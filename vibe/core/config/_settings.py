@@ -445,6 +445,9 @@ def _default_alias_to_name(data: Any) -> Any:
 ThinkingLevel = Literal["off", "low", "medium", "high", "max"]
 THINKING_LEVELS: list[str] = list(get_args(ThinkingLevel))
 
+EffortLevel = Literal["normal", "le-chaton"]
+EFFORT_LEVELS: list[str] = list(get_args(EffortLevel))
+
 DEFAULT_AUTO_COMPACT_THRESHOLD = 200_000
 DEFAULT_API_TIMEOUT = 720.0
 
@@ -765,6 +768,21 @@ class VibeConfig(BaseSettings):
         description=(
             "Additional directories to search for workflow scripts. "
             "Each path may be absolute or relative to the current working directory."
+        ),
+    )
+    disable_workflows: bool = Field(
+        default=False,
+        description=(
+            "Disable workflow features entirely. When true, /workflows is "
+            "unavailable, workflow commands are not registered, and le chaton "
+            "effort mode cannot be activated."
+        ),
+    )
+    effort_mode: str = Field(
+        default="normal",
+        description=(
+            "Effort mode: 'normal' (default) or 'le-chaton' (max thinking + "
+            "automatic workflow planning)."
         ),
     )
 
@@ -1089,6 +1107,12 @@ class VibeConfig(BaseSettings):
                 for m in self.models
             ]
         type(self).save_updates({"models": models})
+
+    def set_effort_mode(self, mode: str) -> None:
+        self.effort_mode = mode
+        type(self).save_updates({"effort_mode": mode})
+        if mode == "le-chaton":
+            self.set_thinking("max")
 
     def add_tool_allowlist_patterns(self, tool_name: str, patterns: list[str]) -> None:
         if tool_name == "bash":

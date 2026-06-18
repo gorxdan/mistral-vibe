@@ -72,6 +72,11 @@ class CommandRegistry:
                 description="Select thinking level",
                 handler="_show_thinking",
             ),
+            "effort": Command(
+                aliases=frozenset(["/effort"]),
+                description="Select effort mode (normal or le chaton)",
+                handler="_show_effort",
+            ),
             "reload": Command(
                 aliases=frozenset(["/reload"]),
                 description="Reload configuration, agent instructions, and skills from disk",

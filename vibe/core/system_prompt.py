@@ -391,4 +391,36 @@ def get_universal_system_prompt(  # noqa: PLR0912
                 Template(template).safe_substitute(sections="\n\n".join(doc_sections))
             )
 
+    if getattr(config, "effort_mode", "normal") == "le-chaton" and not getattr(
+        config, "disable_workflows", False
+    ):
+        sections.append(_get_le_chaton_section())
+
     return "\n\n".join(sections)
+
+
+def _get_le_chaton_section() -> str:
+    return (
+        "## Le Chaton Mode\n\n"
+        "You are in le chaton effort mode: max thinking combined with automatic "
+        "workflow orchestration. For substantive tasks — codebase audits, large "
+        "migrations, cross-checked research, multi-file refactors — write a "
+        "workflow script that orchestrates parallel agents instead of working "
+        "through the task turn-by-turn.\n\n"
+        "A workflow script is a Python file with an `async def main()` function. "
+        "The runtime injects these functions:\n"
+        "- `agent(prompt, *, agent='explore', label=None, phase=None, schema=None)` "
+        "— spawn a subagent\n"
+        "- `parallel(*thunks)` — run thunks concurrently, results in order\n"
+        "- `pipeline(items, fn)` — concurrent map over items, results in order\n"
+        "- `phase(name)` — declare a phase for progress tracking\n"
+        "- `log(msg)` — log a progress message\n"
+        "- `budget` — token budget object with `.total` and `.remaining()`\n"
+        "- `args` — structured input from the invocation command\n\n"
+        "Write the script to a file, then tell the user to run it with the "
+        "workflow tool or save it as a command. For simple tasks (single-file "
+        "edits, quick questions), work normally without a workflow.\n\n"
+        "Prefer workflows when: the task needs 3+ independent agents, adversarial "
+        "verification adds value, or the work spans many files. Use `parallel` "
+        "for independent work and `pipeline` for ordered concurrent map."
+    )

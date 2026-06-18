@@ -75,6 +75,7 @@ from vibe.cli.textual_ui.widgets.config_app import ConfigApp
 from vibe.cli.textual_ui.widgets.connector_auth_app import ConnectorAuthApp
 from vibe.cli.textual_ui.widgets.context_progress import ContextProgress, TokenState
 from vibe.cli.textual_ui.widgets.debug_console import DebugConsole
+from vibe.cli.textual_ui.widgets.effort_picker import EffortPickerApp
 from vibe.cli.textual_ui.widgets.feedback_bar import FeedbackBar
 from vibe.cli.textual_ui.widgets.feedback_bar_manager import FeedbackBarManager
 from vibe.cli.textual_ui.widgets.load_more import HistoryLoadMoreRequested
@@ -245,6 +246,7 @@ class BottomApp(StrEnum):
     Approval = auto()
     Config = auto()
     ConnectorAuth = auto()
+    EffortPicker = auto()
     Input = auto()
     MCP = auto()
     ModelPicker = auto()
@@ -1168,6 +1170,18 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def on_thinking_picker_app_cancelled(
         self, _event: ThinkingPickerApp.Cancelled
+    ) -> None:
+        await self._switch_to_input_app()
+
+    async def on_effort_picker_app_effort_selected(
+        self, message: EffortPickerApp.EffortSelected
+    ) -> None:
+        self.config.set_effort_mode(message.level)
+        await self._reload_config()
+        await self._switch_to_input_app()
+
+    async def on_effort_picker_app_cancelled(
+        self, _event: EffortPickerApp.Cancelled
     ) -> None:
         await self._switch_to_input_app()
 
@@ -2168,6 +2182,18 @@ class VibeApp(App):  # noqa: PLR0904
             return
         await self._switch_to_thinking_picker_app()
 
+    async def _show_effort(self, **kwargs: Any) -> None:
+        if self.config.disable_workflows:
+            from vibe.cli.textual_ui.widgets.messages import ErrorMessage
+
+            await self._mount_and_scroll(
+                ErrorMessage("Workflows are disabled. Effort mode unavailable.")
+            )
+            return
+        if self._current_bottom_app == BottomApp.EffortPicker:
+            return
+        await self._switch_to_effort_picker_app()
+
     async def _show_theme(self, **kwargs: Any) -> None:
         if self._current_bottom_app == BottomApp.ThemePicker:
             return
@@ -2860,6 +2886,18 @@ class VibeApp(App):  # noqa: PLR0904
             ThinkingPickerApp(
                 thinking_levels=THINKING_LEVELS, current_thinking=current_thinking
             )
+        )
+
+    async def _switch_to_effort_picker_app(self) -> None:
+        if self._current_bottom_app == BottomApp.EffortPicker:
+            return
+
+        from vibe.cli.textual_ui.widgets.effort_picker import EffortPickerApp
+        from vibe.core.config import EFFORT_LEVELS
+
+        current_effort = self.config.effort_mode
+        await self._switch_from_input(
+            EffortPickerApp(effort_levels=EFFORT_LEVELS, current_effort=current_effort)
         )
 
     async def _switch_to_theme_picker_app(self) -> None:

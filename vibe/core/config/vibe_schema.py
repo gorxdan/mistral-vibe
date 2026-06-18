@@ -188,6 +188,23 @@ class VibeConfigSchema(ConfigSchema):
             "Each path may be absolute or relative to the current working directory."
         ),
     )
+    disable_workflows: Annotated[bool, WithReplaceMerge()] = Field(
+        default=False,
+        description=(
+            "Disable workflow features entirely. When true, /workflows is "
+            "unavailable, workflow commands are not registered, and le chaton "
+            "effort mode cannot be activated."
+        ),
+    )
+    effort_mode: Annotated[str, WithReplaceMerge()] = Field(
+        default="normal",
+        description=(
+            "Effort mode controls how the agent approaches substantive tasks. "
+            "'normal' (default) works turn-by-turn. 'le-chaton' combines max "
+            "thinking with automatic workflow planning — the agent writes and "
+            "runs workflow scripts to orchestrate parallel agents."
+        ),
+    )
 
     # Internal
     vibe_code_enabled: Annotated[bool, WithReplaceMerge()] = True
