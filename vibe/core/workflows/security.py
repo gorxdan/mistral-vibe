@@ -123,7 +123,7 @@ class _Visitor(ast.NodeVisitor):
     def __init__(self) -> None:
         self.violations: list[Violation] = []
 
-    def _v(self, node: ast.AST, rule: str, detail: str) -> None:
+    def _v(self, node: ast.expr | ast.stmt, rule: str, detail: str) -> None:
         self.violations.append(Violation(node.lineno, node.col_offset, rule, detail))
 
     def visit_Import(self, node: ast.Import) -> None:

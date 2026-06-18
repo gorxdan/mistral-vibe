@@ -6,7 +6,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 import json
 import time
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from vibe.core.logger import logger
 from vibe.core.workflows.budget import Budget, Reservation
@@ -364,8 +364,8 @@ class WorkflowRuntime:
         namespace = self.build_script_namespace(args)
         exec(script_source, namespace)
 
-        main_fn = namespace.get("main")
-        if main_fn is None or not callable(main_fn):
+        main_fn = cast("Callable[[], Awaitable[Any]]", namespace.get("main"))
+        if main_fn is None:
             raise WorkflowError("Script must define an async `main()` function")
 
         try:
