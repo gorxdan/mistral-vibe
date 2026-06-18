@@ -109,10 +109,14 @@ class WorkflowRunner:
         mount: Callable[[Widget], Awaitable[None]],
         on_complete: Callable[[WorkflowResult], Awaitable[None]] | None = None,
         persist_callback: Callable[[], Awaitable[None]] | None = None,
+        snapshot_loader: Callable[[], list[dict[str, Any]]] | None = None,
+        resume_runtime_factory: Callable[[], WorkflowRuntime | None] | None = None,
     ) -> None:
         self._mount = mount
         self._on_complete = on_complete
         self._persist_callback = persist_callback
+        self._snapshot_loader = snapshot_loader
+        self._resume_runtime_factory = resume_runtime_factory or (lambda: None)
         self._runs: list[WorkflowRunEntry] = []
         self._next_id = 1
 
@@ -179,6 +183,24 @@ class WorkflowRunner:
         return entry.runtime.snapshot(
             run_id=entry.run_id, script_source=entry.script_source, args=None
         )
+
+    def _load_snapshot_for_resume(self, run_id: str) -> WorkflowRunSnapshot | None:
+        """Find a persisted snapshot by run_id (read-back for cross-session resume).
+
+        WF-2: snapshots were persisted but never read back, making resume dead
+        code. The snapshot_loader (wired to SessionLogger.load_workflow_snapshots)
+        returns the persisted snapshot dicts; re-validate into WorkflowRunSnapshot.
+        """
+        if self._snapshot_loader is None:
+            return None
+        for raw in self._snapshot_loader():
+            try:
+                snap = WorkflowRunSnapshot.model_validate(raw)
+            except Exception:
+                continue
+            if snap.run_id == run_id:
+                return snap
+        return None
 
     def resume(
         self, run_id: str, snapshot: WorkflowRunSnapshot, *, runtime: WorkflowRuntime
@@ -266,8 +288,28 @@ class WorkflowRunner:
                     f"{snap.budget_spent} tokens spent, status: {snap.status.value}"
                 )
 
+            case "resume":
+                if len(parts) < _MIN_PARTS_FOR_STOP:
+                    return ErrorMessage("Usage: /workflows resume <run-id>")
+                target_id = parts[1].strip()
+                snapshot = self._load_snapshot_for_resume(target_id)
+                if snapshot is None:
+                    return ErrorMessage(
+                        f"No persisted snapshot for `{target_id}` in this session."
+                    )
+                runtime = self._resume_runtime_factory()
+                if runtime is None:
+                    return ErrorMessage(
+                        "Cannot resume: no runtime factory configured."
+                    )
+                new_id = self.resume(target_id, snapshot, runtime=runtime)
+                return UserCommandMessage(
+                    f"Resumed workflow `{target_id}` as `{new_id}` "
+                    f"({snapshot.cached_count} cached results restored)."
+                )
+
             case _:
                 return ErrorMessage(
                     f"Unknown /workflows subcommand: `{verb}`.\n"
-                    "Usage: /workflows [list|stop <id|all>|snapshot <id>]"
+                    "Usage: /workflows [list|stop <id|all>|snapshot <id>|resume <id>]"
                 )

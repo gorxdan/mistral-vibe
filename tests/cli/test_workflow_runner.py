@@ -231,3 +231,69 @@ async def main():
     assert stopped is True
     # The cancel path must have persisted a snapshot.
     assert persist_count >= 1, "persist callback must fire on cancel"
+
+
+async def test_resume_reads_persisted_snapshot_and_restores_cache() -> None:
+    """WF-2: resume must read a persisted snapshot back and restore cached
+    results. Previously snapshots were write-only and resume() had no
+    production caller, so cross-session resume was dead code.
+    """
+    from vibe.core.workflows.models import (
+        CachedAgentResult,
+        WorkflowRunSnapshot,
+        WorkflowStatus,
+    )
+
+    async def mount(w: Any) -> None:
+        pass
+
+    cached_script = """
+async def main():
+    r = await agent("hello")
+    return {"r": r}
+"""
+    cached = CachedAgentResult(
+        prompt_hash="abc123",
+        agent="explore",
+        response="cached answer",
+    )
+    snapshot = WorkflowRunSnapshot(
+        run_id="wf-1",
+        script_source=cached_script,
+        args=None,
+        status=WorkflowStatus.PAUSED,
+        budget_total=1_000_000,
+        budget_spent=1500,
+        cached_results=[cached],
+    )
+    persisted: list[dict[str, Any]] = [snapshot.model_dump(mode="json")]
+
+    runner = WorkflowRunner(
+        mount=mount,
+        snapshot_loader=lambda: persisted,
+        resume_runtime_factory=lambda: WorkflowRuntime(
+            agent_loop_factory=make_factory(), max_concurrent=2
+        ),
+    )
+
+    widget = await runner.handle_command("resume wf-1")
+    assert "Resumed workflow `wf-1`" in widget._content
+    assert runner.runs, "resumed run must be tracked"
+    new_entry = runner.runs[-1]
+    # The resumed runtime restored the cached result from the snapshot.
+    assert "abc123" in new_entry.runtime._cache, "cached results must be restored"
+
+
+async def test_resume_without_snapshot_is_an_error() -> None:
+    async def mount(w: Any) -> None:
+        pass
+
+    runner = WorkflowRunner(
+        mount=mount,
+        snapshot_loader=lambda: [],
+        resume_runtime_factory=lambda: WorkflowRuntime(
+            agent_loop_factory=make_factory()
+        ),
+    )
+    widget = await runner.handle_command("resume wf-missing")
+    assert "No persisted snapshot" in widget._error

@@ -393,6 +393,17 @@ class SessionLogger:
         metadata["workflow_snapshots"] = snapshots
         await SessionLogger.persist_metadata(metadata, session_dir)
 
+    def load_workflow_snapshots(self) -> list[dict[str, Any]]:
+        """Return the workflow snapshots persisted for this session.
+
+        Read-back counterpart to persist_workflow_snapshots, so a resume path
+        can find a prior run's snapshot by run_id. Returns the in-memory list
+        from the session metadata (kept fresh by persist_workflow_snapshots).
+        """
+        if self.session_metadata is None:
+            return []
+        return list(self.session_metadata.workflow_snapshots)
+
     async def persist_experiments(self, response: EvalResponse | None) -> None:
         session_info = self._get_session_info()
         if session_info is None:

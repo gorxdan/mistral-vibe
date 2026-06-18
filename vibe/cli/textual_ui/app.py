@@ -506,6 +506,8 @@ class VibeApp(App):  # noqa: PLR0904
             mount=self._mount_and_scroll,
             on_complete=self._on_workflow_complete,
             persist_callback=self._persist_workflow_snapshots,
+            snapshot_loader=self._load_workflow_snapshots,
+            resume_runtime_factory=self._build_resume_runtime,
         )
         self._workflow_manager = WorkflowManager(lambda: self.agent_loop.config)
         self._register_workflow_commands()
@@ -2705,7 +2707,8 @@ class VibeApp(App):  # noqa: PLR0904
     def _build_team_manager(self) -> TeamManager:
         """Build a TeamManager wired to the agent loop's hook pipeline so team
         lifecycle events (teammate idle, task created/completed) fire through
-        the same HooksManager as agent/tool events."""
+        the same HooksManager as agent/tool events.
+        """
         loop = self.agent_loop
 
         def hook_context() -> Any:
@@ -2729,7 +2732,7 @@ class VibeApp(App):  # noqa: PLR0904
             hook_context=hook_context,
         )
 
-    async def _team_command(self, cmd_args: str = "", **kwargs: Any) -> None:  # noqa: PLR0912, PLR2004
+    async def _team_command(self, cmd_args: str = "", **kwargs: Any) -> None:  # noqa: PLR0912
         from vibe.cli.textual_ui.widgets.messages import (
             ErrorMessage,
             UserCommandMessage,
@@ -2945,6 +2948,20 @@ class VibeApp(App):  # noqa: PLR0904
                 continue
             snapshots.append(snap.model_dump(mode="json"))
         await self.agent_loop.session_logger.persist_workflow_snapshots(snapshots)
+
+    def _load_workflow_snapshots(self) -> list[dict[str, Any]]:
+        """Read persisted workflow snapshots back (WF-2 resume read-back)."""
+        return self.agent_loop.session_logger.load_workflow_snapshots()
+
+    def _build_resume_runtime(self) -> WorkflowRuntime | None:
+        """Build a WorkflowRuntime for resuming a prior run, with the same
+        parent context as a fresh launch so the subagent-type guard and
+        permission/logging inheritance apply.
+        """
+        if self.config.disable_workflows:
+            return None
+        parent_context = self._build_workflow_parent_context("workflow-resume")
+        return WorkflowRuntime(parent_context=parent_context)
 
     async def _handle_le_chaton_prompt(self, text: str) -> None:
         if self.config.disable_workflows:
