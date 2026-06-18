@@ -18,27 +18,33 @@ class TaskStore:
         self._tasks: dict[str, Task] = {}
         self._load()
 
-    def _load(self) -> None:
+    def _lock(self) -> FileLock:
+        return FileLock(str(self._lock_file), timeout=5)
+
+    def _read_tasks(self) -> dict[str, Task]:
+        """Read tasks from disk. Caller must already hold ``_lock``."""
         if not self._tasks_file.exists():
-            self._tasks = {}
-            return
-        lock = FileLock(str(self._lock_file), timeout=5)
-        with lock:
-            try:
-                data = json.loads(self._tasks_file.read_text())
-                self._tasks = {
-                    t["id"]: Task.model_validate(t) for t in data.get("tasks", [])
-                }
-            except Exception as e:
-                logger.warning("Failed to load tasks from %s: %s", self._tasks_file, e)
-                self._tasks = {}
+            return {}
+        try:
+            data = json.loads(self._tasks_file.read_text())
+            return {t["id"]: Task.model_validate(t) for t in data.get("tasks", [])}
+        except Exception as e:
+            logger.warning("Failed to load tasks from %s: %s", self._tasks_file, e)
+            return {}
+
+    def _write_tasks(self, tasks: dict[str, Task]) -> None:
+        """Write tasks to disk. Caller must already hold ``_lock``."""
+        self._team_dir.mkdir(parents=True, exist_ok=True)
+        data = {"tasks": [t.model_dump(mode="json") for t in tasks.values()]}
+        self._tasks_file.write_text(json.dumps(data, indent=2))
+
+    def _load(self) -> None:
+        with self._lock():
+            self._tasks = self._read_tasks()
 
     def _save(self) -> None:
-        self._team_dir.mkdir(parents=True, exist_ok=True)
-        lock = FileLock(str(self._lock_file), timeout=5)
-        with lock:
-            data = {"tasks": [t.model_dump(mode="json") for t in self._tasks.values()]}
-            self._tasks_file.write_text(json.dumps(data, indent=2))
+        with self._lock():
+            self._write_tasks(self._tasks)
 
     def add_task(
         self,
@@ -47,39 +53,50 @@ class TaskStore:
         dependencies: list[str] | None = None,
         task_id: str | None = None,
     ) -> Task:
-        task_id = task_id or f"task-{len(self._tasks) + 1}"
-        task = Task(
-            id=task_id,
-            description=description,
-            dependencies=dependencies or [],
-            created_at=time.time(),
-        )
-        self._tasks[task_id] = task
-        self._save()
-        return task
+        with self._lock():
+            tasks = self._read_tasks()
+            task_id = task_id or f"task-{len(tasks) + 1}"
+            task = Task(
+                id=task_id,
+                description=description,
+                dependencies=dependencies or [],
+                created_at=time.time(),
+            )
+            tasks[task_id] = task
+            self._write_tasks(tasks)
+            self._tasks = tasks
+            return task
 
     def claim_task(self, task_id: str, assignee: str) -> Task | None:
-        task = self._tasks.get(task_id)
-        if task is None:
-            return None
-        if task.status != TaskStatus.PENDING:
-            return None
-        if not self._dependencies_met(task):
-            return None
-        task.status = TaskStatus.IN_PROGRESS
-        task.assignee = assignee
-        self._save()
-        return task
+        # Atomic read-modify-write: re-read tasks.json under the lock so two
+        # processes cannot both observe PENDING and claim the same task.
+        with self._lock():
+            tasks = self._read_tasks()
+            task = tasks.get(task_id)
+            if task is None:
+                return None
+            if task.status != TaskStatus.PENDING:
+                return None
+            if not self._dependencies_met(task, tasks):
+                return None
+            task.status = TaskStatus.IN_PROGRESS
+            task.assignee = assignee
+            self._write_tasks(tasks)
+            self._tasks = tasks
+            return task
 
     def complete_task(self, task_id: str, result: str | None = None) -> Task | None:
-        task = self._tasks.get(task_id)
-        if task is None:
-            return None
-        task.status = TaskStatus.COMPLETED
-        task.completed_at = time.time()
-        task.result = result
-        self._save()
-        return task
+        with self._lock():
+            tasks = self._read_tasks()
+            task = tasks.get(task_id)
+            if task is None:
+                return None
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = time.time()
+            task.result = result
+            self._write_tasks(tasks)
+            self._tasks = tasks
+            return task
 
     def get_task(self, task_id: str) -> Task | None:
         return self._tasks.get(task_id)
@@ -97,11 +114,14 @@ class TaskStore:
             if t.status == TaskStatus.PENDING and self._dependencies_met(t)
         ]
 
-    def _dependencies_met(self, task: Task) -> bool:
+    def _dependencies_met(
+        self, task: Task, tasks: dict[str, Task] | None = None
+    ) -> bool:
+        tasks = self._tasks if tasks is None else tasks
         if not task.dependencies:
             return True
         for dep_id in task.dependencies:
-            dep = self._tasks.get(dep_id)
+            dep = tasks.get(dep_id)
             if dep is None or dep.status != TaskStatus.COMPLETED:
                 return False
         return True

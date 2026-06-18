@@ -79,6 +79,33 @@ def test_persistence_across_instances(tmp_path: Path) -> None:
     assert tasks[0].status == TaskStatus.IN_PROGRESS
 
 
+def test_claim_task_no_double_claim_across_instances(tmp_path: Path) -> None:
+    """Two stores backed by the same dir must not both claim the same task.
+
+    Regression for the cross-process TOCTOU race: each store held a stale
+    in-memory copy and only took the filelock for the write, so two processes
+    could both observe PENDING and claim the same task. The fix re-reads
+    tasks.json under the lock before validating.
+    """
+    store_a = TaskStore(tmp_path)
+    store_b = TaskStore(tmp_path)
+    store_a.add_task("Shared task")
+
+    claimed_a = store_a.claim_task("task-1", "alice")
+    claimed_b = store_b.claim_task("task-1", "bob")
+
+    assert claimed_a is not None
+    assert claimed_a.assignee == "alice"
+    assert claimed_b is None, "second claim must see the updated status under the lock"
+
+    # The on-disk record must reflect exactly one claim.
+    store_c = TaskStore(tmp_path)
+    task = store_c.get_task("task-1")
+    assert task is not None
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert task.assignee == "alice"
+
+
 def test_get_available_tasks(tmp_path: Path) -> None:
     store = TaskStore(tmp_path)
     store.add_task("Task A")
