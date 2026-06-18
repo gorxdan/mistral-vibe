@@ -25,6 +25,7 @@ def test_get_universal_system_prompt_includes_windows_prompt_on_windows(
         include_prompt_detail=True,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     tool_manager = ToolManager(lambda: config)
     skill_manager = SkillManager(lambda: config)
@@ -54,6 +55,7 @@ def test_scratchpad_section_included_when_passed() -> None:
         include_prompt_detail=True,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     tool_manager = ToolManager(lambda: config)
     skill_manager = SkillManager(lambda: config)
@@ -75,6 +77,7 @@ def test_scratchpad_section_absent_when_not_passed() -> None:
         include_prompt_detail=True,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     tool_manager = ToolManager(lambda: config)
     skill_manager = SkillManager(lambda: config)
@@ -94,6 +97,7 @@ def test_headless_section_included_when_enabled() -> None:
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     tool_manager = ToolManager(lambda: config)
     skill_manager = SkillManager(lambda: config)
@@ -114,6 +118,7 @@ def test_headless_section_absent_by_default() -> None:
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     tool_manager = ToolManager(lambda: config)
     skill_manager = SkillManager(lambda: config)
@@ -133,6 +138,7 @@ def test_current_date_placeholder_substituted_in_prompt() -> None:
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     tool_manager = ToolManager(lambda: config)
     skill_manager = SkillManager(lambda: config)

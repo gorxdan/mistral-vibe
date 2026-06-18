@@ -152,6 +152,7 @@ async def test_graduated_experiment_with_deleted_variant_file_falls_back() -> No
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     response = _response_forcing("removed_after_graduation_2025_07")
     manager = ExperimentManager(client=_StubClient(None))

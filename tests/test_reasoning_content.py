@@ -30,6 +30,7 @@ def make_config() -> VibeConfig:
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
         enabled_tools=[],
         tools={},
     )

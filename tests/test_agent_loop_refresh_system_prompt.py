@@ -18,6 +18,7 @@ async def test_refresh_system_prompt_preserves_scratchpad_section() -> None:
         include_prompt_detail=True,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     agent = build_test_agent_loop(config=config)
 

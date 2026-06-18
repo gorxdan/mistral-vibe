@@ -247,7 +247,8 @@ class VibeConfigSchema(ConfigSchema):
     enable_telemetry: Annotated[bool, WithReplaceMerge()] = True
     system_prompt_id: Annotated[str, WithReplaceMerge()] = SystemPrompt.CLI
     compaction_prompt_id: Annotated[str, WithReplaceMerge()] = UtilityPrompt.COMPACT
-    include_commit_signature: Annotated[bool, WithReplaceMerge()] = True
+    include_commit_signature: Annotated[bool, WithReplaceMerge()] = False
+    include_humanizer_guidance: Annotated[bool, WithReplaceMerge()] = True
     include_model_info: Annotated[bool, WithReplaceMerge()] = True
     include_project_context: Annotated[bool, WithReplaceMerge()] = True
     include_prompt_detail: Annotated[bool, WithReplaceMerge()] = True

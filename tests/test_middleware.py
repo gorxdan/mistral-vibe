@@ -458,6 +458,7 @@ class TestReadOnlyAgentMiddlewareIntegration:
             include_prompt_detail=False,
             include_model_info=False,
             include_commit_signature=False,
+            include_humanizer_guidance=False,
             enabled_tools=[],
         )
         agent = build_test_agent_loop(config=config, agent_name=BuiltinAgentName.PLAN)
@@ -491,6 +492,7 @@ class TestReadOnlyAgentMiddlewareIntegration:
             include_prompt_detail=False,
             include_model_info=False,
             include_commit_signature=False,
+            include_humanizer_guidance=False,
             enabled_tools=[],
         )
         agent = build_test_agent_loop(config=config, agent_name=BuiltinAgentName.PLAN)
@@ -527,6 +529,7 @@ class TestReadOnlyAgentMiddlewareIntegration:
             include_prompt_detail=False,
             include_model_info=False,
             include_commit_signature=False,
+            include_humanizer_guidance=False,
             enabled_tools=[],
         )
         agent = build_test_agent_loop(config=config, agent_name=BuiltinAgentName.PLAN)
@@ -555,6 +558,7 @@ class TestReadOnlyAgentMiddlewareIntegration:
             include_prompt_detail=False,
             include_model_info=False,
             include_commit_signature=False,
+            include_humanizer_guidance=False,
             enabled_tools=[],
         )
         agent = build_test_agent_loop(
@@ -586,6 +590,7 @@ class TestReadOnlyAgentMiddlewareIntegration:
             include_prompt_detail=False,
             include_model_info=False,
             include_commit_signature=False,
+            include_humanizer_guidance=False,
             enabled_tools=[],
         )
         agent = build_test_agent_loop(config=config, agent_name=BuiltinAgentName.PLAN)

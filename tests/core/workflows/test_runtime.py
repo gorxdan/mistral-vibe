@@ -168,6 +168,34 @@ async def test_pipeline_returns_results_in_order(runtime: WorkflowRuntime) -> No
     assert results == [2, 4, 6]
 
 
+async def test_parallel_without_await_gives_helpful_error(
+    runtime: WorkflowRuntime,
+) -> None:
+    async def thunk() -> str:
+        return "x"
+
+    result = runtime.parallel(thunk)
+    try:
+        with pytest.raises(TypeError, match="forget 'await'"):
+            a, b = result  # type: ignore[misc]
+    finally:
+        await result  # exhaust the coroutine to avoid RuntimeWarning
+
+
+async def test_pipeline_without_await_gives_helpful_error(
+    runtime: WorkflowRuntime,
+) -> None:
+    async def fn(x: int) -> int:
+        return x
+
+    result = runtime.pipeline([1], fn)
+    try:
+        with pytest.raises(TypeError, match="forget 'await'"):
+            result[0]  # type: ignore[index]
+    finally:
+        await result  # exhaust the coroutine to avoid RuntimeWarning
+
+
 def _concurrency_tracking_factory(active: list[int], max_active: list[int]) -> Any:
     @dataclass
     class _TrackingLoop:

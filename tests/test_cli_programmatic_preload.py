@@ -47,6 +47,7 @@ def test_run_programmatic_preload_streaming_is_batched(
             include_prompt_detail=False,
             include_model_info=False,
             include_commit_signature=False,
+            include_humanizer_guidance=False,
         )
 
         previous = [
@@ -121,6 +122,7 @@ def test_run_programmatic_ignores_system_messages_in_previous(
             include_prompt_detail=False,
             include_model_info=False,
             include_commit_signature=False,
+            include_humanizer_guidance=False,
         )
 
         run_programmatic(
@@ -171,6 +173,7 @@ def test_run_programmatic_teleport_ignored_when_nuage_disabled(
             include_prompt_detail=False,
             include_model_info=False,
             include_commit_signature=False,
+            include_humanizer_guidance=False,
             vibe_code_enabled=False,
         )
 

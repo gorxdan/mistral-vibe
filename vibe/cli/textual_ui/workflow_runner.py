@@ -11,6 +11,8 @@ from textual.widget import Widget
 from vibe.cli.textual_ui.widgets.messages import ErrorMessage, UserCommandMessage
 from vibe.core.logger import logger
 from vibe.core.workflows.models import (
+    BudgetSnapshot,
+    PhaseReport,
     WorkflowResult,
     WorkflowRunSnapshot,
     WorkflowStatus,
@@ -63,6 +65,23 @@ class WorkflowRunEntry:
         if self.result is not None:
             return [p.name for p in self.result.run.phases]
         return list(self.runtime._phase_order)
+
+    @property
+    def phase_reports(self) -> list[PhaseReport]:
+        """Ordered phase reports with agent results, live during execution."""
+        if self.result is not None:
+            return self.result.run.phases
+        return [
+            self.runtime._phases[name]
+            for name in self.runtime._phase_order
+            if name in self.runtime._phases
+        ]
+
+    @property
+    def budget_snapshot(self) -> BudgetSnapshot:
+        if self.result is not None:
+            return self.result.run.budget
+        return self.runtime._budget.snapshot()
 
 
 def _format_run_list(runs: list[WorkflowRunEntry]) -> str:

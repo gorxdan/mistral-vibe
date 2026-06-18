@@ -399,6 +399,7 @@ class VibeApp(App):  # noqa: PLR0904
         Binding("ctrl+p", "rewind_prev", "Rewind Previous", show=False, priority=True),
         Binding("alt+down", "rewind_next", "Rewind Next", show=False, priority=True),
         Binding("ctrl+n", "rewind_next", "Rewind Next", show=False, priority=True),
+        Binding("ctrl+w", "toggle_workflows", "Workflows", show=False, priority=True),
     ]
 
     def get_driver_class(self) -> type[Driver]:
@@ -2782,7 +2783,9 @@ class VibeApp(App):  # noqa: PLR0904
                 )
 
     async def _switch_to_workflows_app(self) -> None:
-        await self._switch_from_input(WorkflowsApp(runs=self._workflow_runner.runs))
+        await self._switch_from_input(
+            WorkflowsApp(runner=self._workflow_runner)
+        )
 
     async def on_workflows_app_closed(self, _event: WorkflowsApp.Closed) -> None:
         await self._switch_to_input_app()
@@ -2790,14 +2793,7 @@ class VibeApp(App):  # noqa: PLR0904
     async def on_workflows_app_stop_requested(
         self, message: WorkflowsApp.StopRequested
     ) -> None:
-        stopped = await self._workflow_runner.stop(message.run_id)
-        if stopped:
-            from vibe.cli.textual_ui.widgets.messages import UserCommandMessage
-
-            await self._mount_and_scroll(
-                UserCommandMessage(f"Stopped workflow `{message.run_id}`.")
-            )
-        await self._switch_to_input_app()
+        await self._workflow_runner.stop(message.run_id)
 
     def _register_workflow_commands(self) -> None:
         if self.config.disable_workflows:
@@ -3328,6 +3324,14 @@ class VibeApp(App):  # noqa: PLR0904
             pass
         self._last_escape_time = None
 
+    def _handle_workflows_app_escape(self) -> None:
+        try:
+            workflows_app = self.query_one(WorkflowsApp)
+            workflows_app.action_back()
+        except Exception:
+            pass
+        self._last_escape_time = None
+
     # --- Rewind mode ---
 
     def _get_user_message_widgets(self) -> list[UserMessage]:
@@ -3569,6 +3573,8 @@ class VibeApp(App):  # noqa: PLR0904
             self._handle_thinking_picker_app_escape()
         elif self._current_bottom_app == BottomApp.SessionPicker:
             self._handle_session_picker_app_escape()
+        elif self._current_bottom_app == BottomApp.Workflows:
+            self._handle_workflows_app_escape()
         elif self._current_bottom_app == BottomApp.Rewind:
             self.run_worker(self._exit_rewind_mode(), exclusive=False)
             self._last_escape_time = None
@@ -3676,6 +3682,14 @@ class VibeApp(App):  # noqa: PLR0904
         self._tools_collapsed = not self._tools_collapsed
         for section in self.query(CollapsibleSection):
             section.set_collapsed(self._tools_collapsed)
+
+    async def action_toggle_workflows(self) -> None:
+        if self.config.disable_workflows:
+            return
+        if self._current_bottom_app == BottomApp.Workflows:
+            await self._switch_to_input_app()
+        else:
+            await self._switch_to_workflows_app()
 
     def action_cycle_mode(self) -> None:
         if self._current_bottom_app != BottomApp.Input:

@@ -52,6 +52,7 @@ async def test_system_prompt_uses_assigned_variant() -> None:
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     response = EvalResponse.model_validate({
         "features": {
@@ -83,6 +84,7 @@ async def test_system_prompt_falls_back_to_default_when_variant_unknown() -> Non
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     response = EvalResponse.model_validate({
         "features": {
@@ -114,6 +116,7 @@ def test_system_prompt_uses_default_when_no_manager() -> None:
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     tool_manager, skill_manager, agent_manager = _build_managers(config)
     prompt = get_universal_system_prompt(
@@ -129,6 +132,7 @@ def test_system_prompt_honors_user_config_when_manager_uninitialized() -> None:
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     manager = ExperimentManager(client=_StubClient(None))
 
@@ -147,6 +151,7 @@ async def test_system_prompt_honors_user_config_when_no_remote_assignment() -> N
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     response = EvalResponse.model_validate({
         "features": {"some_other_feature": {"defaultValue": True}}
@@ -173,6 +178,7 @@ async def test_user_config_overrides_assigned_experiment_variant() -> None:
         include_prompt_detail=False,
         include_model_info=False,
         include_commit_signature=False,
+        include_humanizer_guidance=False,
     )
     response = EvalResponse.model_validate({
         "features": {
