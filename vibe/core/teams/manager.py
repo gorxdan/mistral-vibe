@@ -10,14 +10,14 @@ import time
 from filelock import FileLock
 
 from vibe.core.logger import logger
+from vibe.core.paths import VIBE_HOME
 from vibe.core.teams.mailbox import Mailbox
 from vibe.core.teams.models import TeamConfig, TeamMember
 from vibe.core.teams.task_store import TaskStore
 
 
 def _team_dir_for(team_name: str) -> Path:
-    base = Path(os.environ.get("VIBE_HOME", str(Path.home() / ".vibe")))
-    return base / "teams" / team_name
+    return VIBE_HOME.path / "teams" / team_name
 
 
 class TeamManager:
