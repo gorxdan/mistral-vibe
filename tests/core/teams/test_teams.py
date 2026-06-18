@@ -288,3 +288,30 @@ async def test_stop_teammate_terminates_subprocess(
         assert "alice" not in mgr._teammate_procs
     finally:
         mgr.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_teammate_spawned_in_new_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """teams-007: the teammate is spawned in its own session/process group so
+    stop can signal the whole tree (teammate + bash-tool grandchildren) instead
+    of orphaning grandchildren to init."""
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    proc = _FakeProc()
+    captured: dict[str, object] = {}
+
+    async def fake_exec(*args: object, **kwargs: object) -> _FakeProc:
+        captured.update(kwargs)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    mgr = TeamManager("lead-session", team_name="test-newsession")
+    try:
+        await mgr.spawn_teammate("bob", "work", agent="explore", max_turns=1)
+        await asyncio.sleep(0.05)
+        assert captured.get("start_new_session") is True
+    finally:
+        await mgr.stop_teammate("bob")
+        mgr.cleanup()

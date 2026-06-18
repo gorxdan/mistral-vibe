@@ -4,6 +4,7 @@ import asyncio
 import os
 from pathlib import Path
 import secrets
+import signal
 import sys
 import time
 
@@ -144,6 +145,10 @@ class TeamManager:
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Own session/process group so we can signal the whole tree
+                # (the teammate + any bash-tool grandchildren) on stop; killing
+                # only the direct child would orphan grandchildren to init.
+                start_new_session=True,
             )
             self._teammate_procs[name] = proc
 
@@ -173,31 +178,46 @@ class TeamManager:
             logger.error("Teammate %s error", name, exc_info=e)
         finally:
             # If the task is dying (cancel/stop) with the subprocess still
-            # running, signal it. stop_teammate reaps via _terminate_proc.
+            # running, signal the whole group. stop_teammate reaps via
+            # _terminate_proc.
             if proc is not None and proc.returncode is None:
-                try:
-                    proc.terminate()
-                except ProcessLookupError:
-                    pass
+                self._signal_proc_group(proc, signal.SIGTERM)
             self._teammate_procs.pop(name, None)
 
+    @staticmethod
+    def _signal_proc_group(proc: asyncio.subprocess.Process, sig: int) -> None:
+        """Signal the teammate's whole process group (it is a session leader via
+        start_new_session, so its pid is its pgid), reaping bash-tool
+        grandchildren. Falls back to signaling just the direct child if the
+        group lookup fails (e.g. the process already exited)."""
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            if sig == signal.SIGKILL:
+                proc.kill()
+            else:
+                proc.terminate()
+        except ProcessLookupError:
+            pass
+
     async def _terminate_proc(self, name: str) -> None:
-        """Terminate and reap a teammate subprocess if it is still running."""
+        """Terminate and reap a teammate subprocess (and its group) if still
+        running."""
         proc = self._teammate_procs.get(name)
         if proc is None or proc.returncode is not None:
             return
+        self._signal_proc_group(proc, signal.SIGTERM)
         try:
-            proc.terminate()
+            await asyncio.wait_for(proc.wait(), timeout=3.0)
+        except TimeoutError:
+            self._signal_proc_group(proc, signal.SIGKILL)
             try:
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except TimeoutError:
-                proc.kill()
-                try:
-                    await proc.wait()
-                except ProcessLookupError:
-                    pass
-        except ProcessLookupError:
-            pass
+                await proc.wait()
+            except ProcessLookupError:
+                pass
 
     async def wait_for_teammate(self, name: str) -> None:
         task = self._teammate_tasks.get(name)
