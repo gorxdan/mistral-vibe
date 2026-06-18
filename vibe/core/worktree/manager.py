@@ -159,8 +159,8 @@ class WorktreeManager:
         # 5. Record create_head_sha.
         create_head_sha = repo.head.commit.hexsha
 
-        # 6. Collision-free branch name.
-        leaf = f"{label}-{os.getpid()}-{int(time.time())}"
+        # 6. Collision-free branch name (nanosecond resolution).
+        leaf = f"{label}-{os.getpid()}-{time.time_ns()}"
         branch = f"{config.branch_prefix}{leaf}"
 
         # 7. Ensure .vibe/worktrees/ is gitignored.
@@ -283,7 +283,13 @@ class WorktreeManager:
         Uses a COPY of the real index under ``GIT_INDEX_FILE`` so the user's
         ``.git/index`` is never touched.  Adapts the pattern from
         ``teleport/git.py:158-159`` (``add -N .`` + ``diff HEAD --binary``).
+
+        Uses subprocess directly (not GitPython) for the diff/apply to handle
+        binary patch data correctly — GitPython's string return corrupts
+        binary patches.
         """
+        import subprocess
+
         # Get the path to the real index file.
         index_path = Path(repo.git.rev_parse("--git-path", "index"))
 
@@ -295,21 +301,40 @@ class WorktreeManager:
         shutil.copy2(index_path, tmp_idx)
 
         try:
-            # add -N . and diff HEAD under the temp index.
-            with repo.git.custom_environment(GIT_INDEX_FILE=str(tmp_idx)):
-                repo.git.add("-N", ".")
-                patch = repo.git.diff("HEAD", binary=True)
+            # add -N . and diff HEAD under the temp index, capturing raw bytes.
+            env = dict(os.environ, GIT_INDEX_FILE=str(tmp_idx))
+            repo_root = Path(repo.working_tree_dir)
 
-            if patch.strip():
-                # Apply the patch in the worktree (which is at HEAD — clean).
-                wt_repo = self._get_repo(worktree_path)
+            subprocess.run(
+                ["git", "add", "-N", "."],
+                cwd=str(repo_root),
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+            result = subprocess.run(
+                ["git", "diff", "HEAD", "--binary"],
+                cwd=str(repo_root),
+                env=env,
+                check=True,
+                capture_output=True,
+            )
+            patch_bytes = result.stdout
+
+            if patch_bytes.strip():
+                # Write the patch to a temp file and apply in the worktree.
                 with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".patch", delete=False, dir=str(worktree_path)
+                    suffix=".patch", delete=False, dir=str(worktree_path)
                 ) as pf:
-                    pf.write(patch)
+                    pf.write(patch_bytes)
                     patch_file = Path(pf.name)
                 try:
-                    wt_repo.git.apply(str(patch_file), binary=True)
+                    subprocess.run(
+                        ["git", "apply", str(patch_file)],
+                        cwd=str(worktree_path),
+                        check=True,
+                        capture_output=True,
+                    )
                 finally:
                     patch_file.unlink(missing_ok=True)
         finally:
@@ -421,25 +446,32 @@ class WorktreeManager:
 
     def _wip_commit(self, repo: Repo, handle: WorktreeHandle) -> None:
         """WIP-commit dirty state onto the branch. Never discards work."""
+        import subprocess
+
         try:
             repo.git.add("-A")
-            # Use --no-verify to skip pre-commit hooks that might fail.
-            repo.git.commit(
-                "-m",
-                "WIP: vibe session auto-save",
-                "--no-verify",
-                "-c",
-                f"user.name={_FALLBACK_GIT_NAME}",
-                "-c",
-                f"user.email={_FALLBACK_GIT_EMAIL}",
+            # Use env vars for git identity (not -c flags, which conflict with -m).
+            env = dict(
+                os.environ,
+                GIT_AUTHOR_NAME=_FALLBACK_GIT_NAME,
+                GIT_AUTHOR_EMAIL=_FALLBACK_GIT_EMAIL,
+                GIT_COMMITTER_NAME=_FALLBACK_GIT_NAME,
+                GIT_COMMITTER_EMAIL=_FALLBACK_GIT_EMAIL,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "WIP: vibe session auto-save", "--no-verify"],
+                cwd=str(handle.worktree_path),
+                env=env,
+                check=True,
+                capture_output=True,
             )
             logger.info("WIP-committed dirty worktree state to branch %s", handle.branch)
-        except GitCommandError as exc:
-            # If commit fails (e.g., nothing to commit after add), that's fine.
-            if "nothing to commit" in str(exc).lower():
+        except subprocess.CalledProcessError as exc:
+            err = (exc.stderr or b"").decode("utf-8", errors="replace")
+            if "nothing to commit" in err.lower():
                 logger.debug("Nothing to WIP-commit in worktree %s", handle.worktree_path)
             else:
-                logger.warning("WIP-commit failed: %s. Worktree kept for recovery.", exc)
+                logger.warning("WIP-commit failed: %s. Worktree kept for recovery.", err)
 
     def _try_auto_ff(self, handle: WorktreeHandle) -> bool:
         """Attempt a fast-forward merge into the original repo.

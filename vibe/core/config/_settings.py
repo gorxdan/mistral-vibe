@@ -629,6 +629,7 @@ class VibeConfig(BaseSettings):
     system_prompt_id: str = SystemPrompt.CLI
     compaction_prompt_id: str = UtilityPrompt.COMPACT
     include_commit_signature: bool = False
+    include_humanizer_guidance: bool = True
     include_model_info: bool = True
     include_project_context: bool = True
     include_prompt_detail: bool = True
@@ -683,6 +684,7 @@ class VibeConfig(BaseSettings):
     project_context: ProjectContextConfig = Field(default_factory=ProjectContextConfig)
     experiments: ExperimentsConfig = Field(default_factory=ExperimentsConfig)
     session_logging: SessionLoggingConfig = Field(default_factory=SessionLoggingConfig)
+    worktree: WorktreeConfig = Field(default_factory=WorktreeConfig)
     tools: dict[str, dict[str, Any]] = Field(default_factory=dict)
     tool_paths: list[Path] = Field(
         default_factory=list,
