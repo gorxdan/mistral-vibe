@@ -255,7 +255,6 @@ class WorktreeManager:
 
         # 5. Remove worktree (no --force).
         if handle.config.cleanup == "remove":
-        if handle.config.cleanup == "remove":
             try:
                 root_repo = self._get_repo(handle.original_repo_root)
                 root_repo.git.worktree("remove", str(handle.worktree_path))
