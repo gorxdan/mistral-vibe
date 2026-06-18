@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from vibe.core.types import AssistantEvent as MockEvent
 from vibe.core.workflows.models import WorkflowRunSnapshot, WorkflowStatus
 from vibe.core.workflows.runtime import WorkflowRuntime
 
@@ -16,11 +17,6 @@ pytestmark = pytest.mark.asyncio
 class MockStats:
     session_prompt_tokens: int = 100
     session_completion_tokens: int = 50
-
-
-@dataclass
-class MockEvent:
-    content: str | None = None
 
 
 @dataclass

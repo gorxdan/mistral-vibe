@@ -10,6 +10,7 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from vibe.core.logger import logger
+from vibe.core.types import AssistantEvent
 from vibe.core.workflows.budget import Budget, Reservation
 from vibe.core.workflows.models import (
     AgentResult,
@@ -308,9 +309,15 @@ class WorkflowRuntime:
 
     @staticmethod
     def _extract_content(event: Any) -> str | None:
-        content = getattr(event, "content", None)
-        if content and isinstance(content, str):
-            return content
+        # Only the assistant's answer is part of the response. The real
+        # AgentLoop.act stream also yields UserMessageEvent (the prompt echo)
+        # and ReasoningEvent (chain-of-thought), both of which carry string
+        # `content`; accumulating those polluted the response and broke schema
+        # parsing. Restrict to AssistantEvent.
+        if isinstance(event, AssistantEvent):
+            content = event.content
+            if content and isinstance(content, str):
+                return content
         return None
 
     def _compute_cost(self, tokens_in: int, tokens_out: int, model: str | None) -> float:
@@ -386,20 +393,19 @@ class WorkflowRuntime:
         self._record_agent_result(result)
 
     async def parallel(self, *thunks: Callable[[], Awaitable[T]]) -> list[T]:
-        async def _run(thunk: Callable[[], Awaitable[T]]) -> T:
-            async with self._semaphore:
-                return await thunk()
-
-        return await asyncio.gather(*[_run(t) for t in thunks])
+        # Concurrency is bounded inside spawn_agent (the single owner of
+        # self._semaphore). Acquiring the semaphore here as well would make
+        # each agent hold two permits, and — once the number of concurrent
+        # thunks reaches max_concurrent — deadlock, because every outer permit
+        # is held by a thunk waiting for an inner permit that never frees.
+        return await asyncio.gather(*[thunk() for thunk in thunks])
 
     async def pipeline(
         self, items: list[I], fn: Callable[[I], Awaitable[O]]
     ) -> list[O]:
-        async def _run(item: I) -> O:
-            async with self._semaphore:
-                return await fn(item)
-
-        return await asyncio.gather(*[_run(i) for i in items])
+        # See parallel(): limiting happens in spawn_agent, not here, to avoid
+        # nested acquisition of the non-reentrant semaphore (deadlock at scale).
+        return await asyncio.gather(*[fn(item) for item in items])
 
     def build_script_namespace(self, args: Any = None) -> dict[str, Any]:
         async def _agent(

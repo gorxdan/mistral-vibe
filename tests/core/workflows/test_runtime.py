@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from vibe.core.types import AssistantEvent, ReasoningEvent, UserMessageEvent
 from vibe.core.workflows.runtime import AgentCapExceeded, WorkflowError, WorkflowRuntime
 from vibe.core.workflows.schema import SchemaValidationError
 
@@ -20,27 +21,33 @@ class MockStats:
 
 
 @dataclass
-class MockEvent:
-    content: str | None = None
-
-
-@dataclass
 class MockAgentLoop:
     response_text: str = "mock response"
     tokens_in: int = 1000
     tokens_out: int = 500
     stats: MockStats = field(default_factory=MockStats)
+    delay: float = 0.0
     _call_count: int = field(default=0, init=False)
 
     async def act(
         self, prompt: str, *, response_format: Any = None
-    ) -> AsyncGenerator[MockEvent, None]:
+    ) -> AsyncGenerator[AssistantEvent | ReasoningEvent | UserMessageEvent, None]:
         self._call_count += 1
-        yield MockEvent(content=self.response_text)
+        # Mirror the real AgentLoop.act stream: a prompt echo and a
+        # chain-of-thought event precede the assistant answer. Only the
+        # assistant content must end up in the response.
+        yield UserMessageEvent(content=prompt, message_id="u1")
+        yield ReasoningEvent(content="thinking about it", message_id="r1")
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        yield AssistantEvent(content=self.response_text, message_id="a1")
 
 
 def make_factory(
-    response_text: str = "mock response", tokens_in: int = 1000, tokens_out: int = 500
+    response_text: str = "mock response",
+    tokens_in: int = 1000,
+    tokens_out: int = 500,
+    delay: float = 0.0,
 ) -> Any:
     def factory(
         prompt: str, *, agent: str, parent_context: Any | None = None
@@ -53,6 +60,7 @@ def make_factory(
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             stats=stats,
+            delay=delay,
         )
 
     return factory
@@ -160,20 +168,88 @@ async def test_pipeline_returns_results_in_order(runtime: WorkflowRuntime) -> No
     assert results == [2, 4, 6]
 
 
-async def test_parallel_respects_semaphore() -> None:
-    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_concurrent=2)
+def _concurrency_tracking_factory(active: list[int], max_active: list[int]) -> Any:
+    @dataclass
+    class _TrackingLoop:
+        stats: MockStats = field(default_factory=MockStats)
+
+        async def act(
+            self, prompt: str, *, response_format: Any = None
+        ) -> AsyncGenerator[AssistantEvent, None]:
+            active[0] += 1
+            max_active[0] = max(max_active[0], active[0])
+            try:
+                await asyncio.sleep(0.02)
+                yield AssistantEvent(content="ok", message_id="a1")
+            finally:
+                active[0] -= 1
+
+    def factory(
+        prompt: str, *, agent: str, parent_context: Any | None = None
+    ) -> Any:
+        return _TrackingLoop()
+
+    return factory
+
+
+async def test_parallel_bounds_agent_concurrency() -> None:
+    # Concurrency must be bounded by max_concurrent even though parallel() no
+    # longer takes the semaphore itself — spawn_agent owns the limit.
     active = [0]
     max_active = [0]
-
-    async def thunk() -> int:
-        active[0] += 1
-        max_active[0] = max(max_active[0], active[0])
-        await asyncio.sleep(0.05)
-        active[0] -= 1
-        return active[0]
-
-    await rt.parallel(*[thunk for _ in range(8)])
+    rt = WorkflowRuntime(
+        agent_loop_factory=_concurrency_tracking_factory(active, max_active),
+        max_concurrent=2,
+        max_agents=100,
+    )
+    ns = rt.build_script_namespace()
+    agent = ns["agent"]
+    await rt.parallel(*[(lambda i=i: agent(f"p{i}")) for i in range(8)])
     assert max_active[0] <= 2
+
+
+async def test_parallel_no_deadlock_when_exceeding_max_concurrent() -> None:
+    # Regression: nested semaphore acquisition (parallel + spawn_agent) used to
+    # deadlock once the number of agent thunks reached max_concurrent.
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(delay=0.01),
+        max_concurrent=2,
+        max_agents=100,
+    )
+    ns = rt.build_script_namespace()
+    agent = ns["agent"]
+    results = await asyncio.wait_for(
+        rt.parallel(*[(lambda i=i: agent(f"p{i}")) for i in range(8)]),
+        timeout=5.0,
+    )
+    assert results == ["mock response"] * 8
+
+
+async def test_pipeline_no_deadlock_when_exceeding_max_concurrent() -> None:
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(delay=0.01),
+        max_concurrent=2,
+        max_agents=100,
+    )
+    ns = rt.build_script_namespace()
+    agent = ns["agent"]
+
+    async def fn(i: int) -> str:
+        return await agent(f"p{i}")
+
+    results = await asyncio.wait_for(
+        rt.pipeline(list(range(8)), fn), timeout=5.0
+    )
+    assert results == ["mock response"] * 8
+
+
+async def test_response_excludes_prompt_echo_and_reasoning(
+    runtime: WorkflowRuntime,
+) -> None:
+    # The mock act() stream yields UserMessageEvent(prompt) + ReasoningEvent
+    # before the AssistantEvent. Only the assistant answer must be returned.
+    result = await runtime.spawn_agent("please do the thing")
+    assert result == "mock response"
 
 
 async def test_phase_tracking(runtime: WorkflowRuntime) -> None:
