@@ -179,8 +179,8 @@ async def test_parallel_respects_semaphore() -> None:
 async def test_phase_tracking(runtime: WorkflowRuntime) -> None:
     runtime._declare_phase("Find")
     runtime._declare_phase("Verify")
-    await runtime.spawn_agent("test", phase="Find", label="finder1")
-    await runtime.spawn_agent("test", phase="Verify", label="verifier1")
+    await runtime.spawn_agent("find prompt", phase="Find", label="finder1")
+    await runtime.spawn_agent("verify prompt", phase="Verify", label="verifier1")
 
     run = runtime.build_run()
     assert len(run.phases) == 2

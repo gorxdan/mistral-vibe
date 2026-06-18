@@ -93,3 +93,34 @@ class WorkflowResult(BaseModel):
     return_value: Any = None
     run: WorkflowRun
     summary: str = ""
+
+
+class CachedAgentResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_hash: str
+    agent: str
+    label: str | None = None
+    phase: str | None = None
+    response: str | dict[str, Any]
+    tokens_in: int = 0
+    tokens_out: int = 0
+    completed: bool = True
+    error: str | None = None
+
+
+class WorkflowRunSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    script_source: str
+    args: Any = None
+    status: WorkflowStatus = WorkflowStatus.PAUSED
+    started_at: float = 0.0
+    budget_total: int | None = None
+    budget_spent: int = 0
+    cached_results: list[CachedAgentResult] = Field(default_factory=list)
+
+    @property
+    def cached_count(self) -> int:
+        return len(self.cached_results)

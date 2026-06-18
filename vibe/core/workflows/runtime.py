@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
+import hashlib
 import json
 import time
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
@@ -12,9 +13,11 @@ from vibe.core.logger import logger
 from vibe.core.workflows.budget import Budget, Reservation
 from vibe.core.workflows.models import (
     AgentResult,
+    CachedAgentResult,
     PhaseReport,
     WorkflowResult,
     WorkflowRun,
+    WorkflowRunSnapshot,
     WorkflowStatus,
 )
 from vibe.core.workflows.schema import (
@@ -47,6 +50,10 @@ class WorkflowError(Exception):
     pass
 
 
+def _prompt_hash(prompt: str, agent: str) -> str:
+    return hashlib.sha256(f"{agent}:{prompt}".encode()).hexdigest()[:16]
+
+
 class AgentLoopFactory(Protocol):
     def __call__(
         self, prompt: str, *, agent: str, parent_context: InvokeContext | None
@@ -68,6 +75,7 @@ class WorkflowRuntime:
     _phase_order: list[str] = field(default_factory=list, init=False)
     _event_sink: Callable[[str], None] | None = field(default=None, init=False)
     _started_at: float = field(default_factory=time.monotonic, init=False)
+    _cache: dict[str, CachedAgentResult] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
@@ -105,6 +113,12 @@ class WorkflowRuntime:
         schema: dict | None = None,
         budget_estimate: int | None = None,
     ) -> str | dict[str, Any]:
+        cache_key = _prompt_hash(prompt, agent)
+        if cached := self._cache.get(cache_key):
+            self._log(f"cache hit: {label or agent}")
+            self._record_cached_result(cached)
+            return cached.response
+
         if self._agent_count >= self.max_agents:
             raise AgentCapExceeded(
                 f"Agent cap reached: {self._agent_count}/{self.max_agents}"
@@ -122,6 +136,7 @@ class WorkflowRuntime:
                 phase=phase,
                 schema=schema,
                 reservation=reservation,
+                cache_key=cache_key,
             )
 
     async def _run_agent(
@@ -134,6 +149,7 @@ class WorkflowRuntime:
         phase: str | None,
         schema: dict | None,
         reservation: Reservation,
+        cache_key: str,
     ) -> str | dict[str, Any]:
         response_format = build_response_format(schema) if schema is not None else None
         effective_prompt = prompt
@@ -180,6 +196,8 @@ class WorkflowRuntime:
                     reservation=reservation,
                     completed=completed,
                     error=error_msg,
+                    cache_key=cache_key,
+                    agent=agent,
                 )
                 return response_text
 
@@ -200,6 +218,8 @@ class WorkflowRuntime:
                         reservation=reservation,
                         completed=completed,
                         error=error_msg,
+                        cache_key=cache_key,
+                        agent=agent,
                     )
                     return parsed
                 last_errors = [str(e) for e in errors]
@@ -224,6 +244,8 @@ class WorkflowRuntime:
             reservation=reservation,
             completed=False,
             error=f"Schema validation failed after {self.schema_retries + 1} attempts",
+            cache_key=cache_key,
+            agent=agent,
         )
         raise SchemaValidationError(
             f"Response did not match schema after {self.schema_retries + 1} attempts. "
@@ -270,7 +292,7 @@ class WorkflowRuntime:
             return content
         return None
 
-    def _finalize_agent(
+    def _finalize_agent(  # noqa: PLR0913
         self,
         *,
         prompt: str,
@@ -282,6 +304,8 @@ class WorkflowRuntime:
         reservation: Reservation,
         completed: bool,
         error: str | None,
+        cache_key: str,
+        agent: str,
     ) -> None:
         self._budget.reconcile(reservation, tokens_in, tokens_out)
 
@@ -295,6 +319,33 @@ class WorkflowRuntime:
             cost=0.0,
             completed=completed,
             error=error,
+        )
+        self._record_agent_result(result)
+
+        if completed:
+            self._cache[cache_key] = CachedAgentResult(
+                prompt_hash=cache_key,
+                agent=agent,
+                label=label,
+                phase=phase,
+                response=response,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                completed=completed,
+                error=error,
+            )
+
+    def _record_cached_result(self, cached: CachedAgentResult) -> None:
+        result = AgentResult(
+            label=cached.label,
+            phase=cached.phase,
+            prompt=f"[cached] {cached.agent}",
+            response=cached.response,
+            tokens_in=cached.tokens_in,
+            tokens_out=cached.tokens_out,
+            cost=0.0,
+            completed=cached.completed,
+            error=cached.error,
         )
         self._record_agent_result(result)
 
@@ -395,3 +446,22 @@ class WorkflowRuntime:
             summary += f" — error: {error}"
 
         return WorkflowResult(return_value=return_value, run=run, summary=summary)
+
+    def snapshot(
+        self, run_id: str, script_source: str, args: Any = None
+    ) -> WorkflowRunSnapshot:
+        return WorkflowRunSnapshot(
+            run_id=run_id,
+            script_source=script_source,
+            args=args,
+            status=WorkflowStatus.PAUSED,
+            started_at=self._started_at,
+            budget_total=self.budget_total,
+            budget_spent=self._budget.snapshot().spent,
+            cached_results=list(self._cache.values()),
+        )
+
+    def restore_from_snapshot(self, snapshot: WorkflowRunSnapshot) -> None:
+        for cached in snapshot.cached_results:
+            self._cache[cached.prompt_hash] = cached
+        self._log(f"restored {snapshot.cached_count} cached results from snapshot")

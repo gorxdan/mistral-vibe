@@ -10,7 +10,11 @@ from textual.widget import Widget
 
 from vibe.cli.textual_ui.widgets.messages import ErrorMessage, UserCommandMessage
 from vibe.core.logger import logger
-from vibe.core.workflows.models import WorkflowResult, WorkflowStatus
+from vibe.core.workflows.models import (
+    WorkflowResult,
+    WorkflowRunSnapshot,
+    WorkflowStatus,
+)
 from vibe.core.workflows.runtime import WorkflowRuntime
 
 _MIN_PARTS_FOR_STOP = 2
@@ -143,6 +147,36 @@ class WorkflowRunner:
             await self._mount(ErrorMessage(f"Workflow `{entry.run_id}` failed: {e}"))
             raise
 
+    def get_snapshot(self, run_id: str) -> WorkflowRunSnapshot | None:
+        entry = self._find_run(run_id)
+        if entry is None:
+            return None
+        return entry.runtime.snapshot(
+            run_id=entry.run_id, script_source=entry.script_source, args=None
+        )
+
+    def resume(
+        self, run_id: str, snapshot: WorkflowRunSnapshot, *, runtime: WorkflowRuntime
+    ) -> str:
+        runtime.restore_from_snapshot(snapshot)
+        new_id = f"wf-{self._next_id}"
+        self._next_id += 1
+
+        entry = WorkflowRunEntry(
+            run_id=new_id,
+            script_source=snapshot.script_source,
+            started_at=time.monotonic(),
+            runtime=runtime,
+        )
+
+        def event_sink(msg: str) -> None:
+            pass
+
+        runtime.set_event_sink(event_sink)
+        entry.task = asyncio.create_task(self._run_workflow(entry, snapshot.args))
+        self._runs.append(entry)
+        return new_id
+
     async def stop(self, run_id: str) -> bool:
         entry = self._find_run(run_id)
         if entry is None or entry.task is None:
@@ -168,7 +202,7 @@ class WorkflowRunner:
     def _find_run(self, run_id: str) -> WorkflowRunEntry | None:
         return next((r for r in self._runs if r.run_id == run_id), None)
 
-    async def handle_command(self, cmd_args: str) -> Widget:
+    async def handle_command(self, cmd_args: str) -> Widget:  # noqa: PLR0911
         cmd_args = cmd_args.strip()
         if not cmd_args or cmd_args in {"list", "ls"}:
             return UserCommandMessage(_format_run_list(self._runs))
@@ -191,8 +225,20 @@ class WorkflowRunner:
                     f"Could not stop `{target_id}` — not found or already finished."
                 )
 
+            case "snapshot" | "snap":
+                if len(parts) < _MIN_PARTS_FOR_STOP:
+                    return ErrorMessage("Usage: /workflows snapshot <run-id>")
+                target_id = parts[1].strip()
+                snap = self.get_snapshot(target_id)
+                if snap is None:
+                    return ErrorMessage(f"Run `{target_id}` not found.")
+                return UserCommandMessage(
+                    f"Snapshot of `{target_id}`: {snap.cached_count} cached results, "
+                    f"{snap.budget_spent} tokens spent, status: {snap.status.value}"
+                )
+
             case _:
                 return ErrorMessage(
                     f"Unknown /workflows subcommand: `{verb}`.\n"
-                    "Usage: /workflows [list|stop <id|all>]"
+                    "Usage: /workflows [list|stop <id|all>|snapshot <id>]"
                 )

@@ -8,9 +8,11 @@ from vibe.core.workflows.budget import (
 )
 from vibe.core.workflows.models import (
     AgentResult,
+    CachedAgentResult,
     PhaseReport,
     WorkflowResult,
     WorkflowRun,
+    WorkflowRunSnapshot,
     WorkflowStatus,
 )
 from vibe.core.workflows.runtime import (
@@ -35,6 +37,7 @@ __all__ = [
     "Budget",
     "BudgetExhausted",
     "BudgetSnapshot",
+    "CachedAgentResult",
     "PhaseReport",
     "Reservation",
     "SchemaValidationError",
@@ -43,6 +46,7 @@ __all__ = [
     "WorkflowError",
     "WorkflowResult",
     "WorkflowRun",
+    "WorkflowRunSnapshot",
     "WorkflowRuntime",
     "WorkflowStatus",
     "build_namespace",
