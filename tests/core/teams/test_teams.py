@@ -178,6 +178,42 @@ def test_mailbox_empty_inbox(tmp_path: Path) -> None:
     assert mb.get_unread("nonexistent") == []
 
 
+def test_mailbox_read_preserves_send_order(tmp_path: Path) -> None:
+    """teams-004: messages must be returned in send order, not filename order.
+
+    Filenames are random uuid4 strings. The old code sorted the glob lexically,
+    so recipients saw messages in random order. Write files whose lexical order
+    is the reverse of their timestamp order so the regression is deterministic.
+    """
+    from vibe.core.teams.models import Message
+
+    inbox = tmp_path / "mailbox" / "bob"
+    inbox.mkdir(parents=True)
+    # Lexical filename sort -> a, b, c (contents third, first, second).
+    # Timestamp sort -> b, c, a (contents first, second, third).
+    fixtures = [
+        ("a.json", "third", 3000.0),
+        ("b.json", "first", 1000.0),
+        ("c.json", "second", 2000.0),
+    ]
+    for fname, content, ts in fixtures:
+        msg = Message(
+            id=fname.removesuffix(".json"),
+            from_name="alice",
+            to_name="bob",
+            content=content,
+            timestamp=ts,
+        )
+        (inbox / fname).write_text(msg.model_dump_json(indent=2))
+
+    mb = Mailbox(tmp_path)
+    unread = [m.content for m in mb.get_unread("bob")]
+    assert unread == ["first", "second", "third"]
+
+    read_msgs = [m.content for m in mb.read("bob")]
+    assert read_msgs == ["first", "second", "third"]
+
+
 class _FakeProc:
     """Mimics asyncio.subprocess.Process: blocks on communicate() until killed."""
 
