@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 import respx
+import socket
 
 from tests.mock.utils import collect_result
 from vibe.core.tools.base import BaseToolState, ToolError
@@ -260,6 +261,62 @@ async def test_over_max_timeout_rejected(webfetch):
 
 def test_get_status_text():
     assert WebFetch.get_status_text() == "Fetching URL"
+
+
+@pytest.mark.asyncio
+async def test_blocks_loopback_ipv4(webfetch):
+    with pytest.raises(ToolError, match="SSRF blocked"):
+        await collect_result(webfetch.run(WebFetchArgs(url="http://127.0.0.1")))
+
+
+@pytest.mark.asyncio
+async def test_blocks_private_ipv4(webfetch):
+    with pytest.raises(ToolError, match="SSRF blocked"):
+        await collect_result(webfetch.run(WebFetchArgs(url="http://10.0.0.1")))
+
+
+@pytest.mark.asyncio
+async def test_blocks_cloud_metadata_ip(webfetch):
+    with pytest.raises(ToolError, match="SSRF blocked"):
+        await collect_result(
+            webfetch.run(WebFetchArgs(url="http://169.254.169.254/latest/meta-data/"))
+        )
+
+
+@pytest.mark.asyncio
+async def test_blocks_ipv6_loopback(webfetch):
+    with pytest.raises(ToolError, match="SSRF blocked"):
+        await collect_result(webfetch.run(WebFetchArgs(url="http://[::1]")))
+
+
+@pytest.mark.asyncio
+async def test_blocks_ipv6_link_local(webfetch):
+    with pytest.raises(ToolError, match="SSRF blocked"):
+        await collect_result(webfetch.run(WebFetchArgs(url="http://[fe80::1]")))
+
+
+@pytest.mark.asyncio
+async def test_blocks_hostname_resolving_to_private_ip(webfetch, monkeypatch):
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.webfetch.socket.getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 0))
+        ],
+    )
+    with pytest.raises(ToolError, match="SSRF blocked"):
+        await collect_result(webfetch.run(WebFetchArgs(url="http://internal.example.com")))
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_blocks_redirect_to_private_ip(webfetch):
+    respx.get("https://example.com").mock(
+        return_value=httpx.Response(
+            302, headers={"Location": "http://127.0.0.1/secret"}
+        )
+    )
+    with pytest.raises(ToolError, match="SSRF blocked"):
+        await collect_result(webfetch.run(WebFetchArgs(url="https://example.com")))
 
 
 @pytest.mark.asyncio

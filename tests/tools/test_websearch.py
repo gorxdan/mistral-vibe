@@ -12,6 +12,7 @@ from mistralai.client.models import (
     TextChunk,
     ToolReferenceChunk,
 )
+import httpx
 import pytest
 
 from tests.conftest import build_test_vibe_config
@@ -154,6 +155,7 @@ def test_parse_skips_non_message_entries(websearch):
 @pytest.mark.asyncio
 async def test_run_missing_api_key(monkeypatch):
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("SEARXNG_URL", raising=False)
     config = WebSearchConfig()
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
     with pytest.raises(ToolError, match="MISTRAL_API_KEY"):
@@ -252,8 +254,6 @@ async def test_run_returns_parsed_result(websearch):
 async def test_run_sdk_error_wrapped(websearch):
     from unittest.mock import Mock
 
-    import httpx
-
     mock_response = Mock(spec=httpx.Response)
     mock_response.status_code = 500
     mock_response.text = "error"
@@ -306,6 +306,7 @@ def test_is_available_with_key(monkeypatch):
 
 def test_is_available_without_key(monkeypatch):
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("SEARXNG_URL", raising=False)
     assert WebSearch.is_available() is False
 
 
@@ -425,3 +426,107 @@ def test_get_result_display_uses_singular_for_one_source():
     )
 
     assert "1 source)" in WebSearch.get_result_display(event).message
+
+
+def test_is_available_with_searxng_url_in_config(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "dummy")
+    monkeypatch.delenv("SEARXNG_URL", raising=False)
+    config = build_test_vibe_config(
+        tools={"web_search": {"searxng_url": "http://localhost:8080"}}
+    )
+    assert WebSearch.is_available(config) is True
+
+
+def test_is_available_with_searxng_url_in_env(monkeypatch):
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+    assert WebSearch.is_available() is True
+
+
+@pytest.mark.asyncio
+async def test_run_searxng_success(monkeypatch):
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    mock_response = httpx.Response(
+        200,
+        json={
+            "query": "python asyncio",
+            "results": [
+                {
+                    "title": "Async IO",
+                    "url": "https://docs.python.org/3/library/asyncio.html",
+                    "content": "Asyncio library documentation.",
+                },
+                {
+                    "title": "Tutorial",
+                    "url": "https://realpython.com/async-python/",
+                    "content": "Real Python asyncio tutorial.",
+                },
+            ],
+        },
+        request=httpx.Request("GET", "http://localhost:8080/search"),
+    )
+
+    with patch("httpx.AsyncClient.get", AsyncMock(return_value=mock_response)):
+        result = await collect_result(ws.run(WebSearchArgs(query="python asyncio")))
+
+    assert result.query == "python asyncio"
+    assert "Async IO" in result.answer
+    assert "https://docs.python.org/3/library/asyncio.html" in result.answer
+    assert len(result.sources) == 2
+    assert result.sources[0].title == "Async IO"
+    assert result.sources[0].url == "https://docs.python.org/3/library/asyncio.html"
+
+
+@pytest.mark.asyncio
+async def test_run_searxng_empty_results(monkeypatch):
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    mock_response = httpx.Response(200, json={"query": "xyzabc123", "results": []}, request=httpx.Request("GET", "http://localhost:8080/search"))
+
+    with patch("httpx.AsyncClient.get", AsyncMock(return_value=mock_response)):
+        result = await collect_result(ws.run(WebSearchArgs(query="xyzabc123")))
+
+    assert result.query == "xyzabc123"
+    assert result.answer == "No results found."
+    assert result.sources == []
+
+
+@pytest.mark.asyncio
+async def test_run_searxng_http_error(monkeypatch):
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    with patch(
+        "httpx.AsyncClient.get", AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
+    ):
+        with pytest.raises(ToolError, match="SearXNG request failed"):
+            await collect_result(ws.run(WebSearchArgs(query="test")))
+
+
+@pytest.mark.asyncio
+async def test_run_searxng_invalid_json(monkeypatch):
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    mock_response = httpx.Response(200, text="not json", request=httpx.Request("GET", "http://localhost:8080/search"))
+
+    with patch("httpx.AsyncClient.get", AsyncMock(return_value=mock_response)):
+        with pytest.raises(ToolError, match="Invalid JSON from SearXNG"):
+            await collect_result(ws.run(WebSearchArgs(query="test")))
+
+
+def test_tool_manager_websearch_availability_with_searxng_url(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "dummy")
+    monkeypatch.delenv("SEARXNG_URL", raising=False)
+    config = build_test_vibe_config(
+        tools={"web_search": {"searxng_url": "http://localhost:8080"}}
+    )
+    manager = ToolManager(lambda: config)
+    assert "web_search" in manager.available_tools

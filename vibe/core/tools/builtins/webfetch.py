@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 import functools
+import ipaddress
+import socket
 from typing import TYPE_CHECKING, ClassVar, final
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from pydantic import BaseModel, Field
@@ -31,6 +34,19 @@ if TYPE_CHECKING:
 
 _HONEST_USER_AGENT = "vibe-cli"
 _HTTP_FORBIDDEN = 403
+_MAX_REDIRECTS = 5
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True for private, loopback, link-local, reserved, or multicast IPs.
+
+    Also explicitly blocks the well-known cloud metadata endpoint.
+    """
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+        return True
+    if str(ip) == "169.254.169.254":
+        return True
+    return False
 
 
 @functools.cache
@@ -94,6 +110,49 @@ class WebFetch(
         raw = url.lstrip("/") if url.startswith("//") else url
         return raw if raw.startswith(("http://", "https://")) else "https://" + raw
 
+    async def _validate_url(self, url: str) -> None:
+        """Reject URLs that resolve to private/loopback/link-local IPs.
+
+        This prevents SSRF attacks against cloud metadata endpoints,
+        internal services, and the local machine.
+        """
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if not host:
+            raise ToolError("Invalid URL: no host found")
+
+        # Bare IP address (IPv4 or IPv6)
+        try:
+            ip = ipaddress.ip_address(host)
+            if _is_blocked_ip(ip):
+                raise ToolError(f"SSRF blocked: {ip} is a private/reserved IP address")
+            return
+        except ValueError:
+            pass
+
+        # Hostname – resolve asynchronously to avoid blocking the event loop
+        try:
+            loop = asyncio.get_running_loop()
+            infos = await loop.run_in_executor(
+                None, socket.getaddrinfo, host, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+            )
+        except (socket.gaierror, OSError):
+            return  # Let the HTTP request fail naturally with a clearer error
+
+        for info in infos:
+            addr = info[4][0]
+            # Strip IPv6 scope suffix if present
+            if "%" in addr:
+                addr = addr.split("%")[0]
+            try:
+                ip = ipaddress.ip_address(addr)
+                if _is_blocked_ip(ip):
+                    raise ToolError(
+                        f"SSRF blocked: {host} resolves to {ip}"
+                    )
+            except ValueError:
+                continue
+
     def resolve_permission(self, args: WebFetchArgs) -> PermissionContext | None:
         if self.config.permission in {ToolPermission.ALWAYS, ToolPermission.NEVER}:
             return PermissionContext(permission=self.config.permission)
@@ -124,6 +183,7 @@ class WebFetch(
         url = self._normalize_url(args.url)
         timeout = self._resolve_timeout(args.timeout)
 
+        await self._validate_url(url)
         content, content_type = await self._fetch_url(url, timeout)
 
         if "text/html" in content_type:
@@ -197,11 +257,22 @@ class WebFetch(
         self, url: str, timeout: int, headers: dict[str, str]
     ) -> httpx.Response:
         async with httpx.AsyncClient(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=httpx.Timeout(timeout),
             verify=build_ssl_context(),
         ) as client:
             response = await client.get(url, headers=headers)
+
+            # Manually follow redirects so every hop can be SSRF-validated
+            redirect_count = 0
+            while response.is_redirect and redirect_count < _MAX_REDIRECTS:
+                location = response.headers.get("location")
+                if not location:
+                    break
+                next_url = urljoin(str(response.url), location)
+                await self._validate_url(next_url)
+                response = await client.get(next_url, headers=headers)
+                redirect_count += 1
 
             # In case we are hitting bot detection retry once honestly
             if (
@@ -209,7 +280,7 @@ class WebFetch(
                 and response.headers.get("cf-mitigated") == "challenge"
             ):
                 headers["User-Agent"] = _HONEST_USER_AGENT
-                response = await client.get(url, headers=headers)
+                response = await client.get(str(response.url), headers=headers)
 
             return response
 

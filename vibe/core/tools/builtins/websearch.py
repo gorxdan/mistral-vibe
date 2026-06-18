@@ -54,6 +54,13 @@ class WebSearchConfig(BaseToolConfig):
         default="mistral-vibe-cli-with-tools",
         description="Mistral model to use for web search.",
     )
+    searxng_url: str | None = Field(
+        default=None,
+        description="URL of a local SearXNG instance to use instead of Mistral web search.",
+    )
+    searxng_timeout: int = Field(
+        default=30, description="HTTP timeout in seconds for SearXNG requests."
+    )
 
 
 class WebSearch(
@@ -61,11 +68,20 @@ class WebSearch(
     ToolUIData[WebSearchArgs, WebSearchResult],
 ):
     description: ClassVar[str] = (
-        "Search the web for current information using Mistral's web search."
+        "Search the web for current information. Uses a local SearXNG instance when configured, "
+        "otherwise falls back to Mistral's web search."
     )
 
     @classmethod
     def is_available(cls, config: VibeConfig | None = None) -> bool:
+        searxng_url = None
+        if config is not None:
+            searxng_url = config.tools.get("web_search", {}).get("searxng_url")
+        if not searxng_url:
+            searxng_url = os.getenv("SEARXNG_URL")
+        if searxng_url:
+            return True
+
         if config is None:
             return bool(os.getenv(DEFAULT_MISTRAL_API_ENV_KEY))
 
@@ -80,6 +96,11 @@ class WebSearch(
         self, args: WebSearchArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | WebSearchResult, None]:
         config = self._resolve_config(ctx)
+        searxng_url = self.config.searxng_url or os.getenv("SEARXNG_URL")
+        if searxng_url:
+            yield await self._run_searxng(args, searxng_url)
+            return
+
         api_key_env_var = self._api_key_env_var(config)
         api_key = os.getenv(api_key_env_var)
         if not api_key:
@@ -163,6 +184,55 @@ class WebSearch(
         return WebSearchResult(
             query=query, answer=answer, sources=list(sources.values())
         )
+
+    async def _run_searxng(self, args: WebSearchArgs, searxng_url: str) -> WebSearchResult:
+        ssl_context = build_ssl_context()
+        async with httpx.AsyncClient(
+            follow_redirects=True, verify=ssl_context, timeout=self.config.searxng_timeout
+        ) as client:
+            try:
+                response = await client.get(
+                    f"{searxng_url.rstrip('/')}/search",
+                    params={"q": args.query, "format": "json"},
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise ToolError(f"SearXNG request failed: {exc}") from exc
+
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise ToolError(f"Invalid JSON from SearXNG: {exc}") from exc
+
+            results = data.get("results", [])
+            if not results:
+                return WebSearchResult(
+                    query=args.query,
+                    answer="No results found.",
+                    sources=[],
+                )
+
+            parts: list[str] = []
+            sources: dict[str, WebSearchSource] = {}
+            for i, result in enumerate(results[:10], start=1):
+                title = result.get("title", "Untitled")
+                url = result.get("url", "")
+                content = result.get("content", "")
+                if url and url not in sources:
+                    sources[url] = WebSearchSource(title=title, url=url)
+                parts.append(f"{i}. **{title}**")
+                if url:
+                    parts.append(f"   URL: {url}")
+                if content:
+                    parts.append(f"   {content}")
+                parts.append("")
+
+            answer = "\n".join(parts).strip()
+            return WebSearchResult(
+                query=args.query,
+                answer=answer,
+                sources=list(sources.values()),
+            )
 
     @classmethod
     def get_call_display(cls, event: ToolCallEvent) -> ToolCallDisplay:
