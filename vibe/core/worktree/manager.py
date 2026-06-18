@@ -231,26 +231,30 @@ class WorktreeManager:
     def _do_exit(self, handle: WorktreeHandle) -> None:
         wt_repo = self._get_repo(handle.worktree_path)
 
-        # 1. WIP-commit if dirty.
-        if self._is_dirty(wt_repo):
-            self._wip_commit(wt_repo, handle)
-
-        # 2. Auto-ff merge (only if configured).
-        merged = False
-        if handle.config.merge == "auto-ff":
-            merged = self._try_auto_ff(handle)
-
-        # 3. Unlink dep symlinks.
+        # 1. Unlink dep symlinks BEFORE the WIP commit so the worktree
+        #    tree is clean of ephemeral symlinks (they are gitignored, but
+        #    deleting them after the commit leaves the worktree dirty again
+        #    and blocks git worktree remove).
         for s in handle.symlinks:
             try:
                 s.unlink()
             except OSError as exc:
                 logger.warning("Failed to unlink symlink %s: %s", s, exc)
 
+        # 2. WIP-commit if dirty.
+        if self._is_dirty(wt_repo):
+            self._wip_commit(wt_repo, handle)
+
+        # 3. Auto-ff merge (only if configured).
+        merged = False
+        if handle.config.merge == "auto-ff":
+            merged = self._try_auto_ff(handle)
+
         # 4. chdir back BEFORE worktree remove (removing cwd leaves stale cwd).
         os.chdir(handle.original_repo_root)
 
         # 5. Remove worktree (no --force).
+        if handle.config.cleanup == "remove":
         if handle.config.cleanup == "remove":
             try:
                 root_repo = self._get_repo(handle.original_repo_root)
