@@ -101,6 +101,7 @@ class WorktreeManager:
         self._active: WorktreeHandle | None = None
         self._atexit_registered = False
         self._signal_handlers_installed = False
+        self._signal_received: int | None = None
 
     @property
     def active(self) -> WorktreeHandle | None:
@@ -535,14 +536,25 @@ class WorktreeManager:
 
     def _atexit_cleanup(self) -> None:
         if self._active is not None:
-            logger.info("atexit: cleaning up worktree %s", self._active.branch)
+            if self._signal_received is not None:
+                logger.info(
+                    "atexit (after signal %d): cleaning up worktree %s",
+                    self._signal_received,
+                    self._active.branch,
+                )
+            else:
+                logger.info("atexit: cleaning up worktree %s", self._active.branch)
             self.exit(self._active)
 
     def _signal_handler(self, signum: int, frame: object) -> None:
-        if self._active is not None:
-            logger.info("Signal %d: cleaning up worktree %s", signum, self._active.branch)
-            self.exit(self._active)
-        # Re-raise default handler.
+        # Async-signal-safe: only set a flag and re-raise. The heavy teardown
+        # (fork/exec git, chdir) is deferred to the already-registered atexit
+        # handler, which runs during normal interpreter shutdown. Doing git
+        # subprocess work inside the handler can deadlock if the signal
+        # interrupts a non-reentrant libc/allocator call.
+        self._signal_received = signum
+        # Re-raise default handler so the process exits with the right status;
+        # atexit handlers still run on the way down.
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
 
