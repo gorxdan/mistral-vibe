@@ -89,9 +89,11 @@ class WorkflowRunner:
         *,
         mount: Callable[[Widget], Awaitable[None]],
         on_complete: Callable[[WorkflowResult], Awaitable[None]] | None = None,
+        persist_callback: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._mount = mount
         self._on_complete = on_complete
+        self._persist_callback = persist_callback
         self._runs: list[WorkflowRunEntry] = []
         self._next_id = 1
 
@@ -132,6 +134,8 @@ class WorkflowRunner:
             entry.result = result
             if self._on_complete:
                 await self._on_complete(result)
+            if self._persist_callback:
+                await self._persist_callback()
             return result
         except asyncio.CancelledError:
             entry.error = "Cancelled"

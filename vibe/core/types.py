@@ -160,6 +160,7 @@ class SessionMetadata(BaseModel):
     title: str | None = None
     title_source: Literal["auto", "manual"] = "auto"
     experiments: EvalResponse | None = None
+    workflow_snapshots: list[dict[str, Any]] = Field(default_factory=list)
 
 
 StrToolChoice = Literal["auto", "none", "any", "required"]

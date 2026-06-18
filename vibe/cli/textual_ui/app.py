@@ -500,7 +500,9 @@ class VibeApp(App):  # noqa: PLR0904
             tools_collapsed=lambda: self._tools_collapsed,
         )
         self._workflow_runner = WorkflowRunner(
-            mount=self._mount_and_scroll, on_complete=self._on_workflow_complete
+            mount=self._mount_and_scroll,
+            on_complete=self._on_workflow_complete,
+            persist_callback=self._persist_workflow_snapshots,
         )
         self._workflow_manager = WorkflowManager(lambda: self.agent_loop.config)
         self._register_workflow_commands()
@@ -2766,6 +2768,16 @@ class VibeApp(App):  # noqa: PLR0904
 
         summary = result.summary
         await self._mount_and_scroll(UserCommandMessage(summary))
+
+    async def _persist_workflow_snapshots(self) -> None:
+        snapshots: list[dict[str, Any]] = []
+        for entry in self._workflow_runner.runs:
+            if entry.result is not None:
+                snap = entry.runtime.snapshot(
+                    run_id=entry.run_id, script_source=entry.script_source
+                )
+                snapshots.append(snap.model_dump(mode="json"))
+        await self.agent_loop.session_logger.persist_workflow_snapshots(snapshots)
 
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_running:

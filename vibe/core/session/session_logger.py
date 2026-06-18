@@ -369,6 +369,25 @@ class SessionLogger:
         ]
         await SessionLogger.persist_metadata(metadata, session_dir)
 
+    async def persist_workflow_snapshots(self, snapshots: list[dict[str, Any]]) -> None:
+        session_info = self._get_session_info()
+        if session_info is None:
+            return
+        session_dir, session_metadata = session_info
+        session_metadata.workflow_snapshots = snapshots
+        metadata_path = session_dir / METADATA_FILENAME
+        if not metadata_path.exists():
+            return
+        try:
+            raw = (await read_safe_async(metadata_path)).text
+            metadata = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as e:
+            raise RuntimeError(
+                f"Failed to read session metadata at {metadata_path}: {e}"
+            ) from e
+        metadata["workflow_snapshots"] = snapshots
+        await SessionLogger.persist_metadata(metadata, session_dir)
+
     async def persist_experiments(self, response: EvalResponse | None) -> None:
         session_info = self._get_session_info()
         if session_info is None:
