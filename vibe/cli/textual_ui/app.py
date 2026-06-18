@@ -62,6 +62,7 @@ from vibe.cli.textual_ui.widgets.chat_input import ChatInputContainer
 from vibe.cli.textual_ui.widgets.chat_input.input_kinds import (
     Bash,
     EmptyBash,
+    LeChatonPrompt,
     Prompt,
     Skill,
     SlashCommand,
@@ -852,6 +853,8 @@ class VibeApp(App):  # noqa: PLR0904
                 await self._empty_bash_error()
             case Prompt(text=text):
                 await self._handle_user_message(text)
+            case LeChatonPrompt(text=text):
+                await self._handle_le_chaton_prompt(text)
 
     async def _handle_paused_submit(self, value: str) -> bool:
         if value and not await self._handle_queue_submit(
@@ -881,6 +884,8 @@ class VibeApp(App):  # noqa: PLR0904
             case EmptyBash():
                 await self._empty_bash_error()
             case Prompt(text=text):
+                return await self._enqueue_prompt_with_resources(text)
+            case LeChatonPrompt(text=text):
                 return await self._enqueue_prompt_with_resources(text)
         return True
 
@@ -2779,6 +2784,16 @@ class VibeApp(App):  # noqa: PLR0904
                 snapshots.append(snap.model_dump(mode="json"))
         await self.agent_loop.session_logger.persist_workflow_snapshots(snapshots)
 
+    async def _handle_le_chaton_prompt(self, text: str) -> None:
+        if self.config.disable_workflows:
+            await self._handle_user_message(text)
+            return
+        previous_mode = self.config.effort_mode
+        if previous_mode != "le-chaton":
+            self.config.set_effort_mode("le-chaton")
+            await self._reload_config()
+        await self._handle_user_message(text)
+
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_running:
             await self._mount_and_scroll(
@@ -2928,7 +2943,7 @@ class VibeApp(App):  # noqa: PLR0904
         if self._current_bottom_app == BottomApp.ModelPicker:
             return
 
-        model_aliases = [m.alias for m in self.config.models]
+        model_aliases = [m.alias for m in self.config.available_models]
         current_model = str(self.config.active_model)
         await self._switch_from_input(
             ModelPickerApp(model_aliases=model_aliases, current_model=current_model)

@@ -37,7 +37,21 @@ class Prompt:
     text: str
 
 
-ClassifiedInput = Teleport | SlashCommand | Skill | Bash | EmptyBash | Prompt
+@dataclass(frozen=True, slots=True)
+class LeChatonPrompt:
+    text: str
+
+
+ClassifiedInput = (
+    Teleport | SlashCommand | Skill | Bash | EmptyBash | Prompt | LeChatonPrompt
+)
+
+_LE_CHATON_KEYWORDS = {"le chaton", "lechaton"}
+
+
+def _contains_le_chaton(text: str) -> bool:
+    lower = text.lower()
+    return any(kw in lower for kw in _LE_CHATON_KEYWORDS)
 
 
 def classify(
@@ -56,4 +70,11 @@ def classify(
     if value.startswith("!"):
         cmd = value[1:]
         return EmptyBash() if not cmd else Bash(command=cmd)
+    if _contains_le_chaton(value):
+        stripped = value
+        for kw in _LE_CHATON_KEYWORDS:
+            stripped = stripped.replace(kw, "").replace(kw.title(), "")
+            stripped = stripped.replace(kw.capitalize(), "")
+        stripped = stripped.strip()
+        return LeChatonPrompt(text=stripped or value)
     return Prompt(text=value)
