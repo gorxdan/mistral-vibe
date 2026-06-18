@@ -926,7 +926,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     ) -> dict[str, str]:
         provider = self.config.get_active_provider() if provider is None else provider
         headers: dict[str, str] = {**provider.extra_headers}
-        headers["user-agent"] = get_user_agent(provider.backend)
+        if not any(k.lower() == "user-agent" for k in headers):
+            headers["user-agent"] = get_user_agent(provider.backend)
         headers["x-affinity"] = self.session_id
         return headers
 

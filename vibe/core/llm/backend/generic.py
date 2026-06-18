@@ -421,16 +421,16 @@ class GenericBackend:
                 if line.strip() == "":
                     continue
 
-                DELIM_CHAR = ":"
-                if f"{DELIM_CHAR} " not in line:
-                    raise ValueError(
-                        f"Stream chunk improperly formatted. "
-                        f"Expected `key{DELIM_CHAR} value`, received `{line}`"
-                    )
-                delim_index = line.find(DELIM_CHAR)
-                key = line[0:delim_index]
-                value = line[delim_index + 2 :]
-
+                # SSE comment/keepalive lines start with ':'
+                if line.startswith(":"):
+                    continue
+                delim_index = line.find(":")
+                if delim_index == -1:
+                    continue
+                key = line[:delim_index]
+                value = line[delim_index + 1 :]
+                if value.startswith(" "):
+                    value = value[1:]
                 if key != "data":
                     # This might be the case with openrouter, so we just ignore it
                     continue

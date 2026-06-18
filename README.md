@@ -77,6 +77,8 @@ pip install mistral-vibe
 - [Configuration](#configuration)
   - [Configuration File Location](#configuration-file-location)
   - [API Key Configuration](#api-key-configuration)
+  - [Models and Providers](#models-and-providers)
+    - [Adding OpenAI-compatible providers (Kimi, GLM/ZAI, etc.)](#adding-openai-compatible-providers-kimi-glmzai-etc)
   - [Custom System Prompts](#custom-system-prompts)
   - [Custom Agent Configurations](#custom-agent-configurations)
   - [Tool Management](#tool-management)
@@ -434,6 +436,112 @@ Vibe supports multiple ways to configure your API keys:
    Vibe automatically loads API keys from `~/.vibe/.env` on startup. Environment variables take precedence over the `.env` file if both are set.
 
 **Note**: The `.env` file is specifically for API keys and other provider credentials. General Vibe configuration should be done in `config.toml`.
+
+### Models and Providers
+
+Vibe talks to models through **providers**. Each provider points at an OpenAI-compatible (or Anthropic-compatible) endpoint, and each **model** references a provider by name. Configuration lives in `config.toml`; API keys live in `~/.vibe/.env`.
+
+```toml
+# A provider = an HTTP endpoint + auth.
+#   - backend            : "generic" (default; OpenAI/Anthropic-compatible) or "mistral"
+#   - api_style          : "openai" (default), "anthropic", "reasoning", "openai-responses", "vertex-anthropic"
+#   - api_key_env_var    : name of the env var holding the key (loaded from ~/.vibe/.env)
+#   - reasoning_field_name : field the API streams reasoning in (default "reasoning_content")
+[[providers]]
+name = "kimi"
+api_base = "https://api.kimi.com/coding/v1"
+api_key_env_var = "KIMI_API_KEY"
+backend = "generic"
+api_style = "openai"
+reasoning_field_name = "reasoning_content"
+
+# A model references a provider by name.
+#   - name      : model id sent to the API (the "model" field)
+#   - provider  : must match a [[providers]] name above
+#   - alias     : short id used by `active_model`, `/model`, and `--model`
+#   - thinking  : "off" | "low" | "medium" | "high" | "max"
+#   - supports_images : enable image input
+#   - auto_compact_threshold : token count that triggers auto-compaction (the effective per-model context budget; set ~80% of the model's real context window)
+[[models]]
+name = "kimi-k2.7-code"
+provider = "kimi"
+alias = "kimi"
+thinking = "high"
+input_price = 0.95
+output_price = 4.0
+
+# Select the default model by alias:
+active_model = "kimi"
+```
+
+Custom providers/models are **merged** with the built-in Mistral defaults, so you keep Mistral available while adding others. Switch models at runtime with the `/model` slash command.
+
+#### Adding OpenAI-compatible providers (Kimi K2.7, GLM-5.2/ZAI)
+
+Most third-party coding models expose an OpenAI-compatible `/chat/completions` endpoint and stream reasoning in a `reasoning_content` field — the exact shape Vibe's generic backend expects, so no code changes are required. Use `api_style = "openai"` (the default): Vibe captures the streamed `reasoning_content` and displays it, and both Kimi and GLM default to thinking **enabled**, so reasoning works without Vibe needing to send any effort parameter.
+
+> Do **not** use `api_style = "reasoning"` for these: Vibe's reasoning adapter parses content blocks and would drop the streamed `reasoning_content` field, hiding the model's thinking.
+
+**Kimi K2.7 Code (Moonshot)** — `name` and prices from the Kimi platform; context 256k; supports text, image, and video input:
+
+```toml
+[[providers]]
+name = "kimi"
+api_base = "https://api.kimi.com/coding/v1"   # Kimi Code platform (coding-plan); Moonshot keys use https://api.moonshot.cn/v1
+api_key_env_var = "KIMI_API_KEY"
+
+# Standard model
+[[models]]
+name = "kimi-k2.7-code"          # ~180 tok/s; use "kimi-k2.7-code-highspeed" for the faster variant
+provider = "kimi"
+alias = "kimi"
+thinking = "high"
+input_price = 0.95               # cache miss; cache hit is $0.19/1M
+output_price = 4.0
+supports_images = true
+auto_compact_threshold = 200000   # 256k context; compaction trigger (~76% of window)
+
+[[models]]
+name = "kimi-k2.7-code-highspeed"
+provider = "kimi"
+alias = "kimi-fast"
+thinking = "high"
+input_price = 1.90               # cache miss; cache hit is $0.38/1M
+output_price = 8.0
+supports_images = true
+```
+
+**GLM-5.2 (ZAI / Zhipu / Z.ai)** — 1M context, text input only; the ZAI coding plan is a flat subscription so per-token prices are set to `0.0` for usage tracking:
+
+```toml
+[[providers]]
+name = "zai"
+api_base = "https://api.z.ai/api/paas/v4"   # China: https://open.bigmodel.cn/api/paas/v4
+api_key_env_var = "ZAI_API_KEY"
+
+[[models]]
+name = "glm-5.2"
+provider = "zai"
+alias = "glm"
+thinking = "high"
+input_price = 0.0                # coding plan = flat subscription
+output_price = 0.0
+auto_compact_threshold = 880000   # 1M context, 128k max output; compaction trigger (~84% of window)
+```
+
+Then put the keys in `~/.vibe/.env`:
+
+```sh
+KIMI_API_KEY=sk-...
+ZAI_API_KEY=...
+```
+
+Notes:
+
+- **Reasoning display**: with `api_style = "openai"` (recommended), reasoning shows automatically as the model streams `reasoning_content`. Set `reasoning_field_name` only if a provider uses a different field name.
+- **Thinking effort**: Vibe's `openai` style does not send `reasoning_effort`, so the in-app thinking slider won't change provider effort for these — each model uses its own default thinking level. GLM-5.2 additionally accepts a `thinking: { type }` parameter, which Vibe does not currently send; default thinking stays enabled.
+- **Endpoint base**: `api_base` includes the version segment (`/v1` or `/api/paas/v4`) but **not** `/chat/completions`; Vibe appends that automatically.
+- **Multi-turn reasoning**: if a provider rejects an assistant turn on long conversations because of how reasoning is replayed, set `thinking = "off"` for that model or report it — a dedicated adapter may be needed.
 
 ### TLS and Corporate Certificate Authorities
 
