@@ -47,9 +47,10 @@ def _is_git_repo_root(path: Path) -> bool:
         if git.is_dir():
             return (git / "HEAD").is_file()
         # In a worktree, .git is a file pointing to the main repo's
-        # .git/worktrees/<name> directory.
+        # .git/worktrees/<name> directory. Validate the gitdir pointer so a
+        # stray plain file named .git is not mistaken for a repo root.
         if git.is_file():
-            return True
+            return git.read_text(errors="ignore").lstrip().startswith("gitdir:")
         return False
     except OSError as e:
         logger.warning("Skipping unreadable git path=%s: %s", git, e)
