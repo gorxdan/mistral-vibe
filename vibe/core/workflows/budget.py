@@ -53,6 +53,14 @@ class Budget:
         self._reserved -= reservation.estimate
         self._spent += actual
 
+    def restore_spent(self, spent: int) -> None:
+        """Restore prior spend when resuming from a snapshot, so the cap still
+        accounts for tokens already consumed in the paused run."""
+        self._spent = spent
+
+    def spent(self) -> int:
+        return self._spent
+
     def remaining(self) -> int | float:
         if self.total is None:
             return float("inf")

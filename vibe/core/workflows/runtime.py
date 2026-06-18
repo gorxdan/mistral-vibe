@@ -181,8 +181,11 @@ class WorkflowRuntime:
                 error_msg = str(e)
                 break
 
-            tokens_in = getattr(loop.stats, "session_prompt_tokens", 0)
-            tokens_out = getattr(loop.stats, "session_completion_tokens", 0)
+            # Accumulate across attempts: a fresh loop is created per retry, so
+            # its stats report only that attempt. Overwriting dropped the tokens
+            # spent on failed schema attempts from the budget.
+            tokens_in += getattr(loop.stats, "session_prompt_tokens", 0)
+            tokens_out += getattr(loop.stats, "session_completion_tokens", 0)
 
             response_text = "".join(accumulated)
 
@@ -236,6 +239,26 @@ class WorkflowRuntime:
                 )
                 if schema is not None:
                     effective_prompt += build_prompt_fallback(schema)
+
+        if schema is None:
+            # The schemaless success path returns inside the loop; reaching here
+            # means act() raised. Surface the real error instead of a misleading
+            # SchemaValidationError.
+            self._finalize_agent(
+                prompt=prompt,
+                response="".join(accumulated),
+                label=label,
+                phase=phase,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                reservation=reservation,
+                completed=False,
+                error=error_msg,
+                cache_key=cache_key,
+                agent=agent,
+                model=model,
+            )
+            raise WorkflowError(error_msg or "Agent failed without producing output")
 
         self._finalize_agent(
             prompt=prompt,
@@ -379,13 +402,17 @@ class WorkflowRuntime:
             )
 
     def _record_cached_result(self, cached: CachedAgentResult) -> None:
+        # A cache hit consumes no tokens in THIS run; the original spend is
+        # already reflected in the restored budget. Recording the cached token
+        # counts here would double-count them in run.tokens_total relative to
+        # budget.spent. Report zero for this run.
         result = AgentResult(
             label=cached.label,
             phase=cached.phase,
             prompt=f"[cached] {cached.agent}",
             response=cached.response,
-            tokens_in=cached.tokens_in,
-            tokens_out=cached.tokens_out,
+            tokens_in=0,
+            tokens_out=0,
             cost=0.0,
             completed=cached.completed,
             error=cached.error,
@@ -506,4 +533,7 @@ class WorkflowRuntime:
     def restore_from_snapshot(self, snapshot: WorkflowRunSnapshot) -> None:
         for cached in snapshot.cached_results:
             self._cache[cached.prompt_hash] = cached
+        # Restore prior spend so the budget cap is not silently reset to 0 on
+        # resume (which would allow the resumed run to overspend).
+        self._budget.restore_spent(snapshot.budget_spent)
         self._log(f"restored {snapshot.cached_count} cached results from snapshot")

@@ -228,3 +228,20 @@ async def test_snapshot_serializes_to_json() -> None:
     assert restored.run_id == "wf-1"
     assert restored.cached_count == 1
     assert restored.status == WorkflowStatus.PAUSED
+
+
+async def test_restore_from_snapshot_restores_budget_spend() -> None:
+    # Resuming must not silently reset the budget cap to 0 (which would let the
+    # resumed run overspend).
+    rt1 = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    await rt1.spawn_agent("p1", agent="explore")
+    spent = rt1._budget.spent()
+    assert spent > 0
+    snap = rt1.snapshot("wf-1", "script")
+    assert snap.budget_spent == spent
+
+    rt2 = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    assert rt2._budget.spent() == 0
+    rt2.restore_from_snapshot(snap)
+    assert rt2._budget.spent() == spent
+    assert rt2._budget.remaining() == 1_000_000 - spent

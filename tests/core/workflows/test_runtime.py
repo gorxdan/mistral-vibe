@@ -360,3 +360,90 @@ async def main():
     result = await runtime.run(script)
     assert result.run.budget.spent == 3000
     assert result.run.budget.reserved == 0
+
+
+def _raising_factory() -> Any:
+    @dataclass
+    class _RaisingLoop:
+        stats: MockStats = field(default_factory=MockStats)
+
+        async def act(
+            self, prompt: str, *, response_format: Any = None
+        ) -> AsyncGenerator[AssistantEvent, None]:
+            raise RuntimeError("boom from act")
+            yield  # pragma: no cover  (makes this an async generator)
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        return _RaisingLoop()
+
+    return factory
+
+
+async def test_schemaless_agent_exception_surfaces_real_error() -> None:
+    # A schemaless agent whose act() raises must surface the real error, not a
+    # misleading SchemaValidationError.
+    rt = WorkflowRuntime(
+        agent_loop_factory=_raising_factory(), max_agents=10, budget_total=1_000_000
+    )
+    with pytest.raises(WorkflowError, match="boom from act"):
+        await rt.spawn_agent("do it")
+
+
+async def test_schema_agent_exception_still_raises() -> None:
+    rt = WorkflowRuntime(
+        agent_loop_factory=_raising_factory(), max_agents=10, budget_total=1_000_000
+    )
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    with pytest.raises((WorkflowError, SchemaValidationError)):
+        await rt.spawn_agent("do it", schema=schema)
+
+
+def _retry_then_succeed_factory(per_attempt_in: int, per_attempt_out: int) -> Any:
+    calls = [0]
+
+    @dataclass
+    class _RetryLoop:
+        stats: MockStats = field(
+            default_factory=lambda: MockStats(per_attempt_in, per_attempt_out)
+        )
+        _text: str = ""
+
+        async def act(
+            self, prompt: str, *, response_format: Any = None
+        ) -> AsyncGenerator[AssistantEvent, None]:
+            calls[0] += 1
+            text = "not json" if calls[0] == 1 else '{"a": "ok"}'
+            yield AssistantEvent(content=text, message_id="a1")
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        return _RetryLoop()
+
+    return factory, calls
+
+
+async def test_retry_tokens_accumulate_across_attempts() -> None:
+    factory, calls = _retry_then_succeed_factory(100, 50)
+    rt = WorkflowRuntime(
+        agent_loop_factory=factory,
+        max_agents=10,
+        budget_total=1_000_000,
+        schema_retries=1,
+    )
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    result = await rt.spawn_agent("x", schema=schema)
+    assert result == {"a": "ok"}
+    assert calls[0] == 2  # one failed attempt + one success
+    # Both attempts' tokens counted, not just the last: 2 * (100 + 50).
+    assert rt._budget.spent() == 300
+
+
+async def test_cache_hit_does_not_double_count_tokens(runtime: WorkflowRuntime) -> None:
+    await runtime.spawn_agent("same", agent="explore", phase="P")
+    await runtime.spawn_agent("same", agent="explore", phase="P")  # cache hit
+    run = runtime.build_run()
+    results = run.phases[0].agent_results
+    assert len(results) == 2
+    # First real run records tokens; the cache hit records zero.
+    assert results[0].tokens_in == 1000
+    assert results[1].tokens_in == 0
+    assert results[1].tokens_out == 0
