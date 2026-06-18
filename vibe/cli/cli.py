@@ -328,33 +328,49 @@ def run_cli(args: argparse.Namespace) -> None:
 
         stdin_prompt = get_prompt_from_stdin()
         if is_interactive:
-            try:
-                agent_loop = AgentLoop(
-                    config,
-                    agent_name=initial_agent_name,
-                    enable_streaming=True,
-                    entrypoint_metadata=_build_cli_entrypoint_metadata(),
-                    terminal_emulator=detect_terminal(),
-                    defer_heavy_init=True,
-                    hook_config_result=hook_config_result,
-                )
-            except ValueError as e:
-                rprint(f"[red]Error:[/] {e}")
-                sys.exit(1)
-
-            if loaded_session:
-                _resume_previous_session(agent_loop, *loaded_session)
-
-            run_textual_ui(
-                agent_loop=agent_loop,
-                update_cache_repository=update_cache_repository,
-                startup=StartupOptions(
-                    initial_prompt=args.initial_prompt or stdin_prompt,
-                    teleport_on_start=args.teleport,
-                    show_resume_picker=args.resume is True,
-                    is_resuming_session=loaded_session is not None,
-                ),
+            from vibe.core.worktree.manager import (
+                worktree_enabled,
+                worktree_manager,
             )
+
+            worktree_handle = None
+            if worktree_enabled(config, programmatic=False, cli_flag=args.worktree):
+                worktree_handle = worktree_manager.enter("cli", config.worktree)
+                if worktree_handle is not None and not config.displayed_workdir:
+                    config.displayed_workdir = str(
+                        worktree_handle.original_repo_root
+                    )
+            try:
+                try:
+                    agent_loop = AgentLoop(
+                        config,
+                        agent_name=initial_agent_name,
+                        enable_streaming=True,
+                        entrypoint_metadata=_build_cli_entrypoint_metadata(),
+                        terminal_emulator=detect_terminal(),
+                        defer_heavy_init=True,
+                        hook_config_result=hook_config_result,
+                    )
+                except ValueError as e:
+                    rprint(f"[red]Error:[/] {e}")
+                    sys.exit(1)
+
+                if loaded_session:
+                    _resume_previous_session(agent_loop, *loaded_session)
+
+                run_textual_ui(
+                    agent_loop=agent_loop,
+                    update_cache_repository=update_cache_repository,
+                    startup=StartupOptions(
+                        initial_prompt=args.initial_prompt or stdin_prompt,
+                        teleport_on_start=args.teleport,
+                        show_resume_picker=args.resume is True,
+                        is_resuming_session=loaded_session is not None,
+                    ),
+                )
+            finally:
+                if worktree_handle is not None:
+                    worktree_manager.exit(worktree_handle)
         else:
             _run_programmatic_mode(
                 args=args,

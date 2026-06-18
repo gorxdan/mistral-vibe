@@ -131,6 +131,12 @@ def parse_arguments() -> argparse.Namespace:
         "persisted to trusted_folders.toml). Skips the trust prompt. "
         "Use this for non-interactive automation.",
     )
+    parser.add_argument(
+        "--worktree",
+        action="store_true",
+        help="Run in an isolated git worktree on a throwaway branch. "
+        "Writes land on the branch, not your live checkout.",
+    )
 
     # Feature flag for teleport, not exposed to the user yet
     parser.add_argument("--teleport", action="store_true", help=argparse.SUPPRESS)

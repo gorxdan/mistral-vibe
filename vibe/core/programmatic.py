@@ -18,6 +18,7 @@ from vibe.core.teleport.types import (
 )
 from vibe.core.types import AssistantEvent, LLMMessage, OutputFormat, Role
 from vibe.core.utils import ConversationLimitException
+from vibe.core.worktree.manager import worktree_enabled, worktree_manager
 
 __all__ = ["TeleportError", "run_programmatic"]
 
@@ -39,6 +40,14 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
     hook_config_result: HookConfigResult | None = None,
 ) -> str | None:
     formatter = create_formatter(output_format)
+
+    # Worktree isolation: enter before AgentLoop so all Path.cwd() consumers
+    # see the worktree. Auto-ON for programmatic (mode=auto-by-entrypoint).
+    worktree_handle = None
+    if worktree_enabled(config, programmatic=True):
+        worktree_handle = worktree_manager.enter("programmatic", config.worktree)
+        if worktree_handle is not None and not config.displayed_workdir:
+            config.displayed_workdir = str(worktree_handle.original_repo_root)
 
     agent_loop = AgentLoop(
         config,
@@ -98,4 +107,8 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
             await agent_loop.aclose()
             await agent_loop.telemetry_client.aclose()
 
-    return asyncio.run(_async_run())
+    try:
+        return asyncio.run(_async_run())
+    finally:
+        if worktree_handle is not None:
+            worktree_manager.exit(worktree_handle)

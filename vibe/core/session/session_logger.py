@@ -134,6 +134,11 @@ class SessionLogger:
         git_commit, git_branch = self._fetch_git_metadata()
         user_name = self.username
 
+        # Use original_working_directory() so the recorded path is the user's
+        # real checkout, not the worktree path. This keeps the exact-string
+        # match in session_loader working after the worktree is removed.
+        from vibe.core.worktree.manager import original_working_directory
+
         return SessionMetadata(
             session_id=self.session_id,
             start_time=self.session_start_time,
@@ -141,7 +146,7 @@ class SessionLogger:
             git_commit=git_commit,
             git_branch=git_branch,
             username=user_name,
-            environment={"working_directory": str(Path.cwd())},
+            environment={"working_directory": original_working_directory()},
             title=None,
             title_source="auto",
         )
