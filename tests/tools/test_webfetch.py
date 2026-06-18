@@ -308,6 +308,38 @@ async def test_blocks_hostname_resolving_to_private_ip(webfetch, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resolver_failure_fails_closed(webfetch, monkeypatch):
+    """ssrf-getaddrinfo-fail-open: a resolver error must refuse the request,
+    not bypass validation. The old code returned early and let httpx
+    re-resolve (possibly to a private IP) unchecked.
+    """
+    def _raise(*args, **kwargs):
+        raise socket.gaierror("DNS failed")
+
+    monkeypatch.setattr("vibe.core.tools.builtins.webfetch.socket.getaddrinfo", _raise)
+    with pytest.raises(ToolError, match="SSRF validation failed"):
+        await collect_result(webfetch.run(WebFetchArgs(url="http://example.com")))
+
+
+@pytest.mark.asyncio
+async def test_validate_url_returns_pinned_ip_for_hostname(webfetch, monkeypatch):
+    """ssrf-dns-rebinding: _validate_url returns the validated IP so the
+    connection is pinned to it, closing the TOCTOU between validation and
+    httpx's connect-time resolution.
+    """
+    import ipaddress
+
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.webfetch.socket.getaddrinfo",
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))
+        ],
+    )
+    pinned = await webfetch._validate_url("http://example.com")
+    assert pinned == ipaddress.ip_address("93.184.216.34")
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_blocks_redirect_to_private_ip(webfetch):
     respx.get("https://example.com").mock(

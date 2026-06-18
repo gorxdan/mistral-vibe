@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 import functools
 import ipaddress
 import socket
-from typing import TYPE_CHECKING, ClassVar, final
+from typing import TYPE_CHECKING, Any, ClassVar, final
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -47,6 +47,41 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if str(ip) == "169.254.169.254":
         return True
     return False
+
+
+class _PinningTransport(httpx.AsyncBaseTransport):
+    """Connect to a pinned IP while preserving the original Host/SNI.
+
+    Closes the SSRF DNS-rebinding TOCTOU: the validator resolves the host
+    once and hands the validated IP here, so httpx cannot independently
+    re-resolve to a different (private) address at connect time. The request
+    URL is rewritten to the IP literal; the Host header and TLS SNI keep the
+    original hostname so virtual hosting and certificate validation work.
+    """
+
+    def __init__(
+        self,
+        original_host: str,
+        pinned_ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    ) -> None:
+        self._original_host = original_host
+        self._pinned_ip = pinned_ip
+        self._inner = httpx.AsyncHTTPTransport(verify=build_ssl_context())
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        pinned_url = request.url.copy_with(host=str(self._pinned_ip))
+        # Connect to the pinned IP literal while keeping the original hostname
+        # for the Host header and TLS SNI (set below).
+        request._url = pinned_url
+        request.headers["host"] = self._original_host
+        if pinned_url.scheme == "https":
+            # httpx derives SNI from the URL host (now the IP); restore the
+            # original hostname so the TLS handshake validates the cert.
+            request.extensions["sni_hostname"] = self._original_host
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
 
 
 @functools.cache
@@ -110,35 +145,43 @@ class WebFetch(
         raw = url.lstrip("/") if url.startswith("//") else url
         return raw if raw.startswith(("http://", "https://")) else "https://" + raw
 
-    async def _validate_url(self, url: str) -> None:
-        """Reject URLs that resolve to private/loopback/link-local IPs.
+    async def _validate_url(self, url: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+        """Validate a URL against SSRF and return a pinned IP to connect to.
 
-        This prevents SSRF attacks against cloud metadata endpoints,
-        internal services, and the local machine.
+        Rejects URLs that resolve to private/loopback/link-local IPs (cloud
+        metadata, internal services, localhost). Returns the validated IP so
+        the caller can pin the connection to it, closing the DNS-rebinding
+        TOCTOU between this resolution and httpx's independent connect-time
+        resolution. Returns None for a bare-IP URL (already pinned by the URL
+        itself). Fails closed if resolution errors: the request is refused
+        rather than bypassing validation.
         """
         parsed = urlparse(url)
         host = parsed.hostname
         if not host:
             raise ToolError("Invalid URL: no host found")
 
-        # Bare IP address (IPv4 or IPv6)
+        # Bare IP address (IPv4 or IPv6) -- already pinned by the URL.
         try:
             ip = ipaddress.ip_address(host)
             if _is_blocked_ip(ip):
                 raise ToolError(f"SSRF blocked: {ip} is a private/reserved IP address")
-            return
+            return None
         except ValueError:
             pass
 
-        # Hostname – resolve asynchronously to avoid blocking the event loop
+        # Hostname – resolve asynchronously to avoid blocking the event loop.
         try:
             loop = asyncio.get_running_loop()
             infos = await loop.run_in_executor(
                 None, socket.getaddrinfo, host, None, socket.AF_UNSPEC, socket.SOCK_STREAM
             )
-        except (socket.gaierror, OSError):
-            return  # Let the HTTP request fail naturally with a clearer error
+        except (socket.gaierror, OSError) as e:
+            # Fail closed: if we cannot resolve and validate, refuse rather
+            # than let httpx re-resolve (possibly to a private IP) unchecked.
+            raise ToolError(f"SSRF validation failed: could not resolve {host}: {e}")
 
+        pinned: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
         for info in infos:
             addr = info[4][0]
             # Strip IPv6 scope suffix if present
@@ -146,12 +189,15 @@ class WebFetch(
                 addr = addr.split("%")[0]
             try:
                 ip = ipaddress.ip_address(addr)
-                if _is_blocked_ip(ip):
-                    raise ToolError(
-                        f"SSRF blocked: {host} resolves to {ip}"
-                    )
             except ValueError:
                 continue
+            if _is_blocked_ip(ip):
+                raise ToolError(f"SSRF blocked: {host} resolves to {ip}")
+            if pinned is None:
+                pinned = ip
+        if pinned is None:
+            raise ToolError(f"SSRF validation failed: no usable address for {host}")
+        return pinned
 
     def resolve_permission(self, args: WebFetchArgs) -> PermissionContext | None:
         if self.config.permission in {ToolPermission.ALWAYS, ToolPermission.NEVER}:
@@ -183,8 +229,8 @@ class WebFetch(
         url = self._normalize_url(args.url)
         timeout = self._resolve_timeout(args.timeout)
 
-        await self._validate_url(url)
-        content, content_type = await self._fetch_url(url, timeout)
+        pinned_ip = await self._validate_url(url)
+        content, content_type = await self._fetch_url(url, timeout, pinned_ip)
 
         if "text/html" in content_type:
             content = _html_to_markdown(content)
@@ -227,7 +273,12 @@ class WebFetch(
             return self.config.default_timeout
         return min(timeout, self.config.max_timeout)
 
-    async def _fetch_url(self, url: str, timeout: int) -> tuple[str, str]:
+    async def _fetch_url(
+        self,
+        url: str,
+        timeout: int,
+        pinned_ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None,
+    ) -> tuple[str, str]:
         headers = {
             "User-Agent": self.config.user_agent,
             "Accept": (
@@ -238,7 +289,7 @@ class WebFetch(
         }
 
         try:
-            response = await self._do_fetch(url, timeout, headers)
+            response = await self._do_fetch(url, timeout, headers, pinned_ip)
         except httpx.TimeoutException:
             raise ToolError(f"Request timed out after {timeout} seconds")
         except httpx.RequestError as e:
@@ -254,24 +305,63 @@ class WebFetch(
         return response.text, content_type
 
     async def _do_fetch(
-        self, url: str, timeout: int, headers: dict[str, str]
+        self,
+        url: str,
+        timeout: int,
+        headers: dict[str, str],
+        pinned_ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None,
     ) -> httpx.Response:
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=httpx.Timeout(timeout),
-            verify=build_ssl_context(),
-        ) as client:
+        # Pin the connection to the SSRF-validated IP so a DNS-rebinding
+        # attacker cannot return a public IP to the validator and a private
+        # IP to httpx at connect time. The pinning transport preserves the
+        # original Host header and TLS SNI.
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if pinned_ip is not None:
+            transport: httpx.AsyncBaseTransport = _PinningTransport(host, pinned_ip)
+            client_kwargs: dict[str, Any] = {
+                "follow_redirects": False,
+                "timeout": httpx.Timeout(timeout),
+                "transport": transport,
+            }
+        else:
+            client_kwargs = {
+                "follow_redirects": False,
+                "timeout": httpx.Timeout(timeout),
+                "verify": build_ssl_context(),
+            }
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             response = await client.get(url, headers=headers)
 
-            # Manually follow redirects so every hop can be SSRF-validated
+            # Manually follow redirects so every hop is SSRF-validated and
+            # re-pinned to that hop's resolved IP.
             redirect_count = 0
             while response.is_redirect and redirect_count < _MAX_REDIRECTS:
                 location = response.headers.get("location")
                 if not location:
                     break
                 next_url = urljoin(str(response.url), location)
-                await self._validate_url(next_url)
-                response = await client.get(next_url, headers=headers)
+                next_pinned = await self._validate_url(next_url)
+                next_host = urlparse(next_url).hostname or ""
+                if next_pinned is not None:
+                    next_transport = _PinningTransport(next_host, next_pinned)
+                    # Rebuild the client for the new pinned target. A fresh
+                    # client per hop is simplest and correct; redirects are
+                    # capped at _MAX_REDIRECTS.
+                    next_client_kwargs: dict[str, Any] = {
+                        "follow_redirects": False,
+                        "timeout": httpx.Timeout(timeout),
+                        "transport": next_transport,
+                    }
+                else:
+                    next_client_kwargs = {
+                        "follow_redirects": False,
+                        "timeout": httpx.Timeout(timeout),
+                        "verify": build_ssl_context(),
+                    }
+                async with httpx.AsyncClient(**next_client_kwargs) as next_client:
+                    response = await next_client.get(next_url, headers=headers)
                 redirect_count += 1
 
             # In case we are hitting bot detection retry once honestly
