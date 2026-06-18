@@ -129,6 +129,7 @@ from vibe.cli.textual_ui.windowing import (
     should_resume_history,
     sync_backfill_state,
 )
+from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
 from vibe.cli.update_notifier import (
     PyPIUpdateGateway,
     UpdateCacheRepository,
@@ -399,7 +400,7 @@ class VibeApp(App):  # noqa: PLR0904
         patch_driver_parser(driver_class)
         return driver_class
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         agent_loop: AgentLoop,
         startup: StartupOptions | None = None,
@@ -490,6 +491,9 @@ class VibeApp(App):  # noqa: PLR0904
             fire=self._handle_user_message,
             mount=self._mount_and_scroll,
             tools_collapsed=lambda: self._tools_collapsed,
+        )
+        self._workflow_runner = WorkflowRunner(
+            mount=self._mount_and_scroll, on_complete=self._on_workflow_complete
         )
 
     def _configure_startup_options(self, startup: StartupOptions | None) -> None:
@@ -2632,6 +2636,16 @@ class VibeApp(App):  # noqa: PLR0904
         widget = await self._loop_runner.handle_command(cmd_args)
         await self._mount_and_scroll(widget)
 
+    async def _workflows_command(self, cmd_args: str = "", **kwargs: Any) -> None:
+        widget = await self._workflow_runner.handle_command(cmd_args)
+        await self._mount_and_scroll(widget)
+
+    async def _on_workflow_complete(self, result: Any) -> None:
+        from vibe.cli.textual_ui.widgets.messages import UserCommandMessage
+
+        summary = result.summary
+        await self._mount_and_scroll(UserCommandMessage(summary))
+
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_running:
             await self._mount_and_scroll(
@@ -2705,6 +2719,7 @@ class VibeApp(App):  # noqa: PLR0904
     async def _exit_app(self, **kwargs: Any) -> None:
         self._emit_session_closed_for_active_session()
         await self._loop_runner.stop()
+        await self._workflow_runner.stop_all()
         self._log_reader.shutdown()
         await self._voice_manager.close()
         await self._narrator_manager.close()

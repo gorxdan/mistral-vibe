@@ -169,6 +169,14 @@ class CommandRegistry:
                 ),
                 handler="_loop_command",
             ),
+            "workflows": Command(
+                aliases=frozenset(["/workflows"]),
+                description=(
+                    "Manage workflow runs. "
+                    "Use `/workflows list` or `/workflows stop <id|all>`"
+                ),
+                handler="_workflows_command",
+            ),
             "data-retention": Command(
                 aliases=frozenset(["/data-retention"]),
                 description="Show data retention information",

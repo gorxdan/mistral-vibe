@@ -1,0 +1,198 @@
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+import time
+from typing import Any
+
+from textual.widget import Widget
+
+from vibe.cli.textual_ui.widgets.messages import ErrorMessage, UserCommandMessage
+from vibe.core.logger import logger
+from vibe.core.workflows.models import WorkflowResult, WorkflowStatus
+from vibe.core.workflows.runtime import WorkflowRuntime
+
+_MIN_PARTS_FOR_STOP = 2
+
+
+@dataclass
+class WorkflowRunEntry:
+    run_id: str
+    script_source: str
+    started_at: float
+    runtime: WorkflowRuntime
+    task: asyncio.Task[WorkflowResult] | None = None
+    result: WorkflowResult | None = None
+    error: str | None = None
+
+    @property
+    def status(self) -> WorkflowStatus:
+        if self.result is not None:
+            return self.result.run.status
+        if self.error is not None:
+            return WorkflowStatus.FAILED
+        if self.task is not None and self.task.done():
+            return WorkflowStatus.FAILED
+        return WorkflowStatus.RUNNING
+
+    @property
+    def elapsed(self) -> float:
+        if self.result is not None and self.result.run.finished_at:
+            return self.result.run.finished_at - self.started_at
+        return time.monotonic() - self.started_at
+
+    @property
+    def agent_count(self) -> int:
+        if self.result is not None:
+            return self.result.run.agent_count
+        return self.runtime._agent_count
+
+    @property
+    def tokens_total(self) -> int:
+        if self.result is not None:
+            return self.result.run.tokens_total
+        return sum(p.tokens_total for p in self.runtime._phases.values())
+
+    @property
+    def phases(self) -> list[str]:
+        if self.result is not None:
+            return [p.name for p in self.result.run.phases]
+        return list(self.runtime._phase_order)
+
+
+def _format_run_list(runs: list[WorkflowRunEntry]) -> str:
+    if not runs:
+        return "No workflow runs."
+
+    rows = [
+        "| ID | Status | Agents | Tokens | Elapsed | Phases |",
+        "|----|--------|--------|--------|---------|--------|",
+    ]
+    for entry in runs:
+        elapsed_s = f"{entry.elapsed:.1f}s"
+        phases = ", ".join(entry.phases) or "(none)"
+        rows.append(
+            f"| `{entry.run_id}` | {entry.status.value} | {entry.agent_count} | "
+            f"{entry.tokens_total} | {elapsed_s} | {phases} |"
+        )
+    return "\n".join(rows)
+
+
+class WorkflowRunner:
+    def __init__(
+        self,
+        *,
+        mount: Callable[[Widget], Awaitable[None]],
+        on_complete: Callable[[WorkflowResult], Awaitable[None]] | None = None,
+    ) -> None:
+        self._mount = mount
+        self._on_complete = on_complete
+        self._runs: list[WorkflowRunEntry] = []
+        self._next_id = 1
+
+    @property
+    def runs(self) -> list[WorkflowRunEntry]:
+        return list(self._runs)
+
+    @property
+    def active_runs(self) -> list[WorkflowRunEntry]:
+        return [r for r in self._runs if r.status == WorkflowStatus.RUNNING]
+
+    @property
+    def completed_runs(self) -> list[WorkflowRunEntry]:
+        return [r for r in self._runs if r.status != WorkflowStatus.RUNNING]
+
+    def launch(
+        self, script_source: str, *, runtime: WorkflowRuntime, args: Any = None
+    ) -> str:
+        run_id = f"wf-{self._next_id}"
+        self._next_id += 1
+
+        entry = WorkflowRunEntry(
+            run_id=run_id,
+            script_source=script_source,
+            started_at=time.monotonic(),
+            runtime=runtime,
+        )
+
+        events: list[str] = []
+
+        def event_sink(msg: str) -> None:
+            events.append(msg)
+
+        runtime.set_event_sink(event_sink)
+
+        entry.task = asyncio.create_task(self._run_workflow(entry, args))
+        self._runs.append(entry)
+        return run_id
+
+    async def _run_workflow(self, entry: WorkflowRunEntry, args: Any) -> WorkflowResult:
+        try:
+            result = await entry.runtime.run(entry.script_source, args=args)
+            entry.result = result
+            if self._on_complete:
+                await self._on_complete(result)
+            return result
+        except asyncio.CancelledError:
+            entry.error = "Cancelled"
+            raise
+        except Exception as e:
+            entry.error = str(e)
+            logger.error("Workflow run failed", exc_info=e)
+            await self._mount(ErrorMessage(f"Workflow `{entry.run_id}` failed: {e}"))
+            raise
+
+    async def stop(self, run_id: str) -> bool:
+        entry = self._find_run(run_id)
+        if entry is None or entry.task is None:
+            return False
+        if entry.task.done():
+            return False
+        entry.task.cancel()
+        try:
+            await entry.task
+        except asyncio.CancelledError:
+            pass
+        return True
+
+    async def stop_all(self) -> None:
+        for entry in list(self._runs):
+            if entry.task is not None and not entry.task.done():
+                entry.task.cancel()
+                try:
+                    await entry.task
+                except asyncio.CancelledError:
+                    pass
+
+    def _find_run(self, run_id: str) -> WorkflowRunEntry | None:
+        return next((r for r in self._runs if r.run_id == run_id), None)
+
+    async def handle_command(self, cmd_args: str) -> Widget:
+        cmd_args = cmd_args.strip()
+        if not cmd_args or cmd_args in {"list", "ls"}:
+            return UserCommandMessage(_format_run_list(self._runs))
+
+        parts = cmd_args.split(None, 1)
+        verb = parts[0].lower()
+
+        match verb:
+            case "stop" | "cancel" | "kill":
+                if len(parts) < _MIN_PARTS_FOR_STOP:
+                    return ErrorMessage("Usage: /workflows stop <run-id>")
+                target_id = parts[1].strip()
+                if target_id == "all":
+                    await self.stop_all()
+                    return UserCommandMessage("Stopped all workflow runs.")
+                stopped = await self.stop(target_id)
+                if stopped:
+                    return UserCommandMessage(f"Stopped workflow `{target_id}`.")
+                return ErrorMessage(
+                    f"Could not stop `{target_id}` — not found or already finished."
+                )
+
+            case _:
+                return ErrorMessage(
+                    f"Unknown /workflows subcommand: `{verb}`.\n"
+                    "Usage: /workflows [list|stop <id|all>]"
+                )
