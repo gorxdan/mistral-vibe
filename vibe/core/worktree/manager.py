@@ -163,33 +163,34 @@ class WorktreeManager:
         leaf = f"{label}-{os.getpid()}-{time.time_ns()}"
         branch = f"{config.branch_prefix}{leaf}"
 
-        # 7. Ensure .vibe/worktrees/ is gitignored.
-        self._ensure_gitignore(original_root)
-
-        # 8. Create worktree at <repo>/.vibe/worktrees/<branch>.
-        worktree_path = original_root / ".vibe" / "worktrees" / leaf
+        # 7. Resolve worktree path from config.base_dir (outside the repo by
+        #    default, so it never appears in the user's git status).
+        base_dir = Path(config.base_dir)
+        repo_name = original_root.name
+        worktree_path = base_dir / repo_name / leaf
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
         repo.git.worktree("add", str(worktree_path), "-b", branch, "HEAD")
         logger.info("Created worktree at %s on branch %s", worktree_path, branch)
 
-        # 9. Carry dirty state.
+        # 8. Carry dirty state (excluding carry_ignored paths, which are
+        #    symlinked in step 9 instead).
         symlinks: list[Path] = []
         if config.carry_dirty:
-            self._carry_dirty(repo, worktree_path)
+            self._carry_dirty(repo, worktree_path, config.carry_ignored)
 
-        # 10. Symlink deps.
+        # 9. Symlink deps.
         symlinks = self._symlink_deps(original_root, worktree_path, config)
 
-        # 11. Trust the worktree.
+        # 10. Trust the worktree.
         trusted_folders_manager.trust_for_session(worktree_path)
 
-        # 12. Set orientation (footer shows original root).
+        # 11. Set orientation (footer shows original root).
         # Done by the caller via config.displayed_workdir.
 
-        # 13. chdir into worktree.
+        # 12. chdir into worktree.
         os.chdir(worktree_path)
 
-        # 14. Store handle and register cleanup backstops.
+        # 13. Store handle and register cleanup backstops.
         handle = WorktreeHandle(
             original_repo_root=original_root,
             worktree_path=worktree_path,
@@ -280,12 +281,17 @@ class WorktreeManager:
     # dirty carry
     # ------------------------------------------------------------------
 
-    def _carry_dirty(self, repo: Repo, worktree_path: Path) -> None:
+    def _carry_dirty(
+        self, repo: Repo, worktree_path: Path, carry_ignored: list[str]
+    ) -> None:
         """Copy tracked + untracked working-tree changes into the worktree.
 
         Uses a COPY of the real index under ``GIT_INDEX_FILE`` so the user's
         ``.git/index`` is never touched.  Adapts the pattern from
         ``teleport/git.py:158-159`` (``add -N .`` + ``diff HEAD --binary``).
+
+        Paths in *carry_ignored* are excluded from the diff so they can be
+        symlinked instead (symlinks are cheaper than copying dep trees).
 
         Uses subprocess directly (not GitPython) for the diff/apply to handle
         binary patch data correctly — GitPython's string return corrupts
@@ -308,6 +314,8 @@ class WorktreeManager:
             env = dict(os.environ, GIT_INDEX_FILE=str(tmp_idx))
             repo_root = Path(repo.working_tree_dir)
 
+            # add -N . adds all untracked files as intent-to-add so they
+            # appear in the diff.  Gitignored files are skipped automatically.
             subprocess.run(
                 ["git", "add", "-N", "."],
                 cwd=str(repo_root),
@@ -315,8 +323,15 @@ class WorktreeManager:
                 check=True,
                 capture_output=True,
             )
+
+            # Build diff pathspec: everything EXCEPT carry_ignored paths
+            # (those are symlinked instead).
+            diff_pathspecs = []
+            for name in carry_ignored:
+                diff_pathspecs.append(f":(exclude){name}")
+
             result = subprocess.run(
-                ["git", "diff", "HEAD", "--binary"],
+                ["git", "diff", "HEAD", "--binary", "--", *diff_pathspecs],
                 cwd=str(repo_root),
                 env=env,
                 check=True,
@@ -426,20 +441,6 @@ class WorktreeManager:
             return False
         except GitCommandError:
             return False
-
-    def _ensure_gitignore(self, repo_root: Path) -> None:
-        """Append ``.vibe/worktrees/`` to ``.git/info/exclude`` if not present."""
-        exclude_file = repo_root / ".git" / "info" / "exclude"
-        if not exclude_file.parent.exists():
-            exclude_file.parent.mkdir(parents=True, exist_ok=True)
-        existing = ""
-        if exclude_file.exists():
-            existing = exclude_file.read_text()
-        if ".vibe/worktrees/" not in existing:
-            with exclude_file.open("a") as f:
-                if existing and not existing.endswith("\n"):
-                    f.write("\n")
-                f.write(".vibe/worktrees/\n")
 
     def _is_dirty(self, repo: Repo) -> bool:
         try:

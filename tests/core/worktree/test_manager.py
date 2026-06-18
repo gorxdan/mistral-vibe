@@ -155,16 +155,14 @@ class TestEnterBasic:
         assert handle is not None
         assert handle.branch.startswith("wt/label-")
 
-    def test_enter_ensures_gitignore(self, manager: WorktreeManager, temp_repo: Path):
+    def test_enter_uses_configured_base_dir(self, manager: WorktreeManager, temp_repo: Path, tmp_path: Path):
         os.chdir(str(temp_repo))
-        config = WorktreeConfig(mode="on")
+        custom_base = tmp_path / "custom-wt"
+        config = WorktreeConfig(mode="on", base_dir=str(custom_base))
         handle = manager.enter("test", config)
         assert handle is not None
-
-        exclude = temp_repo / ".git" / "info" / "exclude"
-        assert exclude.exists()
-        content = exclude.read_text()
-        assert ".vibe/worktrees/" in content
+        assert str(handle.worktree_path).startswith(str(custom_base))
+        manager.exit(handle)
 
 
 # ---------------------------------------------------------------------------

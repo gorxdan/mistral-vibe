@@ -36,7 +36,7 @@ import tomli_w
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.logger import logger
-from vibe.core.paths import GLOBAL_ENV_FILE, SESSION_LOG_DIR
+from vibe.core.paths import GLOBAL_ENV_FILE, SESSION_LOG_DIR, VIBE_HOME
 from vibe.core.prompts import (
     SystemPrompt,
     UtilityPrompt,
@@ -183,6 +183,7 @@ class WorktreeConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     mode: Literal["off", "on", "auto-by-entrypoint"] = "auto-by-entrypoint"
+    base_dir: str = ""
     branch_prefix: str = "vibe/"
     merge: Literal["manual", "auto-ff"] = "manual"
     cleanup: Literal["remove", "keep"] = "remove"
@@ -190,6 +191,11 @@ class WorktreeConfig(BaseSettings):
     carry_ignored: list[str] = Field(
         default_factory=lambda: ["node_modules", ".venv", "venv", ".env"]
     )
+
+    @field_validator("base_dir", mode="before")
+    @classmethod
+    def _default_base_dir(cls, v: str) -> str:
+        return v or str(VIBE_HOME.path / "worktrees")
 
 
 DEFAULT_MISTRAL_API_ENV_KEY = "MISTRAL_API_KEY"
