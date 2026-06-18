@@ -75,3 +75,47 @@ class Budget:
     @property
     def agent_count(self) -> int:
         return self._agent_count
+
+
+class ReadOnlyBudget:
+    """Read-only view of a Budget exposed to workflow scripts.
+
+    The live Budget is mutable (reserve/reconcile/restore_spent mutate
+    _spent/_reserved). Injecting it directly let a script reset spend
+    (budget._spent = 0) and bypass the cap. This proxy exposes only the
+    safe accessors and blocks attribute assignment.
+    """
+
+    __slots__ = ("_budget",)
+
+    def __init__(self, budget: Budget) -> None:
+        object.__setattr__(self, "_budget", budget)
+
+    @property
+    def total(self) -> int | None:
+        return self._budget.total
+
+    def spent(self) -> int:
+        return self._budget.spent()
+
+    def remaining(self) -> int | float:
+        return self._budget.remaining()
+
+    def snapshot(self) -> BudgetSnapshot:
+        return self._budget.snapshot()
+
+    @property
+    def agent_count(self) -> int:
+        return self._budget.agent_count
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError(
+            "budget is read-only in workflow scripts; cannot set attribute "
+            f"{name!r}"
+        )
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(
+            "budget is read-only in workflow scripts; cannot delete attribute "
+            f"{name!r}"
+        )

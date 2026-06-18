@@ -506,3 +506,21 @@ async def test_parent_context_rejects_non_subagent_agent() -> None:
     rt = WorkflowRuntime(parent_context=ctx, max_agents=10, budget_total=1_000_000)
     with pytest.raises(WorkflowError, match="Only subagents can be used"):
         await rt.spawn_agent("do anything", agent="auto-approve")
+
+
+async def test_budget_exposed_to_script_is_read_only(runtime: WorkflowRuntime) -> None:
+    """A workflow script must not be able to mutate the budget to bypass the
+    cap. The live Budget is mutable; the namespace injects a read-only proxy.
+    """
+    ns = runtime.build_script_namespace()
+    budget = ns["budget"]
+    # Read accessors work.
+    assert budget.spent() == 0
+    assert budget.total == 1_000_000
+    # Mutation is blocked.
+    with pytest.raises(AttributeError, match="read-only"):
+        budget._spent = 0  # type: ignore[attr-defined]
+    with pytest.raises(AttributeError, match="read-only"):
+        budget.total = 999  # type: ignore[misc]
+    # The underlying budget is unaffected.
+    assert runtime._budget.spent() == 0

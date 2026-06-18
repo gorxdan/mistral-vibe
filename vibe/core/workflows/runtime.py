@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
-from vibe.core.workflows.budget import Budget, Reservation
+from vibe.core.workflows.budget import Budget, ReadOnlyBudget, Reservation
 from vibe.core.workflows.models import (
     AgentResult,
     CachedAgentResult,
@@ -499,7 +499,7 @@ class WorkflowRuntime:
             "pipeline": self.pipeline,
             "phase": self._declare_phase,
             "log": self._log,
-            "budget": self._budget,
+            "budget": ReadOnlyBudget(self._budget),
             "args": args,
         }
         return build_namespace(injected)
