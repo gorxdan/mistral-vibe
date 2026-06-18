@@ -1,0 +1,41 @@
+Use `launch_workflow` to run a workflow script that orchestrates parallel agents in the background.
+
+## When to Use This Tool
+
+- **Multi-agent tasks**: Codebase audits, large migrations, cross-checked research that needs 3+ independent agents
+- **Adversarial verification**: Findings that should be cross-checked by multiple skeptics
+- **Dynamic loops**: Tasks that need to loop until a condition is met (dry rounds, budget exhaustion)
+- **Parallel exploration**: Investigating multiple directories or angles simultaneously
+
+## When NOT to Use
+
+- Single-file edits or quick questions — work normally
+- Tasks that need sequential, dependent steps — use subagents instead
+- Tasks requiring user interaction — workflow agents cannot ask questions
+
+## Script Format
+
+The script must define `async def main()`. The runtime injects:
+
+- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None)` — spawn a subagent
+- `parallel(*thunks)` — run thunks concurrently, results in order
+- `pipeline(items, fn)` — concurrent map over items, results in order
+- `phase(name)` — declare a phase for progress tracking
+- `log(msg)` — log a progress message
+- `budget` — token budget with `.total` and `.remaining()`
+- `args` — structured input from the invocation
+
+## Best Practices
+
+1. **Use schemas for structured output** — pass `schema=` to `agent()` for JSON-validated responses
+2. **Use `parallel` for independent work, `pipeline` for ordered concurrent map**
+3. **Declare phases with `phase()` for progress tracking**
+4. **Guard loops with `budget.remaining()`** — stop when budget is exhausted
+5. **Keep scripts focused** — one workflow per task, not a general-purpose program
+
+## Limitations
+
+- Scripts run in a restricted namespace (no `open`, `exec`, `os`, `subprocess`)
+- Up to 16 concurrent agents, 1000 total per run
+- The workflow runs in the background; the result appears when complete
+- Use `/workflows` to check progress or stop a run
