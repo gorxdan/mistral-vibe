@@ -13,6 +13,12 @@ from vibe.core.workflows.models import (
     WorkflowRun,
     WorkflowStatus,
 )
+from vibe.core.workflows.runtime import (
+    AgentCapExceeded,
+    AgentLoopFactory,
+    WorkflowError,
+    WorkflowRuntime,
+)
 from vibe.core.workflows.schema import (
     SchemaValidationError,
     ValidationError,
@@ -23,6 +29,8 @@ from vibe.core.workflows.schema import (
 from vibe.core.workflows.security import Violation, build_namespace, validate_script
 
 __all__ = [
+    "AgentCapExceeded",
+    "AgentLoopFactory",
     "AgentResult",
     "Budget",
     "BudgetExhausted",
@@ -32,8 +40,10 @@ __all__ = [
     "SchemaValidationError",
     "ValidationError",
     "Violation",
+    "WorkflowError",
     "WorkflowResult",
     "WorkflowRun",
+    "WorkflowRuntime",
     "WorkflowStatus",
     "build_namespace",
     "build_prompt_fallback",
