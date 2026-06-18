@@ -180,6 +180,15 @@ class VibeConfigSchema(ConfigSchema):
         ),
     )
 
+    # Workflows
+    workflow_paths: Annotated[list[Path], WithConcatMerge()] = Field(
+        default_factory=list,
+        description=(
+            "Additional directories to search for workflow scripts. "
+            "Each path may be absolute or relative to the current working directory."
+        ),
+    )
+
     # Internal
     vibe_code_enabled: Annotated[bool, WithReplaceMerge()] = True
     vibe_code_base_url: Annotated[str, WithReplaceMerge()] = DEFAULT_MISTRAL_SERVER_URL

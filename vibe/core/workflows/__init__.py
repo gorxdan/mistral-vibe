@@ -6,6 +6,7 @@ from vibe.core.workflows.budget import (
     BudgetSnapshot,
     Reservation,
 )
+from vibe.core.workflows.manager import WorkflowInfo, WorkflowManager
 from vibe.core.workflows.models import (
     AgentResult,
     CachedAgentResult,
@@ -44,6 +45,8 @@ __all__ = [
     "ValidationError",
     "Violation",
     "WorkflowError",
+    "WorkflowInfo",
+    "WorkflowManager",
     "WorkflowResult",
     "WorkflowRun",
     "WorkflowRunSnapshot",

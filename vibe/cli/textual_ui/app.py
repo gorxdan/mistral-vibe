@@ -224,6 +224,8 @@ from vibe.core.utils import (
     get_user_cancellation_message,
     is_dangerous_directory,
 )
+from vibe.core.workflows.manager import WorkflowManager
+from vibe.core.workflows.runtime import WorkflowRuntime
 
 _VSCODE_FAMILY_TERMINALS = {Terminal.VSCODE, Terminal.VSCODE_INSIDERS, Terminal.CURSOR}
 
@@ -495,6 +497,8 @@ class VibeApp(App):  # noqa: PLR0904
         self._workflow_runner = WorkflowRunner(
             mount=self._mount_and_scroll, on_complete=self._on_workflow_complete
         )
+        self._workflow_manager = WorkflowManager(lambda: self.agent_loop.config)
+        self._register_workflow_commands()
 
     def _configure_startup_options(self, startup: StartupOptions | None) -> None:
         opts = startup or StartupOptions()
@@ -1283,9 +1287,9 @@ class VibeApp(App):  # noqa: PLR0904
             await self._mount_and_scroll(SlashCommandMessage(display))
             handler = getattr(self, command.handler)
             if asyncio.iscoroutinefunction(handler):
-                await handler(cmd_args=cmd_args)
+                await handler(cmd_args=cmd_args, _cmd_name=cmd_name)
             else:
-                handler(cmd_args=cmd_args)
+                handler(cmd_args=cmd_args, _cmd_name=cmd_name)
             return True
         return False
 
@@ -2639,6 +2643,50 @@ class VibeApp(App):  # noqa: PLR0904
     async def _workflows_command(self, cmd_args: str = "", **kwargs: Any) -> None:
         widget = await self._workflow_runner.handle_command(cmd_args)
         await self._mount_and_scroll(widget)
+
+    def _register_workflow_commands(self) -> None:
+        from vibe.cli.commands import Command
+
+        for name, info in self._workflow_manager.workflows.items():
+            self.commands.register_dynamic(
+                name,
+                Command(
+                    aliases=frozenset([f"/{name}"]),
+                    description=info.description or f"Run workflow: {name}",
+                    handler="_run_workflow_command",
+                ),
+            )
+
+    async def _run_workflow_command(self, cmd_args: str = "", **kwargs: Any) -> None:
+        from vibe.cli.textual_ui.widgets.messages import (
+            ErrorMessage,
+            UserCommandMessage,
+        )
+
+        cmd_name = kwargs.get("_cmd_name", "")
+        if not cmd_name:
+            await self._mount_and_scroll(
+                ErrorMessage("Could not determine workflow name.")
+            )
+            return
+
+        info = self._workflow_manager.get_workflow(cmd_name)
+        if info is None:
+            await self._mount_and_scroll(
+                ErrorMessage(f"Workflow '{cmd_name}' not found.")
+            )
+            return
+
+        runtime = WorkflowRuntime()
+        run_id = self._workflow_runner.launch(
+            info.source, runtime=runtime, args=cmd_args or None
+        )
+        await self._mount_and_scroll(
+            UserCommandMessage(
+                f"Launched workflow `{cmd_name}` as `{run_id}`. "
+                f"Use /workflows to check progress."
+            )
+        )
 
     async def _on_workflow_complete(self, result: Any) -> None:
         from vibe.cli.textual_ui.widgets.messages import UserCommandMessage

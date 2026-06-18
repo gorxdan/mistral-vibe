@@ -47,6 +47,7 @@ class CommandRegistry:
         self._disabled_commands = set(excluded_commands)
         self._availability_context = CommandAvailabilityContext()
         self._commands: dict[str, Command] = {}
+        self._dynamic_commands: dict[str, Command] = {}
         self.refresh(availability_context)
 
     def _build_commands(self) -> dict[str, Command]:
@@ -199,12 +200,22 @@ class CommandRegistry:
         self._availability_context = (
             availability_context or CommandAvailabilityContext()
         )
+        built = self._build_commands()
+        built.update(self._dynamic_commands)
         self._commands = {
             name: command
-            for name, command in self._build_commands().items()
+            for name, command in built.items()
             if name not in self._disabled_commands
             and self._is_command_available(command)
         }
+
+    def register_dynamic(self, name: str, command: Command) -> None:
+        self._dynamic_commands[name] = command
+        self._commands[name] = command
+
+    def clear_dynamic(self) -> None:
+        self._dynamic_commands.clear()
+        self.refresh()
 
     def _is_command_available(self, command: Command) -> bool:
         if command.is_available is None:

@@ -10,6 +10,7 @@ from vibe.core.config.harness_files._paths import (
     GLOBAL_PROMPTS_DIR,
     GLOBAL_SKILLS_DIR,
     GLOBAL_TOOLS_DIR,
+    GLOBAL_WORKFLOWS_DIR,
 )
 from vibe.core.paths import (
     AGENTS_MD_FILENAME,
@@ -110,6 +111,13 @@ class HarnessFilesManager:
         d = GLOBAL_AGENTS_DIR.path
         return [d] if d.is_dir() else []
 
+    @property
+    def user_workflows_dirs(self) -> list[Path]:
+        if "user" not in self.sources:
+            return []
+        d = GLOBAL_WORKFLOWS_DIR.path
+        return [d] if d.is_dir() else []
+
     def _collect_project_roots(self) -> LocalConfigDirs:
         result = LocalConfigDirs()
         for root in self.project_roots:
@@ -127,6 +135,10 @@ class HarnessFilesManager:
     @property
     def project_agents_dirs(self) -> list[Path]:
         return list(self._collect_project_roots().agents)
+
+    @property
+    def project_workflows_dirs(self) -> list[Path]:
+        return list(self._collect_project_roots().workflows)
 
     @property
     def user_config_file(self) -> Path:

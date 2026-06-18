@@ -760,6 +760,13 @@ class VibeConfig(BaseSettings):
             " is set. Supports glob patterns and regex with 're:' prefix."
         ),
     )
+    workflow_paths: list[Path] = Field(
+        default_factory=list,
+        description=(
+            "Additional directories to search for workflow scripts. "
+            "Each path may be absolute or relative to the current working directory."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="VIBE_", case_sensitive=False, extra="ignore"
@@ -985,6 +992,13 @@ class VibeConfig(BaseSettings):
     @field_validator("skill_paths", mode="before")
     @classmethod
     def _expand_skill_paths(cls, v: Any) -> list[Path]:
+        if not v:
+            return []
+        return [Path(p).expanduser().resolve() for p in v]
+
+    @field_validator("workflow_paths", mode="before")
+    @classmethod
+    def _expand_workflow_paths(cls, v: Any) -> list[Path]:
         if not v:
             return []
         return [Path(p).expanduser().resolve() for p in v]

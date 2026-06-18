@@ -29,6 +29,7 @@ _VIBE_DIR = Path(".vibe")
 _TOOLS_SUBDIR = _VIBE_DIR / "tools"
 _VIBE_SKILLS_SUBDIR = _VIBE_DIR / "skills"
 _AGENTS_SUBDIR = _VIBE_DIR / "agents"
+_WORKFLOWS_SUBDIR = _VIBE_DIR / "workflows"
 _AGENTS_DIR = Path(".agents")
 _AGENTS_SKILLS_SUBDIR = _AGENTS_DIR / "skills"
 
@@ -41,6 +42,7 @@ class LocalConfigDirs:
     tools: tuple[Path, ...] = ()
     skills: tuple[Path, ...] = ()
     agents: tuple[Path, ...] = ()
+    workflows: tuple[Path, ...] = ()
 
     def __or__(self, other: LocalConfigDirs) -> LocalConfigDirs:
         return LocalConfigDirs(
@@ -48,6 +50,7 @@ class LocalConfigDirs:
             tools=tuple(dedup_paths([*self.tools, *other.tools])),
             skills=tuple(dedup_paths([*self.skills, *other.skills])),
             agents=tuple(dedup_paths([*self.agents, *other.agents])),
+            workflows=tuple(dedup_paths([*self.workflows, *other.workflows])),
         )
 
 
@@ -61,6 +64,7 @@ def find_local_config_dirs(root: Path) -> LocalConfigDirs:
     tools: list[Path] = []
     skills: list[Path] = []
     agents: list[Path] = []
+    workflows: list[Path] = []
 
     vibe_dir = resolved / _VIBE_DIR
     if _safe_is_dir(vibe_dir):
@@ -73,6 +77,9 @@ def find_local_config_dirs(root: Path) -> LocalConfigDirs:
             has_content = True
         if _safe_is_dir(candidate := resolved / _AGENTS_SUBDIR):
             agents.append(candidate)
+            has_content = True
+        if _safe_is_dir(candidate := resolved / _WORKFLOWS_SUBDIR):
+            workflows.append(candidate)
             has_content = True
         if (
             has_content
@@ -93,4 +100,5 @@ def find_local_config_dirs(root: Path) -> LocalConfigDirs:
         tools=tuple(tools),
         skills=tuple(skills),
         agents=tuple(agents),
+        workflows=tuple(workflows),
     )

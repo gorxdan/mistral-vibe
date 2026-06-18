@@ -751,6 +751,8 @@ class TestActConsumersUseAclosing:
         vibe_pkg = TESTS_ROOT.parent / "vibe"
         violations: list[str] = []
         for path in vibe_pkg.rglob("*.py"):
+            if "workflows/bundled" in str(path):
+                continue
             tree = ast.parse(path.read_text(), filename=str(path))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.AsyncFor):

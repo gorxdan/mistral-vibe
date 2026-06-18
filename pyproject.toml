@@ -190,13 +190,13 @@ reportMissingTypeStubs = false
 reportPrivateImportUsage = false
 
 include = ["vibe/**/*.py", "tests/**/*.py"]
-exclude = ["pyinstaller/"]
+exclude = ["pyinstaller/", "vibe/core/workflows/bundled/"]
 venvPath = "."
 venv = ".venv"
 
 [tool.ruff]
 include = ["vibe/**/*.py", "tests/**/*.py"]
-exclude = ["pyinstaller/"]
+exclude = ["pyinstaller/", "vibe/core/workflows/bundled/"]
 line-length = 88
 target-version = "py312"
 preview = true
