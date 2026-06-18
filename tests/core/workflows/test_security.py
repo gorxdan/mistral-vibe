@@ -80,9 +80,48 @@ DUNDER_ACCESS_SOURCES = [
 DUNDER_SUBSCRIPT_SOURCES = ["d['__class__']", "d['__globals__']", "d['__builtins__']"]
 
 
+# Escapes reproduced end-to-end during the phases 0-4 audit. Each must now be
+# rejected by validate_script (the gate that runs before exec).
+SANDBOX_ESCAPE_SOURCES = [
+    # pathlib filesystem access (no open() call)
+    ('import pathlib\nx = pathlib.Path("/etc/hostname").read_text()', "unsafe-import"),
+    # operator.attrgetter reaches dunders via string args
+    ("import operator\nf = operator.attrgetter('__globals__')", "unsafe-import"),
+    ("import operator\ng = operator.itemgetter('__builtins__')", "unsafe-import"),
+    # string.Formatter().get_field() attribute traversal
+    ("import string\nfm = string.Formatter()", "unsafe-import"),
+    # str.format mini-language attribute traversal (dunder hidden in a string)
+    ('y = "{0.__class__.__base__.__subclasses__}".format(())', "forbidden-attr"),
+    ('z = "{0}".format_map({})', "forbidden-attr"),
+    # aliasing the bound method to dodge the call-site check
+    ('h = "{0.__class__}".format\nh(())', "forbidden-attr"),
+]
+
+
 def test_clean_script_passes() -> None:
     violations = validate_script(CLEAN_SCRIPT)
     assert not violations, f"expected no violations, got: {violations}"
+
+
+@pytest.mark.parametrize(("src", "rule"), SANDBOX_ESCAPE_SOURCES)
+def test_sandbox_escapes_rejected(src: str, rule: str) -> None:
+    v = validate_script(src)
+    assert v, f"expected escape to be blocked, but validate_script passed: {src!r}"
+    assert any(viol.rule == rule for viol in v), (
+        f"expected a '{rule}' violation for {src!r}, got {[str(x) for x in v]}"
+    )
+
+
+@pytest.mark.parametrize("mod", ["pathlib", "operator", "string"])
+def test_removed_modules_not_importable(mod: str) -> None:
+    with pytest.raises(ImportError):
+        restricted_import(mod)
+
+
+def test_format_builtin_removed_from_namespace() -> None:
+    ns = build_namespace({})
+    with pytest.raises(NameError):
+        exec("v = format(123)", ns)
 
 
 @pytest.mark.parametrize("src", UNSAFE_IMPORTS)

@@ -6,6 +6,15 @@ from dataclasses import dataclass
 import importlib
 from typing import Any
 
+# NOTE: this is a best-effort, in-process AST allowlist. It is NOT a hard
+# security boundary: a sufficiently determined script could still find a gap,
+# because the script ultimately runs in this interpreter. Untrusted scripts
+# must be gated behind explicit user approval (the launch_workflow tool uses
+# ToolPermission.ASK) — do not auto-run scripts from untrusted sources. The
+# rules below close every escape vector reproduced in the phases 0-4 audit
+# (pathlib filesystem access, operator.attrgetter / string.Formatter attribute
+# traversal via string-encoded dunders, and the str.format mini-language).
+
 SAFE_MODULES = frozenset({
     "json",
     "re",
@@ -19,11 +28,13 @@ SAFE_MODULES = frozenset({
     "copy",
     "hashlib",
     "base64",
-    "string",
     "textwrap",
     "unicodedata",
-    "operator",
-    "pathlib",
+    # Deliberately excluded (audit-confirmed escape primitives):
+    #   pathlib  -> Path.read_text/write_text/unlink = arbitrary filesystem I/O
+    #   operator -> attrgetter/itemgetter reach dunders via string args,
+    #               bypassing the AST dunder checks
+    #   string   -> string.Formatter().get_field() does attribute traversal
 })
 
 SAFE_BUILTINS = frozenset({
@@ -43,7 +54,6 @@ SAFE_BUILTINS = frozenset({
     "enumerate",
     "filter",
     "float",
-    "format",
     "frozenset",
     "hash",
     "hex",
@@ -107,6 +117,21 @@ DANGEROUS_CALLS = frozenset({
     "help",
 })
 
+# Attribute names that are forbidden anywhere they appear (load or call). The
+# str.format / str.format_map mini-language performs attribute and index access
+# from inside a format string ("{0.__class__}"), which the AST dunder checks
+# cannot see because the dunder lives in a string literal. Blocking the methods
+# themselves closes that vector (including aliasing: `f = x.format; f(...)`).
+# The Formatter.* names are listed defensively even though `string` is no longer
+# importable.
+FORBIDDEN_ATTRS = frozenset({
+    "format",
+    "format_map",
+    "format_field",
+    "vformat",
+    "get_field",
+})
+
 
 @dataclass
 class Violation:
@@ -156,6 +181,8 @@ class _Visitor(ast.NodeVisitor):
         attr = node.attr
         if attr.startswith("__") and attr.endswith("__"):
             self._v(node, "dunder-access", f"access to dunder '.{attr}' is forbidden")
+        elif attr in FORBIDDEN_ATTRS:
+            self._v(node, "forbidden-attr", f"access to '.{attr}' is forbidden")
         self.generic_visit(node)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
