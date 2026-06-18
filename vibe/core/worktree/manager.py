@@ -247,12 +247,16 @@ class WorktreeManager:
                 logger.warning("Failed to unlink symlink %s: %s", s, exc)
 
         # 2. WIP-commit if dirty.
+        wip_ok = True
         if self._is_dirty(wt_repo):
-            self._wip_commit(wt_repo, handle)
+            wip_ok = self._wip_commit(wt_repo, handle)
 
-        # 3. Auto-ff merge (only if configured).
+        # 3. Auto-ff merge (only if configured and the WIP commit succeeded).
+        #    If the WIP commit failed, the branch is missing the latest work;
+        #    merging it would give a misleading "merged" result, so skip and
+        #    leave the worktree for manual recovery.
         merged = False
-        if handle.config.merge == "auto-ff":
+        if handle.config.merge == "auto-ff" and wip_ok:
             merged = self._try_auto_ff(handle)
 
         # 4. chdir back BEFORE worktree remove (removing cwd leaves stale cwd).
@@ -458,8 +462,12 @@ class WorktreeManager:
         except Exception:
             return False
 
-    def _wip_commit(self, repo: Repo, handle: WorktreeHandle) -> None:
-        """WIP-commit dirty state onto the branch. Never discards work."""
+    def _wip_commit(self, repo: Repo, handle: WorktreeHandle) -> bool:
+        """WIP-commit dirty state onto the branch. Never discards work.
+
+        Returns True if the commit succeeded (or there was nothing to commit),
+        False if the commit failed so the caller can skip auto-ff.
+        """
         import subprocess
 
         try:
@@ -480,12 +488,14 @@ class WorktreeManager:
                 capture_output=True,
             )
             logger.info("WIP-committed dirty worktree state to branch %s", handle.branch)
+            return True
         except subprocess.CalledProcessError as exc:
             err = (exc.stderr or b"").decode("utf-8", errors="replace")
             if "nothing to commit" in err.lower():
                 logger.debug("Nothing to WIP-commit in worktree %s", handle.worktree_path)
-            else:
-                logger.warning("WIP-commit failed: %s. Worktree kept for recovery.", err)
+                return True
+            logger.warning("WIP-commit failed: %s. Worktree kept for recovery.", err)
+            return False
 
     def _try_auto_ff(self, handle: WorktreeHandle) -> bool:
         """Attempt a fast-forward merge into the original repo.
