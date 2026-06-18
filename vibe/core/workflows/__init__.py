@@ -13,6 +13,13 @@ from vibe.core.workflows.models import (
     WorkflowRun,
     WorkflowStatus,
 )
+from vibe.core.workflows.schema import (
+    SchemaValidationError,
+    ValidationError,
+    build_prompt_fallback,
+    build_response_format,
+    validate_against_schema,
+)
 from vibe.core.workflows.security import Violation, build_namespace, validate_script
 
 __all__ = [
@@ -22,10 +29,15 @@ __all__ = [
     "BudgetSnapshot",
     "PhaseReport",
     "Reservation",
+    "SchemaValidationError",
+    "ValidationError",
     "Violation",
     "WorkflowResult",
     "WorkflowRun",
     "WorkflowStatus",
     "build_namespace",
+    "build_prompt_fallback",
+    "build_response_format",
+    "validate_against_schema",
     "validate_script",
 ]
