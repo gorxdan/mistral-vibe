@@ -35,10 +35,12 @@ agents, prompts, logs, and session data live here.
   prompts/             # Custom prompts (*.md)
   skills/              # User-level skills (each skill is a subdirectory with SKILL.md)
   tools/               # Custom tool definitions
+  workflows/           # User-level workflow scripts (*.py with YAML frontmatter)
   logs/
     vibe.log           # Main log file
     session/           # Session log files
   plans/               # Session plans
+  teams/               # Team directories (created on demand, cleaned up on exit)
 
 ~/.agents/
   skills/              # Additional user-level skills directory
@@ -52,6 +54,7 @@ When in a trusted folder, Vibe also looks for project-local configuration:
 - `.vibe/skills/` - Project-specific skills
 - `.vibe/tools/` - Project-specific tools
 - `.vibe/agents/` - Project-specific agents
+- `.vibe/workflows/` - Project-specific workflow scripts
 - `.vibe/prompts/` - Project-specific prompts
 - `.agents/skills/` - Standard agent skills directory
 
@@ -127,7 +130,10 @@ api_timeout = 720.0               # API request timeout in seconds
 auto_compact_threshold = 200000   # Token count before auto-compaction
 
 # Git commit behavior
-include_commit_signature = true   # Add "Co-Authored-By" to commits
+include_commit_signature = false   # Include commit guidance in system prompt
+
+# Writing style
+include_humanizer_guidance = true  # Prompt the model to avoid AI-writing patterns
 
 # System prompt composition
 include_model_info = true         # Include model name in system prompt
@@ -139,6 +145,11 @@ voice_mode_enabled = false
 narrator_enabled = false
 active_transcribe_model = "voxtral-realtime"
 active_tts_model = "voxtral-tts"
+
+# Workflows and effort
+effort_mode = "normal"            # "normal" or "le-chaton" (max thinking + auto-workflow)
+disable_workflows = false         # Disable all workflow features
+workflow_paths = []               # Additional dirs to search for workflow scripts
 ```
 
 ### Providers
@@ -571,6 +582,17 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/unleanstall` - Uninstall the Lean 4 agent
 - `/data-retention` - Show data retention information
 - `/teleport` - Teleport session to Vibe Code Web (only available when Vibe Code is enabled)
+- `/effort` - Select effort mode: `normal` (turn-by-turn) or `le-chaton` (max thinking + auto-workflow planning)
+- `/workflows` - Manage workflow runs. With no args, opens a progress view.
+  - `/workflows list` - List all runs with status, agents, tokens, elapsed
+  - `/workflows stop <id|all>` - Stop one or all runs
+  - `/workflows snapshot <id>` - Show cached results for a run
+- `/team` - Manage agent teams (multi-process coordination).
+  - `/team list` - Show teammates with name, status, PID
+  - `/team spawn <name> <prompt>` - Spawn a teammate as a separate vibe process
+  - `/team stop <name|all>` - Stop one or all teammates
+  - `/team cleanup` - Remove team directory and reset state
+- `/<workflow-name> [args]` - Run a discovered workflow script (e.g. `/deep-research <question>`)
 - `/exit` - Exit the application
 
 ## File Mentions (`@`)
@@ -662,6 +684,11 @@ Detailed instructions for the model...
   pause before showing tool-approval / ask-user-question dialogs (default:
   `1000`). Set to `0` to disable. Negative or non-numeric values fall back
   to the default.
+- `VIBE_EFFORT_MODE` - Override effort mode (`normal` or `le-chaton`)
+- `VIBE_DISABLE_WORKFLOWS` - Set to `1`/`true` to disable all workflow features
+- `VIBE_TEAM_NAME` - Team name (set by TeamManager when spawning teammates)
+- `VIBE_TEAM_DIR` - Team directory path (set by TeamManager when spawning teammates)
+- `VIBE_TEAMMATE_NAME` - Teammate name (set by TeamManager when spawning teammates)
 
 ## API Keys (.env file)
 
@@ -697,6 +724,163 @@ If the user asks to set or change an API key, instruct them to edit the `.env`
 file themselves. Do not offer to read it, write it, or display its contents.
 Do not use tools (read, write_file, bash cat/echo, etc.) to access these files.
 
+## Workflows
+
+Workflows are Python scripts that orchestrate parallel agents. They run in the
+background as asyncio tasks on the same event loop as the TUI, so the session
+stays responsive while agents work.
+
+### Workflow Scripts
+
+A workflow script is a `.py` file with an `async def main()` function. Optional
+YAML frontmatter (`name:`, `description:`) precedes the Python source. The
+runtime injects these functions into the script's namespace:
+
+- `agent(prompt, *, agent="explore", model=None, label=None, phase=None, schema=None, budget_estimate=None)` — spawn a subagent
+- `parallel(*thunks)` — run thunks concurrently, results in argument order
+- `pipeline(items, fn)` — concurrent map over items, results in input order
+- `phase(name)` — declare a phase for progress tracking
+- `log(msg)` — log a progress message
+- `budget` — token budget object with `.total` (int|None) and `.remaining()` (int|float)
+- `args` — structured input from the invocation command (string or None)
+
+Scripts are validated via AST before execution: unsafe imports, dangerous calls
+(exec/eval/open), dunder access, and dunder subscripts are blocked. The
+restricted namespace has safelisted builtins only (no `open`, `exec`, `__import__`).
+
+### Workflow Discovery
+
+Workflow scripts are discovered from (first match wins):
+1. `workflow_paths` in config.toml
+2. `.vibe/workflows/` in project roots
+3. `~/.vibe/workflows/` (user global)
+4. Bundled workflows shipped with the CLI
+
+Discovered workflows are registered as `/<name>` slash commands. Custom
+workflows override bundled ones on name collision.
+
+### Bundled Workflows
+
+- `/deep-research <question>` — fans out web searches across 5 angles, extracts
+  claims with structured output, verifies each claim via pipeline, synthesizes a
+  cited report from verified claims only.
+
+### Launching Workflows
+
+Three ways to launch:
+1. `/<workflow-name> [args]` — run a discovered workflow script
+2. `launch_workflow` tool — the model writes a script inline and launches it
+   (gated by ToolPermission.ASK, so the user approves)
+3. Le chaton effort mode — the model is instructed to write and launch workflows
+   for substantive tasks
+
+### Workflow Runner
+
+`/workflows` with no args opens a progress view (WorkflowsApp) showing a table
+of all runs with ID, status (color-coded), agent count, tokens, elapsed, and
+phases. Keys: `r` refresh, `s` stop first active run, `Esc` back.
+
+### Resumability
+
+Completed agent results are cached keyed on `sha256(agent:prompt)`. On resume,
+cached results are returned without re-running the agent. Snapshots are
+persisted to session metadata (`workflow_snapshots` field) for cross-session
+recovery. Only completed agents are cached; failed agents re-run on resume.
+
+### Budget
+
+The runtime uses pessimistic reservation: `reserve()` deducts an estimate at
+spawn time so runaway loops can't spawn past the floor. `reconcile()` releases
+the reservation and records actual spend. Overspend is discovered at completion,
+not prevented at spawn. `budget.total = None` means unlimited.
+
+### Concurrency
+
+Up to 16 concurrent agents (configurable), 1000 total per run. `parallel` and
+`pipeline` share the same semaphore as `spawn_agent`.
+
+## Effort Modes
+
+Effort mode controls how the agent approaches substantive tasks.
+
+- **normal** (default): work turn-by-turn as usual.
+- **le-chaton**: max thinking + automatic workflow planning. The system prompt
+  gains a section instructing the model to write workflow scripts for substantive
+  tasks (audits, migrations, multi-file refactors) instead of working
+  turn-by-turn.
+
+Select via `/effort` command or set `effort_mode = "le-chaton"` in config.toml.
+Typing "le chaton" or "lechaton" in a prompt triggers le chaton mode for that
+turn (keyword is stripped from the prompt text).
+
+When le chaton is active and workflows are not disabled, the `launch_workflow`
+tool becomes available and the system prompt includes workflow API documentation.
+
+`disable_workflows = true` disables all workflow features: `/workflows` is
+unavailable, workflow commands are not registered, le chaton mode cannot be
+activated, and the `launch_workflow` tool is hidden.
+
+## Agent Teams
+
+Agent teams coordinate multiple independent Vibe instances working together.
+Unlike subagents (which run in-memory within a single session) or workflows
+(which run as asyncio tasks on the same event loop), teammates are **separate
+OS processes** — each is a full `vibe -p` invocation with its own context window.
+
+### Architecture
+
+```
+Lead session (interactive vibe)
+  └── TeamManager
+       ├── TeamConfig (config.json, filelock-protected)
+       ├── TaskStore (tasks.json, filelock-protected)
+       └── Mailbox (mailbox/<recipient>/<msg>.json, per-inbox filelock)
+            │
+    ┌───────┼───────────┐
+    ▼       ▼           ▼
+ Teammate1  Teammate2  Teammate3
+ (vibe -p)  (vibe -p)  (vibe -p)
+```
+
+### Shared State
+
+- **TaskStore**: file-backed task list with file locking. Tasks have id,
+  description, status (pending/in_progress/completed/blocked), assignee, and
+  dependencies. Claim/complete operations enforce dependency ordering.
+- **Mailbox**: per-recipient inbox directories with JSON message files.
+  Teammates message each other directly without going through the lead.
+- **TeamConfig**: team metadata (members, status, PIDs) in config.json.
+
+### Team Management
+
+- `/team spawn <name> <prompt>` — spawn a teammate as `vibe -p` subprocess
+- `/team list` — show all teammates with name, status, PID
+- `/team stop <name|all>` — stop one or all teammates
+- `/team cleanup` — remove team directory
+
+Teammates are spawned with `VIBE_TEAM_NAME`, `VIBE_TEAM_DIR`, and
+`VIBE_TEAMMATE_NAME` env vars so they can access the shared state. The team
+directory (`~/.vibe/teams/<name>/`) is cleaned up on exit.
+
+### Hook Events
+
+Three hook event types fire for team lifecycle:
+- `TeammateIdle` — when a teammate finishes and goes idle
+- `TaskCreated` — when a task is created
+- `TaskCompleted` — when a task is marked complete
+
+## Structured Output
+
+The `response_format` parameter is threaded through all backend layers:
+`AgentLoop.act()` → `_chat()` → `backend.complete()` → `adapter.prepare_request()`.
+Supported by Mistral (native `json_schema` response format) and OpenAI-compatible
+backends. Anthropic/Vertex accept but ignore it (prompt fallback handles it).
+
+When a schema is set, the backend enforces JSON schema at the API level. The
+workflow runtime adds a second validation layer: parse the response as JSON,
+validate against the schema, retry on mismatch (up to 2 retries with the
+validation error fed back to the model).
+
 ## How to Modify Configuration
 
 To help the user modify their Vibe configuration:
@@ -729,7 +913,7 @@ LOAD when the user:
 - asks any meta question about your own behavior;
 - is unsure whether a command, flag, env var, or file is in scope — this skill is the source of truth.
 
-SCOPE: config under `~/.vibe/` and project-local `.vibe/`; `VIBE_*` and `LOG_*` env vars; models and providers; agents and subagents; skills; tools and their permission model; every slash command and CLI flag; hooks; MCP servers; connectors; trusted folders; `@`-file mentions; logs; themes; voice.""",
+SCOPE: config under `~/.vibe/` and project-local `.vibe/`; `VIBE_*` and `LOG_*` env vars; models and providers; agents and subagents; skills; tools and their permission model; every slash command and CLI flag; hooks; MCP servers; connectors; trusted folders; `@`-file mentions; logs; themes; voice; workflows and workflow scripts; effort modes (normal, le-chaton); agent teams; structured output.""",
     user_invocable=False,
     prompt=_PROMPT_TEMPLATE.replace("__VIBE_VERSION__", __version__),
 )
