@@ -2,7 +2,7 @@
 
 Conventions for AI agents and humans contributing to **Mistral Vibe** — a Python 3.12+ CLI coding assistant managed with `uv`.
 
-Layout: `vibe/core` is the engine (agent loop, tools, LLM backends, config); `vibe/cli` is the Textual TUI; `vibe/acp` bridges to the Agent Client Protocol; `vibe/setup` runs first-run wizards. Tests live in `tests/` with autouse fixtures in `conftest.py` and test doubles in `tests/stubs/`.
+Layout: `vibe/core` is the engine (agent loop, tools, LLM backends, config, workflows, teams); `vibe/cli` is the Textual TUI; `vibe/acp` bridges to the Agent Client Protocol; `vibe/setup` runs first-run wizards. Tests live in `tests/` with autouse fixtures in `conftest.py` and test doubles in `tests/stubs/`.
 
 ## Commands
 
@@ -100,6 +100,15 @@ Always go through `uv` — never invoke bare `python` or `pip`.
 
 In Cursor / Pyright, the "Add import" quick fix is missing — use the workspace snippets `acpschema`, `acphelpers`, `vibetypes`, `vibeconfig` to insert the import line, then rename the symbol.
 
+## Workflows & Teams
+
+- `vibe/core/workflows/` contains the workflow runtime: models, budget, schema validator, AST security, runtime (spawn_agent/parallel/pipeline), and manager (discovery).
+- `vibe/core/teams/` contains agent teams: TaskStore (file-backed), Mailbox (file-backed), TeamManager (subprocess spawning), and models.
+- `vibe/core/workflows/bundled/` contains shipped workflow scripts. These have YAML frontmatter and are excluded from ruff/pyright (they're not standard Python).
+- Workflow scripts run in a restricted namespace with safelisted builtins. The AST validator (`security.py`) blocks unsafe imports, dangerous calls, dunder access, and `str.format` (escape vector). Do not weaken the validator without adding equivalent protection.
+- The `launch_workflow` tool (`vibe/core/tools/builtins/launch_workflow.py`) is conditionally available via `is_available(config)` — hidden when `disable_workflows = true`.
+- Team teammates are spawned as `vibe -p` subprocesses, not in-memory. Shared state uses `filelock` (already a transitive dependency). Do not add in-process locking alternatives.
+- Hook events `TeammateIdle`, `TaskCreated`, `TaskCompleted` are defined in `vibe/core/hooks/models.py` and constructed via `build_invocation()`.
 
 ## Autoimprovement
 
