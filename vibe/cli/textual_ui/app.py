@@ -197,13 +197,13 @@ from vibe.core.teleport.types import (
     TeleportPushResponseEvent,
     TeleportStartingWorkflowEvent,
 )
+from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.builtins.ask_user_question import (
     AskUserQuestionArgs,
     AskUserQuestionResult,
     Choice,
     Question,
 )
-from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.connectors import compute_connector_counts
 from vibe.core.tools.mcp_settings import persist_mcp_toggle
 from vibe.core.tools.permissions import RequiredPermission
@@ -504,6 +504,7 @@ class VibeApp(App):  # noqa: PLR0904
         )
         self._workflow_manager = WorkflowManager(lambda: self.agent_loop.config)
         self._register_workflow_commands()
+        self.agent_loop.launch_workflow_callback = self._launch_workflow_from_tool
 
     def _configure_startup_options(self, startup: StartupOptions | None) -> None:
         opts = startup or StartupOptions()
@@ -2708,6 +2709,11 @@ class VibeApp(App):  # noqa: PLR0904
                     handler="_run_workflow_command",
                 ),
             )
+
+    def _launch_workflow_from_tool(self, script: str, name: str | None = None) -> str:
+        runtime = WorkflowRuntime()
+        run_id = self._workflow_runner.launch(script, runtime=runtime)
+        return run_id
 
     async def _run_workflow_command(self, cmd_args: str = "", **kwargs: Any) -> None:
         from vibe.cli.textual_ui.widgets.messages import (

@@ -60,6 +60,9 @@ class InvokeContext:
     hook_config_result: HookConfigResult | None = field(default=None)
     session_id: str | None = field(default=None)
     terminal_emulator: TerminalEmulator | None = field(default=None)
+    launch_workflow_callback: Callable[[str, str | None], str] | None = field(
+        default=None
+    )
 
 
 class ToolError(Exception):

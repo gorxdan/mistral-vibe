@@ -375,6 +375,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._is_user_prompt_call: bool = False
         self._pending_injected_messages: list[LLMMessage] = []
         self._response_format: dict[str, Any] | None = None
+        self.launch_workflow_callback: Callable[[str, str | None], str] | None = None
 
         self.experiment_manager = ExperimentManager(
             client=RemoteEvalClient.from_settings(
@@ -1371,6 +1372,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 hook_config_result=self._hook_config_result,
                 session_id=self.session_id,
                 terminal_emulator=self.terminal_emulator,
+                launch_workflow_callback=self.launch_workflow_callback,
             ),
             **tool_call.args_dict,
         ):
