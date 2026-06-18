@@ -461,6 +461,30 @@ class TestSessionLoaderFindSessionById:
         assert result is not None
         assert result == session_2
 
+    def test_find_session_by_id_ambiguous_partial_prefix_warns(
+        self, session_config: SessionLoggingConfig, create_test_session, caplog
+    ) -> None:
+        """F2: a partial id that matches several DISTINCT sessions resolves to
+        the most recent, but must surface a warning instead of doing it silently."""
+        import logging
+
+        session_dir = Path(session_config.save_dir)
+        create_test_session(session_dir, "abcd1111")
+        time.sleep(0.01)
+        recent = create_test_session(session_dir, "abcd1999")
+
+        # The shared "abcd1" prefix matches two distinct sessions.
+        assert (
+            len(SessionLoader._find_session_dirs_by_short_id("abcd1", session_config))
+            == 2
+        )
+
+        with caplog.at_level(logging.WARNING, logger="vibe"):
+            result = SessionLoader.find_session_by_id("abcd1", session_config)
+
+        assert result == recent  # most recent still wins
+        assert any("ambiguous" in r.getMessage() for r in caplog.records)
+
     def test_find_session_by_id_filters_by_working_directory(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:

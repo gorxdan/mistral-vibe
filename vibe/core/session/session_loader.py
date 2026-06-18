@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from vibe.core.logger import logger
 from vibe.core.session.session_id import shorten_session_id
 from vibe.core.types import LLMMessage, SessionMetadata
 from vibe.core.utils.io import read_safe
@@ -128,6 +129,16 @@ class SessionLoader:
         working_directory: Path | None = None,
     ) -> Path | None:
         matches = SessionLoader._find_session_dirs_by_short_id(session_id, config)
+        if len(matches) > 1:
+            # The short-id glob uses a trailing wildcard, so a partial id can
+            # match several distinct sessions. Surface the ambiguity instead of
+            # silently resolving it; latest_session still returns the most recent.
+            logger.warning(
+                "Session id %r is ambiguous: %d sessions match; resuming the most "
+                "recent. Use a longer id to disambiguate.",
+                session_id,
+                len(matches),
+            )
 
         return SessionLoader.latest_session(
             matches, working_directory=working_directory
