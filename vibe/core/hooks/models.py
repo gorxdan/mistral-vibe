@@ -21,6 +21,9 @@ class HookType(StrEnum):
     POST_AGENT_TURN = auto()
     BEFORE_TOOL = auto()
     AFTER_TOOL = auto()
+    TEAMMATE_IDLE = auto()
+    TASK_CREATED = auto()
+    TASK_COMPLETED = auto()
 
 
 ToolStatus = Literal["success", "failure", "cancelled"]
@@ -115,10 +118,37 @@ class AfterToolInvocation(HookSessionContext):
     duration_ms: float
 
 
-HookInvocation = PostAgentTurnInvocation | BeforeToolInvocation | AfterToolInvocation
+class TeammateIdleInvocation(HookSessionContext):
+    hook_event_name: Literal[HookType.TEAMMATE_IDLE] = HookType.TEAMMATE_IDLE
+    teammate_name: str
+    teammate_session_id: str | None = None
 
 
-def build_invocation(
+class TaskCreatedInvocation(HookSessionContext):
+    hook_event_name: Literal[HookType.TASK_CREATED] = HookType.TASK_CREATED
+    task_id: str
+    task_description: str
+    assignee: str | None = None
+
+
+class TaskCompletedInvocation(HookSessionContext):
+    hook_event_name: Literal[HookType.TASK_COMPLETED] = HookType.TASK_COMPLETED
+    task_id: str
+    teammate_name: str
+    result: str | None = None
+
+
+HookInvocation = (
+    PostAgentTurnInvocation
+    | BeforeToolInvocation
+    | AfterToolInvocation
+    | TeammateIdleInvocation
+    | TaskCreatedInvocation
+    | TaskCompletedInvocation
+)
+
+
+def build_invocation(  # noqa: PLR0913
     hook_type: HookType,
     ctx: HookSessionContext,
     *,
@@ -130,6 +160,12 @@ def build_invocation(
     tool_output_text: str = "",
     tool_error: str | None = None,
     duration_ms: float = 0.0,
+    teammate_name: str | None = None,
+    teammate_session_id: str | None = None,
+    task_id: str | None = None,
+    task_description: str | None = None,
+    assignee: str | None = None,
+    result: str | None = None,
 ) -> HookInvocation:
     """Build the right HookInvocation subclass for *hook_type*."""
     base = ctx.model_dump()
@@ -163,6 +199,33 @@ def build_invocation(
                 tool_output_text=tool_output_text,
                 tool_error=tool_error,
                 duration_ms=duration_ms,
+            )
+        case HookType.TEAMMATE_IDLE:
+            if teammate_name is None:
+                raise ValueError("teammate_name is required for teammate_idle hooks")
+            return TeammateIdleInvocation(
+                **base,
+                teammate_name=teammate_name,
+                teammate_session_id=teammate_session_id,
+            )
+        case HookType.TASK_CREATED:
+            if task_id is None or task_description is None:
+                raise ValueError(
+                    "task_id and task_description are required for task_created hooks"
+                )
+            return TaskCreatedInvocation(
+                **base,
+                task_id=task_id,
+                task_description=task_description,
+                assignee=assignee,
+            )
+        case HookType.TASK_COMPLETED:
+            if task_id is None or teammate_name is None:
+                raise ValueError(
+                    "task_id and teammate_name are required for task_completed hooks"
+                )
+            return TaskCompletedInvocation(
+                **base, task_id=task_id, teammate_name=teammate_name, result=result
             )
         case _:
             assert_never(hook_type)

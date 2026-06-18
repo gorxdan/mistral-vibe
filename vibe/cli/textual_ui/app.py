@@ -189,6 +189,7 @@ from vibe.core.session.saved_sessions import (
 from vibe.core.session.session_loader import SessionLoader
 from vibe.core.session.title_format import format_session_title
 from vibe.core.skills.manager import SkillManager
+from vibe.core.teams.manager import TeamManager
 from vibe.core.teleport.telemetry import send_teleport_early_failure_telemetry
 from vibe.core.teleport.types import (
     TeleportCheckingGitEvent,
@@ -228,7 +229,6 @@ from vibe.core.utils import (
     get_user_cancellation_message,
     is_dangerous_directory,
 )
-from vibe.core.teams.manager import TeamManager
 from vibe.core.workflows.manager import WorkflowManager
 from vibe.core.workflows.runtime import WorkflowError, WorkflowRuntime
 
@@ -2701,6 +2701,86 @@ class VibeApp(App):  # noqa: PLR0904
                 return
             await self._switch_to_workflows_app()
 
+    async def _team_command(self, cmd_args: str = "", **kwargs: Any) -> None:  # noqa: PLR0912, PLR2004
+        from vibe.cli.textual_ui.widgets.messages import (
+            ErrorMessage,
+            UserCommandMessage,
+        )
+
+        cmd_args = cmd_args.strip()
+        if not cmd_args or cmd_args in {"list", "ls"}:
+            if self._team_manager is None:
+                await self._mount_and_scroll(UserCommandMessage("No team active."))
+                return
+            members = self._team_manager.get_members()
+            if not members:
+                await self._mount_and_scroll(UserCommandMessage("No teammates."))
+                return
+            rows = ["| Name | Status | PID |", "|------|--------|-----|"]
+            for m in members:
+                rows.append(f"| {m.name} | {m.status} | {m.pid or '-'} |")
+            await self._mount_and_scroll(UserCommandMessage("\n".join(rows)))
+            return
+
+        parts = cmd_args.split(None, 2)
+        verb = parts[0].lower()
+
+        match verb:
+            case "spawn":
+                if len(parts) < 3:
+                    await self._mount_and_scroll(
+                        ErrorMessage("Usage: /team spawn <name> <prompt>")
+                    )
+                    return
+                name = parts[1]
+                prompt = parts[2]
+                if self._team_manager is None:
+                    self._team_manager = TeamManager(self.agent_loop.session_id)
+                await self._team_manager.spawn_teammate(name, prompt)
+                await self._mount_and_scroll(
+                    UserCommandMessage(f"Spawned teammate `{name}`.")
+                )
+
+            case "stop" | "cancel" | "kill":
+                if self._team_manager is None:
+                    await self._mount_and_scroll(UserCommandMessage("No team active."))
+                    return
+                if len(parts) < 2:
+                    await self._mount_and_scroll(
+                        ErrorMessage("Usage: /team stop <name|all>")
+                    )
+                    return
+                target = parts[1]
+                if target == "all":
+                    await self._team_manager.stop_all()
+                    await self._mount_and_scroll(
+                        UserCommandMessage("Stopped all teammates.")
+                    )
+                else:
+                    stopped = await self._team_manager.stop_teammate(target)
+                    if stopped:
+                        await self._mount_and_scroll(
+                            UserCommandMessage(f"Stopped teammate `{target}`.")
+                        )
+                    else:
+                        await self._mount_and_scroll(
+                            ErrorMessage(f"Could not stop `{target}`.")
+                        )
+
+            case "cleanup":
+                if self._team_manager is not None:
+                    self._team_manager.cleanup()
+                    self._team_manager = None
+                    await self._mount_and_scroll(UserCommandMessage("Team cleaned up."))
+
+            case _:
+                await self._mount_and_scroll(
+                    ErrorMessage(
+                        f"Unknown /team subcommand: `{verb}`.\n"
+                        "Usage: /team [list|spawn <name> <prompt>|stop <name|all>|cleanup]"
+                    )
+                )
+
     async def _switch_to_workflows_app(self) -> None:
         await self._switch_from_input(WorkflowsApp(runs=self._workflow_runner.runs))
 
@@ -2913,7 +2993,7 @@ class VibeApp(App):  # noqa: PLR0904
             await self._mount_and_scroll(
                 UserCommandMessage(
                     "No worktree is active. Relaunch with `--worktree` to enable "
-                    "isolation, or set `worktree.mode = \"on\"` in config."
+                    'isolation, or set `worktree.mode = "on"` in config.'
                 )
             )
             return
@@ -2938,9 +3018,7 @@ class VibeApp(App):  # noqa: PLR0904
             from git import Repo
 
             root_repo = Repo(str(wt.original_repo_root))
-            diff_output = root_repo.git.diff(
-                wt.create_head_sha, wt.branch, "--stat"
-            )
+            diff_output = root_repo.git.diff(wt.create_head_sha, wt.branch, "--stat")
             await self._mount_and_scroll(
                 UserCommandMessage(
                     f"**Diff** (original HEAD..worktree branch)\n```\n{diff_output or '(no changes)'}\n```"
@@ -2968,6 +3046,10 @@ class VibeApp(App):  # noqa: PLR0904
         self._emit_session_closed_for_active_session()
         await self._loop_runner.stop()
         await self._workflow_runner.stop_all()
+        if self._team_manager is not None:
+            await self._team_manager.stop_all()
+            self._team_manager.cleanup()
+            self._team_manager = None
         self._log_reader.shutdown()
         await self._voice_manager.close()
         await self._narrator_manager.close()

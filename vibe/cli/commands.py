@@ -244,11 +244,11 @@ class CommandRegistry:
 
     def register_dynamic(self, name: str, command: Command) -> bool:
         """Register a discovered command. Refuses to shadow a builtin slash
-        command; returns True if registered, False if skipped."""
+        command; returns True if registered, False if skipped.
+        """
         if name in self._build_commands():
             logger.warning(
-                "Workflow command '/%s' collides with a builtin command; skipping",
-                name,
+                "Workflow command '/%s' collides with a builtin command; skipping", name
             )
             return False
         self._dynamic_commands[name] = command
