@@ -50,8 +50,8 @@ class WorkflowError(Exception):
     pass
 
 
-def _prompt_hash(prompt: str, agent: str) -> str:
-    return hashlib.sha256(f"{agent}:{prompt}".encode()).hexdigest()[:16]
+def _prompt_hash(prompt: str, agent: str, phase: str | None = None) -> str:
+    return hashlib.sha256(f"{agent}:{phase}:{prompt}".encode()).hexdigest()[:16]
 
 
 class AgentLoopFactory(Protocol):
@@ -113,7 +113,7 @@ class WorkflowRuntime:
         schema: dict | None = None,
         budget_estimate: int | None = None,
     ) -> str | dict[str, Any]:
-        cache_key = _prompt_hash(prompt, agent)
+        cache_key = _prompt_hash(prompt, agent, phase)
         if cached := self._cache.get(cache_key):
             self._log(f"cache hit: {label or agent}")
             self._record_cached_result(cached)
@@ -165,7 +165,7 @@ class WorkflowRuntime:
 
         for attempt in range(self.schema_retries + 1):
             accumulated = []
-            loop = self._create_loop(effective_prompt, agent=agent)
+            loop = self._create_loop(effective_prompt, agent=agent, model=model)
 
             try:
                 async with aclosing(
@@ -198,6 +198,7 @@ class WorkflowRuntime:
                     error=error_msg,
                     cache_key=cache_key,
                     agent=agent,
+                    model=model,
                 )
                 return response_text
 
@@ -220,6 +221,7 @@ class WorkflowRuntime:
                         error=error_msg,
                         cache_key=cache_key,
                         agent=agent,
+                        model=model,
                     )
                     return parsed
                 last_errors = [str(e) for e in errors]
@@ -246,29 +248,48 @@ class WorkflowRuntime:
             error=f"Schema validation failed after {self.schema_retries + 1} attempts",
             cache_key=cache_key,
             agent=agent,
+            model=model,
         )
         raise SchemaValidationError(
             f"Response did not match schema after {self.schema_retries + 1} attempts. "
             f"Last errors: {'; '.join(last_errors)}"
         )
 
-    def _create_loop(self, prompt: str, *, agent: str) -> AgentLoop:
+    def _create_loop(self, prompt: str, *, agent: str, model: str | None = None) -> AgentLoop:
         if self.agent_loop_factory is not None:
             return self.agent_loop_factory(
                 prompt, agent=agent, parent_context=self.parent_context
             )
-        return self._create_real_loop(agent=agent)
+        return self._create_real_loop(agent=agent, model=model)
 
-    def _create_real_loop(self, *, agent: str) -> AgentLoop:
+    def _create_real_loop(self, *, agent: str, model: str | None = None) -> AgentLoop:
         from vibe.core.agent_loop import AgentLoop as _AgentLoop
         from vibe.core.config import SessionLoggingConfig, VibeConfig
 
-        base_config = VibeConfig.load(
-            session_logging=SessionLoggingConfig(
-                save_dir="", session_prefix=agent, enabled=False
-            )
-        )
         ctx = self.parent_context
+
+        if ctx and ctx.agent_manager:
+            try:
+                profile = ctx.agent_manager.get_agent(agent)
+            except ValueError as e:
+                raise WorkflowError(f"Unknown agent: {agent}") from e
+            from vibe.core.agents.models import AgentType
+
+            if profile.agent_type != AgentType.SUBAGENT:
+                raise WorkflowError(
+                    f"Agent '{agent}' is a {profile.agent_type.value} agent. "
+                    f"Only subagents can be used in workflows."
+                )
+
+        session_logging = SessionLoggingConfig(
+            save_dir=str(ctx.session_dir / "agents") if ctx and ctx.session_dir else "",
+            session_prefix=agent,
+            enabled=ctx is not None and ctx.session_dir is not None,
+        )
+        overrides: dict[str, Any] = {}
+        if model:
+            overrides["active_model"] = model
+        base_config = VibeConfig.load(session_logging=session_logging, **overrides)
         loop = _AgentLoop(
             config=base_config,
             agent_name=agent,
@@ -292,6 +313,19 @@ class WorkflowRuntime:
             return content
         return None
 
+    def _compute_cost(self, tokens_in: int, tokens_out: int, model: str | None) -> float:
+        ctx = self.parent_context
+        if not ctx or not ctx.agent_manager:
+            return 0.0
+        config = ctx.agent_manager.config
+        target_alias = model or config.active_model
+        for m in config.models:
+            if m.alias == target_alias:
+                return (tokens_in / 1_000_000) * m.input_price + (
+                    tokens_out / 1_000_000
+                ) * m.output_price
+        return 0.0
+
     def _finalize_agent(  # noqa: PLR0913
         self,
         *,
@@ -306,9 +340,11 @@ class WorkflowRuntime:
         error: str | None,
         cache_key: str,
         agent: str,
+        model: str | None = None,
     ) -> None:
         self._budget.reconcile(reservation, tokens_in, tokens_out)
 
+        cost = self._compute_cost(tokens_in, tokens_out, model)
         result = AgentResult(
             label=label,
             phase=phase,
@@ -316,7 +352,7 @@ class WorkflowRuntime:
             response=response,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
-            cost=0.0,
+            cost=cost,
             completed=completed,
             error=error,
         )
