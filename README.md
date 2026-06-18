@@ -86,6 +86,11 @@ pip install mistral-vibe
   - [Session Management](#session-management)
   - [Update Settings](#update-settings)
   - [Custom Vibe Home Directory](#custom-vibe-home-directory)
+- [Workflows](#workflows)
+  - [Workflow Scripts](#workflow-scripts)
+  - [Bundled Workflows](#bundled-workflows)
+  - [Effort Modes](#effort-modes)
+- [Agent Teams](#agent-teams)
 - [Editors/IDEs](#editorsides)
 - [Resources](#resources)
 - [Data collection & usage](#data-collection--usage)
@@ -110,6 +115,9 @@ pip install mistral-vibe
 - **Highly Configurable**: Customize models, providers, tool permissions, and UI preferences through a simple `config.toml` file.
 - **Safety First**: Features tool execution approval.
 - **Multiple Built-in Agents**: Choose from different agent profiles tailored for specific workflows.
+- **Workflow Orchestration**: Write Python scripts that orchestrate parallel agents for codebase audits, migrations, and cross-checked research. Run bundled workflows like `/deep-research` or create your own.
+- **Effort Modes**: Switch between `normal` (turn-by-turn) and `le chaton` (max thinking + automatic workflow planning) via `/effort`.
+- **Agent Teams**: Coordinate multiple independent Vibe instances working together as teammates, communicating via file-backed shared state.
 
 ### Built-in Agents
 
@@ -327,6 +335,10 @@ Vibe provides several built-in slash commands. Use slash commands by typing them
 ```
 > /help
 ```
+
+Key commands include `/model`, `/thinking`, `/effort`, `/config`, `/workflows`,
+`/team`, `/deep-research`, `/loop`, `/rewind`, `/resume`, and `/exit`. Run
+`/help` in-session for the full list.
 
 ### Custom Slash Commands via Skills
 
@@ -869,7 +881,78 @@ This affects where Vibe looks for:
 - `agents/` - Custom agent configurations
 - `prompts/` - Custom system and compaction prompts
 - `tools/` - Custom tools
+- `workflows/` - Custom workflow scripts
 - `logs/` - Session logs
+
+## Workflows
+
+Workflows are Python scripts that orchestrate parallel agents. They run in the
+background as asyncio tasks, so the session stays responsive while agents work.
+
+### Workflow Scripts
+
+A workflow script is a `.py` file with an `async def main()` function. Optional
+YAML frontmatter (`name:`, `description:`) precedes the Python source. The
+runtime injects these functions:
+
+- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None)` — spawn a subagent
+- `parallel(*thunks)` — run thunks concurrently, results in order
+- `pipeline(items, fn)` — concurrent map over items, results in order
+- `phase(name)` — declare a phase for progress tracking
+- `log(msg)` — log a progress message
+- `budget` — token budget object with `.total` and `.remaining()`
+- `args` — structured input from the invocation command
+
+Scripts are validated via AST before execution (unsafe imports, dangerous calls,
+dunder access blocked). Discovered from `workflow_paths` config, `.vibe/workflows/`,
+`~/.vibe/workflows/`, and bundled workflows. Registered as `/<name>` slash commands.
+
+### Bundled Workflows
+
+- `/deep-research <question>` — fans out web searches across 5 angles, extracts
+  claims with structured output, verifies each claim, synthesizes a cited report.
+
+### Managing Workflow Runs
+
+- `/workflows` — open a progress view showing all runs with status, agents, tokens, elapsed
+- `/workflows list` — list runs as text
+- `/workflows stop <id|all>` — stop one or all runs
+- `/workflows snapshot <id>` — show cached results for a run
+
+Completed agent results are cached for resumability. Snapshots persist to session
+metadata for cross-session recovery.
+
+### Effort Modes
+
+- **normal** (default): work turn-by-turn.
+- **le-chaton**: max thinking + automatic workflow planning. The system prompt
+  instructs the model to write workflow scripts for substantive tasks.
+
+Select via `/effort` or set `effort_mode = "le-chaton"` in config.toml. Typing
+"le chaton" in a prompt triggers it for that turn. Disable all workflow features
+with `disable_workflows = true`.
+
+## Agent Teams
+
+Agent teams coordinate multiple independent Vibe instances. Unlike subagents
+(in-memory, same session) or workflows (asyncio tasks, same event loop),
+teammates are **separate OS processes** — each is a full `vibe -p` invocation.
+
+### Team Commands
+
+- `/team spawn <name> <prompt>` — spawn a teammate as a separate process
+- `/team list` — show teammates with name, status, PID
+- `/team stop <name|all>` — stop one or all teammates
+- `/team cleanup` — remove team directory
+
+### Shared State
+
+Teammates coordinate via file-backed shared state with file locking:
+- **TaskStore**: shared task list with dependencies and claim/complete operations
+- **Mailbox**: per-recipient inbox for inter-agent messaging
+- **TeamConfig**: team metadata (members, status, PIDs)
+
+Team directories live under `~/.vibe/teams/<name>/` and are cleaned up on exit.
 
 ## Editors/IDEs
 
