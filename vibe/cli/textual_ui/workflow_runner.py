@@ -120,12 +120,7 @@ class WorkflowRunner:
             runtime=runtime,
         )
 
-        events: list[str] = []
-
-        def event_sink(msg: str) -> None:
-            events.append(msg)
-
-        runtime.set_event_sink(event_sink)
+        runtime.set_event_sink(self._make_event_sink(run_id))
 
         entry.task = asyncio.create_task(self._run_workflow(entry, args))
         self._runs.append(entry)
@@ -169,13 +164,17 @@ class WorkflowRunner:
             runtime=runtime,
         )
 
-        def event_sink(msg: str) -> None:
-            pass
-
-        runtime.set_event_sink(event_sink)
+        runtime.set_event_sink(self._make_event_sink(new_id))
         entry.task = asyncio.create_task(self._run_workflow(entry, snapshot.args))
         self._runs.append(entry)
         return new_id
+
+    @staticmethod
+    def _make_event_sink(run_id: str) -> Callable[[str], None]:
+        def sink(msg: str) -> None:
+            logger.info("workflow %s: %s", run_id, msg)
+
+        return sink
 
     async def stop(self, run_id: str) -> bool:
         entry = self._find_run(run_id)

@@ -179,7 +179,8 @@ class CommandRegistry:
                 aliases=frozenset(["/workflows"]),
                 description=(
                     "Manage workflow runs. "
-                    "Use `/workflows list` or `/workflows stop <id|all>`"
+                    "Use `/workflows list`, `/workflows stop <id|all>`, "
+                    "or `/workflows snapshot <id>`"
                 ),
                 handler="_workflows_command",
             ),
