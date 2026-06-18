@@ -731,7 +731,8 @@ class VibeAcpAgentLoop(AcpAgent):
             session.agent_loop.agent_profile.name,
         )
         models_state, models_config = build_model_state(
-            session.agent_loop.config.models, session.agent_loop.config.active_model
+            session.agent_loop.config.available_models,
+            session.agent_loop.config.active_model,
         )
         return modes_state, modes_config, models_state, models_config
 
@@ -2001,7 +2002,8 @@ class VibeAcpAgentLoop(AcpAgent):
             profiles, session.agent_loop.agent_profile.name
         )
         _, models_config = build_model_state(
-            session.agent_loop.config.models, session.agent_loop.config.active_model
+            session.agent_loop.config.available_models,
+            session.agent_loop.config.active_model,
         )
         thinking_config = make_thinking_response(
             session.agent_loop.config.get_active_model().thinking

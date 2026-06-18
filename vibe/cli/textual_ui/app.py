@@ -229,7 +229,7 @@ from vibe.core.utils import (
     is_dangerous_directory,
 )
 from vibe.core.workflows.manager import WorkflowManager
-from vibe.core.workflows.runtime import WorkflowRuntime
+from vibe.core.workflows.runtime import WorkflowError, WorkflowRuntime
 
 _VSCODE_FAMILY_TERMINALS = {Terminal.VSCODE, Terminal.VSCODE_INSIDERS, Terminal.CURSOR}
 
@@ -2559,6 +2559,12 @@ class VibeApp(App):  # noqa: PLR0904
             await self._resolve_plan()
             self._narrator_manager.sync()
 
+            # Re-discover workflows so new/changed/removed scripts (and the
+            # disable_workflows flag) take effect without a restart.
+            self._workflow_manager = WorkflowManager(lambda: self.agent_loop.config)
+            self.commands.clear_dynamic()
+            self._register_workflow_commands()
+
             if self._banner:
                 cc, ct = compute_connector_counts(
                     base_config, self.agent_loop.connector_registry
@@ -2678,6 +2684,13 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(widget)
 
     async def _workflows_command(self, cmd_args: str = "", **kwargs: Any) -> None:
+        if self.config.disable_workflows:
+            from vibe.cli.textual_ui.widgets.messages import ErrorMessage
+
+            await self._mount_and_scroll(
+                ErrorMessage("Workflows are disabled in this configuration.")
+            )
+            return
         if cmd_args.strip():
             widget = await self._workflow_runner.handle_command(cmd_args)
             await self._mount_and_scroll(widget)
@@ -2705,6 +2718,9 @@ class VibeApp(App):  # noqa: PLR0904
         await self._switch_to_input_app()
 
     def _register_workflow_commands(self) -> None:
+        if self.config.disable_workflows:
+            return
+
         from vibe.cli.commands import Command
 
         for name, info in self._workflow_manager.workflows.items():
@@ -2718,6 +2734,8 @@ class VibeApp(App):  # noqa: PLR0904
             )
 
     def _launch_workflow_from_tool(self, script: str, name: str | None = None) -> str:
+        if self.config.disable_workflows:
+            raise WorkflowError("Workflows are disabled in this configuration.")
         runtime = WorkflowRuntime()
         run_id = self._workflow_runner.launch(script, runtime=runtime)
         return run_id
@@ -2727,6 +2745,12 @@ class VibeApp(App):  # noqa: PLR0904
             ErrorMessage,
             UserCommandMessage,
         )
+
+        if self.config.disable_workflows:
+            await self._mount_and_scroll(
+                ErrorMessage("Workflows are disabled in this configuration.")
+            )
+            return
 
         cmd_name = kwargs.get("_cmd_name", "")
         if not cmd_name:
@@ -2769,10 +2793,20 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
     async def _on_workflow_complete(self, result: Any) -> None:
-        from vibe.cli.textual_ui.widgets.messages import UserCommandMessage
+        from vibe.cli.textual_ui.widgets.messages import (
+            ErrorMessage,
+            UserCommandMessage,
+        )
+        from vibe.core.workflows.models import WorkflowStatus
 
         summary = result.summary
-        await self._mount_and_scroll(UserCommandMessage(summary))
+        # A failed run returns a WorkflowResult with FAILED status (the script
+        # exception is swallowed in WorkflowRuntime.run); surface it as an error
+        # rather than styling it as a successful completion.
+        if getattr(result.run, "status", None) == WorkflowStatus.FAILED:
+            await self._mount_and_scroll(ErrorMessage(summary))
+        else:
+            await self._mount_and_scroll(UserCommandMessage(summary))
 
     async def _persist_workflow_snapshots(self) -> None:
         snapshots: list[dict[str, Any]] = []

@@ -628,7 +628,7 @@ class VibeConfig(BaseSettings):
     applied_migrations: list[str] = Field(default_factory=list, exclude=True)
     system_prompt_id: str = SystemPrompt.CLI
     compaction_prompt_id: str = UtilityPrompt.COMPACT
-    include_commit_signature: bool = True
+    include_commit_signature: bool = False
     include_model_info: bool = True
     include_project_context: bool = True
     include_prompt_detail: bool = True
@@ -899,6 +899,22 @@ class VibeConfig(BaseSettings):
         raise ValueError(
             f"Provider '{model.provider}' for model '{model.name}' not found in configuration."
         )
+
+    def is_provider_available(self, provider: ProviderConfig) -> bool:
+        if not provider.api_key_env_var:
+            return True
+        return bool(os.getenv(provider.api_key_env_var))
+
+    def is_model_available(self, model: ModelConfig) -> bool:
+        try:
+            provider = self.get_provider_for_model(model)
+        except ValueError:
+            return False
+        return self.is_provider_available(provider)
+
+    @property
+    def available_models(self) -> list[ModelConfig]:
+        return [m for m in self.models if self.is_model_available(m)]
 
     def get_active_provider(self) -> ProviderConfig:
         return self.get_provider_for_model(self.get_active_model())
