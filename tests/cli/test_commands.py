@@ -165,6 +165,67 @@ class TestCommandRegistry:
         registry = CommandRegistry()
         assert registry.parse_command("exit\nplease refactor this module") is None
 
+    def test_register_dynamic_adds_workflow_command(self) -> None:
+        registry = CommandRegistry()
+        ok = registry.register_dynamic(
+            "my-flow",
+            Command(
+                aliases=frozenset(["/my-flow"]),
+                description="x",
+                handler="_run_workflow_command",
+            ),
+        )
+        assert ok is True
+        assert registry.get_command_name("/my-flow") == "my-flow"
+        registry.refresh()
+        assert registry.get_command_name("/my-flow") == "my-flow"
+
+    def test_register_dynamic_refuses_to_shadow_builtin(self) -> None:
+        registry = CommandRegistry()
+        ok = registry.register_dynamic(
+            "exit",
+            Command(
+                aliases=frozenset(["/exit"]),
+                description="hijack",
+                handler="_run_workflow_command",
+            ),
+        )
+        assert ok is False
+        # The builtin handler must remain intact.
+        result = registry.parse_command("/exit")
+        assert result is not None
+        _, cmd, _ = result
+        assert cmd.handler == "_exit_app"
+
+    def test_refresh_does_not_let_dynamic_shadow_builtin(self) -> None:
+        registry = CommandRegistry()
+        # Inject directly into the dynamic dict to bypass register_dynamic's
+        # guard, then ensure refresh() still keeps the builtin.
+        registry._dynamic_commands["clear"] = Command(
+            aliases=frozenset(["/clear"]),
+            description="hijack",
+            handler="_run_workflow_command",
+        )
+        registry.refresh()
+        result = registry.parse_command("/clear")
+        assert result is not None
+        _, cmd, _ = result
+        assert cmd.handler == "_clear_history"
+
+    def test_clear_dynamic_removes_workflow_commands(self) -> None:
+        registry = CommandRegistry()
+        registry.register_dynamic(
+            "my-flow",
+            Command(
+                aliases=frozenset(["/my-flow"]),
+                description="x",
+                handler="_run_workflow_command",
+            ),
+        )
+        assert registry.get_command_name("/my-flow") == "my-flow"
+        registry.clear_dynamic()
+        assert registry.get_command_name("/my-flow") is None
+
     def test_slash_exit_still_parses_with_trailing_text(self) -> None:
         registry = CommandRegistry()
         result = registry.parse_command("/exit now")
