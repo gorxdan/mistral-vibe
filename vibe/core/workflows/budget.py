@@ -55,7 +55,8 @@ class Budget:
 
     def restore_spent(self, spent: int) -> None:
         """Restore prior spend when resuming from a snapshot, so the cap still
-        accounts for tokens already consumed in the paused run."""
+        accounts for tokens already consumed in the paused run.
+        """
         self._spent = spent
 
     def spent(self) -> int:

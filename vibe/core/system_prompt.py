@@ -330,7 +330,7 @@ def _get_headless_section() -> str:
     )
 
 
-def get_universal_system_prompt(  # noqa: PLR0912
+def get_universal_system_prompt(  # noqa: PLR0912, PLR0914, PLR0915
     tool_manager: ToolManager,
     config: VibeConfig,
     skill_manager: SkillManager,
