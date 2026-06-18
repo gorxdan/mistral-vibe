@@ -2916,10 +2916,22 @@ class VibeApp(App):  # noqa: PLR0904
             await self._handle_user_message(text)
             return
         previous_mode = self.config.effort_mode
+        # set_effort_mode("le-chaton") bumps the active model's thinking to
+        # "max"; capture the prior level so the turn-scoped switch is fully
+        # reversible. Docs say the keyword triggers le chaton "for that turn"
+        # -- without restoration it persisted permanently across sessions.
+        previous_thinking = self.config.get_active_model().thinking
         if previous_mode != "le-chaton":
             self.config.set_effort_mode("le-chaton")
             await self._reload_config()
-        await self._handle_user_message(text)
+        try:
+            await self._handle_user_message(text)
+        finally:
+            if previous_mode != "le-chaton":
+                self.config.set_effort_mode(previous_mode)
+                if self.config.get_active_model().thinking != previous_thinking:
+                    self.config.set_thinking(previous_thinking)
+                await self._reload_config()
 
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_running:
@@ -3053,14 +3065,26 @@ class VibeApp(App):  # noqa: PLR0904
                 )
             )
 
+    async def _stop_teams(self) -> None:
+        """Terminate and reap all spawned teammates, then drop the manager.
+
+        Shared by graceful exit and force-quit so trusted `vibe -p` teammate
+        subprocesses are never orphaned regardless of how the app exits.
+        """
+        if self._team_manager is not None:
+            try:
+                await self._team_manager.stop_all()
+                self._team_manager.cleanup()
+            except Exception as exc:
+                logger.error("Failed to stop teams during shutdown", exc_info=exc)
+            finally:
+                self._team_manager = None
+
     async def _exit_app(self, **kwargs: Any) -> None:
         self._emit_session_closed_for_active_session()
         await self._loop_runner.stop()
         await self._workflow_runner.stop_all()
-        if self._team_manager is not None:
-            await self._team_manager.stop_all()
-            self._team_manager.cleanup()
-            self._team_manager = None
+        await self._stop_teams()
         self._log_reader.shutdown()
         await self._voice_manager.close()
         await self._narrator_manager.close()
@@ -3847,6 +3871,10 @@ class VibeApp(App):  # noqa: PLR0904
         if self._bash_task and not self._bash_task.done():
             self._bash_task.cancel()
         self._remote_manager.cancel_stream_task()
+
+        # Reap trusted teammate subprocesses on force-quit too — otherwise the
+        # dominant TUI exit path orphans them (only graceful /exit cleaned up).
+        await self._stop_teams()
 
         self._log_reader.shutdown()
         self._narrator_manager.cancel()

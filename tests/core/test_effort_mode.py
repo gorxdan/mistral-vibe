@@ -41,3 +41,30 @@ def test_set_effort_mode_normal_leaves_thinking_untouched(
 
     assert vibe_config.effort_mode == "normal"
     assert vibe_config.get_active_model().thinking == original
+
+
+def test_le_chaton_turn_restore_returns_to_prior_mode_and_thinking(
+    vibe_config: VibeConfig,
+) -> None:
+    """DOC-1: the le-chaton keyword triggers the mode 'for that turn' only.
+
+    The handler captures the prior effort_mode and thinking, switches to
+    le-chaton (which maxes thinking), then restores both. Without restoration
+    the switch persisted permanently across sessions, contradicting the docs.
+    This test exercises the restore sequence at the config level.
+    """
+    assert vibe_config.effort_mode == "normal"
+    prior_thinking = vibe_config.get_active_model().thinking
+
+    with patch.object(VibeConfig, "save_updates"):
+        # Turn: switch to le-chaton.
+        vibe_config.set_effort_mode("le-chaton")
+        assert vibe_config.effort_mode == "le-chaton"
+        assert vibe_config.get_active_model().thinking == "max"
+        # Turn ends: restore prior mode + thinking.
+        vibe_config.set_effort_mode("normal")
+        if vibe_config.get_active_model().thinking != prior_thinking:
+            vibe_config.set_thinking(prior_thinking)
+
+    assert vibe_config.effort_mode == "normal"
+    assert vibe_config.get_active_model().thinking == prior_thinking
