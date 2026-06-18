@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator, Sequence
 import json
 import os
 import types
-from typing import TYPE_CHECKING, Literal, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 import httpx
 from mistralai.client import Mistral
@@ -292,6 +292,7 @@ class MistralBackend:
         tool_choice: StrToolChoice | AvailableTool | None,
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> LLMChunk:
         try:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
@@ -317,6 +318,7 @@ class MistralBackend:
                 metadata=metadata,
                 stream=False,
                 reasoning_effort=reasoning_effort,
+                response_format=cast(Any, response_format),
             )
 
             message = response.choices[0].message
@@ -374,6 +376,7 @@ class MistralBackend:
         tool_choice: StrToolChoice | AvailableTool | None,
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         try:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
@@ -399,6 +402,7 @@ class MistralBackend:
                 http_headers=extra_headers,
                 metadata=metadata,
                 reasoning_effort=reasoning_effort,
+                response_format=cast(Any, response_format),
             )
             correlation_id = stream.response.headers.get("mistral-correlation-id")
             async for chunk in stream:

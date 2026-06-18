@@ -84,6 +84,7 @@ class FakeBackend:
         extra_headers,
         max_tokens,
         metadata=None,
+        response_format=None,
     ) -> LLMChunk:
         if self._exception_to_raise:
             raise self._exception_to_raise
@@ -112,6 +113,7 @@ class FakeBackend:
         extra_headers,
         max_tokens,
         metadata=None,
+        response_format=None,
     ) -> AsyncGenerator[LLMChunk]:
         if self._exception_to_raise:
             raise self._exception_to_raise

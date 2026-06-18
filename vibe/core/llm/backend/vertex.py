@@ -64,7 +64,7 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         super().__init__()
         self.credentials = VertexCredentials()
 
-    def prepare_request(
+    def prepare_request(  # noqa: PLR0913
         self,
         *,
         model_name: str,
@@ -77,6 +77,7 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         provider: ProviderConfig,
         api_key: str | None = None,
         thinking: str = "off",
+        response_format: dict[str, Any] | None = None,
     ) -> PreparedRequest:
         project_id = provider.project_id
         region = provider.region

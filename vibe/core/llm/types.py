@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 import types
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from vibe.core.types import AvailableTool, LLMChunk, LLMMessage, StrToolChoice
 
@@ -36,6 +36,7 @@ class BackendLike(Protocol):
         tool_choice: StrToolChoice | AvailableTool | None,
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> LLMChunk:
         """Complete a chat conversation using the specified model and provider.
 
@@ -48,6 +49,7 @@ class BackendLike(Protocol):
             tool_choice: How to choose tools (auto, none, or specific tool)
             extra_headers: Additional HTTP headers to include
             metadata: Optional metadata to attach to the request
+            response_format: Optional structured output schema
 
         Returns:
             LLMChunk containing the response message and usage information
@@ -71,6 +73,7 @@ class BackendLike(Protocol):
         tool_choice: StrToolChoice | AvailableTool | None,
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         """Equivalent of the complete method, but yields LLMEvent objects
         instead of a single LLMEvent.
@@ -84,6 +87,7 @@ class BackendLike(Protocol):
             tool_choice: How to choose tools (auto, none, or specific tool)
             extra_headers: Additional HTTP headers to include
             metadata: Optional metadata to attach to the request
+            response_format: Optional structured output schema
 
         Returns:
             AsyncGenerator[LLMEvent, None] yielding LLMEvent objects

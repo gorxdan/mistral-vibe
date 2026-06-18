@@ -91,6 +91,7 @@ class ReasoningAdapter(APIAdapter):
         max_tokens: int | None,
         tool_choice: StrToolChoice | AvailableTool | None,
         thinking: str,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model_name,
@@ -114,9 +115,12 @@ class ReasoningAdapter(APIAdapter):
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
 
+        if response_format is not None:
+            payload["response_format"] = response_format
+
         return payload
 
-    def prepare_request(
+    def prepare_request(  # noqa: PLR0913
         self,
         *,
         model_name: str,
@@ -129,6 +133,7 @@ class ReasoningAdapter(APIAdapter):
         provider: ProviderConfig,
         api_key: str | None = None,
         thinking: str = "off",
+        response_format: dict[str, Any] | None = None,
     ) -> PreparedRequest:
         converted_messages = [self._convert_message(msg) for msg in messages]
 
@@ -140,6 +145,7 @@ class ReasoningAdapter(APIAdapter):
             max_tokens=max_tokens,
             tool_choice=tool_choice,
             thinking=thinking,
+            response_format=response_format,
         )
 
         if enable_streaming:

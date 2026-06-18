@@ -452,7 +452,7 @@ class AnthropicAdapter(APIAdapter):
 
         return payload
 
-    def prepare_request(
+    def prepare_request(  # noqa: PLR0913
         self,
         *,
         model_name: str,
@@ -465,6 +465,7 @@ class AnthropicAdapter(APIAdapter):
         provider: ProviderConfig,
         api_key: str | None = None,
         thinking: str = "off",
+        response_format: dict[str, Any] | None = None,
     ) -> PreparedRequest:
         system_prompt, converted_messages = self._mapper.prepare_messages(messages)
         converted_tools = self._mapper.prepare_tools(tools)

@@ -499,6 +499,7 @@ class OpenAIResponsesAdapter(APIAdapter):
         tool_choice: StrToolChoice | AvailableTool | None,
         thinking: str,
         enable_streaming: bool,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model_name,
@@ -527,6 +528,9 @@ class OpenAIResponsesAdapter(APIAdapter):
         if max_tokens is not None:
             payload["max_output_tokens"] = max_tokens
 
+        if response_format is not None:
+            payload["text"] = {"format": response_format}
+
         if enable_streaming:
             payload["stream"] = True
 
@@ -538,7 +542,7 @@ class OpenAIResponsesAdapter(APIAdapter):
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
-    def prepare_request(
+    def prepare_request(  # noqa: PLR0913
         self,
         *,
         model_name: str,
@@ -551,6 +555,7 @@ class OpenAIResponsesAdapter(APIAdapter):
         provider: ProviderConfig,
         api_key: str | None = None,
         thinking: str = "off",
+        response_format: dict[str, Any] | None = None,
     ) -> PreparedRequest:
         input_items = self._convert_messages(messages)
 
@@ -563,6 +568,7 @@ class OpenAIResponsesAdapter(APIAdapter):
             tool_choice=tool_choice,
             thinking=thinking,
             enable_streaming=enable_streaming,
+            response_format=response_format,
         )
 
         headers = self.build_headers(api_key)

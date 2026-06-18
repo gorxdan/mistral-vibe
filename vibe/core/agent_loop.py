@@ -374,6 +374,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._current_user_message_id: str | None = None
         self._is_user_prompt_call: bool = False
         self._pending_injected_messages: list[LLMMessage] = []
+        self._response_format: dict[str, Any] | None = None
 
         self.experiment_manager = ExperimentManager(
             client=RemoteEvalClient.from_settings(
@@ -702,25 +703,30 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         *,
         auto_title: str | None = None,
         images: list[ImageAttachment] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> AsyncGenerator[BaseEvent, None]:
+        self._response_format = response_format
         try:
-            active_model = self.config.get_active_model()
-            model_name = active_model.name
-        except ValueError:
-            active_model = None
-            model_name = None
-        if images and active_model is not None and not active_model.supports_images:
-            raise ImagesNotSupportedError(active_model.alias)
-        self._clean_message_history()
-        self.rewind_manager.create_checkpoint()
-        async with agent_span(model=model_name, session_id=self.session_id):
-            async for event in self._conversation_loop(
-                msg,
-                client_message_id=client_message_id,
-                auto_title=auto_title,
-                images=images,
-            ):
-                yield event
+            try:
+                active_model = self.config.get_active_model()
+                model_name = active_model.name
+            except ValueError:
+                active_model = None
+                model_name = None
+            if images and active_model is not None and not active_model.supports_images:
+                raise ImagesNotSupportedError(active_model.alias)
+            self._clean_message_history()
+            self.rewind_manager.create_checkpoint()
+            async with agent_span(model=model_name, session_id=self.session_id):
+                async for event in self._conversation_loop(
+                    msg,
+                    client_message_id=client_message_id,
+                    auto_title=auto_title,
+                    images=images,
+                ):
+                    yield event
+        finally:
+            self._response_format = None
 
     @property
     def teleport_service(self) -> TeleportService:
@@ -1580,6 +1586,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 extra_headers=self._get_extra_headers(provider),
                 max_tokens=max_tokens,
                 metadata=backend_metadata.model_dump(exclude_none=True),
+                response_format=self._response_format,
             )
             end_time = time.perf_counter()
 
@@ -1656,6 +1663,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 extra_headers=self._get_extra_headers(),
                 max_tokens=max_tokens,
                 metadata=backend_metadata.model_dump(exclude_none=True),
+                response_format=self._response_format,
             ):
                 if chunk.correlation_id:
                     self.telemetry_client.last_correlation_id = chunk.correlation_id
