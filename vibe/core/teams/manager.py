@@ -31,6 +31,7 @@ class TeamManager:
         self._task_store: TaskStore | None = None
         self._mailbox: Mailbox | None = None
         self._teammate_tasks: dict[str, asyncio.Task[None]] = {}
+        self._teammate_procs: dict[str, asyncio.subprocess.Process] = {}
         self._init_config()
 
     @property
@@ -116,6 +117,7 @@ class TeamManager:
     async def _run_teammate(
         self, name: str, prompt: str, agent: str, max_turns: int
     ) -> None:
+        proc: asyncio.subprocess.Process | None = None
         try:
             cmd = [
                 sys.executable,
@@ -143,6 +145,7 @@ class TeamManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            self._teammate_procs[name] = proc
 
             self.update_member_status(name, f"running:pid={proc.pid}")
             config = self._load_config()
@@ -168,6 +171,33 @@ class TeamManager:
         except Exception as e:
             self.update_member_status(name, f"error:{e}")
             logger.error("Teammate %s error", name, exc_info=e)
+        finally:
+            # If the task is dying (cancel/stop) with the subprocess still
+            # running, signal it. stop_teammate reaps via _terminate_proc.
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+            self._teammate_procs.pop(name, None)
+
+    async def _terminate_proc(self, name: str) -> None:
+        """Terminate and reap a teammate subprocess if it is still running."""
+        proc = self._teammate_procs.get(name)
+        if proc is None or proc.returncode is not None:
+            return
+        try:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=3.0)
+            except TimeoutError:
+                proc.kill()
+                try:
+                    await proc.wait()
+                except ProcessLookupError:
+                    pass
+        except ProcessLookupError:
+            pass
 
     async def wait_for_teammate(self, name: str) -> None:
         task = self._teammate_tasks.get(name)
@@ -184,10 +214,16 @@ class TeamManager:
         task = self._teammate_tasks.get(name)
         if task is None or task.done():
             return False
+        # Terminate the subprocess so proc.communicate() unblocks and the task
+        # can finish; cancel as a backstop if the task is stuck before the proc
+        # was created. Previously task.cancel() alone left the trusted `vibe -p`
+        # subprocess alive: CancelledError escaped `except Exception`, so `proc`
+        # was never terminated while status was recorded as "stopped".
+        await self._terminate_proc(name)
         task.cancel()
         try:
             await task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, Exception):
             pass
         self.update_member_status(name, "stopped")
         return True

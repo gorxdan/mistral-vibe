@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
+import pytest
+
 from vibe.core.teams.mailbox import Mailbox
+from vibe.core.teams.manager import TeamManager
 from vibe.core.teams.models import TaskStatus
 from vibe.core.teams.task_store import TaskStore
 
@@ -172,3 +176,79 @@ def test_mailbox_empty_inbox(tmp_path: Path) -> None:
     mb = Mailbox(tmp_path)
     assert mb.read("nonexistent") == []
     assert mb.get_unread("nonexistent") == []
+
+
+class _FakeProc:
+    """Mimics asyncio.subprocess.Process: blocks on communicate() until killed."""
+
+    def __init__(self) -> None:
+        self.pid = 12345
+        self._returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+        self._waiters: list[asyncio.Future[int]] = []
+
+    @property
+    def returncode(self) -> int | None:
+        return self._returncode
+
+    def _set_rc(self, rc: int) -> None:
+        self._returncode = rc
+        for w in self._waiters:
+            if not w.done():
+                w.set_result(rc)
+        self._waiters.clear()
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._set_rc(-15)
+
+    def kill(self) -> None:
+        self.killed = True
+        self._set_rc(-9)
+
+    async def wait(self) -> int:
+        if self._returncode is not None:
+            return self._returncode
+        fut: asyncio.Future[int] = asyncio.get_event_loop().create_future()
+        self._waiters.append(fut)
+        return await fut
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        await self.wait()
+        return (b"", b"")
+
+
+@pytest.mark.asyncio
+async def test_stop_teammate_terminates_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """teams-005: stop_teammate must terminate and reap the spawned subprocess.
+
+    Previously stop_teammate only cancelled the asyncio task; CancelledError
+    escaped `except Exception`, so the trusted `vibe -p` child was never
+    terminated while its status was recorded as "stopped".
+    """
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    proc = _FakeProc()
+
+    async def fake_exec(*args: object, **kwargs: object) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    mgr = TeamManager("lead-session", team_name="test-stop")
+    try:
+        await mgr.spawn_teammate("alice", "do stuff", agent="explore", max_turns=1)
+        # Let the task start, create the proc, and block in communicate().
+        await asyncio.sleep(0.05)
+        assert mgr._teammate_procs.get("alice") is proc
+
+        stopped = await mgr.stop_teammate("alice")
+
+        assert stopped is True
+        assert proc.terminated or proc.killed
+        assert proc.returncode is not None  # reaped, not orphaned
+        assert "alice" not in mgr._teammate_procs
+    finally:
+        mgr.cleanup()
