@@ -153,7 +153,10 @@ class SessionLoader:
             return []
 
         short_id = shorten_session_id(session_id)
-        return list(save_dir.glob(f"{config.session_prefix}_*_{short_id}"))
+        # Prefix match so partial short IDs work (e.g., "1a22050" matches
+        # a directory suffixed "1a22050c").  The trailing wildcard also
+        # handles full UUIDs, which shorten to the same 8-char prefix.
+        return list(save_dir.glob(f"{config.session_prefix}_*_{short_id}*"))
 
     @staticmethod
     def _convert_to_utc_iso(date_str: str) -> str:

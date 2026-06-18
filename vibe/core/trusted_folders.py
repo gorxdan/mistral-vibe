@@ -42,16 +42,25 @@ def has_agents_md_file(path: Path) -> bool:
 
 
 def _is_git_repo_root(path: Path) -> bool:
-    git_dir = path / ".git"
+    git = path / ".git"
     try:
-        return git_dir.is_dir() and (git_dir / "HEAD").is_file()
+        if git.is_dir():
+            return (git / "HEAD").is_file()
+        # In a worktree, .git is a file pointing to the main repo's
+        # .git/worktrees/<name> directory.
+        if git.is_file():
+            return True
+        return False
     except OSError as e:
-        logger.warning("Skipping unreadable git dir=%s: %s", git_dir, e)
+        logger.warning("Skipping unreadable git path=%s: %s", git, e)
         return False
 
 
 def find_git_repo_ancestor(path: Path) -> Path | None:
-    """Closest ancestor (or *path*) with a real ``.git/HEAD``.
+    """Closest ancestor (or *path*) with a ``.git`` dir or worktree file.
+
+    Handles both normal repos (``.git/`` directory with ``HEAD``) and
+    worktrees (``.git`` file pointing to the main repo's worktree admin).
 
     Excludes the home directory and the filesystem root.
     """

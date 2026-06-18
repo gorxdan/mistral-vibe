@@ -506,6 +506,22 @@ class TestSessionLoaderFindSessionById:
         result = SessionLoader.find_session_by_id("nonexistent", session_config)
         assert result is None
 
+    def test_find_session_by_id_partial_short_id(
+        self, session_config: SessionLoggingConfig, create_test_session
+    ) -> None:
+        """Test finding session with fewer chars than the 8-char short ID.
+
+        Regression: ``--resume 1a22050`` (7 chars) should match a session
+        directory suffixed ``1a22050c`` (8 chars).
+        """
+        session_dir = Path(session_config.save_dir)
+        session_folder = create_test_session(session_dir, "1a22050c-1234-5678-abcd-ef0123456789")
+
+        # 7-char prefix of the 8-char short ID should still match.
+        result = SessionLoader.find_session_by_id("1a22050", session_config)
+        assert result is not None
+        assert result == session_folder
+
     def test_find_session_by_id_nonexistent_save_dir(self) -> None:
         """Test finding session by ID when save directory doesn't exist."""
         bad_config = SessionLoggingConfig(

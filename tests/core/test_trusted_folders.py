@@ -479,10 +479,10 @@ class TestFindGitRepoAncestor:
         _make_git_repo(tmp_path)
         assert find_git_repo_ancestor(tmp_path) == tmp_path.resolve()
 
-    def test_ignores_git_file_pointer(self, tmp_path: Path) -> None:
+    def test_recognizes_git_file_pointer_as_worktree(self, tmp_path: Path) -> None:
         (tmp_path / ".git").write_text("gitdir: /elsewhere", encoding="utf-8")
-        # Not a directory, so not treated as a repo root.
-        assert find_git_repo_ancestor(tmp_path) is None
+        # A .git file (worktree pointer) is treated as a repo root.
+        assert find_git_repo_ancestor(tmp_path) == tmp_path.resolve()
 
     def test_ignores_empty_git_directory(self, tmp_path: Path) -> None:
         (tmp_path / ".git").mkdir()
