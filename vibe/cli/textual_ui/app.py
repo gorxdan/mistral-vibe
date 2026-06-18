@@ -119,6 +119,7 @@ from vibe.cli.textual_ui.widgets.tool_widgets import (
     EditResultWidget,
 )
 from vibe.cli.textual_ui.widgets.voice_app import VoiceApp
+from vibe.cli.textual_ui.widgets.workflows_app import WorkflowsApp
 from vibe.cli.textual_ui.windowing import (
     HISTORY_RESUME_TAIL_MESSAGES,
     LOAD_MORE_BATCH_SIZE,
@@ -257,6 +258,7 @@ class BottomApp(StrEnum):
     Rewind = auto()
     SessionPicker = auto()
     Voice = auto()
+    Workflows = auto()
 
 
 class ChatScroll(VerticalScroll):
@@ -2667,8 +2669,31 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(widget)
 
     async def _workflows_command(self, cmd_args: str = "", **kwargs: Any) -> None:
-        widget = await self._workflow_runner.handle_command(cmd_args)
-        await self._mount_and_scroll(widget)
+        if cmd_args.strip():
+            widget = await self._workflow_runner.handle_command(cmd_args)
+            await self._mount_and_scroll(widget)
+        else:
+            if self._current_bottom_app == BottomApp.Workflows:
+                return
+            await self._switch_to_workflows_app()
+
+    async def _switch_to_workflows_app(self) -> None:
+        await self._switch_from_input(WorkflowsApp(runs=self._workflow_runner.runs))
+
+    async def on_workflows_app_closed(self, _event: WorkflowsApp.Closed) -> None:
+        await self._switch_to_input_app()
+
+    async def on_workflows_app_stop_requested(
+        self, message: WorkflowsApp.StopRequested
+    ) -> None:
+        stopped = await self._workflow_runner.stop(message.run_id)
+        if stopped:
+            from vibe.cli.textual_ui.widgets.messages import UserCommandMessage
+
+            await self._mount_and_scroll(
+                UserCommandMessage(f"Stopped workflow `{message.run_id}`.")
+            )
+        await self._switch_to_input_app()
 
     def _register_workflow_commands(self) -> None:
         from vibe.cli.commands import Command
@@ -2960,7 +2985,7 @@ class VibeApp(App):  # noqa: PLR0904
             if self._chat_widget.is_at_bottom:
                 self.call_after_refresh(self._chat_widget.anchor)
 
-    def _focus_current_bottom_app(self) -> None:
+    def _focus_current_bottom_app(self) -> None:  # noqa: PLR0912
         try:
             match self._current_bottom_app:
                 case BottomApp.Input:
@@ -2973,6 +2998,8 @@ class VibeApp(App):  # noqa: PLR0904
                     self.query_one(ThemePickerApp).focus()
                 case BottomApp.ThinkingPicker:
                     self.query_one(ThinkingPickerApp).focus()
+                case BottomApp.EffortPicker:
+                    self.query_one(EffortPickerApp).focus()
                 case BottomApp.ProxySetup:
                     self.query_one(ProxySetupApp).focus()
                 case BottomApp.Approval:
@@ -2989,6 +3016,8 @@ class VibeApp(App):  # noqa: PLR0904
                     self.query_one(RewindApp).focus()
                 case BottomApp.Voice:
                     self.query_one(VoiceApp).focus()
+                case BottomApp.Workflows:
+                    self.query_one(WorkflowsApp).focus()
                 case app:
                     assert_never(app)
         except Exception:
