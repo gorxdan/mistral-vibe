@@ -173,6 +173,25 @@ class SessionLoggingConfig(BaseSettings):
         return str(Path(v).expanduser().resolve())
 
 
+class WorktreeConfig(BaseSettings):
+    """Configuration for git worktree isolation.
+
+    When active, agent writes land on a throwaway branch in a git worktree
+    instead of the user's live checkout.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    mode: Literal["off", "on", "auto-by-entrypoint"] = "auto-by-entrypoint"
+    branch_prefix: str = "vibe/"
+    merge: Literal["manual", "auto-ff"] = "manual"
+    cleanup: Literal["remove", "keep"] = "remove"
+    carry_dirty: bool = True
+    carry_ignored: list[str] = Field(
+        default_factory=lambda: ["node_modules", ".venv", "venv", ".env"]
+    )
+
+
 DEFAULT_MISTRAL_API_ENV_KEY = "MISTRAL_API_KEY"
 DEFAULT_MISTRAL_BROWSER_AUTH_BASE_URL = "https://console.mistral.ai"
 DEFAULT_MISTRAL_BROWSER_AUTH_API_BASE_URL = "https://console.mistral.ai/api"

@@ -37,6 +37,7 @@ from vibe.core.config._settings import (
     TTSModelConfig,
     TTSProviderConfig,
     VibeConfig,
+    WorktreeConfig,
     load_dotenv_values,
 )
 from vibe.core.config.layer import (
@@ -125,6 +126,7 @@ __all__ = [
     "TTSProviderConfig",
     "ThinkingLevel",
     "TomlFileSettingsSource",
+    "WorktreeConfig",
     "TranscribeClient",
     "TranscribeModelConfig",
     "TranscribeProviderConfig",

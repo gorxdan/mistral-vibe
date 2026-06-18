@@ -36,6 +36,7 @@ from vibe.core.config._settings import (
     TranscribeProviderConfig,
     TTSModelConfig,
     TTSProviderConfig,
+    WorktreeConfig,
 )
 from vibe.core.config.schema import (
     ConfigSchema,
@@ -269,4 +270,7 @@ class VibeConfigSchema(ConfigSchema):
     )
     experiments: Annotated[ExperimentsConfig, WithReplaceMerge()] = Field(
         default_factory=ExperimentsConfig
+    )
+    worktree: Annotated[WorktreeConfig, WithReplaceMerge()] = Field(
+        default_factory=WorktreeConfig
     )
