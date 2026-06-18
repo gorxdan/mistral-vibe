@@ -28,38 +28,54 @@ async def kill_async_subprocess(
     is used on all platforms (typical for a single ``create_subprocess_exec``
     leaf such as ``grep``).
     """
-    if proc.returncode is not None:
-        return
-
     try:
-        if not kill_process_group:
-            proc.kill()
-        elif is_windows():
-            try:
-                subprocess_proc = await asyncio.create_subprocess_exec(
-                    "taskkill",
-                    "/F",
-                    "/T",
-                    "/PID",
-                    str(proc.pid),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                await subprocess_proc.wait()
-            except (FileNotFoundError, OSError):
-                proc.terminate()
-        else:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-            except Exception:
-                logger.debug(
-                    "Unexpected error killing process group for pid %s",
-                    proc.pid,
-                    exc_info=True,
-                )
+        if proc.returncode is None:
+            if not kill_process_group:
+                proc.kill()
+            elif is_windows():
+                try:
+                    subprocess_proc = await asyncio.create_subprocess_exec(
+                        "taskkill",
+                        "/F",
+                        "/T",
+                        "/PID",
+                        str(proc.pid),
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await subprocess_proc.wait()
+                except (FileNotFoundError, OSError):
+                    proc.terminate()
+            else:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                except Exception:
+                    logger.debug(
+                        "Unexpected error killing process group for pid %s",
+                        proc.pid,
+                        exc_info=True,
+                    )
 
-        await proc.wait()
+            await proc.wait()
     except (ProcessLookupError, PermissionError, OSError):
         pass
+    finally:
+        _close_transport(proc)
+
+
+def _close_transport(proc: asyncio.subprocess.Process) -> None:
+    """Close the subprocess transport to prevent 'Event loop is closed' errors.
+
+    asyncio.subprocess.Process holds a BaseSubprocessTransport that owns pipe
+    file descriptors. If the transport is garbage-collected after the event
+    loop closes, its __del__ raises RuntimeError. Closing it explicitly while
+    the loop is still open prevents this.
+    """
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        try:
+            transport.close()
+        except Exception:
+            pass
