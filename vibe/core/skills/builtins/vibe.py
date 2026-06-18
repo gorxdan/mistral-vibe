@@ -782,10 +782,11 @@ phases. Keys: `r` refresh, `s` stop first active run, `Esc` back.
 
 ### Resumability
 
-Completed agent results are cached keyed on `sha256(agent:prompt)`. On resume,
-cached results are returned without re-running the agent. Snapshots are
-persisted to session metadata (`workflow_snapshots` field) for cross-session
-recovery. Only completed agents are cached; failed agents re-run on resume.
+Completed agent results are cached keyed on `sha256(agent:phase:prompt)[:16]`.
+On resume, cached results are returned without re-running the agent. Snapshots
+are persisted to session metadata (`workflow_snapshots` field) for cross-session
+recovery via `/workflows resume <run-id>`. Only completed agents are cached;
+failed agents re-run on resume.
 
 ### Budget
 
@@ -796,7 +797,8 @@ not prevented at spawn. `budget.total = None` means unlimited.
 
 ### Concurrency
 
-Up to 16 concurrent agents (configurable), 1000 total per run. `parallel` and
+Up to 16 concurrent agents, 1000 total per run (constructor defaults on
+`WorkflowRuntime`; not exposed as a config.toml key). `parallel` and
 `pipeline` share the same semaphore as `spawn_agent`.
 
 ## Effort Modes
@@ -813,8 +815,11 @@ Select via `/effort` command or set `effort_mode = "le-chaton"` in config.toml.
 Typing "le chaton" or "lechaton" in a prompt triggers le chaton mode for that
 turn (keyword is stripped from the prompt text).
 
-When le chaton is active and workflows are not disabled, the `launch_workflow`
-tool becomes available and the system prompt includes workflow API documentation.
+The `launch_workflow` tool is available whenever workflows are not disabled
+(it is not gated on le chaton). Le chaton mode additionally injects the
+workflow API documentation into the system prompt and raises the active
+model's thinking to max, so the model is more likely to discover and use
+the tool.
 
 `disable_workflows = true` disables all workflow features: `/workflows` is
 unavailable, workflow commands are not registered, le chaton mode cannot be
@@ -850,6 +855,11 @@ Lead session (interactive vibe)
 - **Mailbox**: per-recipient inbox directories with JSON message files.
   Teammates message each other directly without going through the lead.
 - **TeamConfig**: team metadata (members, status, PIDs) in config.json.
+
+Teammates interact with the shared TaskStore and Mailbox through the `team`
+builtin tool (available only inside a teammate, gated on `VIBE_TEAM_DIR`):
+`list_tasks`, `available_tasks`, `claim_task`, `complete_task`,
+`send_message`, `read_messages`, `unread_messages`.
 
 ### Team Management
 

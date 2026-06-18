@@ -100,8 +100,9 @@ class LaunchWorkflow(
 
         if not ctx.launch_workflow_callback:
             raise ToolError(
-                "Workflow launching is not available in this context. "
-                "Use le chaton effort mode or run the script manually."
+                "Workflow launching is not available in this context "
+                "(no launch callback wired). Run the script manually via "
+                "/workflows or the WorkflowRuntime API."
             )
 
         run_id = ctx.launch_workflow_callback(args.script, args.name)
