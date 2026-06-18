@@ -43,6 +43,7 @@ class BuiltinAgentName(StrEnum):
     AUTO_APPROVE = "auto-approve"
     EXPLORE = "explore"
     RESEARCH = "research"
+    REVIEWER = "reviewer"
     LEAN = "lean"
 
 
@@ -171,6 +172,23 @@ RESEARCH = AgentProfile(
     },
 )
 
+REVIEWER = AgentProfile(
+    name=BuiltinAgentName.REVIEWER,
+    display_name="Reviewer",
+    description=(
+        "Subagent for adversarial code review: reads code, inspects diffs via "
+        "git, and runs targeted checks/tests. bash stays approval-gated."
+    ),
+    # Has bash, so not SAFE — bash invocations still route through the normal
+    # approval flow (no bypass_tool_permissions).
+    safety=AgentSafety.NEUTRAL,
+    agent_type=AgentType.SUBAGENT,
+    overrides={
+        "enabled_tools": ["read", "grep", "bash"],
+        "system_prompt_id": "explore",
+    },
+)
+
 LEAN = AgentProfile(
     name=BuiltinAgentName.LEAN,
     display_name="Lean",
@@ -218,5 +236,6 @@ BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.AUTO_APPROVE: AUTO_APPROVE,
     BuiltinAgentName.EXPLORE: EXPLORE,
     BuiltinAgentName.RESEARCH: RESEARCH,
+    BuiltinAgentName.REVIEWER: REVIEWER,
     BuiltinAgentName.LEAN: LEAN,
 }
