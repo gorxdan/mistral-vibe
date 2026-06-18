@@ -7,11 +7,10 @@ merges their summaries, and prints the result. Validates:
   - token/cost totals are sane
   - no semaphore deadlock
 
-Usage:
-  MISTRAL_API_KEY=... uv run python tests/core/workflows/validate_runtime.py
+Usage (ensure your provider API key is configured in ~/.vibe/.env or env):
+  uv run python tests/core/workflows/validate_runtime.py
 
-Or from the repo root:
-  MISTRAL_API_KEY=... uv run python -m tests.core.workflows.validate_runtime
+Works with any configured provider (Mistral, OpenAI-compatible, llamacpp, etc.)
 """
 
 from __future__ import annotations
