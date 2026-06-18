@@ -91,6 +91,10 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         converted_tools = self._mapper.prepare_tools(tools)
         converted_tool_choice = self._mapper.prepare_tool_choice(tool_choice)
 
+        # response_format is accepted for interface parity but unused: Vertex
+        # serves Claude via the Anthropic Messages API (no response_format
+        # field). Structured output relies on the runtime's prompt fallback.
+        _ = response_format
         payload: dict[str, Any] = {
             "anthropic_version": "vertex-2023-10-16",
             "messages": converted_messages,

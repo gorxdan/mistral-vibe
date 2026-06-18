@@ -471,6 +471,12 @@ class AnthropicAdapter(APIAdapter):
         converted_tools = self._mapper.prepare_tools(tools)
         converted_tool_choice = self._mapper.prepare_tool_choice(tool_choice)
 
+        # response_format is accepted for interface parity with the
+        # OpenAI-compatible backends, but the Anthropic Messages API has no such
+        # field (native structured output would require a tool-use round-trip).
+        # Workflow schema enforcement relies on the prompt fallback the runtime
+        # appends (build_prompt_fallback), so it is intentionally not forwarded.
+        _ = response_format
         payload = self._build_payload(
             model_name=model_name,
             system_prompt=system_prompt,
