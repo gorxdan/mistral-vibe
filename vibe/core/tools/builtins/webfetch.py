@@ -71,8 +71,9 @@ class _PinningTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         pinned_url = request.url.copy_with(host=str(self._pinned_ip))
         # Connect to the pinned IP literal while keeping the original hostname
-        # for the Host header and TLS SNI (set below).
-        request._url = pinned_url
+        # for the Host header and TLS SNI (set below). httpx.Request exposes no
+        # public URL setter, so rewrite the private _url field directly.
+        object.__setattr__(request, "_url", pinned_url)
         request.headers["host"] = self._original_host
         if pinned_url.scheme == "https":
             # httpx derives SNI from the URL host (now the IP); restore the
@@ -183,7 +184,7 @@ class WebFetch(
 
         pinned: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
         for info in infos:
-            addr = info[4][0]
+            addr = str(info[4][0])
             # Strip IPv6 scope suffix if present
             if "%" in addr:
                 addr = addr.split("%")[0]

@@ -142,7 +142,10 @@ class WorktreeManager:
         # 2. Resolve original repo root via git (NOT find_git_repo_ancestor,
         #    which requires .git to be a dir and misses worktree roots).
         repo = self._get_repo(Path.cwd())
-        original_root = Path(repo.working_tree_dir).resolve()
+        working_tree_dir = repo.working_tree_dir
+        if working_tree_dir is None:
+            raise RuntimeError("Cannot resolve working tree dir (bare repo?)")
+        original_root = Path(working_tree_dir).resolve()
 
         # 3. Refuse if repo mid-operation.
         if self._is_mid_operation(original_root):
@@ -320,7 +323,10 @@ class WorktreeManager:
         try:
             # add -N . and diff HEAD under the temp index, capturing raw bytes.
             env = dict(os.environ, GIT_INDEX_FILE=str(tmp_idx))
-            repo_root = Path(repo.working_tree_dir)
+            wtd = repo.working_tree_dir
+            if wtd is None:
+                raise RuntimeError("Cannot resolve working tree dir (bare repo?)")
+            repo_root = Path(wtd)
 
             # add -N . adds all untracked files as intent-to-add so they
             # appear in the diff.  Gitignored files are skipped automatically.
