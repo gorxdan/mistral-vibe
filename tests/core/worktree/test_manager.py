@@ -319,6 +319,33 @@ class TestDirtyCarry:
         hash_after = hashlib.sha256(index_path.read_bytes()).hexdigest()
         assert hash_before == hash_after, "User's git index was modified!"
 
+    def test_carries_tracked_carry_ignored_file(
+        self, manager: WorktreeManager, temp_repo: Path, tmp_path: Path
+    ):
+        """WT-3: a tracked file in carry_ignored (e.g. .env) with uncommitted
+        edits must be carried into the worktree, not silently dropped to the
+        stale committed version.
+        """
+        os.chdir(str(temp_repo))
+        repo = Repo(str(temp_repo))
+        (temp_repo / ".env").write_text("SECRET=committed\n")
+        repo.index.add([".env"])
+        repo.index.commit("Add .env")
+        # Uncommitted modification to the now-tracked .env.
+        (temp_repo / ".env").write_text("SECRET=uncommitted\n")
+
+        config = WorktreeConfig(
+            mode="on",
+            carry_dirty=True,
+            carry_ignored=[".env"],
+            base_dir=str(tmp_path / "wt"),
+        )
+        handle = manager.enter("test", config)
+        assert handle is not None
+
+        wt_env = (handle.worktree_path / ".env").read_text()
+        assert "uncommitted" in wt_env, "tracked .env dirty edit must be carried"
+
 
 # ---------------------------------------------------------------------------
 # Symlink deps

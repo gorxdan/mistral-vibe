@@ -125,8 +125,11 @@ class WorktreeManager:
 
         try:
             return self._do_enter(label, config)
-        except Exception as exc:
-            logger.warning("Worktree creation failed, running in-place: %s", exc)
+        except Exception:
+            # Fail soft to in-place (never lose user work), but record the full
+            # traceback so programming errors (AttributeError/TypeError/etc.)
+            # are diagnosable instead of silently degrading isolation.
+            logger.exception("Worktree creation failed, running in-place")
             # Best-effort cleanup of partial state.
             self._cleanup_partial()
             return None
@@ -324,10 +327,16 @@ class WorktreeManager:
                 capture_output=True,
             )
 
-            # Build diff pathspec: everything EXCEPT carry_ignored paths
-            # (those are symlinked instead).
+            # Build diff pathspec: everything EXCEPT untracked carry_ignored
+            # paths (those are symlinked instead). Tracked carry_ignored paths
+            # (e.g. a committed .env with uncommitted edits) must be carried as
+            # a normal diff -- excluding them silently drops the user's changes
+            # and leaves the worktree on the stale committed version.
             diff_pathspecs = []
             for name in carry_ignored:
+                if repo.git.ls_files(name).strip():
+                    # Tracked in HEAD -- carry its dirty diff, don't exclude.
+                    continue
                 diff_pathspecs.append(f":(exclude){name}")
 
             result = subprocess.run(
