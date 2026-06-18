@@ -32,7 +32,9 @@ class MockAgentLoop:
     stats: MockStats = field(default_factory=MockStats)
     _call_count: int = field(default=0, init=False)
 
-    async def act(self, prompt: str) -> AsyncGenerator[MockEvent, None]:
+    async def act(
+        self, prompt: str, *, response_format: Any = None
+    ) -> AsyncGenerator[MockEvent, None]:
         self._call_count += 1
         yield MockEvent(content=self.response_text)
 

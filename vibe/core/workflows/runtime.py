@@ -20,6 +20,7 @@ from vibe.core.workflows.models import (
 from vibe.core.workflows.schema import (
     SchemaValidationError,
     build_prompt_fallback,
+    build_response_format,
     validate_against_schema,
 )
 from vibe.core.workflows.security import build_namespace, validate_script
@@ -134,6 +135,7 @@ class WorkflowRuntime:
         schema: dict | None,
         reservation: Reservation,
     ) -> str | dict[str, Any]:
+        response_format = build_response_format(schema) if schema is not None else None
         effective_prompt = prompt
         if schema is not None:
             effective_prompt = prompt + build_prompt_fallback(schema)
@@ -150,7 +152,9 @@ class WorkflowRuntime:
             loop = self._create_loop(effective_prompt, agent=agent)
 
             try:
-                async with aclosing(loop.act(effective_prompt)) as events:
+                async with aclosing(
+                    loop.act(effective_prompt, response_format=response_format)
+                ) as events:
                     async for event in events:
                         content = self._extract_content(event)
                         if content:
