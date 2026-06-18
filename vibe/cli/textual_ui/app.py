@@ -2811,10 +2811,39 @@ class VibeApp(App):  # noqa: PLR0904
                 ),
             )
 
+    def _build_workflow_parent_context(self, tool_call_id: str) -> InvokeContext:
+        """Build the parent InvokeContext for a workflow runtime.
+
+        Threading this into both the model-invoked and TUI-invoked launch
+        paths keeps spawned agents subject to the subagent-type guard and the
+        inherited permission store / approval callback, session logging, and
+        cost tracking. Omitting it (the prior model-invoked path) left agents
+        running with ctx=None, which bypassed the subagent-type guard and let
+        scripts spawn non-subagent profiles such as auto-approve.
+        """
+        loop = self.agent_loop
+        return InvokeContext(
+            tool_call_id=tool_call_id,
+            agent_manager=loop.agent_manager,
+            session_dir=loop.session_logger.session_dir,
+            entrypoint_metadata=loop.entrypoint_metadata,
+            approval_callback=loop.approval_callback,
+            sampling_callback=loop._sampling_handler,
+            skill_manager=loop.skill_manager,
+            scratchpad_dir=loop.scratchpad_dir,
+            permission_store=loop._permission_store,
+            hook_config_result=loop._hook_config_result,
+            session_id=loop.session_id,
+            terminal_emulator=loop.terminal_emulator,
+        )
+
     def _launch_workflow_from_tool(self, script: str, name: str | None = None) -> str:
         if self.config.disable_workflows:
             raise WorkflowError("Workflows are disabled in this configuration.")
-        runtime = WorkflowRuntime()
+        parent_context = self._build_workflow_parent_context(
+            f"workflow-tool-{name or 'run'}"
+        )
+        runtime = WorkflowRuntime(parent_context=parent_context)
         run_id = self._workflow_runner.launch(script, runtime=runtime)
         return run_id
 
@@ -2844,21 +2873,7 @@ class VibeApp(App):  # noqa: PLR0904
             )
             return
 
-        loop = self.agent_loop
-        parent_context = InvokeContext(
-            tool_call_id=f"workflow-{cmd_name}",
-            agent_manager=loop.agent_manager,
-            session_dir=loop.session_logger.session_dir,
-            entrypoint_metadata=loop.entrypoint_metadata,
-            approval_callback=loop.approval_callback,
-            sampling_callback=loop._sampling_handler,
-            skill_manager=loop.skill_manager,
-            scratchpad_dir=loop.scratchpad_dir,
-            permission_store=loop._permission_store,
-            hook_config_result=loop._hook_config_result,
-            session_id=loop.session_id,
-            terminal_emulator=loop.terminal_emulator,
-        )
+        parent_context = self._build_workflow_parent_context(f"workflow-{cmd_name}")
         runtime = WorkflowRuntime(parent_context=parent_context)
         run_id = self._workflow_runner.launch(
             info.source, runtime=runtime, args=cmd_args or None

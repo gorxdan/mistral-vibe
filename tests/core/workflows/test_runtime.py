@@ -475,3 +475,34 @@ async def test_cache_hit_does_not_double_count_tokens(runtime: WorkflowRuntime) 
     assert results[0].tokens_in == 1000
     assert results[1].tokens_in == 0
     assert results[1].tokens_out == 0
+
+
+async def test_parent_context_rejects_non_subagent_agent() -> None:
+    """WF-1: a threaded parent_context must enforce the subagent-type guard.
+
+    The model-invoked launch_workflow path used to build WorkflowRuntime() with
+    no parent_context, so the guard in _create_real_loop was skipped and a
+    script could spawn non-subagent profiles such as auto-approve (which sets
+    bypass_tool_permissions=True, short-circuiting all tool permission checks).
+    With parent_context.agent_manager present, the guard runs and rejects
+    non-subagent agents before any loop is built.
+    """
+    from vibe.core.agents.models import AgentType
+    from vibe.core.tools.base import InvokeContext
+
+    @dataclass
+    class _Profile:
+        agent_type: AgentType
+
+    class _Manager:
+        def get_agent(self, name: str) -> _Profile:
+            if name == "auto-approve":
+                return _Profile(AgentType.AGENT)
+            if name == "explore":
+                return _Profile(AgentType.SUBAGENT)
+            raise ValueError(name)
+
+    ctx = InvokeContext(tool_call_id="wf-tool", agent_manager=_Manager())
+    rt = WorkflowRuntime(parent_context=ctx, max_agents=10, budget_total=1_000_000)
+    with pytest.raises(WorkflowError, match="Only subagents can be used"):
+        await rt.spawn_agent("do anything", agent="auto-approve")
