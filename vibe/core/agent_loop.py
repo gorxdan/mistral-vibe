@@ -417,6 +417,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if defer_heavy_init:
             self._start_deferred_init()
 
+    @property
+    def hooks_manager(self) -> HooksManager | None:
+        """The hooks manager, or None if no hooks are configured. Exposed so
+        lead-side features (e.g. TeamManager) can dispatch lifecycle events
+        through the same hook pipeline as agent/tool events.
+        """
+        return self._hooks_manager
+
+    @property
+    def hook_config_result(self) -> HookConfigResult | None:
+        return self._hook_config_result
+
     def _start_deferred_init(self) -> threading.Thread:
         """Spawn a daemon thread that finishes deferred heavy I/O once."""
         with self._deferred_init_lock:

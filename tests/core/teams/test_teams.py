@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -296,7 +297,8 @@ async def test_teammate_spawned_in_new_session(
 ) -> None:
     """teams-007: the teammate is spawned in its own session/process group so
     stop can signal the whole tree (teammate + bash-tool grandchildren) instead
-    of orphaning grandchildren to init."""
+    of orphaning grandchildren to init.
+    """
     monkeypatch.setenv("VIBE_HOME", str(tmp_path))
     proc = _FakeProc()
     captured: dict[str, object] = {}
@@ -315,3 +317,59 @@ async def test_teammate_spawned_in_new_session(
     finally:
         await mgr.stop_teammate("bob")
         mgr.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_team_lifecycle_hooks_fire_on_task_events(tmp_path: Path) -> None:
+    """teams-002: team lifecycle hooks must actually fire, not just be defined.
+
+    A HooksManager with a task_created hook (shell command writing a marker
+    file) is wired into TeamManager. add_team_task must dispatch the
+    TASK_CREATED event through the pipeline, running the hook. Previously the
+    events were never dispatched and _HANDLERS had no entry (KeyError).
+    """
+    from vibe.core.hooks.manager import HooksManager
+    from vibe.core.hooks.models import HookConfig, HookSessionContext, HookType
+
+    marker = tmp_path / "created.flag"
+    hook = HookConfig(
+        name="on-task-created",
+        type=HookType.TASK_CREATED,
+        command=f"touch {marker}",
+    )
+    hooks_mgr = HooksManager([hook])
+
+    def ctx() -> HookSessionContext:
+        return HookSessionContext(
+            session_id="lead-session",
+            transcript_path="",
+            cwd=str(tmp_path),
+        )
+
+    # Use a team dir under the test's tmp_path to avoid polluting real VIBE_HOME.
+    monkeypatch_dir = tmp_path / "vibehome"
+    monkeypatch_dir.mkdir()
+    saved = os.environ.get("VIBE_HOME")
+    os.environ["VIBE_HOME"] = str(monkeypatch_dir)
+    try:
+        mgr = TeamManager(
+            "lead-session",
+            team_name="test-hooks",
+            hooks_manager=hooks_mgr,
+            hook_context=ctx,
+        )
+        try:
+            await mgr.add_team_task("Write the auth module")
+            # The hook runs asynchronously in a subprocess; allow it to complete.
+            for _ in range(50):
+                if marker.exists():
+                    break
+                await asyncio.sleep(0.05)
+            assert marker.exists(), "TASK_CREATED hook must fire on add_team_task"
+        finally:
+            mgr.cleanup()
+    finally:
+        if saved is None:
+            os.environ.pop("VIBE_HOME", None)
+        else:
+            os.environ["VIBE_HOME"] = saved

@@ -16,6 +16,7 @@ from vibe.core.hooks._handler import (
     _parse_structured_response,
 )
 from vibe.core.hooks._post_agent_turn import PostAgentTurnHandler
+from vibe.core.hooks._team_lifecycle import TeamLifecycleHandler
 from vibe.core.hooks.config import HookConfig
 from vibe.core.hooks.executor import HookExecutor
 from vibe.core.hooks.models import (
@@ -33,10 +34,15 @@ from vibe.core.tracing import hook_span
 logger = logging.getLogger(__name__)
 
 
+_TEAM_LIFECYCLE_HANDLER = TeamLifecycleHandler()
+
 _HANDLERS: dict[HookType, HookHandler] = {
     HookType.POST_AGENT_TURN: PostAgentTurnHandler(),
     HookType.BEFORE_TOOL: BeforeToolHandler(),
     HookType.AFTER_TOOL: AfterToolHandler(),
+    HookType.TEAMMATE_IDLE: _TEAM_LIFECYCLE_HANDLER,
+    HookType.TASK_CREATED: _TEAM_LIFECYCLE_HANDLER,
+    HookType.TASK_COMPLETED: _TEAM_LIFECYCLE_HANDLER,
 }
 
 
@@ -158,9 +164,9 @@ class HooksManager:
         hook_type = HookType(invocation.hook_event_name)
         handler = _HANDLERS.get(hook_type)
         if handler is None:
-            # Some HookTypes (e.g. the team lifecycle events) are defined and
-            # constructible but have no registered handler yet. Treat them as
-            # no-ops rather than raising KeyError.
+            # Defense-in-depth: a HookType with no registered handler is a
+            # no-op rather than a KeyError. (All currently defined types are
+            # registered, including the team lifecycle events.)
             return
         hooks = self._matching_hooks(handler, invocation)
         if not hooks:

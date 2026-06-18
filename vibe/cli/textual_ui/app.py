@@ -2702,6 +2702,33 @@ class VibeApp(App):  # noqa: PLR0904
                 return
             await self._switch_to_workflows_app()
 
+    def _build_team_manager(self) -> TeamManager:
+        """Build a TeamManager wired to the agent loop's hook pipeline so team
+        lifecycle events (teammate idle, task created/completed) fire through
+        the same HooksManager as agent/tool events."""
+        loop = self.agent_loop
+
+        def hook_context() -> Any:
+            # Mirror AgentLoop._hook_session_context so team hooks see the same
+            # session id, transcript path, and cwd as agent hooks.
+            from vibe.core.hooks.models import HookSessionContext
+
+            transcript = ""
+            if loop.session_logger.enabled and loop.session_logger.session_dir is not None:
+                transcript = str(loop.session_logger.messages_filepath.resolve())
+            return HookSessionContext(
+                session_id=loop.session_id,
+                transcript_path=transcript,
+                cwd=str(Path.cwd().resolve()),
+                parent_session_id=loop.parent_session_id,
+            )
+
+        return TeamManager(
+            loop.session_id,
+            hooks_manager=loop.hooks_manager,
+            hook_context=hook_context,
+        )
+
     async def _team_command(self, cmd_args: str = "", **kwargs: Any) -> None:  # noqa: PLR0912, PLR2004
         from vibe.cli.textual_ui.widgets.messages import (
             ErrorMessage,
@@ -2736,7 +2763,7 @@ class VibeApp(App):  # noqa: PLR0904
                 name = parts[1]
                 prompt = parts[2]
                 if self._team_manager is None:
-                    self._team_manager = TeamManager(self.agent_loop.session_id)
+                    self._team_manager = self._build_team_manager()
                 await self._team_manager.spawn_teammate(name, prompt)
                 await self._mount_and_scroll(
                     UserCommandMessage(f"Spawned teammate `{name}`.")

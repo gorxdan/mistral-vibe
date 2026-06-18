@@ -1,20 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import os
 from pathlib import Path
 import secrets
 import signal
 import sys
 import time
+from typing import TYPE_CHECKING, Any
 
 from filelock import FileLock
 
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
 from vibe.core.teams.mailbox import Mailbox
-from vibe.core.teams.models import TeamConfig, TeamMember
+from vibe.core.teams.models import Task, TeamConfig, TeamMember
 from vibe.core.teams.task_store import TaskStore
+
+if TYPE_CHECKING:
+    from vibe.core.hooks.manager import HooksManager
+    from vibe.core.hooks.models import HookSessionContext
 
 
 def _team_dir_for(team_name: str) -> Path:
@@ -22,7 +28,14 @@ def _team_dir_for(team_name: str) -> Path:
 
 
 class TeamManager:
-    def __init__(self, lead_session_id: str, *, team_name: str | None = None) -> None:
+    def __init__(
+        self,
+        lead_session_id: str,
+        *,
+        team_name: str | None = None,
+        hooks_manager: HooksManager | None = None,
+        hook_context: Callable[[], HookSessionContext | None] | None = None,
+    ) -> None:
         self._team_name = team_name or f"team-{secrets.token_hex(4)}"
         self._team_dir = _team_dir_for(self._team_name)
         self._team_dir.mkdir(parents=True, exist_ok=True)
@@ -33,6 +46,8 @@ class TeamManager:
         self._mailbox: Mailbox | None = None
         self._teammate_tasks: dict[str, asyncio.Task[None]] = {}
         self._teammate_procs: dict[str, asyncio.subprocess.Process] = {}
+        self._hooks_manager = hooks_manager
+        self._hook_context = hook_context
         self._init_config()
 
     @property
@@ -99,6 +114,59 @@ class TeamManager:
                 m.status = status
                 break
         self._save_config(config)
+
+    async def _dispatch_hook(self, hook_type: str, **fields: Any) -> None:
+        """Fire a team lifecycle hook event (no-op without a hooks manager).
+
+        TEAMMATE_IDLE / TASK_CREATED / TASK_COMPLETED are informational; hook
+        output is logged but cannot gate the lifecycle action.
+        """
+        if self._hooks_manager is None or self._hook_context is None:
+            return
+        ctx = self._hook_context()
+        if ctx is None:
+            return
+        from vibe.core.hooks.models import HookType, build_invocation
+
+        try:
+            invocation = build_invocation(HookType(hook_type), ctx, **fields)
+            async for _event in self._hooks_manager.run(invocation):
+                # Lifecycle hooks are informational; swallow events. (A real
+                # UI can subscribe to the hooks manager stream separately.)
+                pass
+        except Exception:
+            logger.warning("Team lifecycle hook %s failed", hook_type, exc_info=True)
+
+    async def add_team_task(
+        self,
+        description: str,
+        *,
+        dependencies: list[str] | None = None,
+        task_id: str | None = None,
+    ) -> Task:
+        """Create a task and fire the TASK_CREATED lifecycle hook."""
+        task = self.task_store.add_task(
+            description, dependencies=dependencies, task_id=task_id
+        )
+        await self._dispatch_hook(
+            "task_created",
+            task_id=task.id,
+            task_description=task.description,
+            assignee=task.assignee,
+        )
+        return task
+
+    async def complete_team_task(self, task_id: str, result: str | None = None) -> Task | None:
+        """Mark a task complete and fire the TASK_COMPLETED lifecycle hook."""
+        task = self.task_store.complete_task(task_id, result=result)
+        if task is not None:
+            await self._dispatch_hook(
+                "task_completed",
+                task_id=task.id,
+                teammate_name=task.assignee or "lead",
+                result=task.result,
+            )
+        return task
 
     async def spawn_teammate(
         self,
@@ -183,13 +251,21 @@ class TeamManager:
             if proc is not None and proc.returncode is None:
                 self._signal_proc_group(proc, signal.SIGTERM)
             self._teammate_procs.pop(name, None)
+            # The teammate is now idle (completed, failed, or stopped). Fire
+            # the TEAMMATE_IDLE lifecycle hook so observers can react.
+            await self._dispatch_hook(
+                "teammate_idle",
+                teammate_name=name,
+                teammate_session_id=None,
+            )
 
     @staticmethod
     def _signal_proc_group(proc: asyncio.subprocess.Process, sig: int) -> None:
         """Signal the teammate's whole process group (it is a session leader via
         start_new_session, so its pid is its pgid), reaping bash-tool
         grandchildren. Falls back to signaling just the direct child if the
-        group lookup fails (e.g. the process already exited)."""
+        group lookup fails (e.g. the process already exited).
+        """
         try:
             os.killpg(os.getpgid(proc.pid), sig)
             return
@@ -205,7 +281,8 @@ class TeamManager:
 
     async def _terminate_proc(self, name: str) -> None:
         """Terminate and reap a teammate subprocess (and its group) if still
-        running."""
+        running.
+        """
         proc = self._teammate_procs.get(name)
         if proc is None or proc.returncode is not None:
             return
