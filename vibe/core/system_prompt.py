@@ -209,6 +209,21 @@ def _add_commit_signature() -> str:
     )
 
 
+def _add_humanizer_guidance() -> str:
+    return (
+        "Write naturally. Avoid AI vocabulary: 'Additionally,' 'crucial,' 'delve,' "
+        "'fostering,' 'showcase,' 'testament,' 'underscore,' 'vibrant,' 'pivotal,' "
+        "'landscape,' 'intricate,' 'tapestry,' 'align with,' 'garner.' "
+        "Use simple 'is/are/has' instead of 'serves as/stands as/boasts.' "
+        "Avoid '-ing' phrases tacked on for fake depth. "
+        "Don't force rule-of-three lists. "
+        "Don't use 'It's not just... it's...' or 'Not only... but...' constructions. "
+        "Use em dashes sparingly. "
+        "Don't end with 'I hope this helps' or 'Let me know.' "
+        "Vary sentence length. Use specific details instead of vague claims."
+    )
+
+
 def _get_available_skills_section(skill_manager: SkillManager) -> str:
     skills = skill_manager.available_skills
     if not skills:
@@ -334,6 +349,9 @@ def get_universal_system_prompt(  # noqa: PLR0912
     if config.include_commit_signature:
         sections.append(_add_commit_signature())
 
+    if config.include_humanizer_guidance:
+        sections.append(_add_humanizer_guidance())
+
     if config.include_model_info:
         sections.append(f"Your model name is: `{config.active_model}`")
 
@@ -441,8 +459,10 @@ def _get_le_chaton_section() -> str:
         "- `budget` — token budget object with `.total` and `.remaining()`\n"
         "- `args` — structured input from the invocation command\n\n"
         "Write the script to a file, then tell the user to run it with the "
-        "workflow tool or save it as a command. For simple tasks (single-file "
-        "edits, quick questions), work normally without a workflow.\n\n"
+        "workflow tool or save it as a command. You can also launch it directly "
+        "using the `launch_workflow` tool, which validates and runs the script "
+        "in the background. For simple tasks (single-file edits, quick "
+        "questions), work normally without a workflow.\n\n"
         "Prefer workflows when: the task needs 3+ independent agents, adversarial "
         "verification adds value, or the work spans many files. Use `parallel` "
         "for independent work and `pipeline` for ordered concurrent map."
