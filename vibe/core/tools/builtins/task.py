@@ -130,6 +130,7 @@ class Task(
             enabled=ctx.session_dir is not None,
         )
         base_config = VibeConfig.load(session_logging=session_logging)
+        # Subagents inherit the parent worktree; never call worktree_manager.enter().
         subagent_loop = AgentLoop(
             config=base_config,
             agent_name=args.agent,

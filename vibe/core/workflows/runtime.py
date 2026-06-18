@@ -314,6 +314,8 @@ class WorkflowRuntime:
         if model:
             overrides["active_model"] = model
         base_config = VibeConfig.load(session_logging=session_logging, **overrides)
+        # Subagents inherit the parent worktree; never call worktree_manager.enter().
+        # Workflow stages share one worktree.
         loop = _AgentLoop(
             config=base_config,
             agent_name=agent,

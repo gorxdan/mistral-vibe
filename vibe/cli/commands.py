@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import sys
 
 from vibe.cli.plan_offer.decide_plan_offer import PlanInfo
+from vibe.core.logger import logger
 
 ALT_KEY = "⌥" if sys.platform == "darwin" else "Alt"
 
@@ -184,6 +185,23 @@ class CommandRegistry:
                 ),
                 handler="_workflows_command",
             ),
+            "team": Command(
+                aliases=frozenset(["/team"]),
+                description=(
+                    "Manage agent teams. "
+                    "Use `/team list`, `/team spawn <name> <prompt>`, "
+                    "or `/team stop <name|all>`"
+                ),
+                handler="_team_command",
+            ),
+            "worktree": Command(
+                aliases=frozenset(["/worktree"]),
+                description=(
+                    "Show worktree isolation status, diff, or trigger merge. "
+                    "Use `/worktree status`, `/worktree diff`, or `/worktree merge`"
+                ),
+                handler="_worktree_command",
+            ),
             "data-retention": Command(
                 aliases=frozenset(["/data-retention"]),
                 description="Show data retention information",
@@ -207,7 +225,16 @@ class CommandRegistry:
             availability_context or CommandAvailabilityContext()
         )
         built = self._build_commands()
-        built.update(self._dynamic_commands)
+        # Dynamic (discovered workflow) commands must never override a builtin
+        # slash command — a project-level workflow named e.g. "exit" or "clear"
+        # would otherwise hijack it.
+        for name, command in self._dynamic_commands.items():
+            if name in built:
+                logger.warning(
+                    "Workflow command '/%s' collides with a builtin; skipping", name
+                )
+                continue
+            built[name] = command
         self._commands = {
             name: command
             for name, command in built.items()
@@ -215,11 +242,22 @@ class CommandRegistry:
             and self._is_command_available(command)
         }
 
-    def register_dynamic(self, name: str, command: Command) -> None:
+    def register_dynamic(self, name: str, command: Command) -> bool:
+        """Register a discovered command. Refuses to shadow a builtin slash
+        command; returns True if registered, False if skipped."""
+        if name in self._build_commands():
+            logger.warning(
+                "Workflow command '/%s' collides with a builtin command; skipping",
+                name,
+            )
+            return False
         self._dynamic_commands[name] = command
         self._commands[name] = command
+        return True
 
     def clear_dynamic(self) -> None:
+        for name in self._dynamic_commands:
+            self._commands.pop(name, None)
         self._dynamic_commands.clear()
         self.refresh()
 

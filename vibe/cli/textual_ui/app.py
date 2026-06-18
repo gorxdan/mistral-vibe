@@ -228,6 +228,7 @@ from vibe.core.utils import (
     get_user_cancellation_message,
     is_dangerous_directory,
 )
+from vibe.core.teams.manager import TeamManager
 from vibe.core.workflows.manager import WorkflowManager
 from vibe.core.workflows.runtime import WorkflowError, WorkflowRuntime
 
@@ -508,6 +509,7 @@ class VibeApp(App):  # noqa: PLR0904
         self._workflow_manager = WorkflowManager(lambda: self.agent_loop.config)
         self._register_workflow_commands()
         self.agent_loop.launch_workflow_callback = self._launch_workflow_from_tool
+        self._team_manager: TeamManager | None = None
 
     def _configure_startup_options(self, startup: StartupOptions | None) -> None:
         opts = startup or StartupOptions()
@@ -2897,6 +2899,70 @@ class VibeApp(App):  # noqa: PLR0904
         if session_path is None:
             return None
         return short_session_id(self.agent_loop.session_logger.session_id)
+
+    async def _worktree_command(self, cmd_args: str = "", **kwargs: Any) -> None:
+        """Read-only /worktree command: status, diff, or merge handoff info."""
+        from vibe.cli.textual_ui.widgets.messages import (
+            ErrorMessage,
+            UserCommandMessage,
+        )
+        from vibe.core.worktree.manager import worktree_manager
+
+        wt = worktree_manager.active
+        if wt is None:
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    "No worktree is active. Relaunch with `--worktree` to enable "
+                    "isolation, or set `worktree.mode = \"on\"` in config."
+                )
+            )
+            return
+
+        sub = cmd_args.strip().lower()
+        if sub in ("", "status"):
+            from git import Repo
+
+            repo = Repo(str(wt.worktree_path))
+            dirty = repo.is_dirty(untracked_files=True)
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    f"**Worktree isolation active**\n"
+                    f"- Branch: `{wt.branch}`\n"
+                    f"- Worktree: `{wt.worktree_path}`\n"
+                    f"- Original root: `{wt.original_repo_root}`\n"
+                    f"- Dirty: {'yes' if dirty else 'no'}\n"
+                    f"- Created at HEAD: `{wt.create_head_sha[:8]}`"
+                )
+            )
+        elif sub == "diff":
+            from git import Repo
+
+            root_repo = Repo(str(wt.original_repo_root))
+            diff_output = root_repo.git.diff(
+                wt.create_head_sha, wt.branch, "--stat"
+            )
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    f"**Diff** (original HEAD..worktree branch)\n```\n{diff_output or '(no changes)'}\n```"
+                )
+            )
+        elif sub == "merge":
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    f"**To merge the worktree branch:**\n"
+                    f"```\ncd {wt.original_repo_root}\n"
+                    f"git merge {wt.branch}\n```\n\n"
+                    f"Or if the original tree is clean and HEAD hasn't moved:\n"
+                    f"```\ngit merge --ff-only {wt.branch}\n```"
+                )
+            )
+        else:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"Unknown /worktree subcommand: `{sub}`. "
+                    "Usage: /worktree [status|diff|merge]"
+                )
+            )
 
     async def _exit_app(self, **kwargs: Any) -> None:
         self._emit_session_closed_for_active_session()
