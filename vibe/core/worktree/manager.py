@@ -9,14 +9,14 @@ never call :meth:`WorktreeManager.enter`.
 from __future__ import annotations
 
 import atexit
+from dataclasses import dataclass, field
 import os
+from pathlib import Path
 import shutil
 import signal
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from git import Repo
