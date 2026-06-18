@@ -53,6 +53,7 @@ async def main():
             f"Search the web for information about: {question}\n"
             f"Focus on: {angle}\n"
             f"Return a summary of what you found, with source URLs.",
+            agent="research",
             label=f"search:{angle}",
             phase="Search",
         ))
@@ -86,6 +87,7 @@ async def main():
             f"Source: {claim.get('source', '')}\n"
             f"Search the web to check if this claim is accurate. "
             f"Return verified=true only if you can confirm it.",
+            agent="research",
             label=f"verify:{claim.get('source', '?')[:20]}",
             phase="Verify",
             schema=VERDICT_SCHEMA,

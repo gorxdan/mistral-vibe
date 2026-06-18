@@ -42,6 +42,7 @@ class BuiltinAgentName(StrEnum):
     ACCEPT_EDITS = "accept-edits"
     AUTO_APPROVE = "auto-approve"
     EXPLORE = "explore"
+    RESEARCH = "research"
     LEAN = "lean"
 
 
@@ -158,6 +159,18 @@ EXPLORE = AgentProfile(
     overrides={"enabled_tools": ["grep", "read"], "system_prompt_id": "explore"},
 )
 
+RESEARCH = AgentProfile(
+    name=BuiltinAgentName.RESEARCH,
+    display_name="Research",
+    description="Read-only subagent for web research with search and fetch tools",
+    safety=AgentSafety.SAFE,
+    agent_type=AgentType.SUBAGENT,
+    overrides={
+        "enabled_tools": ["grep", "read", "web_search", "web_fetch"],
+        "system_prompt_id": "explore",
+    },
+)
+
 LEAN = AgentProfile(
     name=BuiltinAgentName.LEAN,
     display_name="Lean",
@@ -204,5 +217,6 @@ BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.ACCEPT_EDITS: ACCEPT_EDITS,
     BuiltinAgentName.AUTO_APPROVE: AUTO_APPROVE,
     BuiltinAgentName.EXPLORE: EXPLORE,
+    BuiltinAgentName.RESEARCH: RESEARCH,
     BuiltinAgentName.LEAN: LEAN,
 }

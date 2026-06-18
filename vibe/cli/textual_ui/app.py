@@ -203,6 +203,7 @@ from vibe.core.tools.builtins.ask_user_question import (
     Choice,
     Question,
 )
+from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.connectors import compute_connector_counts
 from vibe.core.tools.mcp_settings import persist_mcp_toggle
 from vibe.core.tools.permissions import RequiredPermission
@@ -2728,7 +2729,22 @@ class VibeApp(App):  # noqa: PLR0904
             )
             return
 
-        runtime = WorkflowRuntime()
+        loop = self.agent_loop
+        parent_context = InvokeContext(
+            tool_call_id=f"workflow-{cmd_name}",
+            agent_manager=loop.agent_manager,
+            session_dir=loop.session_logger.session_dir,
+            entrypoint_metadata=loop.entrypoint_metadata,
+            approval_callback=loop.approval_callback,
+            sampling_callback=loop._sampling_handler,
+            skill_manager=loop.skill_manager,
+            scratchpad_dir=loop.scratchpad_dir,
+            permission_store=loop._permission_store,
+            hook_config_result=loop._hook_config_result,
+            session_id=loop.session_id,
+            terminal_emulator=loop.terminal_emulator,
+        )
+        runtime = WorkflowRuntime(parent_context=parent_context)
         run_id = self._workflow_runner.launch(
             info.source, runtime=runtime, args=cmd_args or None
         )
