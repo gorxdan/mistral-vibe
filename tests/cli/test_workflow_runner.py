@@ -185,3 +185,49 @@ async def main():
     await entry.task
     assert len(completed_results) == 1
     assert completed_results[0].return_value == {"done": True}
+
+
+async def test_persist_callback_fires_on_cancel() -> None:
+    """WF-3: snapshots must persist on cancel/exit, not only on completion.
+
+    Previously _run_workflow called the persist callback only on the success
+    path; cancel/exit raised before persisting, so interrupted runs were never
+    snapshotted. The fix moves persistence into a finally block.
+    """
+    persist_count = 0
+
+    async def mount(w: Any) -> None:
+        pass
+
+    async def persist() -> None:
+        nonlocal persist_count
+        persist_count += 1
+
+    runner = WorkflowRunner(mount=mount, persist_callback=persist)
+
+    def slow_factory(
+        prompt: str, *, agent: str, parent_context: Any | None = None
+    ) -> Any:
+        @dataclass
+        class SlowLoop:
+            stats: MockStats = field(default_factory=MockStats)
+
+            async def act(self, prompt: str, *, response_format: Any = None):
+                await asyncio.sleep(10)
+                yield MockEvent(content="slow")
+
+        return SlowLoop()
+
+    rt = WorkflowRuntime(agent_loop_factory=slow_factory, max_concurrent=1)
+    script = """
+async def main():
+    await agent("slow")
+    return {}
+"""
+    run_id = runner.launch(script, runtime=rt)
+    await asyncio.sleep(0.05)
+
+    stopped = await runner.stop(run_id)
+    assert stopped is True
+    # The cancel path must have persisted a snapshot.
+    assert persist_count >= 1, "persist callback must fire on cancel"

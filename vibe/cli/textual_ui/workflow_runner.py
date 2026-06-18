@@ -153,8 +153,6 @@ class WorkflowRunner:
             entry.result = result
             if self._on_complete:
                 await self._on_complete(result)
-            if self._persist_callback:
-                await self._persist_callback()
             return result
         except asyncio.CancelledError:
             entry.error = "Cancelled"
@@ -164,6 +162,15 @@ class WorkflowRunner:
             logger.error("Workflow run failed", exc_info=e)
             await self._mount(ErrorMessage(f"Workflow `{entry.run_id}` failed: {e}"))
             raise
+        finally:
+            # Persist on every outcome (success, cancel, failure, app-exit)
+            # so an interrupted run can be inspected/resumed. Previously only
+            # natural completion persisted, leaving cancel/exit un-snapshotted.
+            if self._persist_callback:
+                try:
+                    await self._persist_callback()
+                except Exception:
+                    logger.warning("Failed to persist workflow snapshot", exc_info=True)
 
     def get_snapshot(self, run_id: str) -> WorkflowRunSnapshot | None:
         entry = self._find_run(run_id)

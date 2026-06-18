@@ -2904,11 +2904,19 @@ class VibeApp(App):  # noqa: PLR0904
     async def _persist_workflow_snapshots(self) -> None:
         snapshots: list[dict[str, Any]] = []
         for entry in self._workflow_runner.runs:
-            if entry.result is not None:
+            # Snapshot every run, including in-flight and cancelled ones, so
+            # interrupted runs are captured for inspection/resume. Previously
+            # only runs with a result (natural completion) were snapshotted.
+            try:
                 snap = entry.runtime.snapshot(
                     run_id=entry.run_id, script_source=entry.script_source
                 )
-                snapshots.append(snap.model_dump(mode="json"))
+            except Exception:
+                logger.warning(
+                    "Failed to snapshot workflow %s", entry.run_id, exc_info=True
+                )
+                continue
+            snapshots.append(snap.model_dump(mode="json"))
         await self.agent_loop.session_logger.persist_workflow_snapshots(snapshots)
 
     async def _handle_le_chaton_prompt(self, text: str) -> None:
