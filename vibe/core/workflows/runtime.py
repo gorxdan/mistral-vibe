@@ -34,9 +34,6 @@ if TYPE_CHECKING:
     from vibe.core.tools.base import InvokeContext
 
 
-_T = TypeVar("_T")
-_I = TypeVar("_I")
-_O = TypeVar("_O")
 
 
 class _AwaitableResult:

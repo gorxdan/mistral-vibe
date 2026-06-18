@@ -3735,8 +3735,11 @@ class VibeApp(App):  # noqa: PLR0904
             return
         if self._current_bottom_app == BottomApp.Workflows:
             await self._switch_to_input_app()
-        else:
+        elif self._current_bottom_app == BottomApp.Input:
             await self._switch_to_workflows_app()
+        # Any other bottom app (a pending Approval/Question modal, a picker,
+        # etc.) is left untouched: switching away would orphan its pending
+        # interaction Future and hang the agent holding _user_interaction_lock.
 
     def action_cycle_mode(self) -> None:
         if self._current_bottom_app != BottomApp.Input:

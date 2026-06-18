@@ -156,7 +156,12 @@ class HooksManager:
     async def run(self, invocation: HookInvocation) -> AsyncGenerator[_HookYield]:
         """Run all hooks matching *invocation* and stream their events."""
         hook_type = HookType(invocation.hook_event_name)
-        handler = _HANDLERS[hook_type]
+        handler = _HANDLERS.get(hook_type)
+        if handler is None:
+            # Some HookTypes (e.g. the team lifecycle events) are defined and
+            # constructible but have no registered handler yet. Treat them as
+            # no-ops rather than raising KeyError.
+            return
         hooks = self._matching_hooks(handler, invocation)
         if not hooks:
             return
