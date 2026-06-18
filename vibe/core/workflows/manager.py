@@ -7,6 +7,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
+import yaml
 
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.logger import logger
@@ -34,6 +35,7 @@ class WorkflowInfo:
     source: str
     path: Path
     is_bundled: bool = False
+    args_schema: dict[str, Any] | None = None
 
 
 class WorkflowManager:
@@ -109,35 +111,43 @@ class WorkflowManager:
     ) -> WorkflowInfo | None:
         try:
             content = read_safe(path).text
-            name, description, source = self._parse_workflow_file(content, path)
+            metadata, source = self._parse_workflow_file(content, path)
             return WorkflowInfo(
-                name=name,
-                description=description,
+                name=metadata.name,
+                description=metadata.description,
                 source=source,
                 path=path,
                 is_bundled=is_bundled,
+                args_schema=metadata.args_schema,
             )
         except Exception as e:
             logger.warning("Failed to load workflow at %s: %s", path, e)
             return None
 
     @staticmethod
-    def _parse_workflow_file(content: str, path: Path) -> tuple[str, str, str]:
+    def _parse_workflow_file(
+        content: str, path: Path
+    ) -> tuple[WorkflowMetadata, str]:
         match = _FRONTMATTER_RE.match(content)
         if match is None:
-            name = path.stem
-            return name, "", content
+            return WorkflowMetadata(name=path.stem), content
 
-        frontmatter_text = match.group(1)
         source = content[match.end() :]
 
-        name = path.stem
-        description = ""
+        try:
+            data = yaml.safe_load(match.group(1))
+        except yaml.YAMLError as e:
+            logger.warning("Invalid YAML frontmatter in %s: %s", path, e)
+            data = None
+        if not isinstance(data, dict):
+            data = {}
+        # Default the name to the filename stem if absent or null.
+        if not data.get("name"):
+            data["name"] = path.stem
 
-        for line in frontmatter_text.strip().splitlines():
-            if line.strip().startswith("name:"):
-                name = line.split(":", 1)[1].strip()
-            elif line.strip().startswith("description:"):
-                description = line.split(":", 1)[1].strip()
-
-        return name, description, source
+        try:
+            metadata = WorkflowMetadata.model_validate(data)
+        except Exception as e:
+            logger.warning("Invalid workflow metadata in %s: %s", path, e)
+            metadata = WorkflowMetadata(name=path.stem)
+        return metadata, source

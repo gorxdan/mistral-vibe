@@ -98,3 +98,55 @@ def test_first_match_wins(tmp_path: Path) -> None:
     info = mgr.get_workflow("audit")
     assert info is not None
     assert info.description == "First"
+
+
+def test_args_schema_parsed_from_frontmatter(tmp_path: Path) -> None:
+    wf_file = tmp_path / "with-args.py"
+    wf_file.write_text(
+        "---\n"
+        "name: with-args\n"
+        "description: Takes args\n"
+        "args_schema:\n"
+        "  type: object\n"
+        "  properties:\n"
+        "    topic:\n"
+        "      type: string\n"
+        "---\n"
+        "async def main():\n"
+        "    return {}\n"
+    )
+    mgr = WorkflowManager(lambda: _make_config(workflow_paths=[tmp_path]))
+    info = mgr.get_workflow("with-args")
+    assert info is not None
+    assert info.args_schema == {
+        "type": "object",
+        "properties": {"topic": {"type": "string"}},
+    }
+
+
+def test_description_with_colon_parsed_via_yaml(tmp_path: Path) -> None:
+    # The old line-based parser kept the surrounding quotes; YAML strips them
+    # and preserves the embedded colon.
+    wf_file = tmp_path / "colon.py"
+    wf_file.write_text(
+        "---\n"
+        "name: colon\n"
+        'description: "Audit: find bugs"\n'
+        "---\n"
+        "async def main():\n    return {}\n"
+    )
+    mgr = WorkflowManager(lambda: _make_config(workflow_paths=[tmp_path]))
+    info = mgr.get_workflow("colon")
+    assert info is not None
+    assert info.description == "Audit: find bugs"
+
+
+def test_malformed_frontmatter_falls_back_to_stem(tmp_path: Path) -> None:
+    wf_file = tmp_path / "broken.py"
+    wf_file.write_text(
+        "---\nname: [unclosed\n---\nasync def main():\n    return {}\n"
+    )
+    mgr = WorkflowManager(lambda: _make_config(workflow_paths=[tmp_path]))
+    info = mgr.get_workflow("broken")
+    assert info is not None  # name falls back to the filename stem
+    assert "async def main" in info.source
