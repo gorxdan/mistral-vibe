@@ -94,10 +94,8 @@ class TomlFileSettingsSource(PydanticBaseSettingsSource):
         super().__init__(settings_cls)
         self.toml_data = self._load_toml()
 
-    def _load_toml(self) -> dict[str, Any]:
-        file = get_harness_files_manager().config_file
-        if file is None:
-            return {}
+    @staticmethod
+    def _read_toml(file: Path) -> dict[str, Any]:
         try:
             with file.open("rb") as f:
                 return tomllib.load(f)
@@ -107,6 +105,43 @@ class TomlFileSettingsSource(PydanticBaseSettingsSource):
             raise RuntimeError(f"Invalid TOML in {file}: {e}") from e
         except OSError as e:
             raise RuntimeError(f"Cannot read {file}: {e}") from e
+
+    @staticmethod
+    def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+        """Recursively merge ``override`` onto ``base`` (override wins).
+
+        Project config must layer on top of user config per-key, not replace
+        it wholesale -- otherwise a project ``.vibe/config.toml`` that sets
+        only e.g. ``[tools.web_search]`` silently drops the user's
+        ``active_model``/``models``/``providers`` and falls back to defaults.
+        """
+        merged = dict(base)
+        for key, value in override.items():
+            if (
+                key in merged
+                and isinstance(merged[key], dict)
+                and isinstance(value, dict)
+            ):
+                merged[key] = TomlFileSettingsSource._deep_merge(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+
+    def _load_toml(self) -> dict[str, Any]:
+        mgr = get_harness_files_manager()
+        file = mgr.config_file
+        if file is None:
+            return {}
+        data = self._read_toml(file)
+        # If the resolved config_file is a PROJECT config (trusted workdir),
+        # merge it on top of the USER config so project keys override rather
+        # than replace the user's settings. Without this, trusting a folder
+        # silently discards the user-level model/provider config.
+        user_file = mgr.user_config_file
+        if file != user_file and user_file.is_file():
+            user_data = self._read_toml(user_file)
+            data = self._deep_merge(user_data, data)
+        return data
 
     def get_field_value(
         self, field: FieldInfo, field_name: str
