@@ -150,5 +150,5 @@ def run_onboarding(
             )
         case "completed":
             rprint(
-                '\nSetup complete 🎉. Run "vibe" to start using the Mistral Vibe CLI.\n'
+                '\nSetup complete 🎉. Run "chaton" to start using the Chaton CLI.\n'
             )

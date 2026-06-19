@@ -161,7 +161,7 @@ async def get_update_if_available(
     return UpdateAvailability(latest_version=update.latest_version, should_notify=True)
 
 
-UPDATE_COMMANDS = ["uv tool upgrade mistral-vibe", "brew upgrade mistral-vibe"]
+UPDATE_COMMANDS = []
 
 
 async def do_update() -> bool:

@@ -253,7 +253,7 @@ class VibeConfigSchema(ConfigSchema):
     include_model_info: Annotated[bool, WithReplaceMerge()] = True
     include_project_context: Annotated[bool, WithReplaceMerge()] = True
     include_prompt_detail: Annotated[bool, WithReplaceMerge()] = True
-    enable_update_checks: Annotated[bool, WithReplaceMerge()] = True
+    enable_update_checks: Annotated[bool, WithReplaceMerge()] = False
     enable_auto_update: Annotated[bool, WithReplaceMerge()] = True
     enable_notifications: Annotated[bool, WithReplaceMerge()] = True
     enable_system_trust_store: Annotated[bool, WithReplaceMerge()] = False

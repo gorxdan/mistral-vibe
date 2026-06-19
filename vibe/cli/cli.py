@@ -299,7 +299,7 @@ def _maybe_run_startup_update_prompt(
             rprint(
                 "[yellow]Vibe could not update automatically.[/]\n"
                 "  Update manually with your package manager (for example "
-                "[bold]uv tool upgrade mistral-vibe[/]), or keep using "
+                "[bold]uv tool upgrade chaton[/]), or keep using "
                 f"the current version ({__version__}) for now."
             )
             sys.exit(1)

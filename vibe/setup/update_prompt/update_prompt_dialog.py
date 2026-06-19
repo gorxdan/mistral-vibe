@@ -88,7 +88,7 @@ class UpdatePromptDialog(CenterMiddle):
             )
 
             yield PetitChat(id="update-dialog-spinner")
-            yield NoMarkupStatic("Updating mistral-vibe…", id="update-dialog-status")
+            yield NoMarkupStatic("Updating chaton…", id="update-dialog-status")
 
     async def on_mount(self) -> None:
         spinner = self.query_one("#update-dialog-spinner", PetitChat)

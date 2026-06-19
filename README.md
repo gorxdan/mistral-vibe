@@ -1,9 +1,9 @@
-# Mistral Vibe
+# Chaton
 
-[![PyPI Version](https://img.shields.io/pypi/v/mistral-vibe)](https://pypi.org/project/mistral-vibe)
+[![PyPI Version](https://img.shields.io/pypi/v/chaton)](https://pypi.org/project/chaton)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/release/python-3120/)
-[![CI Status](https://github.com/mistralai/mistral-vibe/actions/workflows/ci.yml/badge.svg)](https://github.com/mistralai/mistral-vibe/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/mistralai/mistral-vibe)](https://github.com/mistralai/mistral-vibe/blob/main/LICENSE)
+[![CI Status](https://github.com/dan-campos/chaton/actions/workflows/ci.yml/badge.svg)](https://github.com/dan-campos/chaton/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/dan-campos/chaton)](https://github.com/dan-campos/chaton/blob/main/LICENSE)
 
 ```
 ██████████████████░░
@@ -17,12 +17,12 @@
 ██████████████████░░
 ```
 
-**Mistral's open-source CLI coding assistant.**
+**A CLI coding assistant — chaton fork of mistral-vibe.**
 
-Mistral Vibe is a command-line coding assistant powered by Mistral's models. It provides a conversational interface to your codebase, allowing you to use natural language to explore, modify, and interact with your projects through a powerful set of tools.
+Chaton is a command-line coding assistant (a fork of mistral-vibe) powered by Mistral's models. It provides a conversational interface to your codebase, allowing you to use natural language to explore, modify, and interact with your projects through a powerful set of tools.
 
 > [!WARNING]
-> Mistral Vibe works on Windows, but we officially support and target UNIX environments.
+> Chaton works on Windows, but we officially support and target UNIX environments.
 
 ### One-line install (recommended)
 
@@ -45,13 +45,13 @@ Then, use uv command below.
 ### Using uv
 
 ```bash
-uv tool install mistral-vibe
+uv tool install chaton
 ```
 
 ### Using pip
 
 ```bash
-pip install mistral-vibe
+pip install chaton
 ```
 
 ## Table of Contents

@@ -1,7 +1,7 @@
 [project]
-name = "mistral-vibe"
-version = "2.16.1"
-description = "Minimal CLI coding agent by Mistral"
+name = "chaton"
+version = "0.1.0"
+description = "CLI coding agent (chaton fork of mistral-vibe)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
@@ -126,10 +126,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mistralai/mistral-vibe"
-Repository = "https://github.com/mistralai/mistral-vibe"
-Issues = "https://github.com/mistralai/mistral-vibe/issues"
-Documentation = "https://github.com/mistralai/mistral-vibe#readme"
+Homepage = "https://github.com/dan-campos/chaton"
+Repository = "https://github.com/dan-campos/chaton"
+Issues = "https://github.com/dan-campos/chaton/issues"
+Documentation = "https://github.com/dan-campos/chaton#readme"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs", "editables"]
@@ -143,13 +143,11 @@ include = ["vibe/"]
 
 
 [project.scripts]
-vibe = "vibe.cli.entrypoint:main"
-vibe-acp = "vibe.acp.entrypoint:main"
+chaton = "vibe.cli.entrypoint:main"
+chaton-acp = "vibe.acp.entrypoint:main"
 
 
 [tool.uv]
-exclude-newer = "2026-06-12T00:00:00Z"
-
 package = true
 required-version = ">=0.8.0"
 

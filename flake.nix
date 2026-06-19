@@ -73,8 +73,8 @@
     in {
 
       packages.default = mkApplication {
-        venv = pythonSet.mkVirtualEnv "mistralai-vibe-env" workspace.deps.default;
-        package = pythonSet.mistral-vibe;
+        venv = pythonSet.mkVirtualEnv "chaton-env" workspace.deps.default;
+        package = pythonSet.chaton;
       };
 
       apps = {

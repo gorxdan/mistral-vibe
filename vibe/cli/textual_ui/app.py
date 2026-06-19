@@ -4298,7 +4298,7 @@ def run_textual_ui(
 ) -> None:
     from vibe.cli.stderr_guard import stderr_guard
 
-    update_notifier = PyPIUpdateGateway(project_name="mistral-vibe")
+    update_notifier = PyPIUpdateGateway(project_name="chaton")
     plan_offer_gateway = HttpWhoAmIGateway(base_url=agent_loop.config.console_base_url)
     vscode_extension_promo_repository = FileSystemVscodeExtensionPromoRepository()
     vscode_extension_promo = VscodeExtensionPromo(
