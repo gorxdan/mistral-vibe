@@ -17,7 +17,7 @@ Use `launch_workflow` to run a workflow script that orchestrates parallel agents
 
 The script must define `async def main()`. The runtime injects:
 
-- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None)` — spawn a subagent
+- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent; `isolation="worktree"` runs it in a fresh git worktree (isolates file edits for parallel agents)
 - `parallel(*thunks)` (or `parallel([thunks])`) — run thunks concurrently, results in order; a thunk that raises yields `None` (filter the results)
 - `pipeline(items, *stages)` — run each item through all stages with no barrier between stages (item A can be in stage 3 while B is still in stage 1); each stage receives `(prev, item, index)`. One stage acts as a concurrent map.
 - `phase(name)` — declare a phase for progress tracking

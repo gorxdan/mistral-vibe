@@ -700,3 +700,70 @@ async def test_nested_workflow_unavailable_without_resolver() -> None:
     result = await rt.run("async def main():\n    return await workflow('x')\n")
     assert result.run.status.value == "failed"
     assert "not available" in result.summary
+
+
+async def test_isolated_agent_routes_to_executor() -> None:
+    """agent(isolation='worktree') routes to the injectable executor (in
+    production: a `vibe -p` subprocess in a fresh worktree) and returns its
+    output; it still counts against the agent cap/budget."""
+    calls: list[tuple] = []
+
+    async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
+        calls.append((prompt, agent, label, max_turns))
+        return "isolated result"
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        max_agents=100,
+        isolated_executor=stub,
+    )
+    result = await rt.spawn_agent(
+        "do risky thing", agent="default", label="iso1", isolation="worktree"
+    )
+    assert result == "isolated result"
+    assert rt._agent_count == 1
+    assert calls and calls[0][1] == "default" and calls[0][2] == "iso1"
+
+
+async def test_isolated_agent_with_schema_parses_output() -> None:
+    async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
+        return '{"ok": true}'
+
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+    }
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=stub
+    )
+    assert await rt.spawn_agent("x", schema=schema, isolation="worktree") == {"ok": True}
+
+
+async def test_isolated_agent_bad_json_raises() -> None:
+    async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
+        return "not json"
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=stub
+    )
+    with pytest.raises(WorkflowError):
+        await rt.spawn_agent("x", schema=schema, isolation="worktree")
+
+
+async def test_isolated_agent_executor_failure_raises_workflow_error() -> None:
+    async def boom(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
+        raise RuntimeError("subprocess died")
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=boom
+    )
+    with pytest.raises(WorkflowError, match="isolated agent failed"):
+        await rt.spawn_agent("x", isolation="worktree")
+
+
+async def test_unknown_isolation_mode_raises(runtime: WorkflowRuntime) -> None:
+    with pytest.raises(WorkflowError, match="isolation"):
+        await runtime.spawn_agent("x", isolation="container")

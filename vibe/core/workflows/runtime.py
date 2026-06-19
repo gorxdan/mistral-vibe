@@ -75,6 +75,12 @@ DEFAULT_MAX_CONCURRENT = 16
 DEFAULT_MAX_AGENTS = 1000
 DEFAULT_BUDGET_TOTAL = None
 DEFAULT_SCHEMA_RETRIES = 2
+DEFAULT_ISOLATED_MAX_TURNS = 40
+
+# Signature of the isolated-agent executor seam: (prompt, agent, label,
+# max_turns) -> the agent's text output. Injectable so tests can stub the
+# worktree + subprocess; the default runs `vibe -p` in a fresh git worktree.
+IsolatedExecutor = Callable[[str, str, str | None, int], Awaitable[str]]
 
 
 class AgentCapExceeded(Exception):
@@ -106,6 +112,9 @@ class WorkflowRuntime:
     # Resolves a workflow name to its script source, enabling nested workflow()
     # calls. Wired from WorkflowManager at launch; None disables nesting.
     workflow_source_resolver: Callable[[str], str | None] | None = None
+    # Runs an isolation="worktree" agent. None -> the default executor that
+    # spawns `vibe -p` in a fresh git worktree. Injectable for tests.
+    isolated_executor: IsolatedExecutor | None = None
     _semaphore: asyncio.Semaphore = field(init=False)
     _budget: Budget = field(init=False)
     _agent_count: int = field(default=0, init=False)
@@ -151,6 +160,7 @@ class WorkflowRuntime:
         phase: str | None = None,
         schema: dict | None = None,
         budget_estimate: int | None = None,
+        isolation: str | None = None,
     ) -> str | dict[str, Any]:
         cache_key = _prompt_hash(prompt, agent, phase)
         if cached := self._cache.get(cache_key):
@@ -167,6 +177,21 @@ class WorkflowRuntime:
         self._agent_count += 1
 
         async with self._semaphore:
+            if isolation == "worktree":
+                return await self._run_isolated_agent(
+                    prompt=prompt,
+                    agent=agent,
+                    model=model,
+                    label=label,
+                    phase=phase,
+                    schema=schema,
+                    reservation=reservation,
+                    cache_key=cache_key,
+                )
+            if isolation is not None:
+                raise WorkflowError(
+                    f"Unknown isolation mode {isolation!r} (only 'worktree')"
+                )
             return await self._run_agent(
                 prompt=prompt,
                 agent=agent,
@@ -463,6 +488,117 @@ class WorkflowRuntime:
         )
         self._record_agent_result(result)
 
+    async def _run_isolated_agent(
+        self,
+        *,
+        prompt: str,
+        agent: str,
+        model: str | None,
+        label: str | None,
+        phase: str | None,
+        schema: dict | None,
+        reservation: Reservation,
+        cache_key: str,
+    ) -> str | dict[str, Any]:
+        """Run an isolation='worktree' agent: a `vibe -p` subprocess in a fresh
+        git worktree, so file mutations cannot collide with other agents. The
+        worktree's branch is kept for manual merge if the agent changed files."""
+        effective_prompt = prompt + (
+            build_prompt_fallback(schema) if schema is not None else ""
+        )
+        executor = self.isolated_executor or self._default_isolated_executor
+        completed = True
+        error_msg: str | None = None
+        output = ""
+        try:
+            output = await executor(
+                effective_prompt, agent, label, DEFAULT_ISOLATED_MAX_TURNS
+            )
+        except (AgentCapExceeded, BudgetExhausted):
+            raise
+        except Exception as e:
+            completed = False
+            error_msg = str(e)
+
+        response: str | dict[str, Any] = output
+        if completed and schema is not None:
+            try:
+                parsed = json.loads(output)
+            except json.JSONDecodeError as e:
+                completed = False
+                error_msg = f"isolated agent returned invalid JSON: {e}"
+            else:
+                errors = validate_against_schema(parsed, schema)
+                if errors:
+                    completed = False
+                    error_msg = "; ".join(str(err) for err in errors)
+                else:
+                    response = parsed
+
+        # Subprocess token usage is not surfaced over text output; record 0 and
+        # release the reservation. (Future: parse `--output json` for stats.)
+        self._finalize_agent(
+            prompt=prompt,
+            response=response,
+            label=label,
+            phase=phase,
+            tokens_in=0,
+            tokens_out=0,
+            reservation=reservation,
+            completed=completed,
+            error=error_msg,
+            cache_key=cache_key,
+            agent=agent,
+            model=model,
+        )
+        if not completed:
+            raise WorkflowError(f"isolated agent failed: {error_msg}")
+        return response
+
+    async def _default_isolated_executor(
+        self, prompt: str, agent: str, label: str | None, max_turns: int
+    ) -> str:
+        import os
+        from pathlib import Path
+        import signal
+        import sys
+
+        from vibe.core.worktree.ephemeral import (
+            create_ephemeral_worktree,
+            remove_ephemeral_worktree,
+        )
+
+        wt = create_ephemeral_worktree(Path.cwd(), label or agent)
+        try:
+            cmd = [
+                sys.executable, "-m", "vibe", "-p", prompt,
+                "--agent", "auto-approve", "--trust",
+                "--output", "text", "--max-turns", str(max_turns),
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(wt.path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            try:
+                stdout, stderr = await proc.communicate()
+            except asyncio.CancelledError:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                raise
+            if proc.returncode != 0:
+                err = (stderr or b"").decode("utf-8", "replace")[:300]
+                raise WorkflowError(
+                    f"isolated agent subprocess failed (rc={proc.returncode}): {err}"
+                )
+            return (stdout or b"").decode("utf-8", "replace")
+        finally:
+            remove_ephemeral_worktree(wt)
+
     def parallel(self, *thunks: Any) -> _AwaitableResult:
         """Run thunks concurrently and return their results in order (barrier).
 
@@ -587,6 +723,7 @@ class WorkflowRuntime:
             phase: str | None = None,
             schema: dict | None = None,
             budget_estimate: int | None = None,
+            isolation: str | None = None,
         ) -> str | dict[str, Any]:
             return await self.spawn_agent(
                 prompt,
@@ -596,6 +733,7 @@ class WorkflowRuntime:
                 phase=phase,
                 schema=schema,
                 budget_estimate=budget_estimate,
+                isolation=isolation,
             )
 
         async def _workflow(name: str, args: Any = None) -> Any:
