@@ -82,31 +82,48 @@ class ReadOnlyBudget:
 
     The live Budget is mutable (reserve/reconcile/restore_spent mutate
     _spent/_reserved). Injecting it directly let a script reset spend
-    (budget._spent = 0) and bypass the cap. This proxy exposes only the
-    safe accessors and blocks attribute assignment.
+    (budget._spent = 0) and bypass the cap. Blocking writes on a proxy that
+    merely *holds* the Budget was not enough: a script could read it back via
+    the proxy's storage attribute (budget._budget._spent = 0) since a single-
+    underscore name is not blocked by the script sandbox.
+
+    So this proxy stores no readable reference to the Budget — only bound
+    accessor callables. The only paths from those callables back to the live
+    Budget are dunder attributes (__self__ / __closure__), which the sandbox's
+    AST checks reject, so a script cannot reach the Budget to mutate it.
     """
 
-    __slots__ = ("_budget",)
+    __slots__ = (
+        "_total_fn",
+        "_spent_fn",
+        "_remaining_fn",
+        "_snapshot_fn",
+        "_agent_count_fn",
+    )
 
     def __init__(self, budget: Budget) -> None:
-        object.__setattr__(self, "_budget", budget)
+        object.__setattr__(self, "_spent_fn", budget.spent)
+        object.__setattr__(self, "_remaining_fn", budget.remaining)
+        object.__setattr__(self, "_snapshot_fn", budget.snapshot)
+        object.__setattr__(self, "_total_fn", lambda: budget.total)
+        object.__setattr__(self, "_agent_count_fn", lambda: budget.agent_count)
 
     @property
     def total(self) -> int | None:
-        return self._budget.total
+        return self._total_fn()
 
     def spent(self) -> int:
-        return self._budget.spent()
+        return self._spent_fn()
 
     def remaining(self) -> int | float:
-        return self._budget.remaining()
+        return self._remaining_fn()
 
     def snapshot(self) -> BudgetSnapshot:
-        return self._budget.snapshot()
+        return self._snapshot_fn()
 
     @property
     def agent_count(self) -> int:
-        return self._budget.agent_count
+        return self._agent_count_fn()
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError(

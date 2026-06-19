@@ -524,3 +524,21 @@ async def test_budget_exposed_to_script_is_read_only(runtime: WorkflowRuntime) -
         budget.total = 999  # type: ignore[misc]
     # The underlying budget is unaffected.
     assert runtime._budget.spent() == 0
+
+
+async def test_budget_proxy_does_not_expose_live_budget(
+    runtime: WorkflowRuntime,
+) -> None:
+    """Regression (A-001): the proxy must not hold a readable reference to the
+    live Budget — reaching it (budget._budget) let scripts reset spend and lift
+    the cap. The Budget should only be reachable via dunder attrs the sandbox
+    blocks, never a plain readable attribute."""
+    runtime._budget.restore_spent(900_000)
+    ns = runtime.build_script_namespace()
+    budget = ns["budget"]
+    assert budget.remaining() == 100_000
+    # The old bypass attribute is gone.
+    assert not hasattr(budget, "_budget")
+    # remaining() still reflects the live budget (proxy isn't a stale copy).
+    runtime._budget.restore_spent(950_000)
+    assert budget.remaining() == 50_000
