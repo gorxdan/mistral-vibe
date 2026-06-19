@@ -212,9 +212,7 @@ def _concurrency_tracking_factory(active: list[int], max_active: list[int]) -> A
             finally:
                 active[0] -= 1
 
-    def factory(
-        prompt: str, *, agent: str, parent_context: Any | None = None
-    ) -> Any:
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
         return _TrackingLoop()
 
     return factory
@@ -240,24 +238,19 @@ async def test_parallel_no_deadlock_when_exceeding_max_concurrent() -> None:
     # Regression: nested semaphore acquisition (parallel + spawn_agent) used to
     # deadlock once the number of agent thunks reached max_concurrent.
     rt = WorkflowRuntime(
-        agent_loop_factory=make_factory(delay=0.01),
-        max_concurrent=2,
-        max_agents=100,
+        agent_loop_factory=make_factory(delay=0.01), max_concurrent=2, max_agents=100
     )
     ns = rt.build_script_namespace()
     agent = ns["agent"]
     results = await asyncio.wait_for(
-        rt.parallel(*[(lambda i=i: agent(f"p{i}")) for i in range(8)]),
-        timeout=5.0,
+        rt.parallel(*[(lambda i=i: agent(f"p{i}")) for i in range(8)]), timeout=5.0
     )
     assert results == ["mock response"] * 8
 
 
 async def test_pipeline_no_deadlock_when_exceeding_max_concurrent() -> None:
     rt = WorkflowRuntime(
-        agent_loop_factory=make_factory(delay=0.01),
-        max_concurrent=2,
-        max_agents=100,
+        agent_loop_factory=make_factory(delay=0.01), max_concurrent=2, max_agents=100
     )
     ns = rt.build_script_namespace()
     agent = ns["agent"]
@@ -265,9 +258,7 @@ async def test_pipeline_no_deadlock_when_exceeding_max_concurrent() -> None:
     async def fn(i: int) -> str:
         return await agent(f"p{i}")
 
-    results = await asyncio.wait_for(
-        rt.pipeline(list(range(8)), fn), timeout=5.0
-    )
+    results = await asyncio.wait_for(rt.pipeline(list(range(8)), fn), timeout=5.0)
     assert results == ["mock response"] * 8
 
 
@@ -532,7 +523,8 @@ async def test_budget_proxy_does_not_expose_live_budget(
     """Regression (A-001): the proxy must not hold a readable reference to the
     live Budget — reaching it (budget._budget) let scripts reset spend and lift
     the cap. The Budget should only be reachable via dunder attrs the sandbox
-    blocks, never a plain readable attribute."""
+    blocks, never a plain readable attribute.
+    """
     runtime._budget.restore_spent(900_000)
     ns = runtime.build_script_namespace()
     budget = ns["budget"]
@@ -546,6 +538,7 @@ async def test_budget_proxy_does_not_expose_live_budget(
 
 async def test_pipeline_multi_stage(runtime: WorkflowRuntime) -> None:
     """Claude Code semantics: each item flows through all stages in order."""
+
     async def double(x: int) -> int:
         return x * 2
 
@@ -614,3 +607,53 @@ async def test_parallel_accepts_list_form(runtime: WorkflowRuntime) -> None:
     # Claude Code style: parallel([...]) as well as parallel(*...).
     results = await runtime.parallel([a, b])
     assert results == ["a", "b"]
+
+
+async def test_parallel_reraises_resource_exhaustion(runtime: WorkflowRuntime) -> None:
+    """DEFECT-001: hard ceilings (cap/budget) must fail the run, not be swallowed
+    into a None result that masks the breach."""
+    from vibe.core.workflows.budget import BudgetExhausted
+
+    async def ok() -> str:
+        return "ok"
+
+    async def hit_cap() -> str:
+        raise AgentCapExceeded("cap")
+
+    async def over_budget() -> str:
+        raise BudgetExhausted("over")
+
+    with pytest.raises(AgentCapExceeded):
+        await runtime.parallel(ok, hit_cap)
+    with pytest.raises(BudgetExhausted):
+        await runtime.parallel(ok, over_budget)
+
+
+async def test_pipeline_reraises_resource_exhaustion(runtime: WorkflowRuntime) -> None:
+    from vibe.core.workflows.budget import BudgetExhausted
+
+    async def hit_cap(_x: int) -> int:
+        raise AgentCapExceeded("cap")
+
+    async def over_budget(_x: int) -> int:
+        raise BudgetExhausted("over")
+
+    with pytest.raises(AgentCapExceeded):
+        await runtime.pipeline([1, 2], hit_cap)
+    with pytest.raises(BudgetExhausted):
+        await runtime.pipeline([1], over_budget)
+
+
+async def test_pipeline_rejects_keyword_only_stage(runtime: WorkflowRuntime) -> None:
+    """DEFECT-002: a keyword-only stage accepts no positional arg; reject it up
+    front with a clear error instead of silently dropping every item to None."""
+    async def kw_only(*, prev: int) -> int:  # noqa: ARG001
+        return prev
+
+    with pytest.raises(WorkflowError, match="positional"):
+        runtime.pipeline([1, 2], kw_only)  # raises synchronously at call time
+
+
+async def test_pipeline_zero_stages_is_passthrough(runtime: WorkflowRuntime) -> None:
+    """EDGE-001: pipeline with no stages returns items unchanged."""
+    assert await runtime.pipeline([1, 2, 3]) == [1, 2, 3]

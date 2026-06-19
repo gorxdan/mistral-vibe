@@ -18,8 +18,8 @@ Use `launch_workflow` to run a workflow script that orchestrates parallel agents
 The script must define `async def main()`. The runtime injects:
 
 - `agent(prompt, *, agent="explore", label=None, phase=None, schema=None)` — spawn a subagent
-- `parallel(*thunks)` — run thunks concurrently, results in order
-- `pipeline(items, fn)` — concurrent map over items, results in order
+- `parallel(*thunks)` (or `parallel([thunks])`) — run thunks concurrently, results in order; a thunk that raises yields `None` (filter the results)
+- `pipeline(items, *stages)` — run each item through all stages with no barrier between stages (item A can be in stage 3 while B is still in stage 1); each stage receives `(prev, item, index)`. One stage acts as a concurrent map.
 - `phase(name)` — declare a phase for progress tracking
 - `log(msg)` — log a progress message
 - `budget` — token budget with `.total` and `.remaining()`
@@ -28,7 +28,7 @@ The script must define `async def main()`. The runtime injects:
 ## Best Practices
 
 1. **Use schemas for structured output** — pass `schema=` to `agent()` for JSON-validated responses
-2. **Use `parallel` for independent work, `pipeline` for ordered concurrent map**
+2. **Use `parallel` for independent same-stage work; use `pipeline` for multi-stage per-item flows** where each stage consumes the prior stage's output (e.g. find→verify→synthesize), with no barrier between items' stages
 3. **Declare phases with `phase()` for progress tracking**
 4. **Guard loops with `budget.remaining()`** — stop when budget is exhausted
 5. **Keep scripts focused** — one workflow per task, not a general-purpose program

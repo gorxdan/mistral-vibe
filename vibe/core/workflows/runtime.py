@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
-from vibe.core.workflows.budget import Budget, ReadOnlyBudget, Reservation
+from vibe.core.workflows.budget import (
+    Budget,
+    BudgetExhausted,
+    ReadOnlyBudget,
+    Reservation,
+)
 from vibe.core.workflows.models import (
     AgentResult,
     CachedAgentResult,
@@ -33,8 +38,6 @@ from vibe.core.workflows.security import build_namespace, validate_script
 if TYPE_CHECKING:
     from vibe.core.agent_loop import AgentLoop
     from vibe.core.tools.base import InvokeContext
-
-
 
 
 class _AwaitableResult:
@@ -64,9 +67,9 @@ class _AwaitableResult:
             "Use: results = await parallel(...)"
         )
 
+
 T = TypeVar("T")
 I = TypeVar("I")
-O = TypeVar("O")
 
 DEFAULT_MAX_CONCURRENT = 16
 DEFAULT_MAX_AGENTS = 1000
@@ -310,7 +313,9 @@ class WorkflowRuntime:
             f"Last errors: {'; '.join(last_errors)}"
         )
 
-    def _create_loop(self, prompt: str, *, agent: str, model: str | None = None) -> AgentLoop:
+    def _create_loop(
+        self, prompt: str, *, agent: str, model: str | None = None
+    ) -> AgentLoop:
         if self.agent_loop_factory is not None:
             return self.agent_loop_factory(
                 prompt, agent=agent, parent_context=self.parent_context
@@ -376,7 +381,9 @@ class WorkflowRuntime:
                 return content
         return None
 
-    def _compute_cost(self, tokens_in: int, tokens_out: int, model: str | None) -> float:
+    def _compute_cost(
+        self, tokens_in: int, tokens_out: int, model: str | None
+    ) -> float:
         ctx = self.parent_context
         if not ctx or not ctx.agent_manager:
             return 0.0
@@ -472,6 +479,11 @@ class WorkflowRuntime:
         async def _safe(thunk: Callable[[], Awaitable[Any]]) -> Any:
             try:
                 return await thunk()
+            except (AgentCapExceeded, BudgetExhausted):
+                # Hard ceilings (runaway-agent / overspend backstops) must fail
+                # the run, not silently become a None result that masks the
+                # breach. Ordinary failures still degrade to None below.
+                raise
             except Exception:
                 logger.warning("workflow: parallel() thunk failed", exc_info=True)
                 return None
@@ -482,10 +494,13 @@ class WorkflowRuntime:
         return _AwaitableResult(_run())
 
     @staticmethod
-    def _call_stage(stage: Callable[..., Any], result: Any, item: Any, index: int) -> Any:
+    def _call_stage(
+        stage: Callable[..., Any], result: Any, item: Any, index: int
+    ) -> Any:
         """Invoke a pipeline stage, passing as many of (prev, item, index) as it
         accepts (min 1). Lets a one-arg stage ``fn(item)`` and a full Claude-Code
-        style ``(prev, item, index)`` stage both work."""
+        style ``(prev, item, index)`` stage both work.
+        """
         args = (result, item, index)
         try:
             params = list(inspect.signature(stage).parameters.values())
@@ -494,13 +509,28 @@ class WorkflowRuntime:
         if any(p.kind == p.VAR_POSITIONAL for p in params):
             return stage(*args)
         positional = sum(
-            1
-            for p in params
-            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            1 for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
         )
         return stage(*args[: max(1, min(3, positional))])
 
-    def pipeline(self, items: list[I], *stages: Callable[..., Awaitable[Any]]) -> _AwaitableResult:
+    @staticmethod
+    def _stage_accepts_positional(stage: Callable[..., Any]) -> bool:
+        """A pipeline stage must accept at least one positional arg (the item /
+        prev result). Used to reject keyword-only stages up front with a clear
+        error instead of silently dropping every item to None at call time."""
+        try:
+            params = list(inspect.signature(stage).parameters.values())
+        except (TypeError, ValueError):
+            return True  # uninspectable (e.g. a builtin) — assume callable
+        return any(
+            p.kind
+            in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL)
+            for p in params
+        )
+
+    def pipeline(
+        self, items: list[I], *stages: Callable[..., Awaitable[Any]]
+    ) -> _AwaitableResult:
         """Run each item through all stages independently — no barrier between
         stages, so item A can be in stage 3 while item B is still in stage 1
         (Claude Code pipeline semantics). Each stage receives (prevResult,
@@ -510,6 +540,12 @@ class WorkflowRuntime:
         Limiting happens in spawn_agent, not here, to avoid nested acquisition of
         the non-reentrant semaphore (deadlock at scale).
         """
+        for stage in stages:
+            if not self._stage_accepts_positional(stage):
+                raise WorkflowError(
+                    f"pipeline stage {getattr(stage, '__name__', stage)!r} must "
+                    "accept at least one positional argument (prev[, item, index])"
+                )
         items_list = list(items)
 
         async def _run_item(index: int, item: Any) -> Any:
@@ -517,18 +553,23 @@ class WorkflowRuntime:
             for stage in stages:
                 try:
                     result = await self._call_stage(stage, result, item, index)
+                except (AgentCapExceeded, BudgetExhausted):
+                    # Hard ceilings fail the run (see parallel()); they must not
+                    # be swallowed into a silent None item.
+                    raise
                 except Exception:
                     logger.warning(
-                        "workflow: pipeline() stage failed for item %d", index,
+                        "workflow: pipeline() stage failed for item %d",
+                        index,
                         exc_info=True,
                     )
                     return None
             return result
 
         async def _run() -> list[Any]:
-            return await asyncio.gather(
-                *[_run_item(i, it) for i, it in enumerate(items_list)]
-            )
+            return await asyncio.gather(*[
+                _run_item(i, it) for i, it in enumerate(items_list)
+            ])
 
         return _AwaitableResult(_run())
 
