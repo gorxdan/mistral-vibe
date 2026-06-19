@@ -896,8 +896,8 @@ YAML frontmatter (`name:`, `description:`) precedes the Python source. The
 runtime injects these functions:
 
 - `agent(prompt, *, agent="explore", label=None, phase=None, schema=None)` — spawn a subagent
-- `parallel(*thunks)` — run thunks concurrently, results in order
-- `pipeline(items, fn)` — concurrent map over items, results in order
+- `parallel(*thunks)` — run thunks concurrently, results in order (a thunk that raises yields `None`)
+- `pipeline(items, *stages)` — run each item through all stages independently, no barrier between stages; each stage receives `(prev, item, index)`. One stage acts as a concurrent map.
 - `phase(name)` — declare a phase for progress tracking
 - `log(msg)` — log a progress message
 - `budget` — token budget object with `.total` and `.remaining()`
