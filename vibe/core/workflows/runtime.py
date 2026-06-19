@@ -509,7 +509,7 @@ class WorkflowRuntime:
         if any(p.kind == p.VAR_POSITIONAL for p in params):
             return stage(*args)
         positional = sum(
-            1 for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            1 for p in params if p.kind in {p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD}
         )
         return stage(*args[: max(1, min(3, positional))])
 
@@ -517,14 +517,14 @@ class WorkflowRuntime:
     def _stage_accepts_positional(stage: Callable[..., Any]) -> bool:
         """A pipeline stage must accept at least one positional arg (the item /
         prev result). Used to reject keyword-only stages up front with a clear
-        error instead of silently dropping every item to None at call time."""
+        error instead of silently dropping every item to None at call time.
+        """
         try:
             params = list(inspect.signature(stage).parameters.values())
         except (TypeError, ValueError):
             return True  # uninspectable (e.g. a builtin) — assume callable
         return any(
-            p.kind
-            in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL)
+            p.kind in {p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL}
             for p in params
         )
 

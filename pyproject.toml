@@ -148,7 +148,7 @@ vibe-acp = "vibe.acp.entrypoint:main"
 
 
 [tool.uv]
-exclude-newer = "7 days"
+exclude-newer = "2026-06-12T00:00:00Z"
 
 package = true
 required-version = ">=0.8.0"

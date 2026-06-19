@@ -469,15 +469,6 @@ async def test_cache_hit_does_not_double_count_tokens(runtime: WorkflowRuntime) 
 
 
 async def test_parent_context_rejects_non_subagent_agent() -> None:
-    """WF-1: a threaded parent_context must enforce the subagent-type guard.
-
-    The model-invoked launch_workflow path used to build WorkflowRuntime() with
-    no parent_context, so the guard in _create_real_loop was skipped and a
-    script could spawn non-subagent profiles such as auto-approve (which sets
-    bypass_tool_permissions=True, short-circuiting all tool permission checks).
-    With parent_context.agent_manager present, the guard runs and rejects
-    non-subagent agents before any loop is built.
-    """
     from vibe.core.agents.models import AgentType
     from vibe.core.tools.base import InvokeContext
 
@@ -500,9 +491,6 @@ async def test_parent_context_rejects_non_subagent_agent() -> None:
 
 
 async def test_budget_exposed_to_script_is_read_only(runtime: WorkflowRuntime) -> None:
-    """A workflow script must not be able to mutate the budget to bypass the
-    cap. The live Budget is mutable; the namespace injects a read-only proxy.
-    """
     ns = runtime.build_script_namespace()
     budget = ns["budget"]
     # Read accessors work.
@@ -520,11 +508,6 @@ async def test_budget_exposed_to_script_is_read_only(runtime: WorkflowRuntime) -
 async def test_budget_proxy_does_not_expose_live_budget(
     runtime: WorkflowRuntime,
 ) -> None:
-    """Regression (A-001): the proxy must not hold a readable reference to the
-    live Budget — reaching it (budget._budget) let scripts reset spend and lift
-    the cap. The Budget should only be reachable via dunder attrs the sandbox
-    blocks, never a plain readable attribute.
-    """
     runtime._budget.restore_spent(900_000)
     ns = runtime.build_script_namespace()
     budget = ns["budget"]
@@ -537,8 +520,6 @@ async def test_budget_proxy_does_not_expose_live_budget(
 
 
 async def test_pipeline_multi_stage(runtime: WorkflowRuntime) -> None:
-    """Claude Code semantics: each item flows through all stages in order."""
-
     async def double(x: int) -> int:
         return x * 2
 
@@ -610,8 +591,6 @@ async def test_parallel_accepts_list_form(runtime: WorkflowRuntime) -> None:
 
 
 async def test_parallel_reraises_resource_exhaustion(runtime: WorkflowRuntime) -> None:
-    """DEFECT-001: hard ceilings (cap/budget) must fail the run, not be swallowed
-    into a None result that masks the breach."""
     from vibe.core.workflows.budget import BudgetExhausted
 
     async def ok() -> str:
@@ -645,9 +624,7 @@ async def test_pipeline_reraises_resource_exhaustion(runtime: WorkflowRuntime) -
 
 
 async def test_pipeline_rejects_keyword_only_stage(runtime: WorkflowRuntime) -> None:
-    """DEFECT-002: a keyword-only stage accepts no positional arg; reject it up
-    front with a clear error instead of silently dropping every item to None."""
-    async def kw_only(*, prev: int) -> int:  # noqa: ARG001
+    async def kw_only(*, prev: int) -> int:
         return prev
 
     with pytest.raises(WorkflowError, match="positional"):
@@ -655,5 +632,4 @@ async def test_pipeline_rejects_keyword_only_stage(runtime: WorkflowRuntime) -> 
 
 
 async def test_pipeline_zero_stages_is_passthrough(runtime: WorkflowRuntime) -> None:
-    """EDGE-001: pipeline with no stages returns items unchanged."""
     assert await runtime.pipeline([1, 2, 3]) == [1, 2, 3]
