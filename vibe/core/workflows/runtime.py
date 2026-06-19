@@ -91,8 +91,14 @@ class WorkflowError(Exception):
     pass
 
 
-def _prompt_hash(prompt: str, agent: str, phase: str | None = None) -> str:
-    return hashlib.sha256(f"{agent}:{phase}:{prompt}".encode()).hexdigest()[:16]
+def _prompt_hash(
+    prompt: str, agent: str, phase: str | None = None, isolation: str | None = None
+) -> str:
+    # isolation is part of the identity: an isolated (subprocess/worktree) run is
+    # not interchangeable with an in-process one for the same prompt/agent/phase.
+    # Only fold it in when set, so ordinary keys are unchanged.
+    iso = f":iso={isolation}" if isolation else ""
+    return hashlib.sha256(f"{agent}:{phase}{iso}:{prompt}".encode()).hexdigest()[:16]
 
 
 class AgentLoopFactory(Protocol):
@@ -162,7 +168,7 @@ class WorkflowRuntime:
         budget_estimate: int | None = None,
         isolation: str | None = None,
     ) -> str | dict[str, Any]:
-        cache_key = _prompt_hash(prompt, agent, phase)
+        cache_key = _prompt_hash(prompt, agent, phase, isolation)
         if cached := self._cache.get(cache_key):
             self._log(f"cache hit: {label or agent}")
             self._record_cached_result(cached)
@@ -535,15 +541,17 @@ class WorkflowRuntime:
                 else:
                     response = parsed
 
-        # Subprocess token usage is not surfaced over text output; record 0 and
-        # release the reservation. (Future: parse `--output json` for stats.)
+        # The subprocess does not surface real token usage over text output, so
+        # charge the reserved estimate (not 0) — otherwise isolated agents would
+        # spend nothing against budget_total and the cap would be unenforceable.
+        # Conservative by design. (Future: parse `--output json` for real stats.)
         self._finalize_agent(
             prompt=prompt,
             response=response,
             label=label,
             phase=phase,
             tokens_in=0,
-            tokens_out=0,
+            tokens_out=reservation.estimate,
             reservation=reservation,
             completed=completed,
             error=error_msg,
@@ -578,6 +586,11 @@ class WorkflowRuntime:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(wt.path),
+                # The child is a trusted `vibe` instance and needs the parent's
+                # credentials (e.g. the provider API key) to run; pass the env
+                # explicitly (same as teams) rather than relying on implicit
+                # inheritance. Isolation bounds files, not env/secrets.
+                env=os.environ.copy(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
@@ -585,8 +598,16 @@ class WorkflowRuntime:
             try:
                 stdout, stderr = await proc.communicate()
             except asyncio.CancelledError:
+                # Reap the whole group AND wait for exit before the finally
+                # removes the worktree — otherwise `git worktree remove` races a
+                # process that still owns the worktree as its cwd (EBUSY -> leak).
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=3.0)
+                    except TimeoutError:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        await proc.wait()
                 except (ProcessLookupError, PermissionError):
                     pass
                 raise

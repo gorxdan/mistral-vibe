@@ -767,3 +767,120 @@ async def test_isolated_agent_executor_failure_raises_workflow_error() -> None:
 async def test_unknown_isolation_mode_raises(runtime: WorkflowRuntime) -> None:
     with pytest.raises(WorkflowError, match="isolation"):
         await runtime.spawn_agent("x", isolation="container")
+
+
+async def test_isolated_agent_charges_budget_estimate() -> None:
+    """BUDGET-001: isolated agents can't surface real tokens, so they must charge
+    the reserved estimate against budget_total (not 0) to keep the cap enforced."""
+    async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
+        return "done"
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=stub
+    )
+    await rt.spawn_agent("x", isolation="worktree", budget_estimate=12_345)
+    assert rt._budget.spent() == 12_345
+
+
+async def test_isolation_not_cross_cached_with_inprocess() -> None:
+    """CACHE-002: an isolated result must not satisfy a later in-process call with
+    the same prompt/agent/phase (different execution semantics + accounting)."""
+    async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
+        return "ISOLATED"
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),  # in-process returns "mock response"
+        budget_total=1_000_000,
+        max_agents=100,
+        isolated_executor=stub,
+    )
+    iso = await rt.spawn_agent("same", agent="explore", phase="P", isolation="worktree")
+    inproc = await rt.spawn_agent("same", agent="explore", phase="P")
+    assert iso == "ISOLATED"
+    assert inproc == "mock response"  # not the cached isolated result
+    assert rt._agent_count == 2
+
+
+async def test_default_isolated_executor_spawns_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path
+
+    import vibe.core.worktree.ephemeral as eph
+
+    removed: list[Any] = []
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: removed.append(wt))
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 4242
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"agent output", b"")
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        captured["argv"] = args
+        captured["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    out = await rt._default_isolated_executor("do it", "auto-approve", "lbl", 40)
+
+    assert out == "agent output"
+    argv = captured["argv"]
+    assert "-p" in argv and "do it" in argv
+    assert "auto-approve" in argv and "--trust" in argv and "--max-turns" in argv
+    assert captured["kwargs"]["cwd"] == "/tmp/iso-wt"
+    assert captured["kwargs"]["start_new_session"] is True
+    assert "env" in captured["kwargs"]
+    assert removed == [fake_wt]  # worktree cleaned up
+
+
+async def test_default_isolated_executor_reaps_and_cleans_on_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path
+
+    import vibe.core.worktree.ephemeral as eph
+
+    removed: list[Any] = []
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt2")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: removed.append(wt))
+
+    waited = [False]
+
+    class _HangProc:
+        pid = 4243
+        returncode = None
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            raise asyncio.CancelledError
+
+        async def wait(self) -> int:
+            waited[0] = True
+            return -15
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _HangProc:
+        return _HangProc()
+
+    killed: list[int] = []
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    import os as _os
+
+    monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(sig))
+    monkeypatch.setattr(_os, "getpgid", lambda pid: pid)
+
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    with pytest.raises(asyncio.CancelledError):
+        await rt._default_isolated_executor("do it", "auto-approve", "lbl", 40)
+
+    assert killed  # process group was signalled
+    assert waited[0]  # waited for exit before cleanup (WL-001)
+    assert removed == [fake_wt]  # worktree still cleaned up despite cancel
