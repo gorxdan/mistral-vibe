@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from typing import get_args
 from unittest.mock import patch
+
+import pytest
 
 from vibe.core.config import EFFORT_LEVELS, EffortLevel, VibeConfig
 
@@ -68,3 +71,48 @@ def test_le_chaton_turn_restore_returns_to_prior_mode_and_thinking(
 
     assert vibe_config.effort_mode == "normal"
     assert vibe_config.get_active_model().thinking == prior_thinking
+
+
+@pytest.mark.asyncio
+async def test_le_chaton_boost_is_live_during_the_turn(
+    vibe_config: VibeConfig,
+) -> None:
+    """A-1: the boost must apply to the turn the keyword triggers.
+
+    _handle_user_message spawns the turn as a background task and returns; the
+    turn reads the thinking level live when it builds its request. The handler
+    must therefore wait for the turn before restoring, otherwise the boost is
+    reverted before it is ever used (a silent no-op).
+    """
+    from vibe.cli.textual_ui.app import VibeApp
+
+    observed: dict[str, str] = {}
+
+    class _Stub:
+        def __init__(self, config: VibeConfig) -> None:
+            self.config = config
+            self._agent_task: asyncio.Task[None] | None = None
+
+        async def _reload_config(self) -> None:
+            pass
+
+        async def _handle_user_message(self, text: str) -> None:
+            async def _turn() -> None:
+                # Yield once so that, without the fix, the handler's finally
+                # would already have reverted the boost before this read.
+                await asyncio.sleep(0)
+                observed["thinking"] = self.config.get_active_model().thinking
+
+            self._agent_task = asyncio.create_task(_turn())
+
+    stub = _Stub(vibe_config)
+    prior = vibe_config.get_active_model().thinking
+
+    with patch.object(VibeConfig, "save_updates"):
+        await VibeApp._handle_le_chaton_prompt(stub, "do the thing")  # type: ignore[arg-type]
+
+    # The boost was live while the turn ran...
+    assert observed["thinking"] == "max"
+    # ...and is fully restored afterwards.
+    assert stub.config.effort_mode == "normal"
+    assert stub.config.get_active_model().thinking == prior

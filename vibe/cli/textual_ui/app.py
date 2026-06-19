@@ -2980,6 +2980,16 @@ class VibeApp(App):  # noqa: PLR0904
             await self._reload_config()
         try:
             await self._handle_user_message(text)
+            # _handle_user_message spawns the turn as a background task and
+            # returns immediately; the turn reads the thinking level live when it
+            # builds the LLM request. Wait for that turn to finish before
+            # restoring, otherwise the boost is reverted before it is ever used
+            # (the le-chaton turn would run at the prior level). asyncio.wait
+            # does not propagate the turn's own exception/cancellation, but still
+            # surfaces cancellation of this coroutine.
+            task = self._agent_task
+            if task is not None and not task.done():
+                await asyncio.wait({task})
         finally:
             if previous_mode != "le-chaton":
                 self.config.set_effort_mode(previous_mode)
