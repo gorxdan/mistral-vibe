@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum, auto
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 class ConfigOptionKind(StrEnum):
     ACTION_MODEL = auto()
     ACTION_THINKING = auto()
+    ACTION_JUDGE_MODEL = auto()
 
     @staticmethod
     def toggle(key: str) -> str:
@@ -51,7 +52,7 @@ class ConfigApp(Container):
             self.value = value
 
     class ConfigClosed(Message):
-        def __init__(self, changes: dict[str, str | bool]) -> None:
+        def __init__(self, changes: dict[str, Any]) -> None:
             super().__init__()
             self.changes = changes
 
@@ -59,6 +60,9 @@ class ConfigApp(Container):
         pass
 
     class OpenThinkingPicker(Message):
+        pass
+
+    class OpenJudgeModelPicker(Message):
         pass
 
     def __init__(self, config: VibeConfig) -> None:
@@ -71,18 +75,31 @@ class ConfigApp(Container):
                 "file_watcher_for_autocomplete",
                 "Autocomplete watcher (may delay first autocompletion)",
             ),
+            (
+                "safety_judge.enabled",
+                "Safety judge (let an LLM auto-approve safe tool calls)",
+            ),
         ]
 
     def _get_current_model(self) -> str:
         return str(getattr(self.config, "active_model", ""))
 
+    def _nested_get(self, key: str) -> Any:
+        """Read a possibly dotted config key (e.g. ``safety_judge.enabled``)."""
+        obj: Any = self.config
+        for part in key.split("."):
+            obj = getattr(obj, part, None)
+            if obj is None:
+                return None
+        return obj
+
     def _get_toggle_value(self, key: str) -> str:
         if key in self.changes:
             return self.changes[key]
-        raw = getattr(self.config, key, False)
+        raw = self._nested_get(key)
         if isinstance(raw, bool):
             return "On" if raw else "Off"
-        return str(raw)
+        return str(raw) if raw is not None else "Off"
 
     def _model_prompt(self) -> Text:
         text = Text(no_wrap=True)
@@ -100,6 +117,16 @@ class ConfigApp(Container):
         text = Text(no_wrap=True)
         text.append("Thinking: ")
         text.append(self._get_current_thinking().capitalize(), style="bold")
+        return text
+
+    def _judge_model_prompt(self) -> Text:
+        text = Text(no_wrap=True)
+        text.append("  Judge model: ")
+        model = self._nested_get("safety_judge.model")
+        if model:
+            text.append(str(model), style="bold")
+        else:
+            text.append("(none — select one)", style="dim")
         return text
 
     def _toggle_prompt(self, key: str, label: str) -> Text:
@@ -121,6 +148,13 @@ class ConfigApp(Container):
             options.append(
                 Option(self._toggle_prompt(key, label), id=ConfigOptionKind.toggle(key))
             )
+            if key == "safety_judge.enabled":
+                options.append(
+                    Option(
+                        self._judge_model_prompt(),
+                        id=ConfigOptionKind.ACTION_JUDGE_MODEL,
+                    )
+                )
 
         with Vertical(id="config-content"):
             yield NoMarkupStatic("Settings", classes="settings-title")
@@ -149,6 +183,9 @@ class ConfigApp(Container):
             option_list.replace_option_prompt(
                 ConfigOptionKind.toggle(key), self._toggle_prompt(key, label)
             )
+        option_list.replace_option_prompt(
+            ConfigOptionKind.ACTION_JUDGE_MODEL, self._judge_model_prompt()
+        )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         option_id = event.option.id
@@ -163,6 +200,10 @@ class ConfigApp(Container):
             self.post_message(self.OpenThinkingPicker())
             return
 
+        if option_id == ConfigOptionKind.ACTION_JUDGE_MODEL:
+            self.post_message(self.OpenJudgeModelPicker())
+            return
+
         if ConfigOptionKind.is_toggle(option_id):
             key = ConfigOptionKind.toggle_key(option_id)
             current = self._get_toggle_value(key)
@@ -171,13 +212,17 @@ class ConfigApp(Container):
             self.post_message(self.SettingChanged(key=key, value=new_value))
             self._refresh_options()
 
-    def _convert_changes_for_save(self) -> dict[str, str | bool]:
-        result: dict[str, str | bool] = {}
+    def _convert_changes_for_save(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
         for key, value in self.changes.items():
-            if value in {"On", "Off"}:
-                result[key] = value == "On"
-            else:
-                result[key] = value
+            val: str | bool = value == "On" if value in {"On", "Off"} else value
+            # Expand dotted keys (e.g. "safety_judge.enabled") into nested dicts
+            # so save_updates deep-merges them into the right TOML table.
+            parts = key.split(".")
+            cursor = result
+            for part in parts[:-1]:
+                cursor = cursor.setdefault(part, {})
+            cursor[parts[-1]] = val
         return result
 
     def action_close(self) -> None:

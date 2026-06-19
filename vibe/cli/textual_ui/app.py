@@ -1081,6 +1081,17 @@ class VibeApp(App):  # noqa: PLR0904
         await self._switch_to_input_app()
         await self._switch_to_model_picker_app()
 
+    async def on_config_app_open_judge_model_picker(
+        self, _message: ConfigApp.OpenJudgeModelPicker
+    ) -> None:
+        config_app = self.query_one(ConfigApp)
+        changes = config_app._convert_changes_for_save()
+        if changes:
+            VibeConfig.save_updates(changes)
+            await self._reload_config()
+        await self._switch_to_input_app()
+        await self._switch_to_model_picker_app(target="judge")
+
     async def on_config_app_open_thinking_picker(
         self, _message: ConfigApp.OpenThinkingPicker
     ) -> None:
@@ -1118,7 +1129,7 @@ class VibeApp(App):  # noqa: PLR0904
         await self._switch_to_input_app()
 
     async def _handle_config_settings_closed(
-        self, changes: dict[str, str | bool]
+        self, changes: dict[str, Any]
     ) -> None:
         if changes:
             VibeConfig.save_updates(changes)
@@ -1168,13 +1179,19 @@ class VibeApp(App):  # noqa: PLR0904
     async def on_model_picker_app_model_selected(
         self, message: ModelPickerApp.ModelSelected
     ) -> None:
-        VibeConfig.save_updates({"active_model": message.alias})
+        target = getattr(self, "_model_picker_target", "active")
+        self._model_picker_target = "active"
+        if target == "judge":
+            VibeConfig.save_updates({"safety_judge": {"model": message.alias}})
+        else:
+            VibeConfig.save_updates({"active_model": message.alias})
         await self._reload_config()
         await self._switch_to_input_app()
 
     async def on_model_picker_app_cancelled(
         self, _event: ModelPickerApp.Cancelled
     ) -> None:
+        self._model_picker_target = "active"
         await self._switch_to_input_app()
 
     async def on_thinking_picker_app_thinking_selected(
@@ -2901,6 +2918,11 @@ class VibeApp(App):  # noqa: PLR0904
                 ),
             )
 
+    def _resolve_workflow_source(self, name: str) -> str | None:
+        """Resolve a discovered workflow's source by name, for nested workflow()."""
+        info = self._workflow_manager.get_workflow(name)
+        return info.source if info is not None else None
+
     def _build_workflow_parent_context(self, tool_call_id: str) -> InvokeContext:
         """Build the parent InvokeContext for a workflow runtime.
 
@@ -2933,7 +2955,10 @@ class VibeApp(App):  # noqa: PLR0904
         parent_context = self._build_workflow_parent_context(
             f"workflow-tool-{name or 'run'}"
         )
-        runtime = WorkflowRuntime(parent_context=parent_context)
+        runtime = WorkflowRuntime(
+            parent_context=parent_context,
+            workflow_source_resolver=self._resolve_workflow_source,
+        )
         run_id = self._workflow_runner.launch(script, runtime=runtime)
         return run_id
 
@@ -2964,7 +2989,10 @@ class VibeApp(App):  # noqa: PLR0904
             return
 
         parent_context = self._build_workflow_parent_context(f"workflow-{cmd_name}")
-        runtime = WorkflowRuntime(parent_context=parent_context)
+        runtime = WorkflowRuntime(
+            parent_context=parent_context,
+            workflow_source_resolver=self._resolve_workflow_source,
+        )
         run_id = self._workflow_runner.launch(
             info.source, runtime=runtime, args=cmd_args or None
         )
@@ -3023,7 +3051,10 @@ class VibeApp(App):  # noqa: PLR0904
         if self.config.disable_workflows:
             return None
         parent_context = self._build_workflow_parent_context("workflow-resume")
-        return WorkflowRuntime(parent_context=parent_context)
+        return WorkflowRuntime(
+            parent_context=parent_context,
+            workflow_source_resolver=self._resolve_workflow_source,
+        )
 
     async def _handle_le_chaton_prompt(self, text: str) -> None:
         if self.config.disable_workflows:
@@ -3280,12 +3311,18 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(UserCommandMessage("Voice settings opened..."))
         await self._switch_from_input(VoiceApp(self.config))
 
-    async def _switch_to_model_picker_app(self) -> None:
+    async def _switch_to_model_picker_app(self, target: str = "active") -> None:
         if self._current_bottom_app == BottomApp.ModelPicker:
             return
 
+        # Remember whether this picker sets the active model or the safety-judge
+        # model so on_model_picker_app_model_selected persists to the right key.
+        self._model_picker_target = target
         model_aliases = [m.alias for m in self.config.available_models]
-        current_model = str(self.config.active_model)
+        if target == "judge":
+            current_model = str(self.config.safety_judge.model or "")
+        else:
+            current_model = str(self.config.active_model)
         await self._switch_from_input(
             ModelPickerApp(model_aliases=model_aliases, current_model=current_model)
         )
