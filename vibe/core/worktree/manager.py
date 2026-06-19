@@ -495,6 +495,15 @@ class WorktreeManager:
             )
             logger.info("WIP-committed dirty worktree state to branch %s", handle.branch)
             return True
+        except GitCommandError as exc:
+            # repo.git.add("-A") is GitPython and raises GitCommandError (not
+            # CalledProcessError), e.g. on index-lock contention. Treat it as a
+            # failed WIP commit so the caller skips auto-ff and falls through to
+            # the recovery handoff instead of letting it escape teardown.
+            logger.warning(
+                "WIP-commit staging failed: %s. Worktree kept for recovery.", exc
+            )
+            return False
         except subprocess.CalledProcessError as exc:
             err = (exc.stderr or b"").decode("utf-8", errors="replace")
             if "nothing to commit" in err.lower():
