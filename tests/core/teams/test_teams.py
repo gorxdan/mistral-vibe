@@ -373,3 +373,52 @@ async def test_team_lifecycle_hooks_fire_on_task_events(tmp_path: Path) -> None:
             os.environ.pop("VIBE_HOME", None)
         else:
             os.environ["VIBE_HOME"] = saved
+
+
+def test_mailbox_rejects_path_traversal_names(tmp_path: Path) -> None:
+    """team-tool-001: recipient/sender names become inbox path components and
+    arrive from model-controlled tool args, so traversal/absolute names must be
+    rejected (no write/read outside the mailbox dir)."""
+    mb = Mailbox(tmp_path)
+    for bad in ["../evil", "../../etc", "/tmp/abs", "..", "a/b", "with space"]:
+        with pytest.raises(ValueError):
+            mb.send("alice", bad, "x")
+        with pytest.raises(ValueError):
+            mb.read(bad)
+        with pytest.raises(ValueError):
+            mb.get_unread(bad)
+    # A spoofed sender name is rejected too.
+    with pytest.raises(ValueError):
+        mb.send("../evil", "bob", "x")
+    # Normal names still work.
+    mb.send("alice", "bob", "hi")
+    assert len(mb.read("bob")) == 1
+
+
+def test_complete_task_enforces_ownership_for_actor(tmp_path: Path) -> None:
+    """team-tool-003: a teammate (actor given) may only complete a task it
+    claimed and that is in progress; the lead (actor=None) is unrestricted."""
+    store = TaskStore(tmp_path)
+    store.add_task("Task A")
+    store.claim_task("task-1", "alice")
+
+    # Another teammate cannot complete alice's task.
+    assert store.complete_task("task-1", "done", actor="bob") is None
+    assert store.get_task("task-1").status == TaskStatus.IN_PROGRESS
+
+    # The owner can.
+    done = store.complete_task("task-1", "done", actor="alice")
+    assert done is not None
+    assert done.status == TaskStatus.COMPLETED
+
+    # Completing an already-completed task as an actor is refused.
+    assert store.complete_task("task-1", "again", actor="alice") is None
+
+
+def test_complete_task_lead_unrestricted(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path)
+    store.add_task("Task A")  # PENDING, unclaimed
+    # actor=None (lead) completes regardless of claim/status.
+    done = store.complete_task("task-1", "done")
+    assert done is not None
+    assert done.status == TaskStatus.COMPLETED

@@ -85,11 +85,20 @@ class TaskStore:
             self._tasks = tasks
             return task
 
-    def complete_task(self, task_id: str, result: str | None = None) -> Task | None:
+    def complete_task(
+        self, task_id: str, result: str | None = None, *, actor: str | None = None
+    ) -> Task | None:
         with self._lock():
             tasks = self._read_tasks()
             task = tasks.get(task_id)
             if task is None:
+                return None
+            # When an actor is supplied (a teammate completing via the team
+            # tool), only the assignee that claimed an in-progress task may
+            # complete it. actor=None (lead-side) keeps unrestricted completion.
+            if actor is not None and (
+                task.assignee != actor or task.status != TaskStatus.IN_PROGRESS
+            ):
                 return None
             task.status = TaskStatus.COMPLETED
             task.completed_at = time.time()

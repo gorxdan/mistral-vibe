@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import time
 from uuid import uuid4
 
@@ -9,6 +10,18 @@ from filelock import FileLock
 from vibe.core.logger import logger
 from vibe.core.teams.models import Message
 
+# A recipient name becomes a path component (the per-recipient inbox dir). These
+# names reach the mailbox from model-controlled tool args, so they must be a
+# single safe component — no separators, no "..", no absolute paths — to prevent
+# reading/writing outside the mailbox directory (path traversal).
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def _safe_name(name: str) -> str:
+    if name == ".." or not _NAME_RE.match(name):
+        raise ValueError(f"invalid team member name: {name!r}")
+    return name
+
 
 class Mailbox:
     def __init__(self, team_dir: Path) -> None:
@@ -16,7 +29,14 @@ class Mailbox:
         self._mailbox_dir = team_dir / "mailbox"
         self._mailbox_dir.mkdir(parents=True, exist_ok=True)
 
+    def _inbox(self, name: str) -> Path:
+        return self._mailbox_dir / _safe_name(name)
+
     def send(self, from_name: str, to_name: str, content: str) -> Message:
+        # Validate both names: to_name forms the inbox path; from_name is
+        # recorded on the message and used as a recipient elsewhere.
+        _safe_name(from_name)
+        inbox = self._inbox(to_name)
         msg = Message(
             id=str(uuid4()),
             from_name=from_name,
@@ -24,7 +44,6 @@ class Mailbox:
             content=content,
             timestamp=time.time(),
         )
-        inbox = self._mailbox_dir / to_name
         inbox.mkdir(parents=True, exist_ok=True)
         msg_file = inbox / f"{msg.id}.json"
         lock = FileLock(str(inbox / ".lock"), timeout=5)
@@ -51,7 +70,7 @@ class Mailbox:
         return pairs
 
     def read(self, recipient: str, *, mark_read: bool = True) -> list[Message]:
-        inbox = self._mailbox_dir / recipient
+        inbox = self._inbox(recipient)
         if not inbox.is_dir():
             return []
         messages: list[Message] = []
@@ -65,7 +84,7 @@ class Mailbox:
         return messages
 
     def get_unread(self, recipient: str) -> list[Message]:
-        inbox = self._mailbox_dir / recipient
+        inbox = self._inbox(recipient)
         if not inbox.is_dir():
             return []
         messages: list[Message] = []
@@ -77,7 +96,7 @@ class Mailbox:
         return messages
 
     def clear(self, recipient: str) -> None:
-        inbox = self._mailbox_dir / recipient
+        inbox = self._inbox(recipient)
         if not inbox.is_dir():
             return
         lock = FileLock(str(inbox / ".lock"), timeout=5)

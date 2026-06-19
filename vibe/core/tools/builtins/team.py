@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 import os
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -17,6 +17,10 @@ from vibe.core.tools.base import (
 )
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from vibe.core.types import ToolResultEvent, ToolStreamEvent
+
+if TYPE_CHECKING:
+    from vibe.core.teams.mailbox import Mailbox
+    from vibe.core.teams.task_store import TaskStore
 
 
 def _team_dir() -> Path | None:
@@ -40,10 +44,6 @@ class TeamArgs(BaseModel):
         )
     )
     task_id: str | None = Field(default=None, description="Task id for claim/complete.")
-    assignee: str | None = Field(
-        default=None,
-        description="Who is claiming/completing the task. Defaults to this teammate's name.",
-    )
     description: str | None = Field(default=None, description="Result text for complete_task.")
     to_name: str | None = Field(default=None, description="Recipient for send_message.")
     content: str | None = Field(default=None, description="Message body for send_message.")
@@ -97,7 +97,7 @@ class Team(
     def get_status_text(cls) -> str:
         return "Team coordination"
 
-    def _bind(self) -> tuple[object, object]:
+    def _bind(self) -> tuple[TaskStore, Mailbox]:
         from vibe.core.teams.mailbox import Mailbox
         from vibe.core.teams.task_store import TaskStore
 
@@ -107,12 +107,15 @@ class Team(
         return TaskStore(team_dir), Mailbox(team_dir)
 
     @staticmethod
-    def _teammate_name(args: TeamArgs) -> str:
-        if args.assignee:
-            return args.assignee
+    def _self_name() -> str:
+        # Identity is bound to the spawning environment, never to model-supplied
+        # args: a teammate may only act AS ITSELF. Honouring a caller-supplied
+        # name would let a (prompt-injectable, auto-approved) teammate spoof the
+        # sender of a message, claim/complete tasks as someone else, or read and
+        # mark-read another teammate's inbox.
         name = os.environ.get("VIBE_TEAMMATE_NAME")
         if not name:
-            raise ToolError("assignee is required (VIBE_TEAMMATE_NAME is unset).")
+            raise ToolError("Cannot determine teammate identity (VIBE_TEAMMATE_NAME is unset).")
         return name
 
     async def run(
@@ -141,7 +144,7 @@ class Team(
             case "claim_task":
                 if not args.task_id:
                     raise ToolError("task_id is required for claim_task.")
-                assignee = self._teammate_name(args)
+                assignee = self._self_name()
                 task = task_store.claim_task(args.task_id, assignee)
                 if task is None:
                     raise ToolError(
@@ -156,10 +159,15 @@ class Team(
             case "complete_task":
                 if not args.task_id:
                     raise ToolError("task_id is required for complete_task.")
-                assignee = self._teammate_name(args)
-                task = task_store.complete_task(args.task_id, args.description)
+                actor = self._self_name()
+                task = task_store.complete_task(
+                    args.task_id, args.description, actor=actor
+                )
                 if task is None:
-                    raise ToolError(f"Could not complete task {args.task_id} (missing).")
+                    raise ToolError(
+                        f"Could not complete task {args.task_id} (missing, or not "
+                        f"claimed by {actor})."
+                    )
                 yield TeamResult(
                     action=args.action,
                     message=f"Completed task {task.id}.",
@@ -168,7 +176,7 @@ class Team(
             case "send_message":
                 if not args.to_name or args.content is None:
                     raise ToolError("to_name and content are required for send_message.")
-                from_name = self._teammate_name(args)
+                from_name = self._self_name()
                 msg = mailbox.send(from_name, args.to_name, args.content)
                 yield TeamResult(
                     action=args.action,
@@ -176,7 +184,7 @@ class Team(
                     messages=[msg.model_dump(mode="json")],
                 )
             case "read_messages":
-                recipient = self._teammate_name(args)
+                recipient = self._self_name()
                 msgs = mailbox.read(recipient, mark_read=args.mark_read)
                 yield TeamResult(
                     action=args.action,
@@ -184,7 +192,7 @@ class Team(
                     messages=[m.model_dump(mode="json") for m in msgs],
                 )
             case "unread_messages":
-                recipient = self._teammate_name(args)
+                recipient = self._self_name()
                 msgs = mailbox.get_unread(recipient)
                 yield TeamResult(
                     action=args.action,
