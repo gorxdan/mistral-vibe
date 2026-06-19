@@ -69,6 +69,24 @@ async def main():
     assert entry.status == WorkflowStatus.COMPLETED
 
 
+async def test_launch_records_args_for_snapshot() -> None:
+    """WF-RESUME-01: launch args must be recorded on the entry so snapshots (and
+    therefore resume) carry them — otherwise resume re-runs with args=None."""
+
+    async def mount(w: Any) -> None:
+        pass
+
+    runner = WorkflowRunner(mount=mount)
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_concurrent=2)
+    script = "async def main():\n    return {'q': args}\n"
+    run_id = runner.launch(script, runtime=rt, args="my topic")
+
+    snap = runner.get_snapshot(run_id)
+    assert snap is not None
+    assert snap.args == "my topic"
+    assert runner.runs[0].args == "my topic"
+
+
 async def test_list_runs() -> None:
     async def mount(w: Any) -> None:
         pass

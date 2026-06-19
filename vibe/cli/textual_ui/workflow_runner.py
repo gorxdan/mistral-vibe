@@ -28,6 +28,7 @@ class WorkflowRunEntry:
     script_source: str
     started_at: float
     runtime: WorkflowRuntime
+    args: Any = None
     task: asyncio.Task[WorkflowResult] | None = None
     result: WorkflowResult | None = None
     error: str | None = None
@@ -143,6 +144,7 @@ class WorkflowRunner:
             script_source=script_source,
             started_at=time.monotonic(),
             runtime=runtime,
+            args=args,
         )
 
         runtime.set_event_sink(self._make_event_sink(run_id))
@@ -181,7 +183,7 @@ class WorkflowRunner:
         if entry is None:
             return None
         return entry.runtime.snapshot(
-            run_id=entry.run_id, script_source=entry.script_source, args=None
+            run_id=entry.run_id, script_source=entry.script_source, args=entry.args
         )
 
     def _load_snapshot_for_resume(self, run_id: str) -> WorkflowRunSnapshot | None:
@@ -214,6 +216,7 @@ class WorkflowRunner:
             script_source=snapshot.script_source,
             started_at=time.monotonic(),
             runtime=runtime,
+            args=snapshot.args,
         )
 
         runtime.set_event_sink(self._make_event_sink(new_id))

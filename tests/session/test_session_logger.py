@@ -1268,3 +1268,32 @@ class TestPersistExperiments:
             metadata["experiments"]["features"]["vibe_code_cli_test_ab"]["defaultValue"]
             == "cli"
         )
+
+
+@pytest.mark.asyncio
+async def test_persist_workflow_snapshots_merges_by_run_id(
+    session_config: SessionLoggingConfig,
+) -> None:
+    """WF-RESUME-03: persisting must upsert by run_id, not full-replace, so a
+    resumed session (which starts with an empty in-memory run list) does not
+    wipe snapshots persisted by a prior session."""
+    logger = SessionLogger(session_config, "merge-test-1")
+    assert logger.session_dir is not None
+    assert logger.session_metadata is not None
+    logger.session_dir.mkdir(parents=True, exist_ok=True)
+    # A metadata file must exist on disk for persist to read.
+    await SessionLogger.persist_metadata(
+        logger.session_metadata.model_dump(mode="json"), logger.session_dir
+    )
+
+    await logger.persist_workflow_snapshots([{"run_id": "wf-1", "x": 1}])
+    # A later persist carrying only the new run must not wipe wf-1.
+    await logger.persist_workflow_snapshots([{"run_id": "wf-2", "x": 2}])
+    loaded = logger.load_workflow_snapshots()
+    assert {s["run_id"] for s in loaded} == {"wf-1", "wf-2"}
+
+    # Re-persisting an existing run_id upserts (replaces) it, keeps the other.
+    await logger.persist_workflow_snapshots([{"run_id": "wf-1", "x": 99}])
+    by_id = {s["run_id"]: s for s in logger.load_workflow_snapshots()}
+    assert by_id["wf-1"]["x"] == 99
+    assert set(by_id) == {"wf-1", "wf-2"}

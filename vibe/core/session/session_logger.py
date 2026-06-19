@@ -379,7 +379,6 @@ class SessionLogger:
         if session_info is None:
             return
         session_dir, session_metadata = session_info
-        session_metadata.workflow_snapshots = snapshots
         metadata_path = session_dir / METADATA_FILENAME
         if not metadata_path.exists():
             return
@@ -390,7 +389,19 @@ class SessionLogger:
             raise RuntimeError(
                 f"Failed to read session metadata at {metadata_path}: {e}"
             ) from e
-        metadata["workflow_snapshots"] = snapshots
+        # Upsert by run_id rather than full-replace: on resume the runner starts
+        # with an empty in-memory run list, so a plain replace would wipe
+        # snapshots from a prior session that the current process never loaded.
+        by_id: dict[Any, dict[str, Any]] = {
+            s.get("run_id"): s
+            for s in metadata.get("workflow_snapshots", [])
+            if isinstance(s, dict)
+        }
+        for s in snapshots:
+            by_id[s.get("run_id")] = s
+        merged = list(by_id.values())
+        session_metadata.workflow_snapshots = merged
+        metadata["workflow_snapshots"] = merged
         await SessionLogger.persist_metadata(metadata, session_dir)
 
     def load_workflow_snapshots(self) -> list[dict[str, Any]]:

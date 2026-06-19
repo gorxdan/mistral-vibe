@@ -2939,7 +2939,9 @@ class VibeApp(App):  # noqa: PLR0904
             # only runs with a result (natural completion) were snapshotted.
             try:
                 snap = entry.runtime.snapshot(
-                    run_id=entry.run_id, script_source=entry.script_source
+                    run_id=entry.run_id,
+                    script_source=entry.script_source,
+                    args=entry.args,
                 )
             except Exception:
                 logger.warning(
