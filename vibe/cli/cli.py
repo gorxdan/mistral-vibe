@@ -241,6 +241,10 @@ def _run_programmatic_mode(
             teleport=args.teleport and config.vibe_code_enabled,
             headless=True,
             hook_config_result=hook_config_result,
+            # Programmatic mode is a fresh top-level process, not a recursive
+            # spawn inside an interactive session, so allow selecting a SUBAGENT
+            # profile (e.g. reviewer) as the primary agent via --agent.
+            allow_subagent=True,
         )
         if final_response:
             print(final_response)

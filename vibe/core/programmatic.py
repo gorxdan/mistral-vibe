@@ -38,6 +38,7 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
     teleport: bool = False,
     headless: bool = False,
     hook_config_result: HookConfigResult | None = None,
+    allow_subagent: bool = False,
 ) -> str | None:
     formatter = create_formatter(output_format)
 
@@ -58,6 +59,7 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
         max_session_tokens=max_session_tokens,
         enable_streaming=False,
         headless=headless,
+        is_subagent=allow_subagent,
         entrypoint_metadata=build_entrypoint_metadata(
             agent_entrypoint="programmatic",
             agent_version=__version__,
