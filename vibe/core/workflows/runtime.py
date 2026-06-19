@@ -103,9 +103,13 @@ class WorkflowRuntime:
     budget_total: int | None = DEFAULT_BUDGET_TOTAL
     schema_retries: int = DEFAULT_SCHEMA_RETRIES
     agent_loop_factory: AgentLoopFactory | None = None
+    # Resolves a workflow name to its script source, enabling nested workflow()
+    # calls. Wired from WorkflowManager at launch; None disables nesting.
+    workflow_source_resolver: Callable[[str], str | None] | None = None
     _semaphore: asyncio.Semaphore = field(init=False)
     _budget: Budget = field(init=False)
     _agent_count: int = field(default=0, init=False)
+    _nesting_depth: int = field(default=0, init=False)
     _phases: dict[str, PhaseReport] = field(default_factory=dict, init=False)
     _phase_order: list[str] = field(default_factory=list, init=False)
     _event_sink: Callable[[str], None] | None = field(default=None, init=False)
@@ -594,16 +598,64 @@ class WorkflowRuntime:
                 budget_estimate=budget_estimate,
             )
 
+        async def _workflow(name: str, args: Any = None) -> Any:
+            return await self._run_nested(name, args)
+
         injected: dict[str, Any] = {
             "agent": _agent,
             "parallel": self.parallel,
             "pipeline": self.pipeline,
             "phase": self._declare_phase,
             "log": self._log,
+            "workflow": _workflow,
             "budget": ReadOnlyBudget(self._budget),
             "args": args,
         }
         return build_namespace(injected)
+
+    async def _run_nested(self, name: str, args: Any) -> Any:
+        """Run another workflow inline as a sub-step (Claude Code workflow()).
+
+        The child shares this runtime's budget, semaphore, agent counter and
+        result cache, and its phases merge into the parent's (so it appears in
+        the same live monitor). Nesting is one level only — a workflow() call
+        inside a nested run raises.
+        """
+        if self._nesting_depth >= 1:
+            raise WorkflowError(
+                "workflow() can only nest one level deep "
+                f"(while running nested workflow {name!r})"
+            )
+        if self.workflow_source_resolver is None:
+            raise WorkflowError(
+                "Nested workflows are not available in this context "
+                f"(cannot resolve {name!r})"
+            )
+        source = self.workflow_source_resolver(name)
+        if source is None:
+            raise WorkflowError(f"Unknown workflow: {name!r}")
+
+        violations = validate_script(source)
+        if violations:
+            raise WorkflowError(
+                f"Nested workflow {name!r} failed validation:\n"
+                + "\n".join(f"  {v}" for v in violations)
+            )
+
+        namespace = self.build_script_namespace(args)
+        exec(source, namespace)  # noqa: S102 — sandboxed namespace, validated above
+        main_fn = cast("Callable[[], Awaitable[Any]]", namespace.get("main"))
+        if main_fn is None:
+            raise WorkflowError(
+                f"Nested workflow {name!r} must define an async `main()`"
+            )
+
+        self._log(f"nested workflow: {name}")
+        self._nesting_depth += 1
+        try:
+            return await main_fn()
+        finally:
+            self._nesting_depth -= 1
 
     def build_run(
         self, script_path: str | None = None, args: Any = None

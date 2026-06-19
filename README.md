@@ -925,6 +925,7 @@ runtime injects these functions:
 - `phase(name)` — declare a phase for progress tracking
 - `log(msg)` — log a progress message
 - `budget` — token budget object with `.total` and `.remaining()`
+- `workflow(name, args=None)` — run another discovered workflow inline as a sub-step, returning its result (shares this run's budget/agent count; one level deep)
 - `args` — structured input from the invocation command
 
 Scripts are validated via AST before execution (unsafe imports, dangerous calls,

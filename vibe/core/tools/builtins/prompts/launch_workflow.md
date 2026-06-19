@@ -23,6 +23,7 @@ The script must define `async def main()`. The runtime injects:
 - `phase(name)` — declare a phase for progress tracking
 - `log(msg)` — log a progress message
 - `budget` — token budget with `.total` and `.remaining()`
+- `workflow(name, args=None)` — run another discovered workflow inline as a sub-step and return its result (shares this run's budget/agents; one level deep only)
 - `args` — structured input from the invocation
 
 ## Best Practices

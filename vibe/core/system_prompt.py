@@ -460,6 +460,8 @@ def _get_le_chaton_section() -> str:
         "- `phase(name)` — declare a phase for progress tracking\n"
         "- `log(msg)` — log a progress message\n"
         "- `budget` — token budget object with `.total` and `.remaining()`\n"
+        "- `workflow(name, args=None)` — run another workflow inline as a "
+        "sub-step (shares budget/agents; one level deep)\n"
         "- `args` — structured input from the invocation command\n\n"
         "Write the script to a file, then tell the user to run it with the "
         "workflow tool or save it as a command. You can also launch it directly "

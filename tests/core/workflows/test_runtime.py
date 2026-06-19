@@ -633,3 +633,70 @@ async def test_pipeline_rejects_keyword_only_stage(runtime: WorkflowRuntime) -> 
 
 async def test_pipeline_zero_stages_is_passthrough(runtime: WorkflowRuntime) -> None:
     assert await runtime.pipeline([1, 2, 3]) == [1, 2, 3]
+
+
+async def test_nested_workflow_runs_and_shares_state() -> None:
+    """workflow(name) runs another workflow inline on the SAME runtime, so its
+    agents share the parent's counter/budget and its result flows back."""
+    child_src = (
+        "async def main():\n"
+        "    r = await agent('child task')\n"
+        "    return {'child': r}\n"
+    )
+
+    def resolver(name: str) -> str | None:
+        return child_src if name == "child" else None
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        max_agents=100,
+        budget_total=1_000_000,
+        workflow_source_resolver=resolver,
+    )
+    parent_src = (
+        "async def main():\n"
+        "    sub = await workflow('child')\n"
+        "    mine = await agent('parent task')\n"
+        "    return {'sub': sub, 'mine': mine}\n"
+    )
+    result = await rt.run(parent_src)
+    assert result.run.status.value == "completed"
+    assert result.return_value["sub"] == {"child": "mock response"}
+    assert result.return_value["mine"] == "mock response"
+    # Shared agent counter: child agent + parent agent.
+    assert rt._agent_count == 2
+
+
+async def test_nested_workflow_one_level_only() -> None:
+    grandchild = "async def main():\n    return 1\n"
+    child = "async def main():\n    return await workflow('grandchild')\n"
+
+    def resolver(name: str) -> str | None:
+        return {"child": child, "grandchild": grandchild}.get(name)
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        workflow_source_resolver=resolver,
+    )
+    result = await rt.run("async def main():\n    return await workflow('child')\n")
+    assert result.run.status.value == "failed"
+    assert "one level" in result.summary
+
+
+async def test_nested_workflow_unknown_name_fails() -> None:
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        workflow_source_resolver=lambda _n: None,
+    )
+    result = await rt.run("async def main():\n    return await workflow('nope')\n")
+    assert result.run.status.value == "failed"
+    assert "Unknown workflow" in result.summary
+
+
+async def test_nested_workflow_unavailable_without_resolver() -> None:
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    result = await rt.run("async def main():\n    return await workflow('x')\n")
+    assert result.run.status.value == "failed"
+    assert "not available" in result.summary

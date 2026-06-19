@@ -742,6 +742,7 @@ runtime injects these functions into the script's namespace:
 - `phase(name)` — declare a phase for progress tracking
 - `log(msg)` — log a progress message
 - `budget` — token budget object with `.total` (int|None) and `.remaining()` (int|float)
+- `workflow(name, args=None)` — run another discovered workflow inline as a sub-step and return its result; it shares this run's budget, agent counter, and result cache, and its phases merge into the live monitor. Nesting is one level deep — calling `workflow()` inside a nested run raises.
 - `args` — structured input from the invocation command (string or None)
 
 Scripts are validated via AST before execution: unsafe imports, dangerous calls
