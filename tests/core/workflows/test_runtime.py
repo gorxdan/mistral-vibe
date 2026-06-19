@@ -542,3 +542,75 @@ async def test_budget_proxy_does_not_expose_live_budget(
     # remaining() still reflects the live budget (proxy isn't a stale copy).
     runtime._budget.restore_spent(950_000)
     assert budget.remaining() == 50_000
+
+
+async def test_pipeline_multi_stage(runtime: WorkflowRuntime) -> None:
+    """Claude Code semantics: each item flows through all stages in order."""
+    async def double(x: int) -> int:
+        return x * 2
+
+    async def add_ten(prev: int, _item: int, _idx: int) -> int:
+        return prev + 10
+
+    results = await runtime.pipeline([1, 2, 3], double, add_ten)
+    assert results == [12, 14, 16]
+
+
+async def test_pipeline_stage_receives_prev_item_index(
+    runtime: WorkflowRuntime,
+) -> None:
+    seen: list[tuple] = []
+
+    async def stage1(x: int) -> int:
+        return x * 10
+
+    async def stage2(prev: int, item: int, idx: int) -> tuple:
+        seen.append((prev, item, idx))
+        return prev
+
+    await runtime.pipeline([5, 6], stage1, stage2)
+    assert (50, 5, 0) in seen
+    assert (60, 6, 1) in seen
+
+
+async def test_pipeline_stage_failure_drops_item_to_none(
+    runtime: WorkflowRuntime,
+) -> None:
+    reached_stage2: list[int] = []
+
+    async def stage1(x: int) -> int:
+        if x == 2:
+            raise ValueError("boom")
+        return x
+
+    async def stage2(prev: int, _item: int, _idx: int) -> int:
+        reached_stage2.append(prev)
+        return prev
+
+    results = await runtime.pipeline([1, 2, 3], stage1, stage2)
+    assert results == [1, None, 3]
+    # The failing item never reaches stage2.
+    assert 2 not in reached_stage2
+
+
+async def test_parallel_thunk_failure_yields_none(runtime: WorkflowRuntime) -> None:
+    async def ok() -> str:
+        return "ok"
+
+    async def boom() -> str:
+        raise RuntimeError("nope")
+
+    results = await runtime.parallel(ok, boom, ok)
+    assert results == ["ok", None, "ok"]
+
+
+async def test_parallel_accepts_list_form(runtime: WorkflowRuntime) -> None:
+    async def a() -> str:
+        return "a"
+
+    async def b() -> str:
+        return "b"
+
+    # Claude Code style: parallel([...]) as well as parallel(*...).
+    results = await runtime.parallel([a, b])
+    assert results == ["a", "b"]

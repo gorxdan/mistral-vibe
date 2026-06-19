@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 import hashlib
+import inspect
 import json
 import time
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
@@ -451,24 +452,83 @@ class WorkflowRuntime:
         )
         self._record_agent_result(result)
 
-    def parallel(self, *thunks: Callable[[], Awaitable[T]]) -> _AwaitableResult:
-        # Concurrency is bounded inside spawn_agent (the single owner of
-        # self._semaphore). Acquiring the semaphore here as well would make
-        # each agent hold two permits, and — once the number of concurrent
-        # thunks reaches max_concurrent — deadlock, because every outer permit
-        # is held by a thunk waiting for an inner permit that never frees.
+    def parallel(self, *thunks: Any) -> _AwaitableResult:
+        """Run thunks concurrently and return their results in order (barrier).
+
+        Mirrors the Claude Code Workflow contract:
+        - accepts either ``parallel(t1, t2, ...)`` or ``parallel([t1, t2, ...])``;
+        - a thunk that raises resolves to ``None`` (the call never rejects), so
+          one bad agent does not kill the batch — filter with ``[r for r in ... if r]``.
+
+        Concurrency is bounded inside spawn_agent (the single owner of
+        self._semaphore); acquiring it here too would make each agent hold two
+        permits and deadlock once concurrent thunks reach max_concurrent.
+        """
+        if len(thunks) == 1 and isinstance(thunks[0], (list, tuple)):
+            thunk_list = list(thunks[0])
+        else:
+            thunk_list = list(thunks)
+
+        async def _safe(thunk: Callable[[], Awaitable[Any]]) -> Any:
+            try:
+                return await thunk()
+            except Exception:
+                logger.warning("workflow: parallel() thunk failed", exc_info=True)
+                return None
+
         async def _run() -> list[Any]:
-            return await asyncio.gather(*[thunk() for thunk in thunks])
+            return await asyncio.gather(*[_safe(t) for t in thunk_list])
 
         return _AwaitableResult(_run())
 
-    def pipeline(
-        self, items: list[I], fn: Callable[[I], Awaitable[O]]
-    ) -> _AwaitableResult:
-        # See parallel(): limiting happens in spawn_agent, not here, to avoid
-        # nested acquisition of the non-reentrant semaphore (deadlock at scale).
+    @staticmethod
+    def _call_stage(stage: Callable[..., Any], result: Any, item: Any, index: int) -> Any:
+        """Invoke a pipeline stage, passing as many of (prev, item, index) as it
+        accepts (min 1). Lets a one-arg stage ``fn(item)`` and a full Claude-Code
+        style ``(prev, item, index)`` stage both work."""
+        args = (result, item, index)
+        try:
+            params = list(inspect.signature(stage).parameters.values())
+        except (TypeError, ValueError):
+            return stage(result)
+        if any(p.kind == p.VAR_POSITIONAL for p in params):
+            return stage(*args)
+        positional = sum(
+            1
+            for p in params
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        )
+        return stage(*args[: max(1, min(3, positional))])
+
+    def pipeline(self, items: list[I], *stages: Callable[..., Awaitable[Any]]) -> _AwaitableResult:
+        """Run each item through all stages independently — no barrier between
+        stages, so item A can be in stage 3 while item B is still in stage 1
+        (Claude Code pipeline semantics). Each stage receives (prevResult,
+        originalItem, index). A stage that raises drops that item to ``None`` and
+        skips its remaining stages. Returns one final result per item, in order.
+
+        Limiting happens in spawn_agent, not here, to avoid nested acquisition of
+        the non-reentrant semaphore (deadlock at scale).
+        """
+        items_list = list(items)
+
+        async def _run_item(index: int, item: Any) -> Any:
+            result: Any = item
+            for stage in stages:
+                try:
+                    result = await self._call_stage(stage, result, item, index)
+                except Exception:
+                    logger.warning(
+                        "workflow: pipeline() stage failed for item %d", index,
+                        exc_info=True,
+                    )
+                    return None
+            return result
+
         async def _run() -> list[Any]:
-            return await asyncio.gather(*[fn(item) for item in items])
+            return await asyncio.gather(
+                *[_run_item(i, it) for i, it in enumerate(items_list)]
+            )
 
         return _AwaitableResult(_run())
 
