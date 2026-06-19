@@ -108,7 +108,7 @@ In Cursor / Pyright, the "Add import" quick fix is missing — use the workspace
 - Workflow scripts run in a restricted namespace with safelisted builtins. The AST validator (`security.py`) blocks unsafe imports, dangerous calls, dunder access, and `str.format` (escape vector). Do not weaken the validator without adding equivalent protection.
 - The `launch_workflow` tool (`vibe/core/tools/builtins/launch_workflow.py`) is conditionally available via `is_available(config)` — hidden when `disable_workflows = true`.
 - Team teammates are spawned as `vibe -p` subprocesses, not in-memory. Shared state uses `filelock` (already a transitive dependency). Do not add in-process locking alternatives.
-- Hook events `TeammateIdle`, `TaskCreated`, `TaskCompleted` are defined in `vibe/core/hooks/models.py` and constructed via `build_invocation()`.
+- Hook events `TeammateIdle`, `TaskCreated`, `TaskCompleted` are defined in `vibe/core/hooks/models.py`. `TeammateIdle` fires when a teammate goes idle; `TaskCreated`/`TaskCompleted` fire only for **lead-initiated** task ops (`/team task add|done` → `TeamManager.add_team_task`/`complete_team_task`). Teammates write the shared task store from a separate process, so their claims/completions do not fire lead-side hooks (would need a poller/IPC bridge).
 
 ## Autoimprovement
 

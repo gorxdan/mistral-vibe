@@ -2804,11 +2804,71 @@ class VibeApp(App):  # noqa: PLR0904
                     self._team_manager = None
                     await self._mount_and_scroll(UserCommandMessage("Team cleaned up."))
 
+            case "task":
+                if self._team_manager is None:
+                    self._team_manager = self._build_team_manager()
+                sub = parts[1].lower() if len(parts) >= 2 else "list"
+                rest = parts[2] if len(parts) >= 3 else ""
+                if sub == "add":
+                    if not rest.strip():
+                        await self._mount_and_scroll(
+                            ErrorMessage("Usage: /team task add <description>")
+                        )
+                        return
+                    task = await self._team_manager.add_team_task(rest.strip())
+                    await self._mount_and_scroll(
+                        UserCommandMessage(f"Created task `{task.id}`: {task.description}")
+                    )
+                elif sub == "done":
+                    # `task done <id> [result]` — rest is "<id> [result words]".
+                    id_and_result = rest.split(None, 1) if rest else []
+                    if not id_and_result:
+                        await self._mount_and_scroll(
+                            ErrorMessage("Usage: /team task done <id> [result]")
+                        )
+                        return
+                    task_id = id_and_result[0]
+                    result = id_and_result[1] if len(id_and_result) > 1 else None
+                    task = await self._team_manager.complete_team_task(task_id, result)
+                    if task is None:
+                        await self._mount_and_scroll(
+                            ErrorMessage(f"No such task `{task_id}`.")
+                        )
+                    else:
+                        await self._mount_and_scroll(
+                            UserCommandMessage(f"Completed task `{task.id}`.")
+                        )
+                elif sub in {"list", "ls"}:
+                    store = self._team_manager.task_store
+                    store.reload()  # reflect tasks claimed/completed by teammates
+                    tasks = store.get_all_tasks()
+                    if not tasks:
+                        await self._mount_and_scroll(UserCommandMessage("No tasks."))
+                        return
+                    rows = [
+                        "| ID | Status | Assignee | Description |",
+                        "|----|--------|----------|-------------|",
+                    ]
+                    for t in tasks:
+                        rows.append(
+                            f"| {t.id} | {t.status.value} | {t.assignee or '-'} | "
+                            f"{t.description} |"
+                        )
+                    await self._mount_and_scroll(UserCommandMessage("\n".join(rows)))
+                else:
+                    await self._mount_and_scroll(
+                        ErrorMessage(
+                            f"Unknown /team task subcommand: `{sub}`.\n"
+                            "Usage: /team task [add <desc>|done <id> [result]|list]"
+                        )
+                    )
+
             case _:
                 await self._mount_and_scroll(
                     ErrorMessage(
                         f"Unknown /team subcommand: `{verb}`.\n"
-                        "Usage: /team [list|spawn <name> <prompt>|stop <name|all>|cleanup]"
+                        "Usage: /team [list|spawn <name> <prompt>|stop <name|all>|"
+                        "task <add|done|list>|cleanup]"
                     )
                 )
 

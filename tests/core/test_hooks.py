@@ -1909,19 +1909,24 @@ class TestHookOutputCap:
 
 
 @pytest.mark.asyncio
-async def test_run_no_ops_on_unhandled_hook_type(ctx: HookSessionContext) -> None:
-    """teams-002: team lifecycle HookTypes (TASK_COMPLETED/TASK_CREATED/
-    TEAMMATE_IDLE) are defined and constructible but have no registered handler
-    in _HANDLERS. HooksManager.run() must treat them as a no-op rather than
-    raising KeyError on the _HANDLERS lookup.
+async def test_run_no_ops_on_unregistered_hook_type(
+    ctx: HookSessionContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """teams-002 guard: HooksManager.run() must no-op (not KeyError) for a
+    HookType that has no registered handler in _HANDLERS.
+
+    All shipped HookTypes are now registered, so simulate a future/unregistered
+    type by removing one handler entry, then dispatch that type.
     """
+    from vibe.core.hooks import manager as hooks_manager_mod
+
+    patched = dict(hooks_manager_mod._HANDLERS)
+    patched.pop(HookType.TASK_COMPLETED, None)
+    monkeypatch.setattr(hooks_manager_mod, "_HANDLERS", patched)
+
     handler = HooksManager([])
-    cases = [
-        (HookType.TEAMMATE_IDLE, {"teammate_name": "bob"}),
-        (HookType.TASK_CREATED, {"task_id": "t1", "task_description": "do x"}),
-        (HookType.TASK_COMPLETED, {"task_id": "t1", "teammate_name": "bob"}),
-    ]
-    for hook_type, kw in cases:
-        invocation = build_invocation(hook_type, ctx, **kw)
-        events = [ev async for ev in handler.run(invocation)]
-        assert events == []
+    invocation = build_invocation(
+        HookType.TASK_COMPLETED, ctx, task_id="t1", teammate_name="bob"
+    )
+    events = [ev async for ev in handler.run(invocation)]
+    assert events == []  # no handler -> no-op, not KeyError

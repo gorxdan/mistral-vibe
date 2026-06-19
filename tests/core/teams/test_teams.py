@@ -422,3 +422,97 @@ def test_complete_task_lead_unrestricted(tmp_path: Path) -> None:
     done = store.complete_task("task-1", "done")
     assert done is not None
     assert done.status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_complete_team_task_fires_task_completed_hook(tmp_path: Path) -> None:
+    """B-001: the lead-side /team task done path (complete_team_task) must fire
+    the TASK_COMPLETED lifecycle hook. The wrapper previously had no callers."""
+    from vibe.core.hooks.manager import HooksManager
+    from vibe.core.hooks.models import HookConfig, HookSessionContext, HookType
+
+    marker = tmp_path / "completed.flag"
+    hook = HookConfig(
+        name="on-task-completed",
+        type=HookType.TASK_COMPLETED,
+        command=f"touch {marker}",
+    )
+    hooks_mgr = HooksManager([hook])
+
+    def ctx() -> HookSessionContext:
+        return HookSessionContext(
+            session_id="lead-session", transcript_path="", cwd=str(tmp_path)
+        )
+
+    monkeypatch_dir = tmp_path / "vibehome"
+    monkeypatch_dir.mkdir()
+    saved = os.environ.get("VIBE_HOME")
+    os.environ["VIBE_HOME"] = str(monkeypatch_dir)
+    try:
+        mgr = TeamManager(
+            "lead-session",
+            team_name="test-complete-hook",
+            hooks_manager=hooks_mgr,
+            hook_context=ctx,
+        )
+        try:
+            task = await mgr.add_team_task("Do the thing")
+            done = await mgr.complete_team_task(task.id, "done")
+            assert done is not None
+            assert done.status == TaskStatus.COMPLETED
+            for _ in range(50):
+                if marker.exists():
+                    break
+                await asyncio.sleep(0.05)
+            assert marker.exists(), (
+                "TASK_COMPLETED hook must fire on complete_team_task"
+            )
+        finally:
+            mgr.cleanup()
+    finally:
+        if saved is None:
+            os.environ.pop("VIBE_HOME", None)
+        else:
+            os.environ["VIBE_HOME"] = saved
+
+
+@pytest.mark.asyncio
+async def test_team_command_task_verbs_route_to_manager() -> None:
+    """B-001 wiring: /team task add|done route to add_team_task/complete_team_task
+    with correct parsing (done splits '<id> <multi word result>')."""
+    from dataclasses import dataclass as _dc
+
+    from vibe.cli.textual_ui.app import VibeApp
+
+    calls: list[tuple] = []
+
+    @_dc
+    class _FakeTask:
+        id: str
+        description: str = "d"
+
+    class _FakeMgr:
+        async def add_team_task(self, desc: str):
+            calls.append(("add", desc))
+            return _FakeTask("task-1", desc)
+
+        async def complete_team_task(self, task_id: str, result):
+            calls.append(("done", task_id, result))
+            return _FakeTask(task_id)
+
+    class _Stub:
+        def __init__(self) -> None:
+            self._team_manager = _FakeMgr()
+
+        def _build_team_manager(self):
+            return self._team_manager
+
+        async def _mount_and_scroll(self, _w) -> None:
+            pass
+
+    stub = _Stub()
+    await VibeApp._team_command(stub, "task add buy more milk")  # type: ignore[arg-type]
+    await VibeApp._team_command(stub, "task done task-1 all good")  # type: ignore[arg-type]
+
+    assert ("add", "buy more milk") in calls
+    assert ("done", "task-1", "all good") in calls

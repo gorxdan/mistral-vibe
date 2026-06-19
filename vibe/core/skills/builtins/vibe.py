@@ -874,10 +874,14 @@ directory (`~/.vibe/teams/<name>/`) is cleaned up on exit.
 
 ### Hook Events
 
-Three hook event types fire for team lifecycle:
-- `TeammateIdle` — when a teammate finishes and goes idle
-- `TaskCreated` — when a task is created
-- `TaskCompleted` — when a task is marked complete
+Three hook event types exist for team lifecycle:
+- `TeammateIdle` — fires when a teammate finishes and goes idle.
+- `TaskCreated` — fires when the lead creates a task (`/team task add`).
+- `TaskCompleted` — fires when the lead completes a task (`/team task done`).
+
+Note: `TaskCreated`/`TaskCompleted` fire only for lead-initiated task ops. A
+teammate runs in a separate `vibe -p` process and writes the shared task store
+directly, so tasks it claims/completes do **not** fire these hooks in the lead.
 
 ## Structured Output
 
