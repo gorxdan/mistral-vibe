@@ -31,6 +31,7 @@ from vibe.core.config._settings import (
     ModelConfig,
     ProjectContextConfig,
     ProviderConfig,
+    SafetyJudgeConfig,
     SessionLoggingConfig,
     TranscribeModelConfig,
     TranscribeProviderConfig,
@@ -274,4 +275,7 @@ class VibeConfigSchema(ConfigSchema):
     )
     worktree: Annotated[WorktreeConfig, WithReplaceMerge()] = Field(
         default_factory=WorktreeConfig
+    )
+    safety_judge: Annotated[SafetyJudgeConfig, WithReplaceMerge()] = Field(
+        default_factory=SafetyJudgeConfig
     )

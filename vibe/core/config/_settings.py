@@ -208,6 +208,29 @@ class SessionLoggingConfig(BaseSettings):
         return str(Path(v).expanduser().resolve())
 
 
+class SafetyJudgeConfig(BaseSettings):
+    """Configuration for the optional LLM safety judge.
+
+    When enabled, tool calls that would otherwise prompt the user for approval
+    (the ``ASK`` path) are first shown to a separate "judge" model. If the judge
+    deems the call safe, it runs without a prompt. The judge can never override
+    hard denials (denylist / ``NEVER``) and fails closed: any error, timeout, or
+    unparseable response falls back to the normal human prompt.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    enabled: bool = False
+    # Alias of a model from ``[[models]]`` to use as the judge. If unset or not
+    # found, the judge stays disabled regardless of ``enabled``.
+    model: str | None = None
+    max_tokens: int = 512
+    # None → use the judge model's own configured temperature (some providers
+    # reject anything but their fixed value, e.g. Kimi requires 1).
+    temperature: float | None = None
+    timeout: float = 15.0
+
+
 class WorktreeConfig(BaseSettings):
     """Configuration for git worktree isolation.
 
@@ -726,6 +749,7 @@ class VibeConfig(BaseSettings):
     experiments: ExperimentsConfig = Field(default_factory=ExperimentsConfig)
     session_logging: SessionLoggingConfig = Field(default_factory=SessionLoggingConfig)
     worktree: WorktreeConfig = Field(default_factory=WorktreeConfig)
+    safety_judge: SafetyJudgeConfig = Field(default_factory=SafetyJudgeConfig)
     tools: dict[str, dict[str, Any]] = Field(default_factory=dict)
     tool_paths: list[Path] = Field(
         default_factory=list,

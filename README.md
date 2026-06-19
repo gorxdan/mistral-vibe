@@ -528,7 +528,7 @@ supports_images = true
 ```toml
 [[providers]]
 name = "zai"
-api_base = "https://api.z.ai/api/paas/v4"   # China: https://open.bigmodel.cn/api/paas/v4
+api_base = "https://api.z.ai/api/coding/paas/v4"   # Coding Plan endpoint. Pay-as-you-go keys use https://api.z.ai/api/paas/v4; China: https://open.bigmodel.cn/api/paas/v4
 api_key_env_var = "ZAI_API_KEY"
 
 [[models]]
@@ -554,6 +554,30 @@ Notes:
 - **Thinking effort**: Vibe's `openai` style does not send `reasoning_effort`, so the in-app thinking slider won't change provider effort for these — each model uses its own default thinking level. GLM-5.2 additionally accepts a `thinking: { type }` parameter, which Vibe does not currently send; default thinking stays enabled.
 - **Endpoint base**: `api_base` includes the version segment (`/v1` or `/api/paas/v4`) but **not** `/chat/completions`; Vibe appends that automatically.
 - **Multi-turn reasoning**: if a provider rejects an assistant turn on long conversations because of how reasoning is replayed, set `thinking = "off"` for that model or report it — a dedicated adapter may be needed.
+- **Wrong endpoint looks like "rate limit"**: a ZAI Coding Plan key sent to the pay-as-you-go `/api/paas/v4` endpoint returns HTTP 429 with `code 1113` "Insufficient balance or no resource package", which Vibe surfaces as a rate-limit error. If GLM reports rate limits you can't explain, check `api_base` matches your plan (`/api/coding/paas/v4` for the Coding Plan).
+- **Kimi User-Agent gate**: the Kimi coding endpoint only serves approved clients, so its provider needs `extra_headers = { User-Agent = "KimiCLI/1.47.0" }`. A missing/odd User-Agent returns `403 access_terminated_error`.
+
+### Safety Judge (experimental)
+
+By default, any tool call that isn't auto-allowed by your allowlist/permission rules prompts you for approval. The **safety judge** lets a separate LLM auto-approve calls it deems safe, so you're only prompted for the genuinely risky ones. It is **off by default**.
+
+```toml
+[safety_judge]
+enabled = true
+model = "devstral-small"   # alias of a model from [[models]]; ideally a different model than your active one
+max_tokens = 512
+timeout = 15.0             # seconds; on timeout the judge fails closed (you are prompted)
+# temperature is omitted -> uses the judge model's own temperature (some providers, e.g. Kimi, require a fixed value)
+```
+
+How it fits the existing controls:
+
+- It only fills the **approval prompt** gap. Calls your denylist/guardrails mark as denied (`NEVER`) are still hard-blocked — the judge never sees them.
+- `--auto-approve` is unchanged: it still bypasses everything (including the judge).
+- It **fails closed**. No usable judge model, an API error, a timeout, a refusal, or an unparseable answer all fall back to the normal human prompt.
+- Every judge auto-approval is logged.
+
+> **Security note.** An LLM judge is a probabilistic gate, not a guarantee. The tool call it evaluates is authored by the (untrusted) main model, so a compromised or jailbroken main model could in principle craft a call designed to fool the judge. Keep your denylist authoritative, prefer a judge model from a different provider than your active model, and treat this as convenience, not a sandbox.
 
 ### TLS and Corporate Certificate Authorities
 

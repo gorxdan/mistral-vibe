@@ -8,6 +8,7 @@ from enum import StrEnum, auto
 from functools import wraps
 from http import HTTPStatus
 import inspect
+import logging
 import os
 from pathlib import Path
 import threading
@@ -99,6 +100,7 @@ from vibe.core.tools.permissions import (
     PermissionStore,
     RequiredPermission,
 )
+from vibe.core.tools.safety_judge import SafetyJudge
 from vibe.core.tracing import agent_span, set_tool_result, tool_span
 from vibe.core.trusted_folders import has_agents_md_file
 from vibe.core.types import (
@@ -153,6 +155,9 @@ except ImportError:
 if TYPE_CHECKING:
     from vibe.core.teleport.teleport import TeleportService
     from vibe.core.teleport.types import TeleportPushResponseEvent, TeleportYieldEvent
+
+
+logger = logging.getLogger(__name__)
 
 
 class ToolExecutionResponse(StrEnum):
@@ -950,6 +955,44 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         headers["x-affinity"] = self.session_id
         return headers
 
+    def _resolve_safety_judge(self) -> SafetyJudge | None:
+        """Build the LLM safety judge if configured & usable, else None.
+
+        Returns None when the feature is disabled, no usable judge model is
+        configured, or its provider/model cannot be resolved. Built fresh per
+        decision (cheap; no network until a verdict is requested) so it tracks
+        live config.
+        """
+        judge_cfg = self.config.safety_judge
+        if not judge_cfg.enabled or not judge_cfg.model:
+            return None
+        judge_model = next(
+            (m for m in self.config.models if m.alias == judge_cfg.model), None
+        )
+        if judge_model is None or not self.config.is_model_available(judge_model):
+            return None
+        try:
+            provider = self.config.get_provider_for_model(judge_model)
+        except ValueError:
+            logger.warning(
+                "Safety judge model %r has no provider; disabling judge",
+                judge_model.alias,
+            )
+            return None
+        if judge_model.alias == self.config.active_model:
+            logger.warning(
+                "Safety judge model %r is the same as the active model; "
+                "an independent judge model is recommended.",
+                judge_model.alias,
+            )
+        return SafetyJudge(
+            model=judge_model,
+            provider=provider,
+            config=self.config.safety_judge,
+            extra_headers=self._get_extra_headers(provider),
+            timeout=self.config.api_timeout,
+        )
+
     async def _conversation_loop(
         self,
         user_msg: str,
@@ -1469,9 +1512,47 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                             verdict=ToolExecutionResponse.EXECUTE,
                             approval_type=ToolPermission.ALWAYS,
                         )
+                    judged = await self._judge_tool_safety(tool_name, args, uncovered)
+                    if judged is not None:
+                        return judged
                     return await self._ask_approval(
                         tool_name, args, tool_call_id, uncovered
                     )
+
+    async def _judge_tool_safety(
+        self,
+        tool_name: str,
+        args: BaseModel,
+        uncovered: list[RequiredPermission],
+    ) -> ToolDecision | None:
+        """Consult the LLM safety judge for an ASK-gated call.
+
+        Returns an EXECUTE decision when the judge rules the call safe, or None
+        to fall through to the normal human prompt. The judge can never reach a
+        denied (NEVER) call — those return earlier — and fails closed, so any
+        error or "unsafe" verdict simply defers to the user.
+        """
+        judge = self._resolve_safety_judge()
+        if judge is None:
+            return None
+        try:
+            args_repr = args.model_dump_json()[:4000]
+        except Exception:
+            # Never let arg serialization break gating; judge sees a best-effort repr.
+            args_repr = str(args)[:4000]
+        verdict = await judge.judge(
+            tool_name, args_repr, [rp.label for rp in uncovered]
+        )
+        if not verdict.safe:
+            return None
+        logger.info(
+            "Safety judge auto-approved tool %r: %s", tool_name, verdict.reason
+        )
+        return ToolDecision(
+            verdict=ToolExecutionResponse.EXECUTE,
+            approval_type=ToolPermission.ALWAYS,
+            feedback=f"Auto-approved by safety judge: {verdict.reason}",
+        )
 
     async def _ask_approval(
         self,
