@@ -71,7 +71,7 @@ def test_orchestration_section_present_in_normal_mode() -> None:
     assert "Orchestration is a default skill" in prompt
     assert "`task`" in prompt
     # The profile→use map is present.
-    for profile in ("`explore`", "`research`", "`reviewer`"):
+    for profile in ("`explore`", "`research`", "`reviewer`", "`debugger`"):
         assert profile in prompt
     # The le-chaton workflow-orchestration SECTION stays le-chaton-only — it
     # must NOT leak into the normal prompt. (The launch_workflow tool's own
@@ -79,6 +79,41 @@ def test_orchestration_section_present_in_normal_mode() -> None:
     # only assert the le-chaton section itself is absent.)
     assert "Le Chaton Mode" not in prompt
     assert "le chaton effort mode" not in prompt
+
+
+def test_debugger_subagent_registered_with_systematic_prompt() -> None:
+    from vibe.core.agents.models import BUILTIN_AGENTS, AgentType, BuiltinAgentName
+    from vibe.core.prompts import load_system_prompt
+
+    debugger = BUILTIN_AGENTS[BuiltinAgentName.DEBUGGER]
+    assert debugger.agent_type == AgentType.SUBAGENT
+    assert debugger.overrides["enabled_tools"] == ["read", "grep", "bash"]
+    assert debugger.overrides["system_prompt_id"] == "debugger"
+
+    # The dedicated prompt embeds the systematic-debugging method (no skill dep).
+    sp = load_system_prompt("debugger")
+    assert "systematic debugging" in sp.lower()
+    for phase in ("Reproduce", "Isolate", "Hypothesize", "Root cause"):
+        assert phase in sp
+    assert "ROOT CAUSE:" in sp  # structured return format
+
+
+def test_debugger_listed_in_available_subagents() -> None:
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+    )
+    tool_manager = ToolManager(lambda: config)
+    skill_manager = SkillManager(lambda: config)
+    agent_manager = AgentManager(lambda: config)
+    prompt = get_universal_system_prompt(
+        tool_manager, config, skill_manager, agent_manager
+    )
+    assert "**debugger**" in prompt  # appears in the # Available Subagents list
 
 
 def test_scratchpad_section_included_when_passed() -> None:

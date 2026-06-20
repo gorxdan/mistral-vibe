@@ -44,6 +44,7 @@ class BuiltinAgentName(StrEnum):
     EXPLORE = "explore"
     RESEARCH = "research"
     REVIEWER = "reviewer"
+    DEBUGGER = "debugger"
     WORKER = "worker"
     LEAN = "lean"
 
@@ -190,6 +191,25 @@ REVIEWER = AgentProfile(
     },
 )
 
+DEBUGGER = AgentProfile(
+    name=BuiltinAgentName.DEBUGGER,
+    display_name="Debugger",
+    description=(
+        "Subagent for systematic debugging: reproduces a failure, isolates it, "
+        "and traces the root cause via read/grep + targeted bash (tests, git "
+        "bisect). Returns root cause + minimal fix; read-only, so it diagnoses "
+        "rather than edits. bash stays approval-gated."
+    ),
+    # Has bash, so not SAFE — bash invocations still route through the normal
+    # approval flow (no bypass_tool_permissions).
+    safety=AgentSafety.NEUTRAL,
+    agent_type=AgentType.SUBAGENT,
+    overrides={
+        "enabled_tools": ["read", "grep", "bash"],
+        "system_prompt_id": "debugger",
+    },
+)
+
 WORKER = AgentProfile(
     name=BuiltinAgentName.WORKER,
     display_name="Worker",
@@ -255,6 +275,7 @@ BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.EXPLORE: EXPLORE,
     BuiltinAgentName.RESEARCH: RESEARCH,
     BuiltinAgentName.REVIEWER: REVIEWER,
+    BuiltinAgentName.DEBUGGER: DEBUGGER,
     BuiltinAgentName.WORKER: WORKER,
     BuiltinAgentName.LEAN: LEAN,
 }

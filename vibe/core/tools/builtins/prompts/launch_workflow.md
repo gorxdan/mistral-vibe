@@ -17,7 +17,7 @@ Use `launch_workflow` to run a workflow script that orchestrates parallel agents
 
 The script must define `async def main()`. The runtime injects:
 
-- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent; `isolation="worktree"` runs it in a fresh git worktree (isolates file edits for parallel agents). Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `worker` (full tools incl. MCP — **requires** `isolation="worktree"`).
+- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent; `isolation="worktree"` runs it in a fresh git worktree (isolates file edits for parallel agents). Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `debugger` (+bash; systematic root-cause analysis of a failure or flaky test), `worker` (full tools incl. MCP — **requires** `isolation="worktree"`).
 - `parallel(*thunks)` (or `parallel([thunks])`) — run thunks concurrently, results in order; a thunk that raises yields `None` (filter the results)
 - `pipeline(items, *stages)` — run each item through all stages with no barrier between stages (item A can be in stage 3 while B is still in stage 1); each stage receives `(prev, item, index)`. One stage acts as a concurrent map.
 - `phase(name)` — declare a phase for progress tracking
@@ -43,4 +43,6 @@ The script must define `async def main()`. The runtime injects:
 - The workflow runs in the background; the result appears when complete
 - Use `/workflows` to check progress or stop a run. From a model turn, query
   live progress (per-run agents, phases, in-flight agent token totals, budget)
-  with the `workflow_status` tool instead of waiting for completion.
+  with the `workflow_status` tool instead of waiting for completion. Stop a
+  runaway or misbehaving run with the `workflow_stop` tool
+  (`run_id` for one run, or `all` for every active run).

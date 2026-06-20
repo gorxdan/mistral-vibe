@@ -308,6 +308,8 @@ flow, gather all call sites, multi-file reads.
 checks, web lookups.
 - `reviewer` — adversarial review of a diff, branch, or file; runs targeted \
 checks and tests to find what breaks.
+- `debugger` — a specific failure or flaky test: reproduce, isolate, and trace \
+the root cause; returns the cause + minimal fix (it diagnoses, you apply).
 
 Fan out: issue several `task` calls in one turn so independent sub-questions \
 run in parallel. Give each a self-contained brief and ask for findings and \
