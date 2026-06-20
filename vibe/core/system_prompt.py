@@ -474,7 +474,7 @@ def _get_le_chaton_section() -> str:
         "isolation=None)` — spawn a subagent; isolation='worktree' runs it in a "
         "fresh git worktree (isolates file edits for parallel agents). Profiles: "
         "explore (grep/read), research (+web), reviewer (+bash), worker (full "
-        "tools incl. MCP)\n"
+        "tools incl. MCP; requires isolation='worktree')\n"
         "- `parallel(*thunks)` — run thunks concurrently, results in order; a "
         "thunk that raises yields None (filter the results)\n"
         "- `pipeline(items, *stages)` — run each item through all stages with no "
