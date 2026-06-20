@@ -27,6 +27,17 @@ class TestAgentProfile:
         assert "explore" in BUILTIN_AGENTS
         assert BUILTIN_AGENTS["explore"] is EXPLORE
 
+    def test_worker_is_full_tool_subagent(self) -> None:
+        """GAP #2: the 'worker' workflow subagent has NO enabled_tools allowlist,
+        so it exposes the full tool set (incl. integrated MCP tools), unlike the
+        read-only explore/research/reviewer subagents."""
+        worker = BUILTIN_AGENTS["worker"]
+        assert worker.agent_type == AgentType.SUBAGENT
+        # No allowlist -> all tools (MCP names like '<alias>_<tool>' have no
+        # common prefix to allowlist, so full access is how a workflow agent
+        # reaches MCP tools).
+        assert "enabled_tools" not in worker.overrides
+
 
 class TestAgentManager:
     @pytest.fixture

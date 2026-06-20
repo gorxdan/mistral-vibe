@@ -44,6 +44,7 @@ class BuiltinAgentName(StrEnum):
     EXPLORE = "explore"
     RESEARCH = "research"
     REVIEWER = "reviewer"
+    WORKER = "worker"
     LEAN = "lean"
 
 
@@ -189,6 +190,21 @@ REVIEWER = AgentProfile(
     },
 )
 
+WORKER = AgentProfile(
+    name=BuiltinAgentName.WORKER,
+    display_name="Worker",
+    description=(
+        "Full-capability subagent for workflows: all builtin tools plus any "
+        "discovered MCP tools (no enabled_tools allowlist). For workflow agents "
+        "that need to act, not just read. Pair with isolation='worktree' to "
+        "contain file mutations. bash/edit stay approval-gated."
+    ),
+    # No enabled_tools override -> the full tool set (incl. integrated MCP).
+    safety=AgentSafety.NEUTRAL,
+    agent_type=AgentType.SUBAGENT,
+    overrides={"system_prompt_id": "explore"},
+)
+
 LEAN = AgentProfile(
     name=BuiltinAgentName.LEAN,
     display_name="Lean",
@@ -237,5 +253,6 @@ BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.EXPLORE: EXPLORE,
     BuiltinAgentName.RESEARCH: RESEARCH,
     BuiltinAgentName.REVIEWER: REVIEWER,
+    BuiltinAgentName.WORKER: WORKER,
     BuiltinAgentName.LEAN: LEAN,
 }

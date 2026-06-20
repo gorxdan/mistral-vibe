@@ -419,11 +419,24 @@ class WorkflowRuntime:
             defer_heavy_init=True,
             permission_store=ctx.permission_store if ctx else None,
             hook_config_result=ctx.hook_config_result if ctx else None,
+            # Reuse the parent's already-discovered MCP registry so workflow
+            # agents can use MCP tools (cheap — the registry caches discovery).
+            mcp_registry=ctx.mcp_registry if ctx else None,
         )
         if ctx and ctx.session_id:
             loop.parent_session_id = ctx.session_id
         if ctx and ctx.approval_callback:
             loop.set_approval_callback(ctx.approval_callback)
+        # MCP discovery is deferred (defer_heavy_init), so register the parent
+        # registry's tools into this subagent's tool manager now. On a shared,
+        # already-discovered registry this hits the cache (no re-discovery). A
+        # profile with no enabled_tools allowlist (e.g. 'worker') then exposes
+        # them; restrictive allowlists still filter them out.
+        if ctx and ctx.mcp_registry is not None:
+            try:
+                loop.tool_manager.integrate_mcp()
+            except Exception as exc:
+                logger.warning("workflow: MCP integration for subagent failed: %s", exc)
         return loop
 
     @staticmethod

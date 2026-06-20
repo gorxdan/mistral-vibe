@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from vibe.core.hooks.models import HookConfigResult
     from vibe.core.skills.manager import SkillManager
     from vibe.core.telemetry.types import EntrypointMetadata, TerminalEmulator
+    from vibe.core.tools.mcp import MCPRegistry
     from vibe.core.tools.mcp_sampling import MCPSamplingHandler
     from vibe.core.tools.permissions import PermissionContext, PermissionStore
     from vibe.core.types import ApprovalCallback, SwitchAgentCallback, UserInputCallback
@@ -63,6 +64,9 @@ class InvokeContext:
     launch_workflow_callback: Callable[[str, str | None], str] | None = field(
         default=None
     )
+    # Parent's MCP registry, so workflow subagents can reuse already-discovered
+    # MCP tools (cheap via the shared cache) instead of an empty one.
+    mcp_registry: MCPRegistry | None = field(default=None)
 
 
 class ToolError(Exception):

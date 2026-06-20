@@ -2969,6 +2969,9 @@ class VibeApp(App):  # noqa: PLR0904
             hook_config_result=loop._hook_config_result,
             session_id=loop.session_id,
             terminal_emulator=loop.terminal_emulator,
+            # Share the already-discovered MCP registry so workflow agents (e.g.
+            # the 'worker' profile) can use MCP tools without re-discovery.
+            mcp_registry=loop.mcp_registry,
         )
 
     def _launch_workflow_from_tool(self, script: str, name: str | None = None) -> str:
