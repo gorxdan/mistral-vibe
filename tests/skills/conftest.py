@@ -31,6 +31,7 @@ def create_skill(
     name: str,
     description: str = "A test skill",
     *,
+    summary: str | None = None,
     license: str | None = None,
     compatibility: str | None = None,
     metadata: dict[str, str] | None = None,
@@ -42,6 +43,8 @@ def create_skill(
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     frontmatter: dict[str, object] = {"name": name, "description": description}
+    if summary:
+        frontmatter["summary"] = summary
     if license:
         frontmatter["license"] = license
     if compatibility:
