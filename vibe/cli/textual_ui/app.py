@@ -367,6 +367,13 @@ class StartupOptions:
 _REJECT_HINT_BUSY = "wait for the current job to finish."
 _REJECT_HINT_PAUSED = "clear the queue first or remove this input."
 
+# Slash commands that act only on *background* state — never the foreground
+# agent turn — stay reachable while the agent is busy or the queue is paused.
+# `/workflows` in particular exists to monitor and manage runs that, by design,
+# execute concurrently with a busy agent; rejecting it as "cannot be queued"
+# defeats its purpose. These run immediately instead of being rejected.
+_BUSY_ALLOWED_COMMANDS = frozenset({"workflows"})
+
 
 @dataclass(frozen=True, slots=True)
 class _ImageAttachmentRejection:
@@ -829,6 +836,16 @@ class VibeApp(App):  # noqa: PLR0904
             await self._inject_queued_now()
             return
 
+        # Monitor/management commands for background state (e.g. /workflows)
+        # must stay usable while the agent is busy or the queue is paused —
+        # that is exactly when you need to watch or stop a background run. Run
+        # them immediately instead of routing into the "cannot be queued" path.
+        if (
+            self._input_queue.paused or self._is_busy()
+        ) and self._is_busy_allowed_command(value):
+            await self._handle_command(value)
+            return
+
         if self._input_queue.paused:
             if not await self._handle_paused_submit(value):
                 self._restore_input_if_empty(input_widget, value)
@@ -939,6 +956,18 @@ class VibeApp(App):  # noqa: PLR0904
         if self._queue.draining:
             return True
         return False
+
+    def _is_busy_allowed_command(self, value: str) -> bool:
+        """Whether `value` is a slash command allowed to run while busy/paused.
+
+        Only background-state commands (see `_BUSY_ALLOWED_COMMANDS`) qualify;
+        the canonical command name is resolved through the registry so aliases
+        and arguments (e.g. `/workflows list`) are matched correctly.
+        """
+        if not value.startswith("/"):
+            return False
+        resolved = self.commands.parse_command(value)
+        return resolved is not None and resolved[0] in _BUSY_ALLOWED_COMMANDS
 
     async def on_approval_app_approval_granted(
         self, message: ApprovalApp.ApprovalGranted

@@ -585,6 +585,9 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/teleport` - Teleport session to Vibe Code Web (only available when Vibe Code is enabled)
 - `/effort` - Select effort mode: `normal` (turn-by-turn) or `le-chaton` (max thinking + auto-workflow planning)
 - `/workflows` - Manage workflow runs. With no args, opens a progress view.
+  Unlike other slash commands, `/workflows` (and its subcommands) stay usable
+  while the agent is busy or the queue is paused — that is when you need to
+  watch or stop a background run. `Ctrl+W` also toggles the progress view.
   - `/workflows list` - List all runs with status, agents, tokens, elapsed
   - `/workflows stop <id|all>` - Stop one or all runs
   - `/workflows snapshot <id>` - Show cached results for a run
