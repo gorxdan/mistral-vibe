@@ -26,6 +26,45 @@ def _is_retryable_http_error(e: Exception) -> bool:
     return False
 
 
+# Cap on how long we'll honor a server's Retry-After (avoid pathological waits).
+_MAX_RETRY_AFTER_S = 60.0
+
+
+def _retry_after_seconds(e: Exception) -> float | None:
+    """Parse a Retry-After header (delta-seconds or HTTP-date), if present."""
+    if not isinstance(e, httpx.HTTPStatusError):
+        return None
+    raw = e.response.headers.get("retry-after")
+    if not raw:
+        return None
+    raw = raw.strip()
+    if raw.isdigit():
+        return float(raw)
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    import datetime as _dt
+
+    now = _dt.datetime.now(when.tzinfo)
+    return max(0.0, (when - now).total_seconds())
+
+
+def _retry_delay(
+    attempt: int, delay_seconds: float, backoff_factor: float, exc: Exception
+) -> float:
+    """Exponential backoff, overridden upward by a Retry-After header if larger."""
+    base = (delay_seconds * (backoff_factor**attempt)) + (0.05 * attempt)
+    retry_after = _retry_after_seconds(exc)
+    if retry_after is not None:
+        return min(max(base, retry_after), _MAX_RETRY_AFTER_S)
+    return base
+
+
 def async_retry[T, **P](
     tries: int = 3,
     delay_seconds: float = 0.5,
@@ -53,8 +92,8 @@ def async_retry[T, **P](
                 except Exception as e:
                     last_exc = e
                     if attempt < tries - 1 and is_retryable(e):
-                        current_delay = (delay_seconds * (backoff_factor**attempt)) + (
-                            0.05 * attempt
+                        current_delay = _retry_delay(
+                            attempt, delay_seconds, backoff_factor, e
                         )
                         logger.warning(
                             "Retrying %s after error attempt=%d/%d delay=%.2fs error=%r",
@@ -111,8 +150,8 @@ def async_generator_retry[T, **P](
                     last_exc = e
                     await generator.aclose()
                     if attempt < tries - 1 and is_retryable(e):
-                        current_delay = (delay_seconds * (backoff_factor**attempt)) + (
-                            0.05 * attempt
+                        current_delay = _retry_delay(
+                            attempt, delay_seconds, backoff_factor, e
                         )
                         logger.warning(
                             "Retrying %s after error attempt=%d/%d delay=%.2fs error=%r",
