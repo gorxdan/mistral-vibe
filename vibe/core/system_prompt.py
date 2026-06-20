@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 from string import Template
 import subprocess
+import time
 from typing import TYPE_CHECKING
 
 from vibe.core.config import VibeConfig
@@ -30,7 +31,11 @@ if TYPE_CHECKING:
     from vibe.core.skills.models import SkillInfo
     from vibe.core.tools.manager import ToolManager
 
-_git_status_cache: dict[Path, str] = {}
+# Git status is cached per repo root with a short TTL so a long session sees
+# changes (branch switch, new commits, dirty files) without re-running git on
+# every system-prompt assembly. Previously this never expired → stale status.
+_GIT_STATUS_TTL_S = 30.0
+_git_status_cache: dict[Path, tuple[float, str]] = {}
 
 
 class ProjectContextProvider:
@@ -41,11 +46,13 @@ class ProjectContextProvider:
         self.config = config
 
     def get_git_status(self) -> str:
-        if self.root_path in _git_status_cache:
-            return _git_status_cache[self.root_path]
+        now = time.monotonic()
+        cached = _git_status_cache.get(self.root_path)
+        if cached is not None and now - cached[0] < _GIT_STATUS_TTL_S:
+            return cached[1]
 
         result = self._fetch_git_status()
-        _git_status_cache[self.root_path] = result
+        _git_status_cache[self.root_path] = (now, result)
         return result
 
     def _run_git(
