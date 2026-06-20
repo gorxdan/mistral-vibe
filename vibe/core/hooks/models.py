@@ -27,6 +27,8 @@ class HookType(StrEnum):
     PRE_COMPACT = auto()
     USER_PROMPT_SUBMIT = auto()
     STOP = auto()
+    SESSION_START = auto()
+    SESSION_END = auto()
 
 
 ToolStatus = Literal["success", "failure", "cancelled"]
@@ -164,6 +166,16 @@ class StopInvocation(HookSessionContext):
     stop_hook_active: bool = False
 
 
+class SessionStartInvocation(HookSessionContext):
+    hook_event_name: Literal[HookType.SESSION_START] = HookType.SESSION_START
+    source: str = "startup"  # "startup" | "resume" | "clear"
+
+
+class SessionEndInvocation(HookSessionContext):
+    hook_event_name: Literal[HookType.SESSION_END] = HookType.SESSION_END
+    reason: str = "exit"  # "exit" | "clear" | "logout"
+
+
 HookInvocation = (
     PostAgentTurnInvocation
     | BeforeToolInvocation
@@ -174,6 +186,8 @@ HookInvocation = (
     | PreCompactInvocation
     | UserPromptSubmitInvocation
     | StopInvocation
+    | SessionStartInvocation
+    | SessionEndInvocation
 )
 
 
@@ -202,6 +216,8 @@ def build_invocation(  # noqa: PLR0913
     message_id: str | None = None,
     has_images: bool = False,
     stop_hook_active: bool = False,
+    source: str | None = None,
+    reason: str | None = None,
 ) -> HookInvocation:
     """Build the right HookInvocation subclass for *hook_type*."""
     base = ctx.model_dump()
@@ -283,6 +299,10 @@ def build_invocation(  # noqa: PLR0913
             )
         case HookType.STOP:
             return StopInvocation(**base, stop_hook_active=stop_hook_active)
+        case HookType.SESSION_START:
+            return SessionStartInvocation(**base, source=source or "startup")
+        case HookType.SESSION_END:
+            return SessionEndInvocation(**base, reason=reason or "exit")
         case _:
             assert_never(hook_type)
 

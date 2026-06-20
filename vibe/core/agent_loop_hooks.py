@@ -42,6 +42,8 @@ from vibe.core.hooks.models import (
     HookUserMessage,
     PostAgentTurnInvocation,
     PreCompactInvocation,
+    SessionEndInvocation,
+    SessionStartInvocation,
     StopInvocation,
     ToolStatus,
     UserPromptSubmitInvocation,
@@ -183,6 +185,37 @@ class AgentLoopHooksMixin:
             elif isinstance(ev, HookEvent):
                 events.append(ev)
         return continuation, events
+
+    async def _run_session_start_hooks(self, source: str) -> AsyncGenerator[HookEvent]:
+        """Notify session-start hooks (observe-only)."""
+        if not self._hooks_manager:
+            return
+        invocation = SessionStartInvocation(
+            **self._hook_session_context().model_dump(), source=source
+        )
+        async for ev in self._hooks_manager.run(invocation):
+            if isinstance(ev, HookEvent):
+                yield ev
+
+    async def _fire_session_end_hooks(self, reason: str) -> None:
+        """Run session-end hooks best-effort and time-bounded (the process may
+        be tearing down). Events are logged, not surfaced; never raises.
+        """
+        manager = self._hooks_manager
+        if manager is None:
+            return
+        invocation = SessionEndInvocation(
+            **self._hook_session_context().model_dump(), reason=reason
+        )
+
+        async def _drain() -> None:
+            async for _ev in manager.run(invocation):
+                pass
+
+        try:
+            await asyncio.wait_for(_drain(), timeout=5.0)
+        except (TimeoutError, Exception) as e:
+            logger.warning("session_end hooks failed/timed out: %s", e)
 
     async def _run_pre_compact_hooks(
         self, trigger: str, current_context_tokens: int, threshold: int

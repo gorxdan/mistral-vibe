@@ -51,6 +51,9 @@ _HANDLERS: dict[HookType, HookHandler] = {
     # Stop reuses post-agent-turn semantics: deny → inject a continuation
     # message (capped by HookRetryState); allow → let the turn end.
     HookType.STOP: PostAgentTurnHandler(),
+    # Session lifecycle: notification-only (observe session begin/end).
+    HookType.SESSION_START: _TEAM_LIFECYCLE_HANDLER,
+    HookType.SESSION_END: _TEAM_LIFECYCLE_HANDLER,
 }
 
 

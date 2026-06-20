@@ -407,6 +407,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         # True while inside a Stop-hook-induced continuation (passed to the next
         # Stop invocation so a hook can avoid an infinite continue loop).
         self._stop_hook_active: bool = False
+        # SessionStart fires once on the first act() of a session.
+        self._session_started: bool = False
         # File-based cross-session memory (opt-in). Store built lazily; memories
         # are relevance-selected per turn and injected into the system prompt.
         self._is_subagent = is_subagent
@@ -812,6 +814,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 raise ImagesNotSupportedError(active_model.alias)
             self._clean_message_history()
             self.rewind_manager.create_checkpoint()
+            if not self._session_started:
+                self._session_started = True
+                source = "resume" if self.parent_session_id else "startup"
+                async for ev in self._run_session_start_hooks(source):
+                    yield ev
             async with agent_span(model=model_name, session_id=self.session_id):
                 async for event in self._conversation_loop(
                     msg,
@@ -999,7 +1006,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 "auto", old_tokens, threshold
             ):
                 yield ev
-        except Exception as e:  # noqa: BLE001 — a hook must not abort compaction
+        except Exception as e:
             logger.warning("pre_compact hook failed (%s); compacting anyway", e)
 
         compact_status: Literal["success", "failure", "cancelled"] = "success"
@@ -2319,7 +2326,15 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
             i += 1
 
-    async def _reset_session(self, keep_parent: bool = True) -> None:
+    async def _reset_session(
+        self, keep_parent: bool = True, *, lifecycle_reason: str | None = None
+    ) -> None:
+        # lifecycle_reason is set only for real session boundaries (e.g. /clear),
+        # NOT compaction's internal reset — so SessionEnd/Start don't double-fire
+        # during a compaction (PreCompact already covers that).
+        if lifecycle_reason is not None:
+            await self._fire_session_end_hooks(lifecycle_reason)
+            self._session_started = False  # next act() re-fires SessionStart
         old_session_id = self.session_id
         self.emit_session_closed_telemetry()
         suffix = extract_suffix(self.session_id)
@@ -2409,7 +2424,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         self.middleware_pipeline.reset()
         self.tool_manager.reset_all()
-        await self._reset_session(keep_parent=False)
+        await self._reset_session(keep_parent=False, lifecycle_reason="clear")
 
     @requires_init
     async def compact(self, extra_instructions: str = "") -> str:
