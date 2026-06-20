@@ -132,6 +132,8 @@ class SafetyJudge:
                 model=self._model,
                 messages=messages,
                 temperature=temperature,
+                tools=None,
+                tool_choice=None,
                 max_tokens=self._config.max_tokens,
                 extra_headers=self._extra_headers,
                 response_format={"type": "json_object"},

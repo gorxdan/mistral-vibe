@@ -228,7 +228,10 @@ class SafetyJudgeConfig(BaseSettings):
     # None → use the judge model's own configured temperature (some providers
     # reject anything but their fixed value, e.g. Kimi requires 1).
     temperature: float | None = None
-    timeout: float = 15.0
+    # Generous default: reasoning judge models (e.g. GLM with thinking=max) can
+    # take >15s on large tool args before emitting the verdict. On timeout the
+    # judge fails closed (the user is prompted).
+    timeout: float = 30.0
 
 
 class WorktreeConfig(BaseSettings):
