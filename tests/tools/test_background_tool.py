@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -204,6 +205,306 @@ async def test_background_tool_lists_spawned_process(tmp_path):
     assert "proc-1" in result.response
     assert "running" in result.response
     await registry.stop("proc-1")
+
+
+# ---------------------------------------------------------------------------
+# Scoped list (action='list' + task_id) — single-task lookup + tail scoping
+# ---------------------------------------------------------------------------
+
+
+async def _spawn_marker_process(bash, ctx, marker: str) -> str:
+    """Background a shell that prints a marker line then stays alive, so the
+    entry remains 'running' and the marker lands in its log. Returns task_id.
+    """
+    result = await collect_result(
+        bash.run(
+            BashArgs(command=f"sh -c 'echo {marker}; sleep 30'", background=True),
+            ctx=ctx,
+        )
+    )
+    # Wait for the marker to flush into the log before returning.
+    for _ in range(20):
+        await asyncio.sleep(0.1)
+        if marker in registry_log_tail(ctx, result.background_task_id):
+            break
+    return result.background_task_id
+
+
+def registry_log_tail(ctx: InvokeContext, task_id: str) -> str:
+    return ctx.background_registry.read_log_tail(task_id, lines=10)
+
+
+def _has_log_block(response: str) -> bool:
+    """_format_entry wraps a rendered tail in a fenced block; its presence is
+    the reliable signal that a log tail was attached (independent of whatever
+    text the command label itself happens to contain).
+    """
+    return "```" in response
+
+
+@pytest.mark.asyncio
+async def test_scoped_list_returns_only_the_named_task(tmp_path):
+    """task_id scopes the listing to one task: with two procs, asking for
+    proc-1 returns exactly proc-1 and never proc-2 (exact match, no prefix).
+    """
+    bash = _bash()
+    registry = BackgroundRegistry()
+    ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
+
+    await _spawn_marker_process(bash, ctx, "marker-one")   # proc-1
+    await _spawn_marker_process(bash, ctx, "marker-two")   # proc-2
+    tool = _background_tool()
+
+    result = await collect_result(
+        tool.run(BackgroundArgs(action="list", task_id="proc-1"), ctx=_ctx(registry))
+    )
+
+    assert "proc-1" in result.response
+    assert "proc-2" not in result.response  # exact match, not prefix
+    assert _has_log_block(result.response)  # default tail kicked in (scoped)
+    await registry.stop("proc-1")
+    await registry.stop("proc-2")
+
+
+@pytest.mark.asyncio
+async def test_scoped_list_shows_recent_log_by_default(tmp_path):
+    """Omitting tail on a scoped lookup still surfaces recent output — that's
+    the whole point of asking for a single task.
+    """
+    bash = _bash()
+    registry = BackgroundRegistry()
+    ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
+
+    task_id = await _spawn_marker_process(bash, ctx, "scoped-marker")
+    tool = _background_tool()
+
+    result = await collect_result(
+        tool.run(BackgroundArgs(action="list", task_id=task_id), ctx=_ctx(registry))
+    )
+
+    assert _has_log_block(result.response)
+    assert "scoped-marker" in result.response
+    await registry.stop(task_id)
+
+
+@pytest.mark.asyncio
+async def test_scoped_list_tail_zero_suppresses_log(tmp_path):
+    """Explicit tail=0 overrides the scoped default — status only, no log."""
+    bash = _bash()
+    registry = BackgroundRegistry()
+    ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
+
+    task_id = await _spawn_marker_process(bash, ctx, "suppress-me")
+    tool = _background_tool()
+
+    result = await collect_result(
+        tool.run(
+            BackgroundArgs(action="list", task_id=task_id, tail=0), ctx=_ctx(registry)
+        )
+    )
+
+    assert not _has_log_block(result.response)  # tail suppressed
+    assert task_id in result.response  # entry still shown, just without log
+    await registry.stop(task_id)
+
+
+@pytest.mark.asyncio
+async def test_scoped_list_unknown_id_lists_known_ids(tmp_path):
+    """An unknown task_id yields a clear not-found message naming the known
+    ids, so the caller can recover without a second round-trip.
+    """
+    bash = _bash()
+    registry = BackgroundRegistry()
+    ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
+
+    await _spawn_marker_process(bash, ctx, "known-one")  # proc-1
+    tool = _background_tool()
+
+    result = await collect_result(
+        tool.run(BackgroundArgs(action="list", task_id="proc-999"), ctx=_ctx(registry))
+    )
+
+    assert "No background task" in result.response
+    assert "proc-999" in result.response
+    assert "proc-1" in result.response  # known-ids hint
+    await registry.stop("proc-1")
+
+
+@pytest.mark.asyncio
+async def test_scoped_list_explicit_tail_overrides_default(tmp_path):
+    """An explicit positive tail wins over the scoped default sample."""
+    bash = _bash()
+    registry = BackgroundRegistry()
+    ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
+
+    task_id = await _spawn_marker_process(bash, ctx, "explicit-tail")
+    tool = _background_tool()
+
+    result = await collect_result(
+        tool.run(
+            BackgroundArgs(action="list", task_id=task_id, tail=5), ctx=_ctx(registry)
+        )
+    )
+
+    assert _has_log_block(result.response)
+    assert "explicit-tail" in result.response
+    await registry.stop(task_id)
+
+
+# ---------------------------------------------------------------------------
+# Family scoping — '/' boundary match pulls in hierarchical children
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeLiveAgent:
+    agent_id: str
+    label: str = "agent"
+    phase: str = "default"
+    tokens_total: int = 0
+    agent: str | None = "explore"
+    model: str | None = None
+
+
+class _FakeStatus:
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+
+@dataclass
+class _FakeRunEntry:
+    run_id: str
+    status: _FakeStatus
+    elapsed: float = 0.0
+    agent_count: int = 0
+    tokens_total: int = 0
+    phases: list[str] = field(default_factory=list)
+    live_agents: list[_FakeLiveAgent] = field(default_factory=list)
+
+
+class _FakeWorkflowRunner:
+    """Minimal stand-in matching the shape _workflow_entries reads: a `.runs`
+    list of entries, each with live_agents. Lets us exercise family scoping
+    without spinning up a real workflow run.
+    """
+
+    def __init__(self) -> None:
+        self.runs: list[_FakeRunEntry] = []
+
+    async def stop(self, run_id: str) -> bool:
+        return any(r.run_id == run_id for r in self.runs)
+
+    def cancel_agent(self, run_id: str, agent_id: str) -> bool:
+        return True
+
+    def pause(self, run_id: str) -> bool:
+        return True
+
+    def unpause(self, run_id: str) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_family_scoping_pulls_in_workflow_children():
+    """task_id='wf-1' returns the workflow row AND its wf-1/live-* children —
+    the family — via the '/' boundary match.
+    """
+    registry = BackgroundRegistry()
+    wf = _FakeWorkflowRunner()
+    wf.runs.append(
+        _FakeRunEntry(
+            run_id="wf-1",
+            status=_FakeStatus("running"),
+            phases=["reviews"],
+            live_agents=[
+                _FakeLiveAgent(agent_id="explore", label="scout"),
+                _FakeLiveAgent(agent_id="reviewer", label="checker"),
+            ],
+        )
+    )
+    registry.attach_workflow_runner(lambda: wf)
+    tool = _background_tool()
+
+    result = await collect_result(
+        tool.run(BackgroundArgs(action="list", task_id="wf-1"), ctx=_ctx(registry))
+    )
+
+    assert "wf-1" in result.response
+    assert "wf-1/live-explore" in result.response
+    assert "wf-1/live-reviewer" in result.response
+
+
+@pytest.mark.asyncio
+async def test_family_scoping_isolates_sibling_workflows():
+    """wf-1's family must not bleed into wf-2's family — the boundary match
+    keys on the full id, not a numeric prefix.
+    """
+    registry = BackgroundRegistry()
+    wf = _FakeWorkflowRunner()
+    wf.runs.append(
+        _FakeRunEntry(
+            run_id="wf-1",
+            status=_FakeStatus("running"),
+            live_agents=[_FakeLiveAgent(agent_id="explore")],
+        )
+    )
+    wf.runs.append(
+        _FakeRunEntry(
+            run_id="wf-2",
+            status=_FakeStatus("running"),
+            live_agents=[_FakeLiveAgent(agent_id="explore")],
+        )
+    )
+    registry.attach_workflow_runner(lambda: wf)
+    tool = _background_tool()
+
+    result = await collect_result(
+        tool.run(BackgroundArgs(action="list", task_id="wf-1"), ctx=_ctx(registry))
+    )
+
+    assert "wf-1" in result.response
+    assert "wf-2" not in result.response
+    assert "wf-2/live-explore" not in result.response
+
+
+@pytest.mark.asyncio
+async def test_family_scoping_has_no_numeric_footgun(tmp_path):
+    """Regression guard: proc-1 must not match proc-10. The '/' boundary
+    match means a bare numeric suffix can never widen the scope — there is
+    no proc-1/... child, and 'proc-10' does not start with 'proc-1/'.
+    """
+    bash = _bash()
+    registry = BackgroundRegistry()
+    ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
+
+    # Spawn 10 processes so proc-1 and proc-10 both exist. Plain sleep — no
+    # marker needed, registration is synchronous so ids are assigned at once.
+    for _ in range(10):
+        await collect_result(
+            bash.run(BashArgs(command="sleep 30", background=True), ctx=ctx)
+        )
+    tool = _background_tool()
+
+    result = await collect_result(
+        tool.run(BackgroundArgs(action="list", task_id="proc-1"), ctx=_ctx(registry))
+    )
+
+    assert "proc-1" in result.response
+    # proc-10 must NOT appear — only proc-1 (and no proc-1/ children exist).
+    assert "proc-10" not in result.response
+    # Every rendered entry line that names a proc should be proc-1 only.
+    proc_lines = [
+        line for line in result.response.splitlines() if "proc-" in line
+    ]
+    assert proc_lines, "expected at least one proc entry"
+    for line in proc_lines:
+        assert line.lstrip().startswith("- proc-1 "), (
+            f"unexpected sibling leaked into proc-1 scope: {line!r}"
+        )
+
+    for rec in list(registry._procs.values()):
+        if rec.status == "running":
+            await registry.stop(rec.task_id)
 
 
 @pytest.mark.asyncio

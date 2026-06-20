@@ -29,6 +29,12 @@ from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from vibe.core.types import ToolCallEvent, ToolResultEvent, ToolStreamEvent
 
 
+# When the model asks for a single task by id (action='list' + task_id) without
+# specifying a tail, show this many recent log lines — the point of a scoped
+# lookup is to inspect one task, so a small recent sample is the useful default.
+_DEFAULT_SCOPED_TAIL = 20
+
+
 class BackgroundArgs(BaseModel):
     action: str = Field(
         description=(
@@ -39,15 +45,22 @@ class BackgroundArgs(BaseModel):
     task_id: str | None = Field(
         default=None,
         description=(
-            "Task id to stop (required for action='stop'). From the registry's "
-            "id grammar: proc-N, wf-N, wf-N/live-AGENT, team:NAME, loop-LOOPID."
+            "Task id. For action='stop' (required): the task to terminate. "
+            "For action='list' (optional): scope the listing — and any log "
+            "tail — to one task by id. Matches the id exactly plus its "
+            "hierarchical children (wf-1 also pulls in wf-1/live-* agents); "
+            "the '/' boundary is respected, so proc-1 never matches proc-10. "
+            "From the registry's id grammar: proc-N, wf-N, wf-N/live-AGENT, "
+            "team:NAME, loop-LOOPID."
         ),
     )
     tail: int | None = Field(
         default=None,
         description=(
-            "For action='list' only: also return the last N lines of each "
-            "process's log. Useful to check a server's startup output."
+            "For action='list' only: number of trailing log lines to show for "
+            "each process entry. Omitted on a full list -> no log shown; "
+            "omitted with task_id set -> a small recent-output sample is "
+            "shown by default. Pass 0 to suppress."
         ),
     )
 
@@ -101,7 +114,8 @@ class Background(
         "List or stop background tasks (long-running processes you launched "
         "with bash background=true, workflow runs and their in-flight agents, "
         "teammates, and scheduled loops). Use action='list' to see what is "
-        "running and action='stop' with a task_id to cancel one."
+        "running — pass task_id to scope it (and its log tail) to one task — "
+        "and action='stop' with a task_id to cancel one."
     )
     read_only: ClassVar[bool] = False  # stop() has side effects
 
@@ -143,11 +157,48 @@ class Background(
 
         action = (args.action or "").strip().lower()
         if action == "list":
-            entries = registry.list_tasks()
-            if not entries:
-                yield BackgroundResult(response="No background tasks running.")
-                return
-            tail_lines = args.tail if args.tail and args.tail > 0 else None
+            all_entries = registry.list_tasks()
+            scoped = bool(args.task_id)
+            if scoped:
+                target = args.task_id
+                # Family scoping via the '/' boundary: an exact match on the
+                # id, plus any hierarchical children (e.g. wf-1 pulls in
+                # wf-1/live-explore, wf-1/live-reviewer). Matching on the
+                # delimiter — not a raw prefix — means proc-1 never matches
+                # proc-10: there is no proc-1/... child, and 'proc-10' does
+                # not start with 'proc-1/'.
+                entries = [
+                    e
+                    for e in all_entries
+                    if e.task_id == target
+                    or e.task_id.startswith(f"{target}/")
+                ]
+                if not entries:
+                    known_ids = ", ".join(e.task_id for e in all_entries) or "none"
+                    yield BackgroundResult(
+                        response=(
+                            f"No background task with id {args.task_id!r}. "
+                            f"Known ids: {known_ids}."
+                        )
+                    )
+                    return
+            else:
+                entries = all_entries
+                if not entries:
+                    yield BackgroundResult(response="No background tasks running.")
+                    return
+            # Tail resolution:
+            #  - explicit tail > 0 -> that many lines
+            #  - explicit tail <= 0 -> none
+            #  - tail omitted + scoped lookup -> default sample (recent output
+            #    is the whole point of asking for one task)
+            #  - tail omitted + full list -> none (keep the overview cheap)
+            if args.tail is not None:
+                tail_lines = args.tail if args.tail > 0 else None
+            elif scoped:
+                tail_lines = _DEFAULT_SCOPED_TAIL
+            else:
+                tail_lines = None
             lines = [
                 _format_entry(
                     e,
