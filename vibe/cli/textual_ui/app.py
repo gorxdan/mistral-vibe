@@ -122,7 +122,7 @@ from vibe.cli.textual_ui.widgets.tool_widgets import (
 )
 from vibe.cli.textual_ui.widgets.voice_app import VoiceApp
 from vibe.cli.textual_ui.widgets.workflow_save_app import WorkflowSaveApp
-from vibe.cli.textual_ui.widgets.workflows_app import WorkflowsApp
+from vibe.cli.textual_ui.widgets.tasks_app import TasksApp
 from vibe.cli.textual_ui.windowing import (
     HISTORY_RESUME_TAIL_MESSAGES,
     LOAD_MORE_BATCH_SIZE,
@@ -135,6 +135,7 @@ from vibe.cli.textual_ui.windowing import (
     sync_backfill_state,
 )
 from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
+from vibe.core.tools.background import BackgroundRegistry
 from vibe.cli.update_notifier import (
     GitHubUpdateGateway,
     UpdateCacheRepository,
@@ -263,7 +264,7 @@ class BottomApp(StrEnum):
     Rewind = auto()
     SessionPicker = auto()
     Voice = auto()
-    Workflows = auto()
+    Tasks = auto()
 
 
 class ChatScroll(VerticalScroll):
@@ -370,10 +371,11 @@ _REJECT_HINT_PAUSED = "clear the queue first or remove this input."
 
 # Slash commands that act only on *background* state — never the foreground
 # agent turn — stay reachable while the agent is busy or the queue is paused.
-# `/workflows` in particular exists to monitor and manage runs that, by design,
-# execute concurrently with a busy agent; rejecting it as "cannot be queued"
-# defeats its purpose. These run immediately instead of being rejected.
-_BUSY_ALLOWED_COMMANDS = frozenset({"workflows"})
+# `/tasks` in particular exists to monitor and manage processes, workflows,
+# teams, and loops that, by design, execute concurrently with a busy agent;
+# rejecting it as "cannot be queued" defeats its purpose. These run
+# immediately instead of being rejected.
+_BUSY_ALLOWED_COMMANDS = frozenset({"tasks", "workflows"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,7 +410,7 @@ class VibeApp(App):  # noqa: PLR0904
         Binding("ctrl+p", "rewind_prev", "Rewind Previous", show=False, priority=True),
         Binding("alt+down", "rewind_next", "Rewind Next", show=False, priority=True),
         Binding("ctrl+n", "rewind_next", "Rewind Next", show=False, priority=True),
-        Binding("ctrl+w", "toggle_workflows", "Workflows", show=False, priority=True),
+        Binding("ctrl+w", "toggle_tasks", "Tasks", show=False, priority=True),
     ]
 
     def get_driver_class(self) -> type[Driver]:
@@ -525,8 +527,20 @@ class VibeApp(App):  # noqa: PLR0904
         self._register_workflow_commands()
         self.agent_loop.launch_workflow_callback = self._launch_workflow_from_tool
         self.agent_loop.workflow_status_callback = self._workflow_status_for_tool
+        self.agent_loop.workflow_stop_callback = self._workflow_stop_for_tool
         self.agent_loop.team_dir_callback = self._team_dir_for_tool
         self._team_manager: TeamManager | None = None
+        # Unified background-task registry. Owns bash-backgrounded processes and
+        # aggregates workflows/teams/loops for the Tasks pane (ctrl+w) and the
+        # `background` tool. Adapters read lazily so a lazily-created owner
+        # (TeamManager) is picked up when it appears.
+        self._background_registry = BackgroundRegistry()
+        self._background_registry.attach_workflow_runner(lambda: self._workflow_runner)
+        self._background_registry.attach_team_manager(lambda: self._team_manager)
+        self._background_registry.attach_loop_manager(
+            lambda: self._loop_runner.manager
+        )
+        self.agent_loop.background_registry = self._background_registry
 
     def _configure_startup_options(self, startup: StartupOptions | None) -> None:
         opts = startup or StartupOptions()
@@ -2795,21 +2809,64 @@ class VibeApp(App):  # noqa: PLR0904
         widget = await self._loop_runner.handle_command(cmd_args)
         await self._mount_and_scroll(widget)
 
-    async def _workflows_command(self, cmd_args: str = "", **kwargs: Any) -> None:
-        if self.config.disable_workflows:
-            from vibe.cli.textual_ui.widgets.messages import ErrorMessage
+    async def _tasks_command(self, cmd_args: str = "", **kwargs: Any) -> None:
+        """Handle /tasks (and the /workflows alias).
 
+        Bare -> open the Tasks pane. With args -> route to the workflow runner's
+        subcommands (stop/snapshot/resume) for back-compat with /workflows stop,
+        and add /tasks stop <id> for unified stop across all categories.
+        """
+        from vibe.cli.textual_ui.widgets.messages import (
+            ErrorMessage,
+            UserCommandMessage,
+        )
+
+        cmd_args = cmd_args.strip()
+        if not cmd_args:
+            if self._current_bottom_app == BottomApp.Tasks:
+                return
+            await self._switch_to_tasks_app()
+            return
+
+        # Unified stop across all task categories via the registry.
+        parts = cmd_args.split(None, 1)
+        if parts[0].lower() in {"stop", "cancel", "kill"} and len(parts) > 1:
+            target = parts[1].strip()
+            if target == "all":
+                stopped_any = False
+                for entry in self._background_registry.list_tasks():
+                    if await self._background_registry.stop(entry.task_id):
+                        stopped_any = True
+                await self._mount_and_scroll(
+                    UserCommandMessage(
+                        "Stopped all background tasks."
+                        if stopped_any
+                        else "No running tasks to stop."
+                    )
+                )
+                return
+            stopped = await self._background_registry.stop(target)
+            if stopped:
+                await self._mount_and_scroll(
+                    UserCommandMessage(f"Stopped `{target}`.")
+                )
+            else:
+                await self._mount_and_scroll(
+                    ErrorMessage(
+                        f"Could not stop `{target}` — not found or already finished."
+                    )
+                )
+            return
+
+        # Fall back to workflow-runner subcommands (snapshot/resume/list) for
+        # /workflows parity. Workflows disabled only blocks these, not the pane.
+        if self.config.disable_workflows:
             await self._mount_and_scroll(
                 ErrorMessage("Workflows are disabled in this configuration.")
             )
             return
-        if cmd_args.strip():
-            widget = await self._workflow_runner.handle_command(cmd_args)
-            await self._mount_and_scroll(widget)
-        else:
-            if self._current_bottom_app == BottomApp.Workflows:
-                return
-            await self._switch_to_workflows_app()
+        widget = await self._workflow_runner.handle_command(cmd_args)
+        await self._mount_and_scroll(widget)
 
     def _build_team_manager(self) -> TeamManager:
         """Build a TeamManager wired to the agent loop's hook pipeline so team
@@ -2979,53 +3036,52 @@ class VibeApp(App):  # noqa: PLR0904
                     )
                 )
 
-    async def _switch_to_workflows_app(self) -> None:
+    async def _switch_to_tasks_app(self) -> None:
         await self._switch_from_input(
-            WorkflowsApp(runner=self._workflow_runner)
+            TasksApp(
+                registry=self._background_registry,
+                workflow_runner=self._workflow_runner,
+            )
         )
 
-    async def on_workflows_app_closed(self, _event: WorkflowsApp.Closed) -> None:
+    async def on_tasks_app_closed(self, _event: TasksApp.Closed) -> None:
         await self._switch_to_input_app()
 
-    async def on_workflows_app_stop_requested(
-        self, message: WorkflowsApp.StopRequested
+    async def on_tasks_app_task_stop_requested(
+        self, message: TasksApp.TaskStopRequested
     ) -> None:
-        await self._workflow_runner.stop(message.run_id)
-
-    async def on_workflows_app_agent_cancel_requested(
-        self, message: WorkflowsApp.AgentCancelRequested
-    ) -> None:
-        cancelled = self._workflow_runner.cancel_agent(message.run_id, message.agent_id)
-        if cancelled:
-            self.notify(
-                f"Cancelled agent {message.agent_id} in {message.run_id}",
-                markup=False,
-            )
+        # Unified cancel via the registry — routes to the right owner by id.
+        stopped = await self._background_registry.stop(message.task_id)
+        if stopped:
+            self.notify(f"Stopped {message.task_id}", markup=False)
         else:
             self.notify(
-                f"Agent {message.agent_id} not live (already finished?)",
+                f"{message.task_id} not found or already finished",
                 severity="warning",
                 markup=False,
             )
 
-    async def on_workflows_app_pause_toggle_requested(
-        self, message: WorkflowsApp.PauseToggleRequested
+    async def on_tasks_app_task_pause_requested(
+        self, message: TasksApp.TaskPauseRequested
     ) -> None:
-        entry = self._workflow_runner._find_run(message.run_id)
+        # Pause/resume toggle for workflow runs only (registry.pause returns
+        # False for any other category). Both branches must await — pause() is
+        # async and unpause happens via the same toggle when is_paused is True.
+        entry = self._workflow_runner._find_run(message.task_id)
         if entry is None:
             return
         if entry.is_paused:
-            self._workflow_runner.unpause(message.run_id)
-            self.notify(f"Resumed workflow {message.run_id}", markup=False)
+            await self._background_registry.pause(message.task_id)
+            self.notify(f"Resumed workflow {message.task_id}", markup=False)
         else:
-            self._workflow_runner.pause(message.run_id)
+            await self._background_registry.pause(message.task_id)
             self.notify(
-                f"Paused workflow {message.run_id} (in-flight agents finish)",
+                f"Paused workflow {message.task_id} (in-flight agents finish)",
                 markup=False,
             )
 
-    async def on_workflows_app_save_requested(
-        self, message: WorkflowsApp.SaveRequested
+    async def on_tasks_app_save_requested(
+        self, message: TasksApp.SaveRequested
     ) -> None:
         if self.config.disable_workflows:
             self.notify("Workflows are disabled.", severity="warning")
@@ -3052,15 +3108,15 @@ class VibeApp(App):  # noqa: PLR0904
             self._register_workflow_commands()
         except Exception as e:  # surface any save failure to the user
             self.notify(f"Failed to save workflow: {e}", severity="error")
-            await self._switch_to_workflows_app()
+            await self._switch_to_tasks_app()
             return
         self.notify(f"Saved /{message.name} to {path}", markup=False)
-        await self._switch_to_workflows_app()
+        await self._switch_to_tasks_app()
 
     async def on_workflow_save_app_cancelled(
         self, _message: WorkflowSaveApp.Cancelled
     ) -> None:
-        await self._switch_to_workflows_app()
+        await self._switch_to_tasks_app()
 
     def _register_workflow_commands(self) -> None:
         if self.config.disable_workflows:
@@ -3147,6 +3203,50 @@ class VibeApp(App):  # noqa: PLR0904
             )
         return out
 
+    async def _workflow_stop_for_tool(
+        self, run_id: str | None, all_runs: bool
+    ) -> dict[str, Any]:
+        """Back the workflow_stop model tool: cancel one run (run_id) or every
+        active run (all_runs). Returns stopped / stopped_run_ids / message.
+        Delegates to the runner's existing stop/stop_all (same path as the
+        `/workflows stop` slash command).
+        """
+        runner = self._workflow_runner
+        if all_runs:
+            active = [
+                e.run_id
+                for e in runner.runs
+                if e.task is not None and not e.task.done()
+            ]
+            if not active:
+                return {
+                    "stopped": False,
+                    "stopped_run_ids": [],
+                    "message": "No active workflow runs to stop.",
+                }
+            await runner.stop_all()
+            return {
+                "stopped": True,
+                "stopped_run_ids": active,
+                "message": f"Stopped {len(active)} workflow run(s): "
+                f"{', '.join(active)}.",
+            }
+        assert run_id is not None  # enforced by the tool's arg validator
+        stopped = await runner.stop(run_id)
+        if stopped:
+            return {
+                "stopped": True,
+                "stopped_run_ids": [run_id],
+                "message": f"Stopped workflow `{run_id}`.",
+            }
+        return {
+            "stopped": False,
+            "stopped_run_ids": [],
+            "message": (
+                f"Could not stop `{run_id}` — not found or already finished."
+            ),
+        }
+
     def _team_dir_for_tool(self) -> str | None:
         """Back the team_message model tool: the active team directory, or None
         when no team is active.
@@ -3206,8 +3306,11 @@ class VibeApp(App):  # noqa: PLR0904
         summary = result.summary
         # A failed run returns a WorkflowResult with FAILED status (the script
         # exception is swallowed in WorkflowRuntime.run); surface it as an error
-        # rather than styling it as a successful completion.
-        if getattr(result.run, "status", None) == WorkflowStatus.FAILED:
+        # rather than styling it as a successful completion. A STOPPED run
+        # (cancelled by the user) is neither success nor error — render it as a
+        # neutral note so it isn't styled red like a crash.
+        status = getattr(result.run, "status", None)
+        if status == WorkflowStatus.FAILED:
             await self._mount_and_scroll(ErrorMessage(summary))
         else:
             await self._mount_and_scroll(UserCommandMessage(summary))
@@ -3239,7 +3342,15 @@ class VibeApp(App):  # noqa: PLR0904
 
     @classmethod
     def _format_workflow_delivery(cls, result: Any) -> str:
-        """Render a workflow result as a message for the host agent's context."""
+        """Render a workflow result as a message for the host agent's context.
+
+        Always surfaces the script's return_value. When any agent did not
+        complete cleanly (schema failure, crash, cancellation), ALSO surfaces
+        those agents' raw responses: a raising agent becomes ``None`` inside
+        ``parallel()``/``pipeline()`` and vanishes from return_value, so without
+        this recovery a run where every agent failed schema validation delivers
+        an empty result despite real work being recorded on the run.
+        """
         summary = getattr(result, "summary", "") or ""
         return_value = getattr(result, "return_value", None)
         parts: list[str] = []
@@ -3253,7 +3364,54 @@ class VibeApp(App):  # noqa: PLR0904
                         rendered[: cls._WORKFLOW_DELIVERY_CHAR_CAP] + "\n…(truncated)"
                     )
                 parts.append(f"Result:\n{rendered}")
+
+        # Recover outputs from agents that did not complete cleanly. The script's
+        # return_value cannot reach these (they raised and degraded to None),
+        # but the run records them; surface them so partial work is never lost.
+        failed_outputs = cls._collect_recoverable_outputs(getattr(result, "run", None))
+        if failed_outputs:
+            used = sum(len(p) for p in parts)
+            per = max(
+                800,
+                (cls._WORKFLOW_DELIVERY_CHAR_CAP - used) // max(1, len(failed_outputs)),
+            )
+            chunks: list[str] = []
+            for label, response, error in failed_outputs:
+                blob = cls._stringify_workflow_value(response)
+                if len(blob) > per:
+                    blob = blob[:per] + "\n…(truncated)"
+                tag = f"[{label or 'agent'}]"
+                if error:
+                    tag += f" failed: {error.splitlines()[0][:120]}"
+                chunks.append(f"{tag}\n{blob}")
+            parts.append(
+                "Recovered outputs from agents that did not complete cleanly "
+                "(not included in the result above):\n\n" + "\n\n".join(chunks)
+            )
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _collect_recoverable_outputs(
+        run: Any,
+    ) -> list[tuple[str | None, Any, str | None]]:
+        """Return ``(label, response, error)`` for every agent that did not
+        complete cleanly, in run order. Carries partial work the host may still
+        use; agents that produced no output (e.g. cancelled before emitting) are
+        skipped since there is nothing to recover."""
+        if run is None:
+            return []
+        out: list[tuple[str | None, Any, str | None]] = []
+        for phase in getattr(run, "phases", []) or []:
+            for ar in getattr(phase, "agent_results", []) or []:
+                if getattr(ar, "completed", True):
+                    continue
+                resp = getattr(ar, "response", None)
+                if resp in (None, "", []):
+                    continue
+                out.append(
+                    (getattr(ar, "label", None), resp, getattr(ar, "error", None))
+                )
+        return out
 
     async def _persist_workflow_snapshots(self) -> None:
         snapshots: list[dict[str, Any]] = []
@@ -3476,6 +3634,12 @@ class VibeApp(App):  # noqa: PLR0904
         await self._loop_runner.stop()
         await self._workflow_runner.stop_all()
         await self._stop_teams()
+        # Reap backgrounded processes so a forgotten dev server doesn't orphan
+        # to init when vibe exits. Teams/workflows are already reaped above.
+        try:
+            await self._background_registry.shutdown()
+        except Exception as exc:
+            logger.error("Failed to reap background processes on exit", exc_info=exc)
         self._log_reader.shutdown()
         await self._voice_manager.close()
         await self._narrator_manager.close()
@@ -3688,8 +3852,8 @@ class VibeApp(App):  # noqa: PLR0904
                     self.query_one(RewindApp).focus()
                 case BottomApp.Voice:
                     self.query_one(VoiceApp).focus()
-                case BottomApp.Workflows:
-                    self.query_one(WorkflowsApp).focus()
+                case BottomApp.Tasks:
+                    self.query_one(TasksApp).focus()
                 case app:
                     assert_never(app)
         except Exception:
@@ -3769,10 +3933,10 @@ class VibeApp(App):  # noqa: PLR0904
             pass
         self._last_escape_time = None
 
-    def _handle_workflows_app_escape(self) -> None:
+    def _handle_tasks_app_escape(self) -> None:
         try:
-            workflows_app = self.query_one(WorkflowsApp)
-            workflows_app.action_back()
+            tasks_app = self.query_one(TasksApp)
+            tasks_app.action_back()
         except Exception:
             pass
         self._last_escape_time = None
@@ -4018,8 +4182,8 @@ class VibeApp(App):  # noqa: PLR0904
             self._handle_thinking_picker_app_escape()
         elif self._current_bottom_app == BottomApp.SessionPicker:
             self._handle_session_picker_app_escape()
-        elif self._current_bottom_app == BottomApp.Workflows:
-            self._handle_workflows_app_escape()
+        elif self._current_bottom_app == BottomApp.Tasks:
+            self._handle_tasks_app_escape()
         elif self._current_bottom_app == BottomApp.Rewind:
             self.run_worker(self._exit_rewind_mode(), exclusive=False)
             self._last_escape_time = None
@@ -4128,13 +4292,13 @@ class VibeApp(App):  # noqa: PLR0904
         for section in self.query(CollapsibleSection):
             section.set_collapsed(self._tools_collapsed)
 
-    async def action_toggle_workflows(self) -> None:
-        if self.config.disable_workflows:
-            return
-        if self._current_bottom_app == BottomApp.Workflows:
+    async def action_toggle_tasks(self) -> None:
+        # The Tasks pane covers processes, teams, and loops too — it stays
+        # available even when workflows are disabled (those rows just hide).
+        if self._current_bottom_app == BottomApp.Tasks:
             await self._switch_to_input_app()
         elif self._current_bottom_app == BottomApp.Input:
-            await self._switch_to_workflows_app()
+            await self._switch_to_tasks_app()
         # Any other bottom app (a pending Approval/Question modal, a picker,
         # etc.) is left untouched: switching away would orphan its pending
         # interaction Future and hang the agent holding _user_interaction_lock.

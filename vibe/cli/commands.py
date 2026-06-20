@@ -179,11 +179,18 @@ class CommandRegistry:
             "workflows": Command(
                 aliases=frozenset(["/workflows"]),
                 description=(
-                    "Manage workflow runs. "
-                    "Use `/workflows list`, `/workflows stop <id|all>`, "
-                    "or `/workflows snapshot <id>`"
+                    "Alias for /tasks — the unified background-task manager. "
+                    "Use /tasks (or ctrl+w) to open the pane."
                 ),
-                handler="_workflows_command",
+                handler="_tasks_command",
+            ),
+            "tasks": Command(
+                aliases=frozenset(["/tasks"]),
+                description=(
+                    "Manage background tasks (processes, workflows, teams, loops). "
+                    "Use `/tasks`, `/tasks stop <id|all>`, or `/tasks list`."
+                ),
+                handler="_tasks_command",
             ),
             "team": Command(
                 aliases=frozenset(["/team"]),

@@ -82,10 +82,10 @@ async def test_slash_command_rejected_with_warning_when_busy(vibe_app: VibeApp) 
 
 @pytest.mark.asyncio
 async def test_workflows_command_opens_monitor_while_busy(vibe_app: VibeApp) -> None:
-    # /workflows monitors background runs that execute concurrently with a busy
-    # agent, so it must bypass the "cannot be queued" rejection and run now.
-    # The Submitted event is dispatched directly to exercise the routing logic
-    # without the input widget's completion/history state.
+    # /workflows (alias for /tasks) monitors background runs that execute
+    # concurrently with a busy agent, so it must bypass the "cannot be queued"
+    # rejection and run now. The Submitted event is dispatched directly to
+    # exercise the routing logic without the input widget's completion/history.
     async with vibe_app.run_test() as pilot:
         chat_input = vibe_app.query_one(ChatInputContainer)
         chat_input.value = "!sleep 0.3"
@@ -99,7 +99,7 @@ async def test_workflows_command_opens_monitor_while_busy(vibe_app: VibeApp) -> 
         )
         await pilot.pause(0.05)
 
-        assert vibe_app._current_bottom_app == BottomApp.Workflows
+        assert vibe_app._current_bottom_app == BottomApp.Tasks
         assert len(vibe_app._input_queue) == 0
         assert not any(
             "cannot be queued" in n.message for n in vibe_app._notifications

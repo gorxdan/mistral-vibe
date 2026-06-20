@@ -1323,6 +1323,11 @@ NarratorStatus {
     width: auto;
 }
 
+#banner-features {
+    width: auto;
+    height: 1;
+}
+
 .banner-cmd {
     color: $secondary;
     width: auto;
@@ -1438,26 +1443,25 @@ NarratorStatus {
     }
 }
 
-/* Workflows Monitor */
+/* Tasks Monitor (unified background-task pane, ctrl+w) */
 
-#workflows-content {
+#tasks-content {
     width: 100%;
     height: auto;
 }
 
-.workflows-header {
+.tasks-header {
     width: 100%;
     height: auto;
     margin-bottom: 1;
 }
 
-#workflows-body {
+#tasks-body {
     width: 100%;
     height: auto;
 }
 
-#workflows-run-list,
-#workflows-agent-list {
+#tasks-list {
     width: 100%;
     max-height: 50vh;
     text-wrap: nowrap;
@@ -1465,32 +1469,25 @@ NarratorStatus {
     border: none;
 }
 
-#workflows-run-list:focus,
-#workflows-agent-list:focus {
+#tasks-list:focus {
     border: none;
 }
 
-#workflows-agent-detail {
+#tasks-detail,
+#tasks-script {
     width: 100%;
     max-height: 60vh;
     padding: 0 1;
 }
 
-.workflows-script {
-    width: 100%;
-    height: auto;
-    margin-bottom: 1;
-    color: $text-muted;
-}
-
-.workflows-empty {
+.tasks-empty {
     width: 100%;
     height: auto;
     color: $text-muted;
     margin: 1 0;
 }
 
-.workflows-help {
+.tasks-help {
     width: 100%;
     height: auto;
     color: $text-muted;

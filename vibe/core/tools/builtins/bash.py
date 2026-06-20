@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import time
 from typing import ClassVar, Literal, final
 
 from pydantic import BaseModel, Field
@@ -336,6 +337,16 @@ class BashArgs(BaseModel):
     timeout: int | None = Field(
         default=None, description="Override the default command timeout."
     )
+    background: bool = Field(
+        default=False,
+        description=(
+            "Run the command in the background and return immediately instead of "
+            "blocking until it finishes. Use for long-lived processes (dev servers, "
+            "watchers). The process is registered in the background registry; tail "
+            "its output via the `background` tool or the Tasks pane, and stop it with "
+            "background action='stop'. Output goes to a log file under the scratchpad."
+        ),
+    )
 
 
 class BashResult(BaseModel):
@@ -343,6 +354,11 @@ class BashResult(BaseModel):
     stdout: str
     stderr: str
     returncode: int
+    # Set only for background spawns (background=True). background_task_id is the
+    # registry id ("proc-N"); pid is the OS pid. returncode is -1 (still running)
+    # at yield time and is finalized asynchronously by the registry.
+    background_task_id: str | None = None
+    pid: int | None = None
 
 
 class Bash(
@@ -360,6 +376,15 @@ class Bash(
         if not isinstance(event.result, BashResult):
             return ToolResultDisplay(
                 success=False, message=event.error or event.skip_reason or "No result"
+            )
+
+        if event.result.background_task_id is not None:
+            return ToolResultDisplay(
+                success=True,
+                message=(
+                    f"Backgrounded {event.result.command} "
+                    f"({event.result.background_task_id}, pid {event.result.pid})"
+                ),
             )
 
         return ToolResultDisplay(success=True, message=f"Ran {event.result.command}")
@@ -619,11 +644,125 @@ class Bash(
             return None, None, _get_base_env()
         return argv, profile, env
 
+    async def _run_background(
+        self, args: BashArgs, ctx: InvokeContext | None
+    ) -> AsyncGenerator[ToolStreamEvent | BashResult, None]:
+        """Spawn a long-lived command, register it, and return immediately.
+
+        Output is captured via fd-level redirection: the log file is opened in
+        the parent and passed as the child's stdout (stderr dup'd to it). This
+        avoids shell-level `{ cmd ; } >> log` grouping, which a command
+        containing a literal ``}`` could close early and so write part of its
+        output off the log. The registry owns closing the handle when the
+        process leaves the running state. The process is spawned with
+        start_new_session so the registry's process-group signaling reaches
+        grandchildren (npm/vite child servers). The same sandbox resolution as
+        the foreground path applies.
+        """
+        if ctx is None or getattr(ctx, "background_registry", None) is None:
+            raise ToolError(
+                "background execution is not available in this context "
+                "(no background registry)"
+            )
+        # Logs go under the scratchpad (already a sandbox write-root) so a
+        # backgrounded server stays writable even when the OS sandbox is on.
+        log_root = ctx.scratchpad_dir or ctx.session_dir
+        if log_root is None:
+            raise ToolError(
+                "background execution requires a scratchpad or session directory"
+            )
+        registry = ctx.background_registry
+        bg_dir = Path(log_root) / "bg"
+        bg_dir.mkdir(parents=True, exist_ok=True)
+
+        # Unique log name (monotonic ns avoids pid-reuse collisions). Created
+        # eagerly so the Tasks pane's log tail works before the first write.
+        log_path = bg_dir / f"bg-{time.monotonic_ns()}.log"
+        log_path.touch()
+        # Open for binary append; handed to the child as stdout/stderr so the
+        # shell command runs verbatim with no redirection wrapping needed.
+        log_handle = log_path.open("ab", buffering=0)
+
+        kwargs: dict[Literal["start_new_session"], bool] = (
+            {} if is_windows() else {"start_new_session": True}
+        )
+        sandbox_argv, _profile_path, run_env = self._resolve_sandbox(
+            ctx, args.command
+        )
+        shell_exe = _get_shell_executable()
+        try:
+            if sandbox_argv is not None:
+                argv = [*sandbox_argv, shell_exe or "/bin/sh", "-c", args.command]
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdout=log_handle,
+                    stderr=asyncio.subprocess.STDOUT,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    env=run_env,
+                    **kwargs,
+                )
+            else:
+                proc = await asyncio.create_subprocess_shell(
+                    args.command,
+                    stdout=log_handle,
+                    stderr=asyncio.subprocess.STDOUT,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    env=run_env,
+                    executable=shell_exe,
+                    **kwargs,
+                )
+        except (FileNotFoundError, OSError) as exc:
+            log_handle.close()
+            raise ToolError(
+                f"Failed to start background command {args.command!r}: {exc}"
+            ) from exc
+
+        # NOTE: on macOS with sandbox enabled, _profile_path is a temp SBPL file
+        # that sandbox-exec must keep for the process's lifetime, so it is NOT
+        # unlinked here. It is a small file under the (session-scoped) scratchpad
+        # and is cleaned when the scratchpad is; an acceptable v1 leak for the
+        # rare macOS+sandbox+background combination.
+        try:
+            task_id = await registry.register_process(
+                proc,
+                command=args.command,
+                cwd=Path.cwd(),
+                log_path=log_path,
+                log_handle=log_handle,
+            )
+        except Exception:
+            # Cap exceeded or other registry error: terminate the proc we just
+            # spawned and close the handle so nothing leaks.
+            log_handle.close()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=1.0)
+            except (TimeoutError, Exception):  # noqa: BLE001
+                pass
+            raise
+
+        yield BashResult(
+            command=args.command,
+            stdout="",
+            stderr="",
+            returncode=-1,  # sentinel: still running (finalized async by registry)
+            background_task_id=task_id,
+            pid=proc.pid,
+        )
+
     async def run(
         self, args: BashArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | BashResult, None]:
         timeout = args.timeout or self.config.default_timeout
         max_bytes = self.config.max_output_bytes
+
+        # Background branch: spawn, register, return immediately. The process
+        # outlives this turn; output is tailed from a log file via the registry
+        # (background tool / Tasks pane). Returns BEFORE the foreground try/try
+        # below, so the finally that kills the proc never runs for backgrounds.
+        if args.background:
+            async for item in self._run_background(args, ctx):
+                yield item
+            return
 
         proc = None
         profile_path: Path | None = None
@@ -656,16 +795,20 @@ class Bash(
                             f"Sandbox wrapper failed to start: {exc}"
                         ) from exc
                     logger.warning(
-                        "sandbox wrapper failed to start (%s); "
-                        "falling back unsandboxed",
+                        "sandbox wrapper failed to start (%s); falling back "
+                        "unsandboxed. Filesystem containment is lost but the "
+                        "scrubbed environment is preserved (no secrets re-injected).",
                         exc,
                     )
+                    # Keep the already-scrubbed run_env: a user who enabled the
+                    # sandbox/scrub_env to drop secrets must not lose that
+                    # protection just because the containment backend failed.
                     proc = await asyncio.create_subprocess_shell(
                         args.command,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         stdin=asyncio.subprocess.DEVNULL,
-                        env=_get_base_env(),
+                        env=run_env,
                         executable=_get_shell_executable(),
                         **kwargs,
                     )

@@ -135,6 +135,7 @@ include_commit_signature = false   # Include commit guidance in system prompt
 
 # Writing style
 include_humanizer_guidance = true  # Prompt the model to avoid AI-writing patterns
+caveman_thinking = true            # Compress reasoning/thinking blocks (terse; answer stays normal prose)
 
 # System prompt composition
 include_model_info = true         # Include model name in system prompt
@@ -786,36 +787,57 @@ Three ways to launch:
 3. Le chaton effort mode — the model is instructed to write and launch workflows
    for substantive tasks
 
-### Workflow Runner
+### Task Manager (background processes, workflows, teams, loops)
 
-`/workflows` with no args opens a progress view (WorkflowsApp) showing a table
-of all runs with ID, status (color-coded), agent count, tokens, elapsed, and
-phases. Drill into a run with Enter, then into each agent (prompt, response,
-token in/out, cost, error) with Enter again. Keys:
+`/tasks` (or `/workflows`, or `ctrl+w`) opens the Tasks pane — a unified monitor
+for everything running in the background. It aggregates five categories into one
+list with a category filter: bash processes spawned with `background=true`,
+workflow runs, in-flight workflow agents, teammates, and scheduled loops. Keys:
 
 | Key | Action |
 |---|---|
-| `Enter` | Drill into the highlighted run, then into an agent |
-| `x` | Stop the focused run |
-| `p` | Pause/resume the focused run — in-flight agents finish, new agents block at the semaphore until resumed |
-| `s` | Save the focused run's script as a reusable `/<name>` command — opens a name + location dialog (project `.vibe/workflows/` or personal `~/.vibe/workflows/`, Tab to toggle) |
-| `o` | View the run's full script source |
+| `1`-`5` | Filter: All / Processes / Workflows / Teams / Loops |
+| `Enter` | Drill into the highlighted task's detail (process detail tails its log) |
+| `x` | Stop the focused task (routes to the right owner by id) |
+| `p` | Pause/resume the focused workflow run — in-flight agents finish, new agents block until resumed |
+| `s` | Save the focused workflow run's script as a reusable `/<name>` command |
+| `o` | View a workflow run's full script source |
 | `r` | Refresh |
 | `Esc` | Back one level |
 
-`/workflows list` renders the same columns inline. The Tokens column reflects
-**live** spend: per-agent tokens are polled as each agent turn completes, so the
-column advances while agents run rather than jumping only at completion. The
-run drill-down also lists **in-flight agents** (with their live token totals)
-above the finalized ones, so you can see what is running now.
+The task-id grammar routes stop/pause to the right owner: `proc-N` (bash
+process), `wf-N` (workflow run), `wf-N/live-AGENT` (in-flight agent),
+`team:NAME` (teammate), `loop-LOOPID` (scheduled loop).
+
+### Backgrounding processes
+
+The bash tool takes `background: bool`. When true, it spawns the command,
+registers it in the background registry, redirects stdout/stderr to a log under
+the scratchpad, and returns immediately with a `background_task_id` (e.g.
+`proc-3`) and the OS pid — the agent turn does NOT block on the command. Use
+this for dev servers, watchers, and any long-lived process. Tail the output via
+the `background` tool (`action='list', tail=50`) or the Tasks pane, and stop it
+via `background action='stop', task_id='proc-3'` or the pane's `x` key.
+Backgrounded processes are reaped on app exit so a forgotten server doesn't
+orphan.
 
 ### Live status from a model turn
 
-The `workflow_status` tool returns a live, JSON view of runs: per-run agent
-count, phase breakdown, **in-flight agents with their running token totals**,
-and budget. Pass a `run_id` for one run or omit it for all. Use this to gauge
-what a launched workflow is doing mid-flight instead of waiting for the
-completion result.
+The `background` tool (`action='list'`) returns the same unified view the Tasks
+pane shows: every running process, workflow run, in-flight agent, teammate, and
+loop, with elapsed time and status. Use `action='stop', task_id=...` to cancel
+one. This is how you stay aware of — and manage — what is running in the
+background without the TUI.
+
+### Stop workflows from a model turn
+
+The `workflow_stop` tool cancels one run (`run_id`) or every active run
+(`all=true`), mirroring the `/tasks stop <id|all>` slash command but
+callable from a model turn. It cancels the run's asyncio task, halting
+in-flight agents immediately. Use it to recover from a runaway workflow (spend
+climbing without bound, an agent stuck in a read loop) rather than waiting for
+budget exhaustion. Already-finished or unknown runs report `stopped=false`
+with a message rather than erroring. Gated by `ToolPermission.ASK`.
 
 ### Resumability
 
