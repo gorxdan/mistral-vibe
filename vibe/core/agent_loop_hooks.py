@@ -34,6 +34,7 @@ from vibe.core.hooks.models import (
     AfterToolInvocation,
     BeforeToolInvocation,
     HookEvent,
+    HookPromptBlock,
     HookSessionContext,
     HookTextReplacement,
     HookToolDenial,
@@ -42,6 +43,7 @@ from vibe.core.hooks.models import (
     PostAgentTurnInvocation,
     PreCompactInvocation,
     ToolStatus,
+    UserPromptSubmitInvocation,
 )
 from vibe.core.llm.format import ResolvedToolCall
 from vibe.core.logger import logger
@@ -127,6 +129,34 @@ class AgentLoopHooksMixin:
         async for ev in self._hooks_manager.run(invocation):
             if isinstance(ev, (HookEvent, HookUserMessage)):
                 yield ev
+
+    async def _dispatch_user_prompt_submit_hooks(
+        self, prompt: str, message_id: str | None, has_images: bool
+    ) -> tuple[str | None, list[str], list[HookEvent]]:
+        """Run user_prompt_submit hooks.
+
+        Returns ``(block_reason, injected_contexts, events)``. ``block_reason``
+        non-None means a hook denied the prompt (no LLM turn should run).
+        """
+        events: list[HookEvent] = []
+        injected: list[str] = []
+        block_reason: str | None = None
+        if not self._hooks_manager:
+            return None, injected, events
+        invocation = UserPromptSubmitInvocation(
+            **self._hook_session_context().model_dump(),
+            prompt=prompt,
+            message_id=message_id,
+            has_images=has_images,
+        )
+        async for ev in self._hooks_manager.run(invocation):
+            if isinstance(ev, HookPromptBlock):
+                block_reason = ev.content
+            elif isinstance(ev, HookUserMessage):
+                injected.append(ev.content)
+            elif isinstance(ev, HookEvent):
+                events.append(ev)
+        return block_reason, injected, events
 
     async def _run_pre_compact_hooks(
         self, trigger: str, current_context_tokens: int, threshold: int

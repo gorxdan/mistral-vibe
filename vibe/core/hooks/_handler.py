@@ -12,6 +12,7 @@ from vibe.core.hooks.models import (
     HookEvent,
     HookExecutionResult,
     HookInvocation,
+    HookPromptBlock,
     HookStructuredResponse,
     HookTextReplacement,
     HookToolDenial,
@@ -28,6 +29,7 @@ _MAX_RETRIES = 3
 _HookYield = (
     HookEvent
     | HookUserMessage
+    | HookPromptBlock
     | HookToolDenial
     | HookToolInputRewrite
     | HookTextReplacement

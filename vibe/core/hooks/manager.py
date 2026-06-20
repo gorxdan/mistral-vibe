@@ -17,6 +17,7 @@ from vibe.core.hooks._handler import (
 )
 from vibe.core.hooks._post_agent_turn import PostAgentTurnHandler
 from vibe.core.hooks._team_lifecycle import TeamLifecycleHandler
+from vibe.core.hooks._user_prompt_submit import UserPromptSubmitHandler
 from vibe.core.hooks.config import HookConfig
 from vibe.core.hooks.executor import HookExecutor
 from vibe.core.hooks.models import (
@@ -46,6 +47,7 @@ _HANDLERS: dict[HookType, HookHandler] = {
     # PreCompact is a notification (observe + optional non-binding message),
     # so it reuses the generic lifecycle handler semantics.
     HookType.PRE_COMPACT: _TEAM_LIFECYCLE_HANDLER,
+    HookType.USER_PROMPT_SUBMIT: UserPromptSubmitHandler(),
 }
 
 

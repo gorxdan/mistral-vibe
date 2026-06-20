@@ -25,6 +25,7 @@ class HookType(StrEnum):
     TASK_CREATED = auto()
     TASK_COMPLETED = auto()
     PRE_COMPACT = auto()
+    USER_PROMPT_SUBMIT = auto()
 
 
 ToolStatus = Literal["success", "failure", "cancelled"]
@@ -146,6 +147,15 @@ class PreCompactInvocation(HookSessionContext):
     threshold: int
 
 
+class UserPromptSubmitInvocation(HookSessionContext):
+    hook_event_name: Literal[HookType.USER_PROMPT_SUBMIT] = (
+        HookType.USER_PROMPT_SUBMIT
+    )
+    prompt: str
+    message_id: str | None = None
+    has_images: bool = False
+
+
 HookInvocation = (
     PostAgentTurnInvocation
     | BeforeToolInvocation
@@ -154,6 +164,7 @@ HookInvocation = (
     | TaskCreatedInvocation
     | TaskCompletedInvocation
     | PreCompactInvocation
+    | UserPromptSubmitInvocation
 )
 
 
@@ -178,6 +189,9 @@ def build_invocation(  # noqa: PLR0913
     trigger: str | None = None,
     current_context_tokens: int | None = None,
     threshold: int | None = None,
+    prompt: str | None = None,
+    message_id: str | None = None,
+    has_images: bool = False,
 ) -> HookInvocation:
     """Build the right HookInvocation subclass for *hook_type*."""
     base = ctx.model_dump()
@@ -248,6 +262,15 @@ def build_invocation(  # noqa: PLR0913
                 current_context_tokens=current_context_tokens or 0,
                 threshold=threshold or 0,
             )
+        case HookType.USER_PROMPT_SUBMIT:
+            if prompt is None:
+                raise ValueError("prompt is required for user_prompt_submit hooks")
+            return UserPromptSubmitInvocation(
+                **base,
+                prompt=prompt,
+                message_id=message_id,
+                has_images=has_images,
+            )
         case _:
             assert_never(hook_type)
 
@@ -294,6 +317,15 @@ class HookUserMessage(BaseModel):
     message.
     """
 
+    content: str
+
+
+class HookPromptBlock(BaseModel):
+    """user_prompt_submit deny: the prompt is blocked; ``content`` is the
+    reason surfaced to the user. No LLM turn runs.
+    """
+
+    hook_name: str
     content: str
 
 
