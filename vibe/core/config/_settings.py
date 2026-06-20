@@ -232,6 +232,10 @@ class SafetyJudgeConfig(BaseSettings):
     # take >15s on large tool args before emitting the verdict. On timeout the
     # judge fails closed (the user is prompted).
     timeout: float = 30.0
+    # Provider-specific request-body extras merged into the judge's LLM call
+    # (generic backend only). Use to make a reasoning judge fast, e.g. for GLM:
+    #   extra_body = { thinking = { type = "disabled" } }
+    extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorktreeConfig(BaseSettings):

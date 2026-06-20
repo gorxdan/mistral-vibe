@@ -134,6 +134,7 @@ class ReasoningAdapter(APIAdapter):
         api_key: str | None = None,
         thinking: str = "off",
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> PreparedRequest:
         converted_messages = [self._convert_message(msg) for msg in messages]
 
@@ -147,6 +148,8 @@ class ReasoningAdapter(APIAdapter):
             thinking=thinking,
             response_format=response_format,
         )
+        if extra_body:
+            payload.update(extra_body)
 
         if enable_streaming:
             payload["stream"] = True

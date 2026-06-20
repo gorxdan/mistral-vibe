@@ -556,7 +556,9 @@ class OpenAIResponsesAdapter(APIAdapter):
         api_key: str | None = None,
         thinking: str = "off",
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> PreparedRequest:
+        del extra_body  # generic-backend feature; not used by this path
         input_items = self._convert_messages(messages)
 
         payload = self.build_payload(

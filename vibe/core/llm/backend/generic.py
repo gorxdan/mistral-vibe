@@ -42,6 +42,7 @@ class OpenAIAdapter(APIAdapter):
         max_tokens: int | None,
         tool_choice: StrToolChoice | AvailableTool | None,
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "model": model_name,
@@ -61,6 +62,10 @@ class OpenAIAdapter(APIAdapter):
             payload["max_tokens"] = max_tokens
         if response_format is not None:
             payload["response_format"] = response_format
+        if extra_body:
+            # Provider-specific extras merged last (e.g. GLM's
+            # {"thinking": {"type": "disabled"}}). Caller owns the format.
+            payload.update(extra_body)
 
         return payload
 
@@ -114,6 +119,7 @@ class OpenAIAdapter(APIAdapter):
         api_key: str | None = None,
         thinking: str = "off",
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> PreparedRequest:
         field_name = provider.reasoning_field_name
         converted_messages = [
@@ -144,6 +150,7 @@ class OpenAIAdapter(APIAdapter):
             max_tokens,
             tool_choice,
             response_format,
+            extra_body,
         )
 
         if enable_streaming:
@@ -279,6 +286,7 @@ class GenericBackend:
         extra_headers: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> LLMChunk:
         api_key = (
             os.getenv(self._provider.api_key_env_var)
@@ -301,6 +309,7 @@ class GenericBackend:
             api_key=api_key,
             thinking=model.thinking,
             response_format=response_format,
+            extra_body=extra_body,
         )
 
         headers = req.headers
@@ -349,6 +358,7 @@ class GenericBackend:
         extra_headers: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         api_key = (
             os.getenv(self._provider.api_key_env_var)
@@ -371,6 +381,7 @@ class GenericBackend:
             api_key=api_key,
             thinking=model.thinking,
             response_format=response_format,
+            extra_body=extra_body,
         )
 
         headers = req.headers

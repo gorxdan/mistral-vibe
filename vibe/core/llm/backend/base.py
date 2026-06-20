@@ -33,6 +33,7 @@ class APIAdapter(Protocol):
         api_key: str | None = None,
         thinking: str = "off",
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> PreparedRequest: ...
 
     def parse_response(

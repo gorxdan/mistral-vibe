@@ -137,6 +137,7 @@ class SafetyJudge:
                 max_tokens=self._config.max_tokens,
                 extra_headers=self._extra_headers,
                 response_format={"type": "json_object"},
+                extra_body=self._config.extra_body or None,
             )
         return self._parse(result.message.content)
 

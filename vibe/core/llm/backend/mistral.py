@@ -293,7 +293,11 @@ class MistralBackend:
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> LLMChunk:
+        # extra_body is honored only by the generic backend; accepted here for a
+        # uniform interface and ignored.
+        del extra_body
         try:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
             if reasoning_effort is not None:
@@ -377,7 +381,9 @@ class MistralBackend:
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
+        del extra_body  # generic-backend only; ignored here
         try:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
             if reasoning_effort is not None:

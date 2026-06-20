@@ -78,7 +78,9 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         api_key: str | None = None,
         thinking: str = "off",
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> PreparedRequest:
+        del extra_body  # generic-backend feature; not used by the Vertex path
         project_id = provider.project_id
         region = provider.region
 

@@ -37,6 +37,7 @@ class BackendLike(Protocol):
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> LLMChunk:
         """Complete a chat conversation using the specified model and provider.
 
@@ -74,6 +75,7 @@ class BackendLike(Protocol):
         extra_headers: dict[str, str] | None,
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         """Equivalent of the complete method, but yields LLMEvent objects
         instead of a single LLMEvent.
