@@ -1576,6 +1576,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             tool_name, args_repr, [rp.label for rp in uncovered]
         )
         if not verdict.safe:
+            # Refusal is otherwise invisible (looks identical to judge-off):
+            # log it so it's clear the judge ran and deferred to the user.
+            logger.info(
+                "Safety judge deferred tool %r to user: %s",
+                tool_name,
+                verdict.reason,
+            )
             return None
         logger.info(
             "Safety judge auto-approved tool %r: %s", tool_name, verdict.reason
