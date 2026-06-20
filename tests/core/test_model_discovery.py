@@ -10,10 +10,12 @@ from tests.conftest import build_test_vibe_config
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.llm.model_discovery import (
     DiscoveredModel,
+    RawModel,
     build_persisted_updates,
     candidate_local_providers,
     discover_extra_models,
     fetch_model_ids,
+    fetch_models,
 )
 from vibe.core.types import Backend
 
@@ -101,6 +103,145 @@ async def test_fetch_model_ids_sends_auth_header_when_key_set(
     assert route.calls.last.request.headers["Authorization"] == "Bearer sk-test"
 
 
+# --- fetch_models: context-window detection --------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_models_enriches_ollama_context_from_api_tags() -> None:
+    # ollama's /v1/models carries no context info; /api/tags supplies it.
+    respx.get(MODELS_URL).mock(
+        return_value=httpx.Response(
+            200, json={"data": [{"id": "gemma4:12b"}, {"id": "qwen:7b"}]}
+        )
+    )
+    respx.get("http://ollama-test/api/tags").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "models": [
+                    {"name": "gemma4:12b", "details": {"context_length": 131072}},
+                    {"name": "qwen:7b", "details": {"context_length": 32768}},
+                ]
+            },
+        )
+    )
+    out = await fetch_models(_provider())
+    assert {m.id: m.context_length for m in out} == {
+        "gemma4:12b": 131072,
+        "qwen:7b": 32768,
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_models_reads_context_from_v1_models_for_generic() -> None:
+    # Non-ollama (vLLM/llama.cpp) advertise context on /v1/models; /api/tags is
+    # never touched (respx would error on an unmocked request if it were).
+    prov = _provider(name="vllm", api_base="http://vllm-test/v1")
+    respx.get("http://vllm-test/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "qwen", "max_model_len": 32768},
+                    {"id": "llama", "meta": {"n_ctx_train": 8192}},
+                    {"id": "noctx"},
+                ]
+            },
+        )
+    )
+    out = await fetch_models(prov)
+    assert {m.id: m.context_length for m in out} == {
+        "qwen": 32768,
+        "llama": 8192,
+        "noctx": None,
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_model_ids_ignores_api_tags() -> None:
+    # The id-only shim must not enrich (so its respx tests need no /api/tags mock).
+    respx.get(MODELS_URL).mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "m"}]})
+    )
+    assert await fetch_model_ids(_provider()) == ["m"]
+
+
+# --- discover_extra_models: context budget ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_discover_budget_capped_by_default_num_ctx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OLLAMA_CONTEXT_LENGTH", raising=False)
+    config = _mistral_only_config()
+
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        return [RawModel("gemma4:12b", 131072)] if provider.name == "ollama" else []
+
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
+    out = await discover_extra_models(config)
+
+    # served window defaults to 4096 -> floor(0.85 * 4096) = 3481
+    assert out[0].model.auto_compact_threshold == 3481
+
+
+@pytest.mark.asyncio
+async def test_discover_budget_honors_ollama_context_length_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OLLAMA_CONTEXT_LENGTH", "131072")
+    config = _mistral_only_config()
+
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        return [RawModel("gemma4:12b", 131072)] if provider.name == "ollama" else []
+
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
+    out = await discover_extra_models(config)
+
+    # min(131072, 131072) -> floor(0.85 * 131072) = 111411
+    assert out[0].model.auto_compact_threshold == 111411
+
+
+@pytest.mark.asyncio
+async def test_discover_generic_budget_uncapped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = build_test_vibe_config(
+        providers=[_provider(name="vllm", api_base="http://vllm-test/v1")],
+        models=[ModelConfig(name="x", provider="vllm", alias="x")],
+    )
+
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        return [RawModel("big", 32768)] if provider.name == "vllm" else []
+
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
+    out = await discover_extra_models(config)
+
+    # non-ollama: no num_ctx cap -> floor(0.85 * 32768) = 27852
+    assert out[0].model.auto_compact_threshold == 27852
+
+
+@pytest.mark.asyncio
+async def test_discover_no_context_leaves_default_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _mistral_only_config()
+
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        return [RawModel("noctx", None)] if provider.name == "ollama" else []
+
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
+    out = await discover_extra_models(config)
+
+    # No detection -> field left unset so the global default still applies.
+    assert "auto_compact_threshold" not in out[0].model.model_fields_set
+    assert out[0].model.auto_compact_threshold == 200_000
+
+
 # --- candidate_local_providers (auto-detect targets) -----------------------
 
 
@@ -134,10 +275,14 @@ async def test_autodetects_ollama_with_zero_config(
 ) -> None:
     config = _mistral_only_config()
 
-    async def _fake(provider: ProviderConfig, **_k: object) -> list[str]:
-        return ["gemma:1b", "qwen:7b"] if provider.name == "ollama" else []
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        return (
+            [RawModel("gemma:1b"), RawModel("qwen:7b")]
+            if provider.name == "ollama"
+            else []
+        )
 
-    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_model_ids", _fake)
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
     out = await discover_extra_models(config)
 
     assert {dm.model.name for dm in out} == {"gemma:1b", "qwen:7b"}
@@ -150,17 +295,24 @@ async def test_autodetects_ollama_with_zero_config(
 async def test_autodetect_suppressed_when_config_defines_ollama(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # User defined an ollama provider WITHOUT discover_models -> their config
-    # wins, auto-detect must not override it.
+    # User defined an ollama provider with discovery off -> their config wins,
+    # auto-detect must not override it (and explicit discovery is off, so the
+    # user's provider is not probed either).
     config = build_test_vibe_config(
-        providers=[ProviderConfig(name="ollama", api_base="http://127.0.0.1:11434/v1")],
+        providers=[
+            ProviderConfig(
+                name="ollama",
+                api_base="http://127.0.0.1:11434/v1",
+                discover_models=False,
+            )
+        ],
         models=[ModelConfig(name="m", provider="ollama", alias="m")],
     )
 
-    async def _fake(_provider: ProviderConfig, **_k: object) -> list[str]:
-        return ["should-not-appear"]
+    async def _fake(_provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        return [RawModel("should-not-appear")]
 
-    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_model_ids", _fake)
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
     assert await discover_extra_models(config) == []
 
 
@@ -173,10 +325,12 @@ async def test_explicit_discover_models_is_not_ephemeral(
         models=[ModelConfig(name="x", provider="lmstudio", alias="x")],
     )
 
-    async def _fake(provider: ProviderConfig, **_k: object) -> list[str]:
-        return ["model-a"] if provider.name == "lmstudio" else []  # ollama down
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        return (
+            [RawModel("model-a")] if provider.name == "lmstudio" else []
+        )  # ollama down
 
-    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_model_ids", _fake)
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
     out = await discover_extra_models(config)
 
     assert len(out) == 1
@@ -193,10 +347,14 @@ async def test_discover_excludes_already_configured_models(
         models=[ModelConfig(name="gemma4:12b", provider="ollama", alias="gemma")],
     )
 
-    async def _fake(_provider: ProviderConfig, **_k: object) -> list[str]:
-        return ["gemma4:12b", "qwen36-32k:latest", "north:latest"]
+    async def _fake(_provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        return [
+            RawModel("gemma4:12b"),
+            RawModel("qwen36-32k:latest"),
+            RawModel("north:latest"),
+        ]
 
-    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_model_ids", _fake)
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
     out = await discover_extra_models(config)
 
     assert {dm.model.name for dm in out} == {"qwen36-32k:latest", "north:latest"}
@@ -217,10 +375,11 @@ async def test_discover_dedups_across_providers(
         models=[ModelConfig(name="x", provider="ollama", alias="x")],
     )
 
-    async def _fake(provider: ProviderConfig, **_k: object) -> list[str]:
-        return ["shared", "onlyA"] if provider.name == "ollama" else ["shared", "onlyB"]
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        ids = ["shared", "onlyA"] if provider.name == "ollama" else ["shared", "onlyB"]
+        return [RawModel(i) for i in ids]
 
-    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_model_ids", _fake)
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
     out = await discover_extra_models(config)
 
     by_alias = {dm.model.alias: dm.model.provider for dm in out}
@@ -245,15 +404,15 @@ async def test_discover_queries_providers_concurrently(
     in_flight = 0
     max_in_flight = 0
 
-    async def _fake(provider: ProviderConfig, **_k: object) -> list[str]:
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
         nonlocal in_flight, max_in_flight
         in_flight += 1
         max_in_flight = max(max_in_flight, in_flight)
         await asyncio.sleep(0.05)
         in_flight -= 1
-        return [f"m-{provider.name}"]
+        return [RawModel(f"m-{provider.name}")]
 
-    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_model_ids", _fake)
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
     out = await discover_extra_models(config)
 
     assert max_in_flight == 2  # both providers queried at once, not serially
