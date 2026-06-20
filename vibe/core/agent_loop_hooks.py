@@ -42,6 +42,7 @@ from vibe.core.hooks.models import (
     HookUserMessage,
     PostAgentTurnInvocation,
     PreCompactInvocation,
+    StopInvocation,
     ToolStatus,
     UserPromptSubmitInvocation,
 )
@@ -157,6 +158,31 @@ class AgentLoopHooksMixin:
             elif isinstance(ev, HookEvent):
                 events.append(ev)
         return block_reason, injected, events
+
+    async def _dispatch_stop_hooks(
+        self, stop_hook_active: bool
+    ) -> tuple[LLMMessage | None, list[HookEvent]]:
+        """Run stop hooks when the turn is about to end. Deny → a continuation
+        user message (capped by the retry state); allow → end the turn.
+        """
+        from vibe.core.types import LLMMessage, Role
+
+        events: list[HookEvent] = []
+        continuation: LLMMessage | None = None
+        if not self._hooks_manager:
+            return None, events
+        invocation = StopInvocation(
+            **self._hook_session_context().model_dump(),
+            stop_hook_active=stop_hook_active,
+        )
+        async for ev in self._hooks_manager.run(invocation):
+            if isinstance(ev, HookUserMessage):
+                continuation = LLMMessage(
+                    role=Role.user, content=ev.content, injected=True
+                )
+            elif isinstance(ev, HookEvent):
+                events.append(ev)
+        return continuation, events
 
     async def _run_pre_compact_hooks(
         self, trigger: str, current_context_tokens: int, threshold: int

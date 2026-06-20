@@ -26,6 +26,7 @@ class HookType(StrEnum):
     TASK_COMPLETED = auto()
     PRE_COMPACT = auto()
     USER_PROMPT_SUBMIT = auto()
+    STOP = auto()
 
 
 ToolStatus = Literal["success", "failure", "cancelled"]
@@ -156,6 +157,13 @@ class UserPromptSubmitInvocation(HookSessionContext):
     has_images: bool = False
 
 
+class StopInvocation(HookSessionContext):
+    hook_event_name: Literal[HookType.STOP] = HookType.STOP
+    # True when this Stop fires inside a Stop-induced continuation; lets a hook
+    # short-circuit to avoid an infinite continue loop.
+    stop_hook_active: bool = False
+
+
 HookInvocation = (
     PostAgentTurnInvocation
     | BeforeToolInvocation
@@ -165,6 +173,7 @@ HookInvocation = (
     | TaskCompletedInvocation
     | PreCompactInvocation
     | UserPromptSubmitInvocation
+    | StopInvocation
 )
 
 
@@ -192,6 +201,7 @@ def build_invocation(  # noqa: PLR0913
     prompt: str | None = None,
     message_id: str | None = None,
     has_images: bool = False,
+    stop_hook_active: bool = False,
 ) -> HookInvocation:
     """Build the right HookInvocation subclass for *hook_type*."""
     base = ctx.model_dump()
@@ -271,6 +281,8 @@ def build_invocation(  # noqa: PLR0913
                 message_id=message_id,
                 has_images=has_images,
             )
+        case HookType.STOP:
+            return StopInvocation(**base, stop_hook_active=stop_hook_active)
         case _:
             assert_never(hook_type)
 

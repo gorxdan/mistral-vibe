@@ -404,6 +404,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         # the turn with a larger max_tokens. Per-turn override + attempt counter.
         self._max_output_override: int | None = None
         self._response_too_long_attempts: int = 0
+        # True while inside a Stop-hook-induced continuation (passed to the next
+        # Stop invocation so a hook can avoid an infinite continue loop).
+        self._stop_hook_active: bool = False
         # File-based cross-session memory (opt-in). Store built lazily; memories
         # are relevance-selected per turn and injected into the system prompt.
         self._is_subagent = is_subagent
@@ -1371,6 +1374,22 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     if retry_msg is not None:
                         self.messages.append(retry_msg)
                         should_break_loop = False
+
+                if should_break_loop:
+                    # Stop hooks get the last word: a deny injects a continuation
+                    # and re-enters the loop (capped by HookRetryState; guarded by
+                    # stop_hook_active to prevent runaway continues).
+                    stop_msg, stop_events = await self._dispatch_stop_hooks(
+                        self._stop_hook_active
+                    )
+                    for hook_event in stop_events:
+                        yield hook_event
+                    if stop_msg is not None:
+                        self.messages.append(stop_msg)
+                        should_break_loop = False
+                        self._stop_hook_active = True
+                    else:
+                        self._stop_hook_active = False
 
         finally:
             # Fold in any messages staged after the loop's last drain (e.g. a

@@ -48,6 +48,9 @@ _HANDLERS: dict[HookType, HookHandler] = {
     # so it reuses the generic lifecycle handler semantics.
     HookType.PRE_COMPACT: _TEAM_LIFECYCLE_HANDLER,
     HookType.USER_PROMPT_SUBMIT: UserPromptSubmitHandler(),
+    # Stop reuses post-agent-turn semantics: deny → inject a continuation
+    # message (capped by HookRetryState); allow → let the turn end.
+    HookType.STOP: PostAgentTurnHandler(),
 }
 
 
