@@ -463,15 +463,34 @@ class QueueController:
         if not await self._gate_queued_images_for_vision(pending):
             return False
 
-        for p in pending:
-            await self._stage_head_item(p.item, p.widget)
+        # Remote mode streams to a separate backend that does not read
+        # _pending_injected_messages; staging would silently drop the messages.
+        # Mirror _run_tail_prompt and send each via the remote user-message path.
+        if self._ports.remote_is_active():
+            for p in pending:
+                await p.widget.remove()
+                await self._ports.handle_user_message(p.item.content)
+                self._ports.send_skill_telemetry(p.item.skill_name)
+            await self._remove_header_if_empty()
+            self._push_loading_queue_count()
+            return True
+
+        # Capture the history length once; staged messages append in order during
+        # the next drain, so each widget's index is base + its batch position.
+        # Capturing per-item via next_message_index() would hand every widget the
+        # same (stale) index, since staging does not append immediately.
+        base_index = self._ports.next_message_index()
+        for offset, p in enumerate(pending):
+            await self._stage_head_item(p.item, p.widget, base_index + offset)
         self._link_consecutive_user_messages([p.widget for p in pending])
         await self._remove_header_if_empty()
         self._push_loading_queue_count()
         return True
 
-    async def _stage_head_item(self, item: QueuedItem, widget: UserMessage) -> None:
-        widget.message_index = self._ports.next_message_index()
+    async def _stage_head_item(
+        self, item: QueuedItem, widget: UserMessage, message_index: int
+    ) -> None:
+        widget.message_index = message_index
         await widget.set_pending(False)
         message_id = str(uuid4()) if item.payload is not None else None
         if item.payload is not None:

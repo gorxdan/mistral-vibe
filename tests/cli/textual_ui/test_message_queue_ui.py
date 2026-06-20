@@ -11,6 +11,7 @@ from vibe.cli.textual_ui.widgets.chat_input.container import ChatInputContainer
 from vibe.cli.textual_ui.widgets.messages import (
     BashOutputMessage,
     QueueHeaderMessage,
+    UserMessage,
     WarningMessage,
 )
 
@@ -272,4 +273,49 @@ async def test_double_enter_noop_without_queued_messages(
 
         assert len(vibe_app._input_queue) == 0
         assert vibe_app.agent_loop._pending_injected_messages == []
+
+
+@pytest.mark.asyncio
+async def test_double_enter_assigns_distinct_incrementing_widget_indices(
+    vibe_app: VibeApp,
+) -> None:
+    """Multiple staged prompts must get distinct, incrementing message_index
+    values matching the positions they will occupy in history when drained.
+
+    Regression guard: capturing next_message_index() per item yielded the same
+    stale index for every widget (staging defers the append), so rewind and
+    at-mention telemetry resolved to the wrong message.
+    """
+    async with vibe_app.run_test() as pilot:
+        vibe_app._agent_running = True
+        chat_input = vibe_app.query_one(ChatInputContainer)
+
+        chat_input.value = "first prompt"
+        await pilot.press("enter")
+        chat_input.value = "second prompt"
+        await pilot.press("enter")
+        assert len(vibe_app._input_queue) == 2
+
+        chat_input.value = ""
+        await pilot.press("enter")
+        await _wait_until(
+            pilot, lambda: len(vibe_app._input_queue) == 0, timeout=2.0
+        )
+
+        staged_widgets = [
+            w for w in vibe_app.query(UserMessage)
+            if w.message_index is not None and not w.pending
+        ]
+        indices = sorted(w.message_index for w in staged_widgets)
+        assert len(indices) == 2, f"expected 2 staged widgets, got {len(indices)}"
+        assert indices[1] == indices[0] + 1, (
+            f"staged widget indices must be consecutive, got {indices}"
+        )
+        # The base index is the current history length, so both staged indices
+        # must point at or beyond it (where the messages will actually land).
+        base = len(vibe_app.agent_loop.messages)
+        assert indices[0] >= base, (
+            f"first staged index {indices[0]} below history length {base}"
+        )
+
 
