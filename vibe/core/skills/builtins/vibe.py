@@ -747,7 +747,7 @@ YAML frontmatter (`name:`, `description:`) precedes the Python source. The
 runtime injects these functions into the script's namespace:
 
 - `agent(prompt, *, agent="explore", model=None, label=None, phase=None, schema=None, budget_estimate=None, isolation=None)` — spawn a subagent. Pass `isolation="worktree"` to run the agent as a `vibe -p` subprocess in a fresh git worktree (for parallel file-mutating agents that would otherwise conflict); its branch is kept for manual `git merge` if it changed files, else removed. Note: isolated agents run auto-approved/trusted (no interactive prompts reach a subprocess) — the worktree bounds file conflicts, not arbitrary command execution. Agent profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), or `worker` for the full tool set including any configured MCP tools (no allowlist — **requires** `isolation="worktree"`, where it runs auto-approved in its own worktree so its tools actually execute and writes can't race other agents).
-- `parallel(*thunks, max_concurrency=None)` (or `parallel([thunks])`) — run thunks concurrently, results in argument order; a thunk that raises yields `None` (filter the results), so one failure does not abort the batch. Pass `max_concurrency=N` to cap in-flight thunks (e.g. `3` when a provider limits concurrency) instead of hand-rolling chunked waves.
+- `parallel(*items, max_concurrency=None)` (or `parallel([items])`) — run items concurrently, results in argument order; an item that raises yields `None` (filter the results), so one failure does not abort the batch. Each item may be a **coroutine** (`parallel(agent("a"), agent("b"))`) or a zero-arg thunk (`parallel(lambda: agent("a"))`) — both work, since Python coroutines are lazy and bound concurrency identically. Pass `max_concurrency=N` to cap in-flight items (e.g. `3` when a provider limits concurrency) instead of hand-rolling chunked waves.
 - `pipeline(items, *stages, max_concurrency=None)` — run each item through all stages independently with no barrier between stages (item A can be in stage 3 while item B is still in stage 1); each stage receives `(prev, item, index)` and a stage that raises drops that item to `None`. A single stage behaves as a concurrent map. `max_concurrency=N` caps in-flight items.
 - `phase(name)` — declare a phase for progress tracking
 - `log(msg)` — log a progress message
@@ -760,8 +760,12 @@ runtime injects these functions into the script's namespace:
 - `merge_by(items, key, merge)` — group by `key` and fold each group via `merge(acc, item)` (acc starts at the first item); returns one merged value per key in first-seen order. Use to union findings, sum counts, or pick the highest-scored item per group.
 - `args` — structured input from the invocation command (string or None)
 
-Scripts are validated via AST before execution and run in a restricted namespace.
-The non-obvious rules: imports are **allowlisted** to `json`, `re`, `math`,
+Scripts are validated via AST before execution — for **safety and correctness**: it
+rejects undefined names and a coroutine used as a `pipeline` stage
+(`pipeline(items, agent(...))` — use `lambda x: agent(...)`; `parallel(agent(...))`
+is fine). Scripts run in a restricted namespace. The non-obvious rules: a fixed set
+of modules is **pre-bound — no import needed** (`json.dumps(...)` just works):
+`json`, `re`, `math`,
 `statistics`, `collections`, `itertools`, `functools`, `datetime`, `decimal`,
 `copy`, `hashlib`, `base64`, `textwrap`, `unicodedata` — there is **no `asyncio`**
 (you don't need it; `agent`/`parallel`/`pipeline` are injected and awaitable),

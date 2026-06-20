@@ -1347,11 +1347,17 @@ class WorkflowRuntime:
             remove_ephemeral_worktree(wt)
 
     def parallel(self, *thunks: Any, max_concurrency: int | None = None) -> _AwaitableResult:
-        """Run thunks concurrently and return their results in order (barrier).
+        """Run items concurrently and return their results in order (barrier).
 
-        Mirrors the Claude Code Workflow contract:
-        - accepts either ``parallel(t1, t2, ...)`` or ``parallel([t1, t2, ...])``;
-        - a thunk that raises resolves to ``None`` (the call never rejects), so
+        Each item may be a **coroutine** (``parallel(agent(...), agent(...))``) or
+        a **zero-arg thunk** (``parallel(lambda: agent(...))``) — both work, because
+        Python coroutines are lazy (they do not start until awaited), so the bare
+        form bounds concurrency identically. The JS Workflow contract requires
+        thunks because JS promises are eager; that does not apply here, and
+        requiring it was the most common authoring footgun.
+
+        - accepts either ``parallel(a, b, ...)`` or ``parallel([a, b, ...])``;
+        - an item that raises resolves to ``None`` (the call never rejects), so
           one bad agent does not kill the batch — filter with ``[r for r in ... if r]``.
 
         ``max_concurrency`` optionally caps how many thunks run at once (e.g. 3
@@ -1374,31 +1380,42 @@ class WorkflowRuntime:
             asyncio.Semaphore(max_concurrency) if max_concurrency else None
         )
 
-        async def _safe(thunk: Callable[[], Awaitable[Any]]) -> Any:
-            # A non-callable thunk is an authoring bug, not an agent failure:
-            # `parallel(agent(...))` passes a coroutine, whose `thunk()` raises
-            # TypeError. Degrading that to None (below) would silently yield zero
-            # agents and a "successful" run over nothing. Fail loud instead, with
-            # the fix, so the mistake surfaces rather than corrupting results.
-            if not callable(thunk):
+        async def _invoke(item: Any) -> Any:
+            # Accept BOTH a coroutine/awaitable (`agent(...)`) and a zero-arg
+            # thunk (`lambda: agent(...)`). Python coroutines are lazy — they do
+            # not run until awaited — so the bare-call form is safe and bounds
+            # concurrency identically under the semaphore. (This is why the JS
+            # "thunks only" rule does not apply here; requiring it was the #1
+            # authoring footgun.) A thunk that returns a non-awaitable is used
+            # as-is so trivial map stages still work.
+            if inspect.isawaitable(item):
+                return await item
+            result = item()
+            return await result if inspect.isawaitable(result) else result
+
+        async def _safe(item: Any) -> Any:
+            # Neither awaitable nor callable is an authoring bug (e.g. a bare
+            # value passed where a coroutine/thunk was meant). Fail loud with the
+            # fix rather than degrading to None and masking it.
+            if not (inspect.isawaitable(item) or callable(item)):
                 raise WorkflowError(
-                    "parallel() expects thunks (zero-arg callables), got "
-                    f"{type(thunk).__name__}. Wrap each as `lambda: agent(...)`, "
-                    "not `agent(...)` — a bare agent(...) is a coroutine, not a thunk."
+                    "parallel() items must be coroutines (`agent(...)`) or "
+                    f"zero-arg callables (`lambda: agent(...)`), got "
+                    f"{type(item).__name__}."
                 )
             try:
                 if sem is not None:
                     async with sem:
-                        return await thunk()
+                        return await _invoke(item)
                 else:
-                    return await thunk()
+                    return await _invoke(item)
             except (AgentCapExceeded, BudgetExhausted):
                 # Hard ceilings (runaway-agent / overspend backstops) must fail
                 # the run, not silently become a None result that masks the
                 # breach. Ordinary failures still degrade to None below.
                 raise
             except Exception:
-                logger.warning("workflow: parallel() thunk failed", exc_info=True)
+                logger.warning("workflow: parallel() item failed", exc_info=True)
                 return None
 
         async def _run() -> list[Any]:

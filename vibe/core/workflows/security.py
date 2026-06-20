@@ -305,15 +305,18 @@ def _bound_names(tree: ast.AST) -> set[str]:
 
 
 def _undefined_names(tree: ast.AST, bound: set[str]) -> list[Violation]:
-    """Flag names that are LOADed but never imported, assigned, injected, or a
-    safelisted builtin — the exec-time `name 'json' is not defined` class, caught
-    pre-flight at no cost. DANGEROUS_CALLS names are allowed here because they are
-    reported by the more specific `dangerous-call` rule, not double-flagged.
+    """Flag names that are LOADed but never bound, injected, a pre-bound safe
+    module, or a safelisted builtin — the exec-time `name 'X' is not defined`
+    class, caught pre-flight at no cost. SAFE_MODULES are allowed because the
+    runtime auto-binds them (build_namespace), and DANGEROUS_CALLS names are
+    allowed because they are reported by the more specific `dangerous-call`
+    rule, not double-flagged.
     """
     allowed = (
         bound
         | INJECTED_NAMES
         | SAFE_BUILTINS
+        | SAFE_MODULES
         | DANGEROUS_CALLS
         | {"__name__"}
     )
@@ -328,11 +331,10 @@ def _undefined_names(tree: ast.AST, bound: set[str]) -> list[Violation]:
         if key in reported:
             continue
         reported.add(key)
-        detail = f"name '{node.id}' is not defined"
-        if node.id in SAFE_MODULES:
-            detail += f" — add `import {node.id}` (safelisted, but not auto-imported)"
-        else:
-            detail += " (not imported, assigned, or an injected helper)"
+        detail = (
+            f"name '{node.id}' is not defined "
+            "(not assigned, an injected helper, a safelisted module, or a builtin)"
+        )
         violations.append(
             Violation(node.lineno, node.col_offset, "undefined-name", detail)
         )
@@ -340,11 +342,11 @@ def _undefined_names(tree: ast.AST, bound: set[str]) -> list[Violation]:
 
 
 def _thunk_misuse(tree: ast.AST) -> list[Violation]:
-    """`parallel`/`pipeline` take THUNKS (zero-arg callables), not coroutines.
-    Passing `agent(...)`/`workflow(...)` directly is the most common mistake and
-    silently produces zero agents — `parallel` awaits `thunk()`, a coroutine is
-    not callable, and the TypeError degrades to a None result. Flag the direct
-    inline form so it fails pre-flight with a clear fix: wrap as `lambda: ...`.
+    """`pipeline` STAGES must be callables of the item (`lambda x: agent(...)` or
+    a def), not a bare coroutine: each stage is invoked per item, so a single
+    `agent(...)` coroutine cannot serve as one. `parallel` is NOT flagged — it
+    accepts coroutines directly (`parallel(agent(...))`), so the natural form is
+    valid. Catch the common `pipeline(items, agent(...))` slip pre-flight.
     """
     violations: list[Violation] = []
 
@@ -358,23 +360,11 @@ def _thunk_misuse(tree: ast.AST) -> list[Violation]:
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
             continue
-        fname = node.func.id
-        if fname not in {"parallel", "pipeline"}:
+        if node.func.id != "pipeline":
             continue
         positional = [a for a in node.args if not isinstance(a, ast.Starred)]
         # pipeline's first positional is `items` (data); the rest are stages.
-        candidates: list[ast.expr] = (
-            positional[1:] if fname == "pipeline" else list(positional)
-        )
-        # also peek inside a list/tuple literal arg: parallel([agent(...), ...]).
-        for a in node.args:
-            if isinstance(a, (ast.List, ast.Tuple)):
-                candidates.extend(a.elts)
-            elif isinstance(a, ast.Starred) and isinstance(
-                a.value, (ast.List, ast.Tuple)
-            ):
-                candidates.extend(a.value.elts)
-        for a in candidates:
+        for a in positional[1:]:
             if is_spawn_call(a):
                 callee = a.func.id  # type: ignore[union-attr]
                 violations.append(
@@ -382,9 +372,9 @@ def _thunk_misuse(tree: ast.AST) -> list[Violation]:
                         a.lineno,
                         a.col_offset,
                         "non-thunk-arg",
-                        f"{fname}() expects thunks (zero-arg callables); pass "
-                        f"`lambda: {callee}(...)`, not `{callee}(...)` directly "
-                        f"(a bare {callee}(...) is a coroutine, not a thunk)",
+                        f"pipeline() stages must be callables of the item; pass "
+                        f"`lambda x: {callee}(...)` or a def, not `{callee}(...)` "
+                        f"(a bare {callee}(...) is one coroutine, not a per-item stage)",
                     )
                 )
     return violations
@@ -441,5 +431,15 @@ def build_namespace(injected: dict[str, Any]) -> dict[str, Any]:
     safe_builtins["__import__"] = restricted_import
 
     namespace: dict[str, Any] = {"__builtins__": safe_builtins}
+    # Pre-bind the safelisted modules so scripts can use `json`/`re`/... WITHOUT
+    # an explicit `import` line. The import was pure boilerplate (these modules
+    # are already allowlisted), and forgetting it (`json.dumps` with no
+    # `import json`) was the single most common run-killer. A script may still
+    # import them explicitly — that just rebinds the same module object.
+    for mod in SAFE_MODULES:
+        try:
+            namespace[mod] = importlib.import_module(mod)
+        except ImportError:
+            pass
     namespace.update(injected)
     return namespace

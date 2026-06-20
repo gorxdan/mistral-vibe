@@ -181,6 +181,14 @@ def test_build_namespace_exec_json_import() -> None:
     assert ns["y"] == '{"k": 1}'
 
 
+def test_build_namespace_autoinjects_safe_modules() -> None:
+    # Safelisted modules are pre-bound, so a script can use them with NO import.
+    ns = build_namespace({})
+    exec("y = json.dumps({'k': 1}); z = re.findall(r'a', 'aa')", ns)
+    assert ns["y"] == '{"k": 1}'
+    assert ns["z"] == ["a", "a"]
+
+
 def test_build_namespace_blocks_open() -> None:
     ns = build_namespace({})
     with pytest.raises(NameError):
@@ -205,28 +213,28 @@ def test_syntax_error_reported() -> None:
 
 
 # --- correctness lint (lint_script / check_script) ----------------------------
-# These catch the classes that PASS the safety AST check but crash or silently
-# misbehave at exec time: undefined names (e.g. `json` used without `import json`)
-# and coroutine-as-thunk (`parallel(agent(...))` -> zero agents, swallowed None).
+# Catches classes that PASS the safety AST check but crash at exec time:
+# genuinely undefined names, and a coroutine used where a per-item pipeline stage
+# is required. Safelisted modules are auto-injected (no import needed) and
+# `parallel` accepts coroutines directly, so neither of those is flagged.
 
 
 def test_lint_passes_clean_script() -> None:
     assert not lint_script(CLEAN_SCRIPT)
 
 
-def test_lint_flags_json_used_without_import() -> None:
-    # The reported real-world failure: json.dumps with no `import json`.
+def test_lint_allows_safe_module_without_import() -> None:
+    # Safelisted modules are auto-injected by build_namespace, so using `json`
+    # without `import json` is valid — this used to be the #1 run-killer.
     src = (
         "async def main():\n"
-        "    data = [1, 2, 3]\n"
-        "    return json.dumps(data)\n"
+        "    return json.dumps([1, 2, 3])\n"
     )
-    v = lint_script(src)
-    assert v and v[0].rule == "undefined-name"
-    assert "json" in v[0].detail and "import json" in v[0].detail
+    assert not lint_script(src)
 
 
-def test_lint_allows_json_when_imported() -> None:
+def test_lint_allows_safe_module_with_explicit_import() -> None:
+    # An explicit import still works (rebinds the same module) — no double-flag.
     src = (
         "import json\n"
         "async def main():\n"
@@ -250,13 +258,13 @@ def test_lint_allows_injected_names(name: str) -> None:
     assert not lint_script(src), f"{name} is injected and must not be flagged"
 
 
-def test_lint_flags_coroutine_passed_to_parallel() -> None:
+def test_lint_allows_coroutine_passed_to_parallel() -> None:
+    # parallel accepts coroutines directly — the natural form is valid now.
     src = (
         "async def main():\n"
         '    return await parallel(agent("a"), agent("b"))\n'
     )
-    v = lint_script(src)
-    assert len(v) == 2 and all(x.rule == "non-thunk-arg" for x in v)
+    assert not lint_script(src)
 
 
 def test_lint_allows_lambda_thunks_in_parallel() -> None:
@@ -268,7 +276,7 @@ def test_lint_allows_lambda_thunks_in_parallel() -> None:
 
 
 def test_lint_allows_pipeline_items_first_arg() -> None:
-    # pipeline's first positional is data (items), not a thunk — must not flag it.
+    # pipeline's first positional is data (items), not a stage — must not flag it.
     src = (
         "async def main():\n"
         "    async def stage(x):\n"
@@ -278,21 +286,23 @@ def test_lint_allows_pipeline_items_first_arg() -> None:
     assert not lint_script(src)
 
 
-def test_lint_flags_coroutine_in_parallel_list_literal() -> None:
+def test_lint_flags_coroutine_as_pipeline_stage() -> None:
+    # A pipeline STAGE is invoked per item, so a bare coroutine cannot serve as
+    # one — flag `pipeline(items, agent(...))` (use `lambda x: agent(...)`).
     src = (
         "async def main():\n"
-        '    return await parallel([agent("a"), agent("b")])\n'
+        '    return await pipeline([1, 2], agent("x"))\n'
     )
     v = lint_script(src)
-    assert len(v) == 2 and all(x.rule == "non-thunk-arg" for x in v)
+    assert v and v[0].rule == "non-thunk-arg"
 
 
 def test_check_script_combines_safety_and_correctness() -> None:
-    # Unsafe import (safety) + undefined name (correctness) in one script.
+    # Unsafe import (safety) + genuinely undefined name (correctness) together.
     src = (
         "import os\n"
         "async def main():\n"
-        "    return json.dumps(os.listdir())\n"
+        "    return frobnicate(os.listdir())\n"
     )
     rules = {v.rule for v in check_script(src)}
     assert "unsafe-import" in rules

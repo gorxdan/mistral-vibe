@@ -26,7 +26,7 @@ before it runs, so a clear validation error beats a confusing "no main()" later.
 The script must define `async def main()`. The runtime injects:
 
 - `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent; `isolation="worktree"` runs it in a fresh git worktree (isolates file edits for parallel agents). Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `debugger` (+bash; systematic root-cause analysis of a failure or flaky test), `planner` (grep/read; returns a phased, code-grounded plan), `security` (+bash; defensive vuln audit with severity-ranked findings), `editor` (read/grep/write/edit, no bash/MCP; surgical edits — **requires** `isolation="worktree"`), `worker` (full tools incl. MCP — **requires** `isolation="worktree"`). `schema=` validates the agent's JSON output and **strips unknown keys by default** (`strip_unknown=True`), so an extra field in a reply degrades gracefully instead of discarding the agent's work.
-- `parallel(*thunks, max_concurrency=None)` (or `parallel([thunks])`) — run thunks concurrently, results in order; a thunk that raises yields `None` (filter the results). Pass `max_concurrency=N` (e.g. `3`) to cap in-flight thunks — use this instead of hand-rolling chunked waves when a provider limits concurrency.
+- `parallel(*items, max_concurrency=None)` (or `parallel([items])`) — run items concurrently, results in order; an item that raises yields `None` (filter the results). Each item may be a **coroutine** — `parallel(agent("a"), agent("b"))` — or a zero-arg thunk — `parallel(lambda: agent("a"))`; both work (Python coroutines are lazy, so the bare form bounds concurrency identically). Pass `max_concurrency=N` (e.g. `3`) to cap in-flight items — use this instead of hand-rolling chunked waves when a provider limits concurrency.
 - `pipeline(items, *stages, max_concurrency=None)` — run each item through all stages with no barrier between stages (item A can be in stage 3 while B is still in stage 1); each stage receives `(prev, item, index)`. One stage acts as a concurrent map. `max_concurrency=N` caps in-flight items.
 - `phase(name)` — declare a phase for progress tracking. Works bare (`phase("x")`) or awaited (`await phase("x")`) — both are safe.
 - `log(msg)` — log a progress message. Works bare or awaited, like `phase()`.
@@ -41,6 +41,37 @@ The script must define `async def main()`. The runtime injects:
 
 You do **not** need to (and cannot) `import asyncio` — `agent`/`parallel`/`pipeline`
 are already async and injected; call them and `await` the result.
+
+## Starter template
+
+Copy this and fill it in — it has the correct shape (no imports needed, schema,
+phases, coroutine fan-out, filtered results, structured return):
+
+```python
+# find -> verify -> synthesize. `args` is the invocation input.
+SCHEMA = {"type": "object",
+          "properties": {"findings": {"type": "array"}}}
+
+async def main():
+    phase("find")
+    found = await parallel(
+        agent("TODO: finder prompt for lens A", schema=SCHEMA),
+        agent("TODO: finder prompt for lens B", schema=SCHEMA),
+    )
+    items = [f for r in found if r for f in r.get("findings", [])]
+    if not items:
+        return {"summary": "nothing found", "items": []}
+
+    phase("verify")
+    # pipeline STAGE must be callable-of-item: use `lambda x:` (or a def), not a
+    # bare agent(...). parallel above takes coroutines directly; pipeline doesn't.
+    verified = await pipeline(items, lambda f: agent(
+        f"TODO: adversarially verify this finding: {f}", schema=SCHEMA))
+
+    phase("synthesize")
+    report = await agent(f"TODO: synthesize {json.dumps(verified)}")
+    return {"summary": report, "items": verified}
+```
 
 ## Best Practices
 
@@ -74,11 +105,13 @@ Scripts run in a restricted in-process namespace. The validator runs before
 execution and rejects the script with a precise error if it breaks a rule. The
 non-obvious traps (these are the ones that cost runs in practice):
 
-- **Imports are allowlisted.** Only `json`, `re`, `math`, `statistics`,
-  `collections`, `itertools`, `functools`, `datetime`, `decimal`, `copy`,
-  `hashlib`, `base64`, `textwrap`, `unicodedata`. In particular there is **no
-  `asyncio`** (you don't need it — `agent`/`parallel`/`pipeline` are injected and
-  awaitable), and no `os`, `sys`, `subprocess`, `pathlib`, `io`, `requests`, etc.
+- **A fixed set of modules is pre-bound — no `import` needed.** `json`, `re`,
+  `math`, `statistics`, `collections`, `itertools`, `functools`, `datetime`,
+  `decimal`, `copy`, `hashlib`, `base64`, `textwrap`, `unicodedata` are already in
+  scope — just use `json.dumps(...)`. (You may still `import` them; it's a no-op.)
+  Nothing else is importable — no `asyncio` (you don't need it — `agent`/
+  `parallel`/`pipeline` are injected and awaitable), and no `os`, `sys`,
+  `subprocess`, `pathlib`, `io`, `requests`, etc.
 - **`str.format()` and `str.format_map()` are forbidden** (the format
   mini-language can traverse attributes/dunders from inside a string literal, an
   escape vector). Template with **f-strings** or **`%` formatting** instead.
@@ -87,6 +120,12 @@ non-obvious traps (these are the ones that cost runs in practice):
   `__subclasses__`, …), no dunder dict keys, and no `getattr`/`setattr`/`delattr`/
   `globals`/`locals`/`vars`/`eval`/`exec`/`compile`/`open`/`input`/`__import__`.
 - The builtins namespace is safelisted (no `open`, `exec`, `__import__`).
+- **Correctness, not just safety, is checked pre-flight.** Beyond the security
+  rules above, the validator rejects **undefined names** (a name used but never
+  bound, injected, a pre-bound module, or a builtin) and a **coroutine used as a
+  `pipeline` stage** (`pipeline(items, agent(...))` — a stage runs per item, so
+  use `lambda x: agent(...)`). Note `parallel(agent(...))` is fine. These caught
+  classes used to crash at exec time; now they fail at launch with the fix.
 
 ## Getting the result back
 
