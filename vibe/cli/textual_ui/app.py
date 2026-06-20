@@ -510,6 +510,9 @@ class VibeApp(App):  # noqa: PLR0904
             mount=self._mount_and_scroll,
             tools_collapsed=lambda: self._tools_collapsed,
         )
+        # Let the `schedule` tool enqueue into the live runner the model can't
+        # reach the slash command, but it can call the tool.
+        self.agent_loop.set_scheduler(self._loop_runner.manager)
         self._workflow_runner = WorkflowRunner(
             mount=self._mount_and_scroll,
             on_complete=self._on_workflow_complete,
