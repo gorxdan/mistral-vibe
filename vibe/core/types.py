@@ -440,6 +440,8 @@ class ToolResultEvent(BaseEvent):
     cancelled: bool = False
     duration: float | None = None
     tool_call_id: str
+    # Set when the LLM safety judge auto-approved this call (shown in-session).
+    approval_note: str | None = None
 
 
 class ToolStreamEvent(BaseEvent):

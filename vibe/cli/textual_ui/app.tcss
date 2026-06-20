@@ -723,6 +723,17 @@ StatusMessage {
     }
 }
 
+.tool-approval-note {
+    width: 100%;
+    height: auto;
+    color: $success;
+    padding-left: 2;
+
+    &:ansi {
+        text-style: dim;
+    }
+}
+
 .tool-result {
     width: 100%;
     height: auto;

@@ -227,6 +227,14 @@ class ToolResultMessage(ClickWithoutDragMixin, Static):
         self.remove_class("error-text")
         self.remove_class("warning-text")
 
+        if self._event.approval_note:
+            await self._content_container.mount(
+                NoMarkupStatic(
+                    f"🛡 {self._event.approval_note}", classes="tool-approval-note"
+                )
+            )
+            self.display = True
+
         if self._event.tool_class is None:
             self.display = False
             return

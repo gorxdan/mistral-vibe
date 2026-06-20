@@ -169,6 +169,7 @@ class ToolDecision(BaseModel):
     verdict: ToolExecutionResponse
     approval_type: ToolPermission
     feedback: str | None = None
+    judge_approved: bool = False
 
 
 class AgentLoopError(Exception):
@@ -713,6 +714,32 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             )
         await self._save_messages()
 
+    def stage_injected_message(
+        self,
+        content: str,
+        *,
+        images: list[ImageAttachment] | None = None,
+        client_message_id: str | None = None,
+    ) -> None:
+        """Stage a user message to be folded into the running turn at the next
+        step boundary, without ending the turn.
+
+        Unlike ``inject_user_context``, this does NOT append to the message
+        history immediately. The conversation loop picks it up via
+        ``_drain_pending_injections`` after the current LLM/tool step, then
+        continues so the model acts on it. Safe to call while ``act`` is
+        running; the message is seen as soon as the current step yields.
+        """
+        self._pending_injected_messages.append(
+            LLMMessage(
+                role=Role.user,
+                content=content,
+                injected=True,
+                images=images or None,
+                message_id=client_message_id,
+            )
+        )
+
     @requires_init
     async def act(
         self,
@@ -1070,6 +1097,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         should_break_loop = False
 
         finally:
+            # Fold in any messages staged after the loop's last drain (e.g. a
+            # double-enter inject that landed during the post-turn hooks). They
+            # become injected context for the next turn instead of being lost.
+            self._drain_pending_injections()
             await self._save_messages()
 
     def _handle_plan_review_ended(self) -> None:
@@ -1456,6 +1487,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             cancelled=result_cancelled,
             duration=duration,
             tool_call_id=tool_call.call_id,
+            approval_note=decision.feedback if decision.judge_approved else None,
         )
         async for ev in self._run_after_tool_and_finalize(
             tool_call,
@@ -1552,6 +1584,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             verdict=ToolExecutionResponse.EXECUTE,
             approval_type=ToolPermission.ALWAYS,
             feedback=f"Auto-approved by safety judge: {verdict.reason}",
+            judge_approved=True,
         )
 
     async def _ask_approval(

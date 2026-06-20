@@ -103,6 +103,8 @@ async def test_judge_approves_executes_without_prompt() -> None:
     assert decision.verdict == ToolExecutionResponse.EXECUTE
     assert fake.calls, "judge should have been consulted"
     assert approval.called is False, "must not prompt the user when judge approves"
+    assert decision.judge_approved is True
+    assert decision.feedback and "npm install is benign" in decision.feedback
 
 
 @pytest.mark.asyncio

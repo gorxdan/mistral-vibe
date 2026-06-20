@@ -199,6 +199,7 @@ class EventHandler:
                 cancelled=event.cancelled,
                 duration=event.duration,
                 tool_call_id=event.tool_call_id,
+                approval_note=event.approval_note,
             )
         return event
 
