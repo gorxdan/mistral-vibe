@@ -31,15 +31,20 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 import gc
+import json
 import os
 import tracemalloc
 
 import pytest
 
-from tests.conftest import build_test_agent_loop, build_test_vibe_app
+from tests.conftest import (
+    build_test_agent_loop,
+    build_test_vibe_app,
+    build_test_vibe_config,
+)
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
-from vibe.core.types import LLMChunk
+from vibe.core.types import FunctionCall, LLMChunk, Role, ToolCall
 
 _RUN = os.environ.get("VIBE_MEM_PROFILE")
 _TURNS = int(os.environ.get("VIBE_MEM_TURNS", "200"))
@@ -48,6 +53,10 @@ _SNAP_EVERY = int(os.environ.get("VIBE_MEM_SNAP_EVERY", "25"))
 _REPLY_CHARS = int(os.environ.get("VIBE_MEM_REPLY_CHARS", "800"))
 _TOP = int(os.environ.get("VIBE_MEM_TOP", "30"))
 _IMAGE_KB = int(os.environ.get("VIBE_MEM_IMAGE_KB", "0"))
+_PRUNE_LOW = os.environ.get("VIBE_MEM_PRUNE_LOW")
+_PRUNE_HIGH = os.environ.get("VIBE_MEM_PRUNE_HIGH")
+_TOOL_CALLS = os.environ.get("VIBE_MEM_TOOL_CALLS")
+_ECHO_CHARS = int(os.environ.get("VIBE_MEM_ECHO_CHARS", str(_REPLY_CHARS)))
 
 _MB = 1024 * 1024
 
@@ -82,6 +91,52 @@ class _InfiniteFakeBackend(FakeBackend):
         yield self._chunk()
 
 
+class _ToolCallFakeBackend(_InfiniteFakeBackend):
+    """One bash-echo tool round-trip per turn, then a final text reply.
+
+    Emits a tool call unless the last message is a tool result (the round-trip
+    came back), in which case it returns the final assistant reply. Exercises
+    the heavier tool-output widget path (BashOutputMessage) vs plain replies.
+    Requires bypass_tool_permissions so execution does not block on approval.
+    """
+
+    def __init__(self, reply: str, echo_chars: int) -> None:
+        super().__init__(reply)
+        self._echo = "y" * echo_chars
+
+    def _tool_chunk(self) -> LLMChunk:
+        return mock_llm_chunk(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="tc-0",
+                    function=FunctionCall(
+                        name="bash",
+                        arguments=json.dumps({"command": f"echo {self._echo}"}),
+                    ),
+                )
+            ],
+        )
+
+    def _next(self, messages) -> LLMChunk:
+        last_role = messages[-1].role if messages else None
+        return self._chunk() if last_role == Role.tool else self._tool_chunk()
+
+    async def complete(self, **kwargs) -> LLMChunk:  # type: ignore[override]
+        self._requests_messages.append(list(kwargs["messages"]))
+        self._requests_extra_headers.append(kwargs.get("extra_headers"))
+        self._requests_metadata.append(kwargs.get("metadata"))
+        return self._next(kwargs["messages"])
+
+    async def complete_streaming(  # type: ignore[override]
+        self, **kwargs
+    ) -> AsyncGenerator[LLMChunk]:
+        self._requests_messages.append(list(kwargs["messages"]))
+        self._requests_extra_headers.append(kwargs.get("extra_headers"))
+        self._requests_metadata.append(kwargs.get("metadata"))
+        yield self._next(kwargs["messages"])
+
+
 def _fmt(snapshot_diff) -> str:
     lines = []
     for stat in snapshot_diff[:_TOP]:
@@ -97,10 +152,30 @@ def _fmt(snapshot_diff) -> str:
 @pytest.mark.skipif(not _RUN, reason="set VIBE_MEM_PROFILE=1 to run the harness")
 @pytest.mark.asyncio
 async def test_memory_long_session() -> None:
+    # Optionally override the transcript prune marks (the memory/scrollback
+    # knob) to measure their effect. _try_prune reads these module globals at
+    # call time, so patching them here takes effect for the whole run.
+    import vibe.cli.textual_ui.app as _app_mod
+
+    if _PRUNE_LOW:
+        _app_mod.PRUNE_LOW_MARK = int(_PRUNE_LOW)
+    if _PRUNE_HIGH:
+        _app_mod.PRUNE_HIGH_MARK = int(_PRUNE_HIGH)
+
     reply = "x " * (_REPLY_CHARS // 2)
-    loop = build_test_agent_loop(backend=_InfiniteFakeBackend(reply))
+    if _TOOL_CALLS:
+        cfg = build_test_vibe_config(bypass_tool_permissions=True)
+        loop = build_test_agent_loop(
+            config=cfg, backend=_ToolCallFakeBackend(reply, _ECHO_CHARS)
+        )
+    else:
+        loop = build_test_agent_loop(backend=_InfiniteFakeBackend(reply))
     app = build_test_vibe_app(agent_loop=loop)
 
+    print(
+        f"\n[mem] prune marks: low={_app_mod.PRUNE_LOW_MARK} "
+        f"high={_app_mod.PRUNE_HIGH_MARK}  tool_calls={bool(_TOOL_CALLS)}"
+    )
     image_arg = "@fake.png " if _IMAGE_KB > 0 else ""
 
     async with app.run_test() as pilot:
