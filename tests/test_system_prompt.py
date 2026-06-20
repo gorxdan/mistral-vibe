@@ -123,8 +123,12 @@ def test_planner_security_editor_registered() -> None:
     # Security prompt is defensive — must forbid weaponization.
     sec = load_system_prompt("security")
     assert "DEFENSIVE" in sec and "do NOT write exploits" in sec
-    # Editor prompt is explicit about its worktree-only write reality.
-    assert "isolated git worktree" in load_system_prompt("editor")
+    # Editor prompt is honest about its write reality: worktree = git isolation,
+    # NOT a security sandbox; plain-task writes are approval-gated/skipped.
+    ed = load_system_prompt("editor")
+    assert "isolation='worktree'" in ed
+    assert "not a security sandbox" in ed
+    assert "approval-gated" in ed
 
 
 def test_orchestration_map_includes_planner_security_not_editor() -> None:
