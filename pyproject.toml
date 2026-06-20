@@ -156,6 +156,7 @@ required-version = ">=0.8.0"
 dev = [
     "cryptography>=44.0.0",
     "debugpy>=1.8.19",
+    "memray>=1.19.3",
     "pre-commit>=4.2.0",
     "pyinstrument>=5.1.2",
     "pyright>=1.1.403",
