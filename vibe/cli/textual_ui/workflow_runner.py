@@ -59,7 +59,12 @@ class WorkflowRunEntry:
     def tokens_total(self) -> int:
         if self.result is not None:
             return self.result.run.tokens_total
-        return sum(p.tokens_total for p in self.runtime._phases.values())
+        # Finalized phases + in-flight agents. Live agents hold their running
+        # token totals (updated per-turn); without them the Tokens column stays
+        # at the last finalized value until each agent completes.
+        finalized = sum(p.tokens_total for p in self.runtime._phases.values())
+        live = sum(la.tokens_total for la in self.runtime._live_agents.values())
+        return finalized + live
 
     @property
     def phases(self) -> list[str]:

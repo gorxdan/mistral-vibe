@@ -932,6 +932,175 @@ async def test_isolated_agent_charges_real_tokens_when_stats_present() -> None:
     assert rt._budget.spent() == 150  # real tokens, not the 99,999 estimate
 
 
+# --- G2: live per-agent token tracking ---
+
+
+def _gated_stats_factory(gate: asyncio.Event, gate_on: int = 1) -> Any:
+    """A mock loop whose stats grow mid-stream. The gate_on-th invocation blocks
+    on `gate` mid-stream (so a test can observe the live view); other
+    invocations complete immediately with the standard 1000/500 totals. This
+    lets a single runtime host both a finalized agent and an in-flight one.
+    """
+
+    calls = [0]
+
+    @dataclass
+    class _GrowingStats:
+        session_prompt_tokens: int = 0
+        session_completion_tokens: int = 0
+
+    @dataclass
+    class _GatedLoop:
+        stats: _GrowingStats = field(default_factory=_GrowingStats)
+        gated: bool = False
+
+        async def act(
+            self, prompt: str, *, response_format: Any = None
+        ) -> AsyncGenerator[AssistantEvent, None]:
+            if not self.gated:
+                self.stats.session_prompt_tokens = 1000
+                self.stats.session_completion_tokens = 500
+                yield AssistantEvent(content="mock response", message_id="a1")
+                return
+            # First turn completes (partial tokens), then block until released,
+            # then a second turn finalizes the totals.
+            self.stats.session_prompt_tokens = 600
+            self.stats.session_completion_tokens = 120
+            yield AssistantEvent(content="partial", message_id="a1")
+            await gate.wait()
+            self.stats.session_prompt_tokens = 1000
+            self.stats.session_completion_tokens = 500
+            yield AssistantEvent(content=" done", message_id="a2")
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        calls[0] += 1
+        return _GatedLoop(gated=(calls[0] == gate_on))
+
+    return factory
+
+
+async def test_live_agent_visible_and_retired_around_execution() -> None:
+    """While an agent runs it appears in live_status(); once it finalizes it
+    moves to the finalized phases (live XOR finalized, never both).
+    """
+    gate = asyncio.Event()
+    rt = WorkflowRuntime(
+        agent_loop_factory=_gated_stats_factory(gate),
+        max_agents=10,
+        budget_total=1_000_000,
+    )
+
+    task = asyncio.create_task(rt.spawn_agent("work", phase="P", label="worker"))
+    # Yield control so the agent registers and reaches the gate mid-stream.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    live = rt.live_status()
+    assert live["live_agent_count"] == 1, live
+    assert live["live_agents"][0]["label"] == "worker"
+    assert live["live_agents"][0]["status"] == "running"
+    # Partial tokens from the first turn are already visible mid-flight.
+    assert live["live_agents"][0]["tokens_in"] == 600
+    assert live["tokens_live"] == 720
+    # Nothing finalized yet.
+    assert live["tokens_finalized"] == 0
+
+    gate.set()
+    await task
+
+    live = rt.live_status()
+    assert live["live_agent_count"] == 0  # retired after finalize
+    assert live["tokens_live"] == 0
+    assert live["tokens_finalized"] == 1500  # 1000 + 500
+    assert live["phases"] == [{"name": "P", "agents": 1, "tokens": 1500}]
+
+
+async def test_live_tokens_do_not_double_count_with_finalized(runtime: WorkflowRuntime) -> None:
+    """An agent is counted live XOR finalized. With one finished and one live,
+    the live total is the sum without overlap.
+    """
+    gate = asyncio.Event()
+    rt = WorkflowRuntime(
+        agent_loop_factory=_gated_stats_factory(gate, gate_on=2),
+        max_agents=10,
+        budget_total=1_000_000,
+    )
+    # One fully finalized agent (1500 tokens) — invocation 1, completes at once.
+    await rt.spawn_agent("done first", phase="P")
+    # One in-flight agent blocked at the gate — invocation 2, gated.
+    task = asyncio.create_task(rt.spawn_agent("still running", phase="P", label="run2"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    live = rt.live_status()
+    # finalized (1500) + live partial (600+120).
+    assert live["tokens_finalized"] == 1500
+    assert live["tokens_live"] == 720
+    assert live["tokens_total"] == 2220
+
+    gate.set()
+    await task
+
+
+async def test_live_status_budget_snapshot(runtime: WorkflowRuntime) -> None:
+    await runtime.spawn_agent("a")
+    await runtime.spawn_agent("b")
+    live = runtime.live_status()
+    assert live["budget"]["spent"] == 3000
+    assert live["budget"]["total"] == 1_000_000
+    assert live["agent_count"] == 2
+
+
+# --- G4: intra-workflow message board ---
+
+
+async def test_message_board_roundtrip_in_script(runtime: WorkflowRuntime) -> None:
+    script = """
+async def main():
+    post_message("findings", {"url": "http://x", "risk": "high"})
+    post_message("findings", "second finding")
+    msgs = fetch_messages("findings")
+    return {"count": len(msgs), "first_risk": msgs[0]["risk"], "second": msgs[1]}
+"""
+    result = await runtime.run(script)
+    assert result.run.status.value == "completed"
+    assert result.return_value == {
+        "count": 2,
+        "first_risk": "high",
+        "second": "second finding",
+    }
+
+
+async def test_fetch_messages_unknown_channel_is_empty(runtime: WorkflowRuntime) -> None:
+    script = """
+async def main():
+    return {"n": len(fetch_messages("nope"))}
+"""
+    result = await runtime.run(script)
+    assert result.return_value == {"n": 0}
+
+
+async def test_message_board_is_shared_across_parallel_agents(
+    runtime: WorkflowRuntime,
+) -> None:
+    """Agents in the same run share one board: each posts to a channel and a
+    later fetch sees them all (handoff without a barrier return).
+    """
+    script = """
+async def main():
+    async def post_one(i):
+        # an agent does its work, then hands off a partial result
+        await agent(f"work {i}", phase="Work")
+        post_message("results", i)
+        return i
+    await parallel(*[(lambda i=i: post_one(i)) for i in range(3)])
+    return {"results": sorted(fetch_messages("results"))}
+"""
+    result = await runtime.run(script)
+    assert result.run.status.value == "completed"
+    assert result.return_value == {"results": [0, 1, 2]}
+
+
 class _FakeProfile:
     def __init__(self, overrides: dict[str, Any]) -> None:
         self.overrides = overrides

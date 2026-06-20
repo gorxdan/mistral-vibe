@@ -749,6 +749,8 @@ runtime injects these functions into the script's namespace:
 - `log(msg)` — log a progress message
 - `budget` — token budget object with `.total` (int|None) and `.remaining()` (int|float)
 - `workflow(name, args=None)` — run another discovered workflow inline as a sub-step and return its result; it shares this run's budget, agent counter, and result cache, and its phases merge into the live monitor. Nesting is one level deep — calling `workflow()` inside a nested run raises.
+- `post_message(channel, message)` — post to a named channel on this run's shared in-process message board. Visible to every agent/stage in the same run via `fetch_messages`. Use for inter-agent handoffs that don't fit the barrier-return model (e.g. a finder posting partial results a verifier polls for).
+- `fetch_messages(channel)` — return a copy of all messages posted to a channel so far.
 - `args` — structured input from the invocation command (string or None)
 
 Scripts are validated via AST before execution: unsafe imports, dangerous calls
@@ -786,6 +788,18 @@ Three ways to launch:
 `/workflows` with no args opens a progress view (WorkflowsApp) showing a table
 of all runs with ID, status (color-coded), agent count, tokens, elapsed, and
 phases. Keys: `r` refresh, `s` stop first active run, `Esc` back.
+
+`/workflows list` renders the same columns inline. The Tokens column reflects
+**live** spend: per-agent tokens are polled as each agent turn completes, so the
+column advances while agents run rather than jumping only at completion.
+
+### Live status from a model turn
+
+The `workflow_status` tool returns a live, JSON view of runs: per-run agent
+count, phase breakdown, **in-flight agents with their running token totals**,
+and budget. Pass a `run_id` for one run or omit it for all. Use this to gauge
+what a launched workflow is doing mid-flight instead of waiting for the
+completion result.
 
 ### Resumability
 
@@ -867,6 +881,16 @@ Teammates interact with the shared TaskStore and Mailbox through the `team`
 builtin tool (available only inside a teammate, gated on `VIBE_TEAM_DIR`):
 `list_tasks`, `available_tasks`, `claim_task`, `complete_task`,
 `send_message`, `read_messages`, `unread_messages`.
+
+### Lead ↔ teammate messaging
+
+The lead (host) does **not** get the teammate `team` tool. To steer teammates
+and collect their replies, the lead uses the `team_message` tool against the
+same shared Mailbox: `send_message` (to a teammate by name),
+`read_messages` / `unread_messages` (the lead's own `lead` inbox). It is
+available only while a team is active (errors with "No active team" otherwise).
+Teammates reach the lead by addressing messages to `lead`. Task distribution
+remains available to the user via `/team task add|done|list`.
 
 ### Team Management
 

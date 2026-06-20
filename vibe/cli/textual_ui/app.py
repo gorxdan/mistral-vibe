@@ -512,6 +512,8 @@ class VibeApp(App):  # noqa: PLR0904
         self._workflow_manager = WorkflowManager(lambda: self.agent_loop.config)
         self._register_workflow_commands()
         self.agent_loop.launch_workflow_callback = self._launch_workflow_from_tool
+        self.agent_loop.workflow_status_callback = self._workflow_status_for_tool
+        self.agent_loop.team_dir_callback = self._team_dir_for_tool
         self._team_manager: TeamManager | None = None
 
     def _configure_startup_options(self, startup: StartupOptions | None) -> None:
@@ -2986,6 +2988,33 @@ class VibeApp(App):  # noqa: PLR0904
         )
         run_id = self._workflow_runner.launch(script, runtime=runtime)
         return run_id
+
+    def _workflow_status_for_tool(self, run_id: str | None = None) -> list[dict]:
+        """Back the workflow_status model tool: a live, JSON-serializable view
+        of runs. Filters to one run when run_id is given, else returns all."""
+        runs = self._workflow_runner.runs
+        if run_id is not None:
+            runs = [r for r in runs if r.run_id == run_id]
+        out: list[dict] = []
+        for entry in runs:
+            status = entry.runtime.live_status()
+            out.append(
+                {
+                    "run_id": entry.run_id,
+                    "status": entry.status.value,
+                    "elapsed_s": round(entry.elapsed, 1),
+                    "name": None,
+                    **status,
+                }
+            )
+        return out
+
+    def _team_dir_for_tool(self) -> str | None:
+        """Back the team_message model tool: the active team directory, or None
+        when no team is active."""
+        if self._team_manager is None:
+            return None
+        return str(self._team_manager.team_dir)
 
     async def _run_workflow_command(self, cmd_args: str = "", **kwargs: Any) -> None:
         from vibe.cli.textual_ui.widgets.messages import (

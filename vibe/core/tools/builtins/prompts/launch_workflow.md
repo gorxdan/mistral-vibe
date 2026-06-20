@@ -24,6 +24,8 @@ The script must define `async def main()`. The runtime injects:
 - `log(msg)` — log a progress message
 - `budget` — token budget with `.total` and `.remaining()`
 - `workflow(name, args=None)` — run another discovered workflow inline as a sub-step and return its result (shares this run's budget/agents; one level deep only)
+- `post_message(channel, message)` — post to a named channel on this run's shared board (visible to all agents/stages in the same run via `fetch_messages`)
+- `fetch_messages(channel)` — return all messages posted to a channel so far (a copy)
 - `args` — structured input from the invocation
 
 ## Best Practices
@@ -39,4 +41,6 @@ The script must define `async def main()`. The runtime injects:
 - Scripts run in a restricted namespace (no `open`, `exec`, `os`, `subprocess`)
 - Up to 16 concurrent agents, 1000 total per run
 - The workflow runs in the background; the result appears when complete
-- Use `/workflows` to check progress or stop a run
+- Use `/workflows` to check progress or stop a run. From a model turn, query
+  live progress (per-run agents, phases, in-flight agent token totals, budget)
+  with the `workflow_status` tool instead of waiting for completion.
