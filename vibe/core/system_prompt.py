@@ -293,6 +293,42 @@ def _get_available_subagents_section(agent_manager: AgentManager) -> str:
     return "\n".join(lines)
 
 
+_ORCHESTRATION_SECTION = """## Orchestrating Subagents
+
+Orchestration is a default skill, not a last resort. For non-trivial \
+investigation or review, you are the lead: spin up read-only subagents via the \
+`task` tool and keep the main context for synthesis, decisions, and edits. If \
+answering means reading 10+ files or reviewing a branch, send a subagent and \
+get back a conclusion — don't grind it all through here.
+
+Pick the profile by the question:
+- `explore` — codebase questions and searches: where/how is X done, trace a \
+flow, gather all call sites, multi-file reads.
+- `research` — anything outside the repo: docs, library/API behavior, version \
+checks, web lookups.
+- `reviewer` — adversarial review of a diff, branch, or file; runs targeted \
+checks and tests to find what breaks.
+
+Fan out: issue several `task` calls in one turn so independent sub-questions \
+run in parallel. Give each a self-contained brief and ask for findings and \
+conclusions, not raw file dumps; each runs in its own context, so a wide \
+investigation costs you only the returned conclusions.
+
+Don't delegate trivia. For a single known lookup — you already have the file \
+path or symbol — just `read`/`grep` it directly. Delegate breadth and \
+uncertainty; handle pinpoints yourself. Subagents are read-only investigators \
+that can't write files or ask the user — you own every edit and all user \
+interaction."""
+
+
+def _get_orchestration_section() -> str:
+    """Normal-mode orchestration directive — instructs the host to delegate
+    cross-file investigation/review to subagents via the task tool. Shown
+    whenever subagents exist (le-chaton layers workflows on top of this).
+    """
+    return _ORCHESTRATION_SECTION
+
+
 def _get_scratchpad_section(scratchpad_dir: Path | None) -> str | None:
     if not scratchpad_dir:
         return None
@@ -398,6 +434,7 @@ def get_universal_system_prompt(  # noqa: PLR0912, PLR0914, PLR0915
         subagents_section = _get_available_subagents_section(agent_manager)
         if subagents_section:
             sections.append(subagents_section)
+            sections.append(_get_orchestration_section())
 
         sections.extend(filter(None, [_get_scratchpad_section(scratchpad_dir)]))
 

@@ -47,6 +47,40 @@ def test_get_universal_system_prompt_includes_windows_prompt_on_windows(
     assert "Script shebang: Not applicable on Windows" in prompt
 
 
+def test_orchestration_section_present_in_normal_mode() -> None:
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+    )
+    assert config.effort_mode == "normal"
+    tool_manager = ToolManager(lambda: config)
+    skill_manager = SkillManager(lambda: config)
+    agent_manager = AgentManager(lambda: config)
+
+    prompt = get_universal_system_prompt(
+        tool_manager, config, skill_manager, agent_manager
+    )
+
+    # Normal mode: the host is directed to orchestrate subagents (no workflows).
+    assert "# Available Subagents" in prompt
+    assert "## Orchestrating Subagents" in prompt
+    assert "Orchestration is a default skill" in prompt
+    assert "`task`" in prompt
+    # The profile→use map is present.
+    for profile in ("`explore`", "`research`", "`reviewer`"):
+        assert profile in prompt
+    # The le-chaton workflow-orchestration SECTION stays le-chaton-only — it
+    # must NOT leak into the normal prompt. (The launch_workflow tool's own
+    # description is always present and legitimately mentions "workflow"; we
+    # only assert the le-chaton section itself is absent.)
+    assert "Le Chaton Mode" not in prompt
+    assert "le chaton effort mode" not in prompt
+
+
 def test_scratchpad_section_included_when_passed() -> None:
     sp = init_scratchpad("test-session")
     config = build_test_vibe_config(
