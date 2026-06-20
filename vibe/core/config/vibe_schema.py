@@ -140,6 +140,18 @@ class VibeConfigSchema(ConfigSchema):
             "Each path may be absolute or relative to the current working directory."
         ),
     )
+    plugin_paths: Annotated[list[Path], WithConcatMerge()] = Field(
+        default_factory=list,
+        description="Plugin root directories (each containing a plugin.toml).",
+    )
+    enabled_plugins: Annotated[list[str], WithConcatMerge()] = Field(
+        default_factory=list,
+        description="Glob/regex allowlist of plugin names.",
+    )
+    disabled_plugins: Annotated[list[str], WithConcatMerge()] = Field(
+        default_factory=list,
+        description="Glob/regex denylist of plugin names.",
+    )
     enabled_agents: Annotated[list[str], WithConcatMerge()] = Field(
         default_factory=list,
         description=(

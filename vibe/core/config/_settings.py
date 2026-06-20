@@ -931,6 +931,21 @@ class VibeConfig(BaseSettings):
             "Each path may be absolute or relative to the current working directory."
         ),
     )
+    plugin_paths: list[Path] = Field(
+        default_factory=list,
+        description=(
+            "Plugin root directories (each containing a plugin.toml) whose "
+            "components are layered into the matching *_paths / mcp_servers / hooks."
+        ),
+    )
+    enabled_plugins: list[str] = Field(
+        default_factory=list,
+        description="Glob/regex allowlist of plugin names; if set, only these load.",
+    )
+    disabled_plugins: list[str] = Field(
+        default_factory=list,
+        description="Glob/regex denylist of plugin names (ignored if enabled set).",
+    )
     enabled_agents: list[str] = Field(
         default_factory=list,
         description=(
@@ -1252,6 +1267,13 @@ class VibeConfig(BaseSettings):
     @field_validator("workflow_paths", mode="before")
     @classmethod
     def _expand_workflow_paths(cls, v: Any) -> list[Path]:
+        if not v:
+            return []
+        return [Path(p).expanduser().resolve() for p in v]
+
+    @field_validator("plugin_paths", mode="before")
+    @classmethod
+    def _expand_plugin_paths(cls, v: Any) -> list[Path]:
         if not v:
             return []
         return [Path(p).expanduser().resolve() for p in v]

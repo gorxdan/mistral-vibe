@@ -305,6 +305,27 @@ def _maybe_run_startup_update_prompt(
             sys.exit(1)
 
 
+def _load_plugins_into_config(config: object) -> None:
+    """Discover plugins (user dir + explicit plugin_paths) and fold them into
+    config. Fully defensive: a bad plugin logs an issue, never breaks startup.
+    """
+    from vibe.core.paths import VIBE_HOME
+    from vibe.core.plugins.loader import apply_plugin_result, load_plugins_from_fs
+
+    try:
+        result = load_plugins_from_fs(
+            config.plugin_paths,  # type: ignore[attr-defined]
+            [VIBE_HOME.path / "plugins"],
+            enabled=config.enabled_plugins,  # type: ignore[attr-defined]
+            disabled=config.disabled_plugins,  # type: ignore[attr-defined]
+        )
+        apply_plugin_result(config, result)
+        for issue in result.issues:
+            logger.warning("plugin: %s", issue)
+    except Exception as e:
+        logger.warning("plugin loading failed: %s", e)
+
+
 def run_cli(args: argparse.Namespace) -> None:
     load_dotenv_values()
     bootstrap_config_files()
@@ -322,6 +343,7 @@ def run_cli(args: argparse.Namespace) -> None:
             _maybe_run_startup_update_prompt(config, update_cache_repository)
 
         initial_agent_name = get_initial_agent_name(args, config)
+        _load_plugins_into_config(config)
         hook_config_result = load_hooks_from_fs(config)
         setup_tracing(config)
 
@@ -332,10 +354,7 @@ def run_cli(args: argparse.Namespace) -> None:
 
         stdin_prompt = get_prompt_from_stdin()
         if is_interactive:
-            from vibe.core.worktree.manager import (
-                worktree_enabled,
-                worktree_manager,
-            )
+            from vibe.core.worktree.manager import worktree_enabled, worktree_manager
 
             worktree_handle = None
             if worktree_enabled(config, programmatic=False, cli_flag=args.worktree):
