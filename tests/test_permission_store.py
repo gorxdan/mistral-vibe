@@ -123,6 +123,7 @@ class TestAgentLoopSharesStore:
             args: BaseModel,
             tool_call_id: str,
             required_permissions: list[RequiredPermission] | None,
+            _judge_note: str | None = None,
         ) -> tuple[ApprovalResponse, str | None]:
             nonlocal approval_requested
             approval_requested = True

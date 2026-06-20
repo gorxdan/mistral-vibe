@@ -880,6 +880,7 @@ class VibeAcpAgentLoop(AcpAgent):
             args: BaseModel,
             tool_call_id: str,
             required_permissions: list | None = None,
+            judge_note: str | None = None,
         ) -> tuple[ApprovalResponse, str | None]:
             typed_permissions: list[RequiredPermission] | None = (
                 [

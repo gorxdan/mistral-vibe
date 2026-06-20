@@ -9,7 +9,13 @@ from vibe.core.agent_loop import AgentLoop, ToolExecutionResponse
 from vibe.core.config import DEFAULT_MODELS, SafetyJudgeConfig
 from vibe.core.tools.base import BaseToolState
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
-from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
+from vibe.core.tools.safety_judge import (
+    _SYSTEM_PROMPT,
+    _WORKFLOW_SYSTEM_PROMPT,
+    JudgeVerdict,
+    SafetyJudge,
+    _system_prompt_for,
+)
 from vibe.core.types import ApprovalResponse
 
 
@@ -70,8 +76,18 @@ def test_parser_fail_closed(raw: str | None, expected_safe: bool) -> None:
 
 
 def test_resolve_judge_none_when_disabled() -> None:
-    loop = build_test_agent_loop()
+    config = build_test_vibe_config(
+        safety_judge=SafetyJudgeConfig(enabled=False)
+    )
+    loop = build_test_agent_loop(config=config)
     assert loop.config.safety_judge.enabled is False
+    assert loop._resolve_safety_judge() is None
+
+
+def test_resolve_judge_none_when_enabled_but_no_model() -> None:
+    # Enabled by default but no model alias -> judge cannot be built -> None.
+    loop = build_test_agent_loop()
+    assert loop.config.safety_judge.enabled is True
     assert loop._resolve_safety_judge() is None
 
 
@@ -122,6 +138,53 @@ async def test_judge_rejects_falls_through_to_prompt() -> None:
     assert decision.verdict == ToolExecutionResponse.SKIP
     assert fake.calls
     assert approval.called is True, "judge rejection must defer to the user"
+
+
+class _NoteCapturingApproval:
+    """Records the judge_note argument so a test can assert the judge's
+    deferral reason was threaded through to the host-facing callback.
+
+    Mirrors how a workflow/task subagent's denial must reach the host: the
+    note travels as the callback's 5th argument, not via loop-local state
+    (which is invisible across loop boundaries).
+    """
+
+    def __init__(self, response: ApprovalResponse) -> None:
+        self.response = response
+        self.judge_note: str | None = None
+        self.called = False
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> tuple[ApprovalResponse, None]:
+        self.called = True
+        # The 5th positional argument is judge_note (see ApprovalCallback).
+        if len(args) >= 5:
+            self.judge_note = args[4]
+        elif "judge_note" in kwargs:
+            self.judge_note = kwargs["judge_note"]
+        return self.response, None
+
+
+@pytest.mark.asyncio
+async def test_judge_deferral_reason_is_threaded_to_approval_callback() -> None:
+    """The judge's reason must reach the host prompt even when the judged call
+    originated from a subagent. _ask_approval passes pending_judge_deferral as
+    the callback's 5th argument so it crosses loop boundaries.
+    """
+    loop = build_test_agent_loop()
+    fake = _FakeJudge(safe=False, reason="could delete files")
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    approval = _NoteCapturingApproval(ApprovalResponse.NO)
+    loop.approval_callback = approval
+
+    await loop._should_execute_tool(
+        _bash(), BashArgs(command="rm -rf build"), "call-3"
+    )
+
+    assert approval.called
+    assert approval.judge_note == "could delete files", (
+        "judge deferral reason must be passed to the approval callback so the "
+        "host can show WHY approval is needed"
+    )
 
 
 @pytest.mark.asyncio
@@ -367,3 +430,26 @@ async def test_cache_cleared_when_judge_model_changes() -> None:
     assert len(fake.calls) == 2, (
         "cached verdict must be dropped when the judge model changes"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Per-tool system prompt selection (workflow-aware judge)                     #
+# --------------------------------------------------------------------------- #
+
+
+class TestSystemPromptSelection:
+    def test_launch_workflow_uses_workflow_prompt(self) -> None:
+        prompt = _system_prompt_for("launch_workflow")
+        assert prompt is _WORKFLOW_SYSTEM_PROMPT
+        # The workflow prompt must reason about the planned agent surface,
+        # not just literal command effects.
+        assert "PLANNED SURFACE" in prompt
+        assert "worker" in prompt
+
+    def test_other_tools_use_default_prompt(self) -> None:
+        assert _system_prompt_for("bash") is _SYSTEM_PROMPT
+        assert _system_prompt_for("read") is _SYSTEM_PROMPT
+        assert _system_prompt_for("unknown_tool") is _SYSTEM_PROMPT
+
+    def test_workflow_and_default_prompts_differ(self) -> None:
+        assert _WORKFLOW_SYSTEM_PROMPT != _SYSTEM_PROMPT
