@@ -36,6 +36,23 @@ The script must define `async def main()`. The runtime injects:
 4. **Guard loops with `budget.remaining()`** — stop when budget is exhausted
 5. **Keep scripts focused** — one workflow per task, not a general-purpose program
 
+## Safety boundary
+
+`launch_workflow` is ASK-gated, so each launch is reviewed by the safety judge
+(if configured) with a **workflow-aware** prompt: it judges the script's planned
+surface — which agent profiles spawn (read-only vs full-tool `worker`), fan-out
+across `parallel`/`pipeline`, and any destructive logic in the script itself —
+not the Python syntax. If the judge defers, its reason reaches your launch
+approval prompt so you know why.
+
+In-process subagents (`explore`/`research`/`reviewer`/`editor`) consult the
+judge per tool call like any agent, and any deferral is surfaced to the host
+for approval. Isolated `worker`/`editor` agents get a **second judge pass at
+spawn**: each worker's prompt is judged before its subprocess starts, and a
+deferral is routed to your approval with the judge's reason — so even though
+the worker runs auto-approved inside its worktree, its planned task is gated.
+A worker you deny is recorded as failed; the run continues with the others.
+
 ## Limitations
 
 - Scripts run in a restricted namespace (no `open`, `exec`, `os`, `subprocess`)

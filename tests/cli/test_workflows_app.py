@@ -106,6 +106,25 @@ class FakeRuntime:
     _phase_order: list[str] = field(default_factory=list)
     _budget: FakeBudget = field(default_factory=FakeBudget)
     _agent_count: int = 0
+    _live_agents: dict[str, Any] = field(default_factory=dict)
+    is_paused: bool = False
+
+
+@dataclass
+class FakeLiveAgent:
+    agent_id: str = "la-0"
+    agent: str = "explore"
+    label: str | None = "live-1"
+    phase: str | None = "research"
+    model: str | None = None
+    status: str = "running"
+    tokens_in: int = 300
+    tokens_out: int = 120
+    error: str | None = None
+
+    @property
+    def tokens_total(self) -> int:
+        return self.tokens_in + self.tokens_out
 
 
 @dataclass
@@ -121,6 +140,7 @@ class FakeRunEntry:
     _budget_snapshot: BudgetSnapshot = field(
         default_factory=lambda: BudgetSnapshot(total=100_000, reserved=0, spent=5000)
     )
+    _live_agents_override: list[Any] | None = None
 
     @property
     def status(self) -> WorkflowStatus:
@@ -130,6 +150,8 @@ class FakeRunEntry:
             return WorkflowStatus.FAILED
         if self.task is not None and self.task.done():
             return WorkflowStatus.FAILED
+        if self.runtime is not None and getattr(self.runtime, "is_paused", False):
+            return WorkflowStatus.PAUSED
         return WorkflowStatus.RUNNING
 
     @property
@@ -169,6 +191,24 @@ class FakeRunEntry:
         if self.runtime:
             return self.runtime._budget.snapshot()
         return self._budget_snapshot
+
+    @property
+    def is_paused(self) -> bool:
+        if self.result is not None:
+            return False
+        if self.runtime is not None:
+            return getattr(self.runtime, "is_paused", False)
+        return False
+
+    @property
+    def live_agents(self) -> list[Any]:
+        if self.result is not None:
+            return []
+        if self._live_agents_override is not None:
+            return self._live_agents_override
+        if self.runtime is not None:
+            return list(getattr(self.runtime, "_live_agents", {}).values())
+        return []
 
 
 @dataclass
@@ -258,7 +298,17 @@ class TestWorkflowsAppBindings:
         assert "r" in self._get_binding_keys()
 
     def test_has_stop_binding(self) -> None:
+        # Stop moved to `x` (Claude Code parity); `s` is now Save.
+        assert "x" in self._get_binding_keys()
+
+    def test_has_pause_binding(self) -> None:
+        assert "p" in self._get_binding_keys()
+
+    def test_has_save_binding(self) -> None:
         assert "s" in self._get_binding_keys()
+
+    def test_has_script_binding(self) -> None:
+        assert "o" in self._get_binding_keys()
 
 
 # ---------------------------------------------------------------------------
@@ -544,3 +594,216 @@ class TestWorkflowRunEntryProperties:
         snap = entry.budget_snapshot
         assert snap.total == 50_000
         assert snap.spent == 0
+
+
+# ---------------------------------------------------------------------------
+# Pause / save / script message + action tests
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowsAppNewMessages:
+    def test_pause_toggle_requested_stores_run_id(self) -> None:
+        msg = WorkflowsApp.PauseToggleRequested("wf-3")
+        assert msg.run_id == "wf-3"
+
+    def test_save_requested_stores_run_id_and_source(self) -> None:
+        msg = WorkflowsApp.SaveRequested("wf-3", "async def main(): ...", name=None)
+        assert msg.run_id == "wf-3"
+        assert msg.script_source == "async def main(): ..."
+        assert msg.name is None
+
+    def test_save_requested_carries_name(self) -> None:
+        msg = WorkflowsApp.SaveRequested(
+            "wf-3", "src", name="audit"
+        )
+        assert msg.name == "audit"
+
+
+class TestTogglePauseAction:
+    def test_toggle_pause_in_detail_posts_pause(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        app = WorkflowsApp(runner=FakeRunner())
+        app._view = "detail"
+        app._selected_run_id = "wf-2"
+
+        posted: list[object] = []
+        monkeypatch.setattr(app, "post_message", posted.append)
+
+        app.action_toggle_pause()
+
+        assert len(posted) == 1
+        assert isinstance(posted[0], WorkflowsApp.PauseToggleRequested)
+        assert posted[0].run_id == "wf-2"
+
+    def test_toggle_pause_in_list_uses_highlighted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = WorkflowsApp(runner=FakeRunner())
+        app._view = "list"
+        fake_option_list = FakeOptionList(highlighted_option_id="wf-5")
+        monkeypatch.setattr(app, "query_one", lambda *a: fake_option_list)
+
+        posted: list[object] = []
+        monkeypatch.setattr(app, "post_message", posted.append)
+
+        app.action_toggle_pause()
+
+        assert isinstance(posted[0], WorkflowsApp.PauseToggleRequested)
+        assert posted[0].run_id == "wf-5"
+
+    def test_toggle_pause_in_agent_view_does_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = WorkflowsApp(runner=FakeRunner())
+        app._view = "agent"
+        app._selected_run_id = "wf-2"
+
+        posted: list[object] = []
+        monkeypatch.setattr(app, "post_message", posted.append)
+
+        app.action_toggle_pause()
+        assert posted == []
+
+
+class TestSaveAction:
+    def test_save_in_detail_posts_save_requested(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry = FakeRunEntry(run_id="wf-1", script_source="async def main(): return 1")
+        runner = FakeRunner(_runs=[entry])
+        app = WorkflowsApp(runner=runner)
+        app._view = "detail"
+        app._selected_run_id = "wf-1"
+
+        posted: list[object] = []
+        monkeypatch.setattr(app, "post_message", posted.append)
+
+        app.action_save()
+
+        assert len(posted) == 1
+        assert isinstance(posted[0], WorkflowsApp.SaveRequested)
+        assert posted[0].run_id == "wf-1"
+        assert posted[0].script_source == "async def main(): return 1"
+
+    def test_save_with_no_focus_does_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        app = WorkflowsApp(runner=FakeRunner())
+        app._view = "agent"
+
+        posted: list[object] = []
+        monkeypatch.setattr(app, "post_message", posted.append)
+
+        app.action_save()
+        assert posted == []
+
+
+class TestScriptAction:
+    def test_script_in_detail_transitions_to_script_view(
+        self, app_with_mock_render: WorkflowsApp
+    ) -> None:
+        app = app_with_mock_render
+        app._view = "detail"
+        app._selected_run_id = "wf-1"
+
+        app.action_script()
+
+        assert app._view == "script"
+
+    def test_script_in_list_does_nothing(self) -> None:
+        app = WorkflowsApp(runner=FakeRunner())
+        app._view = "list"
+        app.action_script()
+        assert app._view == "list"
+
+
+# ---------------------------------------------------------------------------
+# Unified agent-row builder (live + done)
+# ---------------------------------------------------------------------------
+
+
+class TestAgentCancelAction:
+    def test_x_in_agent_view_cancels_live_agent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In the agent-detail view, `x` cancels the focused in-flight agent
+        (posts AgentCancelRequested), not the whole run.
+        """
+        live = FakeLiveAgent(agent_id="la-2", label="running-agent")
+        entry = FakeRunEntry(
+            run_id="wf-1",
+            runtime=FakeRuntime(),
+            _live_agents_override=[live],
+        )
+        runner = FakeRunner(_runs=[entry])
+        app = WorkflowsApp(runner=runner)
+        app._view = "agent"
+        app._selected_run_id = "wf-1"
+        app._selected_agent_idx = 0  # the live row
+
+        posted: list[object] = []
+        monkeypatch.setattr(app, "post_message", posted.append)
+
+        app.action_stop()
+
+        assert len(posted) == 1
+        assert isinstance(posted[0], WorkflowsApp.AgentCancelRequested)
+        assert posted[0].run_id == "wf-1"
+        assert posted[0].agent_id == "la-2"
+
+    def test_x_in_agent_view_does_nothing_for_finalized_agent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A finalized agent can't be cancelled; `x` posts nothing."""
+        phase = FakePhaseReport(
+            name="done",
+            agent_results=[FakeAgentResult(label="finished", phase="done")],
+        )
+        entry = FakeRunEntry(
+            run_id="wf-1",
+            runtime=FakeRuntime(_phases={"done": phase}, _phase_order=["done"]),
+        )
+        runner = FakeRunner(_runs=[entry])
+        app = WorkflowsApp(runner=runner)
+        app._view = "agent"
+        app._selected_run_id = "wf-1"
+        app._selected_agent_idx = 0  # the done row
+
+        posted: list[object] = []
+        monkeypatch.setattr(app, "post_message", posted.append)
+
+        app.action_stop()
+        assert posted == []
+
+
+class TestGetAgentRows:
+    def test_live_agents_listed_before_done(self) -> None:
+        app = WorkflowsApp(runner=FakeRunner())
+        phase = FakePhaseReport(
+            name="research",
+            agent_results=[
+                FakeAgentResult(label="done-1", phase="research"),
+            ],
+        )
+        runtime = FakeRuntime(_phases={"research": phase}, _phase_order=["research"])
+        entry = FakeRunEntry(
+            run_id="wf-1",
+            runtime=runtime,
+            _live_agents_override=[FakeLiveAgent(agent_id="la-0", label="live-1")],
+        )
+
+        rows = app._get_agent_rows(entry)
+
+        assert len(rows) == 2
+        assert rows[0].kind == "live"
+        assert rows[0].label == "live-1"
+        assert rows[0].status == "running"
+        assert rows[0].key == "live-la-0"
+        assert rows[1].kind == "done"
+        assert rows[1].label == "done-1"
+        # live carries no response; done does
+        assert rows[0].response is None
+        assert rows[1].response == "test response"
+
+    def test_empty_when_no_live_and_no_done(self) -> None:
+        app = WorkflowsApp(runner=FakeRunner())
+        runtime = FakeRuntime()
+        entry = FakeRunEntry(run_id="wf-1", runtime=runtime)
+        assert app._get_agent_rows(entry) == []

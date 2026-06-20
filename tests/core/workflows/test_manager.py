@@ -150,3 +150,121 @@ def test_malformed_frontmatter_falls_back_to_stem(tmp_path: Path) -> None:
     info = mgr.get_workflow("broken")
     assert info is not None  # name falls back to the filename stem
     assert "async def main" in info.source
+
+
+# ---------------------------------------------------------------------------
+# save_workflow_source / reload
+# ---------------------------------------------------------------------------
+
+
+class _FakeHarness:
+    def __init__(self, project_dirs: list[Path], roots: list[Path] | None = None) -> None:
+        self.project_workflows_dirs = project_dirs
+        self.project_roots = roots or []
+        self.user_workflows_dirs = []
+
+
+def test_save_workflow_source_slugs_and_writes(tmp_path: Path, monkeypatch) -> None:
+    wf_dir = tmp_path / "wf"
+    monkeypatch.setattr(
+        "vibe.core.workflows.manager.get_harness_files_manager",
+        lambda: _FakeHarness(project_dirs=[wf_dir]),
+    )
+
+    mgr = WorkflowManager(lambda: _make_config())
+    source = "async def main():\n    return {}\n"
+    path = mgr.save_workflow_source("My Audit!", source)
+
+    assert path == wf_dir / "my-audit.py"
+    assert path.read_text() == source
+
+
+def test_save_then_reload_discovers_command(tmp_path: Path, monkeypatch) -> None:
+    wf_dir = tmp_path / "wf"
+    monkeypatch.setattr(
+        "vibe.core.workflows.manager.get_harness_files_manager",
+        lambda: _FakeHarness(project_dirs=[wf_dir]),
+    )
+
+    mgr = WorkflowManager(lambda: _make_config())
+    assert mgr.get_workflow("saved-run") is None
+
+    mgr.save_workflow_source(
+        "saved-run",
+        "---\nname: saved-run\ndescription: Persisted\n---\nasync def main():\n    return {}\n",
+    )
+    mgr.reload()
+
+    info = mgr.get_workflow("saved-run")
+    assert info is not None
+    assert info.is_bundled is False
+    assert info.description == "Persisted"
+
+
+def test_save_slug_falls_back_when_name_has_no_alnum(
+    tmp_path: Path, monkeypatch
+) -> None:
+    wf_dir = tmp_path / "wf"
+    monkeypatch.setattr(
+        "vibe.core.workflows.manager.get_harness_files_manager",
+        lambda: _FakeHarness(project_dirs=[wf_dir]),
+    )
+    mgr = WorkflowManager(lambda: _make_config())
+    path = mgr.save_workflow_source("!!!", "async def main(): return 1")
+    assert path.name == "workflow.py"
+
+
+def test_save_location_user_uses_global_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """location='user' must write to ~/.vibe/workflows regardless of project dirs."""
+    project_dir = tmp_path / "proj-wf"
+    user_dir = tmp_path / "user-wf"
+    monkeypatch.setattr(
+        "vibe.core.workflows.manager.get_harness_files_manager",
+        lambda: _FakeHarness(project_dirs=[project_dir]),
+    )
+    # GLOBAL_WORKFLOWS_DIR.path is a computed property; swap the module
+    # attribute for a plain object exposing .path so the user-location branch
+    # resolves to our temp dir.
+    import types
+
+    monkeypatch.setattr(
+        "vibe.core.config.harness_files._paths.GLOBAL_WORKFLOWS_DIR",
+        types.SimpleNamespace(path=user_dir),
+    )
+    mgr = WorkflowManager(lambda: _make_config())
+    path = mgr.save_workflow_source(
+        "audit", "async def main(): return 1", location="user"
+    )
+    assert path.parent == user_dir
+    assert path.name == "audit.py"
+
+
+def test_save_location_project_uses_project_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """location='project' writes to the closest project workflows dir."""
+    project_dir = tmp_path / "proj-wf"
+    monkeypatch.setattr(
+        "vibe.core.workflows.manager.get_harness_files_manager",
+        lambda: _FakeHarness(project_dirs=[project_dir]),
+    )
+    mgr = WorkflowManager(lambda: _make_config())
+    path = mgr.save_workflow_source(
+        "audit", "async def main(): return 1", location="project"
+    )
+    assert path.parent == project_dir
+    assert path.name == "audit.py"
+
+
+def test_save_location_auto_prefers_project(tmp_path: Path, monkeypatch) -> None:
+    """location='auto' (default) prefers project when a root exists."""
+    project_dir = tmp_path / "proj-wf"
+    monkeypatch.setattr(
+        "vibe.core.workflows.manager.get_harness_files_manager",
+        lambda: _FakeHarness(project_dirs=[project_dir]),
+    )
+    mgr = WorkflowManager(lambda: _make_config())
+    path = mgr.save_workflow_source("audit", "async def main(): return 1")
+    assert path.parent == project_dir

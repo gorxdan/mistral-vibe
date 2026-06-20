@@ -7,7 +7,12 @@ from typing import Any
 
 import pytest
 
-from vibe.core.types import AssistantEvent, ReasoningEvent, UserMessageEvent
+from vibe.core.types import (
+    ApprovalResponse,
+    AssistantEvent,
+    ReasoningEvent,
+    UserMessageEvent,
+)
 from vibe.core.workflows.runtime import AgentCapExceeded, WorkflowError, WorkflowRuntime
 from vibe.core.workflows.schema import SchemaValidationError
 
@@ -689,7 +694,8 @@ async def test_pipeline_zero_stages_is_passthrough(runtime: WorkflowRuntime) -> 
 
 async def test_nested_workflow_runs_and_shares_state() -> None:
     """workflow(name) runs another workflow inline on the SAME runtime, so its
-    agents share the parent's counter/budget and its result flows back."""
+    agents share the parent's counter/budget and its result flows back.
+    """
     child_src = (
         "async def main():\n"
         "    r = await agent('child task')\n"
@@ -757,7 +763,8 @@ async def test_nested_workflow_unavailable_without_resolver() -> None:
 async def test_isolated_agent_routes_to_executor() -> None:
     """agent(isolation='worktree') routes to the injectable executor (in
     production: a `vibe -p` subprocess in a fresh worktree) and returns its
-    output; it still counts against the agent cap/budget."""
+    output; it still counts against the agent cap/budget.
+    """
     calls: list[tuple] = []
 
     async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
@@ -823,7 +830,8 @@ async def test_unknown_isolation_mode_raises(runtime: WorkflowRuntime) -> None:
 
 async def test_isolated_agent_charges_budget_estimate() -> None:
     """BUDGET-001: isolated agents can't surface real tokens, so they must charge
-    the reserved estimate against budget_total (not 0) to keep the cap enforced."""
+    the reserved estimate against budget_total (not 0) to keep the cap enforced.
+    """
     async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
         return "done"
 
@@ -836,7 +844,8 @@ async def test_isolated_agent_charges_budget_estimate() -> None:
 
 async def test_isolation_not_cross_cached_with_inprocess() -> None:
     """CACHE-002: an isolated result must not satisfy a later in-process call with
-    the same prompt/agent/phase (different execution semantics + accounting)."""
+    the same prompt/agent/phase (different execution semantics + accounting).
+    """
     async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
         return "ISOLATED"
 
@@ -943,7 +952,8 @@ async def test_default_isolated_executor_parses_stats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The executor parses the real token-stats line the subprocess emits on
-    stderr (GAP #1 — real accounting instead of the estimate)."""
+    stderr (GAP #1 — real accounting instead of the estimate).
+    """
     from pathlib import Path
 
     import vibe.core.worktree.ephemeral as eph
@@ -993,7 +1003,6 @@ def _gated_stats_factory(gate: asyncio.Event, gate_on: int = 1) -> Any:
     invocations complete immediately with the standard 1000/500 totals. This
     lets a single runtime host both a finalized agent and an in-flight one.
     """
-
     calls = [0]
 
     @dataclass
@@ -1174,7 +1183,8 @@ class _FakeAgentManager:
 
 async def test_full_tool_profile_requires_worktree_isolation() -> None:
     """W-001/W-002: a no-allowlist profile (worker) must run isolated — in-process
-    it would race the shared tree and its headless ASK tools would auto-skip."""
+    it would race the shared tree and its headless ASK tools would auto-skip.
+    """
     from vibe.core.tools.base import InvokeContext
 
     async def stub(p: str, a: str, lbl: str | None, mt: int) -> tuple[str, None]:
@@ -1203,3 +1213,270 @@ async def test_full_tool_guard_noop_without_agent_manager() -> None:
         agent_loop_factory=make_factory(), budget_total=1_000_000, max_agents=10
     )
     assert await rt.spawn_agent("z", agent="worker") == "mock response"
+
+
+# ---------------------------------------------------------------------------
+# Pause / unpause gate
+# ---------------------------------------------------------------------------
+
+
+async def test_pause_and_unpause_toggle_is_paused() -> None:
+    rt = WorkflowRuntime(agent_loop_factory=make_factory())
+    assert rt.is_paused is False
+
+    rt.pause()
+    assert rt.is_paused is True
+    # While paused, the gate is cleared so spawn_agent would block; the boolean
+    # tracks intent for observers without needing to run an agent.
+    rt.unpause()
+    assert rt.is_paused is False
+
+
+async def test_paused_run_blocks_new_agents_until_unpaused() -> None:
+    # The pause gate sits inside spawn_agent, after the semaphore. We observe
+    # whether the agent loop's act() actually begins: it can only start once
+    # the gate opens, so act_started proves the gate blocked while paused.
+    act_started = asyncio.Event()
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        class Loop:
+            stats = MockStats()
+
+            async def act(self, prompt: str, *, response_format: Any = None) -> Any:
+                act_started.set()
+                yield AssistantEvent(content="mock response", message_id="a1")
+
+        return Loop()
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=factory,
+        max_concurrent=2,
+        max_agents=10,
+        budget_total=1_000_000,
+    )
+
+    rt.pause()
+    task = asyncio.create_task(rt.spawn_agent("p", phase="work"))
+    # Let the scheduler run; the paused gate must keep act() from starting.
+    await asyncio.sleep(0.05)
+    assert not act_started.is_set()
+
+    rt.unpause()
+    result = await asyncio.wait_for(task, timeout=2.0)
+    assert result == "mock response"
+    assert act_started.is_set()
+
+
+# ---------------------------------------------------------------------------
+# Isolated-worker pre-flight safety judge
+# ---------------------------------------------------------------------------
+
+
+class _StubJudge:
+    """Stand-in for SafetyJudge with a fixed verdict, recording its calls."""
+
+    def __init__(self, *, safe: bool, reason: str = "stub") -> None:
+        from vibe.core.tools.safety_judge import JudgeVerdict
+
+        self.verdict = JudgeVerdict(safe=safe, reason=reason)
+        self.calls: list[tuple[str, str, list[str]]] = []
+
+    async def judge(self, tool_name: str, args_repr: str, flagged: list[str]) -> Any:
+        self.calls.append((tool_name, args_repr, flagged))
+        return self.verdict
+
+
+class _RecordingApprovalCB:
+    """Approval callback that records the judge_note and returns a fixed verdict."""
+
+    def __init__(self, response: Any) -> None:
+        self.response = response
+        self.judge_notes: list[str | None] = []
+        self.calls = 0
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls += 1
+        # 5th positional arg is judge_note (see ApprovalCallback signature).
+        self.judge_notes.append(args[4] if len(args) >= 5 else kwargs.get("judge_note"))
+        return self.response, None
+
+
+async def test_isolated_worker_judge_approved_proceeds() -> None:
+    """A worker whose prompt the judge deems safe runs without prompting."""
+    from vibe.core.tools.base import InvokeContext
+
+    async def stub(p: str, a: str, lbl: str | None, mt: int) -> tuple[str, None]:
+        return ("worker-out", None)
+
+    judge = _StubJudge(safe=True, reason="read-only refactor")
+    approval = _RecordingApprovalCB(ApprovalResponse.YES)
+    ctx = InvokeContext(
+        tool_call_id="t",
+        safety_judge_factory=lambda: judge,
+        approval_callback=approval,
+    )
+    rt = WorkflowRuntime(
+        parent_context=ctx,
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        max_agents=100,
+        isolated_executor=stub,
+    )
+
+    out = await rt.spawn_agent("refactor foo", agent="worker", isolation="worktree")
+    assert out == "worker-out"
+    assert judge.calls, "worker spawn must be pre-judged"
+    # Tool name selects the workflow-aware judge prompt.
+    assert judge.calls[0][0] == "launch_workflow"
+    assert approval.calls == 0, "no host prompt when the judge approves"
+
+
+async def test_isolated_worker_judge_deferred_surfaces_to_host() -> None:
+    """When the judge defers, the host approval callback is invoked with the
+    judge's reason as judge_note, and the user's YES lets the worker proceed.
+    """
+    from vibe.core.tools.base import InvokeContext
+
+    async def stub(p: str, a: str, lbl: str | None, mt: int) -> tuple[str, None]:
+        return ("worker-out", None)
+
+    judge = _StubJudge(safe=False, reason="could force-push")
+    approval = _RecordingApprovalCB(ApprovalResponse.YES)
+    ctx = InvokeContext(
+        tool_call_id="t",
+        safety_judge_factory=lambda: judge,
+        approval_callback=approval,
+    )
+    rt = WorkflowRuntime(
+        parent_context=ctx,
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        max_agents=100,
+        isolated_executor=stub,
+    )
+
+    out = await rt.spawn_agent("git push --force", agent="worker", isolation="worktree")
+    assert out == "worker-out"
+    assert approval.calls == 1
+    assert approval.judge_notes == ["could force-push"], (
+        "the judge's deferral reason must reach the host prompt as judge_note"
+    )
+
+
+async def test_isolated_worker_user_denial_raises_workflow_error() -> None:
+    """A user denial at the worker-spawn prompt aborts that worker (raises),
+    not the whole run — distinct from a hard budget/cap ceiling.
+    """
+    from vibe.core.tools.base import InvokeContext
+
+    async def stub(p: str, a: str, lbl: str | None, mt: int) -> tuple[str, None]:
+        return ("should-not-run", None)
+
+    judge = _StubJudge(safe=False, reason="destructive")
+    approval = _RecordingApprovalCB(ApprovalResponse.NO)
+    ctx = InvokeContext(
+        tool_call_id="t",
+        safety_judge_factory=lambda: judge,
+        approval_callback=approval,
+    )
+    rt = WorkflowRuntime(
+        parent_context=ctx,
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        max_agents=100,
+        isolated_executor=stub,
+    )
+
+    with pytest.raises(WorkflowError, match="denied by user"):
+        await rt.spawn_agent("rm -rf /", agent="worker", isolation="worktree")
+
+
+async def test_isolated_worker_no_judge_factory_skips_pre_judge() -> None:
+    """Without a safety_judge_factory on the context, the worker runs unchecked
+    (fail open at spawn; the launch-time script judge already ran).
+    """
+    from vibe.core.tools.base import InvokeContext
+
+    async def stub(p: str, a: str, lbl: str | None, mt: int) -> tuple[str, None]:
+        return ("ok", None)
+
+    ctx = InvokeContext(tool_call_id="t")  # no safety_judge_factory
+    rt = WorkflowRuntime(
+        parent_context=ctx,
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        max_agents=100,
+        isolated_executor=stub,
+    )
+    assert await rt.spawn_agent("x", agent="worker", isolation="worktree") == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Per-agent cancel
+# ---------------------------------------------------------------------------
+
+
+async def test_cancel_agent_aborts_one_in_flight_without_killing_others() -> None:
+    """cancel_agent() cancels a single live agent's task; siblings keep running
+    and the run records the cancelled one as failed.
+    """
+    import asyncio
+
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        class Loop:
+            stats = MockStats()
+
+            async def act(self, prompt: str, *, response_format: Any = None) -> Any:
+                started.set()
+                try:
+                    await asyncio.wait_for(proceed.wait(), timeout=5.0)
+                except TimeoutError:
+                    pass
+                yield AssistantEvent(content="done", message_id="a1")
+
+        return Loop()
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=factory,
+        max_concurrent=4,
+        max_agents=10,
+        budget_total=1_000_000,
+    )
+
+    async def spawn_one(prompt: str) -> str:
+        return await rt.spawn_agent(prompt, agent="explore", phase="work")
+
+    # Launch two agents; both register as live and block on `proceed`.
+    task_a = asyncio.create_task(spawn_one("a"))
+    task_b = asyncio.create_task(spawn_one("b"))
+    # Let both enter act().
+    await asyncio.sleep(0.05)
+    live_ids = list(rt._live_agents.keys())
+    assert len(live_ids) == 2, f"expected 2 live agents, got {live_ids}"
+
+    target = live_ids[0]
+    cancelled = rt.cancel_agent(target)
+    assert cancelled is True
+
+    # The cancelled agent's task completes (CancelledError swallowed inside
+    # _run_agent because cancel_requested is set) and is recorded as failed.
+    await asyncio.wait_for(task_a, timeout=2.0) if task_a.get_coro() else None
+    # The other agent is still live and unaffected.
+    remaining = list(rt._live_agents.keys())
+    assert len(remaining) == 1, "only the targeted agent should be cancelled"
+    assert remaining[0] != target
+
+    # Release the survivor and let it finish.
+    proceed.set()
+    await asyncio.wait_for(asyncio.gather(task_a, task_b, return_exceptions=True), timeout=2.0)
+
+
+async def test_cancel_agent_unknown_or_finished_returns_false() -> None:
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_agents=10)
+    assert rt.cancel_agent("la-nope") is False
+    # A completed agent isn't live anymore.
+    await rt.spawn_agent("done", agent="explore")
+    assert rt.cancel_agent("la-0") is False

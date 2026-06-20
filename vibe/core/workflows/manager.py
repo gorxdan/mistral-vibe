@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?\n)---\s*\n", re.DOTALL)
+_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
 
 
 class WorkflowMetadata(BaseModel):
@@ -66,6 +67,63 @@ class WorkflowManager:
 
     def get_workflow_names(self) -> list[str]:
         return list(self._discovered.keys())
+
+    def reload(self) -> None:
+        """Re-run discovery.
+
+        Call after writing/removing a workflow file so the new command is
+        picked up without restarting the session.
+        """
+        self._search_paths = self._compute_search_paths(self._config)
+        self._discovered = self._discover_workflows()
+
+    def save_workflow_source(
+        self,
+        name: str,
+        source: str,
+        location: str = "auto",
+    ) -> Path:
+        """Persist a workflow script and return its path.
+
+        ``location`` selects the destination:
+
+        - ``"project"``: the closest project ``.vibe/workflows/`` (created at
+          the closest project root if none exists yet).
+        - ``"user"``: the user-global ``~/.vibe/workflows/``.
+        - ``"auto"`` (default): project if a project root exists, else user.
+          Mirrors Claude Code's "closest workflows dir" save rule.
+        """
+        slug = _SLUG_RE.sub("-", name.lower()).strip("-") or "workflow"
+        mgr = get_harness_files_manager()
+        target_dir = self._resolve_save_dir(mgr, location)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{slug}.py"
+        path.write_text(source, encoding="utf-8")
+        return path
+
+    @staticmethod
+    def _resolve_save_dir(mgr: Any, location: str) -> Path:
+        if location == "user":
+            from vibe.core.config.harness_files._paths import GLOBAL_WORKFLOWS_DIR
+
+            return GLOBAL_WORKFLOWS_DIR.path
+        # "project" or "auto": prefer the closest existing project workflows
+        # dir, else create one at the closest project root.
+        project_dirs = mgr.project_workflows_dirs
+        if project_dirs:
+            return project_dirs[0]
+        roots = mgr.project_roots
+        if roots:
+            return roots[0] / ".vibe" / "workflows"
+        if location == "project":
+            # Explicit project requested but none available — fall back to user
+            # rather than failing, and let the caller's notify surface the path.
+            from vibe.core.config.harness_files._paths import GLOBAL_WORKFLOWS_DIR
+
+            return GLOBAL_WORKFLOWS_DIR.path
+        from vibe.core.config.harness_files._paths import GLOBAL_WORKFLOWS_DIR
+
+        return GLOBAL_WORKFLOWS_DIR.path
 
     @staticmethod
     def _compute_search_paths(config: VibeConfig) -> list[Path]:

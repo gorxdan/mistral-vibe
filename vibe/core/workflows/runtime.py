@@ -10,6 +10,8 @@ import json
 import time
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
+from pydantic import BaseModel
+
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
 from vibe.core.workflows.budget import (
@@ -94,6 +96,21 @@ class WorkflowError(Exception):
     pass
 
 
+class _WorkerSpawnArgs(BaseModel):
+    """Args payload for an isolated-worker spawn approval.
+
+    The host approval callback receives a BaseModel; this carries the worker's
+    prompt/profile/label so the prompt UI can show what the user is approving
+    when the safety judge defers a worker spawn.
+    """
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    prompt: str
+    agent: str
+    label: str | None = None
+
+
 @dataclass
 class _LiveAgent:
     """An in-flight agent whose tokens are tracked live (before finalize).
@@ -115,6 +132,12 @@ class _LiveAgent:
     tokens_out: int = 0
     started_at: float = field(default_factory=time.monotonic)
     error: str | None = None
+    # The asyncio task running this agent, captured so cancel_agent() can abort
+    # a single in-flight agent without stopping the whole run. Set inside the
+    # agent coroutine via asyncio.current_task(); None for agents that run on
+    # the caller's coroutine (a direct `await agent(...)` with no wrapping task).
+    task: asyncio.Task[Any] | None = field(default=None, init=False)
+    cancel_requested: bool = field(default=False, init=False)
 
     @property
     def tokens_total(self) -> int:
@@ -209,10 +232,52 @@ class WorkflowRuntime:
     _live_agents: dict[str, _LiveAgent] = field(default_factory=dict, init=False)
     _next_live_id: int = field(default=0, init=False)
     _board: _MessageBoard = field(default_factory=_MessageBoard, init=False)
+    # Pause gate: an asyncio.Event that is set while running and cleared while
+    # paused. spawn_agent awaits it after acquiring its semaphore slot, so a
+    # pause lets in-flight agents finish but blocks new ones from starting.
+    _run_gate: asyncio.Event = field(init=False)
+    _paused: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self._budget = Budget(total=self.budget_total)
+        self._run_gate = asyncio.Event()
+        self._run_gate.set()
+
+    def pause(self) -> None:
+        """Pause the run: in-flight agents continue, new agents block."""
+        self._paused = True
+        self._run_gate.clear()
+        self._log("paused")
+
+    def unpause(self) -> None:
+        """Resume a paused run: blocked agents proceed."""
+        self._paused = False
+        self._run_gate.set()
+        self._log("resumed")
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
+
+    def cancel_agent(self, agent_id: str) -> bool:
+        """Cancel a single in-flight agent by its live agent id.
+
+        Returns True if a live agent was found and its task was cancelled,
+        False if the agent isn't live (already finished / unknown / running
+        without a capturable task). The cancelled agent's _retire_live /
+        finalize path records it as failed, so the run continues with the
+        remaining agents — distinct from stop(), which cancels the whole run.
+        """
+        live = self._live_agents.get(agent_id)
+        if live is None or live.task is None:
+            return False
+        if live.task.done():
+            return False
+        live.cancel_requested = True
+        live.task.cancel()
+        self._log(f"cancelled agent {agent_id}")
+        return True
 
     def set_event_sink(self, sink: Callable[[str], None]) -> None:
         self._event_sink = sink
@@ -285,6 +350,75 @@ class WorkflowRuntime:
                 f"in a workflow it must run with isolation='worktree'."
             )
 
+    async def _judge_isolated_spawn(
+        self, prompt: str, agent: str, label: str | None
+    ) -> None:
+        """Pre-flight safety judge for an isolated worker spawn.
+
+        Isolated workers run as an auto-approved ``vibe -p`` subprocess, so the
+        host's per-tool judge never sees their calls. This judges the worker's
+        *prompt* (the task the host/script gave it) using the workflow-aware
+        judge prompt, since the prompt describes what the worker will do.
+
+        - No judge configured / judge unusable: proceed (fail open at spawn;
+          the launch-time script judge already ran).
+        - Judge rules safe: proceed.
+        - Judge defers: route through the host approval callback so the user
+          can approve or deny this specific worker. The judge's reason travels
+          as ``judge_note`` so the prompt shows why. A user denial raises
+          WorkflowError, recorded as a failed agent — distinct from a hard
+          budget/cap ceiling so the run continues with other agents.
+        """
+        ctx = self.parent_context
+        if not ctx or not ctx.safety_judge_factory:
+            return
+        try:
+            judge = ctx.safety_judge_factory()
+        except Exception:
+            logger.debug("safety judge factory raised; skipping worker pre-judge", exc_info=True)
+            return
+        if judge is None:
+            return
+
+        verdict = await judge.judge(
+            "launch_workflow",  # select the workflow-aware system prompt
+            prompt,
+            [f"isolated '{agent}' worker spawn" + (f": {label}" if label else "")],
+        )
+        if verdict.safe:
+            self._log(
+                f"safety judge approved isolated '{agent}' worker"
+                + (f" ({label})" if label else "")
+                + f": {verdict.reason}"
+            )
+            return
+
+        # Deferred to the user. Surface via the host approval callback if one
+        # is wired; otherwise fail closed (deny the spawn).
+        self._log(
+            f"safety judge deferred isolated '{agent}' worker"
+            + (f" ({label})" if label else "")
+            + f" to user: {verdict.reason}"
+        )
+        if ctx.approval_callback is None:
+            raise WorkflowError(
+                f"Safety judge denied isolated worker spawn and no approval "
+                f"callback is available: {verdict.reason}"
+            )
+        from vibe.core.types import ApprovalResponse
+
+        response, _feedback = await ctx.approval_callback(
+            f"workflow_worker:{agent}",
+            _WorkerSpawnArgs(prompt=prompt, agent=agent, label=label),
+            f"worker-spawn-{agent}-{label or 'anon'}",
+            None,
+            verdict.reason,
+        )
+        if response != ApprovalResponse.YES:
+            raise WorkflowError(
+                f"Isolated worker spawn denied by user (judge: {verdict.reason})"
+            )
+
     async def spawn_agent(
         self,
         prompt: str,
@@ -307,6 +441,15 @@ class WorkflowRuntime:
         # (e.g. 'worker') before reserving budget / counting the agent.
         self._validate_workflow_profile(agent, isolation)
 
+        # Isolated workers run auto-approved inside their subprocess and can't
+        # prompt the host per-tool, so judge each worker's prompt at spawn via
+        # the host's safety judge. On deferral, route through the host approval
+        # callback (the deferral reason is threaded as judge_note) so the user
+        # can approve/deny the specific worker. In-process subagents consult the
+        # judge per-tool like any agent, so they're not pre-judged here.
+        if isolation == "worktree":
+            await self._judge_isolated_spawn(prompt, agent, label)
+
         if self._agent_count >= self.max_agents:
             raise AgentCapExceeded(
                 f"Agent cap reached: {self._agent_count}/{self.max_agents}"
@@ -316,6 +459,10 @@ class WorkflowRuntime:
         self._agent_count += 1
 
         async with self._semaphore:
+            # Pause gate: when cleared, agents holding a semaphore slot wait
+            # here so no new agent work starts until unpause(). Returns
+            # immediately when the run is not paused.
+            await self._run_gate.wait()
             if isolation == "worktree":
                 return await self._run_isolated_agent(
                     prompt=prompt,
@@ -360,6 +507,11 @@ class WorkflowRuntime:
             effective_prompt = prompt + build_prompt_fallback(schema)
 
         live = self._register_live(agent=agent, model=model, label=label, phase=phase)
+        # Capture the running task so cancel_agent() can abort this single
+        # agent. None when spawn_agent is awaited directly (no wrapping task);
+        # in that case the agent can't be cancelled individually, only via the
+        # whole-run stop.
+        live.task = asyncio.current_task()
 
         last_errors: list[str] = []
         accumulated: list[str] = []
@@ -392,6 +544,14 @@ class WorkflowRuntime:
                         live.tokens_out = tokens_out + getattr(
                             loop.stats, "session_completion_tokens", 0
                         )
+            except asyncio.CancelledError:
+                # Whole-run stop re-raises; a targeted cancel_agent() sets
+                # cancel_requested and we record this agent as failed instead.
+                if not live.cancel_requested:
+                    raise
+                completed = False
+                error_msg = "cancelled by user"
+                break
             except Exception as e:
                 completed = False
                 error_msg = str(e)
@@ -479,6 +639,12 @@ class WorkflowRuntime:
                 model=model,
                 live=live,
             )
+            # A targeted cancel is an expected outcome, not a failure to
+            # surface: the agent is already recorded as failed above, so return
+            # the partial output instead of raising. Other failures still raise
+            # so parallel._safe / direct awaiters see them.
+            if live.cancel_requested:
+                return "".join(accumulated)
             raise WorkflowError(error_msg or "Agent failed without producing output")
 
         self._finalize_agent(
@@ -686,6 +852,7 @@ class WorkflowRuntime:
         # until they exit and emit stats. The live tracker therefore shows 0
         # while running (honest), then finalize records the real total.
         live = self._register_live(agent=agent, model=model, label=label, phase=phase)
+        live.task = asyncio.current_task()
         try:
             result = await executor(
                 effective_prompt, agent, label, DEFAULT_ISOLATED_MAX_TURNS
@@ -697,6 +864,15 @@ class WorkflowRuntime:
                 output = result
         except (AgentCapExceeded, BudgetExhausted):
             raise
+        except asyncio.CancelledError:
+            # A whole-run stop re-raises; a targeted cancel_agent() sets
+            # cancel_requested on the live agent and we swallow the cancel so
+            # the run continues with the remaining agents, recording this one
+            # as failed below.
+            if not live.cancel_requested:
+                raise
+            completed = False
+            error_msg = "cancelled by user"
         except Exception as e:
             completed = False
             error_msg = str(e)

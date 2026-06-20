@@ -790,11 +790,24 @@ Three ways to launch:
 
 `/workflows` with no args opens a progress view (WorkflowsApp) showing a table
 of all runs with ID, status (color-coded), agent count, tokens, elapsed, and
-phases. Keys: `r` refresh, `s` stop first active run, `Esc` back.
+phases. Drill into a run with Enter, then into each agent (prompt, response,
+token in/out, cost, error) with Enter again. Keys:
+
+| Key | Action |
+|---|---|
+| `Enter` | Drill into the highlighted run, then into an agent |
+| `x` | Stop the focused run |
+| `p` | Pause/resume the focused run — in-flight agents finish, new agents block at the semaphore until resumed |
+| `s` | Save the focused run's script as a reusable `/<name>` command — opens a name + location dialog (project `.vibe/workflows/` or personal `~/.vibe/workflows/`, Tab to toggle) |
+| `o` | View the run's full script source |
+| `r` | Refresh |
+| `Esc` | Back one level |
 
 `/workflows list` renders the same columns inline. The Tokens column reflects
 **live** spend: per-agent tokens are polled as each agent turn completes, so the
-column advances while agents run rather than jumping only at completion.
+column advances while agents run rather than jumping only at completion. The
+run drill-down also lists **in-flight agents** (with their live token totals)
+above the finalized ones, so you can see what is running now.
 
 ### Live status from a model turn
 

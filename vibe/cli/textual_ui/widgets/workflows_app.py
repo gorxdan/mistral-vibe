@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -131,6 +132,65 @@ def _build_agent_detail(phase_name: str, result: AgentResult, idx: int) -> Text:
     return text
 
 
+@dataclass
+class _AgentRow:
+    """Unified view-model row for one agent in the detail drill-down.
+
+    Covers both in-flight agents (kind='live', no response yet) and finalized
+    agents (kind='done'). The detail list shows live agents first so the user
+    sees what is running now, above what has completed.
+    """
+
+    kind: str  # "live" | "done"
+    key: str  # option id: "live-<agent_id>" | "agent-<idx>"
+    phase: str
+    label: str
+    status: str  # "running" | "completed" | "failed"
+    tokens_total: int
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost: float = 0.0
+    prompt: str = ""
+    response: Any = None
+    error: str | None = None
+    agent: str | None = None
+    model: str | None = None
+
+
+def _build_live_agent_option_text(row: _AgentRow) -> Text:
+    text = Text(no_wrap=True)
+    text.append(f"[{row.phase}]", style="cyan")
+    text.append(f" {row.label}", style="bold")
+    text.append(" running", style="yellow")
+    text.append(f" {_format_tokens(row.tokens_total)} tok", style="dim")
+    detail = row.agent or row.model
+    if detail:
+        text.append(f" {detail}", style="dim")
+    return text
+
+
+def _build_live_agent_detail(row: _AgentRow) -> Text:
+    text = Text()
+    text.append(f"Agent: {row.label}", style="bold cyan")
+    text.append(f"  Phase: {row.phase}", style="cyan")
+    text.append("  Status: running", style="yellow")
+    text.append(
+        f"\nTokens (so far): {_format_tokens(row.tokens_total)} "
+        f"(in: {_format_tokens(row.tokens_in)}, "
+        f"out: {_format_tokens(row.tokens_out)})",
+        style="dim",
+    )
+    if row.agent:
+        text.append(f"\nProfile: {row.agent}", style="dim")
+    if row.model:
+        text.append(f"  Model: {row.model}", style="dim")
+    text.append("\n\n(In-flight — response not available until the agent finishes.)")
+    if row.error:
+        text.append("\n\n--- Error ---", style="bold red")
+        text.append(f"\n{row.error}", style="red")
+    return text
+
+
 class WorkflowsApp(Container):
     """Interactive workflow monitor with drill-down into runs and agents."""
 
@@ -139,7 +199,10 @@ class WorkflowsApp(Container):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "back", "Back", show=False),
         Binding("r", "refresh", "Refresh", show=True),
-        Binding("s", "stop", "Stop", show=True),
+        Binding("x", "stop", "Stop", show=True),
+        Binding("p", "toggle_pause", "Pause/Resume", show=True),
+        Binding("s", "save", "Save", show=True),
+        Binding("o", "script", "Script", show=True),
     ]
 
     class Closed(Message):
@@ -152,12 +215,53 @@ class WorkflowsApp(Container):
             self.run_id = run_id
             super().__init__()
 
+    class PauseToggleRequested(Message):
+        """Toggle pause/resume for the focused run (handled by the app)."""
+
+        run_id: str
+
+        def __init__(self, run_id: str) -> None:
+            self.run_id = run_id
+            super().__init__()
+
+    class AgentCancelRequested(Message):
+        """Cancel a single in-flight agent (from the agent-detail view).
+
+        Carries both the run id and the live agent id so the app can call
+        WorkflowRunner.cancel_agent. Only meaningful for live agents; the
+        widget only emits this when the focused row is an in-flight agent.
+        """
+
+        run_id: str
+        agent_id: str
+
+        def __init__(self, run_id: str, agent_id: str) -> None:
+            self.run_id = run_id
+            self.agent_id = agent_id
+            super().__init__()
+
+    class SaveRequested(Message):
+        """Persist the focused run's script as a reusable /<name> command."""
+
+        run_id: str
+        script_source: str
+        name: str | None
+
+        def __init__(
+            self, run_id: str, script_source: str, name: str | None = None
+        ) -> None:
+            self.run_id = run_id
+            self.script_source = script_source
+            self.name = name
+            super().__init__()
+
     def __init__(self, runner: WorkflowRunner, **kwargs: Any) -> None:
         super().__init__(id="workflows-app", **kwargs)
         self._runner = runner
         self._view: str = "list"
         self._selected_run_id: str | None = None
         self._selected_agent_idx: int | None = None
+        self._agent_rows: list[_AgentRow] = []
         self._poll_timer: Any = None
 
     def compose(self) -> ComposeResult:
@@ -192,6 +296,7 @@ class WorkflowsApp(Container):
             self._refresh_list_view()
         elif self._view == "detail":
             self._refresh_detail_view()
+        # "agent" and "script" views are static snapshots — no live refresh.
 
     # --- View rendering ---
 
@@ -204,6 +309,8 @@ class WorkflowsApp(Container):
             await self._render_detail_view(body)
         elif self._view == "agent":
             await self._render_agent_view(body)
+        elif self._view == "script":
+            await self._render_script_view(body)
         self._update_help()
 
     async def _render_list_view(self, body: Vertical) -> None:
@@ -256,29 +363,23 @@ class WorkflowsApp(Container):
         header.update(_build_run_detail_header(entry))
 
         script_lines = entry.script_source.strip().split("\n")[:_SCRIPT_PREVIEW_LINES]
-        script_preview = Text("Script preview:\n", style="dim")
+        script_preview = Text("Script preview (press o for full):\n", style="dim")
         script_preview.append("\n".join(script_lines), style="dim")
         await body.mount(
             NoMarkupStatic(script_preview, classes="workflows-script")
         )
 
-        agents = self._get_agent_results(entry)
-        if not agents:
+        rows = self._get_agent_rows(entry)
+        if not rows:
             await body.mount(
                 NoMarkupStatic(
-                    "No agents completed yet.",
+                    "No agents yet.",
                     classes="workflows-empty",
                 )
             )
             return
 
-        options = [
-            Option(
-                _build_agent_option_text(phase_name, result, idx),
-                id=f"agent-{idx}",
-            )
-            for idx, (phase_name, result) in enumerate(agents)
-        ]
+        options = [Option(self._build_row_option_text(row), id=row.key) for row in rows]
         option_list = OptionList(*options, id="workflows-agent-list")
         await body.mount(option_list)
         option_list.focus()
@@ -294,20 +395,31 @@ class WorkflowsApp(Container):
             option_list = self.query_one("#workflows-agent-list", OptionList)
         except Exception:
             return
-        agents = self._get_agent_results(entry)
+        rows = self._get_agent_rows(entry)
         highlighted = option_list.highlighted
         option_list.clear_options()
         option_list.add_options(
-            [
-                Option(
-                    _build_agent_option_text(phase_name, result, idx),
-                    id=f"agent-{idx}",
-                )
-                for idx, (phase_name, result) in enumerate(agents)
-            ]
+            [Option(self._build_row_option_text(row), id=row.key) for row in rows]
         )
-        if highlighted is not None and highlighted < len(agents):
+        if highlighted is not None and highlighted < len(rows):
             option_list.highlighted = highlighted
+
+    @staticmethod
+    def _build_row_option_text(row: _AgentRow) -> Text:
+        if row.kind == "live":
+            return _build_live_agent_option_text(row)
+        # Finalized row: reuse the AgentResult renderer via a throwaway result.
+        result = AgentResult(
+            label=row.label,
+            prompt=row.prompt,
+            response=row.response,
+            tokens_in=row.tokens_in,
+            tokens_out=row.tokens_out,
+            cost=row.cost,
+            completed=(row.status == "completed"),
+            error=row.error,
+        )
+        return _build_agent_option_text(row.phase, result, 0)
 
     async def _render_agent_view(self, body: Vertical) -> None:
         entry = self._find_selected_run()
@@ -316,24 +428,51 @@ class WorkflowsApp(Container):
             await self._render_view()
             return
 
-        agents = self._get_agent_results(entry)
-        if self._selected_agent_idx >= len(agents):
+        rows = self._get_agent_rows(entry)
+        if self._selected_agent_idx >= len(rows):
             self._view = "detail"
             await self._render_view()
             return
 
-        phase_name, result = agents[self._selected_agent_idx]
+        row = rows[self._selected_agent_idx]
 
         header = self.query_one("#workflows-header", NoMarkupStatic)
         header.update(Text(f"Run {entry.run_id} \u2192 Agent Detail", style="bold"))
 
         scroll = VerticalScroll(id="workflows-agent-detail")
         await body.mount(scroll)
+        if row.kind == "live":
+            await scroll.mount(NoMarkupStatic(_build_live_agent_detail(row)))
+        else:
+            result = AgentResult(
+                label=row.label,
+                prompt=row.prompt,
+                response=row.response,
+                tokens_in=row.tokens_in,
+                tokens_out=row.tokens_out,
+                cost=row.cost,
+                completed=(row.status == "completed"),
+                error=row.error,
+            )
+            await scroll.mount(
+                NoMarkupStatic(_build_agent_detail(row.phase, result, self._selected_agent_idx))
+            )
+
+    async def _render_script_view(self, body: Vertical) -> None:
+        entry = self._find_selected_run()
+        if entry is None:
+            self._view = "list"
+            await self._render_view()
+            return
+
+        header = self.query_one("#workflows-header", NoMarkupStatic)
+        header.update(Text(f"Run {entry.run_id} \u2192 Script", style="bold"))
+
+        scroll = VerticalScroll(id="workflows-script-detail")
+        await body.mount(scroll)
         await scroll.mount(
             NoMarkupStatic(
-                _build_agent_detail(
-                    phase_name, result, self._selected_agent_idx
-                )
+                Text(entry.script_source or "(empty script)", style="dim")
             )
         )
 
@@ -344,14 +483,56 @@ class WorkflowsApp(Container):
             return None
         return self._runner._find_run(self._selected_run_id)
 
-    def _get_agent_results(
-        self, entry: WorkflowRunEntry
-    ) -> list[tuple[str, AgentResult]]:
-        results: list[tuple[str, AgentResult]] = []
+    def _get_agent_rows(self, entry: WorkflowRunEntry) -> list[_AgentRow]:
+        """In-flight agents first, then finalized results, as unified rows.
+
+        Live agents carry running token totals; finalized agents carry their
+        recorded prompt/response. Positional indices in this list back the
+        detail OptionList and the agent-detail view, so a refresh that adds or
+        retires a live agent can shift indices — selection is restored by
+        highlighted position, not by id.
+        """
+        rows: list[_AgentRow] = []
+
+        live = getattr(entry, "live_agents", None) or []
+        for la in live:
+            label = getattr(la, "label", None) or la.agent_id
+            rows.append(
+                _AgentRow(
+                    kind="live",
+                    key=f"live-{la.agent_id}",
+                    phase=getattr(la, "phase", None) or "default",
+                    label=label,
+                    status="running",
+                    tokens_total=getattr(la, "tokens_total", 0),
+                    tokens_in=getattr(la, "tokens_in", 0),
+                    tokens_out=getattr(la, "tokens_out", 0),
+                    agent=getattr(la, "agent", None),
+                    model=getattr(la, "model", None),
+                    error=getattr(la, "error", None),
+                )
+            )
+
         for phase in entry.phase_reports:
-            for ar in phase.agent_results:
-                results.append((phase.name, ar))
-        return results
+            for idx, ar in enumerate(phase.agent_results):
+                rows.append(
+                    _AgentRow(
+                        kind="done",
+                        key=f"agent-{len(rows)}",
+                        phase=phase.name,
+                        label=ar.label or f"agent-{idx + 1}",
+                        status="completed" if ar.completed else "failed",
+                        tokens_total=ar.tokens_total,
+                        tokens_in=ar.tokens_in,
+                        tokens_out=ar.tokens_out,
+                        cost=ar.cost,
+                        prompt=ar.prompt,
+                        response=ar.response,
+                        error=ar.error,
+                    )
+                )
+        self._agent_rows = rows
+        return rows
 
     def _highlighted_run_id(self) -> str | None:
         try:
@@ -363,23 +544,40 @@ class WorkflowsApp(Container):
             return None
         return str(option.id)
 
+    def _focused_run_id(self) -> str | None:
+        """The run the current view is focused on, for key actions.
+
+        Run-level actions (stop/pause/save) are scoped to the list and detail
+        views. Inside the agent- or script-detail views, Esc returns to the
+        run detail first, so a stray key there does not stop the whole run.
+        """
+        if self._view == "detail":
+            return self._selected_run_id
+        if self._view == "list":
+            return self._highlighted_run_id()
+        return None
+
     def _update_help(self) -> None:
         help_widget = self.query_one("#workflows-help", NoMarkupStatic)
         if self._view == "list":
             help_widget.update(
-                "\u2191\u2193 Navigate  Enter Select  s Stop  r Refresh  Esc Back"
+                "\u2191\u2193 Navigate  Enter Select  x Stop  p Pause  s Save  "
+                "r Refresh  Esc Back"
             )
         elif self._view == "detail":
             help_widget.update(
-                "\u2191\u2193 Navigate  Enter Agent Detail  s Stop  Esc Back to List"
+                "\u2191\u2193 Navigate  Enter Agent Detail  x Stop  p Pause  "
+                "s Save  o Script  Esc Back"
             )
         elif self._view == "agent":
+            help_widget.update("x Cancel agent  Esc Back to Run Detail")
+        elif self._view == "script":
             help_widget.update("Esc Back to Run Detail")
 
     # --- Actions ---
 
     def action_back(self) -> None:
-        if self._view == "agent":
+        if self._view in {"agent", "script"}:
             self._view = "detail"
             self._selected_agent_idx = None
             self.run_worker(self._render_view(), exclusive=True)
@@ -391,14 +589,51 @@ class WorkflowsApp(Container):
             self.post_message(self.Closed())
 
     def action_stop(self) -> None:
-        if self._view == "list":
-            run_id = self._highlighted_run_id()
-        elif self._view == "detail":
-            run_id = self._selected_run_id
-        else:
+        # In the agent-detail view, `x` cancels the focused in-flight agent
+        # (Claude Code parity) rather than the whole run. A finalized agent
+        # can't be cancelled, so fall through to nothing.
+        if self._view == "agent" and self._selected_run_id is not None:
+            entry = self._find_selected_run()
+            if entry is not None and self._selected_agent_idx is not None:
+                rows = self._get_agent_rows(entry)
+                if self._selected_agent_idx < len(rows):
+                    row = rows[self._selected_agent_idx]
+                    if row.kind == "live":
+                        # row.key is "live-<agent_id>"
+                        agent_id = row.key.removeprefix("live-")
+                        self.post_message(
+                            self.AgentCancelRequested(self._selected_run_id, agent_id)
+                        )
             return
+        run_id = self._focused_run_id()
         if run_id:
             self.post_message(self.StopRequested(run_id))
+
+    def action_toggle_pause(self) -> None:
+        run_id = self._focused_run_id()
+        if run_id:
+            self.post_message(self.PauseToggleRequested(run_id))
+
+    def action_save(self) -> None:
+        run_id = self._focused_run_id()
+        if not run_id:
+            return
+        entry = self._find_selected_run() if run_id == self._selected_run_id else None
+        if entry is None:
+            entry = self._runner._find_run(run_id)
+        if entry is None:
+            return
+        self.post_message(
+            self.SaveRequested(run_id, entry.script_source, name=None)
+        )
+
+    def action_script(self) -> None:
+        if self._view != "detail":
+            return
+        if self._selected_run_id is None:
+            return
+        self._view = "script"
+        self.run_worker(self._render_view(), exclusive=True)
 
     def action_refresh(self) -> None:
         self._refresh_current_view()

@@ -41,6 +41,8 @@ class WorkflowRunEntry:
             return WorkflowStatus.FAILED
         if self.task is not None and self.task.done():
             return WorkflowStatus.FAILED
+        if self.runtime.is_paused:
+            return WorkflowStatus.PAUSED
         return WorkflowStatus.RUNNING
 
     @property
@@ -48,6 +50,19 @@ class WorkflowRunEntry:
         if self.result is not None and self.result.run.finished_at:
             return self.result.run.finished_at - self.started_at
         return time.monotonic() - self.started_at
+
+    @property
+    def is_paused(self) -> bool:
+        if self.result is not None:
+            return False
+        return self.runtime.is_paused
+
+    @property
+    def live_agents(self) -> list[Any]:
+        """In-flight agents (live token totals), empty once all finalize."""
+        if self.result is not None:
+            return []
+        return list(self.runtime._live_agents.values())
 
     @property
     def agent_count(self) -> int:
@@ -248,6 +263,37 @@ class WorkflowRunner:
         except asyncio.CancelledError:
             pass
         return True
+
+    def pause(self, run_id: str) -> bool:
+        """Pause a run: in-flight agents finish, new agents block.
+
+        Returns False if the run is missing or already finalized.
+        """
+        entry = self._find_run(run_id)
+        if entry is None or entry.result is not None:
+            return False
+        entry.runtime.pause()
+        return True
+
+    def unpause(self, run_id: str) -> bool:
+        """Resume a paused run. Returns False if the run is missing/finished."""
+        entry = self._find_run(run_id)
+        if entry is None or entry.result is not None:
+            return False
+        entry.runtime.unpause()
+        return True
+
+    def cancel_agent(self, run_id: str, agent_id: str) -> bool:
+        """Cancel a single in-flight agent in a run.
+
+        Returns False if the run is missing/finished or the agent isn't live.
+        The run continues with the remaining agents; the cancelled agent is
+        recorded as failed.
+        """
+        entry = self._find_run(run_id)
+        if entry is None or entry.result is not None:
+            return False
+        return entry.runtime.cancel_agent(agent_id)
 
     async def stop_all(self) -> None:
         for entry in list(self._runs):

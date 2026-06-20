@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, ClassVar
 
@@ -20,6 +21,38 @@ from vibe.core.workflows.security import validate_script
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
+
+
+def _is_phase_call(node: ast.AST) -> str | None:
+    """Return the literal phase name for a ``phase("...")`` call, else None.
+
+    Only literal first-argument strings are recognized, so a script that
+    computes phase names dynamically contributes nothing misleading.
+    """
+    if not isinstance(node, ast.Call):
+        return None
+    if not (isinstance(node.func, ast.Name) and node.func.id == "phase"):
+        return None
+    if not node.args:
+        return None
+    first = node.args[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    return None
+
+
+def _extract_planned_phases(script: str) -> list[str]:
+    """Parse phase(...) names from a workflow script for the approval preview."""
+    try:
+        tree = ast.parse(script)
+    except SyntaxError:
+        return []
+    phases: list[str] = []
+    for node in ast.walk(tree):
+        name = _is_phase_call(node)
+        if name is not None and name not in phases:
+            phases.append(name)
+    return phases
 
 
 class LaunchWorkflowArgs(BaseModel):
@@ -59,7 +92,12 @@ class LaunchWorkflow(
         args = event.args
         if isinstance(args, LaunchWorkflowArgs):
             name = args.name or "workflow"
-            return ToolCallDisplay(summary=f"Launching workflow: {name}")
+            phases = _extract_planned_phases(args.script)
+            if phases:
+                preview = f"Launching workflow: {name}\nPlanned phases: {' \u2192 '.join(phases)}"
+            else:
+                preview = f"Launching workflow: {name}"
+            return ToolCallDisplay(summary=preview)
         return ToolCallDisplay(summary="Launching workflow")
 
     @classmethod

@@ -121,6 +121,7 @@ from vibe.cli.textual_ui.widgets.tool_widgets import (
     EditResultWidget,
 )
 from vibe.cli.textual_ui.widgets.voice_app import VoiceApp
+from vibe.cli.textual_ui.widgets.workflow_save_app import WorkflowSaveApp
 from vibe.cli.textual_ui.widgets.workflows_app import WorkflowsApp
 from vibe.cli.textual_ui.windowing import (
     HISTORY_RESUME_TAIL_MESSAGES,
@@ -1845,6 +1846,7 @@ class VibeApp(App):  # noqa: PLR0904
         args: BaseModel,
         tool_call_id: str,
         required_permissions: list[RequiredPermission] | None,
+        judge_note: str | None = None,
     ) -> tuple[ApprovalResponse, str | None]:
         # Auto-approve only if parent is in auto-approve mode AND tool is enabled
         # This ensures subagents respect the main agent's tool restrictions
@@ -1852,7 +1854,15 @@ class VibeApp(App):  # noqa: PLR0904
             if self._is_tool_enabled_in_main_agent(tool):
                 return (ApprovalResponse.YES, None)
 
-        judge_note = self.agent_loop.pending_judge_deferral if self.agent_loop else None
+        # The judge note arrives via the callback argument (threaded from
+        # _ask_approval) rather than the loop-local pending_judge_deferral
+        # attribute: that attribute lives on whichever loop ran the judge
+        # (often a workflow/task subagent's loop), which is invisible to the
+        # host. The callback argument is the only channel that crosses loops.
+        # Fall back to the host's own attribute only for the host's direct
+        # calls where the note wasn't passed.
+        if judge_note is None and self.agent_loop:
+            judge_note = self.agent_loop.pending_judge_deferral
         async with self._user_interaction_lock:
             await self._wait_for_typing_pause()
             self._pending_approval = asyncio.Future()
@@ -2982,6 +2992,76 @@ class VibeApp(App):  # noqa: PLR0904
     ) -> None:
         await self._workflow_runner.stop(message.run_id)
 
+    async def on_workflows_app_agent_cancel_requested(
+        self, message: WorkflowsApp.AgentCancelRequested
+    ) -> None:
+        cancelled = self._workflow_runner.cancel_agent(message.run_id, message.agent_id)
+        if cancelled:
+            self.notify(
+                f"Cancelled agent {message.agent_id} in {message.run_id}",
+                markup=False,
+            )
+        else:
+            self.notify(
+                f"Agent {message.agent_id} not live (already finished?)",
+                severity="warning",
+                markup=False,
+            )
+
+    async def on_workflows_app_pause_toggle_requested(
+        self, message: WorkflowsApp.PauseToggleRequested
+    ) -> None:
+        entry = self._workflow_runner._find_run(message.run_id)
+        if entry is None:
+            return
+        if entry.is_paused:
+            self._workflow_runner.unpause(message.run_id)
+            self.notify(f"Resumed workflow {message.run_id}", markup=False)
+        else:
+            self._workflow_runner.pause(message.run_id)
+            self.notify(
+                f"Paused workflow {message.run_id} (in-flight agents finish)",
+                markup=False,
+            )
+
+    async def on_workflows_app_save_requested(
+        self, message: WorkflowsApp.SaveRequested
+    ) -> None:
+        if self.config.disable_workflows:
+            self.notify("Workflows are disabled.", severity="warning")
+            return
+        # Open the name + location dialog instead of saving immediately, so the
+        # user can name the command and choose project vs personal. The dialog
+        # posts SaveConfirmed/Cancelled back.
+        await self._switch_from_input(
+            WorkflowSaveApp(
+                run_id=message.run_id,
+                script_source=message.script_source,
+                default_name=message.name,
+            )
+        )
+
+    async def on_workflow_save_app_save_confirmed(
+        self, message: WorkflowSaveApp.SaveConfirmed
+    ) -> None:
+        try:
+            path = self._workflow_manager.save_workflow_source(
+                message.name, message.script_source, location=message.location
+            )
+            self._workflow_manager.reload()
+            self._register_workflow_commands()
+        except Exception as e:  # surface any save failure to the user
+            self.notify(f"Failed to save workflow: {e}", severity="error")
+            await self._switch_to_workflows_app()
+            return
+        self.notify(f"Saved /{message.name} to {path}", markup=False)
+        await self._switch_to_workflows_app()
+
+    async def on_workflow_save_app_cancelled(
+        self, _message: WorkflowSaveApp.Cancelled
+    ) -> None:
+        await self._switch_to_workflows_app()
+
     def _register_workflow_commands(self) -> None:
         if self.config.disable_workflows:
             return
@@ -3027,6 +3107,10 @@ class VibeApp(App):  # noqa: PLR0904
             hook_config_result=loop._hook_config_result,
             session_id=loop.session_id,
             terminal_emulator=loop.terminal_emulator,
+            # Hand the runtime the host's judge resolver so each isolated
+            # worker's prompt is judged at spawn (the subprocess itself runs
+            # auto-approved and can't prompt the host per-tool).
+            safety_judge_factory=loop._resolve_safety_judge,
         )
 
     def _launch_workflow_from_tool(self, script: str, name: str | None = None) -> str:
