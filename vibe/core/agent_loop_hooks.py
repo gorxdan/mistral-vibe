@@ -40,6 +40,7 @@ from vibe.core.hooks.models import (
     HookToolDenial,
     HookToolInputRewrite,
     HookUserMessage,
+    NotificationInvocation,
     PostAgentTurnInvocation,
     PreCompactInvocation,
     SessionEndInvocation,
@@ -216,6 +217,31 @@ class AgentLoopHooksMixin:
             await asyncio.wait_for(_drain(), timeout=5.0)
         except (TimeoutError, Exception) as e:
             logger.warning("session_end hooks failed/timed out: %s", e)
+
+    async def _fire_notification_hooks(
+        self, notification_type: str, message: str, tool_name: str | None = None
+    ) -> None:
+        """Notify on user-attention events (permission/question). Best-effort,
+        time-bounded, never raises into the caller.
+        """
+        manager = self._hooks_manager
+        if manager is None:
+            return
+        invocation = NotificationInvocation(
+            **self._hook_session_context().model_dump(),
+            notification_type=notification_type,
+            message=message,
+            tool_name=tool_name,
+        )
+
+        async def _drain() -> None:
+            async for _ev in manager.run(invocation):
+                pass
+
+        try:
+            await asyncio.wait_for(_drain(), timeout=5.0)
+        except (TimeoutError, Exception) as e:
+            logger.warning("notification hooks failed/timed out: %s", e)
 
     async def _run_pre_compact_hooks(
         self, trigger: str, current_context_tokens: int, threshold: int

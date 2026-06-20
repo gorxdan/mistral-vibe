@@ -29,6 +29,7 @@ class HookType(StrEnum):
     STOP = auto()
     SESSION_START = auto()
     SESSION_END = auto()
+    NOTIFICATION = auto()
 
 
 ToolStatus = Literal["success", "failure", "cancelled"]
@@ -176,6 +177,13 @@ class SessionEndInvocation(HookSessionContext):
     reason: str = "exit"  # "exit" | "clear" | "logout"
 
 
+class NotificationInvocation(HookSessionContext):
+    hook_event_name: Literal[HookType.NOTIFICATION] = HookType.NOTIFICATION
+    notification_type: str  # "permission_required" | "question" | "input_idle"
+    message: str = ""
+    tool_name: str | None = None
+
+
 HookInvocation = (
     PostAgentTurnInvocation
     | BeforeToolInvocation
@@ -188,6 +196,7 @@ HookInvocation = (
     | StopInvocation
     | SessionStartInvocation
     | SessionEndInvocation
+    | NotificationInvocation
 )
 
 
@@ -218,6 +227,8 @@ def build_invocation(  # noqa: PLR0913
     stop_hook_active: bool = False,
     source: str | None = None,
     reason: str | None = None,
+    notification_type: str | None = None,
+    message: str = "",
 ) -> HookInvocation:
     """Build the right HookInvocation subclass for *hook_type*."""
     base = ctx.model_dump()
@@ -303,6 +314,17 @@ def build_invocation(  # noqa: PLR0913
             return SessionStartInvocation(**base, source=source or "startup")
         case HookType.SESSION_END:
             return SessionEndInvocation(**base, reason=reason or "exit")
+        case HookType.NOTIFICATION:
+            if notification_type is None:
+                raise ValueError(
+                    "notification_type is required for notification hooks"
+                )
+            return NotificationInvocation(
+                **base,
+                notification_type=notification_type,
+                message=message,
+                tool_name=tool_name,
+            )
         case _:
             assert_never(hook_type)
 

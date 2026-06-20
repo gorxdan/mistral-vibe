@@ -1994,6 +1994,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 approval_type=ToolPermission.ASK,
                 feedback="Tool execution not permitted.",
             )
+        await self._fire_notification_hooks(
+            "permission_required", f"Approval needed for {tool_name}", tool_name
+        )
         response, feedback = await self.approval_callback(
             tool_name, args, tool_call_id, required_permissions
         )

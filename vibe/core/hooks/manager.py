@@ -54,6 +54,7 @@ _HANDLERS: dict[HookType, HookHandler] = {
     # Session lifecycle: notification-only (observe session begin/end).
     HookType.SESSION_START: _TEAM_LIFECYCLE_HANDLER,
     HookType.SESSION_END: _TEAM_LIFECYCLE_HANDLER,
+    HookType.NOTIFICATION: _TEAM_LIFECYCLE_HANDLER,
 }
 
 
