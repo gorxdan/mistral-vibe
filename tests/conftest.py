@@ -141,6 +141,22 @@ def _scratchpad_dir(
 
 
 @pytest.fixture(autouse=True)
+def _no_live_model_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep local-model discovery offline by default.
+
+    Auto-detection probes a local ollama endpoint on every model-picker open;
+    without this, tests would non-deterministically pick up models from a
+    server that happens to be running on the dev machine. Tests that exercise
+    discovery override this by monkeypatching fetch_model_ids themselves.
+    """
+
+    async def _no_models(*_args: object, **_kwargs: object) -> list[str]:
+        return []
+
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_model_ids", _no_models)
+
+
+@pytest.fixture(autouse=True)
 def _mock_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MISTRAL_API_KEY", "mock")
 

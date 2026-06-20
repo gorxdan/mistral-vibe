@@ -1209,13 +1209,11 @@ class VibeApp(App):  # noqa: PLR0904
         discovered = getattr(self, "_discovered_models", {})
         updates: dict[str, Any] = {}
         if message.alias in discovered:
-            # A live-discovered model has no config block yet — persist it so it
-            # stays resolvable after reload (and offline).
-            from vibe.core.llm.model_discovery import build_persisted_models_update
+            # A live-discovered model has no config block yet — persist it (and
+            # its auto-detected provider) so it stays resolvable after reload.
+            from vibe.core.llm.model_discovery import build_persisted_updates
 
-            updates = build_persisted_models_update(
-                self.config, discovered[message.alias]
-            )
+            updates = build_persisted_updates(self.config, discovered[message.alias])
         if target == "judge":
             updates["safety_judge"] = {"model": message.alias}
         else:
@@ -3443,7 +3441,7 @@ class VibeApp(App):  # noqa: PLR0904
         from vibe.core.llm.model_discovery import discover_extra_models
 
         discovered = await discover_extra_models(self.config)
-        self._discovered_models = {m.alias: m for m in discovered}
+        self._discovered_models = {dm.model.alias: dm for dm in discovered}
         model_aliases = [m.alias for m in self.config.available_models]
         model_aliases += [
             alias for alias in self._discovered_models if alias not in model_aliases
