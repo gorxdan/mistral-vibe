@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable
 import time
 
 from textual.widget import Widget
 
 from vibe.cli.textual_ui.widgets.messages import ErrorMessage, UserCommandMessage
-from vibe.core.logger import logger
 from vibe.core.loop import (
     USAGE_HINT,
     LoopErrorResult,
@@ -17,6 +15,7 @@ from vibe.core.loop import (
     ScheduledLoop,
     format_duration,
 )
+from vibe.core.schedule_driver import ScheduleDriver
 from vibe.core.session.session_logger import SessionLogger
 
 
@@ -45,11 +44,22 @@ class ScheduledLoopRunner:
     ) -> None:
         self._session_logger = session_logger
         self._manager = LoopManager(session_logger)
-        self._can_fire = can_fire
-        self._fire = fire
         self._mount = mount
         self._tools_collapsed = tools_collapsed
-        self._task: asyncio.Task[None] | None = None
+        # The poll-fire loop is the shared core driver; this class only adds the
+        # TUI bits (mount a "fired" message, wrap command results as widgets).
+        self._driver = ScheduleDriver(
+            self._manager, can_fire=can_fire, fire=self._fire_and_announce(fire)
+        )
+
+    def _fire_and_announce(
+        self, fire: Callable[[str], Awaitable[None]]
+    ) -> Callable[[ScheduledLoop], Awaitable[None]]:
+        async def _run(due: ScheduledLoop) -> None:
+            await fire(due.prompt)
+            await self._mount(UserCommandMessage(f"Loop `{due.id}` fired"))
+
+        return _run
 
     @property
     def manager(self) -> LoopManager:
@@ -63,18 +73,10 @@ class ScheduledLoopRunner:
         self._manager.restore(list(metadata.loops) if metadata is not None else [])
 
     def start(self) -> None:
-        if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._poll())
+        self._driver.start()
 
     async def stop(self) -> None:
-        if self._task is None:
-            return
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-        self._task = None
+        await self._driver.stop()
 
     async def handle_command(self, cmd_args: str) -> Widget:
         result = await self._manager.handle_command(cmd_args)
@@ -87,20 +89,3 @@ class ScheduledLoopRunner:
                 )
             case LoopOkResult(message=message):
                 return UserCommandMessage(message)
-
-    async def _poll(self) -> None:
-        while True:
-            try:
-                sleep_for = min(self._manager.next_due_in(), 1.0)
-                await asyncio.sleep(max(0.05, sleep_for))
-                if not self._can_fire():
-                    continue
-                due = await self._manager.pop_due()
-                if due is None:
-                    continue
-                await self._fire(due.prompt)
-                await self._mount(UserCommandMessage(f"Loop `{due.id}` fired"))
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.error("Error polling scheduled loops", exc_info=e)

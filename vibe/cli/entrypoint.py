@@ -60,6 +60,14 @@ def parse_arguments() -> argparse.Namespace:
         "(only applies in programmatic mode with -p).",
     )
     parser.add_argument(
+        "--keep-alive",
+        type=int,
+        metavar="SECONDS",
+        help="After the response, keep firing scheduled-loop turns (from the "
+        "schedule tool) for up to SECONDS before exiting (programmatic -p only). "
+        "Without it, -p exits immediately and scheduled loops only persist.",
+    )
+    parser.add_argument(
         "--max-price",
         type=float,
         metavar="DOLLARS",

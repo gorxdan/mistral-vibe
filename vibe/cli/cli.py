@@ -236,6 +236,7 @@ def _run_programmatic_mode(
             max_turns=args.max_turns,
             max_price=args.max_price,
             max_session_tokens=args.max_tokens,
+            keep_alive_seconds=args.keep_alive,
             output_format=output_format,
             previous_messages=loaded_session[0] if loaded_session else None,
             agent_name=initial_agent_name,

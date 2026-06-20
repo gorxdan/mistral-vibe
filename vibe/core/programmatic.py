@@ -18,20 +18,49 @@ from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import VibeConfig
 from vibe.core.hooks.models import HookConfigResult
 from vibe.core.logger import logger
+from vibe.core.loop import LoopManager
 from vibe.core.output_formatters import create_formatter
+from vibe.core.schedule_driver import ScheduleDriver
 from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
 from vibe.core.telemetry.types import ClientMetadata
 from vibe.core.teleport.types import (
     TeleportPushRequiredEvent,
     TeleportPushResponseEvent,
 )
-from vibe.core.types import AssistantEvent, LLMMessage, OutputFormat, Role
+from vibe.core.types import (
+    AssistantEvent,
+    LLMMessage,
+    OutputFormat,
+    Role,
+    ScheduledLoop,
+)
 from vibe.core.utils import ConversationLimitException
 from vibe.core.worktree.manager import worktree_enabled, worktree_manager
 
 __all__ = ["TeleportError", "run_programmatic"]
 
 _DEFAULT_CLIENT_METADATA = ClientMetadata(name="vibe_programmatic", version=__version__)
+
+
+async def _drive_scheduled_loops(
+    agent_loop: AgentLoop,
+    scheduler: LoopManager,
+    formatter: object,
+    keep_alive_seconds: int,
+) -> None:
+    """Fire due scheduled loops as further turns until they drain (one-shots)
+    or the deadline passes (so recurring loops don't run forever in -p).
+    """
+
+    async def _fire(due: ScheduledLoop) -> None:
+        logger.info("Firing scheduled loop %s: %s", due.id, due.prompt)
+        async with aclosing(agent_loop.act(due.prompt)) as events:
+            async for event in events:
+                formatter.on_event(event)  # type: ignore[attr-defined]
+
+    driver = ScheduleDriver(scheduler, can_fire=lambda: True, fire=_fire)
+    deadline = asyncio.get_running_loop().time() + keep_alive_seconds
+    await driver.run_until_idle(deadline=deadline)
 
 
 def run_programmatic(  # noqa: PLR0913, PLR0917
@@ -48,6 +77,7 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
     headless: bool = False,
     hook_config_result: HookConfigResult | None = None,
     allow_subagent: bool = False,
+    keep_alive_seconds: int | None = None,
 ) -> str | None:
     formatter = create_formatter(output_format)
 
@@ -77,6 +107,12 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
         ),
         hook_config_result=hook_config_result,
     )
+    # Wire the scheduler so the `schedule` tool works headless (create/list/
+    # cancel persist to session metadata). They only FIRE in this run when
+    # keep_alive_seconds is set (see the drive phase below); otherwise they
+    # persist and fire on a later interactive/ACP resume of the session.
+    scheduler = LoopManager(agent_loop.session_logger)
+    agent_loop.set_scheduler(scheduler)
     logger.info("USER: %s", prompt)
 
     async def _async_run() -> str | None:
@@ -89,6 +125,9 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
                 logger.info(
                     "Loaded %d messages from previous session", len(non_system_messages)
                 )
+                metadata = agent_loop.session_logger.session_metadata
+                if metadata is not None:
+                    scheduler.restore(list(metadata.loops))
             else:
                 await agent_loop.initialize_experiments()
                 agent_loop.emit_new_session_telemetry()
@@ -111,6 +150,13 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
                             and event.stopped_by_middleware
                         ):
                             raise ConversationLimitException(event.content)
+
+            # Keep-alive drive: fire scheduled loops as further turns until they
+            # drain (one-shots) or the deadline passes (caps recurring loops).
+            if keep_alive_seconds and scheduler.loops:
+                await _drive_scheduled_loops(
+                    agent_loop, scheduler, formatter, keep_alive_seconds
+                )
 
             if os.environ.get("VIBE_WORKFLOW_EMIT_STATS") == "1":
                 stats_line = _STATS_SENTINEL + json.dumps({

@@ -277,12 +277,16 @@ class LoopManager:
     async def _cancel(self, target: str) -> LoopOkResult | LoopErrorResult:
         if not target:
             return LoopErrorResult(message="Missing loop id.")
-        count = await self.cancel(target)
-        if count == 0:
-            return LoopErrorResult(message=f"No scheduled loop with id `{target}`.")
         if target.lower() == "all":
+            count = await self.cancel("all")
             return LoopOkResult(message=f"Cancelled {count} scheduled loop(s).")
-        return LoopOkResult(message=f"Cancelled loop `{target}`.")
+        # Capture the prompt before cancelling so the message can echo it.
+        match = next((loop for loop in self._loops if loop.id == target), None)
+        if match is None:
+            return LoopErrorResult(message=f"No scheduled loop with id `{target}`.")
+        prompt = match.prompt
+        await self.cancel(target)
+        return LoopOkResult(message=f"Cancelled loop `{target}`: {prompt}")
 
     async def _persist(self) -> None:
         metadata = self._session_logger.session_metadata
