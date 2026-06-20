@@ -159,6 +159,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Central cap on a single tool result's size before it enters the conversation.
+# Tools may self-limit, but read/MCP/connector tools can return arbitrarily large
+# blobs; this keeps one oversized result from blowing the context window (which
+# would otherwise hard-fail the turn). ~100k chars ≈ 25k tokens.
+MAX_TOOL_RESULT_CHARS = 100_000
+
 
 class ToolExecutionResponse(StrEnum):
     SKIP = auto()
@@ -1655,6 +1661,26 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             verdict=verdict, approval_type=ToolPermission.ASK, feedback=feedback
         )
 
+    @staticmethod
+    def _apply_tool_result_budget(text: str) -> str:
+        """Cap a tool result to ``MAX_TOOL_RESULT_CHARS``, keeping head + tail.
+
+        A single oversized result (large file read, chatty MCP tool) can push
+        the context past the model limit and hard-fail the turn. Truncate in the
+        middle with a marker so both the start and the end stay visible.
+        """
+        if len(text) <= MAX_TOOL_RESULT_CHARS:
+            return text
+        head = MAX_TOOL_RESULT_CHARS * 3 // 4
+        tail = MAX_TOOL_RESULT_CHARS - head
+        elided = len(text) - head - tail
+        return (
+            f"{text[:head]}\n\n"
+            f"…[{elided} characters elided: tool result exceeded the "
+            f"{MAX_TOOL_RESULT_CHARS}-char budget]…\n\n"
+            f"{text[-tail:]}"
+        )
+
     def _handle_tool_response(
         self,
         tool_call: ResolvedToolCall,
@@ -1664,6 +1690,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         result: dict[str, Any] | None = None,
         span: trace.Span | None = None,
     ) -> None:
+        text = self._apply_tool_result_budget(text)
         self.messages.append(
             LLMMessage.model_validate(
                 self.format_handler.create_tool_response_message(tool_call, text)
