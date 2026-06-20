@@ -15,13 +15,14 @@ import subprocess
 import sys
 
 # Prefixes that must be absent from sys.modules after importing the app. Using
-# prefixes catches submodules (e.g. mcp.types, mcp.client.*) too.
-_FORBIDDEN_PREFIXES = ("sounddevice", "mcp")
+# prefixes catches submodules (e.g. mcp.types, mcp.client.*) too. "git" is
+# GitPython (loaded lazily for teleport); it does not match "giturlparse".
+_FORBIDDEN_PREFIXES = ("sounddevice", "mcp", "git")
 
 _PROBE = """
 import sys
 import vibe.cli.textual_ui.app  # noqa: F401
-forbidden = ("sounddevice", "mcp")
+forbidden = ("sounddevice", "mcp", "git")
 leaked = sorted(
     name
     for name in sys.modules

@@ -2,10 +2,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from git import InvalidGitRepositoryError, Repo
-from git.exc import GitCommandError
 from giturlparse import parse as parse_git_url
+
+if TYPE_CHECKING:
+    from git import InvalidGitRepositoryError, Repo
+    from git.exc import GitCommandError
+
+
+# GitPython is ~60ms to import and is only needed for teleport's git operations,
+# so defer it until a GitRepository is constructed rather than paying it at
+# module import (which is on the agent_loop startup path). The names are loaded
+# into the module globals so the methods/except-clauses below can use them.
+def _load_git() -> None:
+    if "Repo" not in globals():
+        from git import InvalidGitRepositoryError, Repo
+        from git.exc import GitCommandError
+
+        globals().update(
+            Repo=Repo,
+            InvalidGitRepositoryError=InvalidGitRepositoryError,
+            GitCommandError=GitCommandError,
+        )
 
 from vibe.core.teleport.errors import (
     ServiceTeleportError,
@@ -26,6 +45,7 @@ class GitRepoInfo:
 
 class GitRepository:
     def __init__(self, workdir: Path | None = None) -> None:
+        _load_git()
         self._workdir = workdir or Path.cwd()
         self._repo: Repo | None = None
         # For network I/O (fetch, push) and potentially slow git commands (diff, rev-list)
