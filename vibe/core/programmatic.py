@@ -2,6 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
+import json
+import os
+import sys
+
+# Sentinel-prefixed stderr line carrying real token stats, emitted when
+# VIBE_WORKFLOW_EMIT_STATS=1 (set by the workflow isolated-agent executor so it
+# can charge real tokens instead of an estimate). Kept off stdout so normal
+# programmatic output is unaffected.
+_STATS_SENTINEL = "__VIBE_WORKFLOW_STATS__"
 
 from vibe import __version__
 from vibe.core.agent_loop import AgentLoop, TeleportError
@@ -103,6 +112,13 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
                         ):
                             raise ConversationLimitException(event.content)
 
+            if os.environ.get("VIBE_WORKFLOW_EMIT_STATS") == "1":
+                stats_line = _STATS_SENTINEL + json.dumps({
+                    "prompt_tokens": agent_loop.stats.session_prompt_tokens,
+                    "completion_tokens": agent_loop.stats.session_completion_tokens,
+                })
+                sys.stderr.write("\n" + stats_line + "\n")
+                sys.stderr.flush()
             return formatter.finalize()
         finally:
             agent_loop.emit_session_closed_telemetry()

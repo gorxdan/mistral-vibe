@@ -80,7 +80,10 @@ DEFAULT_ISOLATED_MAX_TURNS = 40
 # Signature of the isolated-agent executor seam: (prompt, agent, label,
 # max_turns) -> the agent's text output. Injectable so tests can stub the
 # worktree + subprocess; the default runs `vibe -p` in a fresh git worktree.
-IsolatedExecutor = Callable[[str, str, str | None, int], Awaitable[str]]
+IsolatedExecutor = Callable[
+    [str, str, str | None, int],
+    Awaitable["str | tuple[str, dict[str, int] | None]"],
+]
 
 
 class AgentCapExceeded(Exception):
@@ -99,6 +102,26 @@ def _prompt_hash(
     # Only fold it in when set, so ordinary keys are unchanged.
     iso = f":iso={isolation}" if isolation else ""
     return hashlib.sha256(f"{agent}:{phase}{iso}:{prompt}".encode()).hexdigest()[:16]
+
+
+# Must match programmatic.py's sentinel; the isolated subprocess writes one
+# stats line to stderr when VIBE_WORKFLOW_EMIT_STATS=1.
+_ISOLATED_STATS_SENTINEL = "__VIBE_WORKFLOW_STATS__"
+
+
+def _parse_stats(stderr_text: str) -> dict[str, int] | None:
+    """Extract the real token stats line a workflow subprocess emits on stderr."""
+    for line in reversed(stderr_text.splitlines()):
+        if line.startswith(_ISOLATED_STATS_SENTINEL):
+            try:
+                data = json.loads(line[len(_ISOLATED_STATS_SENTINEL):])
+                return {
+                    "prompt_tokens": int(data.get("prompt_tokens", 0)),
+                    "completion_tokens": int(data.get("completion_tokens", 0)),
+                }
+            except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                return None
+    return None
 
 
 class AgentLoopFactory(Protocol):
@@ -516,10 +539,16 @@ class WorkflowRuntime:
         completed = True
         error_msg: str | None = None
         output = ""
+        stats: dict[str, int] | None = None
         try:
-            output = await executor(
+            result = await executor(
                 effective_prompt, agent, label, DEFAULT_ISOLATED_MAX_TURNS
             )
+            # Executor may return just the output (str) or (output, stats).
+            if isinstance(result, tuple):
+                output, stats = result
+            else:
+                output = result
         except (AgentCapExceeded, BudgetExhausted):
             raise
         except Exception as e:
@@ -541,17 +570,21 @@ class WorkflowRuntime:
                 else:
                     response = parsed
 
-        # The subprocess does not surface real token usage over text output, so
-        # charge the reserved estimate (not 0) — otherwise isolated agents would
-        # spend nothing against budget_total and the cap would be unenforceable.
-        # Conservative by design. (Future: parse `--output json` for real stats.)
+        # Charge real subprocess tokens when the executor surfaced them; else
+        # fall back to the reserved estimate so the budget cap stays enforced
+        # (charging 0 would make isolated agents spend nothing against the cap).
+        if stats is not None:
+            tokens_in = int(stats.get("prompt_tokens", 0))
+            tokens_out = int(stats.get("completion_tokens", 0))
+        else:
+            tokens_in, tokens_out = 0, reservation.estimate
         self._finalize_agent(
             prompt=prompt,
             response=response,
             label=label,
             phase=phase,
-            tokens_in=0,
-            tokens_out=reservation.estimate,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
             reservation=reservation,
             completed=completed,
             error=error_msg,
@@ -565,7 +598,7 @@ class WorkflowRuntime:
 
     async def _default_isolated_executor(
         self, prompt: str, agent: str, label: str | None, max_turns: int
-    ) -> str:
+    ) -> tuple[str, dict[str, int] | None]:
         import os
         from pathlib import Path
         import signal
@@ -583,6 +616,10 @@ class WorkflowRuntime:
                 "--agent", "auto-approve", "--trust",
                 "--output", "text", "--max-turns", str(max_turns),
             ]
+            env = os.environ.copy()
+            # Ask the child to emit real token stats on stderr so we can charge
+            # actual usage against the budget instead of the estimate.
+            env["VIBE_WORKFLOW_EMIT_STATS"] = "1"
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(wt.path),
@@ -590,7 +627,7 @@ class WorkflowRuntime:
                 # credentials (e.g. the provider API key) to run; pass the env
                 # explicitly (same as teams) rather than relying on implicit
                 # inheritance. Isolation bounds files, not env/secrets.
-                env=os.environ.copy(),
+                env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
@@ -611,12 +648,13 @@ class WorkflowRuntime:
                 except (ProcessLookupError, PermissionError):
                     pass
                 raise
+            stderr_text = (stderr or b"").decode("utf-8", "replace")
             if proc.returncode != 0:
-                err = (stderr or b"").decode("utf-8", "replace")[:300]
                 raise WorkflowError(
-                    f"isolated agent subprocess failed (rc={proc.returncode}): {err}"
+                    f"isolated agent subprocess failed (rc={proc.returncode}): "
+                    f"{stderr_text[:300]}"
                 )
-            return (stdout or b"").decode("utf-8", "replace")
+            return (stdout or b"").decode("utf-8", "replace"), _parse_stats(stderr_text)
         finally:
             remove_ephemeral_worktree(wt)
 

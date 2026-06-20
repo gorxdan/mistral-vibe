@@ -830,15 +830,16 @@ async def test_default_isolated_executor_spawns_subprocess(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
     rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
-    out = await rt._default_isolated_executor("do it", "auto-approve", "lbl", 40)
+    out, stats = await rt._default_isolated_executor("do it", "auto-approve", "lbl", 40)
 
     assert out == "agent output"
+    assert stats is None  # no stats line on stderr in this fake
     argv = captured["argv"]
     assert "-p" in argv and "do it" in argv
     assert "auto-approve" in argv and "--trust" in argv and "--max-turns" in argv
     assert captured["kwargs"]["cwd"] == "/tmp/iso-wt"
     assert captured["kwargs"]["start_new_session"] is True
-    assert "env" in captured["kwargs"]
+    assert captured["kwargs"]["env"].get("VIBE_WORKFLOW_EMIT_STATS") == "1"
     assert removed == [fake_wt]  # worktree cleaned up
 
 
@@ -884,3 +885,48 @@ async def test_default_isolated_executor_reaps_and_cleans_on_cancel(
     assert killed  # process group was signalled
     assert waited[0]  # waited for exit before cleanup (WL-001)
     assert removed == [fake_wt]  # worktree still cleaned up despite cancel
+
+
+async def test_default_isolated_executor_parses_stats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The executor parses the real token-stats line the subprocess emits on
+    stderr (GAP #1 — real accounting instead of the estimate)."""
+    from pathlib import Path
+
+    import vibe.core.worktree.ephemeral as eph
+
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt3")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
+
+    sentinel = '__VIBE_WORKFLOW_STATS__{"prompt_tokens": 111, "completion_tokens": 22}'
+
+    class _P:
+        pid = 1
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"result", ("some log\n" + sentinel + "\n").encode())
+
+    async def fake_exec(*a: Any, **k: Any) -> _P:
+        return _P()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    out, stats = await rt._default_isolated_executor("p", "auto-approve", "l", 40)
+    assert out == "result"
+    assert stats == {"prompt_tokens": 111, "completion_tokens": 22}
+
+
+async def test_isolated_agent_charges_real_tokens_when_stats_present() -> None:
+    async def stub(
+        prompt: str, agent: str, label: str | None, max_turns: int
+    ) -> tuple[str, dict[str, int]]:
+        return ("done", {"prompt_tokens": 100, "completion_tokens": 50})
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=stub
+    )
+    await rt.spawn_agent("x", isolation="worktree", budget_estimate=99_999)
+    assert rt._budget.spent() == 150  # real tokens, not the 99,999 estimate
