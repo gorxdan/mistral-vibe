@@ -24,7 +24,7 @@ from vibe.core.utils.http import build_ssl_context
 
 _SERVICE: Final = "vibe"
 _USERNAME_PREFIX: Final = "mcp-oauth"
-_CLIENT_NAME: Final = "Mistral Vibe"
+_CLIENT_NAME: Final = "Chaton"
 _LOGIN_TIMEOUT_SECONDS: Final = 300.0
 _MIN_REQUEST_LINE_PARTS: Final = 2
 _HEADER_TERMINATORS: Final = frozenset({b"\r\n", b"\n", b""})
@@ -244,15 +244,15 @@ def _render_page(*, title: str, heading: str, body: str) -> bytes:
 
 
 _SUCCESS_HTML: Final = _render_page(
-    title="Mistral Vibe - Login complete",
+    title="Chaton - Login complete",
     heading="Login complete",
-    body="You can close this tab and return to Mistral Vibe.",
+    body="You can close this tab and return to Chaton.",
 )
 
 _ERROR_HTML: Final = _render_page(
-    title="Mistral Vibe - Login failed",
+    title="Chaton - Login failed",
     heading="Login failed",
-    body="The authorization server did not return an authorization code. Return to Mistral Vibe and try again.",
+    body="The authorization server did not return an authorization code. Return to Chaton and try again.",
 )
 
 

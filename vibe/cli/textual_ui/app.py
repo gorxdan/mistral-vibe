@@ -433,7 +433,7 @@ class VibeApp(App):  # noqa: PLR0904
         self._terminal_notifier = terminal_notifier or TextualNotificationAdapter(
             self,
             get_enabled=lambda: self.config.enable_notifications,
-            default_title="Vibe",
+            default_title="Chaton",
         )
         self._agent_running = False
         self._interrupt_requested = False
@@ -4333,7 +4333,7 @@ class VibeApp(App):  # noqa: PLR0904
             return
         with self.suspend():
             rprint(
-                "Mistral Vibe has been suspended. Run [bold cyan]fg[/bold cyan] to bring Mistral Vibe back."
+                "Chaton has been suspended. Run [bold cyan]fg[/bold cyan] to bring Chaton back."
             )
             os.kill(os.getpid(), signal.SIGTSTP)
 

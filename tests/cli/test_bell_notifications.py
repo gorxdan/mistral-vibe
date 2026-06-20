@@ -24,14 +24,14 @@ def fake_app() -> MagicMock:
 @pytest.fixture
 def adapter_enabled(fake_app: MagicMock) -> TextualNotificationAdapter:
     return TextualNotificationAdapter(
-        fake_app, get_enabled=lambda: True, default_title="Vibe"
+        fake_app, get_enabled=lambda: True, default_title="Chaton"
     )
 
 
 @pytest.fixture
 def adapter_disabled(fake_app: MagicMock) -> TextualNotificationAdapter:
     return TextualNotificationAdapter(
-        fake_app, get_enabled=lambda: False, default_title="Vibe"
+        fake_app, get_enabled=lambda: False, default_title="Chaton"
     )
 
 
@@ -61,7 +61,7 @@ class TestTextualNotificationAdapter:
 
         fake_app.bell.assert_called_once()
         fake_app._driver.write.assert_called_once_with(
-            "\x1b]0;Vibe - Action Required\x07"
+            "\x1b]0;Chaton - Action Required\x07"
         )
 
     def test_throttle_prevents_rapid_notifications(
@@ -83,7 +83,7 @@ class TestTextualNotificationAdapter:
         adapter_enabled.notify(NotificationContext.ACTION_REQUIRED)
 
         fake_app._driver.write.assert_called_once_with(
-            "\x1b]0;Vibe - Action Required\x07"
+            "\x1b]0;Chaton - Action Required\x07"
         )
 
     def test_contextual_title_for_complete(
@@ -94,7 +94,7 @@ class TestTextualNotificationAdapter:
         adapter_enabled.notify(NotificationContext.COMPLETE)
 
         fake_app._driver.write.assert_called_once_with(
-            "\x1b]0;Vibe - Task Complete\x07"
+            "\x1b]0;Chaton - Task Complete\x07"
         )
 
     def test_restore_sets_default_title(
@@ -102,7 +102,7 @@ class TestTextualNotificationAdapter:
     ) -> None:
         adapter_enabled.restore()
 
-        fake_app._driver.write.assert_called_once_with("\x1b]0;Vibe\x07")
+        fake_app._driver.write.assert_called_once_with("\x1b]0;Chaton\x07")
 
     def test_on_focus_restores_title(
         self, adapter_enabled: TextualNotificationAdapter, fake_app: MagicMock
@@ -110,7 +110,7 @@ class TestTextualNotificationAdapter:
         adapter_enabled.on_blur()
         adapter_enabled.on_focus()
 
-        fake_app._driver.write.assert_called_once_with("\x1b]0;Vibe\x07")
+        fake_app._driver.write.assert_called_once_with("\x1b]0;Chaton\x07")
 
     def test_on_focus_prevents_notifications(
         self, adapter_enabled: TextualNotificationAdapter, fake_app: MagicMock
@@ -126,7 +126,7 @@ class TestTextualNotificationAdapter:
     def test_no_title_write_when_headless(self) -> None:
         app = _make_fake_app(is_headless=True)
         adapter = TextualNotificationAdapter(
-            app, get_enabled=lambda: True, default_title="Vibe"
+            app, get_enabled=lambda: True, default_title="Chaton"
         )
         adapter.on_blur()
 
@@ -138,7 +138,7 @@ class TestTextualNotificationAdapter:
     def test_enabled_callback_reads_live_value(self, fake_app: MagicMock) -> None:
         enabled = True
         adapter = TextualNotificationAdapter(
-            fake_app, get_enabled=lambda: enabled, default_title="Vibe"
+            fake_app, get_enabled=lambda: enabled, default_title="Chaton"
         )
         adapter.on_blur()
 

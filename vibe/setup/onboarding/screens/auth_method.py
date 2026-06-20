@@ -39,7 +39,7 @@ class AuthMethodScreen(OnboardingScreen):
                 with Vertical(id="auth-method-panel", classes="onboarding-panel"):
                     yield PetitChat(id="auth-method-chat", classes="onboarding-chat")
                     yield NoMarkupStatic(
-                        "Welcome to Mistral Vibe",
+                        "Welcome to Chaton",
                         id="auth-method-title",
                         classes="onboarding-heading",
                     )

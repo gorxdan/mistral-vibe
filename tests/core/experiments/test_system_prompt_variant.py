@@ -73,7 +73,7 @@ async def test_system_prompt_uses_assigned_variant() -> None:
     prompt = get_universal_system_prompt(
         tool_manager, config, skill_manager, agent_manager, experiment_manager=manager
     )
-    assert prompt.startswith("You are Vibe, a super useful programming assistant.")
+    assert prompt.startswith("You are Chaton, a super useful programming assistant.")
 
 
 @pytest.mark.asyncio
@@ -106,7 +106,7 @@ async def test_system_prompt_falls_back_to_default_when_variant_unknown() -> Non
         tool_manager, config, skill_manager, agent_manager, experiment_manager=manager
     )
     # Falls back to the default `cli` system prompt.
-    assert "You are Mistral Vibe" in prompt or "You are Vibe" in prompt
+    assert "You are Chaton" in prompt
 
 
 def test_system_prompt_uses_default_when_no_manager() -> None:
@@ -122,7 +122,7 @@ def test_system_prompt_uses_default_when_no_manager() -> None:
     prompt = get_universal_system_prompt(
         tool_manager, config, skill_manager, agent_manager
     )
-    assert "You are Mistral Vibe" in prompt or "You are Vibe" in prompt
+    assert "You are Chaton" in prompt
 
 
 def test_system_prompt_honors_user_config_when_manager_uninitialized() -> None:

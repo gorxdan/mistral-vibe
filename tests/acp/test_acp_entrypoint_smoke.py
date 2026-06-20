@@ -18,7 +18,7 @@ from tests.e2e.common import ansi_tolerant_pattern
 
 BROWSER_AUTH_NAME = "Sign in through Mistral AI Studio"
 BROWSER_AUTH_DESCRIPTION = (
-    "Sign into Mistral Vibe through your Mistral AI Studio account."
+    "Sign into Chaton through your Mistral AI Studio account."
 )
 
 
@@ -268,7 +268,7 @@ async def test_vibe_acp_initialize_exposes_terminal_auth_when_supported(
         assert auth_method.field_meta is not None
 
         terminal_auth = auth_method.field_meta["terminal-auth"]
-        assert terminal_auth["label"] == "Mistral Vibe Setup"
+        assert terminal_auth["label"] == "Chaton Setup"
         assert terminal_auth["command"]
         assert terminal_auth["args"]
         assert terminal_auth["args"][-1:] == ["--setup"]

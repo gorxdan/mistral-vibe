@@ -50,7 +50,7 @@ WAITING_FOR_AUTHENTICATION_MESSAGE = "Waiting for authentication..."
 STEP_DESCRIPTIONS = [
     ("Open browser", "Your browser should open automatically", "Browser opened"),
     ("Complete sign-in", WAITING_FOR_AUTHENTICATION_MESSAGE, "Sign-in confirmed."),
-    ("Finished setup", "Vibe will start automatically", "Setup complete."),
+    ("Finished setup", "Chaton will start automatically", "Setup complete."),
 ]
 UNEXPECTED_ERROR_MESSAGE = (
     "Something went wrong during browser sign-in. Please try again."

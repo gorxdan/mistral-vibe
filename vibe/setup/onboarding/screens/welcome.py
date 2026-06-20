@@ -13,7 +13,7 @@ from vibe.setup.onboarding.base import OnboardingScreen
 from vibe.setup.onboarding.gradient_text import GRADIENT_COLORS, gradient_markup
 
 WELCOME_PREFIX = "Welcome to "
-WELCOME_HIGHLIGHT = "Mistral Vibe"
+WELCOME_HIGHLIGHT = "Chaton"
 WELCOME_SUFFIX = " - Let's get you started!"
 WELCOME_TEXT = WELCOME_PREFIX + WELCOME_HIGHLIGHT + WELCOME_SUFFIX
 

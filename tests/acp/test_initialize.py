@@ -25,7 +25,7 @@ from vibe.setup.onboarding.context import OnboardingContext
 
 BROWSER_AUTH_NAME = "Sign in through Mistral AI Studio"
 BROWSER_AUTH_DESCRIPTION = (
-    "Sign into Mistral Vibe through your Mistral AI Studio account."
+    "Sign into Chaton through your Mistral AI Studio account."
 )
 
 
@@ -186,7 +186,7 @@ class TestACPInitialize:
         auth_method = response.auth_methods[1]
         assert auth_method.id == "vibe-setup"
         assert auth_method.name == "Register your API Key"
-        assert auth_method.description == "Register your API Key inside Mistral Vibe"
+        assert auth_method.description == "Register your API Key inside Chaton"
         assert auth_method.args is not None
         assert auth_method.args[-1:] == ["--setup"]
         assert auth_method.field_meta is not None
@@ -195,7 +195,7 @@ class TestACPInitialize:
         assert "command" in terminal_auth_meta
         assert "args" in terminal_auth_meta
         assert terminal_auth_meta["args"][-1:] == ["--setup"]
-        assert terminal_auth_meta["label"] == "Mistral Vibe Setup"
+        assert terminal_auth_meta["label"] == "Chaton Setup"
 
     @pytest.mark.asyncio
     async def test_initialize_with_delegated_browser_auth(

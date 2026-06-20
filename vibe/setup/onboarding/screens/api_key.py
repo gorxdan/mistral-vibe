@@ -21,7 +21,7 @@ from vibe.setup.auth.api_key_persistence import (
 from vibe.setup.onboarding.base import OnboardingScreen
 
 MISTRAL_PROVIDER_NAME = "mistral"
-MISTRAL_PROVIDER_HELP_NAME = "Mistral Vibe"
+MISTRAL_PROVIDER_HELP_NAME = "Chaton"
 CONFIG_DOCS_URL = (
     "https://github.com/mistralai/mistral-vibe?tab=readme-ov-file#configuration"
 )
@@ -56,7 +56,7 @@ class ApiKeyScreen(OnboardingScreen):
 
     def _compose_config_docs(self) -> ComposeResult:
         yield NoMarkupStatic(
-            "Learn more about Vibe configurations", id="config-docs-label"
+            "Learn more about Chaton configurations", id="config-docs-label"
         )
         yield Link(CONFIG_DOCS_URL, url=CONFIG_DOCS_URL, id="config-docs-link")
 
@@ -88,7 +88,7 @@ class ApiKeyScreen(OnboardingScreen):
                         classes="onboarding-heading",
                     )
                     yield NoMarkupStatic(
-                        f"Visit {help_name} to generate or copy your Vibe key",
+                        f"Visit {help_name} to generate or copy your Chaton key",
                         id="api-key-subtitle",
                     )
                     yield from self._compose_provider_link()

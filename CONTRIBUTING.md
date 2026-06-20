@@ -1,10 +1,10 @@
-# Contributing to Mistral Vibe
+# Contributing to Chaton
 
-Thank you for your interest in Mistral Vibe! We appreciate your enthusiasm and support.
+Thank you for your interest in Chaton! We appreciate your enthusiasm and support.
 
 ## Current Status
 
-**Mistral Vibe is in active development** — our team is iterating quickly and making lots of changes under the hood. Because of this pace, we may be slower than usual when reviewing PRs and issues.
+**Chaton is in active development** — our team is iterating quickly and making lots of changes under the hood. Because of this pace, we may be slower than usual when reviewing PRs and issues.
 
 **We especially encourage**:
 
@@ -206,6 +206,6 @@ While we're not accepting code contributions at the moment, we may open up contr
 
 ## Questions?
 
-If you have questions about using Mistral Vibe, please check the [README](README.md) first. For other inquiries, feel free to open a discussion or issue.
+If you have questions about using Chaton, please check the [README](README.md) first. For other inquiries, feel free to open a discussion or issue.
 
-Thank you for helping make Mistral Vibe better! 🙏
+Thank you for helping make Chaton better! 🙏

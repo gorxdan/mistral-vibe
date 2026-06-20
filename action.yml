@@ -40,13 +40,13 @@ runs:
     - name: Install uv
       uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7
 
-    - name: Install Mistral Vibe
+    - name: Install Chaton
       shell: bash
       working-directory: ${{ github.action_path }}
       run: |
         uv sync --locked --all-extras --dev
 
-    - name: Run Mistral Vibe
+    - name: Run Chaton
       id: run-mistral-vibe
       shell: bash
       working-directory: ${{ github.action_path }}

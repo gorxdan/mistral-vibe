@@ -982,7 +982,7 @@ Team directories live under `~/.vibe/teams/<name>/` and are cleaned up on exit.
 
 ## Editors/IDEs
 
-Mistral Vibe can be used in text editors and IDEs that support [Agent Client Protocol](https://agentclientprotocol.com/overview/clients). See the [ACP Setup documentation](docs/acp-setup.md) for setup instructions for various editors and IDEs.
+Chaton can be used in text editors and IDEs that support [Agent Client Protocol](https://agentclientprotocol.com/overview/clients). See the [ACP Setup documentation](docs/acp-setup.md) for setup instructions for various editors and IDEs.
 
 ## Resources
 
