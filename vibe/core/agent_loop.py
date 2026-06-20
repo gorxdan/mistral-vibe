@@ -1702,12 +1702,15 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     yield ev
                 return
 
-            tool_started = True
             if tool_call.tool_name == "ask_user_question":
                 # Fire a question notification before the tool blocks on input.
+                # Fired BEFORE tool_started=True: a cancellation during the
+                # notification must not finalize as a started-then-cancelled
+                # tool (which would spuriously fire after-tool hooks).
                 await self._fire_notification_hooks(
                     "question", "Waiting for user input", tool_call.tool_name
                 )
+            tool_started = True
             async for ev in self._invoke_tool(
                 tool_call, tool_instance, tool_input, decision, span=span
             ):

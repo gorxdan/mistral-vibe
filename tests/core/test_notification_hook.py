@@ -140,3 +140,66 @@ async def test_other_tool_does_not_fire_question_notification() -> None:
     loop = build_test_agent_loop()
     fired = await _drive_tool(loop, "bash")
     assert all(nt != "question" for nt, _ in fired)
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_question_notification_does_not_mark_tool_started() -> None:
+    """Regression: the question notification fires BEFORE tool_started=True, so a
+    cancellation there must NOT finalize as a started-then-cancelled tool (which
+    would spuriously fire after-tool hooks).
+    """
+    import asyncio
+
+    from vibe.core.agent_loop import ToolDecision, ToolExecutionResponse
+    from vibe.core.agent_loop_hooks import _BeforeToolResolution
+    from vibe.core.llm.format import ResolvedToolCall
+    from vibe.core.tools.base import ToolPermission
+    from vibe.core.tools.builtins.ask_user_question import AskUserQuestion
+
+    class _A(BaseModel):
+        pass
+
+    loop = build_test_agent_loop()
+    rtc = ResolvedToolCall(
+        tool_name="ask_user_question",
+        tool_class=AskUserQuestion,
+        validated_args=_A(),
+        call_id="c1",
+    )
+    invoked = {"called": False}
+    captured: dict[str, Any] = {}
+
+    async def cancel_notif(*a: Any, **k: Any) -> None:
+        raise asyncio.CancelledError
+
+    async def fake_pipeline(tc, ti, *, span):
+        return [], _BeforeToolResolution(tc, ti, None)
+
+    async def fake_should(*a: Any, **k: Any) -> ToolDecision:
+        return ToolDecision(
+            verdict=ToolExecutionResponse.EXECUTE, approval_type=ToolPermission.ALWAYS
+        )
+
+    async def fake_invoke(*a: Any, **k: Any):
+        invoked["called"] = True
+        return
+        yield  # pragma: no cover
+
+    async def fake_finalize(tc, ti, dec, msg, *, span, tool_started, **k):
+        captured["tool_started"] = tool_started
+        return
+        yield  # pragma: no cover
+
+    loop.tool_manager.get = lambda n: object()  # type: ignore[method-assign]
+    loop._fire_notification_hooks = cancel_notif  # type: ignore[method-assign]
+    loop._run_before_tool_pipeline = fake_pipeline  # type: ignore[method-assign]
+    loop._should_execute_tool = fake_should  # type: ignore[method-assign]
+    loop._invoke_tool = fake_invoke  # type: ignore[method-assign]
+    loop._finalize_cancelled_tool = fake_finalize  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        async for _ in loop._execute_tool_call(None, rtc):  # type: ignore[arg-type]
+            pass
+
+    assert invoked["called"] is False, "tool never invoked"
+    assert captured.get("tool_started") is False, "not finalized as started"
