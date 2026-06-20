@@ -2,19 +2,19 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from logging import getLogger
-from typing import Any
-
-from mcp.client.session import ClientSession
-from mcp.shared.context import RequestContext
-from mcp.types import (
-    CreateMessageRequestParams,
-    CreateMessageResult,
-    ErrorData,
-    TextContent,
-)
+from typing import TYPE_CHECKING, Any
 
 from vibe.core.llm.types import BackendLike
 from vibe.core.types import LLMMessage, Role
+
+if TYPE_CHECKING:
+    # The mcp SDK pulls ~100ms of mcp.types/pydantic model construction at
+    # import. These names are type-only here; the runtime types used in
+    # __call__ (CreateMessageResult/ErrorData/TextContent) are imported lazily
+    # there, so a session with no MCP sampling never loads the SDK.
+    from mcp.client.session import ClientSession
+    from mcp.shared.context import RequestContext
+    from mcp.types import CreateMessageRequestParams, CreateMessageResult, ErrorData
 
 logger = getLogger("vibe")
 
@@ -37,6 +37,8 @@ class MCPSamplingHandler:
         context: RequestContext[ClientSession, Any],
         params: CreateMessageRequestParams,
     ) -> CreateMessageResult | ErrorData:
+        from mcp.types import CreateMessageResult, ErrorData, TextContent
+
         try:
             config = self._config_getter()
             model = config.get_active_model()

@@ -12,9 +12,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, TextIO
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from mcp import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.client.streamable_http import streamable_http_client
 from vibe.core.logger import logger
 from vibe.core.tools.base import (
     BaseTool,
@@ -30,6 +27,9 @@ from vibe.core.utils.http import build_ssl_context
 from vibe.core.utils.io import decode_safe
 
 if TYPE_CHECKING:
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    from mcp.client.streamable_http import streamable_http_client
     from vibe.core.types import ToolResultEvent
 
 
@@ -37,6 +37,47 @@ if TYPE_CHECKING:
 # mcp.shared._httpx_utils, which is an internal module.
 _MCP_DEFAULT_TIMEOUT = 30.0
 _MCP_DEFAULT_SSE_READ_TIMEOUT = 300.0
+
+_MCP_LAZY_NAMES = (
+    "ClientSession",
+    "StdioServerParameters",
+    "stdio_client",
+    "streamable_http_client",
+)
+
+
+# The mcp SDK pulls ~100ms of mcp.types/pydantic model construction at import.
+# It is only needed to connect to a server, so load it lazily into the module
+# globals on first use. The connect-time functions below call _load_mcp() and
+# then reference the names as globals, so test patches of e.g.
+# `...tools.streamable_http_client` still take effect.
+def _load_mcp() -> None:
+    # Fill only the names not already present, so an active test patch of one
+    # name (or a mock teardown that removed another) never gets clobbered.
+    missing = [name for name in _MCP_LAZY_NAMES if name not in globals()]
+    if not missing:
+        return
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    from mcp.client.streamable_http import streamable_http_client
+
+    source = {
+        "ClientSession": ClientSession,
+        "StdioServerParameters": StdioServerParameters,
+        "stdio_client": stdio_client,
+        "streamable_http_client": streamable_http_client,
+    }
+    for name in missing:
+        globals()[name] = source[name]
+
+
+def __getattr__(name: str) -> Any:
+    # PEP 562: external access (incl. tests patching these names) triggers the
+    # lazy load so they behave like normal module attributes.
+    if name in _MCP_LAZY_NAMES:
+        _load_mcp()
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _stderr_logger_thread(read_fd: int) -> None:
@@ -195,6 +236,7 @@ async def list_tools_http(
     auth: httpx.Auth | None = None,
     startup_timeout_sec: float | None = None,
 ) -> list[RemoteTool]:
+    _load_mcp()
     timeout = timedelta(seconds=startup_timeout_sec) if startup_timeout_sec else None
     async with create_vibe_mcp_http_client(headers, auth=auth) as http_client:
         async with streamable_http_client(url, http_client=http_client) as (
@@ -221,6 +263,7 @@ async def call_tool_http(
     tool_timeout_sec: float | None = None,
     sampling_callback: MCPSamplingHandler | None = None,
 ) -> MCPToolResult:
+    _load_mcp()
     init_timeout = (
         timedelta(seconds=startup_timeout_sec) if startup_timeout_sec else None
     )
@@ -341,6 +384,7 @@ async def list_tools_stdio(
     cwd: str | None = None,
     startup_timeout_sec: float | None = None,
 ) -> list[RemoteTool]:
+    _load_mcp()
     params = StdioServerParameters(
         command=command[0], args=command[1:], env=env, cwd=cwd
     )
@@ -366,6 +410,7 @@ async def call_tool_stdio(
     tool_timeout_sec: float | None = None,
     sampling_callback: MCPSamplingHandler | None = None,
 ) -> MCPToolResult:
+    _load_mcp()
     params = StdioServerParameters(
         command=command[0], args=command[1:], env=env, cwd=cwd
     )
