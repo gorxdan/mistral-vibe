@@ -352,6 +352,22 @@ DEFAULT_CONSOLE_BASE_URL = "https://console.mistral.ai"
 DEFAULT_VIBE_BASE_URL = "https://chat.mistral.ai"
 
 
+class ProviderCacheConfig(BaseModel):
+    """Opt-in prompt-cache hints for the generic/OpenAI-compatible path.
+
+    Default 'off' — the dominant providers (OpenAI, DeepSeek, GLM, Together,
+    Groq) auto-cache prefixes with no hints. Only enable for a provider whose
+    auto-cache hit ratio is poor AND that documents an explicit cache knob.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    mode: Literal["off", "explicit"] = "off"
+    style: Literal["off", "anthropic-compat", "passthrough"] = "off"
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+    cache_key: str | None = None
+
+
 class ProviderConfig(BaseModel):
     name: str
     api_base: str
@@ -364,6 +380,7 @@ class ProviderConfig(BaseModel):
     project_id: str = ""
     region: str = ""
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    cache: ProviderCacheConfig = Field(default_factory=ProviderCacheConfig)
 
     def _is_legacy_mistral_provider_without_backend(self) -> bool:
         return (

@@ -56,6 +56,10 @@ class AgentStats(BaseModel):
 
     context_tokens: int = 0
 
+    # Prompt tokens served from the provider's cache (subset of prompt tokens).
+    session_cached_tokens: int = 0
+    last_turn_cached_tokens: int = 0
+
     last_turn_prompt_tokens: int = 0
     last_turn_completion_tokens: int = 0
     last_turn_duration: float = 0.0
@@ -100,6 +104,15 @@ class AgentStats(BaseModel):
 
     @computed_field
     @property
+    def cache_hit_ratio(self) -> float:
+        """Fraction of prompt tokens served from cache (0..1), clamped."""
+        if self.session_prompt_tokens <= 0:
+            return 0.0
+        cached = min(self.session_cached_tokens, self.session_prompt_tokens)
+        return cached / self.session_prompt_tokens
+
+    @computed_field
+    @property
     def session_cost(self) -> float:
         """Calculate the total session cost in dollars based on token usage and pricing.
 
@@ -135,6 +148,7 @@ class AgentStats(BaseModel):
         self.context_tokens = 0
         self.last_turn_prompt_tokens = 0
         self.last_turn_completion_tokens = 0
+        self.last_turn_cached_tokens = 0
         self.last_turn_duration = 0.0
         self.tokens_per_second = 0.0
 

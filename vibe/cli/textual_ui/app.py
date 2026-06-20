@@ -2219,6 +2219,7 @@ class VibeApp(App):  # noqa: PLR0904
 - **Session Prompt Tokens**: {stats.session_prompt_tokens:,}
 - **Session Completion Tokens**: {stats.session_completion_tokens:,}
 - **Session Total LLM Tokens**: {stats.session_total_llm_tokens:,}
+- **Cache Hit Ratio**: {stats.cache_hit_ratio:.0%} ({stats.session_cached_tokens:,} cached)
 - **Last Turn Tokens**: {stats.last_turn_total_tokens:,}
 - **Cost**: ${stats.session_cost:.4f}
 """
@@ -2991,7 +2992,8 @@ class VibeApp(App):  # noqa: PLR0904
 
     def _workflow_status_for_tool(self, run_id: str | None = None) -> list[dict]:
         """Back the workflow_status model tool: a live, JSON-serializable view
-        of runs. Filters to one run when run_id is given, else returns all."""
+        of runs. Filters to one run when run_id is given, else returns all.
+        """
         runs = self._workflow_runner.runs
         if run_id is not None:
             runs = [r for r in runs if r.run_id == run_id]
@@ -3011,7 +3013,8 @@ class VibeApp(App):  # noqa: PLR0904
 
     def _team_dir_for_tool(self) -> str | None:
         """Back the team_message model tool: the active team directory, or None
-        when no team is active."""
+        when no team is active.
+        """
         if self._team_manager is None:
             return None
         return str(self._team_manager.team_dir)

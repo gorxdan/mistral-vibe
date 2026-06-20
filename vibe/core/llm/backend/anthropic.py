@@ -187,6 +187,7 @@ class AnthropicMapper:
         usage = LLMUsage(
             prompt_tokens=total_input_tokens,
             completion_tokens=usage_data.get("output_tokens", 0),
+            cached_tokens=usage_data.get("cache_read_input_tokens", 0),
         )
 
         return LLMChunk(
@@ -320,7 +321,11 @@ class AnthropicMapper:
         )
         chunk = LLMChunk(
             message=LLMMessage(role=Role.assistant),
-            usage=LLMUsage(prompt_tokens=total_input_tokens, completion_tokens=0),
+            usage=LLMUsage(
+                prompt_tokens=total_input_tokens,
+                completion_tokens=0,
+                cached_tokens=usage_data.get("cache_read_input_tokens", 0),
+            ),
         )
         return chunk, current_index
 
@@ -546,7 +551,11 @@ class AnthropicAdapter(APIAdapter):
         )
         return LLMChunk(
             message=LLMMessage(role=Role.assistant, content=None),
-            usage=LLMUsage(prompt_tokens=total_input_tokens, completion_tokens=0),
+            usage=LLMUsage(
+                prompt_tokens=total_input_tokens,
+                completion_tokens=0,
+                cached_tokens=usage_data.get("cache_read_input_tokens", 0),
+            ),
         )
 
     def _parse_content_block_start(self, data: dict[str, Any]) -> LLMChunk | None:

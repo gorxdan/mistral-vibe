@@ -142,6 +142,17 @@ class OpenAIAdapter(APIAdapter):
             for msg in messages
         ]
 
+        # Opt-in provider cache hints (off by default). May tag converted_messages
+        # in place; the returned fragment merges into extra_body (caller wins).
+        from vibe.core.llm.backend.cache_hints import build_cache_hint
+
+        hint = build_cache_hint(provider, converted_messages)
+        if hint:
+            merged = dict(extra_body or {})
+            for key, value in hint.items():
+                merged.setdefault(key, value)
+            extra_body = merged
+
         payload = self.build_payload(
             model_name,
             converted_messages,
