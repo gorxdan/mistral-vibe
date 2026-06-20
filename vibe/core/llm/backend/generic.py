@@ -82,6 +82,27 @@ class OpenAIAdapter(APIAdapter):
             msg_dict[field_name] = msg_dict.pop("reasoning_content")
         return msg_dict
 
+    def _to_api_message(self, msg: LLMMessage, field_name: str) -> dict[str, Any]:
+        msg_dict = msg.model_dump(
+            exclude_none=True,
+            exclude={
+                "message_id",
+                "reasoning_message_id",
+                "reasoning_state",
+                "injected",
+                "images",
+            },
+        )
+        # OpenAI-compatible servers (notably ollama) reject a message whose
+        # content field is absent with "invalid message content type: <nil>".
+        # Assistant messages carrying only tool_calls have content=None, which
+        # exclude_none drops entirely. Send an empty string so the key is always
+        # present (accepted by OpenAI/vLLM/llama.cpp/LM Studio alike).
+        msg_dict.setdefault("content", "")
+        return self._user_with_images_to_parts(
+            self._reasoning_to_api(msg_dict, field_name), msg
+        )
+
     def _reasoning_from_api(
         self, msg_dict: dict[str, Any], field_name: str
     ) -> dict[str, Any]:
@@ -122,28 +143,12 @@ class OpenAIAdapter(APIAdapter):
         extra_body: dict[str, Any] | None = None,
     ) -> PreparedRequest:
         field_name = provider.reasoning_field_name
-        converted_messages = [
-            self._user_with_images_to_parts(
-                self._reasoning_to_api(
-                    msg.model_dump(
-                        exclude_none=True,
-                        exclude={
-                            "message_id",
-                            "reasoning_message_id",
-                            "reasoning_state",
-                            "injected",
-                            "images",
-                        },
-                    ),
-                    field_name,
-                ),
-                msg,
-            )
-            for msg in messages
-        ]
+        converted_messages = [self._to_api_message(msg, field_name) for msg in messages]
 
-        # Opt-in provider cache hints (off by default). May tag converted_messages
-        # in place; the returned fragment merges into extra_body (caller wins).
+        # Provider cache hints. Default is explicit/passthrough but inert unless
+        # the provider sets extra_body/cache_key (empty fragment is skipped below).
+        # May tag converted_messages in place; the returned fragment merges into
+        # extra_body (caller wins).
         from vibe.core.llm.backend.cache_hints import build_cache_hint
 
         hint = build_cache_hint(provider, converted_messages)
