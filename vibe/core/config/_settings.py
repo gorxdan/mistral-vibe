@@ -394,6 +394,10 @@ class ProviderConfig(BaseModel):
     api_style: str = "openai"
     backend: Backend = Backend.GENERIC
     reasoning_field_name: str = "reasoning_content"
+    # Live-discover models from this provider's OpenAI-compatible /models
+    # endpoint (e.g. a local ollama/llama.cpp server) and surface them in the
+    # model picker without a per-model config block. Off by default.
+    discover_models: bool = False
     project_id: str = ""
     region: str = ""
     extra_headers: dict[str, str] = Field(default_factory=dict)

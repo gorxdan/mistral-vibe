@@ -1206,10 +1206,31 @@ class VibeApp(App):  # noqa: PLR0904
     ) -> None:
         target = getattr(self, "_model_picker_target", "active")
         self._model_picker_target = "active"
+        discovered = getattr(self, "_discovered_models", {})
+        updates: dict[str, Any] = {}
+        if message.alias in discovered:
+            # A live-discovered model has no config block yet — persist it so it
+            # stays resolvable after reload (and offline).
+            from vibe.core.llm.model_discovery import build_persisted_models_update
+
+            updates = build_persisted_models_update(
+                self.config, discovered[message.alias]
+            )
         if target == "judge":
-            VibeConfig.save_updates({"safety_judge": {"model": message.alias}})
+            updates["safety_judge"] = {"model": message.alias}
         else:
-            VibeConfig.save_updates({"active_model": message.alias})
+            updates["active_model"] = message.alias
+        self._discovered_models = {}
+        try:
+            # dump_config validates the merged config before writing, so a
+            # failure here leaves the on-disk config untouched.
+            VibeConfig.save_updates(updates)
+        except Exception as exc:
+            self.notify(
+                f"Could not switch model: {exc}", severity="error", markup=False
+            )
+            await self._switch_to_input_app()
+            return
         await self._reload_config()
         await self._switch_to_input_app()
 
@@ -3419,7 +3440,14 @@ class VibeApp(App):  # noqa: PLR0904
         # Remember whether this picker sets the active model or the safety-judge
         # model so on_model_picker_app_model_selected persists to the right key.
         self._model_picker_target = target
+        from vibe.core.llm.model_discovery import discover_extra_models
+
+        discovered = await discover_extra_models(self.config)
+        self._discovered_models = {m.alias: m for m in discovered}
         model_aliases = [m.alias for m in self.config.available_models]
+        model_aliases += [
+            alias for alias in self._discovered_models if alias not in model_aliases
+        ]
         if target == "judge":
             current_model = str(self.config.safety_judge.model or "")
         else:
