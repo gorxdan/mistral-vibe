@@ -383,3 +383,34 @@ async def test_resume_without_snapshot_is_an_error() -> None:
     )
     widget = await runner.handle_command("resume wf-missing")
     assert "No persisted snapshot" in widget._error
+
+
+async def test_finished_runs_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A long session that launches many workflows must not retain every
+    finished run (each holds its agents' full prompts/responses). Finished runs
+    beyond the cap are dropped oldest-first; active/paused runs are never dropped.
+    """
+    import vibe.cli.textual_ui.workflow_runner as wr
+
+    monkeypatch.setattr(wr, "_MAX_FINISHED_RUNS", 3)
+
+    async def mount(w: Any) -> None:
+        pass
+
+    runner = WorkflowRunner(mount=mount)
+    script = "async def main():\n    return {'r': await agent('hi')}\n"
+
+    launched: list[str] = []
+    for _ in range(6):
+        rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_concurrent=2)
+        rid = runner.launch(script, runtime=rt)
+        launched.append(rid)
+        await runner._find_run(rid).task  # finish before the next launch
+
+    ids = [r.run_id for r in runner.runs]
+    assert launched == ["wf-1", "wf-2", "wf-3", "wf-4", "wf-5", "wf-6"]
+    # Bounded: at most the cap of finished runs plus the most-recent launch.
+    assert len(runner.runs) <= wr._MAX_FINISHED_RUNS + 1
+    # Oldest finished runs dropped, newest kept.
+    assert "wf-1" not in ids
+    assert "wf-6" in ids

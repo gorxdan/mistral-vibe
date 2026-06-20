@@ -21,6 +21,12 @@ from vibe.core.workflows.runtime import WorkflowRuntime
 
 _MIN_PARTS_FOR_STOP = 2
 
+# Finished (completed/failed/cancelled) runs are kept for inspection in
+# `/workflows`, but each retains its agents' full prompts and responses. Cap
+# how many we hold so a long session that launches many workflows stays bounded;
+# active and paused (resumable) runs are never dropped.
+_MAX_FINISHED_RUNS = 50
+
 
 @dataclass
 class WorkflowRunEntry:
@@ -171,6 +177,7 @@ class WorkflowRunner:
 
         entry.task = asyncio.create_task(self._run_workflow(entry, args))
         self._runs.append(entry)
+        self._prune_finished_runs()
         return run_id
 
     async def _run_workflow(self, entry: WorkflowRunEntry, args: Any) -> WorkflowResult:
@@ -242,6 +249,7 @@ class WorkflowRunner:
         runtime.set_event_sink(self._make_event_sink(new_id))
         entry.task = asyncio.create_task(self._run_workflow(entry, snapshot.args))
         self._runs.append(entry)
+        self._prune_finished_runs()
         return new_id
 
     @staticmethod
@@ -306,6 +314,21 @@ class WorkflowRunner:
 
     def _find_run(self, run_id: str) -> WorkflowRunEntry | None:
         return next((r for r in self._runs if r.run_id == run_id), None)
+
+    def _prune_finished_runs(self) -> None:
+        """Drop the oldest finished runs beyond `_MAX_FINISHED_RUNS`.
+
+        A run is "finished" once it has a result or an error; only those are
+        eligible for dropping (running and paused/resumable runs are kept).
+        `_runs` preserves launch order, so the oldest finished runs are removed
+        first while their ordering relative to active runs is left intact.
+        """
+        finished = [r for r in self._runs if r.result is not None or r.error is not None]
+        excess = len(finished) - _MAX_FINISHED_RUNS
+        if excess <= 0:
+            return
+        drop = {id(r) for r in finished[:excess]}
+        self._runs = [r for r in self._runs if id(r) not in drop]
 
     async def handle_command(self, cmd_args: str) -> Widget:  # noqa: PLR0911
         cmd_args = cmd_args.strip()
