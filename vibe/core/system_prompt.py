@@ -310,6 +310,10 @@ checks, web lookups.
 checks and tests to find what breaks.
 - `debugger` — a specific failure or flaky test: reproduce, isolate, and trace \
 the root cause; returns the cause + minimal fix (it diagnoses, you apply).
+- `planner` — design an approach before building: returns a code-grounded, \
+phased plan with risks and the files to touch (it plans, you decide).
+- `security` — defensive vuln audit of a change or area: traces untrusted input \
+to sinks and returns severity-ranked findings with fixes.
 
 Fan out: issue several `task` calls in one turn so independent sub-questions \
 run in parallel. Give each a self-contained brief and ask for findings and \
@@ -535,10 +539,16 @@ def _get_le_chaton_section() -> str:
         "Write the script to a file, then tell the user to run it with the "
         "workflow tool or save it as a command. You can also launch it directly "
         "using the `launch_workflow` tool, which validates and runs the script "
-        "in the background. For simple tasks (single-file edits, quick "
-        "questions), work normally without a workflow.\n\n"
+        "in the background and previews the planned phases at the approval "
+        "prompt. For simple tasks (single-file edits, quick questions), work "
+        "normally without a workflow.\n\n"
         "Prefer workflows when: the task needs 3+ independent agents, adversarial "
         "verification adds value, or the work spans many files. Use `parallel` "
         "for independent same-stage work and `pipeline` for multi-stage "
-        "per-item flows (e.g. find -> verify)."
+        "per-item flows (e.g. find -> verify).\n\n"
+        "Once launched, the run is monitored in `/workflows`: keys are x (stop), "
+        "p (pause/resume — in-flight agents finish, new agents block), s (save "
+        "the run's script as a reusable /<name> command), o (view the full "
+        "script), and Enter drills into a run and then into each agent. "
+        "In-flight agents show live token totals in the drill-down."
     )

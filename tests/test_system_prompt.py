@@ -104,6 +104,53 @@ def test_debugger_subagent_registered_with_systematic_prompt() -> None:
     assert "ROOT CAUSE:" in sp
 
 
+def test_planner_security_editor_registered() -> None:
+    from vibe.core.agents.models import BUILTIN_AGENTS, AgentType, BuiltinAgentName
+    from vibe.core.prompts import load_system_prompt
+
+    expected = {
+        "planner": (["read", "grep"], "Clarify the goal"),
+        "security": (["read", "grep", "bash"], "threat-model"),
+        "editor": (["read", "grep", "write_file", "edit"], "Read before editing"),
+    }
+    for name, (tools, marker) in expected.items():
+        prof = BUILTIN_AGENTS[BuiltinAgentName(name)]
+        assert prof.agent_type == AgentType.SUBAGENT
+        assert prof.overrides["enabled_tools"] == tools
+        assert prof.overrides["system_prompt_id"] == name
+        assert marker in load_system_prompt(name)
+
+    # Security prompt is defensive — must forbid weaponization.
+    sec = load_system_prompt("security")
+    assert "DEFENSIVE" in sec and "do NOT write exploits" in sec
+    # Editor prompt is explicit about its worktree-only write reality.
+    assert "isolated git worktree" in load_system_prompt("editor")
+
+
+def test_orchestration_map_includes_planner_security_not_editor() -> None:
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+    )
+    prompt = get_universal_system_prompt(
+        ToolManager(lambda: config),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+    )
+    # planner + security are delegable read-only investigators → in the map.
+    assert "- `planner` —" in prompt
+    assert "- `security` —" in prompt
+    # editor is workflow-only (writes skipped in a plain task) → NOT in the map,
+    # but still listed in the available-subagents inventory.
+    assert "- `editor` —" not in prompt
+    assert "**editor**" in prompt
+
+
 def test_debugger_listed_in_available_subagents() -> None:
     config = build_test_vibe_config(
         system_prompt_id="tests",

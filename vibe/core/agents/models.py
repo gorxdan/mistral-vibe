@@ -45,6 +45,9 @@ class BuiltinAgentName(StrEnum):
     RESEARCH = "research"
     REVIEWER = "reviewer"
     DEBUGGER = "debugger"
+    PLANNER = "planner"
+    SECURITY = "security"
+    EDITOR = "editor"
     WORKER = "worker"
     LEAN = "lean"
 
@@ -210,6 +213,58 @@ DEBUGGER = AgentProfile(
     },
 )
 
+PLANNER = AgentProfile(
+    name=BuiltinAgentName.PLANNER,
+    display_name="Planner",
+    description=(
+        "Read-only subagent for planning: investigates the code and returns a "
+        "code-grounded, phased plan with risks, critical files, and tradeoffs. "
+        "Designs the approach; the lead decides and implements."
+    ),
+    safety=AgentSafety.SAFE,
+    agent_type=AgentType.SUBAGENT,
+    overrides={
+        "enabled_tools": ["read", "grep"],
+        "system_prompt_id": "planner",
+    },
+)
+
+SECURITY = AgentProfile(
+    name=BuiltinAgentName.SECURITY,
+    display_name="Security",
+    description=(
+        "Subagent for defensive security audit: traces untrusted input to "
+        "sinks, checks the vulnerability classes (injection, path-escape, "
+        "authz, secrets, deserialization), and reports severity-ranked findings "
+        "with fixes. Read + grep + approval-gated bash (read-only probes)."
+    ),
+    # Has bash, so not SAFE — bash invocations still route through the normal
+    # approval flow (no bypass_tool_permissions).
+    safety=AgentSafety.NEUTRAL,
+    agent_type=AgentType.SUBAGENT,
+    overrides={
+        "enabled_tools": ["read", "grep", "bash"],
+        "system_prompt_id": "security",
+    },
+)
+
+EDITOR = AgentProfile(
+    name=BuiltinAgentName.EDITOR,
+    display_name="Editor",
+    description=(
+        "Workflow-only subagent for surgical file edits (renames, codemods, "
+        "targeted changes): write/edit + read/grep, no bash/MCP — lower blast "
+        "radius than worker. MUST run with isolation='worktree' in a workflow; "
+        "in a plain task call its writes are approval-gated and skipped."
+    ),
+    safety=AgentSafety.NEUTRAL,
+    agent_type=AgentType.SUBAGENT,
+    overrides={
+        "enabled_tools": ["read", "grep", "write_file", "edit"],
+        "system_prompt_id": "editor",
+    },
+)
+
 WORKER = AgentProfile(
     name=BuiltinAgentName.WORKER,
     display_name="Worker",
@@ -276,6 +331,9 @@ BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.RESEARCH: RESEARCH,
     BuiltinAgentName.REVIEWER: REVIEWER,
     BuiltinAgentName.DEBUGGER: DEBUGGER,
+    BuiltinAgentName.PLANNER: PLANNER,
+    BuiltinAgentName.SECURITY: SECURITY,
+    BuiltinAgentName.EDITOR: EDITOR,
     BuiltinAgentName.WORKER: WORKER,
     BuiltinAgentName.LEAN: LEAN,
 }
