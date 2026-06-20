@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Awaitable, Callable
+import copy
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
 import functools
@@ -89,6 +90,11 @@ class InvokeContext:
     # for its planned work. A factory (not the judge itself) so the runtime
     # picks up mid-session config changes (e.g. judge model swap).
     safety_judge_factory: Callable[[], Any] | None = field(default=None)
+    # Unified background-task registry. Owns processes spawned by the bash tool
+    # with background=True, and aggregates workflows/teams/loops for the Tasks
+    # pane and the `background` tool. None in headless/ACP runs without the TUI
+    # wiring; the bash tool refuses background=True when this is None.
+    background_registry: Any | None = field(default=None)
 
 
 class ToolError(Exception):
@@ -289,9 +295,13 @@ class BaseTool[
         )
 
     @classmethod
+    @functools.cache
     def _get_tool_args_results(cls) -> tuple[type[ToolArgs], type[ToolResult]]:
         """Extract <ToolArgs, ToolResult> from the annotated signature of `run`.
         Works even when `from __future__ import annotations` is in effect.
+
+        Cached per concrete tool class: the result is fixed by `run`'s
+        annotations and the underlying `get_type_hints` call is expensive.
         """
         run_fn = cls.run.__func__ if isinstance(cls.run, classmethod) else cls.run
 
@@ -359,9 +369,13 @@ class BaseTool[
         raise TypeError(f"Could not extract result type from {return_annotation!r}")
 
     @classmethod
-    def get_parameters(cls) -> dict[str, Any]:
-        """Return a cleaned-up JSON-schema dict describing the arguments model
-        with which this concrete tool was parametrised.
+    @functools.cache
+    def _build_parameters(cls) -> dict[str, Any]:
+        """Build the cleaned JSON-schema for the args model once per tool class.
+
+        Cached because `get_available_tools` calls it for every tool on every
+        LLM turn, and `model_json_schema()` is a per-turn CPU hot path. The
+        result is treated as immutable; `get_parameters` hands out copies.
         """
         args_model, _ = cls._get_tool_args_results()
         schema = args_model.model_json_schema()
@@ -380,6 +394,16 @@ class BaseTool[
                         prop_details.pop("title", None)
 
         return schema
+
+    @classmethod
+    def get_parameters(cls) -> dict[str, Any]:
+        """Return a cleaned-up JSON-schema dict describing the arguments model
+        with which this concrete tool was parametrised.
+
+        Returns a fresh deep copy of the cached schema so callers remain free to
+        mutate the result without corrupting the cache.
+        """
+        return copy.deepcopy(cls._build_parameters())
 
     @classmethod
     def get_name(cls) -> str:
