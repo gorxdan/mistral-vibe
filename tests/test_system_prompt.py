@@ -90,12 +90,18 @@ def test_debugger_subagent_registered_with_systematic_prompt() -> None:
     assert debugger.overrides["enabled_tools"] == ["read", "grep", "bash"]
     assert debugger.overrides["system_prompt_id"] == "debugger"
 
-    # The dedicated prompt embeds the systematic-debugging method (no skill dep).
+    # The dedicated prompt embeds the canonical systematic-debugging skill
+    # (no skill-tool dependency — the subagent can't load skills).
     sp = load_system_prompt("debugger")
-    assert "systematic debugging" in sp.lower()
-    for phase in ("Reproduce", "Isolate", "Hypothesize", "Root cause"):
+    assert "systematic-debugging" in sp.lower()
+    # The Iron Law + all four phases (Pattern analysis was the gap in v1).
+    assert "NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST" in sp
+    for phase in ("Phase 1", "Phase 2", "Phase 3", "Phase 4"):
         assert phase in sp
-    assert "ROOT CAUSE:" in sp  # structured return format
+    assert "Pattern analysis" in sp
+    # The 3-fixes → question-architecture escalation, and the return format.
+    assert "architecture" in sp.lower()
+    assert "ROOT CAUSE:" in sp
 
 
 def test_debugger_listed_in_available_subagents() -> None:
