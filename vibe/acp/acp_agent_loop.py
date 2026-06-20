@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import UTC
@@ -130,6 +130,7 @@ from vibe.core.config import (
 from vibe.core.data_retention import DATA_RETENTION_MESSAGE
 from vibe.core.feedback import record_feedback_asked, should_show_feedback
 from vibe.core.hooks.config import load_hooks_from_fs
+from vibe.core.loop import LoopManager
 from vibe.core.paths import GLOBAL_ENV_FILE
 from vibe.core.plugins.integration import load_and_apply_plugins
 from vibe.core.proxy_setup import (
@@ -138,6 +139,7 @@ from vibe.core.proxy_setup import (
     set_proxy_var,
     unset_proxy_var,
 )
+from vibe.core.schedule_driver import ScheduleDriver
 from vibe.core.session.saved_sessions import (
     delete_saved_session,
     update_saved_session_title,
@@ -171,6 +173,7 @@ from vibe.core.types import (
     RefusalError as CoreRefusalError,
     ResponseTooLongError as CoreResponseTooLongError,
     Role,
+    ScheduledLoop,
     SessionTitleUpdatedEvent,
     ToolCallEvent,
     ToolResultEvent,
@@ -689,10 +692,38 @@ class VibeAcpAgentLoop(AcpAgent):
         if not agent_loop.bypass_tool_permissions:
             agent_loop.set_approval_callback(self._create_approval_callback(session.id))
 
+        # Per-session scheduler: the `schedule` tool enqueues into this manager,
+        # and a session-owned poller fires due loops as agent-initiated turns
+        # (cancelled with the session on close).
+        manager = LoopManager(agent_loop.session_logger)
+        agent_loop.set_scheduler(manager)
+        metadata = agent_loop.session_logger.session_metadata
+        if metadata is not None:
+            manager.restore(list(metadata.loops))
+        driver = ScheduleDriver(
+            manager,
+            can_fire=lambda: session.prompt_task is None or session.prompt_task.done(),
+            fire=self._make_loop_fire(session),
+        )
+        session.spawn(driver.poll_forever())
+
         session.spawn(self._send_initial_available_commands(session))
         session.spawn(self._warm_up_agent_loop(agent_loop))
 
         return session
+
+    def _make_loop_fire(
+        self, session: AcpSessionLoop
+    ) -> Callable[[ScheduledLoop], Awaitable[None]]:
+        """Fire a scheduled loop as an agent-initiated turn, streaming its
+        updates to the client like a normal prompt.
+        """
+
+        async def _fire(due: ScheduledLoop) -> None:
+            async for update in self._run_agent_loop(session, due.prompt):
+                await self.client.session_update(session_id=session.id, update=update)
+
+        return _fire
 
     async def _send_initial_available_commands(self, session: AcpSessionLoop) -> None:
         # Zed can drop session/update notifications sent before it registers

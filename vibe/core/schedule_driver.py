@@ -47,7 +47,7 @@ class ScheduleDriver:
 
     def start(self) -> None:
         if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run())
+            self._task = asyncio.create_task(self.poll_forever())
 
     async def stop(self) -> None:
         if self._task is None:
@@ -78,7 +78,10 @@ class ScheduleDriver:
             if due is not None:
                 await self._fire(due)
 
-    async def _run(self) -> None:
+    async def poll_forever(self) -> None:
+        """The poll-fire loop. Run via start(), or hand to a host that owns the
+        task lifecycle (e.g. ACP ``session.spawn(driver.poll_forever())``).
+        """
         while True:
             try:
                 sleep_for = min(self._manager.next_due_in(), self._poll_interval)
