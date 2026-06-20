@@ -755,6 +755,7 @@ class WorkflowRuntime:
     ) -> tuple[str, dict[str, int] | None]:
         import os
         from pathlib import Path
+        import shlex
         import signal
         import sys
 
@@ -765,8 +766,13 @@ class WorkflowRuntime:
 
         wt = create_ephemeral_worktree(Path.cwd(), label or agent)
         try:
+            # The binary prefix is overridable (tests point it at a fake `vibe`);
+            # unset -> the real `vibe` module. Everything else (worktree, cwd,
+            # env, communicate, stats parse, cleanup) runs unchanged.
+            base = os.environ.get("VIBE_ISOLATED_EXECUTOR_CMD")
+            prefix = shlex.split(base) if base else [sys.executable, "-m", "vibe"]
             cmd = [
-                sys.executable, "-m", "vibe", "-p", prompt,
+                *prefix, "-p", prompt,
                 "--agent", "auto-approve", "--trust",
                 "--output", "text", "--max-turns", str(max_turns),
             ]
