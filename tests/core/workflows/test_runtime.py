@@ -13,6 +13,7 @@ from vibe.core.types import (
     ReasoningEvent,
     UserMessageEvent,
 )
+from vibe.core.workflows.models import SchemaValidationFailure
 from vibe.core.workflows.runtime import AgentCapExceeded, WorkflowError, WorkflowRuntime
 from vibe.core.workflows.schema import SchemaValidationError
 
@@ -87,6 +88,43 @@ async def test_spawn_agent_returns_string(runtime: WorkflowRuntime) -> None:
     assert runtime._agent_count == 1
 
 
+async def test_phase_binds_subsequent_agents_implicitly() -> None:
+    # i5: phase('x') sets an ambient phase. Subsequent agent() calls without an
+    # explicit phase= kwarg inherit it. Explicit phase= always wins. phase(None)
+    # resets so agents land in "default" again.
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_agents=10)
+    rt._set_phase("audit")
+    await rt.spawn_agent("a", label="a")  # no phase= → inherits "audit"
+    await rt.spawn_agent("b", label="b", phase="explicit")  # explicit wins
+    rt._set_phase(None)
+    await rt.spawn_agent("c", label="c")  # reset → "default"
+
+    phases = {p.name: p for p in rt._phases.values()}
+    assert any(r.label == "a" for r in phases["audit"].agent_results), "a in audit"
+    assert any(r.label == "b" for r in phases["explicit"].agent_results), "b in explicit"
+    assert any(r.label == "c" for r in phases["default"].agent_results), "c in default"
+
+
+async def test_phase_binding_in_workflow_script() -> None:
+    # End-to-end via a script: phase() then agent() without phase= must land
+    # in the declared phase, not "default".
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_agents=10)
+    script = """
+async def main():
+    phase("research")
+    await agent("find it", label="finder")
+    await agent("another", label="another", phase="override")
+    return {}
+"""
+    result = await rt.run(script)
+    phase_names = {p.name for p in result.run.phases}
+    assert "research" in phase_names
+    assert "override" in phase_names
+    assert "default" not in phase_names, (
+        "agents after phase('research') must inherit it, not land in default"
+    )
+
+
 async def test_spawn_agent_with_schema_returns_dict() -> None:
     schema = {
         "type": "object",
@@ -124,7 +162,10 @@ async def test_spawn_agent_schema_retry_on_bad_json() -> None:
     assert call_idx[0] == 2
 
 
-async def test_spawn_agent_schema_raises_after_max_retries() -> None:
+async def test_spawn_agent_schema_returns_failure_after_max_retries() -> None:
+    # Default (strict_schema=False): schema exhaustion returns a structured
+    # SchemaValidationFailure carrying the raw response, so parallel._safe
+    # never silently swallows the output to None.
     schema = {
         "type": "object",
         "properties": {"answer": {"type": "string"}},
@@ -133,8 +174,47 @@ async def test_spawn_agent_schema_raises_after_max_retries() -> None:
     rt = WorkflowRuntime(
         agent_loop_factory=make_factory(response_text="not json"), schema_retries=1
     )
+    result = await rt.spawn_agent("test", schema=schema)
+    assert isinstance(result, SchemaValidationFailure)
+    assert result.raw_response == "not json"
+    assert "Schema validation failed" in result.error
+    assert result.schema_errors  # last_errors captured
+
+
+async def test_spawn_agent_schema_raises_after_max_retries_strict() -> None:
+    # strict_schema=True preserves the legacy hard-fail behavior.
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(response_text="not json"),
+        schema_retries=1,
+        strict_schema=True,
+    )
     with pytest.raises(SchemaValidationError):
         await rt.spawn_agent("test", schema=schema)
+
+
+async def test_spawn_agent_schema_failure_survives_parallel() -> None:
+    # The P0 fix: a schema-exhausted agent must NOT become None in a parallel()
+    # batch. The script author should be able to recover the raw response.
+    # (Asserted here at the spawn_agent contract level; the parallel() wrapper
+    # only swallows exceptions to None, and spawn_agent no longer raises on
+    # schema exhaustion, so the structured failure flows through untouched.)
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(response_text="not json"),
+        schema_retries=1,
+    )
+    single = await rt.spawn_agent("a", schema=schema)
+    assert isinstance(single, SchemaValidationFailure)
+    assert single.raw_response == "not json"
 
 
 async def test_agent_cap_exceeded() -> None:
@@ -253,6 +333,67 @@ async def test_parallel_no_deadlock_when_exceeding_max_concurrent() -> None:
     assert results == ["mock response"] * 8
 
 
+async def test_parallel_max_concurrency_caps_in_flight_below_global() -> None:
+    # max_concurrency on parallel() must bound in-flight thunks independently of
+    # (and below) the runtime's global max_concurrent. Regression for the
+    # hand-rolled waves(tasks, n=3) chunking loop every provider-limited user
+    # had to write.
+    active = [0]
+    max_active = [0]
+    rt = WorkflowRuntime(
+        agent_loop_factory=_concurrency_tracking_factory(active, max_active),
+        max_concurrent=16,  # global cap is loose; the per-call cap must bind
+        max_agents=100,
+    )
+    ns = rt.build_script_namespace()
+    agent = ns["agent"]
+    await rt.parallel(
+        *[(lambda i=i: agent(f"p{i}")) for i in range(8)],
+        max_concurrency=3,
+    )
+    assert max_active[0] <= 3, (
+        f"per-call cap should bound concurrency to 3, saw {max_active[0]}"
+    )
+
+
+async def test_pipeline_max_concurrency_caps_in_flight_items() -> None:
+    active = [0]
+    max_active = [0]
+    rt = WorkflowRuntime(
+        agent_loop_factory=_concurrency_tracking_factory(active, max_active),
+        max_concurrent=16,
+        max_agents=100,
+    )
+    ns = rt.build_script_namespace()
+    agent = ns["agent"]
+
+    async def stage(prev, item, index):
+        return await agent(item)
+
+    await rt.pipeline(
+        [f"p{i}" for i in range(8)], stage, max_concurrency=2
+    )
+    assert max_active[0] <= 2, (
+        f"per-call cap should bound pipeline concurrency to 2, saw {max_active[0]}"
+    )
+
+
+async def test_parallel_max_concurrency_zero_is_rejected() -> None:
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_agents=100)
+    with pytest.raises(WorkflowError, match="must be >= 1"):
+        await rt.parallel(lambda: asyncio.sleep(0), max_concurrency=0)
+
+
+async def test_pipeline_max_concurrency_zero_is_rejected() -> None:
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_agents=100)
+
+    async def stage(prev, item, index):
+        return item
+
+    with pytest.raises(WorkflowError, match="must be >= 1"):
+        await rt.pipeline([1, 2], stage, max_concurrency=0)
+
+
 async def test_pipeline_no_deadlock_when_exceeding_max_concurrent() -> None:
     rt = WorkflowRuntime(
         agent_loop_factory=make_factory(delay=0.01), max_concurrent=2, max_agents=100
@@ -277,8 +418,8 @@ async def test_response_excludes_prompt_echo_and_reasoning(
 
 
 async def test_phase_tracking(runtime: WorkflowRuntime) -> None:
-    runtime._declare_phase("Find")
-    runtime._declare_phase("Verify")
+    runtime._set_phase("Find")
+    runtime._set_phase("Verify")
     await runtime.spawn_agent("find prompt", phase="Find", label="finder1")
     await runtime.spawn_agent("verify prompt", phase="Verify", label="verifier1")
 
@@ -332,6 +473,63 @@ async def main():
     assert "boom" in result.summary
 
 
+@pytest.mark.asyncio
+async def test_run_reports_stopped_not_failed_on_cancellation() -> None:
+    # A whole-run stop cancels the task awaiting main(); the run must report
+    # STOPPED (not FAILED) and still return a WorkflowResult so the host gets
+    # recovered outputs instead of a bare cancel. Regression for wf-2.
+    from vibe.core.workflows.runtime import WorkflowRuntime
+
+    started = asyncio.Event()
+
+    class _BlockingLoop:
+        async def act(self, prompt, *, response_format=None):
+            started.set()
+            await asyncio.sleep(60)
+            return
+            yield  # pragma: no cover
+
+        class stats:
+            session_prompt_tokens = 10
+            session_completion_tokens = 5
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=lambda prompt, *, agent, parent_context=None: _BlockingLoop()
+    )
+    script = """
+async def main():
+    return await agent("x")
+"""
+    task = asyncio.create_task(rt.run(script))
+    await started.wait()
+    task.cancel()
+    result = await task
+    assert result.run.status.value == "stopped"
+    assert "stopped" in result.summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_awaiting_log_and_phase_is_not_a_trap() -> None:
+    # Regression for wf-1: `await log(...)` / `await phase(...)` used to raise
+    # "NoneType can't be used in 'await'" and kill the run with 0 agents. The
+    # injected wrappers are now awaitable noops.
+    from vibe.core.workflows.runtime import WorkflowRuntime
+
+    async def _factory(prompt, *, agent, parent_context=None):
+        raise AssertionError("should not be reached")
+
+    rt = WorkflowRuntime(agent_loop_factory=_factory)
+    script = """
+async def main():
+    await log("hi")
+    await phase("p")
+    return {"ok": True}
+"""
+    result = await rt.run(script)
+    assert result.run.status.value == "completed"
+    assert result.return_value == {"ok": True}
+
+
 async def test_run_with_parallel_agents(runtime: WorkflowRuntime) -> None:
     script = """
 async def main():
@@ -368,7 +566,7 @@ async def main():
 async def test_event_sink_receives_logs(runtime: WorkflowRuntime) -> None:
     messages: list[str] = []
     runtime.set_event_sink(messages.append)
-    runtime._declare_phase("Test")
+    runtime._set_phase("Test")
     runtime._log("hello")
     assert any("phase: Test" in m for m in messages)
     assert "hello" in messages
@@ -440,7 +638,9 @@ async def main():
     return results
 """
     result = await rt.run(script)
-    assert result.run.status.value == "completed"  # null-on-throw: script succeeded
+    assert result.run.status.value == "completed_with_failures", (
+        "a batch where every agent crashed must not read as unqualified success"
+    )
     assert result.return_value == [None, None]
     assert "2/2" in result.summary, "summary must report that all agents failed"
     assert "boom from act" in result.summary, "summary must include the error"
@@ -469,9 +669,46 @@ async def main():
     return results
 """
     result = await rt.run(script)
-    assert result.run.status.value == "completed"
+    assert result.run.status.value == "completed_with_failures"
     assert "1/2" in result.summary
     assert "boom from act" in result.summary
+
+
+async def test_live_status_reports_per_phase_failure_breakdown() -> None:
+    # live_status() must surface a per-phase completed/failed/failed_details
+    # breakdown so observers (workflow_status tool) can see which agents failed
+    # without parsing the human-readable summary string. Covers the i2 contract.
+    calls = {"n": 0}
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return _raising_factory()(prompt, agent=agent, parent_context=parent_context)
+        return make_factory()(prompt, agent=agent, parent_context=parent_context)
+
+    rt = WorkflowRuntime(agent_loop_factory=factory, max_agents=10, budget_total=1_000_000)
+    script = """
+async def main():
+    phase("audit")
+    results = await parallel(
+        lambda: agent("ok", label="ok", phase="audit"),
+        lambda: agent("bad", label="bad", phase="audit"),
+    )
+    return results
+"""
+    result = await rt.run(script)
+    # The run is over so live_status has no in-flight agents, but the finalized
+    # phase breakdown must still reflect 1 succeeded / 1 failed.
+    status = rt.live_status()
+    audit = next(p for p in status["phases"] if p["name"] == "audit")
+    assert audit["agents"] == 2
+    assert audit["completed"] == 1
+    assert audit["failed"] == 1
+    assert len(audit["failed_details"]) == 1
+    assert audit["failed_details"][0]["label"] == "bad"
+    assert "boom from act" in (audit["failed_details"][0]["error"] or "")
+    # And the run-level status must reflect the partial failure.
+    assert result.run.status.value == "completed_with_failures"
 
 
 def _retry_then_succeed_factory(per_attempt_in: int, per_attempt_out: int) -> Any:
@@ -800,7 +1037,10 @@ async def test_isolated_agent_with_schema_parses_output() -> None:
     assert await rt.spawn_agent("x", schema=schema, isolation="worktree") == {"ok": True}
 
 
-async def test_isolated_agent_bad_json_raises() -> None:
+async def test_isolated_agent_bad_json_returns_failure() -> None:
+    # Default (strict_schema=False): isolated-agent schema exhaustion returns a
+    # structured SchemaValidationFailure (mirrors the in-process path) so the
+    # raw output is recoverable instead of being lost to None via parallel._safe.
     async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
         return "not json"
 
@@ -808,7 +1048,24 @@ async def test_isolated_agent_bad_json_raises() -> None:
     rt = WorkflowRuntime(
         agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=stub
     )
-    with pytest.raises(WorkflowError):
+    result = await rt.spawn_agent("x", schema=schema, isolation="worktree")
+    assert isinstance(result, SchemaValidationFailure)
+    assert result.raw_response == "not json"
+
+
+async def test_isolated_agent_bad_json_raises_strict() -> None:
+    # strict_schema=True preserves the legacy hard-fail behavior for isolated agents.
+    async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
+        return "not json"
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        isolated_executor=stub,
+        strict_schema=True,
+    )
+    with pytest.raises(SchemaValidationError):
         await rt.spawn_agent("x", schema=schema, isolation="worktree")
 
 
@@ -1073,7 +1330,16 @@ async def test_live_agent_visible_and_retired_around_execution() -> None:
     assert live["live_agent_count"] == 0  # retired after finalize
     assert live["tokens_live"] == 0
     assert live["tokens_finalized"] == 1500  # 1000 + 500
-    assert live["phases"] == [{"name": "P", "agents": 1, "tokens": 1500}]
+    assert live["phases"] == [
+        {
+            "name": "P",
+            "agents": 1,
+            "tokens": 1500,
+            "completed": 1,
+            "failed": 0,
+            "failed_details": [],
+        }
+    ]
 
 
 async def test_live_tokens_do_not_double_count_with_finalized(runtime: WorkflowRuntime) -> None:
@@ -1101,6 +1367,98 @@ async def test_live_tokens_do_not_double_count_with_finalized(runtime: WorkflowR
 
     gate.set()
     await task
+
+
+async def test_live_response_preview_visible_mid_run() -> None:
+    # i4: response_so_far is populated on _LiveAgent as content streams, and
+    # visible in live_status() as response_preview while the agent is running.
+    gate = asyncio.Event()
+    rt = WorkflowRuntime(
+        agent_loop_factory=_gated_stats_factory(gate),
+        max_agents=10,
+        budget_total=1_000_000,
+    )
+    task = asyncio.create_task(rt.spawn_agent("work", phase="P", label="worker"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    live = rt.live_status()
+    assert live["live_agent_count"] == 1
+    # The gated loop yields "partial" before blocking on the gate.
+    assert live["live_agents"][0]["response_preview"] == "partial"
+
+    gate.set()
+    await task
+
+
+async def test_agent_timeout_cancels_hung_agent() -> None:
+    # i7: agent_timeout_s wraps the agent in a watchdog that cancels it after
+    # the timeout. A hung agent (blocks forever on a gate) must be cancelled
+    # and recorded as failed, not block the run indefinitely.
+    gate = asyncio.Event()
+
+    @dataclass
+    class _HungLoop:
+        stats: MockStats = field(default_factory=MockStats)
+
+        async def act(
+            self, prompt: str, *, response_format: Any = None
+        ) -> AsyncGenerator[AssistantEvent, None]:
+            yield AssistantEvent(content="starting", message_id="a1")
+            await gate.wait()  # never set — simulates a hung agent
+            yield AssistantEvent(content="should never reach", message_id="a2")
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        return _HungLoop()
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=factory,
+        max_agents=10,
+        budget_total=1_000_000,
+        agent_timeout_s=0.1,
+    )
+    # The agent should be cancelled by the watchdog after 0.1s, not block forever.
+    result = await rt.spawn_agent("hang", label="hung")
+    # A cancelled agent returns partial output (the schemaless cancel path).
+    assert "starting" in result
+    # The agent must be recorded as failed (not completed).
+    phase = next(iter(rt._phases.values()))
+    assert len(phase.agent_results) == 1
+    assert phase.agent_results[0].completed is False
+    assert "timed out" in (phase.agent_results[0].error or "")
+
+
+async def test_agent_budget_ceiling_cancels_spendy_agent() -> None:
+    # i7: agent_budget_ceiling checks per-agent token spend mid-stream and
+    # cancels the agent if it exceeds the ceiling. A mock loop that reports
+    # high token stats triggers the ceiling and the agent is stopped.
+    @dataclass
+    class _SpendyStats:
+        session_prompt_tokens: int = 100_000
+        session_completion_tokens: int = 100_000
+
+    @dataclass
+    class _SpendyLoop:
+        stats: _SpendyStats = field(default_factory=_SpendyStats)
+
+        async def act(
+            self, prompt: str, *, response_format: Any = None
+        ) -> AsyncGenerator[AssistantEvent, None]:
+            yield AssistantEvent(content="spending tokens", message_id="a1")
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        return _SpendyLoop()
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=factory,
+        max_agents=10,
+        budget_total=1_000_000,
+        agent_budget_ceiling=50_000,  # well below the 200K the mock reports
+    )
+    result = await rt.spawn_agent("spend", label="spendy")
+    phase = next(iter(rt._phases.values()))
+    assert len(phase.agent_results) == 1
+    assert phase.agent_results[0].completed is False
 
 
 async def test_live_status_budget_snapshot(runtime: WorkflowRuntime) -> None:

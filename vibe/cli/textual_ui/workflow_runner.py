@@ -14,6 +14,7 @@ from vibe.core.workflows.models import (
     BudgetSnapshot,
     PhaseReport,
     WorkflowResult,
+    WorkflowRun,
     WorkflowRunSnapshot,
     WorkflowStatus,
 )
@@ -38,6 +39,11 @@ class WorkflowRunEntry:
     task: asyncio.Task[WorkflowResult] | None = None
     result: WorkflowResult | None = None
     error: str | None = None
+    # Exactly-once delivery guard (i6): set True the first time _on_complete
+    # fires for this entry. Defends against double-delivery from resume replay,
+    # future fire sites, or external re-invocation — the host agent's context
+    # must never receive the same run's payload twice.
+    delivered: bool = False
 
     @property
     def status(self) -> WorkflowStatus:
@@ -180,15 +186,47 @@ class WorkflowRunner:
         self._prune_finished_runs()
         return run_id
 
+    @staticmethod
+    def _build_stopped_result(entry: WorkflowRunEntry) -> WorkflowResult:
+        """Minimal STOPPED result for runs cancelled before run() could build
+        one (e.g. cancelled during setup). Carries whatever phases the runtime
+        already recorded plus a clear 'stopped by user' summary."""
+        runtime_run = entry.runtime.build_run(script_path=None, args=entry.args)
+        runtime_run.status = WorkflowStatus.STOPPED
+        runtime_run.finished_at = time.monotonic()
+        try:
+            runtime_run.budget = entry.runtime._budget.snapshot()  # type: ignore[attr-defined]
+        except Exception:
+            runtime_run.budget = BudgetSnapshot(total=None, reserved=0, spent=0)
+        return WorkflowResult(
+            run=runtime_run,
+            summary=f"Workflow stopped: {runtime_run.agent_count} agent(s) "
+            "(stopped by user; partial outputs recovered below where available).",
+        )
+
     async def _run_workflow(self, entry: WorkflowRunEntry, args: Any) -> WorkflowResult:
         try:
             result = await entry.runtime.run(entry.script_source, args=args)
             entry.result = result
-            if self._on_complete:
+            if self._on_complete and not entry.delivered:
+                entry.delivered = True
                 await self._on_complete(result)
             return result
         except asyncio.CancelledError:
+            # run() now returns a STOPPED WorkflowResult on cancel instead of
+            # raising; if we still see a CancelledError here, build a minimal
+            # STOPPED entry so the host sees a coherent status.
             entry.error = "Cancelled"
+            if entry.result is None:
+                entry.result = self._build_stopped_result(entry)
+                if self._on_complete and not entry.delivered:
+                    entry.delivered = True
+                    try:
+                        await self._on_complete(entry.result)
+                    except Exception:
+                        logger.warning(
+                            "on_complete hook failed for stopped run", exc_info=True
+                        )
             raise
         except Exception as e:
             entry.error = str(e)

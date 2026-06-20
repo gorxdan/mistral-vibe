@@ -26,6 +26,7 @@ from vibe.core.workflows.models import (
     AgentResult,
     CachedAgentResult,
     PhaseReport,
+    SchemaValidationFailure,
     WorkflowResult,
     WorkflowRun,
     WorkflowRunSnapshot,
@@ -129,6 +130,22 @@ def _awaitable(fn: Any) -> Any:
     return wrapper
 
 
+def _eager_awaitable(fn: Any) -> Any:
+    """Like _awaitable but executes eagerly on call, not deferred to __await__.
+
+    Used for ``phase()`` so implicit phase binding takes effect immediately
+    whether or not the script awaits the return value. The returned object is
+    still await-safe (a falsy noop), so ``await phase("x")`` doesn't raise.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> _AwaitableNoop:
+        fn(*args, **kwargs)  # execute NOW so binding takes effect
+        return _AwaitableNoop(lambda *a, **k: None, (), {})  # await-safe noop
+
+    return wrapper
+
+
 def _loop_log_path(loop: Any) -> Path | None:
     """Path to an in-process agent loop's transcript (messages.jsonl), or None.
 
@@ -210,10 +227,23 @@ class _LiveAgent:
     # dir removed on exit, so there is nothing stable to tail. Refreshed per
     # retry attempt, so it always points at the current attempt's log.
     log_path: Path | None = field(default=None, init=False)
+    # i4: partial response text accumulated as the agent streams, so observers
+    # can see what an agent is producing mid-run (not only after finalize).
+    # Capped at _LIVE_RESPONSE_CAP chars to bound memory; the full text lives
+    # in the agent's transcript and in AgentResult.response after finalize.
+    response_so_far: str = field(default="", init=False)
+    # i7: per-agent timeout watchdog task. Cancelled in _retire_live (called at
+    # every exit path via _finalize_agent) so it never outlives the agent.
+    watchdog: asyncio.Task[None] | None = field(default=None, init=False)
 
     @property
     def tokens_total(self) -> int:
         return self.tokens_in + self.tokens_out
+
+
+# Cap on how much partial response text we accumulate on _LiveAgent. The full
+# text is in the transcript; this is just for live-preview window in live_status.
+_LIVE_RESPONSE_CAP = 8000
 
 
 class _MessageBoard:
@@ -285,6 +315,18 @@ class WorkflowRuntime:
     max_agents: int = DEFAULT_MAX_AGENTS
     budget_total: int | None = DEFAULT_BUDGET_TOTAL
     schema_retries: int = DEFAULT_SCHEMA_RETRIES
+    # When True, an agent that exhausts its schema-retry budget raises
+    # SchemaValidationError (the legacy hard-fail behavior). When False (default),
+    # the agent returns a SchemaValidationFailure carrying the raw response so the
+    # workflow script never silently loses output to None via parallel._safe.
+    strict_schema: bool = False
+    # i7: per-agent safety guardrails (opt-in, default off). agent_timeout_s
+    # wraps each agent's body in asyncio.wait_for so a hung agent is stopped
+    # after N seconds instead of blocking the run indefinitely. agent_budget_ceiling
+    # checks per-agent token spend mid-stream and cancels the agent if it exceeds
+    # the ceiling — catches runaway agents that read freely in a tool loop.
+    agent_timeout_s: float | None = None
+    agent_budget_ceiling: int | None = None
     agent_loop_factory: AgentLoopFactory | None = None
     # Resolves a workflow name to its script source, enabling nested workflow()
     # calls. Wired from WorkflowManager at launch; None disables nesting.
@@ -298,6 +340,10 @@ class WorkflowRuntime:
     _nesting_depth: int = field(default=0, init=False)
     _phases: dict[str, PhaseReport] = field(default_factory=dict, init=False)
     _phase_order: list[str] = field(default_factory=list, init=False)
+    # Implicit phase binding (i5): set by phase(name), inherited by subsequent
+    # agent() calls that don't pass an explicit phase= kwarg. None means no
+    # ambient phase (agents land in "default"). Explicit phase= always wins.
+    _current_phase: str | None = field(default=None, init=False)
     _event_sink: Callable[[str], None] | None = field(default=None, init=False)
     _started_at: float = field(default_factory=time.monotonic, init=False)
     _cache: dict[str, CachedAgentResult] = field(default_factory=dict, init=False)
@@ -359,10 +405,20 @@ class WorkflowRuntime:
         if self._event_sink:
             self._event_sink(msg)
 
-    def _declare_phase(self, name: str) -> None:
+    def _set_phase(self, name: str | None) -> None:
+        """Declare a phase AND bind it as the ambient phase for subsequent
+        agent() calls (i5). Passing None resets the ambient phase so agents
+        without an explicit phase= land in "default" again. Explicit phase=
+        on agent() always overrides the ambient value.
+        """
+        if name is None:
+            self._current_phase = None
+            self._log("phase: (reset)")
+            return
         if name not in self._phases:
             self._phases[name] = PhaseReport(name=name)
             self._phase_order.append(name)
+        self._current_phase = name
         self._log(f"phase: {name}")
 
     def _record_agent_result(self, result: AgentResult) -> None:
@@ -392,6 +448,11 @@ class WorkflowRuntime:
     ) -> None:
         live.status = status
         live.error = error
+        # i7: cancel the timeout watchdog so it doesn't fire after the agent
+        # has already finished. Every exit path runs through _finalize_agent
+        # -> _retire_live, so this covers all cases.
+        if live.watchdog is not None and not live.watchdog.done():
+            live.watchdog.cancel()
         self._live_agents.pop(live.agent_id, None)
 
     def _validate_workflow_profile(self, agent: str, isolation: str | None) -> None:
@@ -503,8 +564,11 @@ class WorkflowRuntime:
         budget_estimate: int | None = None,
         isolation: str | None = None,
         strip_unknown: bool = True,
-    ) -> str | dict[str, Any]:
-        cache_key = _prompt_hash(prompt, agent, phase, isolation)
+    ) -> str | dict[str, Any] | SchemaValidationFailure:
+        # i5: implicit phase binding. An explicit phase= kwarg always wins;
+        # otherwise inherit the ambient phase set by the last phase() call.
+        effective_phase = phase if phase is not None else self._current_phase
+        cache_key = _prompt_hash(prompt, agent, effective_phase, isolation)
         if cached := self._cache.get(cache_key):
             self._log(f"cache hit: {label or agent}")
             self._record_cached_result(cached)
@@ -542,7 +606,7 @@ class WorkflowRuntime:
                     agent=agent,
                     model=model,
                     label=label,
-                    phase=phase,
+                    phase=effective_phase,
                     schema=schema,
                     reservation=reservation,
                     cache_key=cache_key,
@@ -557,7 +621,7 @@ class WorkflowRuntime:
                 agent=agent,
                 model=model,
                 label=label,
-                phase=phase,
+                phase=effective_phase,
                 schema=schema,
                 reservation=reservation,
                 cache_key=cache_key,
@@ -576,7 +640,7 @@ class WorkflowRuntime:
         reservation: Reservation,
         cache_key: str,
         strip_unknown: bool = True,
-    ) -> str | dict[str, Any]:
+    ) -> str | dict[str, Any] | SchemaValidationFailure:
         response_format = build_response_format(schema) if schema is not None else None
         effective_prompt = prompt
         if schema is not None:
@@ -588,6 +652,29 @@ class WorkflowRuntime:
         # in that case the agent can't be cancelled individually, only via the
         # whole-run stop.
         live.task = asyncio.current_task()
+
+        # i7: per-agent timeout watchdog (opt-in). A separate asyncio task that
+        # sleeps for agent_timeout_s then cancels the agent. Catches both slowly-
+        # spending agents AND fully stuck agents (no events emitted) — the inline
+        # budget-ceiling check only fires on event boundaries, so the watchdog
+        # is the backstop for pathological hangs. Cancelled in _retire_live.
+        if self.agent_timeout_s is not None:
+
+            async def _timeout_watchdog() -> None:
+                try:
+                    await asyncio.sleep(self.agent_timeout_s)
+                    if (
+                        not live.cancel_requested
+                        and live.task is not None
+                        and not live.task.done()
+                    ):
+                        live.cancel_requested = True
+                        live.error = f"agent timed out after {self.agent_timeout_s}s"
+                        live.task.cancel()
+                except asyncio.CancelledError:
+                    pass
+
+            live.watchdog = asyncio.create_task(_timeout_watchdog())
 
         last_errors: list[str] = []
         accumulated: list[str] = []
@@ -611,6 +698,28 @@ class WorkflowRuntime:
                         content = self._extract_content(event)
                         if content:
                             accumulated.append(content)
+                            # i4: accumulate partial response for live preview.
+                            if len(live.response_so_far) < _LIVE_RESPONSE_CAP:
+                                live.response_so_far += content
+                        # i7: per-agent budget ceiling (opt-in). Check mid-stream
+                        # so a runaway agent is stopped before exhausting the run
+                        # budget, not just at reserve() time. Set completed=False
+                        # and break — no task.cancel() (cancelling the current
+                        # task is racy if there's no real await after the break).
+                        if self.agent_budget_ceiling is not None:
+                            spent = (
+                                tokens_in
+                                + getattr(loop.stats, "session_prompt_tokens", 0)
+                                + tokens_out
+                                + getattr(loop.stats, "session_completion_tokens", 0)
+                            )
+                            if spent > self.agent_budget_ceiling:
+                                completed = False
+                                error_msg = (
+                                    f"agent exceeded per-agent budget ceiling "
+                                    f"({spent} > {self.agent_budget_ceiling} tokens)"
+                                )
+                                break
                         # Live token accounting: the real AgentLoop updates
                         # stats at turn boundaries (between emitted events), so
                         # polling after each event reflects spend as each turn
@@ -624,12 +733,14 @@ class WorkflowRuntime:
                             loop.stats, "session_completion_tokens", 0
                         )
             except asyncio.CancelledError:
-                # Whole-run stop re-raises; a targeted cancel_agent() sets
-                # cancel_requested and we record this agent as failed instead.
+                # Whole-run stop re-raises; a targeted cancel_agent() or the i7
+                # timeout watchdog sets cancel_requested and we record this agent
+                # as failed instead. Use live.error if the watchdog pre-set a
+                # descriptive message (e.g. "agent timed out after Ns").
                 if not live.cancel_requested:
                     raise
                 completed = False
-                error_msg = "cancelled by user"
+                error_msg = live.error or "cancelled by user"
                 break
             except Exception as e:
                 completed = False
@@ -728,6 +839,37 @@ class WorkflowRuntime:
                 return "".join(accumulated)
             raise WorkflowError(error_msg or "Agent failed without producing output")
 
+        if error_msg is not None:
+            # act() raised before schema validation. Surface the real error
+            # instead of a misleading SchemaValidationError (mirrors the
+            # schemaless path above): the agent crashed, it didn't produce
+            # invalid output.
+            self._finalize_agent(
+                prompt=prompt,
+                response="".join(accumulated),
+                label=label,
+                phase=phase,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                reservation=reservation,
+                completed=False,
+                error=error_msg,
+                cache_key=cache_key,
+                agent=agent,
+                model=model,
+                live=live,
+            )
+            if live.cancel_requested:
+                return "".join(accumulated)
+            raise WorkflowError(error_msg)
+
+        # Genuine schema exhaustion: act() ran clean but never produced valid
+        # output. Record the raw text so it survives, then either raise (strict)
+        # or return a structured failure so the workflow script can recover it
+        # instead of losing it to None via parallel._safe.
+        schema_error_summary = (
+            f"Schema validation failed after {self.schema_retries + 1} attempts"
+        )
         self._finalize_agent(
             prompt=prompt,
             response="".join(accumulated),
@@ -737,15 +879,21 @@ class WorkflowRuntime:
             tokens_out=tokens_out,
             reservation=reservation,
             completed=False,
-            error=f"Schema validation failed after {self.schema_retries + 1} attempts",
+            error=schema_error_summary,
             cache_key=cache_key,
             agent=agent,
             model=model,
             live=live,
         )
-        raise SchemaValidationError(
-            f"Response did not match schema after {self.schema_retries + 1} attempts. "
-            f"Last errors: {'; '.join(last_errors)}"
+        if self.strict_schema:
+            raise SchemaValidationError(
+                f"Response did not match schema after {self.schema_retries + 1} attempts. "
+                f"Last errors: {'; '.join(last_errors)}"
+            )
+        return SchemaValidationFailure(
+            raw_response="".join(accumulated),
+            error=schema_error_summary,
+            schema_errors=list(last_errors),
         )
 
     def _create_loop(
@@ -860,6 +1008,7 @@ class WorkflowRuntime:
         result = AgentResult(
             label=label,
             phase=phase,
+            agent=agent,
             prompt=prompt,
             response=response,
             tokens_in=tokens_in,
@@ -896,6 +1045,7 @@ class WorkflowRuntime:
         result = AgentResult(
             label=cached.label,
             phase=cached.phase,
+            agent=cached.agent,
             prompt=f"[cached] {cached.agent}",
             response=cached.response,
             tokens_in=0,
@@ -918,7 +1068,7 @@ class WorkflowRuntime:
         reservation: Reservation,
         cache_key: str,
         strip_unknown: bool = True,
-    ) -> str | dict[str, Any]:
+    ) -> str | dict[str, Any] | SchemaValidationFailure:
         """Run an isolation='worktree' agent: a `vibe -p` subprocess in a fresh
         git worktree, so file mutations cannot collide with other agents. The
         worktree's branch is kept for manual merge if the agent changed files."""
@@ -960,12 +1110,14 @@ class WorkflowRuntime:
             error_msg = str(e)
 
         response: str | dict[str, Any] = output
+        schema_errors: list[str] = []
         if completed and schema is not None:
             try:
                 parsed = json.loads(_strip_code_fences(output))
             except json.JSONDecodeError as e:
                 completed = False
                 error_msg = f"isolated agent returned invalid JSON: {e}"
+                schema_errors = [str(e)]
             else:
                 if strip_unknown:
                     parsed = strip_unknown_properties(parsed, schema)
@@ -973,6 +1125,7 @@ class WorkflowRuntime:
                 if errors:
                     completed = False
                     error_msg = "; ".join(str(err) for err in errors)
+                    schema_errors = [str(err) for err in errors]
                 else:
                     response = parsed
 
@@ -1007,6 +1160,21 @@ class WorkflowRuntime:
             live=live,
         )
         if not completed:
+            # Schema/JSON failures (output produced but didn't validate) return a
+            # structured SchemaValidationFailure so parallel._safe doesn't lose
+            # the output to None. Subprocess crashes (executor raised, or output
+            # was empty) still raise WorkflowError. strict_schema forces a raise
+            # for schema failures. Mirrors the in-process _run_agent path.
+            if schema is not None and schema_errors:
+                if self.strict_schema:
+                    raise SchemaValidationError(
+                        error_msg or "isolated agent schema validation failed"
+                    )
+                return SchemaValidationFailure(
+                    raw_response=output,
+                    error=error_msg or "isolated agent schema validation failed",
+                    schema_errors=schema_errors,
+                )
             raise WorkflowError(f"isolated agent failed: {error_msg}")
         return response
 
@@ -1271,7 +1439,7 @@ class WorkflowRuntime:
             "agent": _agent,
             "parallel": self.parallel,
             "pipeline": self.pipeline,
-            "phase": _awaitable(self._declare_phase),
+            "phase": _eager_awaitable(self._set_phase),
             "log": _awaitable(self._log),
             "workflow": _workflow,
             "budget": ReadOnlyBudget(self._budget),
@@ -1353,11 +1521,22 @@ class WorkflowRuntime:
             report = self._phases.get(name)
             if report is None:
                 continue
+            completed = sum(1 for r in report.agent_results if r.completed)
+            failed_results = [r for r in report.agent_results if not r.completed]
             phases.append(
                 {
                     "name": name,
                     "agents": len(report.agent_results),
                     "tokens": report.tokens_total,
+                    # Per-phase pass/fail breakdown so observers (workflow_status
+                    # tool, /workflows list) can see which agents failed without
+                    # waiting for the run to finish and parsing the summary string.
+                    "completed": completed,
+                    "failed": len(failed_results),
+                    "failed_details": [
+                        {"label": r.label, "error": r.error}
+                        for r in failed_results
+                    ],
                 }
             )
         live = [
@@ -1371,6 +1550,10 @@ class WorkflowRuntime:
                 "tokens_out": la.tokens_out,
                 "tokens": la.tokens_total,
                 "elapsed_s": round(time.monotonic() - la.started_at, 1),
+                # i4: partial response preview so observers can see what the
+                # agent is producing mid-run. Capped at 2000 chars for the
+                # status view (full text is in the transcript + after finalize).
+                "response_preview": la.response_so_far[:2000],
             }
             for la in self._live_agents.values()
         ]
@@ -1423,6 +1606,20 @@ class WorkflowRuntime:
             error = str(e)
             logger.error("Workflow script failed", exc_info=e)
 
+        # Compute failed agents BEFORE building the run/summary so we can promote
+        # a clean COMPLETED to COMPLETED_WITH_FAILURES when any agent did not
+        # complete. Without this, a batch where every agent crashed (or schema-
+        # exhausted) would read as an unqualified success — the status enum is
+        # the machine-readable contract; the summary string is for humans.
+        failed = [
+            ar
+            for p in self._phases.values()
+            for ar in p.agent_results
+            if not ar.completed
+        ]
+        if status == WorkflowStatus.COMPLETED and failed:
+            status = WorkflowStatus.COMPLETED_WITH_FAILURES
+
         run = self.build_run(script_path=None, args=args)
         run.status = status
         run.finished_at = time.monotonic()
@@ -1436,12 +1633,8 @@ class WorkflowRuntime:
             summary += f" — error: {error}"
         # parallel()/pipeline() degrade a crashing agent to None instead of
         # failing the run (documented null-on-throw, so one bad agent doesn't
-        # kill a batch). The cost is that a batch where EVERY agent crashed
-        # would otherwise read as an unqualified success. Surface the failed
-        # agents and their (deduped) errors so a systemic failure is visible.
-        failed = [
-            ar for p in run.phases for ar in p.agent_results if not ar.completed
-        ]
+        # kill a batch). Surface the failed agents and their (deduped) errors
+        # so a systemic failure is visible in the human-readable summary too.
         if failed:
             seen: list[str] = []
             for ar in failed:

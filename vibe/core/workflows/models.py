@@ -10,7 +10,9 @@ class WorkflowStatus(StrEnum):
     RUNNING = auto()
     PAUSED = auto()
     COMPLETED = auto()
+    COMPLETED_WITH_FAILURES = auto()
     FAILED = auto()
+    STOPPED = auto()
 
 
 class BudgetSnapshot(BaseModel):
@@ -32,6 +34,7 @@ class AgentResult(BaseModel):
 
     label: str | None = None
     phase: str | None = None
+    agent: str | None = None
     prompt: str
     response: str | dict[str, Any]
     tokens_in: int = 0
@@ -43,6 +46,25 @@ class AgentResult(BaseModel):
     @property
     def tokens_total(self) -> int:
         return self.tokens_in + self.tokens_out
+
+
+class SchemaValidationFailure(BaseModel):
+    """Structured return value when an agent exhausts its schema-retry budget.
+
+    Returned (not raised) by ``WorkflowRuntime.spawn_agent`` in the default
+    non-strict mode so a workflow script never silently loses the agent's raw
+    output to ``None``. Callers that want the legacy hard-fail behavior can set
+    ``strict_schema=True`` on the runtime, in which case ``spawn_agent`` raises
+    ``SchemaValidationError`` instead.
+
+    Scripts check for failure with ``isinstance(result, SchemaValidationFailure)``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    raw_response: str
+    error: str
+    schema_errors: list[str] = Field(default_factory=list)
 
 
 class PhaseReport(BaseModel):

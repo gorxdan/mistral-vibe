@@ -527,6 +527,7 @@ class VibeApp(App):  # noqa: PLR0904
         self._register_workflow_commands()
         self.agent_loop.launch_workflow_callback = self._launch_workflow_from_tool
         self.agent_loop.workflow_status_callback = self._workflow_status_for_tool
+        self.agent_loop.workflow_results_callback = self._workflow_results_for_tool
         self.agent_loop.workflow_stop_callback = self._workflow_stop_for_tool
         self.agent_loop.team_dir_callback = self._team_dir_for_tool
         self._team_manager: TeamManager | None = None
@@ -775,6 +776,28 @@ class VibeApp(App):  # noqa: PLR0904
                 severity="warning",
                 markup=False,
                 timeout=10,
+            )
+        # One-time nudge to install bubblewrap when the sandbox is enabled with
+        # containment but only the weaker `unshare` backend is available — the
+        # unshare fallback provides namespace isolation but no filesystem write
+        # confinement, which is almost certainly not what the user opted into.
+        try:
+            from vibe.core.tools.sandbox import unshare_confinement_nudge
+
+            bash_cfg = self.agent_loop.tool_manager.get_tool_config("bash")
+            sb = getattr(bash_cfg, "sandbox", None)
+            if sb is not None:
+                nudge = unshare_confinement_nudge(
+                    sandbox_enabled=sb.enabled,
+                    backend_override=sb.backend,
+                    write_dirs=sb.write_dirs,
+                    allow_network=sb.allow_network,
+                )
+                if nudge:
+                    self.notify(nudge, severity="warning", markup=False, timeout=15)
+        except Exception:
+            logger.debug(
+                "bubblewrap install nudge skipped", exc_info=True
             )
 
     async def _watch_init_completion(self) -> None:
@@ -3202,6 +3225,91 @@ class VibeApp(App):  # noqa: PLR0904
                 }
             )
         return out
+
+    def _workflow_results_for_tool(
+        self,
+        run_id: str,
+        *,
+        phase: str | None = None,
+        raw: bool = False,
+    ) -> dict[str, Any]:
+        """Back the workflow_results model tool (i1): return the actual agent
+        outputs for a run, tagged with completion status. Sources finalized
+        phases from the result if the run completed/stopped/failed, else from
+        the live runtime so results are also recoverable mid-run.
+
+        Per-agent response text is capped to 4KB by default so a large batch
+        doesn't flood the host's context; ``raw=True`` lifts the cap. Failed
+        agents' raw responses are included so schema-validation failures and
+        crashes are recoverable instead of silently swallowed.
+        """
+        from vibe.core.tools.builtins.workflow_results import WorkflowResults
+
+        cap = None if raw else WorkflowResults._DEFAULT_PER_AGENT_CHAR_CAP
+
+        entry = next(
+            (r for r in self._workflow_runner.runs if r.run_id == run_id), None
+        )
+        if entry is None:
+            return {
+                "run_id": run_id,
+                "status": "unknown",
+                "phases": [],
+                "agent_results": [],
+            }
+
+        if entry.result is not None:
+            run_phases = entry.result.run.phases
+            status = entry.result.run.status.value
+        else:
+            run_phases = list(entry.runtime._phases.values())
+            status = entry.status.value
+
+        if phase is not None:
+            run_phases = [p for p in run_phases if p.name == phase]
+
+        phase_summaries: list[dict[str, Any]] = []
+        agent_results: list[dict[str, Any]] = []
+        for p in run_phases:
+            completed = sum(1 for r in p.agent_results if r.completed)
+            phase_summaries.append(
+                {
+                    "name": p.name,
+                    "agents": len(p.agent_results),
+                    "completed": completed,
+                    "failed": len(p.agent_results) - completed,
+                }
+            )
+            for r in p.agent_results:
+                response: Any = r.response
+                if (
+                    cap is not None
+                    and isinstance(response, str)
+                    and len(response) > cap
+                ):
+                    response = (
+                        response[:cap]
+                        + "\n…(truncated; pass raw=true for full text)"
+                    )
+                agent_results.append(
+                    {
+                        "label": r.label,
+                        "agent": r.agent,
+                        "phase": p.name,
+                        "completed": r.completed,
+                        "response": response,
+                        "error": r.error,
+                        "tokens_in": r.tokens_in,
+                        "tokens_out": r.tokens_out,
+                    }
+                )
+
+        return {
+            "run_id": run_id,
+            "status": status,
+            "phases": phase_summaries,
+            "agent_results": agent_results,
+        }
 
     async def _workflow_stop_for_tool(
         self, run_id: str | None, all_runs: bool

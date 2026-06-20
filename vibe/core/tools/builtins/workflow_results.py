@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from pydantic import BaseModel, Field
+
+from vibe.core.tools.base import (
+    BaseTool,
+    BaseToolConfig,
+    BaseToolState,
+    InvokeContext,
+    ToolError,
+    ToolPermission,
+)
+from vibe.core.tools.permissions import PermissionContext
+from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
+from vibe.core.types import ToolResultEvent, ToolStreamEvent
+
+if TYPE_CHECKING:
+    from vibe.core.config import VibeConfig
+
+
+class WorkflowResultsArgs(BaseModel):
+    run_id: str = Field(
+        description=(
+            "Workflow run id (e.g. 'wf-1'). Required — there is no 'all runs' "
+            "form for results."
+        )
+    )
+    phase: str | None = Field(
+        default=None,
+        description=(
+            "Optional phase name to filter to. When omitted, every phase's "
+            "agents are returned."
+        ),
+    )
+    raw: bool = Field(
+        default=False,
+        description=(
+            "Include the full response text for each agent. Default (false) "
+            "truncates each agent's response to 4KB so a large run doesn't "
+            "flood context. Pass true when you need the complete output."
+        ),
+    )
+
+
+class WorkflowResultsResult(BaseModel):
+    run_id: str
+    status: str = Field(
+        description=(
+            "Run-level status: running, paused, completed, "
+            "completed_with_failures, failed, or stopped."
+        )
+    )
+    phases: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Per-phase summary: {name, agents, completed, failed}.",
+    )
+    agent_results: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "One dict per finalized agent: {label, agent, phase, completed, "
+            "response, error, tokens_in, tokens_out}. response may be truncated "
+            "(pass raw=true for full text)."
+        ),
+    )
+
+
+class WorkflowResultsConfig(BaseToolConfig):
+    permission: ToolPermission = ToolPermission.ALWAYS
+
+
+class WorkflowResults(
+    BaseTool[
+        WorkflowResultsArgs, WorkflowResultsResult, WorkflowResultsConfig, BaseToolState
+    ],
+    ToolUIData[WorkflowResultsArgs, WorkflowResultsResult],
+):
+    read_only: ClassVar[bool] = True
+    description: ClassVar[str] = (
+        "Retrieve the actual outputs produced by a workflow run's agents — "
+        "formatted and tagged with completion status. Use this to recover work "
+        "from a completed, stopped, or partially failed run, especially when the "
+        "auto-delivered completion summary was truncated or when schema-validation "
+        "failures occurred (failed agents' raw responses are included). Returns "
+        "per-agent {label, agent, phase, completed, response, error, tokens}. "
+        "Pass raw=true for untruncated responses. Always prefer this over "
+        "workflow_status when you need the agents' output text rather than "
+        "live progress metadata."
+    )
+
+    # Per-agent response cap when raw=false. Chosen so a 16-agent batch fits in
+    # ~64KB rather than flooding the host's context. raw=true lifts it entirely.
+    _DEFAULT_PER_AGENT_CHAR_CAP: ClassVar[int] = 4000
+
+    @classmethod
+    def is_available(cls, config: VibeConfig | None = None) -> bool:
+        # Mirrors launch_workflow / workflow_status: hidden when workflows are
+        # disabled, since there is nothing to retrieve.
+        if config is None:
+            return True
+        return not getattr(config, "disable_workflows", False)
+
+    @classmethod
+    def get_call_display(cls, event: Any) -> ToolCallDisplay:
+        args = event.args
+        if isinstance(args, WorkflowResultsArgs):
+            suffix = f", phase={args.phase}" if args.phase else ""
+            return ToolCallDisplay(summary=f"Workflow results: {args.run_id}{suffix}")
+        return ToolCallDisplay(summary="Workflow results")
+
+    @classmethod
+    def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
+        result = event.result
+        if isinstance(result, WorkflowResultsResult):
+            n = len(result.agent_results)
+            failed = sum(1 for r in result.agent_results if not r.get("completed"))
+            msg = f"Workflow results: {n} agent(s)"
+            if failed:
+                msg += f" ({failed} failed)"
+            return ToolResultDisplay(success=True, message=msg)
+        return ToolResultDisplay(success=True, message="Workflow results")
+
+    @classmethod
+    def get_status_text(cls) -> str:
+        return "Retrieving workflow results"
+
+    def resolve_permission(
+        self, args: WorkflowResultsArgs
+    ) -> PermissionContext | None:
+        # Read-only retrieval of run data the host already owns. Low blast
+        # radius — no reason to gate behind ASK.
+        return PermissionContext(permission=ToolPermission.ALWAYS)
+
+    async def run(
+        self, args: WorkflowResultsArgs, ctx: InvokeContext | None = None
+    ) -> AsyncGenerator[ToolStreamEvent | WorkflowResultsResult, None]:
+        if ctx is None:
+            raise ToolError("Workflow results tool requires context")
+        if ctx.workflow_results_callback is None:
+            raise ToolError(
+                "Workflow results are not available in this context "
+                "(no results callback wired)."
+            )
+        data = ctx.workflow_results_callback(
+            args.run_id, phase=args.phase, raw=args.raw
+        )
+        yield WorkflowResultsResult(**data)

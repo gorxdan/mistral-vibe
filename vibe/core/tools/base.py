@@ -74,6 +74,13 @@ class InvokeContext:
     workflow_status_callback: Callable[[str | None], list[dict[str, Any]]] | None = (
         field(default=None)
     )
+    # Returns the actual agent outputs for a workflow run (i1): pass a run_id
+    # plus optional phase filter / raw flag. Used by the workflow_results tool
+    # to recover work from completed/stopped/partially-failed runs on demand,
+    # instead of relying solely on the one-shot completion delivery.
+    workflow_results_callback: (
+        Callable[..., dict[str, Any]] | None
+    ) = field(default=None)
     # Stops one run (run_id) or all runs (all_runs=True). Async because
     # WorkflowRunner.stop awaits the cancelled task. Returns a dict with
     # stopped / stopped_run_ids / message. Wired to the WorkflowRunner.
