@@ -375,6 +375,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         # Reason the safety judge deferred the current tool call to the user, if
         # any; read by the approval UI. Set per-decision in _judge_tool_safety.
         self.pending_judge_deferral: str | None = None
+        # When the active model is rate-limited/overloaded, the loop switches to
+        # a configured fallback model for the rest of the session. Tracks the
+        # override + which fallback aliases have already been tried.
+        self._fallback_model_override: ModelConfig | None = None
+        self._tried_fallback_aliases: set[str] = set()
         self.user_input_callback: UserInputCallback | None = None
         self.entrypoint_metadata = entrypoint_metadata
         self.terminal_emulator = terminal_emulator
@@ -1044,6 +1049,35 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             timeout=self.config.api_timeout,
         )
 
+    def _switch_to_fallback_model(self) -> ModelConfig | None:
+        """Switch to the next untried fallback model, rebuilding the backend.
+
+        Marks the current model tried, then picks the first configured
+        ``fallback_models`` alias that is untried and available, rebuilding
+        ``self.backend`` for its provider. Returns the model, or None when the
+        fallback pool is exhausted.
+        """
+        current_alias = (
+            self._fallback_model_override.alias
+            if self._fallback_model_override
+            else self.config.active_model
+        )
+        self._tried_fallback_aliases.add(current_alias)
+        for alias in self.config.fallback_models:
+            if alias in self._tried_fallback_aliases:
+                continue
+            self._tried_fallback_aliases.add(alias)
+            model = next((m for m in self.config.models if m.alias == alias), None)
+            if model is None or not self.config.is_model_available(model):
+                continue
+            provider = self.config.get_provider_for_model(model)
+            self._fallback_model_override = model
+            self.backend = BACKEND_FACTORY[provider.backend](
+                provider=provider, timeout=self.config.api_timeout
+            )
+            return model
+        return None
+
     async def _conversation_loop(
         self,
         user_msg: str,
@@ -1115,6 +1149,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         self.stats.context_tokens, threshold
                     ):
                         yield ev
+                    continue
+                except RateLimitError:
+                    # Fail over to the next configured fallback model and retry,
+                    # instead of surfacing a terminal rate-limit error. When the
+                    # fallback pool is exhausted, re-raise.
+                    fallback = self._switch_to_fallback_model()
+                    if fallback is None:
+                        raise
+                    logger.warning(
+                        "Active model rate-limited; falling back to %r",
+                        fallback.alias,
+                    )
                     continue
                 # Per-turn save so the on-disk log stays fresh; after the
                 # inner loop so before_tool rewrites land in the snapshot.
@@ -1778,7 +1824,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _chat(
         self, max_tokens: int | None = None, model_override: ModelConfig | None = None
     ) -> LLMChunk:
-        active_model = model_override or self.config.get_active_model()
+        active_model = (
+            model_override
+            or self._fallback_model_override
+            or self.config.get_active_model()
+        )
         provider = self.config.get_provider_for_model(active_model)
         backend_metadata = self._build_backend_metadata()
 

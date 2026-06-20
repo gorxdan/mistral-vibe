@@ -730,6 +730,9 @@ class VibeConfig(BaseSettings):
     )
     models: list[ModelConfig] = Field(default_factory=lambda: list(DEFAULT_MODELS))
     compaction_model: ModelConfig | None = None
+    # Aliases of models to fall back to (in order) when the active model is rate
+    # limited / overloaded. Empty = no failover (error surfaces as before).
+    fallback_models: list[str] = Field(default_factory=list)
 
     transcribe_providers: list[TranscribeProviderConfig] = Field(
         default_factory=lambda: list(DEFAULT_TRANSCRIBE_PROVIDERS)

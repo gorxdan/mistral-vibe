@@ -59,6 +59,9 @@ class VibeConfigSchema(ConfigSchema):
         default_factory=lambda: list(DEFAULT_MODELS)
     )
     compaction_model: Annotated[ModelConfig | None, WithReplaceMerge()] = None
+    fallback_models: Annotated[list[str], WithReplaceMerge()] = Field(
+        default_factory=list
+    )
     auto_compact_threshold: Annotated[int, WithReplaceMerge()] = (
         DEFAULT_AUTO_COMPACT_THRESHOLD
     )
