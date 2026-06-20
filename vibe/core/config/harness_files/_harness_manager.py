@@ -84,6 +84,23 @@ class HarnessFilesManager:
         return files
 
     @property
+    def plugin_dirs(self) -> list[Path]:
+        """Plugin parent dirs to scan: ``<root>/.vibe/plugins`` for each
+        (trust-gated) project root + ``~/.vibe/plugins``. project_roots already
+        excludes untrusted cwds, so plugin discovery inherits that gating.
+        """
+        dirs: list[Path] = [
+            d
+            for root in self.project_roots
+            if (d := root / ".vibe" / "plugins").is_dir()
+        ]
+        if "user" in self.sources:
+            user_plugins = VIBE_HOME.path / "plugins"
+            if user_plugins.is_dir():
+                dirs.append(user_plugins)
+        return dirs
+
+    @property
     def persist_allowed(self) -> bool:
         return "user" in self.sources
 

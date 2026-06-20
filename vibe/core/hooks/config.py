@@ -74,7 +74,11 @@ def _load_hooks_file(path: Path) -> HookConfigResult:
     return HookConfigResult(hooks=hooks, issues=issues)
 
 
-def load_hooks_from_fs(config: VibeConfig) -> HookConfigResult:
+def load_hooks_from_fs(
+    config: VibeConfig, plugin_hooks: list[HookConfig] | None = None
+) -> HookConfigResult:
+    # The experimental gate is the OUTER check: when hooks are disabled, neither
+    # filesystem nor plugin-contributed hooks load (plugin hooks can't bypass it).
     if not config.enable_experimental_hooks:
         return HookConfigResult(hooks=[], issues=[])
 
@@ -96,5 +100,19 @@ def load_hooks_from_fs(config: VibeConfig) -> HookConfigResult:
                 continue
             seen_names.add(hook.name)
             all_hooks.append(hook)
+
+    # Plugin-contributed hooks share the one namespace + duplicate guard.
+    _plugin_src = Path("<plugin>")
+    for hook in plugin_hooks or []:
+        if hook.name in seen_names:
+            all_issues.append(
+                HookConfigIssue(
+                    file=_plugin_src,
+                    message=f"Duplicate hook name (plugin): {hook.name!r}",
+                )
+            )
+            continue
+        seen_names.add(hook.name)
+        all_hooks.append(hook)
 
     return HookConfigResult(hooks=all_hooks, issues=all_issues)

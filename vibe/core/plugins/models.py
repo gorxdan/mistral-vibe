@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from vibe.core.hooks.models import HookConfig
+
 # Conventional component subdir names used when a manifest omits the field.
 _DEFAULT_DIRS = {
     "agents": "agents",
@@ -48,4 +50,5 @@ class PluginLoadResult(BaseModel):
     tool_paths: list[Path] = Field(default_factory=list)
     workflow_paths: list[Path] = Field(default_factory=list)
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
+    hooks: list[HookConfig] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)

@@ -100,8 +100,35 @@ def load_plugins_from_fs(
                 if resolved.is_dir():
                     getattr(result, target).append(resolved)
         result.mcp_servers.extend(manifest.mcp_servers)
+        _collect_hooks(manifest, root, name, result)
 
     return result
+
+
+def _collect_hooks(manifest, root, name, result) -> None:  # noqa: ANN001
+    """Parse a manifest's hooks (a path to a hooks.toml, or inline [[hooks]])
+    into HookConfig entries on the result. Defensive: errors → issues.
+    """
+    from vibe.core.hooks.config import _load_hooks_file
+    from vibe.core.hooks.models import HookConfig
+
+    raw = manifest.hooks
+    if raw is None:
+        return
+    if isinstance(raw, str):
+        resolved = (root / raw).resolve()
+        if not _within(resolved, root):
+            result.issues.append(f"{name}: hooks path {raw!r} escapes the plugin root")
+            return
+        loaded = _load_hooks_file(resolved)
+        result.hooks.extend(loaded.hooks)
+        result.issues.extend(f"{name}: {i.message}" for i in loaded.issues)
+        return
+    for entry in raw:  # inline list of hook dicts
+        try:
+            result.hooks.append(HookConfig.model_validate(entry))
+        except (ValidationError, ValueError) as e:
+            result.issues.append(f"{name}: invalid inline hook ({e})")
 
 
 def _within(path: Path, root: Path) -> bool:

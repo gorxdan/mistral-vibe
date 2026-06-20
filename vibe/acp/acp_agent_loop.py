@@ -131,6 +131,7 @@ from vibe.core.data_retention import DATA_RETENTION_MESSAGE
 from vibe.core.feedback import record_feedback_asked, should_show_feedback
 from vibe.core.hooks.config import load_hooks_from_fs
 from vibe.core.paths import GLOBAL_ENV_FILE
+from vibe.core.plugins.integration import load_and_apply_plugins
 from vibe.core.proxy_setup import (
     ProxySetupError,
     parse_proxy_command,
@@ -798,7 +799,10 @@ class VibeAcpAgentLoop(AcpAgent):
         await self._resolve_workspace_trust(Path.cwd())
 
         config = self._load_config()
-        hook_config_result = load_hooks_from_fs(config)
+        plugin_result = load_and_apply_plugins(config)
+        hook_config_result = load_hooks_from_fs(
+            config, plugin_hooks=plugin_result.hooks
+        )
 
         try:
             agent_loop = self._create_agent_loop(
@@ -1063,7 +1067,10 @@ class VibeAcpAgentLoop(AcpAgent):
         await self._resolve_workspace_trust(Path.cwd())
 
         config = self._load_config()
-        hook_config_result = load_hooks_from_fs(config)
+        plugin_result = load_and_apply_plugins(config)
+        hook_config_result = load_hooks_from_fs(
+            config, plugin_hooks=plugin_result.hooks
+        )
 
         session_dir = SessionLoader.find_session_by_id(
             session_id, config.session_logging
