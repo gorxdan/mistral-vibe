@@ -233,6 +233,16 @@ def _add_humanizer_guidance() -> str:
     )
 
 
+def _add_caveman_thinking_guidance() -> str:
+    return (
+        "When you think (reasoning/thinking blocks): be terse. "
+        "Drop articles, filler, hedging, and pleasantries. Fragments are fine. "
+        "Keep ALL technical substance — names, file:line references, errors, and "
+        "code verbatim. This governs only your private reasoning; your final "
+        "answer to the user stays normal prose."
+    )
+
+
 _SKILL_INDEX_MAX_CHARS = 160
 _SENTENCE_END = re.compile(r"[.!?](?=\s)")
 
@@ -322,9 +332,11 @@ investigation costs you only the returned conclusions.
 
 Don't delegate trivia. For a single known lookup — you already have the file \
 path or symbol — just `read`/`grep` it directly. Delegate breadth and \
-uncertainty; handle pinpoints yourself. Subagents are read-only investigators \
-that can't write files or ask the user — you own every edit and all user \
-interaction."""
+uncertainty; handle pinpoints yourself. The read-only profiles (explore, \
+research, reviewer, debugger, planner, security) can't write files or ask the \
+user — you own every edit and all user interaction. `editor` and `worker` are \
+write-capable but only function inside a workflow worktree; in a plain `task` \
+call their writes are approval-gated and skipped, so treat every edit as yours."""
 
 
 def _get_orchestration_section() -> str:
@@ -420,6 +432,9 @@ def get_universal_system_prompt(  # noqa: PLR0912, PLR0914, PLR0915
 
     if config.include_humanizer_guidance:
         sections.append(_add_humanizer_guidance())
+
+    if config.caveman_thinking:
+        sections.append(_add_caveman_thinking_guidance())
 
     if config.include_model_info:
         sections.append(f"Your model name is: `{config.active_model}`")
@@ -528,23 +543,23 @@ def _get_le_chaton_section() -> str:
         "defensive audit), editor (read/grep/write/edit; surgical edits — requires "
         "isolation='worktree'), worker (full tools incl. MCP; requires "
         "isolation='worktree')\n"
-        "- `parallel(*thunks)` — run thunks concurrently, results in order; a "
+        "- `parallel(*thunks, max_concurrency=None)` — run thunks concurrently, results in order; a "
         "thunk that raises yields None (filter the results)\n"
-        "- `pipeline(items, *stages)` — run each item through all stages with no "
+        "- `pipeline(items, *stages, max_concurrency=None)` — run each item through all stages with no "
         "barrier between stages (item A can be in stage 3 while B is in stage 1); "
         "each stage gets (prev, item, index); one stage acts as a concurrent map\n"
-        "- `phase(name)` — declare a phase for progress tracking\n"
-        "- `log(msg)` — log a progress message\n"
+        "- `phase(name)` — declare a phase for progress tracking (safe bare or `await`ed)\n"
+        "- `log(msg)` — log a progress message (safe bare or `await`ed, like phase)\n"
         "- `budget` — token budget object with `.total` and `.remaining()`\n"
         "- `workflow(name, args=None)` — run another workflow inline as a "
         "sub-step (shares budget/agents; one level deep)\n"
         "- `args` — structured input from the invocation command\n\n"
-        "Write the script to a file, then tell the user to run it with the "
-        "workflow tool or save it as a command. You can also launch it directly "
-        "using the `launch_workflow` tool, which validates and runs the script "
-        "in the background and previews the planned phases at the approval "
-        "prompt. For simple tasks (single-file edits, quick questions), work "
-        "normally without a workflow.\n\n"
+        "Launch via the `launch_workflow` tool: pass the script's SOURCE TEXT in the "
+        "`script` argument inline, NOT a file path (the tool does not read files — "
+        "if you wrote it to a scratchpad file, paste its contents). It validates, "
+        "previews planned phases at the approval prompt, and runs in the background. "
+        "To make a script a reusable `/<name>` command, write it under `.vibe/workflows/`. For simple "
+        "tasks, work normally without a workflow. The script runs in a sandbox: only safelisted imports (no `asyncio` — agent/parallel/pipeline are injected and awaitable), and `str.format()` is forbidden — use f-strings or % formatting.\n\n"
         "Prefer workflows when: the task needs 3+ independent agents, adversarial "
         "verification adds value, or the work spans many files. Use `parallel` "
         "for independent same-stage work and `pipeline` for multi-stage "

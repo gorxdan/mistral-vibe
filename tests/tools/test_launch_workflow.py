@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from vibe.core.tools.builtins.launch_workflow import _extract_planned_phases
+import pytest
+
+from vibe.core.tools.builtins.launch_workflow import (
+    _extract_planned_phases,
+    _looks_like_path,
+)
 
 
 def test_extracts_literal_phase_names_in_order() -> None:
@@ -42,3 +47,30 @@ def test_returns_empty_for_script_without_phases() -> None:
 
 def test_invalid_python_returns_empty() -> None:
     assert _extract_planned_phases("async def main(:") == []
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "review_commits.py",
+        "./scripts/review_commits.py",
+        "review_commits.py\n",  # trailing newline only
+        "  .vibe/workflows/audit.py  ",  # surrounding whitespace
+    ],
+)
+def test_looks_like_path_detects_file_paths(script: str) -> None:
+    # Passing a path instead of source is the most common launch mistake; the
+    # guard must catch bare paths, dotted/relative paths, and stray whitespace.
+    assert _looks_like_path(script) is True
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "async def main():\n    return {}\n",
+        "async def main(): return {}",  # one-liner still contains "def "
+        "import json\n\nasync def main():\n    return json.dumps({})\n",
+    ],
+)
+def test_looks_like_path_does_not_flag_real_source(script: str) -> None:
+    assert _looks_like_path(script) is False

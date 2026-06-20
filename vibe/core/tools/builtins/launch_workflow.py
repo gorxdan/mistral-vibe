@@ -55,6 +55,21 @@ def _extract_planned_phases(script: str) -> list[str]:
     return phases
 
 
+def _looks_like_path(script: str) -> bool:
+    """Detect a common mistake: passing a file path instead of source text.
+
+    ``launch_workflow`` takes the script's *source* inline; it does not read
+    files. When a model writes the script to a scratchpad file and then passes
+    the path, ``validate_script`` accepts it (a bare ``foo.py`` parses as an
+    attribute access) and the run fails later with a confusing "no main()".
+    This catches that case up front so the error names the real problem.
+    """
+    s = script.strip()
+    if "\n" in s:
+        return False
+    return s.endswith(".py") and "def " not in s
+
+
 class LaunchWorkflowArgs(BaseModel):
     script: str = Field(
         description="The workflow script source code (Python with async def main())"
@@ -81,10 +96,15 @@ class LaunchWorkflow(
 ):
     description: ClassVar[str] = (
         "Launch a workflow script that orchestrates parallel agents. "
-        "The script must define an `async def main()` function. "
-        "The runtime injects: agent, parallel, pipeline, phase, log, budget, args. "
-        "Use this when a task needs multiple independent agents, adversarial "
-        "verification, or dynamic loops. The workflow runs in the background."
+        "Pass the script's SOURCE TEXT in the `script` argument inline (not a "
+        "file path). The script must define an `async def main()` function. "
+        "The runtime injects: agent, parallel, pipeline, phase, log, budget, "
+        "args. `parallel`/`pipeline` accept `max_concurrency=N` to cap in-flight "
+        "agents. Note: the script runs in a sandbox — imports are allowlisted "
+        "(no `asyncio` — the injected helpers are already awaitable) and "
+        "`str.format()` is forbidden (use f-strings or `%`). Use this when a "
+        "task needs multiple independent agents, adversarial verification, or "
+        "dynamic loops. The workflow runs in the background."
     )
 
     @classmethod
@@ -129,6 +149,13 @@ class LaunchWorkflow(
     ) -> AsyncGenerator[ToolStreamEvent | LaunchWorkflowResult, None]:
         if not ctx:
             raise ToolError("Launch workflow tool requires context")
+
+        if _looks_like_path(args.script):
+            raise ToolError(
+                "`script` must be the workflow SOURCE TEXT, not a file path "
+                f"(got {args.script.strip()!r}). The tool does not read files; "
+                "read the file's contents and pass them inline in `script`."
+            )
 
         violations = validate_script(args.script)
         if violations:

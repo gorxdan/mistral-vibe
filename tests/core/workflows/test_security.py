@@ -34,6 +34,7 @@ UNSAFE_IMPORTS = [
     "import os",
     "import subprocess",
     "import sys",
+    "import asyncio",
     "from os import system",
     "from subprocess import Popen",
     "import socket",

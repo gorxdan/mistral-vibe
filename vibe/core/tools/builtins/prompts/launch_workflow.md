@@ -13,28 +13,40 @@ Use `launch_workflow` to run a workflow script that orchestrates parallel agents
 - Tasks that need sequential, dependent steps — use subagents instead
 - Tasks requiring user interaction — workflow agents cannot ask questions
 
+## Passing the script
+
+Pass the script's **source text** in the `script` argument — the full Python
+source, inline. Do **not** pass a file path; the tool does not read files. If you
+wrote the script to a scratchpad file with `write_file`, paste its contents into
+`script` (or `read` it and pass the body). The tool validates the source via AST
+before it runs, so a clear validation error beats a confusing "no main()" later.
+
 ## Script Format
 
 The script must define `async def main()`. The runtime injects:
 
-- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent; `isolation="worktree"` runs it in a fresh git worktree (isolates file edits for parallel agents). Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `debugger` (+bash; systematic root-cause analysis of a failure or flaky test), `planner` (grep/read; returns a phased, code-grounded plan), `security` (+bash; defensive vuln audit with severity-ranked findings), `editor` (read/grep/write/edit, no bash/MCP; surgical edits — **requires** `isolation="worktree"`), `worker` (full tools incl. MCP — **requires** `isolation="worktree"`).
-- `parallel(*thunks)` (or `parallel([thunks])`) — run thunks concurrently, results in order; a thunk that raises yields `None` (filter the results)
-- `pipeline(items, *stages)` — run each item through all stages with no barrier between stages (item A can be in stage 3 while B is still in stage 1); each stage receives `(prev, item, index)`. One stage acts as a concurrent map.
-- `phase(name)` — declare a phase for progress tracking
-- `log(msg)` — log a progress message
+- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent; `isolation="worktree"` runs it in a fresh git worktree (isolates file edits for parallel agents). Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `debugger` (+bash; systematic root-cause analysis of a failure or flaky test), `planner` (grep/read; returns a phased, code-grounded plan), `security` (+bash; defensive vuln audit with severity-ranked findings), `editor` (read/grep/write/edit, no bash/MCP; surgical edits — **requires** `isolation="worktree"`), `worker` (full tools incl. MCP — **requires** `isolation="worktree"`). `schema=` validates the agent's JSON output and **strips unknown keys by default** (`strip_unknown=True`), so an extra field in a reply degrades gracefully instead of discarding the agent's work.
+- `parallel(*thunks, max_concurrency=None)` (or `parallel([thunks])`) — run thunks concurrently, results in order; a thunk that raises yields `None` (filter the results). Pass `max_concurrency=N` (e.g. `3`) to cap in-flight thunks — use this instead of hand-rolling chunked waves when a provider limits concurrency.
+- `pipeline(items, *stages, max_concurrency=None)` — run each item through all stages with no barrier between stages (item A can be in stage 3 while B is still in stage 1); each stage receives `(prev, item, index)`. One stage acts as a concurrent map. `max_concurrency=N` caps in-flight items.
+- `phase(name)` — declare a phase for progress tracking. Works bare (`phase("x")`) or awaited (`await phase("x")`) — both are safe.
+- `log(msg)` — log a progress message. Works bare or awaited, like `phase()`.
 - `budget` — token budget with `.total` and `.remaining()`
 - `workflow(name, args=None)` — run another discovered workflow inline as a sub-step and return its result (shares this run's budget/agents; one level deep only)
 - `post_message(channel, message)` — post to a named channel on this run's shared board (visible to all agents/stages in the same run via `fetch_messages`)
 - `fetch_messages(channel)` — return all messages posted to a channel so far (a copy)
 - `args` — structured input from the invocation
 
+You do **not** need to (and cannot) `import asyncio` — `agent`/`parallel`/`pipeline`
+are already async and injected; call them and `await` the result.
+
 ## Best Practices
 
-1. **Use schemas for structured output** — pass `schema=` to `agent()` for JSON-validated responses
+1. **Use schemas for structured output** — pass `schema=` to `agent()` for JSON-validated responses; unknown keys are stripped, not fatal
 2. **Use `parallel` for independent same-stage work; use `pipeline` for multi-stage per-item flows** where each stage consumes the prior stage's output (e.g. find→verify→synthesize), with no barrier between items' stages
-3. **Declare phases with `phase()` for progress tracking**
-4. **Guard loops with `budget.remaining()`** — stop when budget is exhausted
-5. **Keep scripts focused** — one workflow per task, not a general-purpose program
+3. **Cap concurrency with `max_concurrency=`** — pass it to `parallel`/`pipeline` instead of hand-rolling chunked waves, especially when a provider allows only 1-3 concurrent agents
+4. **Declare phases with `phase()` for progress tracking**
+5. **Guard loops with `budget.remaining()`** — stop when budget is exhausted
+6. **Keep scripts focused** — one workflow per task, not a general-purpose program
 
 ## Safety boundary
 
@@ -53,10 +65,29 @@ deferral is routed to your approval with the judge's reason — so even though
 the worker runs auto-approved inside its worktree, its planned task is gated.
 A worker you deny is recorded as failed; the run continues with the others.
 
+## Sandbox restrictions
+
+Scripts run in a restricted in-process namespace. The validator runs before
+execution and rejects the script with a precise error if it breaks a rule. The
+non-obvious traps (these are the ones that cost runs in practice):
+
+- **Imports are allowlisted.** Only `json`, `re`, `math`, `statistics`,
+  `collections`, `itertools`, `functools`, `datetime`, `decimal`, `copy`,
+  `hashlib`, `base64`, `textwrap`, `unicodedata`. In particular there is **no
+  `asyncio`** (you don't need it — `agent`/`parallel`/`pipeline` are injected and
+  awaitable), and no `os`, `sys`, `subprocess`, `pathlib`, `io`, `requests`, etc.
+- **`str.format()` and `str.format_map()` are forbidden** (the format
+  mini-language can traverse attributes/dunders from inside a string literal, an
+  escape vector). Template with **f-strings** or **`%` formatting** instead.
+  `"...".format(...)` is blocked both as a direct call and via aliasing.
+- **No dunder access** (`obj.__class__`, `__globals__`, `__dict__`, `__mro__`,
+  `__subclasses__`, …), no dunder dict keys, and no `getattr`/`setattr`/`delattr`/
+  `globals`/`locals`/`vars`/`eval`/`exec`/`compile`/`open`/`input`/`__import__`.
+- The builtins namespace is safelisted (no `open`, `exec`, `__import__`).
+
 ## Limitations
 
-- Scripts run in a restricted namespace (no `open`, `exec`, `os`, `subprocess`)
-- Up to 16 concurrent agents, 1000 total per run
+- Up to 16 concurrent agents, 1000 total per run (lower both with `max_concurrency=`)
 - The workflow runs in the background; the result appears when complete
 - Use `/workflows` to check progress or stop a run. From a model turn, query
   live progress (per-run agents, phases, in-flight agent token totals, budget)

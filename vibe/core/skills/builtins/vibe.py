@@ -747,8 +747,8 @@ YAML frontmatter (`name:`, `description:`) precedes the Python source. The
 runtime injects these functions into the script's namespace:
 
 - `agent(prompt, *, agent="explore", model=None, label=None, phase=None, schema=None, budget_estimate=None, isolation=None)` — spawn a subagent. Pass `isolation="worktree"` to run the agent as a `vibe -p` subprocess in a fresh git worktree (for parallel file-mutating agents that would otherwise conflict); its branch is kept for manual `git merge` if it changed files, else removed. Note: isolated agents run auto-approved/trusted (no interactive prompts reach a subprocess) — the worktree bounds file conflicts, not arbitrary command execution. Agent profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), or `worker` for the full tool set including any configured MCP tools (no allowlist — **requires** `isolation="worktree"`, where it runs auto-approved in its own worktree so its tools actually execute and writes can't race other agents).
-- `parallel(*thunks)` (or `parallel([thunks])`) — run thunks concurrently, results in argument order; a thunk that raises yields `None` (filter the results), so one failure does not abort the batch
-- `pipeline(items, *stages)` — run each item through all stages independently with no barrier between stages (item A can be in stage 3 while item B is still in stage 1); each stage receives `(prev, item, index)` and a stage that raises drops that item to `None`. A single stage behaves as a concurrent map.
+- `parallel(*thunks, max_concurrency=None)` (or `parallel([thunks])`) — run thunks concurrently, results in argument order; a thunk that raises yields `None` (filter the results), so one failure does not abort the batch. Pass `max_concurrency=N` to cap in-flight thunks (e.g. `3` when a provider limits concurrency) instead of hand-rolling chunked waves.
+- `pipeline(items, *stages, max_concurrency=None)` — run each item through all stages independently with no barrier between stages (item A can be in stage 3 while item B is still in stage 1); each stage receives `(prev, item, index)` and a stage that raises drops that item to `None`. A single stage behaves as a concurrent map. `max_concurrency=N` caps in-flight items.
 - `phase(name)` — declare a phase for progress tracking
 - `log(msg)` — log a progress message
 - `budget` — token budget object with `.total` (int|None) and `.remaining()` (int|float)
@@ -757,9 +757,17 @@ runtime injects these functions into the script's namespace:
 - `fetch_messages(channel)` — return a copy of all messages posted to a channel so far.
 - `args` — structured input from the invocation command (string or None)
 
-Scripts are validated via AST before execution: unsafe imports, dangerous calls
-(exec/eval/open), dunder access, and dunder subscripts are blocked. The
-restricted namespace has safelisted builtins only (no `open`, `exec`, `__import__`).
+Scripts are validated via AST before execution and run in a restricted namespace.
+The non-obvious rules: imports are **allowlisted** to `json`, `re`, `math`,
+`statistics`, `collections`, `itertools`, `functools`, `datetime`, `decimal`,
+`copy`, `hashlib`, `base64`, `textwrap`, `unicodedata` — there is **no `asyncio`**
+(you don't need it; `agent`/`parallel`/`pipeline` are injected and awaitable),
+and no `os`/`sys`/`subprocess`/`pathlib`/`io`. `str.format()` and `str.format_map()`
+are **forbidden** (the format mini-language traverses attributes/dunders from
+inside a string literal) — template with f-strings or `%` formatting instead.
+Also blocked: `exec`/`eval`/`compile`/`open`/`input`/`getattr`/`setattr`/`globals`/
+`vars`/`__import__`, all dunder access, and dunder dict keys. The builtins
+namespace is safelisted (no `open`, `exec`, `__import__`).
 
 ### Workflow Discovery
 
@@ -858,7 +866,10 @@ not prevented at spawn. `budget.total = None` means unlimited.
 
 Up to 16 concurrent agents, 1000 total per run (constructor defaults on
 `WorkflowRuntime`; not exposed as a config.toml key). `parallel` and
-`pipeline` share the same semaphore as `spawn_agent`.
+`pipeline` share the same semaphore as `spawn_agent`. Pass `max_concurrency=N`
+to either to cap in-flight work below the global 16 (e.g. `3` when a provider
+allows only a few concurrent agents) — prefer this over hand-rolling chunked
+waves.
 
 ## Effort Modes
 
