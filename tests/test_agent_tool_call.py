@@ -1045,9 +1045,15 @@ async def test_pending_injected_message_continues_loop_after_tool_result() -> No
 
 
 @pytest.mark.asyncio
-async def test_stage_injected_message_continues_running_turn() -> None:
-    """The public staging API folds a message into the running turn at the next
-    step boundary instead of ending it (double-enter inject path).
+async def test_stage_injected_message_folds_into_running_turn() -> None:
+    """The public staging API queues a user message to be folded into the
+    running turn at the next step boundary (double-enter inject path).
+
+    Contract verified:
+    - the staged message is drained into self.messages (not lost),
+    - it lands as an injected user message AFTER the tool result that was in
+      flight when it was staged, and BEFORE the assistant turn that follows,
+    - nothing remains staged once the turn ends.
     """
     tool_call = make_todo_tool_call("call_stage")
     backend = FakeBackend([
@@ -1056,26 +1062,28 @@ async def test_stage_injected_message_continues_running_turn() -> None:
     ])
     agent_loop = make_agent_loop(auto_approve=True, backend=backend)
 
-    events: list[BaseEvent] = []
     async for event in agent_loop.act("Go"):
-        events.append(event)
         if isinstance(event, ToolResultEvent):
+            # Simulate a message arriving mid-step, like double-enter does.
             agent_loop.stage_injected_message("remember: be terse")
 
-    # Two assistant turns: the second only happens because the staged message
-    # kept the loop going instead of letting it end after the tool result.
-    assert len([e for e in events if isinstance(e, AssistantEvent)]) == 2
+    messages = agent_loop.messages
 
-    staged = [
-        m for m in agent_loop.messages
+    tool_result_idx = next(i for i, m in enumerate(messages) if m.role == Role.tool)
+    staged_idx = next(
+        i for i, m in enumerate(messages)
         if m.role == Role.user and m.injected and "be terse" in (m.content or "")
-    ]
-    assert len(staged) == 1
-
-    last_assistant = next(
-        m for m in reversed(agent_loop.messages) if m.role == Role.assistant
     )
-    assert "staged note" in (last_assistant.content or "")
+    final_assistant_idx = next(
+        i for i, m in enumerate(messages)
+        if m.role == Role.assistant and "staged note" in (m.content or "")
+    )
+
+    # The staged message was folded in between the tool result and the next
+    # assistant turn — so the model actually saw it on the following step.
+    assert tool_result_idx < staged_idx < final_assistant_idx
+    assert messages[staged_idx].injected
+    assert messages[staged_idx].images is None
     # Nothing left staged once the turn ended.
     assert agent_loop._pending_injected_messages == []
 
