@@ -196,10 +196,12 @@ WORKER = AgentProfile(
     description=(
         "Full-capability subagent for workflows: all builtin tools plus any "
         "discovered MCP tools (no enabled_tools allowlist). For workflow agents "
-        "that need to act, not just read. Pair with isolation='worktree' to "
-        "contain file mutations. bash/edit stay approval-gated."
+        "that need to act, not just read. MUST run with isolation='worktree' in a "
+        "workflow — it then executes as an auto-approved `vibe -p` subprocess in "
+        "its own git worktree, so its tools actually run (no headless skip) and "
+        "file writes can't race other agents."
     ),
-    # No enabled_tools override -> the full tool set (incl. integrated MCP).
+    # No enabled_tools override -> the full tool set (incl. MCP in the subprocess).
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
     overrides={"system_prompt_id": "explore"},

@@ -94,6 +94,59 @@ class WorkflowError(Exception):
     pass
 
 
+@dataclass
+class _LiveAgent:
+    """An in-flight agent whose tokens are tracked live (before finalize).
+
+    Recorded separately from finalized PhaseReport results so observers (the
+    workflow_status tool, /workflows list) can see per-agent spend while an
+    agent is still running, not only after it completes. Retired (removed) once
+    the agent's AgentResult is recorded into its phase, so at any instant an
+    agent is counted in exactly one place — live XOR finalized — never both.
+    """
+
+    agent_id: str
+    agent: str
+    label: str | None = None
+    phase: str | None = None
+    model: str | None = None
+    status: str = "running"
+    tokens_in: int = 0
+    tokens_out: int = 0
+    started_at: float = field(default_factory=time.monotonic)
+    error: str | None = None
+
+    @property
+    def tokens_total(self) -> int:
+        return self.tokens_in + self.tokens_out
+
+
+class _MessageBoard:
+    """In-process, single-event-loop message board shared across all agents in a
+    workflow run. Lets the orchestrator (main()) route named-channel handoffs
+    between phases and pipeline stages without funneling everything through
+    return values at a barrier.
+
+    Safe for concurrent use only within one asyncio loop (no locks): workflow
+    agents and the orchestrator all run on the runtime's loop.
+    """
+
+    def __init__(self) -> None:
+        self._channels: dict[str, list[Any]] = {}
+
+    def post(self, channel: str, message: Any) -> None:
+        self._channels.setdefault(channel, []).append(message)
+
+    def fetch(self, channel: str) -> list[Any]:
+        return list(self._channels.get(channel, []))
+
+    def fetch_all(self) -> dict[str, list[Any]]:
+        return {k: list(v) for k, v in self._channels.items()}
+
+    def channels(self) -> list[str]:
+        return list(self._channels.keys())
+
+
 def _prompt_hash(
     prompt: str, agent: str, phase: str | None = None, isolation: str | None = None
 ) -> str:
@@ -153,6 +206,9 @@ class WorkflowRuntime:
     _event_sink: Callable[[str], None] | None = field(default=None, init=False)
     _started_at: float = field(default_factory=time.monotonic, init=False)
     _cache: dict[str, CachedAgentResult] = field(default_factory=dict, init=False)
+    _live_agents: dict[str, _LiveAgent] = field(default_factory=dict, init=False)
+    _next_live_id: int = field(default=0, init=False)
+    _board: _MessageBoard = field(default_factory=_MessageBoard, init=False)
 
     def __post_init__(self) -> None:
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
@@ -179,6 +235,56 @@ class WorkflowRuntime:
             self._phase_order.append(phase_name)
         self._phases[phase_name].agent_results.append(result)
 
+    def _register_live(
+        self,
+        agent: str,
+        model: str | None,
+        label: str | None,
+        phase: str | None,
+    ) -> _LiveAgent:
+        live_id = f"la-{self._next_live_id}"
+        self._next_live_id += 1
+        live = _LiveAgent(
+            agent_id=live_id, agent=agent, model=model, label=label, phase=phase
+        )
+        self._live_agents[live_id] = live
+        return live
+
+    def _retire_live(
+        self, live: _LiveAgent, *, status: str, error: str | None = None
+    ) -> None:
+        live.status = status
+        live.error = error
+        self._live_agents.pop(live.agent_id, None)
+
+    def _validate_workflow_profile(self, agent: str, isolation: str | None) -> None:
+        """Validate the requested agent profile for a workflow spawn: it must be a
+        subagent, and a full-tool profile (no enabled_tools allowlist, e.g.
+        'worker') must run isolated — its write tools would race the shared tree
+        and its ASK tools auto-skip headless. No-op when the profile can't be
+        resolved (e.g. no agent_manager in unit contexts)."""
+        ctx = self.parent_context
+        if not ctx or not ctx.agent_manager:
+            return
+        try:
+            profile = ctx.agent_manager.get_agent(agent)
+        except ValueError:
+            return
+        from vibe.core.agents.models import AgentType
+
+        agent_type = getattr(profile, "agent_type", AgentType.SUBAGENT)
+        if agent_type != AgentType.SUBAGENT:
+            raise WorkflowError(
+                f"Agent '{agent}' is a {agent_type.value} agent. "
+                f"Only subagents can be used in workflows."
+            )
+        overrides = getattr(profile, "overrides", {}) or {}
+        if isolation != "worktree" and not overrides.get("enabled_tools"):
+            raise WorkflowError(
+                f"Agent '{agent}' has no tool allowlist (full tools incl. write); "
+                f"in a workflow it must run with isolation='worktree'."
+            )
+
     async def spawn_agent(
         self,
         prompt: str,
@@ -196,6 +302,10 @@ class WorkflowRuntime:
             self._log(f"cache hit: {label or agent}")
             self._record_cached_result(cached)
             return cached.response
+
+        # Reject non-subagents and require isolation for full-tool profiles
+        # (e.g. 'worker') before reserving budget / counting the agent.
+        self._validate_workflow_profile(agent, isolation)
 
         if self._agent_count >= self.max_agents:
             raise AgentCapExceeded(
@@ -249,6 +359,8 @@ class WorkflowRuntime:
         if schema is not None:
             effective_prompt = prompt + build_prompt_fallback(schema)
 
+        live = self._register_live(agent=agent, model=model, label=label, phase=phase)
+
         last_errors: list[str] = []
         accumulated: list[str] = []
         tokens_in = 0
@@ -268,6 +380,18 @@ class WorkflowRuntime:
                         content = self._extract_content(event)
                         if content:
                             accumulated.append(content)
+                        # Live token accounting: the real AgentLoop updates
+                        # stats at turn boundaries (between emitted events), so
+                        # polling after each event reflects spend as each turn
+                        # completes rather than only at finalize. tokens_in/out
+                        # hold prior attempts' totals; loop.stats is this
+                        # attempt's running total (fresh loop per attempt).
+                        live.tokens_in = tokens_in + getattr(
+                            loop.stats, "session_prompt_tokens", 0
+                        )
+                        live.tokens_out = tokens_out + getattr(
+                            loop.stats, "session_completion_tokens", 0
+                        )
             except Exception as e:
                 completed = False
                 error_msg = str(e)
@@ -278,6 +402,8 @@ class WorkflowRuntime:
             # spent on failed schema attempts from the budget.
             tokens_in += getattr(loop.stats, "session_prompt_tokens", 0)
             tokens_out += getattr(loop.stats, "session_completion_tokens", 0)
+            live.tokens_in = tokens_in
+            live.tokens_out = tokens_out
 
             response_text = "".join(accumulated)
 
@@ -295,6 +421,7 @@ class WorkflowRuntime:
                     cache_key=cache_key,
                     agent=agent,
                     model=model,
+                    live=live,
                 )
                 return response_text
 
@@ -318,6 +445,7 @@ class WorkflowRuntime:
                         cache_key=cache_key,
                         agent=agent,
                         model=model,
+                        live=live,
                     )
                     return parsed
                 last_errors = [str(e) for e in errors]
@@ -349,6 +477,7 @@ class WorkflowRuntime:
                 cache_key=cache_key,
                 agent=agent,
                 model=model,
+                live=live,
             )
             raise WorkflowError(error_msg or "Agent failed without producing output")
 
@@ -365,6 +494,7 @@ class WorkflowRuntime:
             cache_key=cache_key,
             agent=agent,
             model=model,
+            live=live,
         )
         raise SchemaValidationError(
             f"Response did not match schema after {self.schema_retries + 1} attempts. "
@@ -419,24 +549,17 @@ class WorkflowRuntime:
             defer_heavy_init=True,
             permission_store=ctx.permission_store if ctx else None,
             hook_config_result=ctx.hook_config_result if ctx else None,
-            # Reuse the parent's already-discovered MCP registry so workflow
-            # agents can use MCP tools (cheap — the registry caches discovery).
-            mcp_registry=ctx.mcp_registry if ctx else None,
         )
         if ctx and ctx.session_id:
             loop.parent_session_id = ctx.session_id
         if ctx and ctx.approval_callback:
             loop.set_approval_callback(ctx.approval_callback)
-        # MCP discovery is deferred (defer_heavy_init), so register the parent
-        # registry's tools into this subagent's tool manager now. On a shared,
-        # already-discovered registry this hits the cache (no re-discovery). A
-        # profile with no enabled_tools allowlist (e.g. 'worker') then exposes
-        # them; restrictive allowlists still filter them out.
-        if ctx and ctx.mcp_registry is not None:
-            try:
-                loop.tool_manager.integrate_mcp()
-            except Exception as exc:
-                logger.warning("workflow: MCP integration for subagent failed: %s", exc)
+        # NOTE: in-process subagents are MCP-free by design. Restricted profiles
+        # (explore/research/reviewer) filter MCP out via their allowlist anyway;
+        # full-tool MCP work runs as the 'worker' profile under
+        # isolation='worktree', whose `vibe -p` subprocess discovers MCP itself.
+        # (An earlier in-process integrate_mcp() here blocked the event loop and
+        # raced the shared registry — removed.)
         return loop
 
     @staticmethod
@@ -482,6 +605,7 @@ class WorkflowRuntime:
         cache_key: str,
         agent: str,
         model: str | None = None,
+        live: _LiveAgent | None = None,
     ) -> None:
         self._budget.reconcile(reservation, tokens_in, tokens_out)
 
@@ -498,6 +622,11 @@ class WorkflowRuntime:
             error=error,
         )
         self._record_agent_result(result)
+        # Retire the live tracker the moment its result is recorded, so an agent
+        # is reflected as live XOR finalized, never both (which would double its
+        # tokens in the live view + finalized phases).
+        if live is not None:
+            self._retire_live(live, status="completed" if completed else "failed", error=error)
 
         if completed:
             self._cache[cache_key] = CachedAgentResult(
@@ -553,6 +682,10 @@ class WorkflowRuntime:
         error_msg: str | None = None
         output = ""
         stats: dict[str, int] | None = None
+        # Isolated agents run as a subprocess; their token usage is unknowable
+        # until they exit and emit stats. The live tracker therefore shows 0
+        # while running (honest), then finalize records the real total.
+        live = self._register_live(agent=agent, model=model, label=label, phase=phase)
         try:
             result = await executor(
                 effective_prompt, agent, label, DEFAULT_ISOLATED_MAX_TURNS
@@ -591,6 +724,13 @@ class WorkflowRuntime:
             tokens_out = int(stats.get("completion_tokens", 0))
         else:
             tokens_in, tokens_out = 0, reservation.estimate
+            if completed:
+                logger.info(
+                    "workflow: isolated agent %s emitted no token stats; charging "
+                    "the estimate (%d)",
+                    label or agent,
+                    reservation.estimate,
+                )
         self._finalize_agent(
             prompt=prompt,
             response=response,
@@ -604,6 +744,7 @@ class WorkflowRuntime:
             cache_key=cache_key,
             agent=agent,
             model=model,
+            live=live,
         )
         if not completed:
             raise WorkflowError(f"isolated agent failed: {error_msg}")
@@ -811,6 +952,19 @@ class WorkflowRuntime:
         async def _workflow(name: str, args: Any = None) -> Any:
             return await self._run_nested(name, args)
 
+        def _post_message(channel: str, message: Any) -> None:
+            """Post a message to a named channel on this run's shared board.
+
+            Visible to other agents/stages in the SAME run via fetch_messages.
+            Use for inter-agent handoffs that don't fit the barrier-return model
+            (e.g. a finder posting partial results a verifier polls for).
+            """
+            self._board.post(channel, message)
+
+        def _fetch_messages(channel: str) -> list[Any]:
+            """Return (a copy of) all messages posted to a channel so far."""
+            return self._board.fetch(channel)
+
         injected: dict[str, Any] = {
             "agent": _agent,
             "parallel": self.parallel,
@@ -819,6 +973,8 @@ class WorkflowRuntime:
             "log": self._log,
             "workflow": _workflow,
             "budget": ReadOnlyBudget(self._budget),
+            "post_message": _post_message,
+            "fetch_messages": _fetch_messages,
             "args": args,
         }
         return build_namespace(injected)
@@ -878,6 +1034,60 @@ class WorkflowRuntime:
             started_at=self._started_at,
             budget=self._budget.snapshot(),
         )
+
+    def live_status(self) -> dict[str, Any]:
+        """Point-in-time, JSON-serializable view of this run for observers
+        (the workflow_status tool, /workflows list). Includes both finalized
+        phase results AND in-flight agents with their live token counts, so a
+        caller can gauge progress mid-run — not only after each agent finishes.
+
+        Live + finalized are mutually exclusive per agent (an agent is retired
+        from _live_agents the instant its AgentResult is recorded), so summing
+        the two never double-counts.
+        """
+        budget = self._budget.snapshot()
+        phases = []
+        for name in self._phase_order:
+            report = self._phases.get(name)
+            if report is None:
+                continue
+            phases.append(
+                {
+                    "name": name,
+                    "agents": len(report.agent_results),
+                    "tokens": report.tokens_total,
+                }
+            )
+        live = [
+            {
+                "agent_id": la.agent_id,
+                "agent": la.agent,
+                "label": la.label,
+                "phase": la.phase,
+                "status": la.status,
+                "tokens_in": la.tokens_in,
+                "tokens_out": la.tokens_out,
+                "tokens": la.tokens_total,
+                "elapsed_s": round(time.monotonic() - la.started_at, 1),
+            }
+            for la in self._live_agents.values()
+        ]
+        finalized_tokens = sum(p.tokens_total for p in self._phases.values())
+        live_tokens = sum(la.tokens_total for la in self._live_agents.values())
+        return {
+            "agent_count": self._agent_count,
+            "phases": phases,
+            "live_agents": live,
+            "live_agent_count": len(live),
+            "tokens_finalized": finalized_tokens,
+            "tokens_live": live_tokens,
+            "tokens_total": finalized_tokens + live_tokens,
+            "budget": {
+                "total": budget.total,
+                "spent": budget.spent,
+                "reserved": budget.reserved,
+            },
+        }
 
     async def run(self, script_source: str, args: Any = None) -> WorkflowResult:
         violations = validate_script(script_source)

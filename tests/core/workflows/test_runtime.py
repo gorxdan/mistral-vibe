@@ -930,3 +930,55 @@ async def test_isolated_agent_charges_real_tokens_when_stats_present() -> None:
     )
     await rt.spawn_agent("x", isolation="worktree", budget_estimate=99_999)
     assert rt._budget.spent() == 150  # real tokens, not the 99,999 estimate
+
+
+class _FakeProfile:
+    def __init__(self, overrides: dict[str, Any]) -> None:
+        self.overrides = overrides
+
+
+class _FakeConfig:
+    active_model = "x"
+    models: list[Any] = []
+
+
+class _FakeAgentManager:
+    config = _FakeConfig()
+
+    def get_agent(self, name: str) -> _FakeProfile:
+        if name == "worker":
+            return _FakeProfile({})  # no enabled_tools -> full tools
+        return _FakeProfile({"enabled_tools": ["read", "grep"]})
+
+
+async def test_full_tool_profile_requires_worktree_isolation() -> None:
+    """W-001/W-002: a no-allowlist profile (worker) must run isolated — in-process
+    it would race the shared tree and its headless ASK tools would auto-skip."""
+    from vibe.core.tools.base import InvokeContext
+
+    async def stub(p: str, a: str, lbl: str | None, mt: int) -> tuple[str, None]:
+        return ("ok", None)
+
+    ctx = InvokeContext(tool_call_id="t", agent_manager=_FakeAgentManager())  # type: ignore[arg-type]
+    rt = WorkflowRuntime(
+        parent_context=ctx,
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        max_agents=100,
+        isolated_executor=stub,
+    )
+    # worker without isolation -> rejected
+    with pytest.raises(WorkflowError, match="isolation='worktree'"):
+        await rt.spawn_agent("x", agent="worker")
+    # worker WITH isolation -> runs (isolated subprocess)
+    assert await rt.spawn_agent("x", agent="worker", isolation="worktree") == "ok"
+    # restricted profile (allowlist) is fine in-process
+    assert await rt.spawn_agent("y", agent="explore") == "mock response"
+
+
+async def test_full_tool_guard_noop_without_agent_manager() -> None:
+    # No agent_manager (e.g. unit context) -> guard can't resolve, must not fire.
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(), budget_total=1_000_000, max_agents=10
+    )
+    assert await rt.spawn_agent("z", agent="worker") == "mock response"
