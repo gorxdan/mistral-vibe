@@ -920,7 +920,7 @@ A workflow script is a `.py` file with an `async def main()` function. Optional
 YAML frontmatter (`name:`, `description:`) precedes the Python source. The
 runtime injects these functions:
 
-- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent. `isolation="worktree"` runs it as a `vibe -p` subprocess in a fresh git worktree (isolates file mutations for parallel agents); the branch is kept for manual merge if it changed files.
+- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent. Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `worker` (full tools incl. any configured MCP). `isolation="worktree"` runs it as a `vibe -p` subprocess in a fresh git worktree (isolates file mutations for parallel agents); the branch is kept for manual merge if it changed files.
 - `parallel(*thunks)` — run thunks concurrently, results in order (a thunk that raises yields `None`)
 - `pipeline(items, *stages)` — run each item through all stages independently, no barrier between stages; each stage receives `(prev, item, index)`. One stage acts as a concurrent map.
 - `phase(name)` — declare a phase for progress tracking
