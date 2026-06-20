@@ -30,6 +30,7 @@ class BannerState:
     skills_count: int = 0
     hooks_count: int = 0
     plan_description: str | None = None
+    safety_judge: str | None = None
 
 
 class Banner(Static):
@@ -121,6 +122,12 @@ class Banner(Static):
         enabled_servers = [s for s in all_servers if not s.disabled]
 
         active_model = config.get_active_model()
+        judge = getattr(config, "safety_judge", None)
+        safety_judge = (
+            (judge.model or "on")
+            if judge and judge.enabled and judge.model
+            else None
+        )
         return BannerState(
             active_model=f"{active_model.alias}[{active_model.thinking}]",
             models_count=len(config.models),
@@ -131,6 +138,7 @@ class Banner(Static):
             skills_count=skill_manager.custom_skills_count,
             hooks_count=hooks_count,
             plan_description=plan_description,
+            safety_judge=safety_judge,
         )
 
     def _format_meta_counts(self) -> str:
@@ -157,6 +165,8 @@ class Banner(Static):
         parts.append(_pluralize(self.state.skills_count, "skill"))
         if self.state.hooks_count > 0:
             parts.append(_pluralize(self.state.hooks_count, "hook"))
+        if self.state.safety_judge:
+            parts.append(f"🛡 judge:{self.state.safety_judge}")
         return " · ".join(parts)
 
     def _format_plan(self) -> str:
