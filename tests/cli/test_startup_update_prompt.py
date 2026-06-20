@@ -196,7 +196,7 @@ def test_failed_update_prints_error_message(
 
     out = capsys.readouterr().out
     assert "could not update automatically" in out
-    assert "package manager" in out
+    assert "Update manually from git" in out
 
 
 def test_failed_update_does_not_dismiss_so_user_is_reprompted_on_next_launch(

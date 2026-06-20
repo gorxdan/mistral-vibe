@@ -5,6 +5,7 @@ from datetime import date
 import html
 import os
 from pathlib import Path
+import re
 from string import Template
 import subprocess
 from typing import TYPE_CHECKING
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from vibe.core.config import ProjectContextConfig
     from vibe.core.experiments import ExperimentManager
     from vibe.core.skills.manager import SkillManager
+    from vibe.core.skills.models import SkillInfo
     from vibe.core.tools.manager import ToolManager
 
 _git_status_cache: dict[Path, str] = {}
@@ -224,6 +226,28 @@ def _add_humanizer_guidance() -> str:
     )
 
 
+_SKILL_INDEX_MAX_CHARS = 160
+_SENTENCE_END = re.compile(r"[.!?](?=\s)")
+
+
+def _truncate_to_first_sentence(
+    text: str, *, max_chars: int = _SKILL_INDEX_MAX_CHARS
+) -> str:
+    collapsed = " ".join(text.split())
+    match = _SENTENCE_END.search(collapsed)
+    if match and match.end() <= max_chars:
+        return collapsed[: match.end()]
+    if len(collapsed) <= max_chars:
+        return collapsed
+    return collapsed[:max_chars].rstrip() + "\u2026"
+
+
+def _skill_index_line(info: SkillInfo) -> str:
+    if info.summary:
+        return " ".join(info.summary.split())
+    return _truncate_to_first_sentence(info.description)
+
+
 def _get_available_skills_section(skill_manager: SkillManager) -> str:
     skills = skill_manager.available_skills
     if not skills:
@@ -232,21 +256,17 @@ def _get_available_skills_section(skill_manager: SkillManager) -> str:
     lines = [
         "# Available Skills",
         "",
-        "You have access to the following skills. When a task matches a skill's description,",
-        "use the `skill` tool if available to load the full skill instructions, if it is not available, read the files manually if they exist.",
+        "You have access to these skills. Each entry shows only a short trigger"
+        " line; call the `skill` tool with the skill's `name` to load its full"
+        " instructions, workflows, and bundled resources (the `description`"
+        " frontmatter is intentionally not loaded here to save context).",
         "",
         "<available_skills>",
     ]
 
     for name, info in sorted(skills.items()):
-        lines.append("  <skill>")
-        lines.append(f"    <name>{html.escape(str(name))}</name>")
-        lines.append(
-            f"    <description>{html.escape(str(info.description))}</description>"
-        )
-        if info.skill_path is not None:
-            lines.append(f"    <path>{html.escape(str(info.skill_path))}</path>")
-        lines.append("  </skill>")
+        summary = _skill_index_line(info)
+        lines.append(f"- **{html.escape(str(name))}**: {html.escape(summary)}")
 
     lines.append("</available_skills>")
 

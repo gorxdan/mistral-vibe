@@ -298,9 +298,9 @@ def _maybe_run_startup_update_prompt(
         case UpdatePromptResult.UPDATE_FAILED:
             rprint(
                 "[yellow]Vibe could not update automatically.[/]\n"
-                "  Update manually with your package manager (for example "
-                "[bold]uv tool upgrade chaton[/]), or keep using "
-                f"the current version ({__version__}) for now."
+                "  Update manually from git (for example "
+                "[bold]git pull upstream && uv sync --all-extras[/]), or keep "
+                f"using the current version ({__version__}) for now."
             )
             sys.exit(1)
 

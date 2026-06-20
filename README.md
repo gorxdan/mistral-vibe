@@ -376,6 +376,7 @@ Skills are defined in directories with a `SKILL.md` file containing metadata in 
 ---
 name: code-review
 description: Perform automated code reviews
+summary: Run automated code reviews (optional; index defaults to the first sentence of description)
 license: MIT
 compatibility: Python 3.12+
 user-invocable: true

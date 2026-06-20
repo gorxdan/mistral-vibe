@@ -134,7 +134,7 @@ from vibe.cli.textual_ui.windowing import (
 )
 from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
 from vibe.cli.update_notifier import (
-    PyPIUpdateGateway,
+    GitHubUpdateGateway,
     UpdateCacheRepository,
     UpdateError,
     UpdateGateway,
@@ -542,6 +542,7 @@ class VibeApp(App):  # noqa: PLR0904
             remove_loading_widget=self._remove_loading_widget,
             set_loading_queue_count=self._set_loading_queue_count,
             inject_user_context=self.agent_loop.inject_user_context,
+            stage_injected_message=self.agent_loop.stage_injected_message,
             next_message_index=lambda: len(self.agent_loop.messages),
             start_agent_turn=self._start_queued_agent_turn,
             await_agent_turn=self._await_agent_turn,
@@ -802,7 +803,16 @@ class VibeApp(App):  # noqa: PLR0904
         value = event.value.strip()
         input_widget = self.query_one(ChatInputContainer)
 
-        if not value and not self._input_queue.paused:
+        # Double-enter: an empty submit while an agent turn is running with
+        # queued prompts folds those prompts into the running turn instead of
+        # waiting for the whole turn to finish.
+        inject_now = (
+            not value
+            and self._agent_running
+            and not self._input_queue.paused
+            and bool(self._input_queue)
+        )
+        if not value and not self._input_queue.paused and not inject_now:
             return
 
         if self._banner:
@@ -811,6 +821,10 @@ class VibeApp(App):  # noqa: PLR0904
         if self._whats_new_message:
             await self._whats_new_message.remove()
             self._whats_new_message = None
+
+        if inject_now:
+            await self._inject_queued_now()
+            return
 
         if self._input_queue.paused:
             if not await self._handle_paused_submit(value):
@@ -905,6 +919,14 @@ class VibeApp(App):  # noqa: PLR0904
             content, skill_name=skill_name, images=images, payload=payload
         )
         return True
+
+    async def _inject_queued_now(self) -> None:
+        """Fold queued prompts into the running agent turn (double-enter)."""
+        if await self._queue.inject_now():
+            self.notify(
+                "Injected — the agent will pick this up at the next step.",
+                timeout=3,
+            )
 
     def _is_busy(self) -> bool:
         if self._agent_running:
@@ -4298,7 +4320,7 @@ def run_textual_ui(
 ) -> None:
     from vibe.cli.stderr_guard import stderr_guard
 
-    update_notifier = PyPIUpdateGateway(project_name="chaton")
+    update_notifier = GitHubUpdateGateway(owner="dan-campos", repository="chaton")
     plan_offer_gateway = HttpWhoAmIGateway(base_url=agent_loop.config.console_base_url)
     vscode_extension_promo_repository = FileSystemVscodeExtensionPromoRepository()
     vscode_extension_promo = VscodeExtensionPromo(

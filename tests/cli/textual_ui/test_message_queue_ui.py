@@ -6,6 +6,7 @@ import pytest
 
 from tests.conftest import build_test_vibe_app
 from vibe.cli.textual_ui.app import VibeApp
+from vibe.cli.textual_ui.message_queue import QueuedItemKind
 from vibe.cli.textual_ui.widgets.chat_input.container import ChatInputContainer
 from vibe.cli.textual_ui.widgets.messages import (
     BashOutputMessage,
@@ -198,3 +199,77 @@ async def test_quit_warning_shows_queue_count(vibe_app: VibeApp) -> None:
 
         vibe_app._input_queue.pop_last()
         assert vibe_app._queue.quit_warning_extra() == ""
+
+
+@pytest.mark.asyncio
+async def test_double_enter_injects_queued_prompt_into_running_turn(
+    vibe_app: VibeApp,
+) -> None:
+    async with vibe_app.run_test() as pilot:
+        vibe_app._agent_running = True
+        chat_input = vibe_app.query_one(ChatInputContainer)
+
+        chat_input.value = "hey check this"
+        await pilot.press("enter")
+        assert len(vibe_app._input_queue) == 1
+        assert vibe_app.agent_loop._pending_injected_messages == []
+
+        # Second Enter on empty input folds the queued prompt into the turn.
+        chat_input.value = ""
+        await pilot.press("enter")
+        await _wait_until(
+            pilot, lambda: len(vibe_app._input_queue) == 0, timeout=2.0
+        )
+
+        assert len(vibe_app._input_queue) == 0
+        staged = vibe_app.agent_loop._pending_injected_messages
+        assert len(staged) == 1
+        assert "check this" in (staged[0].content or "")
+        assert staged[0].injected
+
+
+@pytest.mark.asyncio
+async def test_double_enter_stops_at_queued_bash(vibe_app: VibeApp) -> None:
+    async with vibe_app.run_test() as pilot:
+        vibe_app._agent_running = True
+        chat_input = vibe_app.query_one(ChatInputContainer)
+
+        # Leading prompt is injectable; the bash after it is not (bash can't be
+        # folded into an LLM turn), so double-enter injects the prompt and
+        # leaves the bash queued.
+        chat_input.value = "fold me now"
+        await pilot.press("enter")
+        chat_input.value = "!echo later"
+        await pilot.press("enter")
+        assert len(vibe_app._input_queue) == 2
+
+        chat_input.value = ""
+        await pilot.press("enter")
+        await _wait_until(
+            pilot, lambda: len(vibe_app._input_queue) == 1, timeout=2.0
+        )
+
+        assert len(vibe_app._input_queue) == 1
+        assert vibe_app._input_queue.items[0].kind == QueuedItemKind.BASH
+        assert vibe_app._input_queue.items[0].content == "echo later"
+
+        staged = vibe_app.agent_loop._pending_injected_messages
+        assert len(staged) == 1
+        assert "fold me now" in (staged[0].content or "")
+
+
+@pytest.mark.asyncio
+async def test_double_enter_noop_without_queued_messages(
+    vibe_app: VibeApp,
+) -> None:
+    async with vibe_app.run_test() as pilot:
+        vibe_app._agent_running = True
+        chat_input = vibe_app.query_one(ChatInputContainer)
+
+        chat_input.value = ""
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+
+        assert len(vibe_app._input_queue) == 0
+        assert vibe_app.agent_loop._pending_injected_messages == []
+

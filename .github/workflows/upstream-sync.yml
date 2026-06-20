@@ -1,0 +1,193 @@
+name: Upstream Sync
+
+# Pulls the latest mistralai/mistral-vibe release into this fork, runs the
+# test suite, and either opens a PR (clean merge) or an issue (merge
+# conflict). Never force-pushes: prior sync branches are deleted, then a
+# fresh branch is pushed with a plain push.
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream tag to sync (e.g. v2.17.1). Leave empty for the latest release.'
+        required: false
+        default: ''
+
+env:
+  UPSTREAM_REPO: mistralai/mistral-vibe
+  UPSTREAM_REMOTE: https://github.com/mistralai/mistral-vibe.git
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Add upstream remote
+        run: git remote add upstream "$UPSTREAM_REMOTE"
+
+      - name: Resolve upstream tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ]; then
+            tag=$(gh api "repos/$UPSTREAM_REPO/releases/latest" --jq '.tag_name' 2>/dev/null || true)
+          fi
+          if [ -z "$tag" ]; then
+            tag=$(git ls-remote --tags --refs upstream 'v*' | awk -F/ '{print $NF}' | sort -V | tail -n1)
+          fi
+          if [ -z "$tag" ]; then
+            echo "::error::Could not resolve an upstream tag to sync."
+            exit 1
+          fi
+          branch="sync/upstream-$(printf '%s' "$tag" | tr / -)"
+          echo "Resolved upstream tag: $tag -> branch $branch"
+          {
+            echo "TAG=$tag"
+            echo "BRANCH=$branch"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare sync branch
+        run: |
+          git checkout -B "$BRANCH" origin/main
+
+      - name: Fetch upstream tag
+        run: git fetch upstream "refs/tags/$TAG:refs/tags/$TAG" --no-tags
+
+      - name: Merge upstream tag
+        id: merge
+        continue-on-error: true
+        run: git merge --no-ff --no-edit "$TAG"
+
+      - name: Install uv with caching
+        if: steps.merge.outcome == 'success'
+        uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7
+        with:
+          version: 'latest'
+          enable-cache: true
+          cache-dependency-glob: 'uv.lock'
+
+      - name: Set up Python
+        if: steps.merge.outcome == 'success'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Sync dependencies
+        if: steps.merge.outcome == 'success'
+        run: uv sync --all-extras
+
+      - name: Install ripgrep
+        if: steps.merge.outcome == 'success'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Run tests
+        id: tests
+        if: steps.merge.outcome == 'success'
+        continue-on-error: true
+        run: uv run pytest --ignore tests/snapshots
+
+      - name: Report result (PR or issue)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_OUTCOME: ${{ steps.merge.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          set -euo pipefail
+          gh label create upstream-sync --color 0E8A16 2>/dev/null || true
+          gh label create tests-failing --color B60205 2>/dev/null || true
+
+          if [ "$MERGE_OUTCOME" != "success" ]; then
+            conflicts=$(git diff --name-only --diff-filter=U | sed 's/^/  - /' || true)
+            title="Upstream sync blocked: $TAG"
+            num=$(gh issue list --state open --search "in:title $title" --json number --jq '.[0].number // empty' || true)
+            body=$(cat <<EOF
+          The automated upstream sync could not merge **$TAG** cleanly.
+
+          Conflicting files:
+          ${conflicts:-  (none reported)}
+
+          Resolve manually:
+            \`\`\`
+            git fetch upstream "refs/tags/$TAG:refs/tags/$TAG"
+            git checkout -b "$BRANCH" origin/main
+            git merge "$TAG"
+            # resolve conflicts, preserving fork customizations (pyproject.toml,
+            # branding, the builtin skill), then verify:
+            uv run pytest --ignore tests/snapshots
+            \`\`\`
+          EOF
+            )
+            if [ -n "$num" ]; then
+              gh issue edit "$num" --body "$body"
+              echo "::notice::Updated existing issue #$num for blocked sync of $TAG."
+            else
+              num=$(gh issue create --title "$title" --body "$body" --label upstream-sync)
+              echo "::notice::Opened issue $num for blocked sync of $TAG."
+            fi
+            exit 1
+          fi
+
+          # Clean merge: close any prior open sync PRs and delete their branches.
+          gh pr list --state open --json number,headRefName \
+            | jq -r '.[] | select(.headRefName | startswith("sync/upstream-")) | .number' \
+            | while read -r n; do gh pr close "$n" --delete-branch || true; done
+          # Drop any orphan remote sync branch so the plain push below is a fast-forward-free create.
+          git push origin --delete "$BRANCH" 2>/dev/null || true
+
+          git push origin "$BRANCH"
+
+          if [ "$TESTS_OUTCOME" = "failure" ]; then
+            status="TESTS FAILING — do not merge until resolved"
+            extra_label="--label tests-failing"
+          else
+            status="tests passed"
+            extra_label=""
+          fi
+
+          release_url="https://github.com/$UPSTREAM_REPO/releases/tag/$TAG"
+          body=$(cat <<EOF
+          Automated sync of upstream **$TAG** ($release_url) into this fork.
+
+          - Merge: clean
+          - Verification: $status
+
+          Review the diff — especially \`pyproject.toml\`, branding, and the
+          builtin Vibe skill — to confirm fork customizations are preserved,
+          then merge.
+          EOF
+          )
+          pr_url=$(gh pr create --base main --head "$BRANCH" \
+            --title "chore(sync): merge upstream $TAG" \
+            --body "$body" \
+            --label upstream-sync $extra_label || true)
+          if [ -z "$pr_url" ]; then
+            pr_url=$(gh pr list --head "$BRANCH" --state open --json url --jq '.[0].url')
+          fi
+          echo "::notice::Opened sync PR: $pr_url ($status)."
+          if [ "$TESTS_OUTCOME" = "failure" ]; then exit 1; fi

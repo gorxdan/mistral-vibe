@@ -150,6 +150,7 @@ class LoadingWidget(SpinnerMixin, Static):
         if self._queued_count > 0:
             return (
                 f"({elapsed_str} Esc to interrupt · "
+                "Enter to send now · "
                 "Ctrl+C to cancel last queued message)"
             )
         return f"({elapsed_str} Esc/Ctrl+C to interrupt)"

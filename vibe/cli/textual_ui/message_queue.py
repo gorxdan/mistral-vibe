@@ -126,6 +126,7 @@ class QueuePorts:
     remove_loading_widget: Callable[[], Awaitable[None]]
     set_loading_queue_count: Callable[[int], None]
     inject_user_context: Callable[..., Awaitable[None]]
+    stage_injected_message: Callable[..., None]
     next_message_index: Callable[[], int]
     start_agent_turn: Callable[..., asyncio.Task]
     await_agent_turn: Callable[[], Awaitable[None]]
@@ -424,3 +425,62 @@ class QueueController:
         for prev, curr in zip(widgets, widgets[1:], strict=False):
             prev.set_show_separator(False)
             curr.set_follows_previous(True)
+
+    # -- inject now (double-enter) ---------------------------------------
+
+    async def inject_now(self) -> bool:
+        """Fold the leading run of queued prompts into the running agent turn.
+
+        Prompts are staged via ``stage_injected_message`` so the model sees
+        them at the next step boundary and the turn keeps going. Bash items
+        cannot be folded into an LLM turn, so the run stops at the first one
+        (it stays queued for the normal drain). No-op unless an agent turn is
+        running. Returns True if anything was staged.
+        """
+        if not self._ports.agent_running():
+            return False
+        if not self._queue or self._queue.paused:
+            return False
+
+        pending: list[_Pending] = []
+        while self._queue and not self._queue.paused:
+            item = self._queue.pop_first()
+            if item is None:
+                break
+            widget = self._widgets.pop(0) if self._widgets else None
+            if item.kind == QueuedItemKind.BASH:
+                # Bash can't be folded into an LLM turn; put it back and stop.
+                self._queue.prepend_prompts([item])
+                if widget is not None:
+                    self._widgets.insert(0, widget)
+                break
+            if isinstance(widget, UserMessage):
+                pending.append(_Pending(item, widget))
+
+        if not pending:
+            return False
+
+        if not await self._gate_queued_images_for_vision(pending):
+            return False
+
+        for p in pending:
+            await self._stage_head_item(p.item, p.widget)
+        self._link_consecutive_user_messages([p.widget for p in pending])
+        await self._remove_header_if_empty()
+        self._push_loading_queue_count()
+        return True
+
+    async def _stage_head_item(self, item: QueuedItem, widget: UserMessage) -> None:
+        widget.message_index = self._ports.next_message_index()
+        await widget.set_pending(False)
+        message_id = str(uuid4()) if item.payload is not None else None
+        if item.payload is not None:
+            rendered = self._ports.render_payload(item.payload)
+        else:
+            rendered = item.content
+        self._ports.stage_injected_message(
+            rendered, images=item.images, client_message_id=message_id
+        )
+        self._ports.send_skill_telemetry(item.skill_name)
+        if item.payload is not None and message_id is not None:
+            self._ports.send_at_mention_telemetry(item.payload, message_id)

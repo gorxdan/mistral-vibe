@@ -22,6 +22,14 @@ class SkillMetadata(BaseModel):
         max_length=1024,
         description="What this skill does and when to use it.",
     )
+    summary: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "One-line trigger line shown in the always-loaded skills index. "
+            "When omitted, the first sentence of `description` is used."
+        ),
+    )
     license: str | None = Field(
         default=None, description="License name or reference to a bundled license file."
     )
@@ -65,6 +73,7 @@ class SkillMetadata(BaseModel):
 class SkillInfo(BaseModel):
     name: str
     description: str
+    summary: str | None = None
     license: str | None = None
     compatibility: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
@@ -88,6 +97,7 @@ class SkillInfo(BaseModel):
         return cls(
             name=meta.name,
             description=meta.description,
+            summary=meta.summary,
             license=meta.license,
             compatibility=meta.compatibility,
             metadata=meta.metadata,

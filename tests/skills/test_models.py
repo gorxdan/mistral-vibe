@@ -14,6 +14,7 @@ class TestSkillMetadata:
 
         assert meta.name == "test-skill"
         assert meta.description == "A test skill"
+        assert meta.summary is None
         assert meta.license is None
         assert meta.compatibility is None
         assert meta.metadata == {}
@@ -24,6 +25,7 @@ class TestSkillMetadata:
         meta = SkillMetadata(
             name="full-skill",
             description="A skill with all fields",
+            summary="One-line trigger for the index.",
             license="MIT",
             compatibility="Requires git",
             metadata={"author": "Test Author", "version": "1.0"},
@@ -33,11 +35,18 @@ class TestSkillMetadata:
 
         assert meta.name == "full-skill"
         assert meta.description == "A skill with all fields"
+        assert meta.summary == "One-line trigger for the index."
         assert meta.license == "MIT"
         assert meta.compatibility == "Requires git"
         assert meta.metadata == {"author": "Test Author", "version": "1.0"}
         assert meta.allowed_tools == ["bash", "read"]
         assert meta.user_invocable is False
+
+    def test_summary_rejects_value_over_max_length(self) -> None:
+        with pytest.raises(ValidationError):
+            SkillMetadata(
+                name="long-summary", description="A test skill", summary="x" * 201
+            )
 
     def test_raises_error_for_uppercase_name(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
@@ -132,6 +141,7 @@ class TestSkillInfo:
 
         assert info.name == "test-skill"
         assert info.description == "A test skill"
+        assert info.summary is None
         assert info.license == "MIT"
         assert info.skill_path == skill_path.resolve()
         assert skill_dir == skill_path.parent.resolve()
@@ -144,6 +154,7 @@ class TestSkillInfo:
         info = SkillInfo(
             name="full-skill",
             description="A skill with all fields",
+            summary="One-line trigger for the index.",
             license="Apache-2.0",
             compatibility="git, docker",
             metadata={"author": "Test"},
@@ -155,6 +166,7 @@ class TestSkillInfo:
 
         assert info.name == "full-skill"
         assert info.description == "A skill with all fields"
+        assert info.summary == "One-line trigger for the index."
         assert info.license == "Apache-2.0"
         assert info.compatibility == "git, docker"
         assert info.metadata == {"author": "Test"}
@@ -162,6 +174,21 @@ class TestSkillInfo:
         assert info.user_invocable is False
         assert info.skill_path == skill_path
         assert info.skill_dir == skill_path.parent.resolve()
+
+    def test_from_metadata_propagates_summary(self, tmp_path: Path) -> None:
+        skill_path = tmp_path / "summary-skill" / "SKILL.md"
+        skill_path.parent.mkdir()
+        skill_path.touch()
+
+        meta = SkillMetadata(
+            name="summary-skill",
+            description="A long description. With a second sentence.",
+            summary="Short curated trigger.",
+        )
+        info = SkillInfo.from_metadata(meta, skill_path, prompt="Skill body")
+
+        assert info.summary == "Short curated trigger."
+        assert info.description == "A long description. With a second sentence."
 
     def test_from_metadata_resolves_paths(self, tmp_path: Path) -> None:
         skill_path = tmp_path / "test-skill" / "SKILL.md"

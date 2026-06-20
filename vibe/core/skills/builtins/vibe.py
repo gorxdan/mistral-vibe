@@ -69,11 +69,12 @@ is present. `Ctrl+Z` suspends on POSIX (resume with `fg`).
 
 ### Update
 
-Vibe never updates silently. With `enable_update_checks = true` (default), it
-polls PyPI for `mistral-vibe` daily and prompts on the next launch when a
-newer release exists; accepting runs `uv tool upgrade mistral-vibe`, then
-`brew upgrade mistral-vibe` as a fallback. Disable via `enable_update_checks
-= false`. Initial install: `uv tool install mistral-vibe`.
+In this fork (`chaton`), in-app update checks are off by default
+(`enable_update_checks = false`). The `mistral-vibe` and `chaton` PyPI names
+are unrelated to this fork, so never run `uv tool upgrade mistral-vibe` or
+`uv tool upgrade chaton`. Updates are pulled from the `mistralai/mistral-vibe`
+upstream via the `upstream` git remote and verified by the `upstream-sync` CI
+workflow; apply them with `git pull upstream <tag> && uv sync --all-extras`.
 
 ### Version
 
@@ -123,7 +124,7 @@ bypass_tool_permissions = false    # Skip tool approval prompts
 system_prompt_id = "cli"          # System prompt: "cli", "lean", or custom .md filename
 compaction_prompt_id = "compact"  # Compaction prompt: built-in "compact" or custom .md filename
 enable_telemetry = true
-enable_update_checks = true       # Daily PyPI check; prompts on next launch when a newer release exists
+enable_update_checks = false      # Off in this fork; upstream tracked via the upstream-sync CI workflow + git
 enable_notifications = true
 enable_system_trust_store = false  # Use OS trust store for outbound HTTPS
 api_timeout = 720.0               # API request timeout in seconds
@@ -650,6 +651,7 @@ Each skill is a directory containing a `SKILL.md` file with YAML frontmatter.
 ---
 name: my-skill
 description: What this skill does and when to use it.
+summary: One-line trigger shown in the skills index (optional; defaults to the first sentence of description).
 user-invocable: true
 allowed-tools: bash read
 ---
@@ -658,6 +660,10 @@ allowed-tools: bash read
 
 Detailed instructions for the model...
 ```
+
+Only `name` and `description` are required. The system prompt loads a short
+trigger line per skill (the `summary`, or the first sentence of `description`);
+the `skill` tool loads the full instructions on demand.
 
 ### Skill Search Order (first match wins)
 

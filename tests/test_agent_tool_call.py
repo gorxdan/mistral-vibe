@@ -1042,3 +1042,40 @@ async def test_pending_injected_message_continues_loop_after_tool_result() -> No
         m for m in reversed(agent_loop.messages) if m.role == Role.assistant
     )
     assert "Acting on the injected guidance" in (last_assistant.content or "")
+
+
+@pytest.mark.asyncio
+async def test_stage_injected_message_continues_running_turn() -> None:
+    """The public staging API folds a message into the running turn at the next
+    step boundary instead of ending it (double-enter inject path).
+    """
+    tool_call = make_todo_tool_call("call_stage")
+    backend = FakeBackend([
+        [mock_llm_chunk(content="Working.", tool_calls=[tool_call])],
+        [mock_llm_chunk(content="Now acting on the staged note.")],
+    ])
+    agent_loop = make_agent_loop(auto_approve=True, backend=backend)
+
+    events: list[BaseEvent] = []
+    async for event in agent_loop.act("Go"):
+        events.append(event)
+        if isinstance(event, ToolResultEvent):
+            agent_loop.stage_injected_message("remember: be terse")
+
+    # Two assistant turns: the second only happens because the staged message
+    # kept the loop going instead of letting it end after the tool result.
+    assert len([e for e in events if isinstance(e, AssistantEvent)]) == 2
+
+    staged = [
+        m for m in agent_loop.messages
+        if m.role == Role.user and m.injected and "be terse" in (m.content or "")
+    ]
+    assert len(staged) == 1
+
+    last_assistant = next(
+        m for m in reversed(agent_loop.messages) if m.role == Role.assistant
+    )
+    assert "staged note" in (last_assistant.content or "")
+    # Nothing left staged once the turn ended.
+    assert agent_loop._pending_injected_messages == []
+
