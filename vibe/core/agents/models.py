@@ -114,6 +114,78 @@ def _plan_overrides() -> dict[str, Any]:
     }
 
 
+# Read-only review agents (reviewer / debugger / security) get `bash` so they
+# can run git inspection and tests — but they must NOT mutate the user's code.
+# This is a hard policy jail on bash, enforced by the tool's AST-split
+# allow/deny engine (every command node in a compound command is checked):
+#   - ALLOW (auto-run, works headless): git inspection + file-reading + named
+#     test/lint runners → the agent can do its job without an approval prompt.
+#   - DENY (hard NEVER, precedence over allow): anything that mutates code/git
+#     state, touches the network, installs packages, or escalates privilege.
+#   - Anything else falls through to the default ASK (skipped headless; the
+#     user can approve "when necessary" in an interactive session).
+# General-purpose write-capable tools (sed/awk/find/python/perl/env/xargs/sort
+# -o, shell redirects) are deliberately NOT allowlisted — they fall to ASK
+# rather than auto-run, since a prefix policy can't prove they won't write.
+_REVIEW_BASH_ALLOWLIST = [
+    "cd", "echo", "pwd", "true", "false",
+    # git inspection (read-only)
+    "git diff", "git log", "git status", "git show", "git blame",
+    "git rev-parse", "git diff-tree", "git ls-files", "git ls-tree",
+    "git cat-file", "git shortlog", "git describe", "git for-each-ref",
+    "git rev-list", "git name-rev", "git merge-base", "git grep",
+    "git branch --list", "git branch -a", "git branch -v", "git tag --list",
+    # file reading / inspection
+    "cat", "head", "tail", "wc", "file", "stat", "ls", "tree",
+    "diff", "comm", "nl", "column", "jq", "grep", "rg", "ag",
+    "whoami", "date", "which", "type", "uname", "basename", "dirname",
+    # test / lint / typecheck runners (run the repo's own checks)
+    "pytest", "python -m pytest", "python3 -m pytest", "tox",
+    "ruff", "mypy", "pyright", "flake8", "bandit",
+    "npm test", "npm run test", "yarn test", "pnpm test", "jest", "vitest",
+    "eslint", "tsc", "cargo test", "cargo check", "cargo clippy",
+    "go test", "go vet", "make test", "make check", "make lint",
+]
+_REVIEW_BASH_DENYLIST = [
+    # git mutation / network
+    "git commit", "git push", "git pull", "git fetch", "git reset",
+    "git checkout", "git switch", "git restore", "git clean", "git add",
+    "git rm", "git mv", "git stash", "git merge", "git rebase",
+    "git cherry-pick", "git revert", "git apply", "git am", "git update-ref",
+    "git gc", "git filter-branch", "git config", "git remote",
+    "git tag -d", "git branch -d", "git branch -D", "git worktree",
+    # filesystem mutation
+    "rm", "rmdir", "mv", "cp", "dd", "shred", "truncate", "ln",
+    "chmod", "chown", "chgrp", "sed -i", "perl -i", "tee", "install",
+    # network / exfil
+    "curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "sftp",
+    "rsync", "telnet",
+    # package installs / privilege / system control
+    "sudo", "su", "pip install", "pip3 install", "pip uninstall",
+    "npm install", "npm i", "npm uninstall", "yarn add", "pnpm add",
+    "apt", "apt-get", "brew", "cargo install", "go install", "gem install",
+    "kill", "killall", "pkill", "systemctl", "service", "mount", "umount",
+    "crontab", "reboot", "shutdown",
+    # interactive / write-capable editors
+    "vim", "vi", "nano", "emacs",
+]
+
+
+def _review_bash_overrides() -> dict[str, Any]:
+    """Per-agent bash policy for read-only review agents — see the comment on
+    _REVIEW_BASH_ALLOWLIST. Permission stays the default ASK so unknown
+    commands are skipped headless / approvable interactively.
+    """
+    return {
+        "tools": {
+            "bash": {
+                "allowlist": list(_REVIEW_BASH_ALLOWLIST),
+                "denylist": list(_REVIEW_BASH_DENYLIST),
+            }
+        }
+    }
+
+
 DEFAULT = AgentProfile(
     BuiltinAgentName.DEFAULT,
     "Default",
@@ -182,15 +254,15 @@ REVIEWER = AgentProfile(
     display_name="Reviewer",
     description=(
         "Subagent for adversarial code review: reads code, inspects diffs via "
-        "git, and runs targeted checks/tests. bash stays approval-gated."
+        "git, and runs targeted checks/tests. bash is jailed read-only — "
+        "inspection + tests auto-run, code/git mutations are denied."
     ),
-    # Has bash, so not SAFE — bash invocations still route through the normal
-    # approval flow (no bypass_tool_permissions).
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
     overrides={
         "enabled_tools": ["read", "grep", "bash"],
         "system_prompt_id": "explore",
+        **_review_bash_overrides(),
     },
 )
 
@@ -200,16 +272,16 @@ DEBUGGER = AgentProfile(
     description=(
         "Subagent for systematic debugging: reproduces a failure, isolates it, "
         "and traces the root cause via read/grep + targeted bash (tests, git "
-        "bisect). Returns root cause + minimal fix; read-only, so it diagnoses "
-        "rather than edits. bash stays approval-gated."
+        "inspection). Returns root cause + minimal fix; read-only, so it "
+        "diagnoses rather than edits. bash is jailed read-only — inspection + "
+        "tests auto-run, code/git mutations are denied."
     ),
-    # Has bash, so not SAFE — bash invocations still route through the normal
-    # approval flow (no bypass_tool_permissions).
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
     overrides={
         "enabled_tools": ["read", "grep", "bash"],
         "system_prompt_id": "debugger",
+        **_review_bash_overrides(),
     },
 )
 
@@ -236,7 +308,8 @@ SECURITY = AgentProfile(
         "Subagent for defensive security audit: traces untrusted input to "
         "sinks, checks the vulnerability classes (injection, path-escape, "
         "authz, secrets, deserialization), and reports severity-ranked findings "
-        "with fixes. Read + grep + approval-gated bash (read-only probes)."
+        "with fixes. Read + grep + bash jailed read-only — inspection probes "
+        "auto-run, repo mutations and network are denied."
     ),
     # Has bash, so not SAFE — bash invocations still route through the normal
     # approval flow (no bypass_tool_permissions).
@@ -245,6 +318,7 @@ SECURITY = AgentProfile(
     overrides={
         "enabled_tools": ["read", "grep", "bash"],
         "system_prompt_id": "security",
+        **_review_bash_overrides(),
     },
 )
 
