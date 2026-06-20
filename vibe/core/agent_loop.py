@@ -927,43 +927,54 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 threshold = result.metadata.get(
                     "threshold", self.config.get_active_model().auto_compact_threshold
                 )
-                old_session_id = self.session_id
-                old_parent_session_id = self.parent_session_id
-                tool_call_id = str(uuid4())
-
-                yield CompactStartEvent(
-                    tool_call_id=tool_call_id,
-                    current_context_tokens=old_tokens,
-                    threshold=threshold,
-                )
-
-                compact_status: Literal["success", "failure", "cancelled"] = "success"
-                try:
-                    summary = await self.compact()
-                except asyncio.CancelledError:
-                    compact_status = "cancelled"
-                    raise
-                except Exception:
-                    compact_status = "failure"
-                    raise
-                finally:
-                    self.telemetry_client.send_auto_compact_triggered(
-                        nb_context_tokens_before=old_tokens,
-                        auto_compact_threshold=threshold,
-                        status=compact_status,
-                        session_id=old_session_id,
-                        parent_session_id=old_parent_session_id,
-                    )
-
-                yield CompactEndEvent(
-                    tool_call_id=tool_call_id,
-                    summary_length=len(summary),
-                    old_session_id=old_session_id,
-                    new_session_id=self.session_id,
-                )
+                async for ev in self._run_compaction(old_tokens, threshold):
+                    yield ev
 
             case MiddlewareAction.CONTINUE:
                 pass
+
+    async def _run_compaction(
+        self, old_tokens: int, threshold: int
+    ) -> AsyncGenerator[BaseEvent, None]:
+        """Run history compaction, emitting start/end events + telemetry.
+
+        Shared by the auto-compact middleware path and emergency recovery from
+        a context-overflow error.
+        """
+        old_session_id = self.session_id
+        old_parent_session_id = self.parent_session_id
+        tool_call_id = str(uuid4())
+
+        yield CompactStartEvent(
+            tool_call_id=tool_call_id,
+            current_context_tokens=old_tokens,
+            threshold=threshold,
+        )
+
+        compact_status: Literal["success", "failure", "cancelled"] = "success"
+        try:
+            summary = await self.compact()
+        except asyncio.CancelledError:
+            compact_status = "cancelled"
+            raise
+        except Exception:
+            compact_status = "failure"
+            raise
+        finally:
+            self.telemetry_client.send_auto_compact_triggered(
+                nb_context_tokens_before=old_tokens,
+                auto_compact_threshold=threshold,
+                status=compact_status,
+                session_id=old_session_id,
+                parent_session_id=old_parent_session_id,
+            )
+
+        yield CompactEndEvent(
+            tool_call_id=tool_call_id,
+            summary_length=len(summary),
+            old_session_id=old_session_id,
+            new_session_id=self.session_id,
+        )
 
     def _get_context(self) -> ConversationContext:
         return ConversationContext(
@@ -1067,6 +1078,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         try:
             should_break_loop = False
             first_llm_turn = True
+            emergency_compacted = False
             while not should_break_loop:
                 self._is_user_prompt_call = False
                 result = await self.middleware_pipeline.run_before_turn(
@@ -1083,10 +1095,27 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 if first_llm_turn:
                     self._is_user_prompt_call = True
                     first_llm_turn = False
-                async for event in self._perform_llm_turn():
-                    if is_user_cancellation_event(event):
-                        user_cancelled = True
-                    yield event
+                try:
+                    async for event in self._perform_llm_turn():
+                        if is_user_cancellation_event(event):
+                            user_cancelled = True
+                        yield event
+                except ContextTooLongError:
+                    # Self-heal: compact once and retry the turn rather than
+                    # dead-ending with a manual /rewind+/compact message. If it
+                    # recurs after compaction, surface the error as before.
+                    if emergency_compacted:
+                        raise
+                    emergency_compacted = True
+                    logger.warning(
+                        "Context overflow; emergency-compacting and retrying turn"
+                    )
+                    threshold = self.config.get_active_model().auto_compact_threshold
+                    async for ev in self._run_compaction(
+                        self.stats.context_tokens, threshold
+                    ):
+                        yield ev
+                    continue
                 # Per-turn save so the on-disk log stays fresh; after the
                 # inner loop so before_tool rewrites land in the snapshot.
                 await self._save_messages()
