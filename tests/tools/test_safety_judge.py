@@ -192,3 +192,125 @@ async def test_safety_judge_fails_closed_on_backend_error(monkeypatch) -> None:
     )
     verdict = await judge.judge("bash", '{"command":"rm -rf /"}', ["rm -rf /"])
     assert verdict.safe is False
+    assert verdict.failed is True
+
+
+# --------------------------------------------------------------------------- #
+# Verdict cache                                                                #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_repeated_safe_call_hits_cache_and_skips_judge() -> None:
+    loop = build_test_agent_loop()
+    fake = _FakeJudge(safe=True, reason="benign")
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
+
+    args = BashArgs(command="npm install")
+    first = await loop._should_execute_tool(_bash(), args, "c1")
+    second = await loop._should_execute_tool(_bash(), args, "c2")
+
+    assert first.verdict == ToolExecutionResponse.EXECUTE
+    assert second.verdict == ToolExecutionResponse.EXECUTE
+    assert len(fake.calls) == 1, "second identical call must reuse the cached verdict"
+    assert second.judge_approved is True
+
+
+@pytest.mark.asyncio
+async def test_repeated_unsafe_call_hits_cache_and_skips_judge() -> None:
+    loop = build_test_agent_loop()
+    fake = _FakeJudge(safe=False, reason="destructive")
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    approval = _RecordingApproval(ApprovalResponse.NO)
+    loop.approval_callback = approval
+
+    args = BashArgs(command="rm -rf build")
+    await loop._should_execute_tool(_bash(), args, "c1")
+    await loop._should_execute_tool(_bash(), args, "c2")
+
+    assert len(fake.calls) == 1, "cached unsafe verdict must skip re-querying"
+    assert approval.called is True, "each call still defers to the user"
+
+
+@pytest.mark.asyncio
+async def test_distinct_args_miss_cache_and_query_judge() -> None:
+    loop = build_test_agent_loop()
+    fake = _FakeJudge(safe=True, reason="benign")
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
+
+    await loop._should_execute_tool(_bash(), BashArgs(command="npm install"), "c1")
+    await loop._should_execute_tool(_bash(), BashArgs(command="npm test"), "c2")
+
+    assert len(fake.calls) == 2, "different args must not share a verdict"
+
+
+@pytest.mark.asyncio
+async def test_fail_closed_verdict_is_not_cached() -> None:
+    loop = build_test_agent_loop()
+
+    class _FailOnceJudge:
+        """Returns a fail-closed verdict first, then a real safe one."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def judge(self, tool_name, args_repr, flagged) -> JudgeVerdict:  # type: ignore[no-untyped-def]
+            self.calls += 1
+            if self.calls == 1:
+                return JudgeVerdict(safe=False, reason="timed out", failed=True)
+            return JudgeVerdict(safe=True, reason="benign")
+
+    fake = _FailOnceJudge()
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    loop.approval_callback = _RecordingApproval(ApprovalResponse.YES)
+
+    args = BashArgs(command="npm install")
+    first = await loop._should_execute_tool(_bash(), args, "c1")  # fail-closed → prompt
+    second = await loop._should_execute_tool(_bash(), args, "c2")  # retried → safe
+
+    assert first.judge_approved is False
+    assert second.judge_approved is True, "fail-closed must not poison the cache"
+    assert fake.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_disabled_when_size_zero() -> None:
+    config = build_test_vibe_config(
+        safety_judge=SafetyJudgeConfig(
+            enabled=True, model="any", verdict_cache_size=0
+        )
+    )
+    loop = build_test_agent_loop(config=config)
+    fake = _FakeJudge(safe=True, reason="benign")
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
+
+    args = BashArgs(command="npm install")
+    await loop._should_execute_tool(_bash(), args, "c1")
+    await loop._should_execute_tool(_bash(), args, "c2")
+
+    assert len(fake.calls) == 2, "verdict_cache_size=0 must disable caching"
+
+
+@pytest.mark.asyncio
+async def test_cache_evicts_oldest_at_capacity() -> None:
+    config = build_test_vibe_config(
+        safety_judge=SafetyJudgeConfig(
+            enabled=True, model="any", verdict_cache_size=1
+        )
+    )
+    loop = build_test_agent_loop(config=config)
+    fake = _FakeJudge(safe=True, reason="benign")
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
+
+    # Fill the single slot with call A, then a distinct call B evicts it.
+    await loop._should_execute_tool(_bash(), BashArgs(command="npm install"), "c1")
+    await loop._should_execute_tool(_bash(), BashArgs(command="npm test"), "c2")
+    fake.calls.clear()
+    # A was evicted by B, so re-querying A must miss and call the judge.
+    await loop._should_execute_tool(_bash(), BashArgs(command="npm install"), "c3")
+
+    assert len(fake.calls) == 1, "LRU must evict the least-recently-used entry"

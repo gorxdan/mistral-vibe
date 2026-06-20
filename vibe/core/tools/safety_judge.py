@@ -61,9 +61,16 @@ When in doubt, respond {"safe": false, ...}."""
 class JudgeVerdict(BaseModel):
     safe: bool
     reason: str
+    # True only for the synthesized fail-closed verdict (timeout/backend error).
+    # Real verdicts from the judge model are always failed=False, so callers can
+    # cache real verdicts and retry the transiently-failed ones instead of
+    # poisoning the cache with an unrecoverable "unsafe".
+    failed: bool = False
 
 
-_FAIL_CLOSED = JudgeVerdict(safe=False, reason="judge unavailable; deferring to user")
+_FAIL_CLOSED = JudgeVerdict(
+    safe=False, reason="judge unavailable; deferring to user", failed=True
+)
 
 
 class SafetyJudge:
