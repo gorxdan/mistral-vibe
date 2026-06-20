@@ -80,12 +80,14 @@ class ApprovalApp(Container):
         tool_args: BaseModel,
         config: VibeConfig,
         required_permissions: list[RequiredPermission] | None = None,
+        judge_note: str | None = None,
     ) -> None:
         super().__init__(id="approval-app")
         self.tool_name = tool_name
         self.tool_args = tool_args
         self.config = config
         self.required_permissions = required_permissions or []
+        self.judge_note = judge_note
         self.selected_option = 0
         self.content_container: Vertical | None = None
         self.title_widget = NoMarkupStatic(
@@ -99,6 +101,12 @@ class ApprovalApp(Container):
     def compose(self) -> ComposeResult:
         with Vertical(id="approval-content"):
             yield self.title_widget
+
+            if self.judge_note:
+                yield NoMarkupStatic(
+                    f"🛡 Safety judge deferred to you: {self.judge_note}",
+                    classes="approval-judge-note",
+                )
 
             with VerticalScroll(classes="approval-tool-info-scroll"):
                 self.tool_info_container = Vertical(

@@ -366,6 +366,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         self.stats = AgentStats()
         self.approval_callback: ApprovalCallback | None = None
+        # Reason the safety judge deferred the current tool call to the user, if
+        # any; read by the approval UI. Set per-decision in _judge_tool_safety.
+        self.pending_judge_deferral: str | None = None
         self.user_input_callback: UserInputCallback | None = None
         self.entrypoint_metadata = entrypoint_metadata
         self.terminal_emulator = terminal_emulator
@@ -1564,6 +1567,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         denied (NEVER) call — those return earlier — and fails closed, so any
         error or "unsafe" verdict simply defers to the user.
         """
+        # Cleared each decision; set to the judge's reason when it defers so the
+        # approval UI can show why the user is being asked. Must not leak stale
+        # values to the next prompt.
+        self.pending_judge_deferral = None
         judge = self._resolve_safety_judge()
         if judge is None:
             return None
@@ -1576,6 +1583,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             tool_name, args_repr, [rp.label for rp in uncovered]
         )
         if not verdict.safe:
+            self.pending_judge_deferral = verdict.reason
             # Refusal is otherwise invisible (looks identical to judge-off):
             # log it so it's clear the judge ran and deferred to the user.
             logger.info(

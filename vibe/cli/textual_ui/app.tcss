@@ -1069,6 +1069,14 @@ StatusMessage {
     color: $warning;
 }
 
+.approval-judge-note {
+    height: auto;
+    width: 100%;
+    color: $success;
+    text-style: italic;
+    padding: 0 0 1 0;
+}
+
 .approval-tool-info-container {
     width: 100%;
     height: auto;

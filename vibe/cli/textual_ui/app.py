@@ -1798,13 +1798,16 @@ class VibeApp(App):  # noqa: PLR0904
             if self._is_tool_enabled_in_main_agent(tool):
                 return (ApprovalResponse.YES, None)
 
+        judge_note = self.agent_loop.pending_judge_deferral if self.agent_loop else None
         async with self._user_interaction_lock:
             await self._wait_for_typing_pause()
             self._pending_approval = asyncio.Future()
             self._terminal_notifier.notify(NotificationContext.ACTION_REQUIRED)
             try:
                 with paused_timer(self._loading_widget):
-                    await self._switch_to_approval_app(tool, args, required_permissions)
+                    await self._switch_to_approval_app(
+                        tool, args, required_permissions, judge_note=judge_note
+                    )
                     result = await self._pending_approval
                 return result
             finally:
@@ -3406,12 +3409,14 @@ class VibeApp(App):  # noqa: PLR0904
         tool_name: str,
         tool_args: BaseModel,
         required_permissions: list[RequiredPermission] | None = None,
+        judge_note: str | None = None,
     ) -> None:
         approval_app = ApprovalApp(
             tool_name=tool_name,
             tool_args=tool_args,
             config=self.config,
             required_permissions=required_permissions,
+            judge_note=judge_note,
         )
         await self._switch_from_input(approval_app, scroll=True)
 
