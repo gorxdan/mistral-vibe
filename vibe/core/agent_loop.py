@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable, Generator, Sequence
 import contextlib
 import copy
@@ -100,7 +101,7 @@ from vibe.core.tools.permissions import (
     PermissionStore,
     RequiredPermission,
 )
-from vibe.core.tools.safety_judge import SafetyJudge
+from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
 from vibe.core.tracing import agent_span, set_tool_result, tool_span
 from vibe.core.trusted_folders import has_agents_md_file
 from vibe.core.types import (
@@ -375,11 +376,25 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         # Reason the safety judge deferred the current tool call to the user, if
         # any; read by the approval UI. Set per-decision in _judge_tool_safety.
         self.pending_judge_deferral: str | None = None
+        # Session-scoped LRU of judge verdicts, keyed on the exact call signature
+        # (tool_name, args_repr, flagged_reasons). Repeated identical ASK-gated
+        # calls reuse a verdict instead of re-querying the judge model. Only real
+        # verdicts are cached; fail-closed ones (timeout/error) are retried.
+        self._judge_verdict_cache: OrderedDict[
+            tuple[str, str, tuple[str, ...]], JudgeVerdict
+        ] = OrderedDict()
+        self._judge_verdict_cache_maxsize: int = (
+            config.safety_judge.verdict_cache_size
+        )
         # When the active model is rate-limited/overloaded, the loop switches to
         # a configured fallback model for the rest of the session. Tracks the
         # override + which fallback aliases have already been tried.
         self._fallback_model_override: ModelConfig | None = None
         self._tried_fallback_aliases: set[str] = set()
+        # When the model truncates output (ResponseTooLongError), the loop retries
+        # the turn with a larger max_tokens. Per-turn override + attempt counter.
+        self._max_output_override: int | None = None
+        self._response_too_long_attempts: int = 0
         self.user_input_callback: UserInputCallback | None = None
         self.entrypoint_metadata = entrypoint_metadata
         self.terminal_emulator = terminal_emulator
@@ -1078,6 +1093,31 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return model
         return None
 
+    def _escalate_max_output(self) -> int | None:
+        """Compute the next, larger output budget after a truncated response.
+
+        Returns the new max_tokens (also stored on ``_max_output_override``), or
+        None when escalation is disabled, the attempt budget is spent, or the
+        value is already pinned at the cap (so a retry could not grow it).
+        """
+        esc = self.config.max_output_escalation
+        if not esc.enabled:
+            return None
+        self._response_too_long_attempts += 1
+        if self._response_too_long_attempts > esc.max_attempts:
+            return None
+        # Streaming model resolution ignores the fallback override, so clamp
+        # against the plain active model (matches _chat_streaming).
+        model = self.config.get_active_model()
+        cap = model.max_output_tokens or esc.cap
+        current = self._max_output_override or esc.base
+        next_val = min(int(current * esc.factor), cap)
+        if next_val <= (self._max_output_override or 0):
+            # Already at cap; a further retry would request the same size.
+            return None
+        self._max_output_override = next_val
+        return next_val
+
     async def _conversation_loop(
         self,
         user_msg: str,
@@ -1113,6 +1153,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             should_break_loop = False
             first_llm_turn = True
             emergency_compacted = False
+            # Output-escalation state is scoped to this user turn.
+            self._max_output_override = None
+            self._response_too_long_attempts = 0
             while not should_break_loop:
                 self._is_user_prompt_call = False
                 result = await self.middleware_pipeline.run_before_turn(
@@ -1160,6 +1203,17 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     logger.warning(
                         "Active model rate-limited; falling back to %r",
                         fallback.alias,
+                    )
+                    continue
+                except ResponseTooLongError:
+                    # Self-heal: retry the turn with a larger output budget
+                    # rather than dead-ending on a truncated response. When
+                    # escalation is disabled/exhausted/pinned at cap, re-raise.
+                    nxt = self._escalate_max_output()
+                    if nxt is None:
+                        raise
+                    logger.warning(
+                        "Response truncated; retrying turn with max_tokens=%d", nxt
                     )
                     continue
                 # Per-turn save so the on-disk log stays fresh; after the
@@ -1685,9 +1739,22 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         except Exception:
             # Never let arg serialization break gating; judge sees a best-effort repr.
             args_repr = str(args)[:4000]
-        verdict = await judge.judge(
-            tool_name, args_repr, [rp.label for rp in uncovered]
-        )
+        flagged_reasons = [rp.label for rp in uncovered]
+        cache_key = (tool_name, args_repr, tuple(flagged_reasons))
+        # Reuse a real verdict for an identical call instead of re-querying the
+        # judge model. Fail-closed verdicts (verdict.failed) are never stored,
+        # so a transient timeout/error is retried on the next identical call.
+        verdict = self._judge_verdict_cache_get(cache_key)
+        if verdict is None:
+            verdict = await judge.judge(tool_name, args_repr, flagged_reasons)
+            if not verdict.failed:
+                self._judge_verdict_cache_put(cache_key, verdict)
+        else:
+            logger.debug(
+                "Safety judge verdict cache hit for tool %r (safe=%s)",
+                tool_name,
+                verdict.safe,
+            )
         if not verdict.safe:
             self.pending_judge_deferral = verdict.reason
             # Refusal is otherwise invisible (looks identical to judge-off):
@@ -1707,6 +1774,30 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             feedback=f"Auto-approved by safety judge: {verdict.reason}",
             judge_approved=True,
         )
+
+    def _judge_verdict_cache_get(
+        self, key: tuple[str, str, tuple[str, ...]]
+    ) -> JudgeVerdict | None:
+        """Return a cached verdict, marking it most-recently-used, or None."""
+        if self._judge_verdict_cache_maxsize <= 0:
+            return None
+        cache = self._judge_verdict_cache
+        verdict = cache.get(key)
+        if verdict is not None:
+            cache.move_to_end(key)
+        return verdict
+
+    def _judge_verdict_cache_put(
+        self, key: tuple[str, str, tuple[str, ...]], verdict: JudgeVerdict
+    ) -> None:
+        """Store a verdict with bounded-LRU eviction. No-op when disabled."""
+        if self._judge_verdict_cache_maxsize <= 0:
+            return
+        cache = self._judge_verdict_cache
+        cache[key] = verdict
+        cache.move_to_end(key)
+        while len(cache) > self._judge_verdict_cache_maxsize:
+            cache.popitem(last=False)
 
     async def _ask_approval(
         self,
@@ -1823,6 +1914,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _chat(
         self, max_tokens: int | None = None, model_override: ModelConfig | None = None
     ) -> LLMChunk:
+        # Apply the output-escalation override only to main-turn calls: callers
+        # that set model_override (e.g. compaction summary) must not inherit it.
+        if max_tokens is None and model_override is None:
+            max_tokens = self._max_output_override
         active_model = (
             model_override
             or self._fallback_model_override
@@ -1902,6 +1997,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _chat_streaming(
         self, max_tokens: int | None = None
     ) -> AsyncGenerator[LLMChunk]:
+        if max_tokens is None:
+            max_tokens = self._max_output_override
         active_model = self.config.get_active_model()
         provider = self.config.get_active_provider()
         backend_metadata = self._build_backend_metadata()

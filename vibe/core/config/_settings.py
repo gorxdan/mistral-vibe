@@ -236,6 +236,31 @@ class SafetyJudgeConfig(BaseSettings):
     # (generic backend only). Use to make a reasoning judge fast, e.g. for GLM:
     #   extra_body = { thinking = { type = "disabled" } }
     extra_body: dict[str, Any] = Field(default_factory=dict)
+    # Max number of judge verdicts cached per session, keyed on the exact tool
+    # call signature. Identical repeated ASK-gated calls reuse the verdict
+    # instead of re-querying the judge model. Fail-closed verdicts (timeout /
+    # backend error) are never cached. Set to 0 to disable.
+    verdict_cache_size: int = 256
+
+
+class MaxOutputEscalationConfig(BaseSettings):
+    """Retry a truncated turn with a larger ``max_tokens`` instead of failing.
+
+    When the model truncates its response (ResponseTooLongError), the turn is
+    retried with a geometrically larger output budget, up to ``max_attempts``
+    and a hard ``cap``. Disabled or exhausted → the error surfaces as before.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    enabled: bool = True
+    # Floor for the first escalation step when no override is active yet. The
+    # first retry uses min(base*factor, cap); set at/above the backend default
+    # so the first retry is a real increase.
+    base: int = 8192
+    factor: float = 2.0
+    cap: int = 65536
+    max_attempts: int = 3
 
 
 class WorktreeConfig(BaseSettings):
@@ -552,6 +577,8 @@ class ModelConfig(BaseModel):
     thinking: ThinkingLevel = "off"
     supports_images: bool = False
     auto_compact_threshold: int = DEFAULT_AUTO_COMPACT_THRESHOLD
+    # Model's true output-token ceiling; seeds/caps max-output escalation when set.
+    max_output_tokens: int | None = None
     _default_alias_to_name = model_validator(mode="before")(_default_alias_to_name)
 
 
@@ -740,6 +767,9 @@ class VibeConfig(BaseSettings):
     # Aliases of models to fall back to (in order) when the active model is rate
     # limited / overloaded. Empty = no failover (error surfaces as before).
     fallback_models: list[str] = Field(default_factory=list)
+    max_output_escalation: MaxOutputEscalationConfig = Field(
+        default_factory=MaxOutputEscalationConfig
+    )
 
     transcribe_providers: list[TranscribeProviderConfig] = Field(
         default_factory=lambda: list(DEFAULT_TRANSCRIBE_PROVIDERS)
