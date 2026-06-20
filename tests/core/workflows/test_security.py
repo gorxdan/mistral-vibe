@@ -4,6 +4,8 @@ import pytest
 
 from vibe.core.workflows.security import (
     build_namespace,
+    check_script,
+    lint_script,
     restricted_import,
     validate_script,
 )
@@ -200,3 +202,98 @@ def test_build_namespace_blocks_unsafe_import() -> None:
 def test_syntax_error_reported() -> None:
     v = validate_script("def main(\n")
     assert v and v[0].rule == "syntax-error"
+
+
+# --- correctness lint (lint_script / check_script) ----------------------------
+# These catch the classes that PASS the safety AST check but crash or silently
+# misbehave at exec time: undefined names (e.g. `json` used without `import json`)
+# and coroutine-as-thunk (`parallel(agent(...))` -> zero agents, swallowed None).
+
+
+def test_lint_passes_clean_script() -> None:
+    assert not lint_script(CLEAN_SCRIPT)
+
+
+def test_lint_flags_json_used_without_import() -> None:
+    # The reported real-world failure: json.dumps with no `import json`.
+    src = (
+        "async def main():\n"
+        "    data = [1, 2, 3]\n"
+        "    return json.dumps(data)\n"
+    )
+    v = lint_script(src)
+    assert v and v[0].rule == "undefined-name"
+    assert "json" in v[0].detail and "import json" in v[0].detail
+
+
+def test_lint_allows_json_when_imported() -> None:
+    src = (
+        "import json\n"
+        "async def main():\n"
+        "    return json.dumps([1, 2, 3])\n"
+    )
+    assert not lint_script(src)
+
+
+def test_lint_flags_undefined_helper_name() -> None:
+    src = "async def main():\n    return frobnicate(3)\n"
+    v = lint_script(src)
+    assert v and v[0].rule == "undefined-name"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["agent", "parallel", "pipeline", "phase", "log", "workflow", "budget", "args"],
+)
+def test_lint_allows_injected_names(name: str) -> None:
+    src = f"async def main():\n    return {name}\n"
+    assert not lint_script(src), f"{name} is injected and must not be flagged"
+
+
+def test_lint_flags_coroutine_passed_to_parallel() -> None:
+    src = (
+        "async def main():\n"
+        '    return await parallel(agent("a"), agent("b"))\n'
+    )
+    v = lint_script(src)
+    assert len(v) == 2 and all(x.rule == "non-thunk-arg" for x in v)
+
+
+def test_lint_allows_lambda_thunks_in_parallel() -> None:
+    src = (
+        "async def main():\n"
+        '    return await parallel(lambda: agent("a"), lambda: agent("b"))\n'
+    )
+    assert not lint_script(src)
+
+
+def test_lint_allows_pipeline_items_first_arg() -> None:
+    # pipeline's first positional is data (items), not a thunk — must not flag it.
+    src = (
+        "async def main():\n"
+        "    async def stage(x):\n"
+        "        return x\n"
+        "    return await pipeline([1, 2, 3], stage)\n"
+    )
+    assert not lint_script(src)
+
+
+def test_lint_flags_coroutine_in_parallel_list_literal() -> None:
+    src = (
+        "async def main():\n"
+        '    return await parallel([agent("a"), agent("b")])\n'
+    )
+    v = lint_script(src)
+    assert len(v) == 2 and all(x.rule == "non-thunk-arg" for x in v)
+
+
+def test_check_script_combines_safety_and_correctness() -> None:
+    # Unsafe import (safety) + undefined name (correctness) in one script.
+    src = (
+        "import os\n"
+        "async def main():\n"
+        "    return json.dumps(os.listdir())\n"
+    )
+    rules = {v.rule for v in check_script(src)}
+    assert "unsafe-import" in rules
+    assert "undefined-name" in rules

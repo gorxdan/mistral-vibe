@@ -132,6 +132,26 @@ FORBIDDEN_ATTRS = frozenset({
     "get_field",
 })
 
+# Names the runtime injects into every workflow namespace. Kept in sync with
+# WorkflowRuntime.build_script_namespace() in runtime.py. Used by the correctness
+# lint (lint_script) to tell a genuinely-undefined name (e.g. `json` used without
+# `import json`) from a legitimately-available injected helper.
+INJECTED_NAMES = frozenset({
+    "agent",
+    "parallel",
+    "pipeline",
+    "phase",
+    "log",
+    "workflow",
+    "budget",
+    "post_message",
+    "fetch_messages",
+    "flatten",
+    "dedup_by",
+    "merge_by",
+    "args",
+})
+
 
 @dataclass
 class Violation:
@@ -211,6 +231,192 @@ def validate_script(source: str) -> list[Violation]:
     visitor = _Visitor()
     visitor.visit(tree)
     return visitor.violations
+
+
+def _bound_names(tree: ast.AST) -> set[str]:
+    """Over-approximate every name BOUND anywhere in the script: imports,
+    assignments, def/lambda params, function/class names, loop/comprehension/
+    with/except targets, and walrus.
+
+    Over-approximation (collecting bindings from every scope, ignoring scope
+    boundaries) is deliberate: the goal is ZERO false positives on valid scripts
+    at the cost of possibly missing some genuinely-undefined uses. A name bound
+    anywhere is treated as defined everywhere.
+    """
+    bound: set[str] = set()
+
+    def add_target(t: ast.AST) -> None:
+        if isinstance(t, ast.Name):
+            bound.add(t.id)
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            for elt in t.elts:
+                add_target(elt)
+        elif isinstance(t, ast.Starred):
+            add_target(t.value)
+
+    def add_args(a: ast.arguments) -> None:
+        for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs):
+            bound.add(arg.arg)
+        if a.vararg:
+            bound.add(a.vararg.arg)
+        if a.kwarg:
+            bound.add(a.kwarg.arg)
+
+    # Nodes that expose a single `.target` to bind (assignment-like, loop, and
+    # comprehension targets all share the attribute), grouped to keep the
+    # dispatch flat.
+    target_nodes = (
+        ast.AnnAssign,
+        ast.AugAssign,
+        ast.For,
+        ast.AsyncFor,
+        ast.comprehension,
+        ast.NamedExpr,
+    )
+
+    for node in ast.walk(tree):
+        # def/class introduce a name; def/lambda also bind their parameters.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            add_args(node.args)
+
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                add_target(t)
+        elif isinstance(node, target_nodes):
+            add_target(node.target)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    add_target(item.optional_vars)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+
+    return bound
+
+
+def _undefined_names(tree: ast.AST, bound: set[str]) -> list[Violation]:
+    """Flag names that are LOADed but never imported, assigned, injected, or a
+    safelisted builtin — the exec-time `name 'json' is not defined` class, caught
+    pre-flight at no cost. DANGEROUS_CALLS names are allowed here because they are
+    reported by the more specific `dangerous-call` rule, not double-flagged.
+    """
+    allowed = (
+        bound
+        | INJECTED_NAMES
+        | SAFE_BUILTINS
+        | DANGEROUS_CALLS
+        | {"__name__"}
+    )
+    violations: list[Violation] = []
+    reported: set[tuple[str, int]] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)):
+            continue
+        if node.id in allowed:
+            continue
+        key = (node.id, node.lineno)
+        if key in reported:
+            continue
+        reported.add(key)
+        detail = f"name '{node.id}' is not defined"
+        if node.id in SAFE_MODULES:
+            detail += f" — add `import {node.id}` (safelisted, but not auto-imported)"
+        else:
+            detail += " (not imported, assigned, or an injected helper)"
+        violations.append(
+            Violation(node.lineno, node.col_offset, "undefined-name", detail)
+        )
+    return violations
+
+
+def _thunk_misuse(tree: ast.AST) -> list[Violation]:
+    """`parallel`/`pipeline` take THUNKS (zero-arg callables), not coroutines.
+    Passing `agent(...)`/`workflow(...)` directly is the most common mistake and
+    silently produces zero agents — `parallel` awaits `thunk()`, a coroutine is
+    not callable, and the TypeError degrades to a None result. Flag the direct
+    inline form so it fails pre-flight with a clear fix: wrap as `lambda: ...`.
+    """
+    violations: list[Violation] = []
+
+    def is_spawn_call(n: ast.AST) -> bool:
+        return (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id in {"agent", "workflow"}
+        )
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        fname = node.func.id
+        if fname not in {"parallel", "pipeline"}:
+            continue
+        positional = [a for a in node.args if not isinstance(a, ast.Starred)]
+        # pipeline's first positional is `items` (data); the rest are stages.
+        candidates: list[ast.expr] = (
+            positional[1:] if fname == "pipeline" else list(positional)
+        )
+        # also peek inside a list/tuple literal arg: parallel([agent(...), ...]).
+        for a in node.args:
+            if isinstance(a, (ast.List, ast.Tuple)):
+                candidates.extend(a.elts)
+            elif isinstance(a, ast.Starred) and isinstance(
+                a.value, (ast.List, ast.Tuple)
+            ):
+                candidates.extend(a.value.elts)
+        for a in candidates:
+            if is_spawn_call(a):
+                callee = a.func.id  # type: ignore[union-attr]
+                violations.append(
+                    Violation(
+                        a.lineno,
+                        a.col_offset,
+                        "non-thunk-arg",
+                        f"{fname}() expects thunks (zero-arg callables); pass "
+                        f"`lambda: {callee}(...)`, not `{callee}(...)` directly "
+                        f"(a bare {callee}(...) is a coroutine, not a thunk)",
+                    )
+                )
+    return violations
+
+
+def lint_script(source: str) -> list[Violation]:
+    """Correctness lint (distinct from validate_script's safety gate): catches
+    the exec-time / silent-failure classes that pass the AST safety check but
+    crash or misbehave once running — undefined names and coroutine-as-thunk.
+
+    Returns violations sorted by (line, col). Empty list means clean.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as e:
+        return [Violation(e.lineno or 0, e.offset or 0, "syntax-error", str(e))]
+
+    violations = _undefined_names(tree, _bound_names(tree))
+    violations.extend(_thunk_misuse(tree))
+    violations.sort(key=lambda v: (v.line, v.col))
+    return violations
+
+
+def check_script(source: str) -> list[Violation]:
+    """Full pre-flight gate: safety (validate_script) + correctness (lint_script).
+    Use at the agent-authored launch boundary so the common authoring mistakes
+    fail before any agent spawns instead of at exec time.
+    """
+    violations = list(validate_script(source))
+    violations.extend(lint_script(source))
+    violations.sort(key=lambda v: (v.line, v.col))
+    return violations
 
 
 def restricted_import(

@@ -61,8 +61,21 @@ class WorkflowResultsResult(BaseModel):
         default_factory=list,
         description=(
             "One dict per finalized agent: {label, agent, phase, completed, "
-            "response, error, tokens_in, tokens_out}. response may be truncated "
-            "(pass raw=true for full text)."
+            "response, error, schema_errors, tokens_in, tokens_out}. response "
+            "may be truncated (pass raw=true for full text). schema_errors "
+            "carries field-level reasons when an agent failed JSON-schema "
+            "validation (empty otherwise)."
+        ),
+    )
+    return_value: Any = Field(
+        default=None,
+        description=(
+            "The workflow script's return value (what main() returned), or None "
+            "while the run is still in flight. This is the canonical pull path "
+            "for a run's result — use it whenever the auto-delivered completion "
+            "summary was missed, truncated, or you need the structured output. "
+            "Structured values (dict/list) pass through when they fit the cap; "
+            "larger values come back as a truncated string unless raw=true."
         ),
     )
 
@@ -79,20 +92,23 @@ class WorkflowResults(
 ):
     read_only: ClassVar[bool] = True
     description: ClassVar[str] = (
-        "Retrieve the actual outputs produced by a workflow run's agents — "
-        "formatted and tagged with completion status. Use this to recover work "
-        "from a completed, stopped, or partially failed run, especially when the "
-        "auto-delivered completion summary was truncated or when schema-validation "
-        "failures occurred (failed agents' raw responses are included). Returns "
-        "per-agent {label, agent, phase, completed, response, error, tokens}. "
-        "Pass raw=true for untruncated responses. Always prefer this over "
-        "workflow_status when you need the agents' output text rather than "
-        "live progress metadata."
+        "Retrieve a workflow run's outputs: the script's return_value plus "
+        "per-agent {label, response, error, schema_errors, tokens}. Use this "
+        "as the canonical pull path for a run's result — especially when the "
+        "auto-delivered completion summary was missed/truncated, when you need "
+        "the structured return value, or to recover why agents failed "
+        "(schema_errors carries field-level JSON-validation reasons; failed "
+        "agents' raw responses are included). Pass raw=true for untruncated "
+        "responses and the full return_value. Prefer this over workflow_status "
+        "when you need outputs, not live progress."
     )
 
     # Per-agent response cap when raw=false. Chosen so a 16-agent batch fits in
     # ~64KB rather than flooding the host's context. raw=true lifts it entirely.
     _DEFAULT_PER_AGENT_CHAR_CAP: ClassVar[int] = 4000
+    # return_value cap when raw=false. Larger than the per-agent cap because the
+    # return value is the synthesized point of the run; raw=true lifts it.
+    _DEFAULT_RETURN_VALUE_CHAR_CAP: ClassVar[int] = 16_000
 
     @classmethod
     def is_available(cls, config: VibeConfig | None = None) -> bool:

@@ -755,6 +755,9 @@ runtime injects these functions into the script's namespace:
 - `workflow(name, args=None)` — run another discovered workflow inline as a sub-step and return its result; it shares this run's budget, agent counter, and result cache, and its phases merge into the live monitor. Nesting is one level deep — calling `workflow()` inside a nested run raises.
 - `post_message(channel, message)` — post to a named channel on this run's shared in-process message board. Visible to every agent/stage in the same run via `fetch_messages`. Use for inter-agent handoffs that don't fit the barrier-return model (e.g. a finder posting partial results a verifier polls for).
 - `fetch_messages(channel)` — return a copy of all messages posted to a channel so far.
+- `flatten(items)` — flatten one level of nested lists (strings/dicts/bytes are atoms, not iterated): `flatten([[1,2],[3]]) == [1,2,3]`.
+- `dedup_by(items, key)` — drop duplicates keeping the first occurrence; `key` maps each item to a hashable identity (e.g. `lambda f: f"{f['file']}:{f['line']}"`). Items whose key raises are kept as unique by `id()`.
+- `merge_by(items, key, merge)` — group by `key` and fold each group via `merge(acc, item)` (acc starts at the first item); returns one merged value per key in first-seen order. Use to union findings, sum counts, or pick the highest-scored item per group.
 - `args` — structured input from the invocation command (string or None)
 
 Scripts are validated via AST before execution and run in a restricted namespace.
@@ -794,6 +797,15 @@ Three ways to launch:
    (gated by ToolPermission.ASK, so the user approves)
 3. Le chaton effort mode — the model is instructed to write and launch workflows
    for substantive tasks
+
+A launch returns only `{run_id, launched, delivery}` — the run is background.
+The script's `return_value` and per-agent outputs are auto-delivered as a
+message on completion (best-effort; capped at ~16KB; dropped if the host turn
+already ended). Re-read the result any time with the `workflow_results` tool
+(`workflow_results(run_id=...)`), which returns the structured `return_value`
+plus per-agent `response`/`error`/`schema_errors`. For finished runs the return
+value is persisted across sessions. Use `workflow_status` for live progress
+only.
 
 ### Task Manager (background processes, workflows, teams, loops)
 

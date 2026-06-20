@@ -3301,6 +3301,7 @@ class VibeApp(App):  # noqa: PLR0904
                         "error": r.error,
                         "tokens_in": r.tokens_in,
                         "tokens_out": r.tokens_out,
+                        "schema_errors": list(r.schema_errors),
                     }
                 )
 
@@ -3309,7 +3310,33 @@ class VibeApp(App):  # noqa: PLR0904
             "status": status,
             "phases": phase_summaries,
             "agent_results": agent_results,
+            "return_value": self._return_value_for_tool(entry, raw=raw),
         }
+
+    @staticmethod
+    def _return_value_for_tool(entry: Any, *, raw: bool) -> Any:
+        """Surface the script's return_value through the workflow_results tool.
+
+        This is the pull path that makes a run's result re-readable after the
+        one-shot completion delivery (which is best-effort and capped). When the
+        run hasn't finished (entry.result is None) the value is None. When it
+        has, the structured value is returned as-is if it fits the cap; a value
+        whose stringified form exceeds the cap is returned as a truncated string
+        with a marker, unless raw=True lifts the cap.
+        """
+        result = getattr(entry, "result", None)
+        if result is None:
+            return None
+        value = getattr(result, "return_value", None)
+        if value is None:
+            return None
+        rendered = VibeApp._stringify_workflow_value(value)
+        cap = None if raw else VibeApp._WORKFLOW_DELIVERY_CHAR_CAP
+        if cap is not None and len(rendered) > cap:
+            return rendered[:cap] + "\n…(truncated; pass raw=true for full value)"
+        # Small/structured values pass through unchanged so the model keeps the
+        # dict/list shape rather than a JSON string.
+        return value
 
     async def _workflow_stop_for_tool(
         self, run_id: str | None, all_runs: bool
@@ -3484,13 +3511,19 @@ class VibeApp(App):  # noqa: PLR0904
                 (cls._WORKFLOW_DELIVERY_CHAR_CAP - used) // max(1, len(failed_outputs)),
             )
             chunks: list[str] = []
-            for label, response, error in failed_outputs:
+            for label, response, error, schema_errors in failed_outputs:
                 blob = cls._stringify_workflow_value(response)
                 if len(blob) > per:
                     blob = blob[:per] + "\n…(truncated)"
                 tag = f"[{label or 'agent'}]"
                 if error:
                     tag += f" failed: {error.splitlines()[0][:120]}"
+                # Surface the first field-level schema error so a systemic
+                # schema mismatch is named in the push, not just the generic
+                # "Schema validation failed after N attempts". Full per-agent
+                # detail is on the workflow_results pull path.
+                if schema_errors:
+                    tag += f" [{schema_errors[0][:120]}]"
                 chunks.append(f"{tag}\n{blob}")
             parts.append(
                 "Recovered outputs from agents that did not complete cleanly "
@@ -3501,14 +3534,15 @@ class VibeApp(App):  # noqa: PLR0904
     @staticmethod
     def _collect_recoverable_outputs(
         run: Any,
-    ) -> list[tuple[str | None, Any, str | None]]:
-        """Return ``(label, response, error)`` for every agent that did not
-        complete cleanly, in run order. Carries partial work the host may still
-        use; agents that produced no output (e.g. cancelled before emitting) are
-        skipped since there is nothing to recover."""
+    ) -> list[tuple[str | None, Any, str | None, list[str]]]:
+        """Return ``(label, response, error, schema_errors)`` for every agent
+        that did not complete cleanly, in run order. Carries partial work the
+        host may still use; agents that produced no output (e.g. cancelled
+        before emitting) are skipped since there is nothing to recover.
+        """
         if run is None:
             return []
-        out: list[tuple[str | None, Any, str | None]] = []
+        out: list[tuple[str | None, Any, str | None, list[str]]] = []
         for phase in getattr(run, "phases", []) or []:
             for ar in getattr(phase, "agent_results", []) or []:
                 if getattr(ar, "completed", True):
@@ -3517,7 +3551,12 @@ class VibeApp(App):  # noqa: PLR0904
                 if resp in (None, "", []):
                     continue
                 out.append(
-                    (getattr(ar, "label", None), resp, getattr(ar, "error", None))
+                    (
+                        getattr(ar, "label", None),
+                        resp,
+                        getattr(ar, "error", None),
+                        list(getattr(ar, "schema_errors", []) or []),
+                    )
                 )
         return out
 
@@ -3532,6 +3571,9 @@ class VibeApp(App):  # noqa: PLR0904
                     run_id=entry.run_id,
                     script_source=entry.script_source,
                     args=entry.args,
+                    return_value=(
+                        entry.result.return_value if entry.result is not None else None
+                    ),
                 )
             except Exception:
                 logger.warning(

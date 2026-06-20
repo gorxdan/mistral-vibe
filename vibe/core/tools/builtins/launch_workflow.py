@@ -17,7 +17,7 @@ from vibe.core.tools.base import (
 from vibe.core.tools.permissions import PermissionContext
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from vibe.core.types import ToolCallEvent, ToolResultEvent, ToolStreamEvent
-from vibe.core.workflows.security import validate_script
+from vibe.core.workflows.security import check_script
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
@@ -82,6 +82,15 @@ class LaunchWorkflowArgs(BaseModel):
 class LaunchWorkflowResult(BaseModel):
     run_id: str = Field(description="The ID of the launched workflow run")
     launched: bool = Field(description="Whether the workflow was successfully launched")
+    delivery: str = Field(
+        description=(
+            "How results arrive: the run executes in the background, so the "
+            "script's return_value and per-agent outputs are NOT in this "
+            "result. They are auto-delivered as a message on completion, and "
+            "you can re-read them at any time — including after a missed or "
+            "truncated delivery — with workflow_results(run_id=<run_id>)."
+        )
+    )
 
 
 class LaunchWorkflowConfig(BaseToolConfig):
@@ -99,12 +108,14 @@ class LaunchWorkflow(
         "Pass the script's SOURCE TEXT in the `script` argument inline (not a "
         "file path). The script must define an `async def main()` function. "
         "The runtime injects: agent, parallel, pipeline, phase, log, budget, "
-        "args. `parallel`/`pipeline` accept `max_concurrency=N` to cap in-flight "
-        "agents. Note: the script runs in a sandbox — imports are allowlisted "
-        "(no `asyncio` — the injected helpers are already awaitable) and "
-        "`str.format()` is forbidden (use f-strings or `%`). Use this when a "
-        "task needs multiple independent agents, adversarial verification, or "
-        "dynamic loops. The workflow runs in the background."
+        "args, plus the synthesis helpers flatten/dedup_by/merge_by. "
+        "`parallel`/`pipeline` accept `max_concurrency=N` to cap in-flight "
+        "agents. The run is BACKGROUND and fire-and-forget from this tool: the "
+        "return_value is NOT in the result — it is auto-delivered on completion "
+        "and re-readable via workflow_results(run_id). Note: the script runs in "
+        "a sandbox — imports are allowlisted (no `asyncio`; the injected helpers "
+        "are already awaitable) and `str.format()` is forbidden (use f-strings "
+        "or `%`)."
     )
 
     @classmethod
@@ -157,7 +168,11 @@ class LaunchWorkflow(
                 "read the file's contents and pass them inline in `script`."
             )
 
-        violations = validate_script(args.script)
+        # Full pre-flight gate: safety AND correctness (undefined names,
+        # coroutine-as-thunk). These authoring mistakes pass the safety AST check
+        # but crash or silently produce zero agents at exec time — catching them
+        # here fails the launch at no cost instead of after spawning.
+        violations = check_script(args.script)
         if violations:
             raise ToolError(
                 "Script validation failed:\n" + "\n".join(f"  {v}" for v in violations)
@@ -172,4 +187,12 @@ class LaunchWorkflow(
 
         run_id = ctx.launch_workflow_callback(args.script, args.name)
 
-        yield LaunchWorkflowResult(run_id=run_id, launched=True)
+        yield LaunchWorkflowResult(
+            run_id=run_id,
+            launched=True,
+            delivery=(
+                f"Run {run_id} is executing in the background. Its return_value "
+                f"and per-agent outputs are auto-delivered on completion; re-read "
+                f"them any time with workflow_results(run_id='{run_id}')."
+            ),
+        )

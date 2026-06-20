@@ -146,6 +146,100 @@ def _eager_awaitable(fn: Any) -> Any:
     return wrapper
 
 
+# --- Synthesis helpers (injected into every workflow namespace) -------------
+# Pure functions so workflow authors don't reinvent flatten/dedup/merge in
+# every script. All sandbox-safe: no imports, no dunders, no I/O.
+
+
+def _flatten(items: Any) -> list[Any]:
+    """Flatten one level of nested iterables into a single list.
+
+    ``flatten([[1,2],[3],4]) == [1,2,3,4]``. Strings/bytes/dicts are treated as
+    atoms (not iterated), so a list of strings is returned unchanged. Any other
+    non-iterable item (int, None, bool) passes through as-is — flatten never
+    silently drops data; filter ``None`` upstream if you don't want it.
+    """
+    out: list[Any] = []
+    for sub in items:
+        if isinstance(sub, (str, bytes, dict)):
+            out.append(sub)
+            continue
+        try:
+            iterator = iter(sub)
+        except TypeError:
+            out.append(sub)  # scalar atom — keep it
+            continue
+        out.extend(iterator)
+    return out
+
+
+def _dedup_by(items: Any, key: Callable[[Any], Any]) -> list[Any]:
+    """Return ``items`` with duplicates removed, keeping first occurrence.
+
+    ``key`` maps each item to a hashable identity (e.g. ``lambda f: f["id"]``
+    or ``lambda f: f"{f['file']}:{f['line']}"``). Items whose key raises are
+    kept as-is (never dropped) and treated as unique by their id().
+    """
+    seen: set[Any] = set()
+    out: list[Any] = []
+    for item in items:
+        try:
+            k = key(item)
+            hash(k)
+        except Exception:
+            k = id(item)
+        if k not in seen:
+            seen.add(k)
+            out.append(item)
+    return out
+
+
+def _merge_by(
+    items: Any,
+    key: Callable[[Any], Any],
+    merge: Callable[[Any, Any], Any],
+) -> list[Any]:
+    """Group ``items`` by ``key`` and fold each group with ``merge``.
+
+    For each key, ``merge(acc, item)`` combines the running accumulator with the
+    next item (acc starts as the first item). Returns one merged value per key,
+    in first-seen order. Use to union findings, sum counts, or pick the
+    highest-scored item per group.
+    """
+    groups: dict[Any, Any] = {}
+    order: list[Any] = []
+    for item in items:
+        try:
+            k = key(item)
+            hash(k)
+        except Exception:
+            k = id(item)
+        if k not in groups:
+            groups[k] = item
+            order.append(k)
+        else:
+            groups[k] = merge(groups[k], item)
+    return [groups[k] for k in order]
+
+
+def _coerce_json_safe(value: Any) -> Any:
+    """Coerce a workflow return value to pure JSON types for snapshotting.
+
+    A workflow script can return arbitrary Python (a dataclass, a set, a custom
+    object). The snapshot is persisted via ``model_dump(mode="json")`` and
+    re-validated on resume, so a non-serializable value would either crash the
+    dump or fail validation. Round-trip through ``json`` with ``default=str``:
+    serializable values pass through unchanged, anything exotic degrades to its
+    ``str()`` form rather than dropping the whole snapshot. ``None`` is a no-op.
+    """
+    if value is None:
+        return None
+    try:
+        return json.loads(json.dumps(value, default=str))
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _loop_log_path(loop: Any) -> Path | None:
     """Path to an in-process agent loop's transcript (messages.jsonl), or None.
 
@@ -884,6 +978,7 @@ class WorkflowRuntime:
             agent=agent,
             model=model,
             live=live,
+            schema_errors=list(last_errors),
         )
         if self.strict_schema:
             raise SchemaValidationError(
@@ -1001,10 +1096,12 @@ class WorkflowRuntime:
         agent: str,
         model: str | None = None,
         live: _LiveAgent | None = None,
+        schema_errors: list[str] | None = None,
     ) -> None:
         self._budget.reconcile(reservation, tokens_in, tokens_out)
 
         cost = self._compute_cost(tokens_in, tokens_out, model)
+        schema_errs = schema_errors or []
         result = AgentResult(
             label=label,
             phase=phase,
@@ -1016,6 +1113,7 @@ class WorkflowRuntime:
             cost=cost,
             completed=completed,
             error=error,
+            schema_errors=schema_errs,
         )
         self._record_agent_result(result)
         # Retire the live tracker the moment its result is recorded, so an agent
@@ -1035,6 +1133,7 @@ class WorkflowRuntime:
                 tokens_out=tokens_out,
                 completed=completed,
                 error=error,
+                schema_errors=schema_errs,
             )
 
     def _record_cached_result(self, cached: CachedAgentResult) -> None:
@@ -1158,6 +1257,7 @@ class WorkflowRuntime:
             agent=agent,
             model=model,
             live=live,
+            schema_errors=schema_errors,
         )
         if not completed:
             # Schema/JSON failures (output produced but didn't validate) return a
@@ -1275,6 +1375,17 @@ class WorkflowRuntime:
         )
 
         async def _safe(thunk: Callable[[], Awaitable[Any]]) -> Any:
+            # A non-callable thunk is an authoring bug, not an agent failure:
+            # `parallel(agent(...))` passes a coroutine, whose `thunk()` raises
+            # TypeError. Degrading that to None (below) would silently yield zero
+            # agents and a "successful" run over nothing. Fail loud instead, with
+            # the fix, so the mistake surfaces rather than corrupting results.
+            if not callable(thunk):
+                raise WorkflowError(
+                    "parallel() expects thunks (zero-arg callables), got "
+                    f"{type(thunk).__name__}. Wrap each as `lambda: agent(...)`, "
+                    "not `agent(...)` — a bare agent(...) is a coroutine, not a thunk."
+                )
             try:
                 if sem is not None:
                     async with sem:
@@ -1406,7 +1517,7 @@ class WorkflowRuntime:
             budget_estimate: int | None = None,
             isolation: str | None = None,
             strip_unknown: bool = True,
-        ) -> str | dict[str, Any]:
+        ) -> str | dict[str, Any] | SchemaValidationFailure:
             return await self.spawn_agent(
                 prompt,
                 agent=agent,
@@ -1445,6 +1556,11 @@ class WorkflowRuntime:
             "budget": ReadOnlyBudget(self._budget),
             "post_message": _post_message,
             "fetch_messages": _fetch_messages,
+            # Synthesis helpers: pure functions so workflow authors stop
+            # reinventing flatten/dedup/merge list comprehensions in every script.
+            "flatten": _flatten,
+            "dedup_by": _dedup_by,
+            "merge_by": _merge_by,
             "args": args,
         }
         return build_namespace(injected)
@@ -1639,6 +1755,13 @@ class WorkflowRuntime:
             seen: list[str] = []
             for ar in failed:
                 msg = ar.error or "(no error recorded)"
+                # Append the first field-level schema error so a systemic schema
+                # mismatch (e.g. every agent missing a required field) is named
+                # in the summary, not just "Schema validation failed after N
+                # attempts". Full per-agent detail lives on AgentResult and is
+                # surfaced via the workflow_results tool.
+                if ar.schema_errors:
+                    msg = f"{msg} [{ar.schema_errors[0]}]"
                 if msg not in seen:
                     seen.append(msg)
             detail = "; ".join(seen)[:500]
@@ -1647,7 +1770,12 @@ class WorkflowRuntime:
         return WorkflowResult(return_value=return_value, run=run, summary=summary)
 
     def snapshot(
-        self, run_id: str, script_source: str, args: Any = None
+        self,
+        run_id: str,
+        script_source: str,
+        args: Any = None,
+        *,
+        return_value: Any = None,
     ) -> WorkflowRunSnapshot:
         return WorkflowRunSnapshot(
             run_id=run_id,
@@ -1658,6 +1786,7 @@ class WorkflowRuntime:
             budget_total=self.budget_total,
             budget_spent=self._budget.snapshot().spent,
             cached_results=list(self._cache.values()),
+            return_value=_coerce_json_safe(return_value),
         )
 
     def restore_from_snapshot(self, snapshot: WorkflowRunSnapshot) -> None:

@@ -34,6 +34,9 @@ The script must define `async def main()`. The runtime injects:
 - `workflow(name, args=None)` — run another discovered workflow inline as a sub-step and return its result (shares this run's budget/agents; one level deep only)
 - `post_message(channel, message)` — post to a named channel on this run's shared board (visible to all agents/stages in the same run via `fetch_messages`)
 - `fetch_messages(channel)` — return all messages posted to a channel so far (a copy)
+- `flatten(items)` — flatten one level of nested lists (strings/dicts/bytes treated as atoms): `flatten([[1,2],[3]]) == [1,2,3]`
+- `dedup_by(items, key)` — drop duplicates, keeping first occurrence; `key` maps each item to a hashable identity (e.g. `lambda f: f"{f['file']}:{f['line']}"`)
+- `merge_by(items, key, merge)` — group by `key` and fold each group via `merge(acc, item)`; use to union findings, sum counts, or pick the best per group
 - `args` — structured input from the invocation
 
 You do **not** need to (and cannot) `import asyncio` — `agent`/`parallel`/`pipeline`
@@ -84,6 +87,17 @@ non-obvious traps (these are the ones that cost runs in practice):
   `__subclasses__`, …), no dunder dict keys, and no `getattr`/`setattr`/`delattr`/
   `globals`/`locals`/`vars`/`eval`/`exec`/`compile`/`open`/`input`/`__import__`.
 - The builtins namespace is safelisted (no `open`, `exec`, `__import__`).
+
+## Getting the result back
+
+`launch_workflow` returns only `{run_id, launched, delivery}` — the run is
+background and fire-and-forget from this tool. The script's `return_value` and
+per-agent outputs are auto-delivered as a message on completion, but that
+delivery is best-effort (capped at ~16KB, dropped if the host turn already
+ended). **Re-read the result any time** with `workflow_results(run_id=...)`,
+which returns the structured `return_value` plus per-agent responses/errors/
+`schema_errors`. For finished runs the return value is also persisted across
+sessions.
 
 ## Limitations
 

@@ -42,6 +42,11 @@ class AgentResult(BaseModel):
     cost: float = 0.0
     completed: bool = True
     error: str | None = None
+    # Field-level detail for schema-validation failures (e.g.
+    # "$.findings[0].severity: 'medium' not in enum"). Empty unless this agent
+    # exhausted its schema-retry budget; surfaced via workflow_results so the
+    # launching model sees *why* output was rejected, not just *that* it was.
+    schema_errors: list[str] = Field(default_factory=list)
 
     @property
     def tokens_total(self) -> int:
@@ -129,6 +134,7 @@ class CachedAgentResult(BaseModel):
     tokens_out: int = 0
     completed: bool = True
     error: str | None = None
+    schema_errors: list[str] = Field(default_factory=list)
 
 
 class WorkflowRunSnapshot(BaseModel):
@@ -142,6 +148,12 @@ class WorkflowRunSnapshot(BaseModel):
     budget_total: int | None = None
     budget_spent: int = 0
     cached_results: list[CachedAgentResult] = Field(default_factory=list)
+    # The script's return value, captured so a completed run's result survives
+    # session exit and can be re-read after resume. None until the run finishes
+    # (or for runs that failed/cancelled before main() returned). Coerced to a
+    # JSON-safe form at snapshot time, so a non-serializable return value degrades
+    # to its string form rather than dropping the whole snapshot.
+    return_value: Any = None
 
     @property
     def cached_count(self) -> int:
