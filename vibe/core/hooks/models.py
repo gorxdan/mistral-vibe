@@ -24,6 +24,7 @@ class HookType(StrEnum):
     TEAMMATE_IDLE = auto()
     TASK_CREATED = auto()
     TASK_COMPLETED = auto()
+    PRE_COMPACT = auto()
 
 
 ToolStatus = Literal["success", "failure", "cancelled"]
@@ -138,6 +139,13 @@ class TaskCompletedInvocation(HookSessionContext):
     result: str | None = None
 
 
+class PreCompactInvocation(HookSessionContext):
+    hook_event_name: Literal[HookType.PRE_COMPACT] = HookType.PRE_COMPACT
+    trigger: str  # "auto" | "emergency" | "manual"
+    current_context_tokens: int
+    threshold: int
+
+
 HookInvocation = (
     PostAgentTurnInvocation
     | BeforeToolInvocation
@@ -145,6 +153,7 @@ HookInvocation = (
     | TeammateIdleInvocation
     | TaskCreatedInvocation
     | TaskCompletedInvocation
+    | PreCompactInvocation
 )
 
 
@@ -166,6 +175,9 @@ def build_invocation(  # noqa: PLR0913
     task_description: str | None = None,
     assignee: str | None = None,
     result: str | None = None,
+    trigger: str | None = None,
+    current_context_tokens: int | None = None,
+    threshold: int | None = None,
 ) -> HookInvocation:
     """Build the right HookInvocation subclass for *hook_type*."""
     base = ctx.model_dump()
@@ -226,6 +238,15 @@ def build_invocation(  # noqa: PLR0913
                 )
             return TaskCompletedInvocation(
                 **base, task_id=task_id, teammate_name=teammate_name, result=result
+            )
+        case HookType.PRE_COMPACT:
+            if trigger is None:
+                raise ValueError("trigger is required for pre_compact hooks")
+            return PreCompactInvocation(
+                **base,
+                trigger=trigger,
+                current_context_tokens=current_context_tokens or 0,
+                threshold=threshold or 0,
             )
         case _:
             assert_never(hook_type)

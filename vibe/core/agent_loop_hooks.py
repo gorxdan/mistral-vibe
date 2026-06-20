@@ -40,6 +40,7 @@ from vibe.core.hooks.models import (
     HookToolInputRewrite,
     HookUserMessage,
     PostAgentTurnInvocation,
+    PreCompactInvocation,
     ToolStatus,
 )
 from vibe.core.llm.format import ResolvedToolCall
@@ -125,6 +126,22 @@ class AgentLoopHooksMixin:
         )
         async for ev in self._hooks_manager.run(invocation):
             if isinstance(ev, (HookEvent, HookUserMessage)):
+                yield ev
+
+    async def _run_pre_compact_hooks(
+        self, trigger: str, current_context_tokens: int, threshold: int
+    ) -> AsyncGenerator[HookEvent]:
+        """Notify pre-compaction hooks (observe-only). Never blocks compaction."""
+        if not self._hooks_manager:
+            return
+        invocation = PreCompactInvocation(
+            **self._hook_session_context().model_dump(),
+            trigger=trigger,
+            current_context_tokens=current_context_tokens,
+            threshold=threshold,
+        )
+        async for ev in self._hooks_manager.run(invocation):
+            if isinstance(ev, HookEvent):
                 yield ev
 
     async def _run_before_tool_hooks(

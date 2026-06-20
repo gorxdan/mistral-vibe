@@ -985,6 +985,15 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             threshold=threshold,
         )
 
+        # Notify pre-compaction hooks (observe-only; never blocks compaction).
+        try:
+            async for ev in self._run_pre_compact_hooks(
+                "auto", old_tokens, threshold
+            ):
+                yield ev
+        except Exception as e:  # noqa: BLE001 — a hook must not abort compaction
+            logger.warning("pre_compact hook failed (%s); compacting anyway", e)
+
         compact_status: Literal["success", "failure", "cancelled"] = "success"
         try:
             summary = await self.compact()

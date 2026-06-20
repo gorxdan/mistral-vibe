@@ -43,6 +43,9 @@ _HANDLERS: dict[HookType, HookHandler] = {
     HookType.TEAMMATE_IDLE: _TEAM_LIFECYCLE_HANDLER,
     HookType.TASK_CREATED: _TEAM_LIFECYCLE_HANDLER,
     HookType.TASK_COMPLETED: _TEAM_LIFECYCLE_HANDLER,
+    # PreCompact is a notification (observe + optional non-binding message),
+    # so it reuses the generic lifecycle handler semantics.
+    HookType.PRE_COMPACT: _TEAM_LIFECYCLE_HANDLER,
 }
 
 
