@@ -30,6 +30,7 @@ from vibe.core.config._settings import (
     ExperimentsConfig,
     MaxOutputEscalationConfig,
     MCPServer,
+    MemoryConfig,
     ModelConfig,
     ProjectContextConfig,
     ProviderConfig,
@@ -289,4 +290,7 @@ class VibeConfigSchema(ConfigSchema):
     )
     safety_judge: Annotated[SafetyJudgeConfig, WithReplaceMerge()] = Field(
         default_factory=SafetyJudgeConfig
+    )
+    memory: Annotated[MemoryConfig, WithReplaceMerge()] = Field(
+        default_factory=MemoryConfig
     )

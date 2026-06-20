@@ -288,6 +288,23 @@ class MicrocompactConfig(BaseSettings):
     max_blocks_per_turn: int = 1  # cache-preservation rate limit
 
 
+class MemoryConfig(BaseSettings):
+    """File-based, LLM-selected cross-session memory (opt-in)."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    enabled: bool = False
+    select_mode: Literal["per-turn", "per-session", "always"] = "per-turn"
+    model: str | None = None  # alias; falls back to compaction/active model
+    max_selected: int = 5
+    max_inject_chars: int = 8000
+    max_entries_scanned: int = 200
+    timeout: float = 20.0
+    auto_extract: bool = False
+    project_writes: bool = False
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+
+
 class SandboxConfig(BaseModel):
     """OS-level sandbox for the bash tool (opt-in, defense-in-depth).
 
@@ -845,6 +862,7 @@ class VibeConfig(BaseSettings):
         default_factory=MaxOutputEscalationConfig
     )
     context_shaping: ContextShapingConfig = Field(default_factory=ContextShapingConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
     transcribe_providers: list[TranscribeProviderConfig] = Field(
         default_factory=lambda: list(DEFAULT_TRANSCRIBE_PROVIDERS)
