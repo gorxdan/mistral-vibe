@@ -6,6 +6,7 @@ from enum import StrEnum, auto
 from typing import TYPE_CHECKING, Any, Protocol
 
 from vibe.core.agents import AgentProfile
+from vibe.core.logger import logger
 from vibe.core.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
@@ -210,6 +211,8 @@ class SnipMiddleware(ContextShaperMiddleware):
             key=lambda i: approx_token_count(messages[i].content or ""), reverse=True
         )
         target = cfg.target * threshold
+        est_before = est
+        snipped = 0
         for i in candidates:
             if est <= target:
                 break
@@ -217,6 +220,17 @@ class SnipMiddleware(ContextShaperMiddleware):
             new_msg = self._snip(messages[i])
             messages.replace_at(i, new_msg)
             est -= max(0, before - approx_token_count(new_msg.content or ""))
+            snipped += 1
+        if snipped:
+            logger.debug(
+                "snip: elided %d message(s), ~%d->%d est tokens "
+                "(watermark %.2f, threshold %d)",
+                snipped,
+                est_before,
+                est,
+                cfg.high_watermark,
+                threshold,
+            )
         return MiddlewareResult()
 
     @staticmethod
@@ -276,6 +290,7 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
             messages, context.config.context_shaping.snip.keep_recent_turns, prefix
         )
         target = cfg.target * threshold
+        est_before = est
         done = 0
         for i in range(prefix, len(messages) - suffix):  # oldest first
             if done >= cfg.max_blocks_per_turn or est <= target:
@@ -290,6 +305,16 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
             messages.replace_at(i, msg.model_copy(update={"content": new_content}))
             est -= approx_token_count(content) - approx_token_count(new_content)
             done += 1
+        if done:
+            logger.debug(
+                "microcompact: compressed %d block(s), ~%d->%d est tokens "
+                "(watermark %.2f, threshold %d)",
+                done,
+                est_before,
+                est,
+                cfg.high_watermark,
+                threshold,
+            )
         return MiddlewareResult()
 
 
