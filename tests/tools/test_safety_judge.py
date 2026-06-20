@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
-from vibe.core.agent_loop import ToolExecutionResponse
+from vibe.core.agent_loop import AgentLoop, ToolExecutionResponse
 from vibe.core.config import DEFAULT_MODELS, SafetyJudgeConfig
 from vibe.core.tools.base import BaseToolState
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
@@ -314,3 +314,56 @@ async def test_cache_evicts_oldest_at_capacity() -> None:
     await loop._should_execute_tool(_bash(), BashArgs(command="npm install"), "c3")
 
     assert len(fake.calls) == 1, "LRU must evict the least-recently-used entry"
+
+
+@pytest.mark.asyncio
+async def test_calls_differing_only_past_truncation_do_not_collide() -> None:
+    """The cache key hashes the FULL args, so two calls whose 4000-char truncation
+    is byte-identical but whose full content differs get distinct keys.
+
+    Calls _judge_tool_safety directly with a fixed uncovered list so the result
+    isolates cache keying from Bash's command-specific permission resolution.
+    """
+    loop = build_test_agent_loop()
+    fake = _FakeJudge(safe=True, reason="benign")
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+
+    padding = "a" * 4500
+    benign = BashArgs(command=f"echo {padding}")
+    # Identical for the first 4000 chars of the JSON; the dangerous tail sits
+    # past the truncation point, so the judge would see the same args_repr.
+    dangerous = BashArgs(command=f"echo {padding}; rm -rf /important")
+
+    args_key_a, repr_a = AgentLoop._serialize_args(benign)
+    args_key_b, repr_b = AgentLoop._serialize_args(dangerous)
+    assert repr_a == repr_b, "fixture premise: judge sees identical truncated args"
+    assert args_key_a != args_key_b, "full-args fingerprint must distinguish them"
+
+    await loop._judge_tool_safety("bash", benign, [])
+    await loop._judge_tool_safety("bash", dangerous, [])
+
+    assert len(fake.calls) == 2, (
+        "calls differing past the 4000-char truncation must not share a verdict"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cache_cleared_when_judge_model_changes() -> None:
+    config = build_test_vibe_config(
+        safety_judge=SafetyJudgeConfig(enabled=True, model="alpha")
+    )
+    loop = build_test_agent_loop(config=config)
+    fake = _FakeJudge(safe=True, reason="benign")
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
+
+    args = BashArgs(command="npm install")
+    await loop._should_execute_tool(_bash(), args, "c1")  # cached under "alpha"
+    assert len(fake.calls) == 1
+    # Swap the judge model mid-session.
+    loop.config.safety_judge = SafetyJudgeConfig(enabled=True, model="beta")
+    await loop._should_execute_tool(_bash(), args, "c2")  # must not reuse alpha's verdict
+
+    assert len(fake.calls) == 2, (
+        "cached verdict must be dropped when the judge model changes"
+    )

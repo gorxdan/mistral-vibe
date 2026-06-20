@@ -7,6 +7,7 @@ import contextlib
 import copy
 from enum import StrEnum, auto
 from functools import wraps
+import hashlib
 from http import HTTPStatus
 import inspect
 import logging
@@ -390,6 +391,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._judge_verdict_cache_maxsize: int = (
             config.safety_judge.verdict_cache_size
         )
+        # Judge model alias the cached verdicts were produced under. When the
+        # configured judge model changes mid-session, the cache is cleared so a
+        # verdict from one model is never reused under another.
+        self._judge_model_alias_for_cache: str | None = None
         # When the active model is rate-limited/overloaded, the loop switches to
         # a configured fallback model for the rest of the session. Tracks the
         # override + which fallback aliases have already been tried.
@@ -1244,6 +1249,30 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         yield UserMessageEvent(content=user_msg, message_id=user_message.message_id)
 
+        block_reason, injected_ctx, hook_events = (
+            await self._dispatch_user_prompt_submit_hooks(
+                user_msg, user_message.message_id, bool(images)
+            )
+        )
+        for hook_event in hook_events:
+            yield hook_event
+        if block_reason is not None:
+            # Keep a coherent transcript: the user prompt stays, plus a
+            # synthetic assistant reply explaining the block. No LLM turn runs.
+            blocked = LLMMessage(
+                role=Role.assistant,
+                content=f"Prompt blocked by hook: {block_reason}",
+            )
+            self.messages.append(blocked)
+            yield AssistantEvent(
+                content=blocked.content or "", message_id=blocked.message_id
+            )
+            return
+        for ctx_text in injected_ctx:
+            self.messages.append(
+                LLMMessage(role=Role.user, content=ctx_text, injected=True)
+            )
+
         await self._apply_memory_selection(user_msg)
 
         if auto_title is not None and self.session_logger.set_initial_auto_title(
@@ -1839,13 +1868,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         judge = self._resolve_safety_judge()
         if judge is None:
             return None
-        try:
-            args_repr = args.model_dump_json()[:4000]
-        except Exception:
-            # Never let arg serialization break gating; judge sees a best-effort repr.
-            args_repr = str(args)[:4000]
+        # Drop cached verdicts when the judge model changes: a verdict produced
+        # under one model must not be reused after swapping to another.
+        judge_model = self.config.safety_judge.model
+        if judge_model != self._judge_model_alias_for_cache:
+            self._judge_verdict_cache.clear()
+            self._judge_model_alias_for_cache = judge_model
+        # args_key is a hash of the FULL serialized args so two calls differing
+        # only past the 4000-char judge-input truncation get distinct keys;
+        # args_repr is the truncated string the judge actually sees.
+        args_key, args_repr = self._serialize_args(args)
         flagged_reasons = [rp.label for rp in uncovered]
-        cache_key = (tool_name, args_repr, tuple(flagged_reasons))
+        cache_key = (tool_name, args_key, tuple(flagged_reasons))
         # Reuse a real verdict for an identical call instead of re-querying the
         # judge model. Fail-closed verdicts (verdict.failed) are never stored,
         # so a transient timeout/error is retried on the next identical call.
@@ -1879,6 +1913,23 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             feedback=f"Auto-approved by safety judge: {verdict.reason}",
             judge_approved=True,
         )
+
+    @staticmethod
+    def _serialize_args(args: BaseModel) -> tuple[str, str]:
+        """Return ``(cache_key_fingerprint, judge_input_repr)`` for tool args.
+
+        The fingerprint hashes the FULL serialized form, so two calls that share
+        an identical 4000-char truncation but differ further on get distinct
+        cache keys. Hashing keeps each key constant-size regardless of how large
+        the args are (e.g. ``write_file`` content). The repr is the 4000-char
+        slice actually handed to the judge model, unchanged from prior behavior.
+        """
+        try:
+            blob = args.model_dump_json()
+        except Exception:
+            blob = str(args)
+        digest = hashlib.sha256(blob.encode("utf-8", errors="replace")).hexdigest()
+        return digest, blob[:4000]
 
     def _judge_verdict_cache_get(
         self, key: tuple[str, str, tuple[str, ...]]
