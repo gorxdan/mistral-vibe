@@ -1,9 +1,16 @@
 """Regression tests for the OpenAI-compatible (generic) message serialization.
 
 ollama's /v1/chat/completions rejects a message whose ``content`` field is
-absent with ``invalid message content type: <nil>``. Assistant messages that
-carry only tool_calls have ``content=None`` (see ``LLMMessage.__add__``), which
-``model_dump(exclude_none=True)`` would otherwise drop entirely.
+absent with ``invalid message content type: <nil>`` (verified live against
+gemma4:26b on ollama 0.30.10). It tolerates a missing content ONLY on an
+assistant message that carries tool_calls; every other role (system, user,
+tool, and a reasoning-only assistant turn) must include content.
+
+Any ``LLMMessage`` with ``content=None`` — a reasoning-only assistant turn on a
+thinking model, an empty tool result, or an assistant whose accumulated content
+collapsed to None in ``LLMMessage.__add__`` — was dropped by
+``model_dump(exclude_none=True)``, producing the 400. The fix sends an empty
+string so the key is always present.
 """
 
 from __future__ import annotations
@@ -65,12 +72,17 @@ def test_normal_message_content_is_preserved() -> None:
 
 
 def test_every_message_has_a_content_key() -> None:
-    # Whatever the role, content must never be absent for OpenAI-compatible
-    # servers; guards against a future exclude_none regression.
+    # ollama rejects an absent content field on EVERY role except an assistant
+    # carrying tool_calls; verified live against gemma4:26b. The real-world
+    # trigger is a reasoning-only assistant turn (thinking models) whose content
+    # is None. content must never be absent for any role.
     msgs = [
+        LLMMessage(role=Role.system, content=None),
+        LLMMessage(role=Role.user, content="q"),
+        # reasoning-only assistant turn: no content, no tool_calls -> the bug.
+        LLMMessage(role=Role.assistant, content=None, reasoning_content="hmm"),
         LLMMessage(role=Role.assistant, content=None, tool_calls=[ToolCall(id="c")]),
         LLMMessage(role=Role.tool, content="result", tool_call_id="c"),
-        LLMMessage(role=Role.user, content="q"),
     ]
     out = _serialized_messages(msgs)
-    assert all("content" in m for m in out)
+    assert [m.get("content") for m in out] == ["", "q", "", "", "result"]
