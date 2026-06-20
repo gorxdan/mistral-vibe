@@ -72,7 +72,10 @@ async def test_ask_approval_fires_permission_notification() -> None:
     async def approve(*a: Any, **k: Any):
         return ApprovalResponse.YES, None
 
+    class _Args(BaseModel):
+        pass
+
     loop.approval_callback = approve  # type: ignore[assignment]
-    await loop._ask_approval("bash", BaseModel(), "call-1", [])
+    await loop._ask_approval("bash", _Args(), "call-1", [])
     assert mgr.notifs and mgr.notifs[0].notification_type == "permission_required"
     assert mgr.notifs[0].tool_name == "bash"

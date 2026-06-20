@@ -110,16 +110,26 @@ async def test_blocked_prompt_runs_no_llm_turn() -> None:
     assert events
 
 
+class _StopLoop(Exception):
+    pass
+
+
 @pytest.mark.asyncio
 async def test_injected_context_added_before_turn() -> None:
     loop = build_test_agent_loop()
     loop._hooks_manager = _FakeManager(HookUserMessage(content="REMEMBER: be terse"))  # type: ignore[assignment]
 
     async def fake_turn():
-        return
+        # Injection already happened above the turn; bail before the loop's
+        # post-turn token accounting (keeps the test fast + deterministic).
+        raise _StopLoop
         yield  # pragma: no cover
 
     loop._perform_llm_turn = fake_turn  # type: ignore[method-assign]
-    _ = [e async for e in loop._conversation_loop("do it")]
-    injected = [m for m in loop.messages if m.injected and "REMEMBER" in (m.content or "")]
+    with pytest.raises(_StopLoop):
+        async for _ in loop._conversation_loop("do it"):
+            pass
+    injected = [
+        m for m in loop.messages if m.injected and "REMEMBER" in (m.content or "")
+    ]
     assert injected, "additional_context injected as a user message"
