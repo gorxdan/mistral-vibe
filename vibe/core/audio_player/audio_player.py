@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from vibe.core.audio_player.audio_player_port import (
     AlreadyPlayingError,
@@ -14,14 +14,33 @@ from vibe.core.audio_player.audio_player_port import (
 from vibe.core.audio_player.utils import decode_wav
 from vibe.core.logger import logger
 
-# sounddevice raises OSError on import when no audio driver is available.
-try:
+if TYPE_CHECKING:
     import sounddevice as sd
+    from sounddevice import CallbackFlags, RawOutputStream
 
-    if TYPE_CHECKING:
-        from sounddevice import CallbackFlags, RawOutputStream
-except OSError:
-    sd = None  # type: ignore[assignment]
+
+# sounddevice loads a native PortAudio library at import (and enumerates audio
+# devices), which is slow and unnecessary when voice features are unused. Import
+# it lazily on first use instead of at module import. It raises OSError when no
+# audio driver is available, in which case `sd` is None and playback is disabled.
+def _load_sounddevice() -> None:
+    """Populate the module-global ``sd`` once (real module, or None on OSError)."""
+    if "sd" not in globals():
+        try:
+            import sounddevice
+
+            globals()["sd"] = sounddevice
+        except OSError:
+            globals()["sd"] = None
+
+
+def __getattr__(name: str) -> Any:
+    # PEP 562: lets external access (incl. tests patching `...audio_player.sd`)
+    # trigger the lazy load, so `sd` behaves like a normal module attribute.
+    if name == "sd":
+        _load_sounddevice()
+        return globals()["sd"]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 DEFAULT_BLOCKSIZE = 4096
 DTYPE = "int16"
@@ -51,6 +70,7 @@ class AudioPlayer:
         *,
         on_finished: Callable[[], object] | None = None,
     ) -> None:
+        _load_sounddevice()
         with self._lock:
             if self._playing:
                 raise AlreadyPlayingError("Already playing")
@@ -94,6 +114,7 @@ class AudioPlayer:
     def _audio_callback(
         self, outdata: memoryview, frames: int, time_info: object, status: CallbackFlags
     ) -> None:
+        _load_sounddevice()
         if not sd:
             raise RuntimeError("sounddevice is not available")
         if status:
@@ -122,6 +143,7 @@ class AudioPlayer:
 
     @staticmethod
     def _guard_audio_output() -> None:
+        _load_sounddevice()
         if sd is None:
             raise RuntimeError("sounddevice is not available")
         try:
