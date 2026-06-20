@@ -6,8 +6,9 @@ from typing import Any
 
 import pytest
 
+from vibe.cli.textual_ui.app import VibeApp
 from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
-from vibe.core.workflows.models import WorkflowStatus
+from vibe.core.workflows.models import WorkflowResult, WorkflowRun, WorkflowStatus
 from vibe.core.workflows.runtime import WorkflowRuntime
 
 pytestmark = pytest.mark.asyncio
@@ -203,6 +204,73 @@ async def main():
     await entry.task
     assert len(completed_results) == 1
     assert completed_results[0].return_value == {"done": True}
+
+
+def _result(*, summary: str, return_value: Any, status: WorkflowStatus) -> WorkflowResult:
+    return WorkflowResult(
+        return_value=return_value,
+        run=WorkflowRun(status=status),
+        summary=summary,
+    )
+
+
+def test_format_workflow_delivery_includes_return_value() -> None:
+    # The host agent must receive the actual return_value, not just the summary.
+    # Previously _on_workflow_complete discarded return_value entirely.
+    result = _result(
+        summary="Workflow completed: 1 agents, 100 tokens, $0.0001",
+        return_value={"reviews": [{"verdict": "sound"}]},
+        status=WorkflowStatus.COMPLETED,
+    )
+    payload = VibeApp._format_workflow_delivery(result)
+    assert "Workflow completed" in payload
+    assert "Result:" in payload
+    assert '"reviews"' in payload
+    assert "sound" in payload
+
+
+def test_format_workflow_delivery_omits_absent_return_value() -> None:
+    result = _result(summary="Workflow failed: 0 tokens", return_value=None, status=WorkflowStatus.FAILED)
+    payload = VibeApp._format_workflow_delivery(result)
+    assert payload == "Workflow failed: 0 tokens"
+    assert "Result:" not in payload
+
+
+def test_format_workflow_delivery_truncates_large_result() -> None:
+    big = "x" * (VibeApp._WORKFLOW_DELIVERY_CHAR_CAP + 5000)
+    result = _result(summary="ok", return_value=big, status=WorkflowStatus.COMPLETED)
+    payload = VibeApp._format_workflow_delivery(result)
+    assert "(truncated)" in payload
+    # Cap + the summary + label, well under the raw 21k input.
+    assert len(payload) < VibeApp._WORKFLOW_DELIVERY_CHAR_CAP + 500
+
+
+async def test_on_workflow_complete_delivers_return_value_to_agent_context() -> None:
+    # End-to-end: a completed workflow's return_value must land in the host
+    # agent's message context, not just the UI. _mount_and_scroll is stubbed so
+    # this runs without a mounted Textual app.
+    from tests.conftest import build_test_vibe_app
+
+    app = build_test_vibe_app()
+
+    async def _noop_mount(_w: Any) -> None:
+        return None
+
+    app._mount_and_scroll = _noop_mount  # type: ignore[method-assign]
+
+    result = _result(
+        summary="Workflow completed: 1 agents, 10 tokens, $0.0001",
+        return_value={"findings": ["all good"]},
+        status=WorkflowStatus.COMPLETED,
+    )
+    before = len(app.agent_loop.messages)
+    await app._on_workflow_complete(result)
+    after = len(app.agent_loop.messages)
+
+    assert after == before + 1, "result must be injected into the agent context"
+    injected = app.agent_loop.messages[-1]
+    assert "all good" in (injected.content or "")
+    assert "Workflow completed" in (injected.content or "")
 
 
 async def test_persist_callback_fires_on_cancel() -> None:

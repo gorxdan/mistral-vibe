@@ -417,6 +417,58 @@ async def test_schema_agent_exception_still_raises() -> None:
         await rt.spawn_agent("do it", schema=schema)
 
 
+async def test_parallel_all_agents_crash_surfaces_failure_in_summary() -> None:
+    # parallel() degrades a crashing agent to None rather than failing the run
+    # (documented null-on-throw). A batch where EVERY agent crashes must not
+    # therefore read as an unqualified success — the summary must say how many
+    # agents failed and why, or a systemic failure looks identical to success.
+    rt = WorkflowRuntime(
+        agent_loop_factory=_raising_factory(), max_agents=10, budget_total=1_000_000
+    )
+    script = """
+async def main():
+    phase("audit")
+    results = await parallel(
+        lambda: agent("a", label="a", phase="audit"),
+        lambda: agent("b", label="b", phase="audit"),
+    )
+    return results
+"""
+    result = await rt.run(script)
+    assert result.run.status.value == "completed"  # null-on-throw: script succeeded
+    assert result.return_value == [None, None]
+    assert "2/2" in result.summary, "summary must report that all agents failed"
+    assert "boom from act" in result.summary, "summary must include the error"
+
+
+async def test_parallel_partial_failure_surfaces_count_in_summary(
+    runtime: WorkflowRuntime,
+) -> None:
+    # One agent succeeds (default mock factory), one raises — the mixed batch
+    # completes but the summary must still flag the single failure.
+    calls = {"n": 0}
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return _raising_factory()(prompt, agent=agent, parent_context=parent_context)
+        return make_factory()(prompt, agent=agent, parent_context=parent_context)
+
+    rt = WorkflowRuntime(agent_loop_factory=factory, max_agents=10, budget_total=1_000_000)
+    script = """
+async def main():
+    results = await parallel(
+        lambda: agent("ok", label="ok"),
+        lambda: agent("bad", label="bad"),
+    )
+    return results
+"""
+    result = await rt.run(script)
+    assert result.run.status.value == "completed"
+    assert "1/2" in result.summary
+    assert "boom from act" in result.summary
+
+
 def _retry_then_succeed_factory(per_attempt_in: int, per_attempt_out: int) -> Any:
     calls = [0]
 

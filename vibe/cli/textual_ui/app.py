@@ -7,6 +7,7 @@ from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from enum import StrEnum, auto
 import gc
+import json
 import os
 from pathlib import Path
 import signal
@@ -3075,6 +3076,49 @@ class VibeApp(App):  # noqa: PLR0904
             await self._mount_and_scroll(ErrorMessage(summary))
         else:
             await self._mount_and_scroll(UserCommandMessage(summary))
+
+        # Deliver the outcome + return value to the host agent's context. The
+        # UserCommandMessage above is a UI-only note for the human; without this
+        # injection the agent that launched the workflow never sees the actual
+        # return_value, making background workflows useless to it. Failures are
+        # delivered too (the summary now carries failed-agent counts/errors).
+        payload = self._format_workflow_delivery(result)
+        if payload:
+            try:
+                await self.agent_loop.inject_user_context(payload)
+            except Exception:
+                logger.warning(
+                    "Failed to deliver workflow result to agent loop", exc_info=True
+                )
+
+    _WORKFLOW_DELIVERY_CHAR_CAP = 16_000
+
+    @staticmethod
+    def _stringify_workflow_value(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, indent=2, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+
+    @classmethod
+    def _format_workflow_delivery(cls, result: Any) -> str:
+        """Render a workflow result as a message for the host agent's context."""
+        summary = getattr(result, "summary", "") or ""
+        return_value = getattr(result, "return_value", None)
+        parts: list[str] = []
+        if summary:
+            parts.append(summary)
+        if return_value is not None:
+            rendered = cls._stringify_workflow_value(return_value)
+            if rendered and rendered.strip():
+                if len(rendered) > cls._WORKFLOW_DELIVERY_CHAR_CAP:
+                    rendered = (
+                        rendered[: cls._WORKFLOW_DELIVERY_CHAR_CAP] + "\n…(truncated)"
+                    )
+                parts.append(f"Result:\n{rendered}")
+        return "\n\n".join(parts)
 
     async def _persist_workflow_snapshots(self) -> None:
         snapshots: list[dict[str, Any]] = []

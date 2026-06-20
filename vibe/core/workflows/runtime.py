@@ -1130,6 +1130,22 @@ class WorkflowRuntime:
         )
         if error:
             summary += f" — error: {error}"
+        # parallel()/pipeline() degrade a crashing agent to None instead of
+        # failing the run (documented null-on-throw, so one bad agent doesn't
+        # kill a batch). The cost is that a batch where EVERY agent crashed
+        # would otherwise read as an unqualified success. Surface the failed
+        # agents and their (deduped) errors so a systemic failure is visible.
+        failed = [
+            ar for p in run.phases for ar in p.agent_results if not ar.completed
+        ]
+        if failed:
+            seen: list[str] = []
+            for ar in failed:
+                msg = ar.error or "(no error recorded)"
+                if msg not in seen:
+                    seen.append(msg)
+            detail = "; ".join(seen)[:500]
+            summary += f" — {len(failed)}/{run.agent_count} agent(s) failed: {detail}"
 
         return WorkflowResult(return_value=return_value, run=run, summary=summary)
 
