@@ -17,8 +17,9 @@ Use `task` to delegate work to a subagent for independent execution.
 
 4. **Trust the subagent's judgment** - Let it explore and find information without micromanaging the approach
 
-## Limitations
+## Capabilities & limits
 
-- Subagents cannot write or modify files
-- Subagents cannot ask the user questions
-- Results are returned as text when the subagent completes
+- **The investigation profiles are read-only.** `explore`, `research`, and `reviewer` cannot write or edit files — they read, search, and report back. `reviewer` may run `bash` for targeted checks/tests, but `bash` stays approval-gated: it only runs if an approval path is available and is skipped in a headless/non-interactive run.
+- **`worker` is the exception** — it has the full tool set (including writes), but it is meant for workflows with `isolation='worktree'`, where it runs as an auto-approved subprocess. In a plain `task` call a `worker`'s write/exec tools are approval-gated like any other, so don't rely on a `task`-spawned `worker` to actually mutate files — do edits yourself.
+- Subagents **cannot ask the user questions** — give each a self-contained brief with everything it needs.
+- Results are returned as text when the subagent completes.
