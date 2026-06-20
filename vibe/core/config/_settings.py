@@ -263,6 +263,43 @@ class MaxOutputEscalationConfig(BaseSettings):
     max_attempts: int = 3
 
 
+class SnipConfig(BaseSettings):
+    """Cheap whole-message elision stage (replaces old content with a marker)."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    enabled: bool = True
+    # Watermarks are fractions of the active model's auto_compact_threshold.
+    high_watermark: float = 0.6  # start eliding at/above this fraction
+    target: float = 0.5  # stop once back down to this fraction
+    keep_recent_turns: int = 8  # protected suffix: never snip the last N messages
+    min_message_tokens: int = 300  # skip messages smaller than this
+
+
+class MicrocompactConfig(BaseSettings):
+    """Mid-tier per-message compression (head+tail truncate, no LLM call)."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    enabled: bool = False  # opt-in, like safety_judge
+    high_watermark: float = 0.8
+    target: float = 0.7
+    per_message_cap_tokens: int = 2000  # max tokens kept per compressed message
+    max_blocks_per_turn: int = 1  # cache-preservation rate limit
+
+
+class ContextShapingConfig(BaseSettings):
+    """Pre-model context-shaper pipeline (runs before auto-compaction)."""
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    snip: SnipConfig = Field(default_factory=SnipConfig)
+    microcompact: MicrocompactConfig = Field(default_factory=MicrocompactConfig)
+    # Never edit messages within the first N estimated tokens after the system
+    # prompt, to keep the provider's auto-cached prefix stable across edits.
+    cache_prefix_guard_tokens: int = 4000
+
+
 class WorktreeConfig(BaseSettings):
     """Configuration for git worktree isolation.
 
@@ -770,6 +807,7 @@ class VibeConfig(BaseSettings):
     max_output_escalation: MaxOutputEscalationConfig = Field(
         default_factory=MaxOutputEscalationConfig
     )
+    context_shaping: ContextShapingConfig = Field(default_factory=ContextShapingConfig)
 
     transcribe_providers: list[TranscribeProviderConfig] = Field(
         default_factory=lambda: list(DEFAULT_TRANSCRIBE_PROVIDERS)

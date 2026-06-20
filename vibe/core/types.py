@@ -556,6 +556,16 @@ class MessageList(Sequence[LLMMessage]):
         for hook in self._reset_hooks:
             hook()
 
+    def replace_at(self, index: int, msg: LLMMessage) -> None:
+        """Replace the message at ``index`` in place, silently.
+
+        Used by context-shaper middlewares to rewrite (snip/compress) an old
+        message without firing observer notifications or reset hooks. The caller
+        builds the replacement message; structure (role, tool linkage) is its
+        responsibility. Atomic under CPython's GIL like update_system_prompt.
+        """
+        self._data[index] = msg
+
     def update_system_prompt(self, new: str) -> None:
         """Update the system prompt in place.
 

@@ -10,7 +10,7 @@ from vibe.core.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
-    from vibe.core.types import AgentStats, MessageList
+    from vibe.core.types import AgentStats, LLMMessage, MessageList
 
 
 class MiddlewareAction(StrEnum):
@@ -113,6 +113,184 @@ class AutoCompactMiddleware:
 
     def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
         pass
+
+
+_SNIP_OPEN = "<vibe_snipped>"
+_SNIP_CLOSE = "</vibe_snipped>"
+
+
+class ContextShaperMiddleware:
+    """Base for cheap, local, in-place context shapers run before AutoCompact.
+
+    Shapers mutate ``context.messages`` directly and return CONTINUE; they never
+    call an LLM. They read their live config from ``context.config`` so a
+    mid-session config edit takes effect without rebuilding the pipeline.
+    """
+
+    def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
+        pass
+
+    @staticmethod
+    def _threshold(context: ConversationContext) -> int:
+        return context.config.get_active_model().auto_compact_threshold
+
+    @staticmethod
+    def _estimated_tokens(context: ConversationContext) -> int:
+        from vibe.core.utils.tokens import approx_token_count
+
+        local = sum(approx_token_count(m.content or "") for m in context.messages)
+        # stats.context_tokens is one turn behind / 0 after compaction; take the
+        # larger so a stale-low value never suppresses shaping.
+        return max(context.stats.context_tokens, local)
+
+    @staticmethod
+    def _protected_prefix_len(messages: MessageList, guard_tokens: int) -> int:
+        """Leading messages that must never be edited: system + any compaction
+        context + a cache-stable prefix band of ~guard_tokens.
+        """
+        from vibe.core.compaction import _is_compaction_context_message
+        from vibe.core.utils.tokens import approx_token_count
+
+        if len(messages) == 0:
+            return 0
+        n = 1  # system prompt
+        while n < len(messages) and _is_compaction_context_message(messages[n]):
+            n += 1
+        acc = sum(approx_token_count(messages[i].content or "") for i in range(n))
+        while n < len(messages) and acc < guard_tokens:
+            acc += approx_token_count(messages[n].content or "")
+            n += 1
+        return n
+
+    @staticmethod
+    def _protected_suffix_len(
+        messages: MessageList, keep_recent: int, prefix_len: int
+    ) -> int:
+        """Trailing messages kept verbatim (the working set)."""
+        return min(keep_recent, max(0, len(messages) - prefix_len))
+
+    @staticmethod
+    def _is_real_user_message(msg: LLMMessage) -> bool:
+        from vibe.core.types import Role
+
+        return msg.role == Role.user and not msg.injected
+
+
+class SnipMiddleware(ContextShaperMiddleware):
+    """Elide old, large messages to a placeholder once context is moderately
+    full. Preserves message structure (role, tool linkage) so the request stays
+    valid; only the content/args/images are dropped.
+    """
+
+    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
+        from vibe.core.utils.tokens import approx_token_count
+
+        cfg = context.config.context_shaping.snip
+        threshold = self._threshold(context)
+        if not cfg.enabled or threshold <= 0:
+            return MiddlewareResult()
+        est = self._estimated_tokens(context)
+        if est < cfg.high_watermark * threshold:
+            return MiddlewareResult()
+
+        messages = context.messages
+        prefix = self._protected_prefix_len(
+            messages, context.config.context_shaping.cache_prefix_guard_tokens
+        )
+        suffix = self._protected_suffix_len(messages, cfg.keep_recent_turns, prefix)
+        band = range(prefix, len(messages) - suffix)
+        candidates = [
+            i
+            for i in band
+            if approx_token_count(messages[i].content or "") >= cfg.min_message_tokens
+            and not (messages[i].content or "").startswith(_SNIP_OPEN)
+            and not self._is_real_user_message(messages[i])
+        ]
+        candidates.sort(
+            key=lambda i: approx_token_count(messages[i].content or ""), reverse=True
+        )
+        target = cfg.target * threshold
+        for i in candidates:
+            if est <= target:
+                break
+            before = approx_token_count(messages[i].content or "")
+            new_msg = self._snip(messages[i])
+            messages.replace_at(i, new_msg)
+            est -= max(0, before - approx_token_count(new_msg.content or ""))
+        return MiddlewareResult()
+
+    @staticmethod
+    def _snip(msg: LLMMessage) -> LLMMessage:
+        from vibe.core.types import FunctionCall, ToolCall
+        from vibe.core.utils.tokens import approx_token_count
+
+        n = approx_token_count(msg.content or "")
+        placeholder = (
+            f"{_SNIP_OPEN} {n} tokens of older {msg.role} content elided "
+            f"{_SNIP_CLOSE}"
+        )
+        new_tool_calls = None
+        if msg.tool_calls:
+            # Keep id/index/name (tool_call<->tool_result linkage) but blank args.
+            new_tool_calls = [
+                ToolCall(
+                    id=tc.id,
+                    index=tc.index,
+                    type=tc.type,
+                    function=FunctionCall(name=tc.function.name, arguments="{}"),
+                )
+                for tc in msg.tool_calls
+            ]
+        return msg.model_copy(
+            update={
+                "content": placeholder,
+                "images": None,
+                "tool_calls": new_tool_calls,
+                "reasoning_content": None,
+                "reasoning_state": None,
+            }
+        )
+
+
+class MicrocompactMiddleware(ContextShaperMiddleware):
+    """Compress (head+tail truncate) the oldest oversized messages, rate-limited
+    per turn to keep the provider cache stable. No LLM call.
+    """
+
+    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
+        from vibe.core.utils.tokens import approx_token_count, truncate_middle_to_tokens
+
+        cfg = context.config.context_shaping.microcompact
+        threshold = self._threshold(context)
+        if not cfg.enabled or threshold <= 0:
+            return MiddlewareResult()
+        est = self._estimated_tokens(context)
+        if est < cfg.high_watermark * threshold:
+            return MiddlewareResult()
+
+        messages = context.messages
+        prefix = self._protected_prefix_len(
+            messages, context.config.context_shaping.cache_prefix_guard_tokens
+        )
+        suffix = self._protected_suffix_len(
+            messages, context.config.context_shaping.snip.keep_recent_turns, prefix
+        )
+        target = cfg.target * threshold
+        done = 0
+        for i in range(prefix, len(messages) - suffix):  # oldest first
+            if done >= cfg.max_blocks_per_turn or est <= target:
+                break
+            msg = messages[i]
+            content = msg.content or ""
+            if self._is_real_user_message(msg) or content.startswith(_SNIP_OPEN):
+                continue
+            if approx_token_count(content) <= cfg.per_message_cap_tokens:
+                continue  # already small / previously compressed
+            new_content = truncate_middle_to_tokens(content, cfg.per_message_cap_tokens)
+            messages.replace_at(i, msg.model_copy(update={"content": new_content}))
+            est -= approx_token_count(content) - approx_token_count(new_content)
+            done += 1
+        return MiddlewareResult()
 
 
 class ContextWarningMiddleware:

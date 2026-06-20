@@ -26,6 +26,7 @@ from vibe.core.config._settings import (
     DEFAULT_VIBE_CODE_TASK_QUEUE,
     DEFAULT_VIBE_CODE_WORKFLOW_ID,
     ConnectorConfig,
+    ContextShapingConfig,
     ExperimentsConfig,
     MaxOutputEscalationConfig,
     MCPServer,
@@ -66,6 +67,9 @@ class VibeConfigSchema(ConfigSchema):
     max_output_escalation: Annotated[
         MaxOutputEscalationConfig, WithReplaceMerge()
     ] = Field(default_factory=MaxOutputEscalationConfig)
+    context_shaping: Annotated[ContextShapingConfig, WithReplaceMerge()] = Field(
+        default_factory=ContextShapingConfig
+    )
     auto_compact_threshold: Annotated[int, WithReplaceMerge()] = (
         DEFAULT_AUTO_COMPACT_THRESHOLD
     )

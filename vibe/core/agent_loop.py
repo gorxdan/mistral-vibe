@@ -50,12 +50,14 @@ from vibe.core.middleware import (
     AutoCompactMiddleware,
     ContextWarningMiddleware,
     ConversationContext,
+    MicrocompactMiddleware,
     MiddlewareAction,
     MiddlewarePipeline,
     MiddlewareResult,
     PriceLimitMiddleware,
     ReadOnlyAgentMiddleware,
     ResetReason,
+    SnipMiddleware,
     TokenLimitMiddleware,
     TurnLimitMiddleware,
     make_plan_agent_reminder,
@@ -896,6 +898,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if self._max_session_tokens is not None:
             self.middleware_pipeline.add(TokenLimitMiddleware(self._max_session_tokens))
 
+        # Cheap, local context shapers run before the LLM-summary fallback.
+        # Both no-op when disabled (read their config live), so registration is
+        # unconditional and a mid-session config edit takes effect immediately.
+        self.middleware_pipeline.add(SnipMiddleware())
+        self.middleware_pipeline.add(MicrocompactMiddleware())
         self.middleware_pipeline.add(AutoCompactMiddleware())
         if self.config.context_warnings:
             self.middleware_pipeline.add(ContextWarningMiddleware(0.5))
