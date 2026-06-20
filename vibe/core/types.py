@@ -351,11 +351,16 @@ class LLMUsage(BaseModel):
     model_config = ConfigDict(frozen=True)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Prompt tokens served from the provider's cache (subset of prompt_tokens).
+    # Lets cache effectiveness be measured for OpenAI-compatible providers that
+    # auto-cache (e.g. Kimi, GLM) without Vibe managing cache breakpoints.
+    cached_tokens: int = 0
 
     def __add__(self, other: LLMUsage) -> LLMUsage:
         return LLMUsage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
+            cached_tokens=self.cached_tokens + other.cached_tokens,
         )
 
 
