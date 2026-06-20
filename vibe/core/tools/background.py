@@ -21,6 +21,7 @@ See docs/design/tasks.md for the full design.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import time
@@ -156,6 +157,66 @@ async def _terminate_proc(proc: asyncio.subprocess.Process) -> None:
             await proc.wait()
         except ProcessLookupError:
             pass
+
+
+def _extract_message_text(content: Any) -> str:
+    """Pull a plain-text snippet from an LLMMessage ``content`` field.
+
+    ``content`` may be a string or a list of content blocks (text, tool_use,
+    tool_result). Text blocks contribute their text; tool blocks contribute a
+    short ``[name]`` marker so the tail shows tool activity without dumping
+    whole payloads.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                btype = block.get("type")
+                if btype == "text" and isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+                elif btype in {"tool_use", "tool_result"}:
+                    parts.append(f"[{block.get('name') or btype}]")
+        return " ".join(parts)
+    if content is None:
+        return ""
+    return str(content)
+
+
+def _format_jsonl_tail(
+    raw: str, *, content_limit: int = 160, max_role_width: int = 10
+) -> str:
+    """Render raw messages.jsonl text as readable ``role: content`` snippets.
+
+    Each line is a JSON-serialized LLMMessage. Malformed or partial trailing
+    writes are passed through verbatim so an in-progress append never blanks the
+    tail. Long content is truncated to ``content_limit`` chars; the role label
+    is capped to ``max_role_width`` chars.
+    """
+    if not raw:
+        return ""
+    out: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            out.append(line)
+            continue
+        if not isinstance(msg, dict):
+            out.append(line)
+            continue
+        role = str(msg.get("role") or "?")[:max_role_width]
+        text = _extract_message_text(msg.get("content")).replace("\n", " ").strip()
+        if len(text) > content_limit:
+            text = text[: content_limit - 1] + "\u2026"
+        out.append(f"{role}: {text}" if text else f"{role}:")
+    return "\n".join(out)
 
 
 class BackgroundRegistry:
@@ -315,12 +376,68 @@ class BackgroundRegistry:
         try:
             if path.stat().st_size > _LOG_DISK_CAP_BYTES:
                 self._trim_log_in_place(path)
+        except (FileNotFoundError, OSError):
+            return ""
+        return self._tail_bytes(path, lines)
+
+    @staticmethod
+    def _tail_bytes(path: Path, lines: int) -> str:
+        """Read the last ``lines`` lines of a file (capped to the last
+        ``_LOG_TAIL_MAX_BYTES`` of bytes). Format-agnostic: returns raw decoded
+        text; callers needing structured formatting (e.g. JSONL transcripts)
+        post-process the result. Returns '' on missing/unreadable files.
+        """
+        try:
             data = path.read_bytes()[-_LOG_TAIL_MAX_BYTES:]
         except (FileNotFoundError, OSError):
             return ""
         text = data.decode("utf-8", errors="replace")
-        tail = text.splitlines()[-lines:]
-        return "\n".join(tail)
+        return "\n".join(text.splitlines()[-lines:])
+
+    def read_agent_log_tail(self, task_id: str, *, lines: int = 50) -> str:
+        """Last ``lines`` messages from an in-process workflow agent's transcript.
+
+        Resolves a ``wf-N/live-la-M`` task id back to the agent's messages.jsonl
+        via the workflow runner and renders recent messages as readable
+        'role: content' lines (not raw JSON). Returns '' for isolated (worktree)
+        agents, which have no in-process log; unknown ids; or missing logs — the
+        renderer treats all of these as "no output yet".
+        """
+        run_id, agent_id = self._parse_agent_task_id(task_id)
+        if run_id is None or agent_id is None:
+            return ""
+        runner = self._workflow_runner_ref()
+        if runner is None:
+            return ""
+        for entry in runner.runs:
+            if getattr(entry, "run_id", None) != run_id:
+                continue
+            for la in getattr(entry, "live_agents", None) or []:
+                if getattr(la, "agent_id", None) != agent_id:
+                    continue
+                path = getattr(la, "log_path", None)
+                if path is None:
+                    return ""
+                return _format_jsonl_tail(self._tail_bytes(Path(path), lines))
+        return ""
+
+    @staticmethod
+    def _parse_agent_task_id(
+        task_id: str,
+    ) -> tuple[str | None, str | None]:
+        """Split ``wf-1/live-la-3`` into ``('wf-1', 'la-3')``.
+
+        Returns ``(None, None)`` when the id is not a hierarchical agent id (no
+        ``/``, or the suffix is not a ``live-`` child), so callers can treat the
+        whole non-agent-id space uniformly.
+        """
+        if "/" not in task_id:
+            return None, None
+        run_id, _, agent_suffix = task_id.partition("/")
+        prefix = "live-"
+        if not agent_suffix.startswith(prefix):
+            return None, None
+        return run_id, agent_suffix[len(prefix):]
 
     @staticmethod
     def _trim_log_in_place(path: Path) -> None:

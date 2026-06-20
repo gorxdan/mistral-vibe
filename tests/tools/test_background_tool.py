@@ -364,6 +364,7 @@ class _FakeLiveAgent:
     tokens_total: int = 0
     agent: str | None = "explore"
     model: str | None = None
+    log_path: Path | None = None
 
 
 class _FakeStatus:
@@ -505,6 +506,90 @@ async def test_family_scoping_has_no_numeric_footgun(tmp_path):
     for rec in list(registry._procs.values()):
         if rec.status == "running":
             await registry.stop(rec.task_id)
+
+
+# ---------------------------------------------------------------------------
+# Agent log tailing — scoped workflow lookup shows child agent transcripts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scoped_workflow_list_tails_child_agent_transcript(tmp_path):
+    """background list task_id=wf-1 shows the workflow row AND each live
+    agent's recent transcript (rendered as 'role: content'), not just the
+    agent's status line. This closes the gap where AGENT-category rows had no
+    tail because only PROCESS entries had on-disk logs.
+    """
+    import json
+
+    log = tmp_path / "agent-transcript.jsonl"
+    log.write_text(
+        json.dumps({"role": "user", "content": "audit the auth module"}) + "\n"
+        + json.dumps({"role": "assistant", "content": "grepping for login routes"}) + "\n"
+        + json.dumps({"role": "assistant", "content": "login is handled in auth.py"}) + "\n"
+    )
+    registry = BackgroundRegistry()
+    wf = _FakeWorkflowRunner()
+    wf.runs.append(
+        _FakeRunEntry(
+            run_id="wf-1",
+            status=_FakeStatus("running"),
+            phases=["audit"],
+            live_agents=[
+                _FakeLiveAgent(agent_id="explore", label="auditor", log_path=log)
+            ],
+        )
+    )
+    registry.attach_workflow_runner(lambda: wf)
+    tool = _background_tool()
+
+    result = await collect_result(
+        tool.run(BackgroundArgs(action="list", task_id="wf-1"), ctx=_ctx(registry))
+    )
+
+    assert "wf-1" in result.response
+    assert "wf-1/live-explore" in result.response
+    # The agent's transcript tail renders inline, formatted (not raw JSON).
+    assert _has_log_block(result.response)
+    assert "login is handled in auth.py" in result.response
+    assert '"role"' not in result.response  # JSON envelope stripped
+
+
+@pytest.mark.asyncio
+async def test_scoped_agent_list_tails_single_agent(tmp_path):
+    """Asking for the agent id directly (wf-1/live-explore) tails just that
+    agent — same machinery, scoped to the one child row."""
+    import json
+
+    log = tmp_path / "single-agent.jsonl"
+    log.write_text(
+        json.dumps({"role": "assistant", "content": "narrow result here"}) + "\n"
+    )
+    registry = BackgroundRegistry()
+    wf = _FakeWorkflowRunner()
+    wf.runs.append(
+        _FakeRunEntry(
+            run_id="wf-1",
+            status=_FakeStatus("running"),
+            live_agents=[
+                _FakeLiveAgent(agent_id="explore", log_path=log),
+                _FakeLiveAgent(agent_id="reviewer", label="checker"),
+            ],
+        )
+    )
+    registry.attach_workflow_runner(lambda: wf)
+    tool = _background_tool()
+
+    result = await collect_result(
+        tool.run(
+            BackgroundArgs(action="list", task_id="wf-1/live-explore"),
+            ctx=_ctx(registry),
+        )
+    )
+
+    assert "wf-1/live-explore" in result.response
+    assert "wf-1/live-reviewer" not in result.response  # only the named agent
+    assert "narrow result here" in result.response
 
 
 @pytest.mark.asyncio

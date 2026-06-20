@@ -32,6 +32,7 @@ class _FakeLiveAgent:
     agent: str | None = "explore"
     model: str | None = None
     error: str | None = None
+    log_path: Path | None = None
 
 
 class _WorkflowStatus:
@@ -486,6 +487,99 @@ async def test_read_log_tail_returns_empty_for_missing_file(tmp_path):
         log_path=tmp_path / "never-written.log",
     )
     assert reg.read_log_tail("proc-1") == ""
+
+
+# ---------------------------------------------------------------------------
+# read_agent_log_tail
+# ---------------------------------------------------------------------------
+
+
+def _registry_with_workflow_log(tmp_path) -> tuple[BackgroundRegistry, _FakeWorkflowRunner]:
+    """Wire a registry to a fake workflow runner with one run (wf-1) carrying a
+    single live agent (la-0) whose transcript lives at a real on-disk path.
+    """
+    import json
+
+    reg, wf, _team, _loop = _registry_with_all()
+    log = tmp_path / "messages.jsonl"
+    log.write_text(
+        json.dumps({"role": "user", "content": "find the auth flow"}) + "\n"
+        + json.dumps({"role": "assistant", "content": "I will grep for auth"}) + "\n"
+        + json.dumps({"role": "assistant", "content": "Found it in auth.py:42"}) + "\n"
+    )
+    run = _FakeRunEntry(
+        run_id="wf-1",
+        status=_WorkflowStatus("running"),
+        live_agents=[_FakeLiveAgent(agent_id="la-0", log_path=log)],
+    )
+    wf.runs.append(run)
+    return reg, wf
+
+
+def test_read_agent_log_tail_returns_formatted_recent_messages(tmp_path):
+    """A wf-N/live-la-M id resolves to the agent's transcript and renders the
+    last lines as readable 'role: content' snippets — not raw JSON.
+    """
+    reg, _wf = _registry_with_workflow_log(tmp_path)
+
+    tail = reg.read_agent_log_tail("wf-1/live-la-0", lines=2)
+
+    assert "Found it in auth.py:42" in tail
+    assert "assistant: " in tail
+    assert "{" not in tail  # JSON envelope stripped, not dumped raw
+
+
+def test_read_agent_log_tail_empty_for_isolated_agent(tmp_path):
+    """An agent with no log_path (isolated/worktree agent) returns '' — nothing
+    stable to tail, rendered as 'no output yet'.
+    """
+    reg, wf, _team, _loop = _registry_with_all()
+    wf.runs.append(
+        _FakeRunEntry(
+            run_id="wf-2",
+            status=_WorkflowStatus("running"),
+            live_agents=[_FakeLiveAgent(agent_id="la-0", log_path=None)],
+        )
+    )
+
+    assert reg.read_agent_log_tail("wf-2/live-la-0") == ""
+
+
+def test_read_agent_log_tail_empty_for_unknown_id():
+    """Unknown run or agent ids return '' rather than raising."""
+    reg, _wf, _team, _loop = _registry_with_all()
+
+    assert reg.read_agent_log_tail("wf-999/live-la-0") == ""
+    assert reg.read_agent_log_tail("wf-1/live-la-999") == ""
+    # A bare proc id is not a hierarchical agent id.
+    assert reg.read_agent_log_tail("proc-1") == ""
+
+
+def test_read_agent_log_tail_empty_when_no_workflow_runner():
+    """With no workflow runner attached, agent tails resolve to ''."""
+    reg = BackgroundRegistry()
+    assert reg.read_agent_log_tail("wf-1/live-la-0") == ""
+
+
+def test_parse_agent_task_id_round_trip():
+    """The id parser splits hierarchical agent ids and rejects non-agent ids."""
+    parse = BackgroundRegistry._parse_agent_task_id
+    assert parse("wf-1/live-la-3") == ("wf-1", "la-3")
+    assert parse("proc-1") == (None, None)          # not hierarchical
+    assert parse("wf-1/phases") == (None, None)     # suffix is not a 'live-' child
+    assert parse("team:alice") == (None, None)
+
+
+def test_format_jsonl_tail_handles_malformed_trailing_line():
+    """A partial trailing write (no closing brace yet) is passed through, not
+    dropped, so an in-progress append never blanks the tail.
+    """
+    from vibe.core.tools.background import _format_jsonl_tail
+
+    raw = '{"role": "assistant", "content": "ok"}\n{"role": "user", "content": "par'
+    out = _format_jsonl_tail(raw)
+    assert "assistant: ok" in out
+    assert "par" in out  # malformed line kept verbatim
 
 
 # ---------------------------------------------------------------------------

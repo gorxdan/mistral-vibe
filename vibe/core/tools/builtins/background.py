@@ -11,7 +11,7 @@ session itself launched; it cannot spawn or mutate files.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -74,6 +74,21 @@ class BackgroundResult(BaseModel):
 
 class BackgroundToolConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ALWAYS
+
+
+def _tail_for(
+    registry: Any, entry: TaskEntry, tail_lines: int | None
+) -> str | None:
+    """Resolve a log tail for an entry by category. Returns None when tails are
+    suppressed (tail_lines is None) or the category has nothing to tail.
+    """
+    if not tail_lines:
+        return None
+    if entry.category == TaskCategory.PROCESS:
+        return registry.read_log_tail(entry.task_id, lines=tail_lines)
+    if entry.category == TaskCategory.AGENT:
+        return registry.read_agent_log_tail(entry.task_id, lines=tail_lines)
+    return None
 
 
 def _format_entry(entry: TaskEntry, tail: str | None) -> str:
@@ -200,12 +215,7 @@ class Background(
             else:
                 tail_lines = None
             lines = [
-                _format_entry(
-                    e,
-                    registry.read_log_tail(e.task_id, lines=tail_lines)
-                    if tail_lines and e.category == TaskCategory.PROCESS
-                    else None,
-                )
+                _format_entry(e, _tail_for(registry, e, tail_lines))
                 for e in entries
             ]
             yield BackgroundResult(

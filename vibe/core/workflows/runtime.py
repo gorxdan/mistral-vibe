@@ -4,9 +4,11 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
+import functools
 import hashlib
 import inspect
 import json
+from pathlib import Path
 import time
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
@@ -33,6 +35,7 @@ from vibe.core.workflows.schema import (
     SchemaValidationError,
     build_prompt_fallback,
     build_response_format,
+    strip_unknown_properties,
     validate_against_schema,
 )
 from vibe.core.workflows.security import build_namespace, validate_script
@@ -77,6 +80,69 @@ DEFAULT_MAX_CONCURRENT = 16
 DEFAULT_MAX_AGENTS = 1000
 DEFAULT_BUDGET_TOTAL = None
 DEFAULT_SCHEMA_RETRIES = 2
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip a surrounding markdown code fence so schema-tagged agent responses
+    wrapped in ```...``` (or ```json...```) still parse. A leading fence is the
+    most common cause of spurious schema-validation failure, which previously
+    discarded completed agent work before the delivery-recovery path existed."""
+    s = text.strip()
+    if s.startswith("```"):
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl + 1 :]
+        if s.endswith("```"):
+            s = s[: -3]
+    return s.strip()
+
+
+class _AwaitableNoop:
+    """Wraps a sync log/phase-style call so it works both bare and awaited.
+
+    ``log("x")`` returns the wrapper (which behaves as a falsy/noop value), and
+    ``await log("x")`` awaits to ``None`` — so the historical trap of awaiting
+    these injected helpers (wf-1 died on "NoneType can't be used in 'await'")
+    becomes harmless instead of killing the run with zero agents spawned.
+    """
+
+    __slots__ = ("_fn", "_args", "_kwargs")
+
+    def __init__(self, fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        self._fn = fn
+        self._args = args
+        self._kwargs = kwargs
+
+    def __await__(self) -> Any:
+        self._fn(*self._args, **self._kwargs)
+        return iter(())
+
+    def __bool__(self) -> bool:
+        return False
+
+
+def _awaitable(fn: Any) -> Any:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> _AwaitableNoop:
+        return _AwaitableNoop(fn, args, kwargs)
+
+    return wrapper
+
+
+def _loop_log_path(loop: Any) -> Path | None:
+    """Path to an in-process agent loop's transcript (messages.jsonl), or None.
+
+    Defensive against custom/mock loop factories that return an object without
+    a session_logger, and against disabled logging — such agents simply aren't
+    tailable by the background tool. Isolated (worktree) agents never reach
+    here (they run via a subprocess with no in-process loop).
+    """
+    sl = getattr(loop, "session_logger", None)
+    if sl is None or not getattr(sl, "enabled", False):
+        return None
+    return sl.messages_filepath
+
+
 DEFAULT_ISOLATED_MAX_TURNS = 40
 
 # Signature of the isolated-agent executor seam: (prompt, agent, label,
@@ -138,6 +204,12 @@ class _LiveAgent:
     # the caller's coroutine (a direct `await agent(...)` with no wrapping task).
     task: asyncio.Task[Any] | None = field(default=None, init=False)
     cancel_requested: bool = field(default=False, init=False)
+    # Path to this in-process agent's transcript (messages.jsonl), set after
+    # the AgentLoop is created so the background tool can tail it. None for
+    # isolated (worktree) agents — their subprocess writes transiently to a
+    # dir removed on exit, so there is nothing stable to tail. Refreshed per
+    # retry attempt, so it always points at the current attempt's log.
+    log_path: Path | None = field(default=None, init=False)
 
     @property
     def tokens_total(self) -> int:
@@ -430,6 +502,7 @@ class WorkflowRuntime:
         schema: dict | None = None,
         budget_estimate: int | None = None,
         isolation: str | None = None,
+        strip_unknown: bool = True,
     ) -> str | dict[str, Any]:
         cache_key = _prompt_hash(prompt, agent, phase, isolation)
         if cached := self._cache.get(cache_key):
@@ -473,6 +546,7 @@ class WorkflowRuntime:
                     schema=schema,
                     reservation=reservation,
                     cache_key=cache_key,
+                    strip_unknown=strip_unknown,
                 )
             if isolation is not None:
                 raise WorkflowError(
@@ -487,6 +561,7 @@ class WorkflowRuntime:
                 schema=schema,
                 reservation=reservation,
                 cache_key=cache_key,
+                strip_unknown=strip_unknown,
             )
 
     async def _run_agent(
@@ -500,6 +575,7 @@ class WorkflowRuntime:
         schema: dict | None,
         reservation: Reservation,
         cache_key: str,
+        strip_unknown: bool = True,
     ) -> str | dict[str, Any]:
         response_format = build_response_format(schema) if schema is not None else None
         effective_prompt = prompt
@@ -523,6 +599,9 @@ class WorkflowRuntime:
         for attempt in range(self.schema_retries + 1):
             accumulated = []
             loop = self._create_loop(effective_prompt, agent=agent, model=model)
+            # Point the background tool at this attempt's transcript so it can
+            # be tailed; refreshed each retry, so it follows the live log.
+            live.log_path = _loop_log_path(loop)
 
             try:
                 async with aclosing(
@@ -586,10 +665,12 @@ class WorkflowRuntime:
                 return response_text
 
             try:
-                parsed = json.loads(response_text)
+                parsed = json.loads(_strip_code_fences(response_text))
             except json.JSONDecodeError as e:
                 last_errors = [f"JSON parse error: {e}"]
             else:
+                if strip_unknown:
+                    parsed = strip_unknown_properties(parsed, schema)
                 errors = validate_against_schema(parsed, schema)
                 if not errors:
                     self._finalize_agent(
@@ -836,6 +917,7 @@ class WorkflowRuntime:
         schema: dict | None,
         reservation: Reservation,
         cache_key: str,
+        strip_unknown: bool = True,
     ) -> str | dict[str, Any]:
         """Run an isolation='worktree' agent: a `vibe -p` subprocess in a fresh
         git worktree, so file mutations cannot collide with other agents. The
@@ -880,11 +962,13 @@ class WorkflowRuntime:
         response: str | dict[str, Any] = output
         if completed and schema is not None:
             try:
-                parsed = json.loads(output)
+                parsed = json.loads(_strip_code_fences(output))
             except json.JSONDecodeError as e:
                 completed = False
                 error_msg = f"isolated agent returned invalid JSON: {e}"
             else:
+                if strip_unknown:
+                    parsed = strip_unknown_properties(parsed, schema)
                 errors = validate_against_schema(parsed, schema)
                 if errors:
                     completed = False
@@ -994,7 +1078,7 @@ class WorkflowRuntime:
         finally:
             remove_ephemeral_worktree(wt)
 
-    def parallel(self, *thunks: Any) -> _AwaitableResult:
+    def parallel(self, *thunks: Any, max_concurrency: int | None = None) -> _AwaitableResult:
         """Run thunks concurrently and return their results in order (barrier).
 
         Mirrors the Claude Code Workflow contract:
@@ -1002,18 +1086,33 @@ class WorkflowRuntime:
         - a thunk that raises resolves to ``None`` (the call never rejects), so
           one bad agent does not kill the batch — filter with ``[r for r in ... if r]``.
 
-        Concurrency is bounded inside spawn_agent (the single owner of
-        self._semaphore); acquiring it here too would make each agent hold two
-        permits and deadlock once concurrent thunks reach max_concurrent.
+        ``max_concurrency`` optionally caps how many thunks run at once (e.g. 3
+        for providers that rate-limit at 1–3 concurrent agents). It uses a
+        semaphore LOCAL to this call, distinct from the global spawn_agent
+        semaphore, so there is no nested acquisition of a non-reentrant lock
+        (the historical deadlock risk). When omitted, concurrency is bounded
+        only by the runtime's global ``max_concurrent`` (default 16).
         """
         if len(thunks) == 1 and isinstance(thunks[0], (list, tuple)):
             thunk_list = list(thunks[0])
         else:
             thunk_list = list(thunks)
 
+        if max_concurrency is not None and max_concurrency < 1:
+            raise WorkflowError(
+                f"parallel(max_concurrency=...) must be >= 1, got {max_concurrency}"
+            )
+        sem: asyncio.Semaphore | None = (
+            asyncio.Semaphore(max_concurrency) if max_concurrency else None
+        )
+
         async def _safe(thunk: Callable[[], Awaitable[Any]]) -> Any:
             try:
-                return await thunk()
+                if sem is not None:
+                    async with sem:
+                        return await thunk()
+                else:
+                    return await thunk()
             except (AgentCapExceeded, BudgetExhausted):
                 # Hard ceilings (runaway-agent / overspend backstops) must fail
                 # the run, not silently become a None result that masks the
@@ -1064,16 +1163,22 @@ class WorkflowRuntime:
         )
 
     def pipeline(
-        self, items: list[I], *stages: Callable[..., Awaitable[Any]]
+        self,
+        items: list[I],
+        *stages: Callable[..., Awaitable[Any]],
+        max_concurrency: int | None = None,
     ) -> _AwaitableResult:
         """Run each item through all stages independently — no barrier between
         stages, so item A can be in stage 3 while item B is still in stage 1
         (Claude Code pipeline semantics). Each stage receives (prevResult,
-        originalItem, index). A stage that raises drops that item to ``None`` and
-        skips its remaining stages. Returns one final result per item, in order.
+        originalItem, index). A stage that raises drops that item to ``None``
+        and skips its remaining stages. Returns one final result per item, in order.
 
-        Limiting happens in spawn_agent, not here, to avoid nested acquisition of
-        the non-reentrant semaphore (deadlock at scale).
+        ``max_concurrency`` optionally caps how many items are in flight at once
+        (across all stages). It uses a LOCAL semaphore, distinct from the global
+        spawn_agent semaphore, so there is no nested-acquire deadlock. When
+        omitted, concurrency is bounded only by the runtime's global
+        ``max_concurrent``.
         """
         for stage in stages:
             if not self._stage_accepts_positional(stage):
@@ -1081,6 +1186,13 @@ class WorkflowRuntime:
                     f"pipeline stage {getattr(stage, '__name__', stage)!r} must "
                     "accept at least one positional argument (prev[, item, index])"
                 )
+        if max_concurrency is not None and max_concurrency < 1:
+            raise WorkflowError(
+                f"pipeline(max_concurrency=...) must be >= 1, got {max_concurrency}"
+            )
+        sem: asyncio.Semaphore | None = (
+            asyncio.Semaphore(max_concurrency) if max_concurrency else None
+        )
         items_list = list(items)
 
         async def _run_item(index: int, item: Any) -> Any:
@@ -1101,9 +1213,15 @@ class WorkflowRuntime:
                     return None
             return result
 
+        async def _guarded_run_item(index: int, item: Any) -> Any:
+            if sem is None:
+                return await _run_item(index, item)
+            async with sem:
+                return await _run_item(index, item)
+
         async def _run() -> list[Any]:
             return await asyncio.gather(*[
-                _run_item(i, it) for i, it in enumerate(items_list)
+                _guarded_run_item(i, it) for i, it in enumerate(items_list)
             ])
 
         return _AwaitableResult(_run())
@@ -1119,6 +1237,7 @@ class WorkflowRuntime:
             schema: dict | None = None,
             budget_estimate: int | None = None,
             isolation: str | None = None,
+            strip_unknown: bool = True,
         ) -> str | dict[str, Any]:
             return await self.spawn_agent(
                 prompt,
@@ -1129,6 +1248,7 @@ class WorkflowRuntime:
                 schema=schema,
                 budget_estimate=budget_estimate,
                 isolation=isolation,
+                strip_unknown=strip_unknown,
             )
 
         async def _workflow(name: str, args: Any = None) -> Any:
@@ -1151,8 +1271,8 @@ class WorkflowRuntime:
             "agent": _agent,
             "parallel": self.parallel,
             "pipeline": self.pipeline,
-            "phase": self._declare_phase,
-            "log": self._log,
+            "phase": _awaitable(self._declare_phase),
+            "log": _awaitable(self._log),
             "workflow": _workflow,
             "budget": ReadOnlyBudget(self._budget),
             "post_message": _post_message,
@@ -1289,6 +1409,14 @@ class WorkflowRuntime:
             return_value = await main_fn()
             status = WorkflowStatus.COMPLETED
             error = None
+        except asyncio.CancelledError:
+            # A whole-run stop cancels the task awaiting main(); surface that
+            # as STOPPED (not FAILED) and still build a result so the host gets
+            # the summary + any recovered agent outputs rather than a bare
+            # cancel. Do not re-raise: the runner persists in its finally.
+            return_value = None
+            status = WorkflowStatus.STOPPED
+            error = "stopped by user"
         except Exception as e:
             return_value = None
             status = WorkflowStatus.FAILED
