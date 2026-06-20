@@ -187,16 +187,25 @@ class AgentLoopHooksMixin:
                 events.append(ev)
         return continuation, events
 
-    async def _run_session_start_hooks(self, source: str) -> AsyncGenerator[HookEvent]:
-        """Notify session-start hooks (observe-only)."""
+    async def _dispatch_session_start_hooks(
+        self, source: str
+    ) -> tuple[list[str], list[HookEvent]]:
+        """Run session-start hooks. Returns (injected_contexts, events): a hook
+        may inject additional_context the first turn sees.
+        """
+        events: list[HookEvent] = []
+        injected: list[str] = []
         if not self._hooks_manager:
-            return
+            return injected, events
         invocation = SessionStartInvocation(
             **self._hook_session_context().model_dump(), source=source
         )
         async for ev in self._hooks_manager.run(invocation):
-            if isinstance(ev, HookEvent):
-                yield ev
+            if isinstance(ev, HookUserMessage):
+                injected.append(ev.content)
+            elif isinstance(ev, HookEvent):
+                events.append(ev)
+        return injected, events
 
     async def _fire_session_end_hooks(self, reason: str) -> None:
         """Run session-end hooks best-effort and time-bounded (the process may

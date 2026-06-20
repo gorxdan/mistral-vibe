@@ -817,8 +817,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             if not self._session_started:
                 self._session_started = True
                 source = "resume" if self.parent_session_id else "startup"
-                async for ev in self._run_session_start_hooks(source):
+                ss_injected, ss_events = await self._dispatch_session_start_hooks(
+                    source
+                )
+                for ev in ss_events:
                     yield ev
+                # Append session-start context BEFORE the user prompt (which
+                # _conversation_loop appends next) so the first turn sees it as
+                # a session preamble.
+                for ctx_text in ss_injected:
+                    self.messages.append(
+                        LLMMessage(role=Role.user, content=ctx_text, injected=True)
+                    )
             async with agent_span(model=model_name, session_id=self.session_id):
                 async for event in self._conversation_loop(
                     msg,
@@ -1693,6 +1703,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 return
 
             tool_started = True
+            if tool_call.tool_name == "ask_user_question":
+                # Fire a question notification before the tool blocks on input.
+                await self._fire_notification_hooks(
+                    "question", "Waiting for user input", tool_call.tool_name
+                )
             async for ev in self._invoke_tool(
                 tool_call, tool_instance, tool_input, decision, span=span
             ):

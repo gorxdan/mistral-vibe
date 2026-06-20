@@ -79,3 +79,64 @@ async def test_ask_approval_fires_permission_notification() -> None:
     await loop._ask_approval("bash", _Args(), "call-1", [])
     assert mgr.notifs and mgr.notifs[0].notification_type == "permission_required"
     assert mgr.notifs[0].tool_name == "bash"
+
+
+async def _drive_tool(loop, tool_name: str) -> list[tuple[str, str | None]]:
+    """Run _execute_tool_call with the pipeline stubbed, recording any
+    notification fired.
+    """
+    from vibe.core.agent_loop import ToolDecision, ToolExecutionResponse
+    from vibe.core.agent_loop_hooks import _BeforeToolResolution
+    from vibe.core.llm.format import ResolvedToolCall
+    from vibe.core.tools.base import ToolPermission
+    from vibe.core.tools.builtins.ask_user_question import AskUserQuestion
+
+    class _A(BaseModel):
+        pass
+
+    rtc = ResolvedToolCall(
+        tool_name=tool_name,
+        tool_class=AskUserQuestion,
+        validated_args=_A(),
+        call_id="c1",
+    )
+    fired: list[tuple[str, str | None]] = []
+
+    async def rec(nt: str, msg: str, tn: str | None = None) -> None:
+        fired.append((nt, tn))
+
+    async def fake_pipeline(tc, ti, *, span):
+        return [], _BeforeToolResolution(tc, ti, None)
+
+    async def fake_should(*a: Any, **k: Any) -> ToolDecision:
+        return ToolDecision(
+            verdict=ToolExecutionResponse.EXECUTE, approval_type=ToolPermission.ALWAYS
+        )
+
+    async def fake_invoke(*a: Any, **k: Any):
+        return
+        yield  # pragma: no cover
+
+    loop.tool_manager.get = lambda n: object()  # type: ignore[method-assign]
+    loop._fire_notification_hooks = rec  # type: ignore[method-assign]
+    loop._run_before_tool_pipeline = fake_pipeline  # type: ignore[method-assign]
+    loop._should_execute_tool = fake_should  # type: ignore[method-assign]
+    loop._invoke_tool = fake_invoke  # type: ignore[method-assign]
+
+    async for _ in loop._execute_tool_call(None, rtc):  # type: ignore[arg-type]
+        pass
+    return fired
+
+
+@pytest.mark.asyncio
+async def test_ask_user_question_fires_question_notification() -> None:
+    loop = build_test_agent_loop()
+    fired = await _drive_tool(loop, "ask_user_question")
+    assert ("question", "ask_user_question") in fired
+
+
+@pytest.mark.asyncio
+async def test_other_tool_does_not_fire_question_notification() -> None:
+    loop = build_test_agent_loop()
+    fired = await _drive_tool(loop, "bash")
+    assert all(nt != "question" for nt, _ in fired)

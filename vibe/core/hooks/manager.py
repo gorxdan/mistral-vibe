@@ -16,6 +16,7 @@ from vibe.core.hooks._handler import (
     _parse_structured_response,
 )
 from vibe.core.hooks._post_agent_turn import PostAgentTurnHandler
+from vibe.core.hooks._session_start import SessionStartHandler
 from vibe.core.hooks._team_lifecycle import TeamLifecycleHandler
 from vibe.core.hooks._user_prompt_submit import UserPromptSubmitHandler
 from vibe.core.hooks.config import HookConfig
@@ -51,8 +52,9 @@ _HANDLERS: dict[HookType, HookHandler] = {
     # Stop reuses post-agent-turn semantics: deny → inject a continuation
     # message (capped by HookRetryState); allow → let the turn end.
     HookType.STOP: PostAgentTurnHandler(),
-    # Session lifecycle: notification-only (observe session begin/end).
-    HookType.SESSION_START: _TEAM_LIFECYCLE_HANDLER,
+    # SessionStart can inject additional_context; SessionEnd/Notification are
+    # notification-only.
+    HookType.SESSION_START: SessionStartHandler(),
     HookType.SESSION_END: _TEAM_LIFECYCLE_HANDLER,
     HookType.NOTIFICATION: _TEAM_LIFECYCLE_HANDLER,
 }
