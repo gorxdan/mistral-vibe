@@ -70,4 +70,6 @@ grep(pattern="TODO", path="src/")
 grep(pattern="import", path=".")
 ```
 
+**Never `sleep` to wait, poll, or track an interval.** A long `sleep` blocks the turn, hits the command timeout, and wastes the session — and it's denied. To run something later or repeatedly (e.g. "check again in 5m", poll until ready, every 10m), use the `schedule` tool, which fires a future turn without blocking. A short `sleep 1`/`sleep 2` to let a service start is fine.
+
 **Remember:** Bash is best for quick system checks and git operations. For file operations, searching, and editing, always use the dedicated tools when they are available.

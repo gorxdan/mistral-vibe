@@ -6,6 +6,7 @@ from functools import lru_cache
 import logging
 import os
 from pathlib import Path
+import re
 from typing import ClassVar, Literal, final
 
 from pydantic import BaseModel, Field
@@ -259,6 +260,47 @@ def _matches_pattern(command: str, pattern: str) -> bool:
     return command == pattern or command.startswith(pattern + " ")
 
 
+# A `sleep` of this many seconds or more is treated as a blocking wait — the
+# agent should schedule a future turn instead of tying up the session.
+_SLEEP_BLOCK_THRESHOLD_S = 10.0
+_SLEEP_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+# Match `sleep <duration>` anywhere in the raw command (any position in a
+# compound command). Scans the RAW command, not the AST parts, because the
+# bash parser drops bare numeric args (`sleep 300` -> `sleep`).
+_SLEEP_RE = re.compile(r"(?:^|[\s;&|()`])sleep\s+(\d[\d.]*[smhd]?)")
+
+
+def _sleep_token_seconds(token: str) -> float:
+    if token and token[-1] in _SLEEP_UNIT_SECONDS:
+        return float(token[:-1]) * _SLEEP_UNIT_SECONDS[token[-1]]
+    return float(token)  # bare number = seconds; raises ValueError if non-numeric
+
+
+def _blocking_sleep_reason(command: str) -> str | None:
+    """Reason to deny a long blocking `sleep` in *command*, or None to allow it.
+
+    Short sleeps (a couple seconds, e.g. waiting for a service) are fine; a long
+    sleep blocks the turn, hits the command timeout, and wastes the session —
+    denied with a pointer to the `schedule` tool. A non-numeric duration
+    (`sleep $X`) doesn't match and is left to the normal flow.
+    """
+    longest = 0.0
+    for match in _SLEEP_RE.finditer(command):
+        try:
+            longest = max(longest, _sleep_token_seconds(match.group(1)))
+        except ValueError:
+            continue
+    if longest < _SLEEP_BLOCK_THRESHOLD_S:
+        return None
+    return (
+        f"Blocking `sleep` (~{int(longest)}s) is not allowed — it ties up the "
+        "session and hits the command timeout. Don't sleep to wait, poll, or "
+        "track an interval. Use the `schedule` tool instead (e.g. "
+        "action='create', interval='5m', recurring=false) to get a future turn "
+        "without blocking."
+    )
+
+
 class BashToolConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ASK
     max_output_bytes: int = Field(
@@ -474,6 +516,11 @@ class Bash(
     def resolve_permission(self, args: BashArgs) -> PermissionContext | None:
         if is_windows():
             return None
+
+        if blocking_sleep := _blocking_sleep_reason(args.command):
+            return PermissionContext(
+                permission=ToolPermission.NEVER, reason=blocking_sleep
+            )
 
         command_parts = _extract_commands(args.command)
         if not command_parts:

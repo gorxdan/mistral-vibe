@@ -51,6 +51,13 @@ class ScheduledLoopRunner:
         self._tools_collapsed = tools_collapsed
         self._task: asyncio.Task[None] | None = None
 
+    @property
+    def manager(self) -> LoopManager:
+        """The live scheduler — handed to AgentLoop so the `schedule` tool
+        enqueues loops this runner polls and fires.
+        """
+        return self._manager
+
     def restore_from_session(self) -> None:
         metadata = self._session_logger.session_metadata
         self._manager.restore(list(metadata.loops) if metadata is not None else [])

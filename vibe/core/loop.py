@@ -5,7 +5,7 @@ import math
 import re
 import secrets
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
@@ -26,9 +26,27 @@ __all__ = [
     "LoopListResult",
     "LoopManager",
     "LoopOkResult",
+    "Scheduler",
     "format_duration",
     "parse_interval",
 ]
+
+
+@runtime_checkable
+class Scheduler(Protocol):
+    """The slice of LoopManager the model-facing `schedule` tool needs. Passed
+    into InvokeContext so the tool mutates the SAME live manager the runner
+    polls (so newly-scheduled loops actually fire).
+    """
+
+    @property
+    def loops(self) -> list[ScheduledLoop]: ...
+
+    async def add_loop(
+        self, interval_seconds: int, prompt: str, *, recurring: bool = True
+    ) -> ScheduledLoop: ...
+
+    async def cancel(self, target: str) -> int: ...
 
 
 MIN_INTERVAL_SECONDS = 30
@@ -174,7 +192,10 @@ class LoopManager:
         if not due_loops:
             return None
         due = min(due_loops, key=lambda loop: loop.next_fire_at)
-        due.next_fire_at = ts + due.interval_seconds
+        if due.recurring:
+            due.next_fire_at = ts + due.interval_seconds
+        else:
+            self._loops.remove(due)  # one-shot: fire once, then drop
         await self._persist()
         return due
 
@@ -193,52 +214,75 @@ class LoopManager:
     def _list_result(self) -> LoopListResult:
         return LoopListResult(loops=list(self._loops))
 
+    async def add_loop(
+        self, interval_seconds: int, prompt: str, *, recurring: bool = True
+    ) -> ScheduledLoop:
+        """Schedule a loop. Raises LoopError on a bad prompt or the session cap.
+
+        Shared by the ``/loop`` command and the model-facing ``schedule`` tool.
+        """
+        prompt = prompt.strip()
+        if not prompt:
+            raise LoopError("Missing prompt.")
+        if prompt.startswith("/"):
+            raise LoopError("Prompt cannot start with '/'.")
+        if interval_seconds < MIN_INTERVAL_SECONDS:
+            raise LoopError(f"Interval must be at least {MIN_INTERVAL_SECONDS}s.")
+        if len(self._loops) >= MAX_LOOPS_PER_SESSION:
+            raise LoopError(
+                f"Loop limit reached ({MAX_LOOPS_PER_SESSION} per session)."
+            )
+        now = time.time()
+        loop = ScheduledLoop(
+            id=secrets.token_hex(4),
+            interval_seconds=interval_seconds,
+            prompt=prompt,
+            next_fire_at=now + interval_seconds,
+            created_at=now,
+            recurring=recurring,
+        )
+        self._loops.append(loop)
+        await self._persist()
+        return loop
+
+    async def cancel(self, target: str) -> int:
+        """Cancel by id or ``all``; returns the number cancelled."""
+        if target.lower() == "all":
+            count = len(self._loops)
+            self._loops.clear()
+            await self._persist()
+            return count
+        match = next((loop for loop in self._loops if loop.id == target), None)
+        if match is None:
+            return 0
+        self._loops.remove(match)
+        await self._persist()
+        return 1
+
     async def _add(
         self, interval_text: str, prompt: str
     ) -> LoopOkResult | LoopErrorResult:
         try:
             seconds = parse_interval(interval_text)
+            loop = await self.add_loop(seconds, prompt)
         except LoopError as e:
             return LoopErrorResult(message=str(e))
-        prompt = prompt.strip()
-        if not prompt:
-            return LoopErrorResult(message="Missing prompt.")
-        if prompt.startswith("/"):
-            return LoopErrorResult(message="Prompt cannot start with '/'.")
-        if len(self._loops) >= MAX_LOOPS_PER_SESSION:
-            return LoopErrorResult(
-                message=f"Loop limit reached ({MAX_LOOPS_PER_SESSION} per session)."
-            )
-        now = time.time()
-        loop = ScheduledLoop(
-            id=secrets.token_hex(4),
-            interval_seconds=seconds,
-            prompt=prompt,
-            next_fire_at=now + seconds,
-            created_at=now,
-        )
-        self._loops.append(loop)
-        await self._persist()
         return LoopOkResult(
             message=(
-                f"Scheduled loop `{loop.id}` every {format_duration(seconds)}: {prompt}"
+                f"Scheduled loop `{loop.id}` every "
+                f"{format_duration(seconds)}: {loop.prompt}"
             )
         )
 
     async def _cancel(self, target: str) -> LoopOkResult | LoopErrorResult:
         if not target:
             return LoopErrorResult(message="Missing loop id.")
-        if target.lower() == "all":
-            count = len(self._loops)
-            self._loops.clear()
-            await self._persist()
-            return LoopOkResult(message=f"Cancelled {count} scheduled loop(s).")
-        match = next((loop for loop in self._loops if loop.id == target), None)
-        if match is None:
+        count = await self.cancel(target)
+        if count == 0:
             return LoopErrorResult(message=f"No scheduled loop with id `{target}`.")
-        self._loops.remove(match)
-        await self._persist()
-        return LoopOkResult(message=f"Cancelled loop `{match.id}`: {match.prompt}")
+        if target.lower() == "all":
+            return LoopOkResult(message=f"Cancelled {count} scheduled loop(s).")
+        return LoopOkResult(message=f"Cancelled loop `{target}`.")
 
     async def _persist(self) -> None:
         metadata = self._session_logger.session_metadata

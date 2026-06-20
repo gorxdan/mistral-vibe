@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Callable, Generator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
 import contextlib
 import copy
 from enum import StrEnum, auto
@@ -158,6 +158,7 @@ except ImportError:
     _TeleportService = None
 
 if TYPE_CHECKING:
+    from vibe.core.loop import Scheduler
     from vibe.core.memory.store import MemoryStore
     from vibe.core.teleport.teleport import TeleportService
     from vibe.core.teleport.types import TeleportPushResponseEvent, TeleportYieldEvent
@@ -378,6 +379,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         self.stats = AgentStats()
         self.approval_callback: ApprovalCallback | None = None
+        # Live scheduler (LoopManager) wired by the interactive app so the
+        # `schedule` tool can enqueue future turns. None in headless mode.
+        self.scheduler: Scheduler | None = None
         # Reason the safety judge deferred the current tool call to the user, if
         # any; read by the approval UI. Set per-decision in _judge_tool_safety.
         self.pending_judge_deferral: str | None = None
@@ -432,6 +436,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self.launch_workflow_callback: Callable[[str, str | None], str] | None = None
         self.workflow_status_callback: (
             Callable[[str | None], list[dict[str, Any]]] | None
+        ) = None
+        self.workflow_stop_callback: (
+            Callable[[str | None, bool], dict[str, Any] | Awaitable[dict[str, Any]]]
+            | None
         ) = None
         self.team_dir_callback: Callable[[], str | None] | None = None
 
@@ -579,6 +587,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         self.approval_callback = callback
+
+    def set_scheduler(self, scheduler: Scheduler) -> None:
+        self.scheduler = scheduler
 
     def set_user_input_callback(self, callback: UserInputCallback) -> None:
         self.user_input_callback = callback
@@ -1784,6 +1795,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         async for item in tool_instance.invoke(
             ctx=InvokeContext(
                 tool_call_id=tool_call.call_id,
+                scheduler=self.scheduler,
                 agent_manager=self.agent_manager,
                 session_dir=self.session_logger.session_dir,
                 entrypoint_metadata=self.entrypoint_metadata,
@@ -1800,6 +1812,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 terminal_emulator=self.terminal_emulator,
                 launch_workflow_callback=self.launch_workflow_callback,
                 workflow_status_callback=self.workflow_status_callback,
+                workflow_stop_callback=self.workflow_stop_callback,
                 team_dir_callback=self.team_dir_callback,
             ),
             **tool_call.args_dict,
@@ -2016,7 +2029,16 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             "permission_required", f"Approval needed for {tool_name}", tool_name
         )
         response, feedback = await self.approval_callback(
-            tool_name, args, tool_call_id, required_permissions
+            tool_name,
+            args,
+            tool_call_id,
+            required_permissions,
+            # Carry the judge's deferral reason (set in _judge_tool_safety) so
+            # the host prompt can show WHY approval is needed even when the
+            # call originated from a workflow/task subagent — the subagent's
+            # loop-local pending_judge_deferral is invisible to the host, so the
+            # note must travel with the callback itself.
+            self.pending_judge_deferral,
         )
 
         match response:

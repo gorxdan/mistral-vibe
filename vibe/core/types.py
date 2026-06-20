@@ -37,6 +37,8 @@ class ScheduledLoop(BaseModel):
     prompt: str
     next_fire_at: float
     created_at: float
+    # Recurring loops re-arm after firing; one-shot loops fire once then drop.
+    recurring: bool = True
 
 
 class Backend(StrEnum):
@@ -521,7 +523,7 @@ class OutputFormat(StrEnum):
 
 
 type ApprovalCallback = Callable[
-    [str, BaseModel, str, list[RequiredPermission] | None],
+    [str, BaseModel, str, list[RequiredPermission] | None, str | None],
     Awaitable[tuple[ApprovalResponse, str | None]],
 ]
 

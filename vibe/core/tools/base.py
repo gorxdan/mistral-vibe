@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
 import functools
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from vibe.core.agents.manager import AgentManager
     from vibe.core.config import VibeConfig
     from vibe.core.hooks.models import HookConfigResult
+    from vibe.core.loop import Scheduler
     from vibe.core.skills.manager import SkillManager
     from vibe.core.telemetry.types import EntrypointMetadata, TerminalEmulator
     from vibe.core.tools.mcp_sampling import MCPSamplingHandler
@@ -47,6 +48,10 @@ class InvokeContext:
 
     tool_call_id: str
     approval_callback: ApprovalCallback | None = field(default=None)
+    # Live scheduler (LoopManager) so the `schedule` tool can enqueue a future
+    # turn instead of blocking on `sleep`. None when no scheduler is running
+    # (e.g. headless), in which case the tool reports scheduling unavailable.
+    scheduler: Scheduler | None = field(default=None)
     agent_manager: AgentManager | None = field(default=None)
     user_input_callback: UserInputCallback | None = field(default=None)
     sampling_callback: MCPSamplingHandler | None = field(default=None)
@@ -68,10 +73,22 @@ class InvokeContext:
     workflow_status_callback: Callable[[str | None], list[dict[str, Any]]] | None = (
         field(default=None)
     )
+    # Stops one run (run_id) or all runs (all_runs=True). Async because
+    # WorkflowRunner.stop awaits the cancelled task. Returns a dict with
+    # stopped / stopped_run_ids / message. Wired to the WorkflowRunner.
+    workflow_stop_callback: (
+        Callable[[str | None, bool], Awaitable[dict[str, Any]]] | None
+    ) = field(default=None)
     # Returns the active team directory path (G3), or None when no team is
     # active. Lets the lead bind the shared Mailbox/TaskStore to message
     # teammates — the teammate-only `team` tool is unavailable to the lead.
     team_dir_callback: Callable[[], str | None] | None = field(default=None)
+    # Resolves the host's LLM safety judge (or None when disabled). Used by the
+    # workflow runtime to judge each isolated worker's prompt at spawn time —
+    # the worker subprocess runs auto-approved, so the host judge is the gate
+    # for its planned work. A factory (not the judge itself) so the runtime
+    # picks up mid-session config changes (e.g. judge model swap).
+    safety_judge_factory: Callable[[], Any] | None = field(default=None)
 
 
 class ToolError(Exception):
