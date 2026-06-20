@@ -1630,36 +1630,35 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 config_perm = self.tool_manager.get_tool_config(tool_name).permission
                 ctx = PermissionContext(permission=config_perm)
 
-            match ctx.permission:
-                case ToolPermission.ALWAYS:
-                    return ToolDecision(
-                        verdict=ToolExecutionResponse.EXECUTE,
-                        approval_type=ToolPermission.ALWAYS,
-                    )
-                case ToolPermission.NEVER:
-                    return ToolDecision(
-                        verdict=ToolExecutionResponse.SKIP,
-                        approval_type=ToolPermission.NEVER,
-                        feedback=ctx.reason
-                        or f"Tool '{tool_name}' is permanently disabled",
-                    )
-                case _:
-                    uncovered = [
-                        rp
-                        for rp in ctx.required_permissions
-                        if not self._permission_store.covers(tool_name, rp)
-                    ]
-                    if ctx.required_permissions and not uncovered:
-                        return ToolDecision(
-                            verdict=ToolExecutionResponse.EXECUTE,
-                            approval_type=ToolPermission.ALWAYS,
-                        )
-                    judged = await self._judge_tool_safety(tool_name, args, uncovered)
-                    if judged is not None:
-                        return judged
-                    return await self._ask_approval(
-                        tool_name, args, tool_call_id, uncovered
-                    )
+            if ctx.permission == ToolPermission.ALWAYS:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.EXECUTE,
+                    approval_type=ToolPermission.ALWAYS,
+                )
+            if ctx.permission == ToolPermission.NEVER:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.SKIP,
+                    approval_type=ToolPermission.NEVER,
+                    feedback=ctx.reason or f"Tool '{tool_name}' is permanently disabled",
+                )
+            uncovered = [
+                rp
+                for rp in ctx.required_permissions
+                if not self._permission_store.covers(tool_name, rp)
+            ]
+            if ctx.required_permissions and not uncovered:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.EXECUTE,
+                    approval_type=ToolPermission.ALWAYS,
+                )
+
+        # Lock released: the safety-judge LLM call and human approval are slow;
+        # holding the permission lock across them would serialize every parallel
+        # ASK-gated tool. The rule-store reads above happened under the lock.
+        judged = await self._judge_tool_safety(tool_name, args, uncovered)
+        if judged is not None:
+            return judged
+        return await self._ask_approval(tool_name, args, tool_call_id, uncovered)
 
     async def _judge_tool_safety(
         self,
