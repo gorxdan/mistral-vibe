@@ -63,6 +63,15 @@ class InvokeContext:
     launch_workflow_callback: Callable[[str, str | None], str] | None = field(
         default=None
     )
+    # Returns live status for workflow runs (G1): pass a run_id for one run or
+    # None for all. Wired to the WorkflowRunner in the TUI app.
+    workflow_status_callback: Callable[[str | None], list[dict[str, Any]]] | None = (
+        field(default=None)
+    )
+    # Returns the active team directory path (G3), or None when no team is
+    # active. Lets the lead bind the shared Mailbox/TaskStore to message
+    # teammates — the teammate-only `team` tool is unavailable to the lead.
+    team_dir_callback: Callable[[], str | None] | None = field(default=None)
 
 
 class ToolError(Exception):
@@ -146,6 +155,13 @@ class BaseTool[
     )
 
     prompt_path: ClassVar[Path] | None = None
+
+    # Whether the tool only reads state (no side effects on the filesystem,
+    # processes, or external systems). Read-only tools run concurrently within a
+    # turn; non-read-only tools run sequentially to avoid races (e.g. two edits
+    # to the same file). Default False (conservative) so unknown/third-party
+    # tools serialize.
+    read_only: ClassVar[bool] = False
 
     def __init__(
         self, config_getter: Callable[[], ToolConfig], state: ToolState

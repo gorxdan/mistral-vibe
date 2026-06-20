@@ -133,6 +133,7 @@ class WebFetch(
     BaseTool[WebFetchArgs, WebFetchResult, WebFetchConfig, BaseToolState],
     ToolUIData[WebFetchArgs, WebFetchResult],
 ):
+    read_only: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Fetch content from a URL. Converts HTML to markdown for readability."
     )

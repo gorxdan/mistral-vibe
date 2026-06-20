@@ -151,6 +151,7 @@ class Grep(
     BaseTool[GrepArgs, GrepResult, GrepToolConfig, BaseToolState],
     ToolUIData[GrepArgs, GrepResult],
 ):
+    read_only: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Recursively search files for a regex pattern using ripgrep (rg) or grep. "
         "Respects .gitignore and .codeignore files by default when using ripgrep."

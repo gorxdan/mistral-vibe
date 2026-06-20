@@ -92,6 +92,7 @@ class Read(
     BaseTool[ReadArgs, ReadResult, ReadConfig, ReadState],
     ToolUIData[ReadArgs, ReadResult],
 ):
+    read_only: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Read a text file with line numbers. "
         "Results are formatted with line number prefixes for easy reference."

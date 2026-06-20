@@ -385,6 +385,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._pending_injected_messages: list[LLMMessage] = []
         self._response_format: dict[str, Any] | None = None
         self.launch_workflow_callback: Callable[[str, str | None], str] | None = None
+        self.workflow_status_callback: (
+            Callable[[str | None], list[dict[str, Any]]] | None
+        ) = None
+        self.team_dir_callback: Callable[[], str | None] | None = None
 
         self.experiment_manager = ExperimentManager(
             client=RemoteEvalClient.from_settings(
@@ -1101,8 +1105,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         finally:
             # Fold in any messages staged after the loop's last drain (e.g. a
-            # double-enter inject that landed during the post-turn hooks). They
-            # become injected context for the next turn instead of being lost.
+            # double-enter inject that landed during the post-turn hooks) so
+            # they become injected context for the next turn instead of being
+            # lost. The save runs on every exit (including the middleware-STOP
+            # and user-cancelled return paths above, which skip the per-turn
+            # save at the top of the loop).
             self._drain_pending_injections()
             await self._save_messages()
 
@@ -1260,15 +1267,32 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _run_tools_concurrently(
         self, tool_calls: list[ResolvedToolCall]
     ) -> AsyncGenerator[ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent]:
-        """Execute multiple tool calls concurrently, yielding events as they arrive."""
+        """Execute a batch of tool calls, yielding events as they arrive.
+
+        Read-only tools (``tool_class.read_only``) run concurrently. Tools with
+        side effects run sequentially (in model-emitted order) so that, e.g.,
+        two edits to the same file cannot interleave. The mutating chain runs
+        concurrently with the read-only pool.
+        """
         queue: asyncio.Queue[
             ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent | None
         ] = asyncio.Queue()
 
+        readers = [tc for tc in tool_calls if getattr(tc.tool_class, "read_only", False)]
+        writers = [
+            tc for tc in tool_calls if not getattr(tc.tool_class, "read_only", False)
+        ]
+
+        async def _run_writers_sequentially() -> None:
+            for tc in writers:
+                await self._execute_tool_to_queue(tc, queue)
+
         tasks = [
             asyncio.create_task(self._execute_tool_to_queue(tc, queue))
-            for tc in tool_calls
+            for tc in readers
         ]
+        if writers:
+            tasks.append(asyncio.create_task(_run_writers_sequentially()))
 
         async def _signal_when_all_done() -> None:
             try:
@@ -1462,6 +1486,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 session_id=self.session_id,
                 terminal_emulator=self.terminal_emulator,
                 launch_workflow_callback=self.launch_workflow_callback,
+                workflow_status_callback=self.workflow_status_callback,
+                team_dir_callback=self.team_dir_callback,
             ),
             **tool_call.args_dict,
         ):

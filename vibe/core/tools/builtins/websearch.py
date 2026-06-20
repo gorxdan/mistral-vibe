@@ -67,6 +67,7 @@ class WebSearch(
     BaseTool[WebSearchArgs, WebSearchResult, WebSearchConfig, BaseToolState],
     ToolUIData[WebSearchArgs, WebSearchResult],
 ):
+    read_only: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Search the web for current information. Uses a local SearXNG instance when configured, "
         "otherwise falls back to Mistral's web search."
