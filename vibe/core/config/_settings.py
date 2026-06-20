@@ -288,6 +288,26 @@ class MicrocompactConfig(BaseSettings):
     max_blocks_per_turn: int = 1  # cache-preservation rate limit
 
 
+class SandboxConfig(BaseModel):
+    """OS-level sandbox for the bash tool (opt-in, defense-in-depth).
+
+    A plain BaseModel (not BaseSettings): a security control must NOT be
+    silently driven by stray environment variables. Default disabled → bash
+    behaves exactly as before.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    write_dirs: list[str] = Field(default_factory=list)
+    allow_network: bool = True
+    scrub_env: bool = True
+    env_passthrough: list[str] = Field(default_factory=list)
+    require_backend: bool = False  # fail closed if no sandbox backend available
+    backend: str = "auto"  # auto | bwrap | unshare | sandbox-exec | none
+    extra_args: list[str] = Field(default_factory=list)
+
+
 class ContextShapingConfig(BaseSettings):
     """Pre-model context-shaper pipeline (runs before auto-compaction)."""
 

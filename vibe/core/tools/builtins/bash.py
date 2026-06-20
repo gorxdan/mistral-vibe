@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from functools import lru_cache
+import logging
 import os
 from pathlib import Path
 from typing import ClassVar, Literal, final
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field
 from tree_sitter import Language, Node, Parser
 import tree_sitter_bash as tsbash
 
+from vibe.core.config import SandboxConfig
 from vibe.core.scratchpad import is_scratchpad_path
 from vibe.core.tools.arity import build_session_pattern
 from vibe.core.tools.base import (
@@ -26,6 +28,12 @@ from vibe.core.tools.permissions import (
     PermissionScope,
     RequiredPermission,
 )
+from vibe.core.tools.sandbox import (
+    SandboxSpec,
+    build_sandbox_command,
+    detect_backend,
+    scrub_env,
+)
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from vibe.core.tools.utils import is_path_within_workdir
 from vibe.core.types import ToolResultEvent, ToolStreamEvent
@@ -36,6 +44,17 @@ from vibe.core.utils.io import decode_safe
 @lru_cache(maxsize=1)
 def _get_parser() -> Parser:
     return Parser(Language(tsbash.language()))
+
+
+logger = logging.getLogger(__name__)
+_sandbox_unavailable_warned = False
+
+
+def _build_sandbox_env(config: SandboxConfig) -> dict[str, str]:
+    base = _get_base_env()
+    if not config.scrub_env:
+        return base
+    return scrub_env(base, config.env_passthrough)
 
 
 def _extract_commands(command: str) -> list[str]:
@@ -263,6 +282,10 @@ class BashToolConfig(BaseToolConfig):
     sensitive_patterns: list[str] = Field(
         default=["sudo"],
         description="Command prefixes that always ASK regardless of arity approval.",
+    )
+    sandbox: SandboxConfig = Field(
+        default_factory=SandboxConfig,
+        description="OS-level sandbox for spawned commands (opt-in; default off).",
     )
 
 
@@ -500,6 +523,55 @@ class Bash(
             command=command, stdout=stdout, stderr=stderr, returncode=returncode
         )
 
+    def _resolve_sandbox(
+        self, ctx: InvokeContext | None, command: str
+    ) -> tuple[list[str] | None, Path | None, dict[str, str]]:
+        """Resolve the sandbox wrapper for a command.
+
+        Returns (argv_prefix, seatbelt_profile_path, env). argv_prefix is None
+        when sandboxing is disabled or no backend is available (run as today).
+        """
+        sb = self.config.sandbox
+        if not sb.enabled:
+            return None, None, _get_base_env()
+
+        write_roots: list[Path] = [Path.cwd()]
+        if ctx is not None and ctx.scratchpad_dir is not None:
+            write_roots.append(Path(ctx.scratchpad_dir))
+        write_roots += [Path(d) for d in sb.write_dirs]
+        # Widen writes to any out-of-tree dir the command references — those were
+        # already surfaced to (and approved by) the permission gate.
+        for d in _collect_outside_dirs(_extract_commands(command)):
+            write_roots.append(Path(d))
+
+        backend = detect_backend(sb.backend)
+        if backend == "none":
+            if sb.require_backend:
+                raise ToolError(
+                    "Sandbox required (require_backend=true) but no sandbox "
+                    "backend is available on this platform."
+                )
+            global _sandbox_unavailable_warned
+            if not _sandbox_unavailable_warned:
+                logger.warning(
+                    "bash sandbox enabled but no backend available; "
+                    "running unsandboxed"
+                )
+                _sandbox_unavailable_warned = True
+            return None, None, _get_base_env()
+
+        env = _build_sandbox_env(sb)
+        spec = SandboxSpec(
+            write_roots=write_roots,
+            allow_network=sb.allow_network,
+            env=env,
+            extra_args=sb.extra_args,
+        )
+        argv, _name, profile = build_sandbox_command(spec, backend)
+        if argv is None:
+            return None, None, _get_base_env()
+        return argv, profile, env
+
     async def run(
         self, args: BashArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | BashResult, None]:
@@ -507,21 +579,59 @@ class Bash(
         max_bytes = self.config.max_output_bytes
 
         proc = None
+        profile_path: Path | None = None
         try:
             # start_new_session is Unix-only, on Windows it's ignored
             kwargs: dict[Literal["start_new_session"], bool] = (
                 {} if is_windows() else {"start_new_session": True}
             )
 
-            proc = await asyncio.create_subprocess_shell(
-                args.command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.DEVNULL,
-                env=_get_base_env(),
-                executable=_get_shell_executable(),
-                **kwargs,
+            sandbox_argv, profile_path, run_env = self._resolve_sandbox(
+                ctx, args.command
             )
+            if sandbox_argv is not None:
+                shell_exe = _get_shell_executable() or "/bin/sh"
+                argv = [*sandbox_argv, shell_exe, "-c", args.command]
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *argv,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        stdin=asyncio.subprocess.DEVNULL,
+                        env=run_env,
+                        **kwargs,
+                    )
+                except (FileNotFoundError, OSError) as exc:
+                    # Wrapper binary missing / namespace creation refused. Fail
+                    # closed only if the user demanded a sandbox.
+                    if self.config.sandbox.require_backend:
+                        raise ToolError(
+                            f"Sandbox wrapper failed to start: {exc}"
+                        ) from exc
+                    logger.warning(
+                        "sandbox wrapper failed to start (%s); "
+                        "falling back unsandboxed",
+                        exc,
+                    )
+                    proc = await asyncio.create_subprocess_shell(
+                        args.command,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        stdin=asyncio.subprocess.DEVNULL,
+                        env=_get_base_env(),
+                        executable=_get_shell_executable(),
+                        **kwargs,
+                    )
+            else:
+                proc = await asyncio.create_subprocess_shell(
+                    args.command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    env=run_env,
+                    executable=_get_shell_executable(),
+                    **kwargs,
+                )
 
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -558,3 +668,8 @@ class Bash(
         finally:
             if proc is not None:
                 await kill_async_subprocess(proc)
+            if profile_path is not None:
+                try:
+                    profile_path.unlink()
+                except OSError:
+                    pass
