@@ -25,8 +25,7 @@ def _result(
     summary: str = "Workflow completed: 3 agents",
 ) -> WorkflowResult:
     run = WorkflowRun(
-        phases=[PhaseReport(name="default", agent_results=agent_results)],
-        status=status,
+        phases=[PhaseReport(name="default", agent_results=agent_results)], status=status
     )
     return WorkflowResult(return_value=return_value, run=run, summary=summary)
 
@@ -94,6 +93,48 @@ def test_strip_code_fences_passthrough_no_fence() -> None:
     assert _strip_code_fences('{"a": 1}') == '{"a": 1}'
 
 
+# --- Regression for the wf-1 root cause: the previous _strip_code_fences only
+# stripped a fence when it was the very first token, so any leading prose made
+# json.loads fail at char 0 ("Expecting value: line 1 column 1 (char 0)") and
+# the run exhausted its schema retries, discarding completed work. All three
+# real failures had a prose prefix before the JSON. ---
+def test_strip_code_fences_prose_then_fenced_json() -> None:
+    text = (
+        "Based on my trace of commit 33f894d, here are the findings.\n"
+        '```json\n{"a": 1}\n```'
+    )
+    assert _strip_code_fences(text) == '{"a": 1}'
+
+
+def test_strip_code_fences_prose_then_unfenced_json() -> None:
+    text = 'I\'ll start by examining the code.\n{"a": 1}\nDone.'
+    assert _strip_code_fences(text) == '{"a": 1}'
+
+
+def test_strip_code_fences_trailing_prose_after_fenced_json() -> None:
+    text = '```json\n{"a": 1}\n```\nLet me know if you need more detail.'
+    assert _strip_code_fences(text) == '{"a": 1}'
+
+
+def test_strip_code_fences_brace_inside_string_is_not_a_close() -> None:
+    text = 'notes\n{"msg": "contains a } char"}'
+    assert _strip_code_fences(text) == '{"msg": "contains a } char"}'
+
+
+def test_strip_code_fences_nested_objects_and_arrays() -> None:
+    payload = '{"findings": [{"severity": "high"}, {"severity": "low"}]}'
+    assert _strip_code_fences("Preface.\n" + payload + "\nTrailer.") == payload
+
+
+def test_strip_code_fences_no_json_returns_as_is() -> None:
+    # No JSON anywhere: return the original so json.loads raises a real error
+    # (the caller surfaces it) instead of the function guessing.
+    assert (
+        _strip_code_fences("just prose, nothing to parse")
+        == "just prose, nothing to parse"
+    )
+
+
 @pytest.mark.asyncio
 async def test_fenced_json_response_now_passes_schema() -> None:
     # Regression for the wf-3 root cause: a schema-tagged agent that wraps its
@@ -104,7 +145,9 @@ async def test_fenced_json_response_now_passes_schema() -> None:
         async def act(
             self, prompt: str, *, response_format: Any = None
         ) -> AsyncGenerator[AssistantEvent, None]:
-            yield AssistantEvent(content='```json\n{"answer": "42"}\n```', message_id="a1")
+            yield AssistantEvent(
+                content='```json\n{"answer": "42"}\n```', message_id="a1"
+            )
 
         class stats:  # type: ignore[no-redef]
             session_prompt_tokens = 10
@@ -157,10 +200,7 @@ async def test_strip_unknown_drops_extra_properties_by_default() -> None:
 
 @pytest.mark.asyncio
 async def test_spawn_agent_strips_unknown_properties_from_agent_output() -> None:
-    schema = {
-        "type": "object",
-        "properties": {"answer": {"type": "string"}},
-    }
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
 
     class _Loop:
         async def act(
@@ -243,7 +283,10 @@ async def test_schema_exhaustion_records_field_level_errors_on_agent_result() ->
 
     # The recorded AgentResult (what workflow_results / delivery read) must too.
     recorded = [
-        ar for p in rt._phases.values() for ar in p.agent_results if ar.label == "finder"
+        ar
+        for p in rt._phases.values()
+        for ar in p.agent_results
+        if ar.label == "finder"
     ]
     assert recorded, "agent was finalized onto a phase"
     assert recorded[0].schema_errors, "field-level errors must survive to the record"

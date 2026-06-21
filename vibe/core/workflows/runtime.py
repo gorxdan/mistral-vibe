@@ -9,6 +9,7 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+import re
 import time
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
@@ -89,20 +90,69 @@ DEFAULT_BUDGET_TOTAL = None
 DEFAULT_SCHEMA_RETRIES = 2
 
 
+_JSON_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*\n?(.*?)```", re.DOTALL)
+
+
 def _strip_code_fences(text: str) -> str:
-    """Strip a surrounding markdown code fence so schema-tagged agent responses
-    wrapped in ```...``` (or ```json...```) still parse. A leading fence is the
-    most common cause of spurious schema-validation failure, which previously
-    discarded completed agent work before the delivery-recovery path existed.
+    """Extract the JSON payload from a schema-tagged agent response.
+
+    Agents routinely narrate before the payload ("Based on my trace..."), with or
+    without a code fence. Try, in order: any fenced block anywhere in the text,
+    then the first balanced ``{...}``/``[...]`` span (string/escape-aware). A
+    no-JSON response returns as-is so the caller's ``json.loads`` reports a real
+    error instead of a misleading char-0 one.
     """
     s = text.strip()
-    if s.startswith("```"):
-        first_nl = s.find("\n")
-        if first_nl != -1:
-            s = s[first_nl + 1 :]
-        if s.endswith("```"):
-            s = s[:-3]
-    return s.strip()
+    for match in _JSON_FENCE_RE.finditer(s):
+        candidate = match.group(1).strip()
+        if candidate.startswith(("{", "[")):
+            return candidate
+    balanced = _first_json_span(s)
+    if balanced is not None:
+        return balanced
+    return s
+
+
+def _first_json_span(s: str) -> str | None:
+    """First balanced ``{...}``/``[...]`` substring of ``s``.
+
+    String/escape-aware so braces inside literals or prose do not skew depth.
+    Returns None with no opener; returns the opener's tail when unbalanced so
+    ``json.loads`` reports a meaningful error.
+    """
+    start = -1
+    opener = ""
+    closer = ""
+    for i, ch in enumerate(s):
+        if ch in "{[":
+            start = i
+            opener = ch
+            closer = "}" if ch == "{" else "]"
+            break
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return s[start : i + 1]
+    return s[start:]
 
 
 class _AwaitableNoop:
