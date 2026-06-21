@@ -244,3 +244,35 @@ async def test_review_short_circuits_on_no_changed_files() -> None:
     assert result.run.status.value == "completed"
     assert result.return_value["candidates"] == 0
     assert rt._agent_count == 1  # only the scope agent ran
+
+
+def test_verify_contract_discovered() -> None:
+    mgr = WorkflowManager(lambda: _make_config())
+    assert "verify-contract" in mgr.get_workflow_names()
+    info = mgr.get_workflow("verify-contract")
+    assert info is not None
+    assert info.is_bundled is True
+    assert "async def main" in info.source
+    assert info.description
+
+
+def test_verify_contract_gate_clean() -> None:
+    mgr = WorkflowManager(lambda: _make_config())
+    info = mgr.get_workflow("verify-contract")
+    assert info is not None
+    violations = check_script(info.source)
+    assert not violations, f"violations: {[str(v) for v in violations]}"
+
+
+async def test_verify_contract_requires_task_and_contract() -> None:
+    mgr = WorkflowManager(lambda: _make_config())
+    info = mgr.get_workflow("verify-contract")
+    assert info is not None
+    rt = WorkflowRuntime(
+        agent_loop_factory=_factory("{}"),
+        max_agents=100,
+        budget_total=1_000_000,
+    )
+    result = await rt.run(info.source, args={"task": "do something"})
+    assert result.return_value["gate"] == "error"
+    assert rt._agent_count == 0
