@@ -6,7 +6,13 @@ import pytest
 
 from tests.mock.utils import collect_result
 from vibe.core.tools.base import BaseToolState, ToolError
-from vibe.core.tools.builtins.grep import Grep, GrepArgs, GrepBackend, GrepToolConfig
+from vibe.core.tools.builtins.grep import (
+    Grep,
+    GrepArgs,
+    GrepBackend,
+    GrepOutputMode,
+    GrepToolConfig,
+)
 
 
 @pytest.fixture
@@ -367,3 +373,223 @@ class TestRipgrepBackend:
         )
         assert "included.py" in result_without_ignore.matches
         assert "ignored_by_rg/file.py" in result_without_ignore.matches
+
+
+@pytest.mark.asyncio
+async def test_content_mode_is_default_and_back_compatible(grep, tmp_path):
+    (tmp_path / "a.py").write_text("def hello():\n    pass\n")
+
+    result = await collect_result(grep.run(GrepArgs(pattern="hello")))
+
+    assert result.output_mode == GrepOutputMode.CONTENT
+    assert result.match_count == 1
+    assert result.parsed_matches and result.parsed_matches[0].line == 1
+
+
+@pytest.mark.asyncio
+async def test_output_mode_files_with_matches(grep, tmp_path):
+    (tmp_path / "a.py").write_text("needle\n")
+    (tmp_path / "b.py").write_text("needle here too\n")
+    (tmp_path / "c.py").write_text("nothing\n")
+
+    result = await collect_result(
+        grep.run(
+            GrepArgs(pattern="needle", output_mode=GrepOutputMode.FILES_WITH_MATCHES)
+        )
+    )
+
+    assert result.match_count == 2
+    assert "a.py" in result.matches
+    assert "b.py" in result.matches
+    assert "c.py" not in result.matches
+    assert result.parsed_matches == []
+
+
+@pytest.mark.asyncio
+async def test_output_mode_count(grep, tmp_path):
+    (tmp_path / "a.py").write_text("hit\nhit\nhit\n")
+    (tmp_path / "b.py").write_text("nope\n")
+
+    result = await collect_result(
+        grep.run(GrepArgs(pattern="hit", output_mode=GrepOutputMode.COUNT))
+    )
+
+    assert result.match_count == 1
+    assert "a.py" in result.matches
+    assert "3" in result.matches
+    assert "b.py" not in result.matches
+
+
+@pytest.mark.asyncio
+async def test_context_after_includes_following_line(grep, tmp_path):
+    (tmp_path / "a.py").write_text("alpha\nNEEDLE\nbravo\ncharlie\n")
+
+    result = await collect_result(grep.run(GrepArgs(pattern="NEEDLE", context_after=1)))
+
+    assert "NEEDLE" in result.matches
+    assert "bravo" in result.matches
+    assert "charlie" not in result.matches
+
+
+@pytest.mark.asyncio
+async def test_context_before_includes_preceding_line(grep, tmp_path):
+    (tmp_path / "a.py").write_text("alpha\nbravo\nNEEDLE\ncharlie\n")
+
+    result = await collect_result(
+        grep.run(GrepArgs(pattern="NEEDLE", context_before=1))
+    )
+
+    assert "bravo" in result.matches
+    assert "alpha" not in result.matches
+
+
+@pytest.mark.asyncio
+async def test_context_around_includes_both_sides(grep, tmp_path):
+    (tmp_path / "a.py").write_text("alpha\nbravo\nNEEDLE\ncharlie\ndelta\n")
+
+    result = await collect_result(grep.run(GrepArgs(pattern="NEEDLE", context=1)))
+
+    assert "bravo" in result.matches
+    assert "charlie" in result.matches
+    assert "alpha" not in result.matches
+    assert "delta" not in result.matches
+
+
+@pytest.mark.asyncio
+async def test_context_rejected_in_non_content_mode(grep):
+    with pytest.raises(ToolError) as err:
+        await collect_result(
+            grep.run(
+                GrepArgs(
+                    pattern="x",
+                    output_mode=GrepOutputMode.FILES_WITH_MATCHES,
+                    context=2,
+                )
+            )
+        )
+
+    assert "content output mode" in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_head_limit_caps_output(grep, tmp_path):
+    (tmp_path / "a.py").write_text("\n".join("match" for _ in range(20)) + "\n")
+
+    result = await collect_result(grep.run(GrepArgs(pattern="match", head_limit=3)))
+
+    assert result.match_count == 3
+    assert result.was_truncated
+
+
+@pytest.mark.asyncio
+async def test_glob_filter_limits_to_matching_files(grep, tmp_path):
+    (tmp_path / "a.py").write_text("target\n")
+    (tmp_path / "b.js").write_text("target\n")
+
+    result = await collect_result(grep.run(GrepArgs(pattern="target", glob="*.py")))
+
+    assert "a.py" in result.matches
+    assert "b.js" not in result.matches
+
+
+@pytest.mark.asyncio
+async def test_case_insensitive_overrides_smart_case(grep, tmp_path):
+    (tmp_path / "a.py").write_text("Hello\nHELLO\nhello\n")
+
+    result = await collect_result(
+        grep.run(GrepArgs(pattern="Hello", case_insensitive=True))
+    )
+
+    assert result.match_count == 3
+
+
+@pytest.mark.skipif(not shutil.which("rg"), reason="ripgrep not available")
+@pytest.mark.asyncio
+async def test_type_filter_ripgrep(grep, tmp_path):
+    (tmp_path / "a.py").write_text("target\n")
+    (tmp_path / "a.md").write_text("target\n")
+
+    result = await collect_result(grep.run(GrepArgs(pattern="target", type="py")))
+
+    assert "a.py" in result.matches
+    assert "a.md" not in result.matches
+
+
+@pytest.mark.skipif(not shutil.which("rg"), reason="ripgrep not available")
+@pytest.mark.asyncio
+async def test_multiline_matches_across_lines(grep, tmp_path):
+    (tmp_path / "a.py").write_text("foo\nbar\n")
+
+    without = await collect_result(grep.run(GrepArgs(pattern="foo.bar")))
+    assert without.match_count == 0
+
+    with_multiline = await collect_result(
+        grep.run(GrepArgs(pattern="foo.bar", multiline=True))
+    )
+    assert with_multiline.match_count >= 1
+
+
+@pytest.mark.skipif(not shutil.which("grep"), reason="GNU grep not available")
+class TestGnuGrepEnrichment:
+    @pytest.mark.asyncio
+    async def test_type_raises_on_gnu_backend(self, grep_gnu_only, tmp_path):
+        (tmp_path / "a.py").write_text("x\n")
+
+        with pytest.raises(ToolError) as err:
+            await collect_result(grep_gnu_only.run(GrepArgs(pattern="x", type="py")))
+
+        assert "ripgrep" in str(err.value)
+
+    @pytest.mark.asyncio
+    async def test_multiline_raises_on_gnu_backend(self, grep_gnu_only, tmp_path):
+        (tmp_path / "a.py").write_text("x\n")
+
+        with pytest.raises(ToolError) as err:
+            await collect_result(
+                grep_gnu_only.run(GrepArgs(pattern="x", multiline=True))
+            )
+
+        assert "ripgrep" in str(err.value)
+
+    @pytest.mark.asyncio
+    async def test_glob_filter_on_gnu_backend(self, grep_gnu_only, tmp_path):
+        (tmp_path / "a.py").write_text("target\n")
+        (tmp_path / "b.js").write_text("target\n")
+
+        result = await collect_result(
+            grep_gnu_only.run(GrepArgs(pattern="target", glob="*.py"))
+        )
+
+        assert "a.py" in result.matches
+        assert "b.js" not in result.matches
+
+    @pytest.mark.asyncio
+    async def test_files_with_matches_on_gnu_backend(self, grep_gnu_only, tmp_path):
+        (tmp_path / "a.py").write_text("needle\n")
+        (tmp_path / "b.py").write_text("nope\n")
+
+        result = await collect_result(
+            grep_gnu_only.run(
+                GrepArgs(
+                    pattern="needle", output_mode=GrepOutputMode.FILES_WITH_MATCHES
+                )
+            )
+        )
+
+        assert result.match_count == 1
+        assert "a.py" in result.matches
+        assert "b.py" not in result.matches
+
+    @pytest.mark.asyncio
+    async def test_count_on_gnu_backend(self, grep_gnu_only, tmp_path):
+        (tmp_path / "a.py").write_text("hit\nhit\n")
+        (tmp_path / "b.py").write_text("nope\n")
+
+        result = await collect_result(
+            grep_gnu_only.run(GrepArgs(pattern="hit", output_mode=GrepOutputMode.COUNT))
+        )
+
+        assert result.match_count == 1
+        assert "a.py" in result.matches
+        assert "2" in result.matches
+        assert "b.py" not in result.matches

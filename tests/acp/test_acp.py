@@ -556,7 +556,7 @@ class TestSessionUpdates:
             assert tool_call.params.update.title == "Grepping 'auth'"
             assert (
                 tool_call.params.update.raw_input
-                == '{"pattern":"auth","path":".","max_matches":null,"use_default_ignore":true}'
+                == '{"pattern":"auth","path":".","output_mode":"content","glob":null,"type":null,"case_insensitive":false,"context":0,"context_before":0,"context_after":0,"multiline":false,"head_limit":null,"max_matches":null,"use_default_ignore":true}'
             )
 
 
@@ -598,7 +598,7 @@ class TestToolCallStructure:
                     ToolCall(
                         function=FunctionCall(
                             name="grep",
-                            arguments='{"pattern":"auth","path":".","max_matches":null,"use_default_ignore":true}',
+                            arguments='{"pattern":"auth","path":".","output_mode":"content","glob":null,"type":null,"case_insensitive":false,"context":0,"context_before":0,"context_after":0,"multiline":false,"head_limit":null,"max_matches":null,"use_default_ignore":true}',
                         ),
                         type="function",
                         index=0,
@@ -657,7 +657,7 @@ class TestToolCallStructure:
                     ToolCall(
                         function=FunctionCall(
                             name="grep",
-                            arguments='{"pattern":"auth","path":".","max_matches":null,"use_default_ignore":true}',
+                            arguments='{"pattern":"auth","path":".","output_mode":"content","glob":null,"type":null,"case_insensitive":false,"context":0,"context_before":0,"context_after":0,"multiline":false,"head_limit":null,"max_matches":null,"use_default_ignore":true}',
                         ),
                         type="function",
                         index=0,
@@ -719,7 +719,7 @@ class TestToolCallStructure:
                     ToolCall(
                         function=FunctionCall(
                             name="grep",
-                            arguments='{"pattern":"auth","path":".","max_matches":null,"use_default_ignore":true}',
+                            arguments='{"pattern":"auth","path":".","output_mode":"content","glob":null,"type":null,"case_insensitive":false,"context":0,"context_before":0,"context_after":0,"multiline":false,"head_limit":null,"max_matches":null,"use_default_ignore":true}',
                         ),
                         type="function",
                         index=0,
@@ -822,7 +822,7 @@ class TestToolCallStructure:
                     ToolCall(
                         function=FunctionCall(
                             name="grep",
-                            arguments='{"pattern":"auth","path":".","max_matches":null,"use_default_ignore":true}',
+                            arguments='{"pattern":"auth","path":".","output_mode":"content","glob":null,"type":null,"case_insensitive":false,"context":0,"context_before":0,"context_after":0,"multiline":false,"head_limit":null,"max_matches":null,"use_default_ignore":true}',
                         ),
                         type="function",
                         index=0,

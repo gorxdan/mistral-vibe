@@ -33,6 +33,12 @@ class GrepBackend(StrEnum):
     GNU_GREP = auto()
 
 
+class GrepOutputMode(StrEnum):
+    CONTENT = auto()
+    FILES_WITH_MATCHES = auto()
+    COUNT = auto()
+
+
 class GrepToolConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ALWAYS
     sensitive_patterns: list[str] = Field(
@@ -86,6 +92,45 @@ class GrepToolConfig(BaseToolConfig):
 class GrepArgs(BaseModel):
     pattern: str
     path: str = "."
+    output_mode: GrepOutputMode = Field(
+        default=GrepOutputMode.CONTENT,
+        description=(
+            "content = file:line:text; files_with_matches = matching filenames; "
+            "count = file:count."
+        ),
+    )
+    glob: str | None = Field(
+        default=None,
+        description="Only search files matching this glob, e.g. '*.py' or '*.{ts,tsx}'.",
+    )
+    type: str | None = Field(
+        default=None,
+        description="Only search files of this ripgrep type, e.g. 'py' (ripgrep only).",
+    )
+    case_insensitive: bool = Field(
+        default=False, description="Case-insensitive search (-i)."
+    )
+    context: int = Field(
+        default=0,
+        ge=0,
+        description="Lines of context around each match (-C). Content mode only.",
+    )
+    context_before: int = Field(
+        default=0,
+        ge=0,
+        description="Lines of context before each match (-B). Content mode only.",
+    )
+    context_after: int = Field(
+        default=0,
+        ge=0,
+        description="Lines of context after each match (-A). Content mode only.",
+    )
+    multiline: bool = Field(
+        default=False, description="Allow patterns to span lines (ripgrep only)."
+    )
+    head_limit: int | None = Field(
+        default=None, ge=1, description="Cap output to the first N lines/files."
+    )
     max_matches: int | None = Field(
         default=None, description="Override the default maximum number of matches."
     )
@@ -137,14 +182,27 @@ class GrepResult(BaseModel):
     was_truncated: bool = Field(
         description="True if output was cut short by max_matches or max_output_bytes."
     )
+    output_mode: GrepOutputMode = GrepOutputMode.CONTENT
 
     @property
     def parsed_matches(self) -> list[GrepMatch]:
+        if self.output_mode is not GrepOutputMode.CONTENT:
+            return []
         results: list[GrepMatch] = []
         for line in self.matches.splitlines():
             if match := GrepMatch.from_output_line(line):
                 results.append(match)
         return results
+
+
+def _is_zero_count(line: str) -> bool:
+    return line.rsplit(":", 1)[-1] == "0"
+
+
+def _result_noun(output_mode: GrepOutputMode, count: int) -> str:
+    if output_mode is GrepOutputMode.CONTENT:
+        return "matches" if count != 1 else "match"
+    return "files" if count != 1 else "file"
 
 
 class Grep(
@@ -188,12 +246,20 @@ class Grep(
         stdout = await self._execute_search(cmd)
 
         yield self._parse_output(
-            stdout, args.max_matches or self.config.default_max_matches
+            stdout,
+            args.max_matches or self.config.default_max_matches,
+            output_mode=args.output_mode,
+            head_limit=args.head_limit,
         )
 
     def _validate_args(self, args: GrepArgs) -> None:
         if not args.pattern.strip():
             raise ToolError("Empty search pattern provided.")
+
+        if args.output_mode is not GrepOutputMode.CONTENT and (
+            args.context or args.context_before or args.context_after
+        ):
+            raise ToolError("Context lines are only supported in content output mode.")
 
         path_obj = Path(args.path).expanduser()
         if not path_obj.is_absolute():
@@ -236,18 +302,26 @@ class Grep(
     ) -> list[str]:
         max_matches = args.max_matches or self.config.default_max_matches
 
-        cmd = [
-            "rg",
-            "--line-number",
-            "--no-heading",
-            "--with-filename",
-            "--smart-case",
-            "--no-binary",
-            # Request one extra to detect truncation
-            "--max-count",
-            str(max_matches + 1),
-        ]
+        cmd = ["rg", "--no-heading", "--with-filename", "--no-binary"]
+        cmd.append("--ignore-case" if args.case_insensitive else "--smart-case")
 
+        match args.output_mode:
+            case GrepOutputMode.CONTENT:
+                cmd.append("--line-number")
+                cmd.extend(self._ripgrep_context_flags(args))
+                # Request one extra to detect truncation
+                cmd.extend(["--max-count", str(max_matches + 1)])
+            case GrepOutputMode.FILES_WITH_MATCHES:
+                cmd.append("--files-with-matches")
+            case GrepOutputMode.COUNT:
+                cmd.append("--count")
+
+        if args.multiline:
+            cmd.extend(["--multiline", "--multiline-dotall"])
+        if args.type is not None:
+            cmd.extend(["--type", args.type])
+        if args.glob is not None:
+            cmd.extend(["--glob", args.glob])
         if not args.use_default_ignore:
             cmd.append("--no-ignore")
 
@@ -258,15 +332,48 @@ class Grep(
 
         return cmd
 
+    def _ripgrep_context_flags(self, args: GrepArgs) -> list[str]:
+        if args.context:
+            return ["--context", str(args.context)]
+        flags: list[str] = []
+        if args.context_before:
+            flags.extend(["--before-context", str(args.context_before)])
+        if args.context_after:
+            flags.extend(["--after-context", str(args.context_after)])
+        return flags
+
     def _build_gnu_grep_command(
         self, args: GrepArgs, exclude_patterns: list[str]
     ) -> list[str]:
+        if args.type is not None:
+            raise ToolError(
+                "The `type` filter requires ripgrep (rg); the GNU grep fallback "
+                "cannot filter by file type. Use `glob` instead."
+            )
+        if args.multiline:
+            raise ToolError(
+                "`multiline` requires ripgrep (rg); the GNU grep fallback is "
+                "line-oriented."
+            )
+
         max_matches = args.max_matches or self.config.default_max_matches
 
-        cmd = ["grep", "-r", "-n", "-H", "-I", "-E", f"--max-count={max_matches + 1}"]
+        cmd = ["grep", "-r", "-H", "-I", "-E", f"--max-count={max_matches + 1}"]
 
-        if args.pattern.islower():
+        if args.case_insensitive or args.pattern.islower():
             cmd.append("-i")
+
+        match args.output_mode:
+            case GrepOutputMode.CONTENT:
+                cmd.append("-n")
+                cmd.extend(self._gnu_context_flags(args))
+            case GrepOutputMode.FILES_WITH_MATCHES:
+                cmd.append("-l")
+            case GrepOutputMode.COUNT:
+                cmd.append("-c")
+
+        if args.glob is not None:
+            cmd.append(f"--include={args.glob}")
 
         for pattern in exclude_patterns:
             if pattern.endswith("/"):
@@ -278,6 +385,16 @@ class Grep(
         cmd.extend(["-e", args.pattern, args.path])
 
         return cmd
+
+    def _gnu_context_flags(self, args: GrepArgs) -> list[str]:
+        if args.context:
+            return [f"-C{args.context}"]
+        flags: list[str] = []
+        if args.context_before:
+            flags.append(f"-B{args.context_before}")
+        if args.context_after:
+            flags.append(f"-A{args.context_after}")
+        return flags
 
     async def _execute_search(self, cmd: list[str]) -> str:
         try:
@@ -317,14 +434,25 @@ class Grep(
         except Exception as exc:
             raise ToolError(f"Error running grep: {exc}") from exc
 
-    def _parse_output(self, stdout: str, max_matches: int) -> GrepResult:
+    def _parse_output(
+        self,
+        stdout: str,
+        max_matches: int,
+        *,
+        output_mode: GrepOutputMode,
+        head_limit: int | None,
+    ) -> GrepResult:
         output_lines = stdout.splitlines() if stdout else []
+        if output_mode is GrepOutputMode.COUNT:
+            output_lines = [line for line in output_lines if not _is_zero_count(line)]
 
-        truncated_lines = output_lines[:max_matches]
+        cap = max_matches if head_limit is None else min(max_matches, head_limit)
+
+        truncated_lines = output_lines[:cap]
         truncated_output = "\n".join(truncated_lines)
 
         was_truncated = (
-            len(output_lines) > max_matches
+            len(output_lines) > cap
             or len(truncated_output) > self.config.max_output_bytes
         )
 
@@ -334,6 +462,7 @@ class Grep(
             matches=final_output,
             match_count=len(truncated_lines),
             was_truncated=was_truncated,
+            output_mode=output_mode,
         )
 
     @classmethod
@@ -341,8 +470,16 @@ class Grep(
         summary = f"Grepping '{args.pattern}'"
         if args.path != ".":
             summary += f" in {args.path}"
+        if args.glob is not None:
+            summary += f" matching {args.glob}"
+        if args.type is not None:
+            summary += f" [type: {args.type}]"
+        if args.output_mode is GrepOutputMode.FILES_WITH_MATCHES:
+            summary += " [files]"
+        elif args.output_mode is GrepOutputMode.COUNT:
+            summary += " [count]"
         if args.max_matches:
-            summary += f" (max {args.max_matches} matches)"
+            summary += f" (max {args.max_matches})"
         if not args.use_default_ignore:
             summary += " [no-ignore]"
         return ToolCallDisplay(summary=summary)
@@ -354,7 +491,8 @@ class Grep(
                 success=False, message=event.error or event.skip_reason or "No result"
             )
 
-        message = f"Found {event.result.match_count} matches"
+        noun = _result_noun(event.result.output_mode, event.result.match_count)
+        message = f"Found {event.result.match_count} {noun}"
         suffix = "(truncated)" if event.result.was_truncated else ""
 
         return ToolResultDisplay(success=True, message=message, suffix=suffix)
