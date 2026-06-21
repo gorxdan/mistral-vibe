@@ -6,6 +6,13 @@ from vibe.core.workflows.budget import (
     BudgetSnapshot,
     Reservation,
 )
+from vibe.core.workflows.contract import (
+    ContractFailure,
+    ContractReport,
+    ContractSpec,
+    ContractViolation,
+    verify_contract,
+)
 from vibe.core.workflows.manager import WorkflowInfo, WorkflowManager
 from vibe.core.workflows.models import (
     AgentResult,
@@ -40,6 +47,10 @@ __all__ = [
     "BudgetExhausted",
     "BudgetSnapshot",
     "CachedAgentResult",
+    "ContractFailure",
+    "ContractReport",
+    "ContractSpec",
+    "ContractViolation",
     "PhaseReport",
     "Reservation",
     "SchemaValidationError",
@@ -59,4 +70,5 @@ __all__ = [
     "build_response_format",
     "validate_against_schema",
     "validate_script",
+    "verify_contract",
 ]

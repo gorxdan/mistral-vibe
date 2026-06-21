@@ -35,7 +35,8 @@ def create_ephemeral_worktree(
     repo_root: Path, label: str, *, base_dir: Path | None = None
 ) -> EphemeralWorktree:
     """Create a throwaway worktree off HEAD. No chdir, no global state — safe to
-    call concurrently (each call yields a distinct worktree + branch)."""
+    call concurrently (each call yields a distinct worktree + branch).
+    """
     repo = Repo(str(repo_root), search_parent_directories=True)
     if repo.working_tree_dir is None:
         raise RuntimeError(f"{repo_root} is a bare repo; cannot create a worktree")
@@ -55,6 +56,36 @@ def create_ephemeral_worktree(
     return EphemeralWorktree(
         path=path, branch=branch, repo_root=root, base_sha=base_sha
     )
+
+
+def deliver_ephemeral_worktree(wt: EphemeralWorktree) -> bool:
+    # Gated by a passed contract: commit the agent's work, then ff-merge its
+    # branch into the parent. --ff-only never creates a merge commit and never
+    # force-overwrites; if the parent HEAD moved (concurrent delivery) or the
+    # merge would touch uncommitted changes, git refuses — the branch stays for
+    # manual merge. Returns True only if the parent HEAD advanced.
+    try:
+        parent = Repo(str(wt.repo_root))
+        wt_repo = Repo(str(wt.path))
+        if wt_repo.is_dirty(untracked_files=True):
+            wt_repo.git.add("-A")
+            wt_repo.index.commit("workflow agent work")
+        try:
+            parent.git.merge("--ff-only", wt.branch)
+        except GitCommandError as e:
+            reason = str(e).strip().splitlines()[:1]
+            logger.info(
+                "Skipping delivery of %s: ff-merge refused (%s); branch %s kept",
+                wt.path,
+                reason,
+                wt.branch,
+            )
+            return False
+        logger.info("Delivered isolated worktree %s into %s", wt.path, wt.repo_root)
+        return True
+    except (GitCommandError, OSError) as e:
+        logger.warning("Failed to deliver isolated worktree %s: %s", wt.path, e)
+        return False
 
 
 def remove_ephemeral_worktree(
