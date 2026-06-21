@@ -248,7 +248,7 @@ prompt for user permission before running the command.
 
 #### File Tool Permission Resolution
 
-File-based tools (`read`, `grep`, `write_file`, `edit`) resolve
+File-based tools (`read`, `grep`, `glob`, `write_file`, `edit`) resolve
 permissions in this order (first match wins):
 
 1. **Scratchpad** path → always allowed
@@ -634,6 +634,28 @@ There are two kinds of agents:
 - **auto-approve**: Auto-approves all tool calls
 - **lean**: Specialized Lean 4 proof assistant. Not available by default — must be
   installed with `/leanstall` (removed with `/unleanstall`)
+
+### Plan Mode
+
+Plan mode is a read-only sandbox (the `plan` profile) for researching a task and
+drafting an implementation plan before edits. The plan file at
+`~/.vibe/plans/<session>.md` (Ctrl+G to edit live) is the only writable target;
+every turn injects a hard reminder forbidding other edits and non-readonly tools.
+
+Entry — any of:
+- User: `Shift+Tab`, `--agent plan`, or `default_agent = "plan"` in config.toml.
+- Agent: calls the `enter_plan_mode` tool when it judges a task warrants planning
+  (multi-file refactors, new features, architecturally significant work). Available
+  in default / accept-edits / auto-approve; not available in plan or chat.
+
+Exit — any of:
+- User: `Shift+Tab` to cycle out.
+- Agent: calls the `exit_plan_mode` tool once the plan file is ready (offered only
+  in the plan profile).
+
+Both agent-initiated transitions present a confirmation dialog, so the human
+authorizes the plan↔execute boundary. Neither tool is available in programmatic
+(`-p`) or ACP non-interactive sessions.
 
 ### Subagents
 

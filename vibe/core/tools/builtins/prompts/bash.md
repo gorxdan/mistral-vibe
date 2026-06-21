@@ -7,7 +7,8 @@ Use the `bash` tool to run one-off shell commands. Each command runs independent
 | Instead of | Use |
 | --- | --- |
 | `cat` / `head` / `tail` / `sed -n` / `less` / `more` | `read` (with `offset`/`limit` for ranges) |
-| `grep` / `rg` / `ag` / `ack` / `find` / `locate` | `grep` |
+| `grep` / `rg` / `ag` / `ack` (search file contents) | `grep` (`output_mode`, context lines, `-i`, `glob`/`type` filters, `multiline`) |
+| `find` / `locate` / `ls **/*` (find files by name) | `glob` (pattern like `**/*.py`, newest first) |
 | `echo > file` / new file | `write_file` |
 | `echo >> file` / `sed -i` / `awk` / any in-place edit | `edit` (read first) |
 

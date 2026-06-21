@@ -102,7 +102,8 @@ pip install chaton
 - **Powerful Toolset**: A suite of tools for file manipulation, code searching, version control, and command execution, right from the chat prompt.
   - Read, write, and patch files (`read`, `write_file`, `edit`).
   - Execute shell commands in a stateful terminal (`bash`).
-  - Recursively search code with `grep` (with `ripgrep` support).
+  - Search file contents with `grep` (ripgrep-backed: output modes, context lines, `glob`/`type` filters).
+  - Find files by name with `glob` (patterns like `**/*.py`, most recently modified first).
   - Manage a `todo` list to track the agent's work.
   - Ask interactive questions to gather user input (`ask_user_question`).
   - Delegate tasks to subagents for parallel work (`task`).
@@ -150,6 +151,17 @@ directory. Subagents such as `explore` are not accepted.
 > Note: `default_agent` applies in both interactive and programmatic
 > (`-p` / `--prompt`) sessions. Pass `--auto-approve` when a run should
 > approve all tool calls without prompting.
+
+### Plan Mode
+
+Plan mode is a read-only sandbox for researching a task and drafting an
+implementation plan at `~/.vibe/plans/<session>.md` before making changes.
+Enter it yourself with `Shift+Tab` or `--agent plan`, or let the agent
+propose it: for long or multi-step tasks the agent can call the
+`enter_plan_mode` tool, which asks you to confirm the switch. When the plan
+is ready the agent calls `exit_plan_mode` (also confirmed) to move into
+implementation. The agent-initiated transitions are unavailable in
+non-interactive (`-p` / ACP) sessions.
 
 ### Subagents and Task Delegation
 
