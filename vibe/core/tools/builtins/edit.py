@@ -6,6 +6,7 @@ from typing import ClassVar, final
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from vibe.core.lsp._integration import notify_file_changed
 from vibe.core.rewind.manager import FileSnapshot
 from vibe.core.scratchpad import is_scratchpad_path
 from vibe.core.tools.base import (
@@ -155,6 +156,7 @@ class Edit(
                     await self._write_file(
                         file_path, modified, result.encoding, result.newline
                     )
+                    await notify_file_changed(file_path, modified)
         except UnicodeDecodeError as e:
             raise ToolError(
                 f"Cannot edit {file_path}: file is not valid text "

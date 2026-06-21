@@ -52,6 +52,7 @@ class LanguageServer:
         self._start_lock = asyncio.Lock()
         self._last_error: str | None = None
         self._crash_watcher: asyncio.Task[None] | None = None
+        self._pending_handlers: list[tuple[str, Any]] = []
 
     @property
     def state(self) -> ServerState:
@@ -71,6 +72,7 @@ class LanguageServer:
         return bool(sync) or "textDocumentSync" in self._capabilities
 
     def on_notification(self, method: str, handler: Any) -> None:
+        self._pending_handlers.append((method, handler))
         if self._conn is not None:
             self._conn.on_notification(method, handler)
 
@@ -107,6 +109,8 @@ class LanguageServer:
         )
         assert self._proc.stdout is not None and self._proc.stdin is not None
         self._conn = JsonRpcConnection(self._proc.stdout, self._proc.stdin)
+        for method, handler in self._pending_handlers:
+            self._conn.on_notification(method, handler)
         self._conn.start()
         self._crash_watcher = asyncio.create_task(
             self._watch_exit(), name=f"lsp-exit-{self.config.name}"

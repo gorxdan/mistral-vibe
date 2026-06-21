@@ -7,6 +7,7 @@ from typing import ClassVar, final
 import anyio
 from pydantic import BaseModel, Field
 
+from vibe.core.lsp._integration import notify_file_changed
 from vibe.core.rewind.manager import FileSnapshot
 from vibe.core.scratchpad import is_scratchpad_path
 from vibe.core.tools.base import (
@@ -95,6 +96,7 @@ class WriteFile(
         file_path, content_bytes = self._prepare_and_validate_path(args)
 
         await self._write_file(args, file_path)
+        await notify_file_changed(file_path, args.content)
 
         yield WriteFileResult(
             path=str(file_path), bytes_written=content_bytes, content=args.content

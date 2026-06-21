@@ -49,6 +49,7 @@ from vibe.core.llm.format import (
     ResolvedToolCall,
 )
 from vibe.core.llm.types import BackendLike
+from vibe.core.lsp._integration import drain_diagnostics_into
 from vibe.core.middleware import (
     CHAT_AGENT_EXIT,
     CHAT_AGENT_REMINDER,
@@ -601,12 +602,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self.agent_manager.invalidate_config()
 
     def _drain_pending_injections(self) -> bool:
-        if not self._pending_injected_messages:
-            return False
-        for injected in self._pending_injected_messages:
-            self.messages.append(injected)
-        self._pending_injected_messages.clear()
-        return True
+        staged = False
+        if self._pending_injected_messages:
+            for injected in self._pending_injected_messages:
+                self.messages.append(injected)
+            self._pending_injected_messages.clear()
+            staged = True
+        if drain_diagnostics_into(self.stage_injected_message):
+            for injected in self._pending_injected_messages:
+                self.messages.append(injected)
+            self._pending_injected_messages.clear()
+            staged = True
+        return staged
 
     def set_approval_callback(self, callback: ApprovalCallback) -> None:
         self.approval_callback = callback
