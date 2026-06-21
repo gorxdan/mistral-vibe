@@ -36,6 +36,8 @@ agents, prompts, logs, and session data live here.
   skills/              # User-level skills (each skill is a subdirectory with SKILL.md)
   tools/               # Custom tool definitions
   workflows/           # User-level workflow scripts (*.py with YAML frontmatter)
+  memory/              # Cross-session memory files (*.md with YAML frontmatter)
+    projects/<hash>/   # Per-project memory namespaces (hash of trusted workdir)
   logs/
     vibe.log           # Main log file
     session/           # Session log files
@@ -495,6 +497,32 @@ non-conforming stdout) emits a UI warning and lets the gated action proceed
   permission prompt sees the rewritten arguments, the tool runs with them,
   and the assistant message is patched so subsequent LLM turns reflect what
   actually ran.
+
+### Memory
+
+Cross-session memory stores durable notes as plain `*.md` files (YAML
+frontmatter + body) under `~/.vibe/memory/`. Each turn, a selector (its own
+standalone backend, like the safety judge) scans only the lightweight
+frontmatter index and injects up to `max_selected` relevant bodies into the
+system prompt. Selection fails open (no memories) on any error.
+
+```toml
+[memory]
+enabled = true                   # Master switch
+select_mode = "per-turn"         # "per-turn" | "per-session" | "always"
+model = ""                       # Alias; falls back to compaction, then active
+max_selected = 5                 # Top-K injected
+max_inject_chars = 8000          # Hard cap on total injected body text
+max_entries_scanned = 200        # Cap on index lines sent to the selector
+timeout = 20.0                   # Per-selection LLM timeout
+```
+
+**Scopes.** Memories are global by default (shared across every project). Pass
+`scope = "project"` to the `manage_memory` tool to write to the current trusted
+project's private namespace (`~/.vibe/memory/projects/<hash>/`, keyed by
+`sha256(resolved workdir)[:16]`). Project memories live under `~/.vibe` (never in
+the repo), so they cannot be committed; they shadow same-id global memories for
+that project only. `scope = "project"` requires a trusted project directory.
 
 ### Pattern Matching
 

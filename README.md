@@ -117,6 +117,7 @@ pip install chaton
 - **Multiple Built-in Agents**: Choose from different agent profiles tailored for specific workflows.
 - **Workflow Orchestration**: Write Python scripts that orchestrate parallel agents for codebase audits, migrations, and cross-checked research. Run bundled workflows like `/deep-research` or create your own.
 - **Effort Modes**: Switch between `normal` (turn-by-turn) and `le chaton` (max thinking + automatic workflow planning) via `/effort`.
+- **Cross-Session Memory**: Durable notes stored as plain `*.md` files under `~/.vibe/memory/`. An LLM selector injects relevant memories into context each turn. Memories are global by default; use `scope = "project"` to namespace them per trusted project (stored under `~/.vibe`, never committed).
 - **Agent Teams**: Coordinate multiple independent Vibe instances working together as teammates, communicating via file-backed shared state.
 
 ### Built-in Agents
@@ -579,6 +580,22 @@ How it fits the existing controls:
 - Every judge auto-approval is logged.
 
 > **Security note.** An LLM judge is a probabilistic gate, not a guarantee. The tool call it evaluates is authored by the (untrusted) main model, so a compromised or jailbroken main model could in principle craft a call designed to fool the judge. Keep your denylist authoritative, prefer a judge model from a different provider than your active model, and treat this as convenience, not a sandbox.
+
+### Cross-Session Memory
+
+Vibe can carry durable notes across sessions as plain `*.md` files (YAML frontmatter + body) under `~/.vibe/memory/`. Each turn, a selector running on its own backend scans the lightweight frontmatter index and injects the most relevant bodies into the system prompt. It is on by default; selection fails open (no memories injected) on any error.
+
+```toml
+[memory]
+enabled = true
+select_mode = "per-turn"   # "per-turn" | "per-session" | "always"
+model = ""                  # alias; falls back to compaction, then active model
+max_selected = 5            # top-K memories injected per turn
+max_inject_chars = 8000     # hard cap on total injected body text
+timeout = 20.0              # selector LLM timeout; on timeout, no memories
+```
+
+Memories are written via the `manage_memory` tool. By default they are **global** (shared across every project). Pass `scope = "project"` to write to the current trusted project's private namespace under `~/.vibe/memory/projects/<hash>/` (keyed by `sha256` of the resolved working directory). Project memories never live inside the repo, so they cannot be committed, and they shadow same-id global memories for that project only. `scope = "project"` requires a trusted project directory.
 
 ### TLS and Corporate Certificate Authorities
 

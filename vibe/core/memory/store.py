@@ -10,6 +10,7 @@ shared tree never tear a sibling file.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -18,7 +19,8 @@ import tempfile
 
 import yaml
 
-from vibe.core.memory.models import MemoryEntry, MemoryMetadata, _SLUG
+from vibe.core.memory.models import _SLUG, MemoryEntry, MemoryMetadata
+from vibe.core.paths import VIBE_HOME
 from vibe.core.skills.parser import SkillParseError, parse_skill_markdown
 
 logger = logging.getLogger(__name__)
@@ -60,10 +62,18 @@ class MemoryStore:
             return self._cache
         entries: dict[str, MemoryEntry] = {}
         self.issues = []
-        for f in sorted(mtimes):
-            entry = self._load_file(f)
-            if entry is not None:
-                entries[entry.id] = entry  # later dirs (project) shadow user
+        # Iterate in _search_dirs order (user first, then project dirs): the
+        # project entry must shadow a same-id user entry. Sorting by path (the
+        # old behavior) tied precedence to directory names alphabetically.
+        for d in self._search_dirs():
+            if not d.is_dir():
+                continue
+            for f in sorted(d.glob("*.md")):
+                if f not in mtimes:  # vanished between scans; skip
+                    continue
+                entry = self._load_file(f)
+                if entry is not None:
+                    entries[entry.id] = entry  # later dirs (project) shadow user
         self._cache = entries
         self._mtimes = mtimes
         return entries
@@ -138,13 +148,17 @@ class MemoryStore:
         # a .md file outside the memory dir.
         if not _ID_RE.match(memory_id):
             return False
+        # Clear every tier: a project memory shadows a same-id user one, so a
+        # first-match early-return would leave the shadowed id still visible.
+        removed = False
         for d in self._search_dirs():
             path = d / f"{memory_id}.md"
             if path.exists():
                 path.unlink()
-                self._cache = None
-                return True
-        return False
+                removed = True
+        if removed:
+            self._cache = None
+        return removed
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
@@ -157,3 +171,32 @@ class MemoryStore:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
+
+
+def project_memory_dir(*, create: bool = False) -> Path | None:
+    """Current project's memory namespace under ``~/.vibe``, or ``None``.
+
+    Per-project memories live UNDER ``~/.vibe`` (never in the repo) so they
+    can't be committed — this is why project memory is on by default. The
+    namespace is ``sha256(resolved trusted workdir)[:16]``. Returns ``None``
+    when there's no trusted project (so the caller falls back to global only).
+    """
+    try:
+        from vibe.core.config.harness_files import get_harness_files_manager
+
+        roots = get_harness_files_manager().project_roots
+    except Exception:
+        return None
+    if not roots:
+        return None
+    resolved = roots[0].resolve()
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:16]
+    ns = VIBE_HOME.path / "memory" / "projects" / digest
+    if create:
+        ns.mkdir(parents=True, exist_ok=True)
+        # Stamp the resolved path so an opaque hash dir stays debuggable.
+        origin = ns / ".origin"
+        if not origin.exists():
+            with contextlib.suppress(OSError):
+                origin.write_text(f"{resolved}\n", encoding="utf-8")
+    return ns

@@ -1154,10 +1154,15 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if self._is_subagent or not self.config.memory.enabled:
             return None
         if self._memory_store is None:
-            from vibe.core.memory.store import MemoryStore
+            from vibe.core.memory.store import MemoryStore, project_memory_dir
             from vibe.core.paths import VIBE_HOME
 
-            self._memory_store = MemoryStore(user_dir=VIBE_HOME.path / "memory")
+            # Feed the per-project namespace so project memories are read here
+            # and shadow same-id global ones; without this the tier is write-only.
+            project_dirs = [d] if (d := project_memory_dir()) else []
+            self._memory_store = MemoryStore(
+                user_dir=VIBE_HOME.path / "memory", project_dirs=project_dirs
+            )
         return self._memory_store
 
     def _resolve_memory_selector(self):  # noqa: ANN202

@@ -129,9 +129,7 @@ async def test_selector_fails_to_empty_on_backend_error(monkeypatch) -> None:
         async def complete(self, **k: Any) -> Any:
             raise RuntimeError("down")
 
-    monkeypatch.setattr(
-        "vibe.core.memory.selector.BACKEND_FACTORY", {"generic": _Boom}
-    )
+    monkeypatch.setattr("vibe.core.memory.selector.BACKEND_FACTORY", {"generic": _Boom})
     ids = await _selector().select(["- [a] A"], "user msg", {"a"})
     assert ids == []
 
@@ -183,3 +181,93 @@ def test_set_memory_section_neutralizes_embedded_block_delimiters() -> None:
     assert second.count("<memories>") == 1
     assert second.count("</memories>") == 1
     assert "EVIL" not in second and "harmless" not in second
+
+
+# --------------------------------------------------------------------------- #
+# Project-scoped memory (per-project namespace under ~/.vibe)                  #
+# --------------------------------------------------------------------------- #
+
+
+def _proj_entry(mid: str, body: str = "b") -> MemoryEntry:
+    return MemoryEntry(
+        metadata=MemoryMetadata(id=mid, title=mid, description="d", scope="project"),
+        body=body,
+    )
+
+
+def test_project_entry_shadows_user_by_id(tmp_path) -> None:
+    user = tmp_path / "user"
+    proj = tmp_path / "proj"
+    store = MemoryStore(user_dir=user, project_dirs=[proj])
+    store.upsert(_entry("shared", body="GLOBAL", desc="u"), project=False)
+    store.upsert(_proj_entry("shared", body="PROJECT"), project=True)
+
+    # Merged view: the project body wins, but both files persist on disk.
+    assert store.get("shared").body == "PROJECT"
+    assert (user / "shared.md").exists()
+    assert (proj / "shared.md").exists()
+
+
+def test_delete_clears_all_tiers(tmp_path) -> None:
+    user = tmp_path / "user"
+    proj = tmp_path / "proj"
+    store = MemoryStore(user_dir=user, project_dirs=[proj])
+    store.upsert(_entry("dup", body="U"), project=False)
+    store.upsert(_proj_entry("dup", body="P"), project=True)
+
+    assert store.delete("dup") is True
+    # Without cross-tier delete the project file would survive and the memory
+    # would still be visible (shadowing the now-deleted user file).
+    assert not (user / "dup.md").exists()
+    assert not (proj / "dup.md").exists()
+    assert store.get("dup") is None
+
+
+def test_index_line_tags_project_scope_only() -> None:
+    assert "(project)" not in _entry("a").index_line()
+    assert "(project)" in _proj_entry("b").index_line()
+
+
+def test_project_memory_dir_none_without_trusted_project(monkeypatch) -> None:
+    from vibe.core.memory import store as store_mod
+
+    class _Mgr:
+        def __init__(self, roots: list) -> None:
+            self.project_roots = roots
+
+    monkeypatch.setattr(
+        "vibe.core.config.harness_files.get_harness_files_manager", lambda: _Mgr([])
+    )
+    assert store_mod.project_memory_dir() is None
+
+
+def test_project_memory_dir_hashes_trusted_root(monkeypatch, tmp_path) -> None:
+    import hashlib
+
+    from vibe.core.memory import store as store_mod
+
+    root = tmp_path / "myproj"
+    root.mkdir()
+    # Redirect VIBE_HOME so the test never writes into the real ~/.vibe.
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe_home"))
+
+    class _Mgr:
+        def __init__(self, roots: list) -> None:
+            self.project_roots = roots
+
+    monkeypatch.setattr(
+        "vibe.core.config.harness_files.get_harness_files_manager", lambda: _Mgr([root])
+    )
+
+    digest = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:16]
+    expected = tmp_path / "vibe_home" / "memory" / "projects" / digest
+
+    # create=False does not materialize anything on disk.
+    assert store_mod.project_memory_dir() == expected
+    assert not expected.exists()
+
+    # create=True mkdirs and stamps a debuggable .origin with the resolved path.
+    created = store_mod.project_memory_dir(create=True)
+    assert created == expected
+    assert created.is_dir()
+    assert (created / ".origin").read_text().strip() == str(root.resolve())

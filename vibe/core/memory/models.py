@@ -36,4 +36,5 @@ class MemoryEntry(BaseModel):
         m = self.metadata
         tags = f" (tags: {', '.join(m.tags)})" if m.tags else ""
         desc = f": {m.description}" if m.description else ""
-        return f"- [{m.id}] {m.title}{desc}{tags}"
+        scope = " (project)" if m.scope == "project" else ""
+        return f"- [{m.id}] {m.title}{desc}{tags}{scope}"

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from vibe.core.config import VibeConfig
 from vibe.core.memory.models import MemoryEntry, MemoryMetadata
-from vibe.core.memory.store import MemoryStore
+from vibe.core.memory.store import MemoryStore, project_memory_dir
 from vibe.core.paths import VIBE_HOME
 from vibe.core.tools.base import (
     BaseTool,
@@ -27,8 +27,9 @@ def _slugify(text: str) -> str:
     return slug or "memory"
 
 
-def user_memory_store() -> MemoryStore:
-    return MemoryStore(user_dir=VIBE_HOME.path / "memory")
+def _memory_store() -> MemoryStore:
+    project_dirs = [d] if (d := project_memory_dir()) else []
+    return MemoryStore(user_dir=VIBE_HOME.path / "memory", project_dirs=project_dirs)
 
 
 class ManageMemoryArgs(BaseModel):
@@ -38,6 +39,8 @@ class ManageMemoryArgs(BaseModel):
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
     body: str | None = None
+    # add: defaults to "user". update: None preserves the existing tier.
+    scope: Literal["user", "project"] | None = None
 
 
 class ManageMemoryResult(BaseModel):
@@ -52,12 +55,16 @@ class ManageMemoryConfig(BaseToolConfig):
 
 
 class ManageMemory(
-    BaseTool[ManageMemoryArgs, ManageMemoryResult, ManageMemoryConfig, BaseToolState],
+    BaseTool[ManageMemoryArgs, ManageMemoryResult, ManageMemoryConfig, BaseToolState]
 ):
     description: ClassVar[str] = (
         "Manage durable cross-session memories (markdown files under ~/.vibe/memory). "
         "Actions: add (new memory), update (patch existing), list, delete. Memories are "
-        "relevance-selected into context in later sessions."
+        "relevance-selected into context in later sessions. By default memories are "
+        "global (shared across all projects); pass scope='project' to write to the "
+        "current project's private namespace (~/.vibe/memory/projects/<hash>, never "
+        "committed, isolated per trusted project path). Project memories shadow "
+        "same-id global ones for that project only."
     )
 
     @classmethod
@@ -67,15 +74,19 @@ class ManageMemory(
     async def run(
         self, args: ManageMemoryArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | ManageMemoryResult, None]:
-        store = user_memory_store()
+        store = _memory_store()
         today = _dt.date.today().isoformat()
+        project_dir = project_memory_dir()
 
         if args.action == "list":
             index = store.index()
+            note = (
+                f" (project namespace {project_dir.name} active)"
+                if project_dir is not None
+                else ""
+            )
             yield ManageMemoryResult(
-                action="list",
-                message=f"{len(index)} memories",
-                entries=index,
+                action="list", message=f"{len(index)} memories{note}", entries=index
             )
             return
 
@@ -84,15 +95,19 @@ class ManageMemory(
                 raise ToolError("delete requires 'id'")
             ok = store.delete(args.id)
             yield ManageMemoryResult(
-                action="delete",
-                id=args.id,
-                message="deleted" if ok else "not found",
+                action="delete", id=args.id, message="deleted" if ok else "not found"
             )
             return
 
         if args.action == "add":
             if not args.title:
                 raise ToolError("add requires 'title'")
+            scope = args.scope or "user"
+            if scope == "project" and project_dir is None:
+                raise ToolError(
+                    "scope=project requires a trusted project directory; "
+                    "run from a trusted folder or use scope=user."
+                )
             mem_id = args.id or _slugify(args.title)
             if store.get(mem_id) is not None:
                 raise ToolError(
@@ -104,15 +119,18 @@ class ManageMemory(
                     title=args.title,
                     description=args.description or "",
                     tags=args.tags,
+                    scope=scope,
                     created=today,
                     updated=today,
                     source="tool",
                 ),
                 body=args.body or "",
             )
-            path = store.upsert(entry)
+            if scope == "project":
+                project_memory_dir(create=True)
+            path = store.upsert(entry, project=(scope == "project"))
             yield ManageMemoryResult(
-                action="add", id=mem_id, message=f"created {path.name}"
+                action="add", id=mem_id, message=f"created {path.name} ({scope})"
             )
             return
 
@@ -122,6 +140,13 @@ class ManageMemory(
         existing = store.get(args.id)
         if existing is None:
             raise ToolError(f"Memory '{args.id}' not found; use action=add.")
+        # Omitting scope preserves the existing tier (no silent re-tier on edit).
+        scope = args.scope if args.scope is not None else existing.metadata.scope
+        if scope == "project" and project_dir is None:
+            raise ToolError(
+                "scope=project requires a trusted project directory; "
+                "run from a trusted folder or use scope=user."
+            )
         meta = existing.metadata.model_copy(
             update={
                 k: v
@@ -133,7 +158,13 @@ class ManageMemory(
                 if v is not None
             }
         )
-        meta = meta.model_copy(update={"updated": today})
+        meta = meta.model_copy(update={"updated": today, "scope": scope})
         body = args.body if args.body is not None else existing.body
-        store.upsert(MemoryEntry(metadata=meta, body=body))
-        yield ManageMemoryResult(action="update", id=args.id, message="updated")
+        if scope == "project":
+            project_memory_dir(create=True)
+        store.upsert(
+            MemoryEntry(metadata=meta, body=body), project=(scope == "project")
+        )
+        yield ManageMemoryResult(
+            action="update", id=args.id, message=f"updated ({scope})"
+        )
