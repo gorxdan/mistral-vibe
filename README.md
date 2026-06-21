@@ -115,6 +115,7 @@ pip install chaton
   - Beautiful Themes.
 - **Highly Configurable**: Customize models, providers, tool permissions, and UI preferences through a simple `config.toml` file.
 - **Safety First**: Features tool execution approval.
+- **Subagent Isolation**: Write-capable `task` subagents (`worker`/`auto-approve`/`editor`) run in their own git worktree by default, so destructive commands and edits are scoped to a throwaway branch that's merged back only on success. Read-only subagents stay in-process. An optional safety judge pre-flights the delegation prompt before the subprocess spawns. Configure with `task.isolation` (`off`/`auto`/`always`).
 - **Multiple Built-in Agents**: Choose from different agent profiles tailored for specific workflows.
 - **Workflow Orchestration**: Write Python scripts that orchestrate parallel agents for codebase audits, migrations, and cross-checked research. Run bundled workflows like `/deep-research` or create your own.
 - **Effort Modes**: Switch between `normal` (turn-by-turn) and `le chaton` (max thinking + automatic workflow planning) via `/effort`.

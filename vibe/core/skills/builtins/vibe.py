@@ -233,6 +233,10 @@ searxng_stop_on_exit = true              # stop on exit, only if vibe started it
 # and read-jailed profiles (explore/research/planner/reviewer/debugger/
 # security) stay in-process for speed. "always" isolates every subagent;
 # "off" forces in-process (the historical behavior).
+# An isolated spawn is pre-flight judged: the safety judge (when configured)
+# evaluates the delegation prompt before the subprocess starts — safe proceeds,
+# a deferral routes through the host approval callback, and a denial blocks the
+# spawn entirely (no subprocess, no worktree). Fail-open when no judge is set.
 [tools.task]
 isolation = "auto"
 ```
