@@ -62,6 +62,7 @@ Always go through `uv` — never invoke bare `python` or `pip`.
 - Implement `async def run(args, ctx: InvokeContext)` and yield events progressively.
 - Raise `ToolError` for user-facing failures; raise `ToolPermissionError` for authorization failures.
 - Declare permission with `ToolPermission` (`ALWAYS` / `ASK` / `NEVER`); honor it consistently.
+- Prefer the dedicated search tools over the shell: `glob` to find files by name, `grep` to search file contents — not Bash `find` / `grep` / `sed`. Reserve Bash for genuine system and git operations. (Also enforced in the `bash` tool prompt.)
 
 ## Logging & errors
 
