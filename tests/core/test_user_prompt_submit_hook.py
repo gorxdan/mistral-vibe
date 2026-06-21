@@ -110,6 +110,37 @@ async def test_blocked_prompt_runs_no_llm_turn() -> None:
     assert events
 
 
+@pytest.mark.asyncio
+async def test_blocked_prompt_is_redacted_from_transcript() -> None:
+    # A denied prompt (e.g. one containing a secret) must not be retained raw in
+    # the transcript nor re-sent to the model on later turns. The slot stays for
+    # coherence, but the content is redacted.
+    loop = build_test_agent_loop()
+    loop._hooks_manager = _FakeManager(  # type: ignore[assignment]
+        HookPromptBlock(hook_name="h", content="secret detected")
+    )
+
+    async def fake_turn():
+        raise AssertionError("no LLM turn when blocked")
+        yield  # pragma: no cover
+
+    loop._perform_llm_turn = fake_turn  # type: ignore[method-assign]
+
+    await _drain(loop._conversation_loop("AWS_KEY=sk-supersecret"))
+
+    user_msgs = [m for m in loop.messages if m.role.value == "user"]
+    assert user_msgs, "user slot retained for transcript coherence"
+    assert "sk-supersecret" not in "".join(
+        m.content or "" for m in user_msgs
+    ), "raw denied prompt must not persist"
+    assert any("redacted" in (m.content or "") for m in user_msgs)
+
+
+async def _drain(gen) -> None:
+    async for _ in gen:
+        pass
+
+
 class _StopLoop(Exception):
     pass
 

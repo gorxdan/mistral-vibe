@@ -8,11 +8,13 @@ from vibe.core.config import SandboxConfig
 from vibe.core.tools.base import BaseToolState, ToolError
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
 from vibe.core.tools.sandbox import (
+    BUBBLEWRAP_INSTALL_NUDGE,
     SandboxSpec,
     build_sandbox_command,
     build_seatbelt_profile,
     detect_backend,
     scrub_env,
+    unshare_confinement_nudge,
 )
 
 # --------------------------------------------------------------------------- #
@@ -48,6 +50,19 @@ def test_bwrap_argv_network_allowed_has_no_unshare_net(tmp_path) -> None:
     assert argv is not None and "--unshare-net" not in argv
 
 
+def test_bwrap_argv_ro_bind_precedes_pseudo_fs(tmp_path) -> None:
+    # Regression: --ro-bind / / must come BEFORE --dev/--proc/--tmpfs, else the
+    # read-only root overlays them and makes /tmp read-only.
+    spec = SandboxSpec(write_roots=[tmp_path], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    ro = argv.index("--ro-bind")
+    assert argv[ro + 1] == "/" and argv[ro + 2] == "/"
+    assert ro < argv.index("--dev")
+    assert ro < argv.index("--proc")
+    assert ro < argv.index("--tmpfs")
+
+
 def test_seatbelt_profile(tmp_path) -> None:
     spec = SandboxSpec(write_roots=[tmp_path], allow_network=False)
     profile = build_seatbelt_profile(spec)
@@ -61,6 +76,101 @@ def test_seatbelt_rejects_quoted_roots(tmp_path) -> None:
     spec = SandboxSpec(write_roots=[bad], allow_network=True)
     profile = build_seatbelt_profile(spec)
     assert 'a"b' not in profile  # never injected into the SBPL string
+
+
+def test_unshare_backend_warns_when_containment_requested(tmp_path, caplog) -> None:
+    # The unshare backend cannot enforce filesystem confinement or network
+    # denial. When the spec asks for either, a loud warning must fire so the
+    # user knows their opt-in is not doing what they think (the common case on
+    # minimal containers/CI without bubblewrap).
+    import logging
+
+    spec = SandboxSpec(write_roots=[tmp_path], allow_network=False)
+    with caplog.at_level(logging.WARNING, logger="vibe.core.tools.sandbox"):
+        argv, name, _ = build_sandbox_command(spec, "unshare")
+    assert name == "unshare" and argv is not None
+    assert any(
+        "NO filesystem write confinement" in r.message for r in caplog.records
+    ), [r.message for r in caplog.records]
+
+
+def test_unshare_backend_silent_when_no_containment_requested(caplog) -> None:
+    # Bare namespace isolation (no write_roots, network allowed) is honest
+    # about what it provides — no warning needed.
+    import logging
+
+    spec = SandboxSpec(write_roots=[], allow_network=True)
+    with caplog.at_level(logging.WARNING, logger="vibe.core.tools.sandbox"):
+        build_sandbox_command(spec, "unshare")
+    assert not any(
+        "NO filesystem write confinement" in r.message for r in caplog.records
+    )
+
+
+def test_unshare_confinement_nudge_only_when_unshare_with_containment(
+    monkeypatch,
+) -> None:
+    # The startup nudge fires only when the resolved backend is `unshare` AND
+    # the user asked for containment it cannot enforce. It must stay silent when
+    # the sandbox is off, when a real backend (bwrap) is selected, or when no
+    # containment was requested (bare namespace isolation is honest).
+    monkeypatch.setattr(
+        "vibe.core.tools.sandbox.detect_backend",
+        lambda override: override if override != "auto" else "unshare",
+    )
+
+    # Containment requested + unshare -> nudge.
+    msg = unshare_confinement_nudge(
+        sandbox_enabled=True,
+        backend_override="auto",
+        write_dirs=["/tmp/work"],
+        allow_network=True,
+    )
+    assert msg == BUBBLEWRAP_INSTALL_NUDGE
+    assert "sudo apt install bubblewrap" in msg
+
+    # Sandbox disabled -> no nudge.
+    assert (
+        unshare_confinement_nudge(
+            sandbox_enabled=False,
+            backend_override="auto",
+            write_dirs=["/tmp/work"],
+            allow_network=True,
+        )
+        is None
+    )
+
+    # Explicit bwrap override -> no nudge (user gets what they asked for, and
+    # detect_backend honors the override without consulting the filesystem).
+    assert (
+        unshare_confinement_nudge(
+            sandbox_enabled=True,
+            backend_override="bwrap",
+            write_dirs=["/tmp/work"],
+            allow_network=True,
+        )
+        is None
+    )
+
+    # No containment requested -> no nudge (unshare's namespace isolation is
+    # honestly what the user gets).
+    assert (
+        unshare_confinement_nudge(
+            sandbox_enabled=True,
+            backend_override="auto",
+            write_dirs=[],
+            allow_network=True,
+        )
+        is None
+    )
+
+    # Network denial alone counts as containment unshare can't enforce -> nudge.
+    assert unshare_confinement_nudge(
+        sandbox_enabled=True,
+        backend_override="auto",
+        write_dirs=[],
+        allow_network=False,
+    )
 
 
 def test_scrub_env_drops_secrets_keeps_allowlist() -> None:

@@ -26,6 +26,7 @@ _COMPONENTS = (
     ("skills", "skill_paths"),
     ("tools", "tool_paths"),
     ("workflows", "workflow_paths"),
+    ("prompts", "prompt_paths"),
 )
 
 
@@ -146,6 +147,7 @@ def apply_plugin_result(config, result: PluginLoadResult) -> None:  # noqa: ANN0
     config.skill_paths = [*config.skill_paths, *result.skill_paths]
     config.tool_paths = [*config.tool_paths, *result.tool_paths]
     config.workflow_paths = [*config.workflow_paths, *result.workflow_paths]
+    config.prompt_paths = [*config.prompt_paths, *result.prompt_paths]
 
     existing = {s.name for s in config.mcp_servers}
     from vibe.core.config import MCPServer as _MCPServerAdapter  # type: ignore

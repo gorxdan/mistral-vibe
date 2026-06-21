@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
 from typing import TYPE_CHECKING, Any, Protocol
@@ -11,6 +11,7 @@ from vibe.core.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
+    from vibe.core.tools.tool_result_store import ToolResultStore
     from vibe.core.types import AgentStats, LLMMessage, MessageList
 
 
@@ -118,6 +119,7 @@ class AutoCompactMiddleware:
 
 _SNIP_OPEN = "<vibe_snipped>"
 _SNIP_CLOSE = "</vibe_snipped>"
+_MC_OPEN = "<vibe_microcompacted>"
 
 
 class ContextShaperMiddleware:
@@ -240,8 +242,7 @@ class SnipMiddleware(ContextShaperMiddleware):
 
         n = approx_token_count(msg.content or "")
         placeholder = (
-            f"{_SNIP_OPEN} {n} tokens of older {msg.role} content elided "
-            f"{_SNIP_CLOSE}"
+            f"{_SNIP_OPEN} {n} tokens of older {msg.role} content elided {_SNIP_CLOSE}"
         )
         new_tool_calls = None
         if msg.tool_calls:
@@ -297,11 +298,17 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
                 break
             msg = messages[i]
             content = msg.content or ""
-            if self._is_real_user_message(msg) or content.startswith(_SNIP_OPEN):
+            if (
+                self._is_real_user_message(msg)
+                or content.startswith(_SNIP_OPEN)
+                or content.startswith(_MC_OPEN)
+            ):
                 continue
             if approx_token_count(content) <= cfg.per_message_cap_tokens:
-                continue  # already small / previously compressed
-            new_content = truncate_middle_to_tokens(content, cfg.per_message_cap_tokens)
+                continue  # naturally small, not worth compressing
+            new_content = f"{_MC_OPEN} " + truncate_middle_to_tokens(
+                content, cfg.per_message_cap_tokens
+            )
             messages.replace_at(i, msg.model_copy(update={"content": new_content}))
             est -= approx_token_count(content) - approx_token_count(new_content)
             done += 1
@@ -316,6 +323,96 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
                 threshold,
             )
         return MiddlewareResult()
+
+
+class ToolResultBudgetMiddleware:
+    """Cap the aggregate size of tool-result groups (parallel tool calls).
+
+    A single turn can fan out into many parallel tool calls, each producing a
+    result under the per-result cap individually but collectively flooding
+    context. This middleware scans for maximal runs of consecutive tool
+    messages, and when a group exceeds the aggregate budget, persists the
+    largest members in full and replaces their inline content with smaller
+    previews. No LLM call, no watermark — acts only on the pathological case.
+    Idempotent via the sum check.
+    """
+
+    def __init__(
+        self,
+        store: ToolResultStore,
+        aggregate_chars: int,
+        keep_recent_messages: int = 8,
+    ) -> None:
+        self._store = store
+        self._aggregate_chars = aggregate_chars
+        self._keep_recent = keep_recent_messages
+
+    def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
+        pass
+
+    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
+        messages = context.messages
+        suffix = min(self._keep_recent, len(messages))
+        for start, end in self._tool_groups(messages):
+            if end > len(messages) - suffix:
+                continue  # protect the most-recent working set
+            group = [messages[i] for i in range(start, end)]
+            total = sum(len(m.content or "") for m in group)
+            if total <= self._aggregate_chars:
+                continue
+            self._compress_group(messages, start, group, total)
+        return MiddlewareResult()
+
+    @staticmethod
+    def _tool_groups(messages: MessageList) -> Iterator[tuple[int, int]]:
+        from vibe.core.types import Role
+
+        start = 0
+        n = len(messages)
+        while start < n:
+            if messages[start].role != Role.tool:
+                start += 1
+                continue
+            end = start + 1
+            while end < n and messages[end].role == Role.tool:
+                end += 1
+            yield start, end
+            start = end
+
+    def _compress_group(
+        self, messages: MessageList, start: int, group: list[LLMMessage], total: int
+    ) -> None:
+        from vibe.core.tools.tool_result_store import truncate_middle_chars
+
+        budget = self._aggregate_chars
+        ordered = sorted(
+            range(len(group)), key=lambda i: len(group[i].content or ""), reverse=True
+        )
+        # Account for truncation + persisted-output marker overhead (~200 chars)
+        # so post-compression content stays within the even split.
+        per_message_target = max(budget // len(group) - 200, 2_000)
+        for gi in ordered:
+            if total <= budget:
+                break
+            msg = group[gi]
+            content = msg.content or ""
+            if len(content) <= per_message_target:
+                continue
+            call_id = msg.tool_call_id or ""
+            persisted = self._store.persist(call_id, content) if call_id else None
+            if persisted is not None:
+                new_content = (
+                    f"{truncate_middle_chars(content, per_message_target)}\n\n"
+                    f"…[Full output ({len(content):,} characters) persisted to "
+                    f"{persisted}; use the `read` tool to retrieve it.]…"
+                )
+            else:
+                new_content = truncate_middle_chars(content, per_message_target)
+            old_len = len(content)
+            messages.replace_at(
+                start + gi, msg.model_copy(update={"content": new_content})
+            )
+            total -= old_len - len(new_content)
 
 
 class ContextWarningMiddleware:

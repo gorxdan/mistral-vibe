@@ -13,14 +13,19 @@ import contextlib
 import logging
 import os
 from pathlib import Path
+import re
 import tempfile
 
 import yaml
 
-from vibe.core.memory.models import MemoryEntry, MemoryMetadata
+from vibe.core.memory.models import MemoryEntry, MemoryMetadata, _SLUG
 from vibe.core.skills.parser import SkillParseError, parse_skill_markdown
 
 logger = logging.getLogger(__name__)
+
+# Compiled slug pattern (same source as MemoryMetadata.id) for the delete path,
+# which bypasses the pydantic model and interpolates the id into a path.
+_ID_RE = re.compile(_SLUG)
 
 
 class MemoryStore:
@@ -127,6 +132,12 @@ class MemoryStore:
         return path
 
     def delete(self, memory_id: str) -> bool:
+        # Validate against the slug pattern before interpolating into a path:
+        # the add/update paths enforce this via MemoryMetadata, but delete()
+        # built `{memory_id}.md` directly, so an id like "../../x" could unlink
+        # a .md file outside the memory dir.
+        if not _ID_RE.match(memory_id):
+            return False
         for d in self._search_dirs():
             path = d / f"{memory_id}.md"
             if path.exists():

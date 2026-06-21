@@ -20,8 +20,11 @@ def _provider(cache: ProviderCacheConfig | None = None) -> ProviderConfig:
 # --------------------------------------------------------------------------- #
 
 
-def test_hint_off_by_default_returns_none() -> None:
-    assert build_cache_hint(_provider(), [{"role": "user", "content": "hi"}]) is None
+def test_default_passthrough_is_inert_empty_fragment() -> None:
+    # Default is mode="explicit", style="passthrough" with no extra_body/cache_key,
+    # so the hint is an empty fragment. The generic caller merges hint only when
+    # truthy (`if hint:`), so an empty fragment is a no-op on the request body.
+    assert build_cache_hint(_provider(), [{"role": "user", "content": "hi"}]) == {}
 
 
 def test_passthrough_merges_extra_body_and_cache_key() -> None:

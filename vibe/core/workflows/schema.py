@@ -106,6 +106,42 @@ def validate_against_schema(value: Any, schema: dict) -> list[ValidationError]:
     return _validate_value(value, schema, "$")
 
 
+def _strip_object_unknown(value: Any, schema: dict) -> Any:
+    """Recursively remove object properties not declared in the schema's
+    ``properties``. Used as a lenient pre-step before validation so an agent
+    that emits extra fields (e.g. a free-form ``confidence`` note alongside
+    structured findings) still validates and yields a clean, schema-shaped
+    result, instead of either failing or passing the extras through to the host.
+
+    Strips at every object node that has a ``properties`` map; arrays are
+    recursed element-wise; non-object values are returned unchanged. Unknown
+    properties on objects with no ``properties`` key are preserved (the schema
+    makes no claim about shape there).
+    """
+    if isinstance(value, list):
+        item_schema = schema.get("items") if isinstance(schema, dict) else None
+        if isinstance(item_schema, dict):
+            return [_strip_object_unknown(v, item_schema) for v in value]
+        return list(value)
+    if not isinstance(value, dict) or not isinstance(schema, dict):
+        return value
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return value
+    out: dict[str, Any] = {}
+    for k, v in value.items():
+        if k not in props:
+            continue
+        out[k] = _strip_object_unknown(v, props[k])
+    return out
+
+
+def strip_unknown_properties(value: Any, schema: dict) -> Any:
+    """Public entry point for the lenient pre-validation strip. Returns a new
+    value with unknown properties removed; the input is not mutated."""
+    return _strip_object_unknown(value, schema)
+
+
 def build_response_format(schema: dict) -> dict:
     return {
         "type": "json_schema",

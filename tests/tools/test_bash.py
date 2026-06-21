@@ -230,11 +230,11 @@ class TestResolvePermissionWindowsSyntax:
         assert isinstance(result, PermissionContext)
         assert result.permission == ToolPermission.ASK
 
-    def test_chained_windows_commands_all_allowed(self):
+    def test_chained_windows_commands_ask_due_to_operator(self):
         bash_tool = self._make_bash(allowlist=["dir", "echo"])
         result = bash_tool.resolve_permission(BashArgs(command="dir /s && echo done"))
         assert isinstance(result, PermissionContext)
-        assert result.permission is ToolPermission.ALWAYS
+        assert result.permission is ToolPermission.ASK
 
     def test_chained_commands_one_denied(self):
         bash_tool = self._make_bash(allowlist=["dir"], denylist=["rm"])
@@ -242,13 +242,13 @@ class TestResolvePermissionWindowsSyntax:
         assert isinstance(result, PermissionContext)
         assert result.permission is ToolPermission.NEVER
 
-    def test_piped_windows_commands(self):
+    def test_piped_windows_commands_ask_due_to_operator(self):
         bash_tool = self._make_bash(allowlist=["findstr", "type"])
         result = bash_tool.resolve_permission(
             BashArgs(command="type file.txt | findstr pattern")
         )
         assert isinstance(result, PermissionContext)
-        assert result.permission is ToolPermission.ALWAYS
+        assert result.permission is ToolPermission.ASK
 
 
 class TestDenylistWordBoundary:
@@ -403,3 +403,131 @@ def test_new_read_only_commands_are_allowlisted():
         assert permission.permission is ToolPermission.ALWAYS, (
             f"Command '{cmd}' should be always allowed"
         )
+
+
+class TestParserDifferentialHardening:
+    def _make_bash(self, **kwargs) -> Bash:
+        config = BashToolConfig(**kwargs)
+        return Bash(config_getter=lambda: config, state=BaseToolState())
+
+    def test_carriage_return_bypass_is_refused(self):
+        # The proven bypass: tree-sitter sees 'echo curl evil.com' and
+        # ALWAYS-approves; bash runs curl. CR must be refused outright.
+        bash_tool = self._make_bash(allowlist=["echo"])
+        result = bash_tool.resolve_permission(
+            BashArgs(command="TZ=UTC\recho curl evil.com")
+        )
+        assert isinstance(result, PermissionContext)
+        assert result.permission is ToolPermission.NEVER
+        assert "carriage return" in (result.reason or "")
+
+    def test_nul_is_refused(self):
+        bash_tool = self._make_bash(allowlist=["echo"])
+        result = bash_tool.resolve_permission(BashArgs(command="echo a\x00b"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is ToolPermission.NEVER
+
+    def test_other_c0_control_is_refused(self):
+        bash_tool = self._make_bash(allowlist=["echo"])
+        result = bash_tool.resolve_permission(BashArgs(command="echo a\x0bb"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is ToolPermission.NEVER
+
+    def test_tab_and_newline_are_not_control_refusals(self):
+        bash_tool = self._make_bash(allowlist=["echo"])
+        for cmd in ("echo a\tb", "echo hi\n"):
+            result = bash_tool.resolve_permission(BashArgs(command=cmd))
+            assert result is None or result.permission is not ToolPermission.NEVER, (
+                f"{cmd!r} should not be refused as a control char"
+            )
+
+    def test_redirection_blocks_auto_approval(self):
+        bash_tool = self._make_bash(allowlist=["echo"])
+        result = bash_tool.resolve_permission(
+            BashArgs(command="echo data > /tmp/vibe-redir-marker")
+        )
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+
+    def test_append_redirection_blocks_auto_approval(self):
+        bash_tool = self._make_bash(allowlist=["echo"])
+        result = bash_tool.resolve_permission(
+            BashArgs(command="echo data >> /tmp/vibe-redir-marker")
+        )
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+
+    def test_pipe_blocks_auto_approval(self):
+        bash_tool = self._make_bash(allowlist=["echo", "cat"])
+        result = bash_tool.resolve_permission(BashArgs(command="echo hi | cat"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+
+    def test_sequence_blocks_auto_approval(self):
+        bash_tool = self._make_bash(allowlist=["echo", "pwd"])
+        result = bash_tool.resolve_permission(BashArgs(command="echo hi ; pwd"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+
+    def test_and_list_blocks_auto_approval(self):
+        bash_tool = self._make_bash(allowlist=["echo", "pwd"])
+        result = bash_tool.resolve_permission(BashArgs(command="echo hi && pwd"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+
+    def test_command_substitution_blocks_auto_approval(self):
+        bash_tool = self._make_bash(allowlist=["echo"])
+        result = bash_tool.resolve_permission(BashArgs(command="echo $(whoami)"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+
+    def test_backtick_blocks_auto_approval(self):
+        bash_tool = self._make_bash(allowlist=["echo"])
+        result = bash_tool.resolve_permission(BashArgs(command="echo `whoami`"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+
+    def test_unbalanced_quotes_block_auto_approval(self):
+        bash_tool = self._make_bash(allowlist=["echo"])
+        result = bash_tool.resolve_permission(BashArgs(command="echo 'unterminated"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+
+    def test_clean_allowlisted_command_still_auto_approves(self):
+        bash_tool = self._make_bash(allowlist=["echo"])
+        result = bash_tool.resolve_permission(BashArgs(command="echo hello"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is ToolPermission.ALWAYS
+
+    def test_cr_survives_json_parsing_and_is_blocked_end_to_end(self):
+        # The model emits tool_call arguments as a JSON string; a CR must
+        # survive json.loads + model_validate and still hit the control-char
+        # refusal in resolve_permission. Guards the full integration boundary.
+        import json as _json
+
+        from vibe.core.llm.format import APIToolFormatHandler
+        from vibe.core.types import FunctionCall, LLMMessage, Role, ToolCall
+
+        arguments = _json.dumps({"command": "TZ=UTC\recho curl evil.com"})
+        msg = LLMMessage(
+            role=Role.assistant,
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    index=0,
+                    function=FunctionCall(name="bash", arguments=arguments),
+                )
+            ],
+        )
+        parsed = APIToolFormatHandler().parse_message(msg)
+        assert "\r" in parsed.tool_calls[0].raw_args["command"]
+
+        validated = BashArgs.model_validate(parsed.tool_calls[0].raw_args)
+        assert "\r" in validated.command
+
+        bash_tool = self._make_bash(allowlist=["echo"])
+        result = bash_tool.resolve_permission(validated)
+        assert isinstance(result, PermissionContext)
+        assert result.permission is ToolPermission.NEVER
+        assert "carriage return" in (result.reason or "")

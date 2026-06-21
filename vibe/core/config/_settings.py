@@ -141,6 +141,34 @@ class TomlFileSettingsSource(PydanticBaseSettingsSource):
         if file != user_file and user_file.is_file():
             user_data = self._read_toml(user_file)
             data = self._deep_merge(user_data, data)
+        # Confine project-sourced plugin_paths to the trust root: a project
+        # config is only loaded after the user trusts the workdir, but that
+        # trust must not extend to arbitrary absolute paths the project can
+        # name. Drop any entry that escapes the project root, with a warning,
+        # before the value reaches the field validator / loader.
+        project_root = mgr._trusted_workdir  # type: ignore[attr-defined]
+        if project_root is not None and isinstance(data.get("plugin_paths"), list):
+            root_resolved = Path(project_root).resolve()
+            kept: list[Any] = []
+            for entry in data["plugin_paths"]:
+                try:
+                    resolved = Path(str(entry)).expanduser().resolve()
+                    contained = (
+                        resolved == root_resolved
+                        or resolved.is_relative_to(root_resolved)
+                    )
+                except (OSError, ValueError):
+                    contained = False
+                if contained:
+                    kept.append(entry)
+                else:
+                    logger.warning(
+                        "plugin_paths entry %r from project config escapes the "
+                        "trusted project root %s; dropping",
+                        entry,
+                        root_resolved,
+                    )
+            data["plugin_paths"] = kept
         return data
 
     def get_field_value(
@@ -220,7 +248,7 @@ class SafetyJudgeConfig(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    enabled: bool = False
+    enabled: bool = True
     # Alias of a model from ``[[models]]`` to use as the judge. If unset or not
     # found, the judge stays disabled regardless of ``enabled``.
     model: str | None = None
@@ -281,7 +309,7 @@ class MicrocompactConfig(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    enabled: bool = False  # opt-in, like safety_judge
+    enabled: bool = True
     high_watermark: float = 0.8
     target: float = 0.7
     per_message_cap_tokens: int = 2000  # max tokens kept per compressed message
@@ -289,19 +317,17 @@ class MicrocompactConfig(BaseSettings):
 
 
 class MemoryConfig(BaseSettings):
-    """File-based, LLM-selected cross-session memory (opt-in)."""
+    """File-based, LLM-selected cross-session memory (on by default)."""
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    enabled: bool = False
+    enabled: bool = True
     select_mode: Literal["per-turn", "per-session", "always"] = "per-turn"
     model: str | None = None  # alias; falls back to compaction/active model
     max_selected: int = 5
     max_inject_chars: int = 8000
     max_entries_scanned: int = 200
     timeout: float = 20.0
-    auto_extract: bool = False
-    project_writes: bool = False
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -309,8 +335,25 @@ class SandboxConfig(BaseModel):
     """OS-level sandbox for the bash tool (opt-in, defense-in-depth).
 
     A plain BaseModel (not BaseSettings): a security control must NOT be
-    silently driven by stray environment variables. Default disabled → bash
+    silently driven by stray environment variables. Default disabled -> bash
     behaves exactly as before.
+
+    Backend capability (what ``write_dirs`` / ``allow_network`` actually buy
+    you, by resolved backend):
+
+    - ``bwrap`` (Linux, preferred): full filesystem read-only confinement with
+      ``write_dirs`` bind-mounted writable; network enforcement via a separate
+      namespace.
+    - ``unshare`` (Linux fallback, auto-selected when bwrap is absent): PID/IPC
+      namespace isolation ONLY. ``write_dirs`` and ``allow_network`` are NOT
+      enforced — commands can still read/write anywhere the running user can,
+      and the network is not isolated. A loud warning is emitted at spawn time
+      when this backend is used with containment requested. Install bubblewrap
+      for real containment.
+    - ``sandbox-exec`` (macOS, seatbelt): filesystem read-only with
+      ``write_dirs`` allow-listed; network allow/deny enforced.
+    - ``none`` (Windows, or nothing available): no sandbox. ``require_backend``
+      controls whether this fails closed or runs unsandboxed.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -370,17 +413,20 @@ DEFAULT_VIBE_BASE_URL = "https://chat.mistral.ai"
 
 
 class ProviderCacheConfig(BaseModel):
-    """Opt-in prompt-cache hints for the generic/OpenAI-compatible path.
+    """Prompt-cache hints for the generic/OpenAI-compatible path.
 
-    Default 'off' — the dominant providers (OpenAI, DeepSeek, GLM, Together,
-    Groq) auto-cache prefixes with no hints. Only enable for a provider whose
-    auto-cache hit ratio is poor AND that documents an explicit cache knob.
+    Defaults to ``mode="explicit"``, ``style="passthrough"``. With the
+    passthrough style the hint is inert unless ``extra_body`` / ``cache_key`` is
+    set per provider, so enabling by default does not mutate request bodies.
+    Most generic providers (OpenAI, DeepSeek, GLM, Together, Groq) auto-cache
+    prefixes anyway; set ``style="anthropic-compat"`` only for a provider that
+    documents an Anthropic-style cache breakpoint and needs it.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    mode: Literal["off", "explicit"] = "off"
-    style: Literal["off", "anthropic-compat", "passthrough"] = "off"
+    mode: Literal["off", "explicit"] = "explicit"
+    style: Literal["off", "anthropic-compat", "passthrough"] = "passthrough"
     extra_body: dict[str, Any] = Field(default_factory=dict)
     cache_key: str | None = None
 
@@ -396,8 +442,9 @@ class ProviderConfig(BaseModel):
     reasoning_field_name: str = "reasoning_content"
     # Live-discover models from this provider's OpenAI-compatible /models
     # endpoint (e.g. a local ollama/llama.cpp server) and surface them in the
-    # model picker without a per-model config block. Off by default.
-    discover_models: bool = False
+    # model picker without a per-model config block. On by default; discovery is
+    # best-effort (2s timeout, never blocks startup) and dedupes against config.
+    discover_models: bool = True
     project_id: str = ""
     region: str = ""
     extra_headers: dict[str, str] = Field(default_factory=dict)
@@ -807,9 +854,9 @@ class VibeConfig(BaseSettings):
     theme: str = DEFAULT_THEME
     disable_welcome_banner_animation: bool = False
     autocopy_to_clipboard: bool = True
-    file_watcher_for_autocomplete: bool = False
+    file_watcher_for_autocomplete: bool = True
     displayed_workdir: str = ""
-    context_warnings: bool = False
+    context_warnings: bool = True
     voice_mode_enabled: bool = False
     narrator_enabled: bool = False
     active_transcribe_model: str = DEFAULT_ACTIVE_TRANSCRIBE_MODEL_CONFIG.alias
@@ -821,8 +868,9 @@ class VibeConfig(BaseSettings):
     applied_migrations: list[str] = Field(default_factory=list, exclude=True)
     system_prompt_id: str = SystemPrompt.CLI
     compaction_prompt_id: str = UtilityPrompt.COMPACT
-    include_commit_signature: bool = False
+    include_commit_signature: bool = True
     include_humanizer_guidance: bool = True
+    caveman_thinking: bool = True
     include_model_info: bool = True
     include_project_context: bool = True
     include_prompt_detail: bool = True
@@ -933,6 +981,15 @@ class VibeConfig(BaseSettings):
         description=(
             "Additional directories to search for custom agent profiles. "
             "Each path may be absolute or relative to the current working directory."
+        ),
+    )
+    prompt_paths: list[Path] = Field(
+        default_factory=list,
+        description=(
+            "Additional directories to search for custom prompt (.md) files. "
+            "Searched before the builtin prompts, so an id here overrides a "
+            "builtin of the same stem. Each path may be absolute or relative "
+            "to the current working directory."
         ),
     )
     plugin_paths: list[Path] = Field(
@@ -1076,7 +1133,7 @@ class VibeConfig(BaseSettings):
 
     @property
     def system_prompt(self) -> str:
-        return load_system_prompt(self.system_prompt_id)
+        return load_system_prompt(self.system_prompt_id, extra_dirs=self.prompt_paths)
 
     @property
     def compaction_prompt(self) -> str:
@@ -1084,6 +1141,7 @@ class VibeConfig(BaseSettings):
             self.compaction_prompt_id,
             setting_name="compaction_prompt_id",
             builtins={"compact": UtilityPrompt.COMPACT.path},
+            extra_dirs=self.prompt_paths,
         )
 
     def get_active_model(self) -> ModelConfig:
@@ -1271,6 +1329,13 @@ class VibeConfig(BaseSettings):
     @field_validator("workflow_paths", mode="before")
     @classmethod
     def _expand_workflow_paths(cls, v: Any) -> list[Path]:
+        if not v:
+            return []
+        return [Path(p).expanduser().resolve() for p in v]
+
+    @field_validator("prompt_paths", mode="before")
+    @classmethod
+    def _expand_prompt_paths(cls, v: Any) -> list[Path]:
         if not v:
             return []
         return [Path(p).expanduser().resolve() for p in v]

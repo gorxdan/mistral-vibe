@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import shlex
 import time
 from typing import ClassVar, Literal, final
 
@@ -302,6 +303,62 @@ def _blocking_sleep_reason(command: str) -> str | None:
     )
 
 
+# C0 control chars (minus \t=\x09 and \n=\x0a, which are legitimate whitespace)
+# plus DEL. \r is the CR differential: bash treats it as a token boundary in
+# some configs while tree-sitter swallows it, so the validator and the shell
+# disagree on what runs. NUL and the rest have no valid use in a command.
+_FORBIDDEN_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0d\x0e-\x1f\x7f]")
+
+# Shell operators that either tree-sitter drops from its extracted command text
+# (redirections) or that compose commands in ways the allowlist prefix check is
+# not sound for (pipes, lists, substitution). Presence forces ASK even when the
+# leading command word is allowlisted. Longer/compound forms first so the
+# reported operator is the most specific.
+_SIDE_EFFECTING_OPERATORS = (">>", "||", "&&", ">", "|", ";", "$(", "`")
+
+
+def _forbidden_control_char_reason(command: str) -> str | None:
+    match = _FORBIDDEN_CONTROL_RE.search(command)
+    if match is None:
+        return None
+    char = match.group(0)
+    label = {
+        "\r": "carriage return (\\r)",
+        "\x00": "NUL",
+        "\x7f": "DEL",
+    }.get(char, f"control char U+{ord(char):04X}")
+    return (
+        f"Command contains {label}, which has no legitimate use in a single "
+        "command string and can make the security validator disagree with the "
+        "shell on tokenization. Rewrite the command without it."
+    )
+
+
+def _auto_approval_blocker(command: str) -> str | None:
+    """Return a reason the command must not resolve to ALWAYS, even when its
+    leading words are allowlisted; None permits auto-approval.
+
+    Side-effecting shell operators compose or redirect in ways the prefix
+    allowlist check cannot soundly approve, and a shlex tokenization failure
+    means tree-sitter's view of the command may not match what the shell runs.
+    """
+    for op in _SIDE_EFFECTING_OPERATORS:
+        if op in command:
+            return (
+                f"Command uses shell operator '{op}'. The allowlist inspects "
+                "only the leading command word, so it cannot soundly "
+                "auto-approve composition or redirection."
+            )
+    try:
+        shlex.split(command, posix=True)
+    except ValueError:
+        return (
+            "Command could not be tokenized (unbalanced quotes); the "
+            "validator's view may not match what the shell executes."
+        )
+    return None
+
+
 class BashToolConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ASK
     max_output_bytes: int = Field(
@@ -547,6 +604,11 @@ class Bash(
                 permission=ToolPermission.NEVER, reason=blocking_sleep
             )
 
+        if control_char := _forbidden_control_char_reason(args.command):
+            return PermissionContext(
+                permission=ToolPermission.NEVER, reason=control_char
+            )
+
         command_parts = _extract_commands(args.command)
         if not command_parts:
             return None
@@ -558,8 +620,10 @@ class Bash(
         ):
             return guardrail_permission
         outside_dirs = _collect_outside_dirs(command_parts)
+        blocker = _auto_approval_blocker(args.command)
         if (
-            self._is_unconditionally_allowed(command_parts, outside_dirs)
+            blocker is None
+            and self._is_unconditionally_allowed(command_parts, outside_dirs)
             and not guardrail_permission
         ):
             return PermissionContext(permission=ToolPermission.ALWAYS)
@@ -568,6 +632,10 @@ class Bash(
         if guardrail_permission:
             required.extend(guardrail_permission.required_permissions)
         if not required:
+            if blocker is not None:
+                return PermissionContext(
+                    permission=ToolPermission.ASK, reason=blocker
+                )
             return None
 
         return PermissionContext(

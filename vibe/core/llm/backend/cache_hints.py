@@ -48,7 +48,8 @@ def _tag_anthropic_compat(messages: list[dict[str, Any]]) -> None:
     string and already-converted list content.
     """
     sys_idx = next(
-        (i for i, m in enumerate(messages) if m.get("role") == "system"), None
+        (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "system"),
+        None,
     )
     usr_idx = next(
         (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),

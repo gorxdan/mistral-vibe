@@ -155,6 +155,29 @@ class TestResolveConfigFile:
         mgr = HarnessFilesManager(sources=("user",))
         assert mgr.config_file == VIBE_HOME.path / "config.toml"
 
+    def test_project_plugin_paths_confined_to_trust_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A trusted project config may name plugin_paths inside the project,
+        # but must NOT reach absolute paths outside it (otherwise a trusted
+        # project could point the loader at arbitrary code on disk).
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".vibe").mkdir()
+        (tmp_path / ".vibe" / "config.toml").write_text(
+            'plugin_paths = ["/etc/evil", "./inside"]\n', encoding="utf-8"
+        )
+        monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: True)
+
+        reset_harness_files_manager()
+        try:
+            init_harness_files_manager("user", "project")
+            config = VibeConfig.load()
+            paths = [str(p) for p in config.plugin_paths]
+            assert any(p.endswith("inside") for p in paths), paths
+            assert not any("etc" in p or "evil" in p for p in paths), paths
+        finally:
+            reset_harness_files_manager()
+
 
 class TestSaveUpdates:
     def test_merges_nested_tool_updates_without_materializing_defaults(

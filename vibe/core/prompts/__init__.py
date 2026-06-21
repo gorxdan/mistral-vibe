@@ -76,11 +76,20 @@ def _validate_prompt_id(prompt_id: str, setting_name: str) -> None:
 
 
 def load_prompt(
-    prompt_id: str, *, setting_name: str, builtins: Mapping[str, Path]
+    prompt_id: str,
+    *,
+    setting_name: str,
+    builtins: Mapping[str, Path],
+    extra_dirs: Iterable[Path] = (),
 ) -> str:
     _validate_prompt_id(prompt_id, setting_name)
     mgr = get_harness_files_manager()
-    custom_dirs = mgr.project_prompts_dirs + mgr.user_prompts_dirs
+    # extra_dirs (e.g. prompt_paths from config, including plugin-supplied dirs)
+    # take precedence over the harness-managed dirs, which in turn take
+    # precedence over builtins — so a user/plugin can override a builtin prompt
+    # by stem without forking the package.
+    custom_dirs: list[Path] = [Path(d) for d in extra_dirs]
+    custom_dirs += mgr.project_prompts_dirs + mgr.user_prompts_dirs
     for d in custom_dirs:
         path = (d / prompt_id).with_suffix(".md")
         if path.is_file():
@@ -96,13 +105,18 @@ def load_prompt(
     )
 
 
-def load_system_prompt(prompt_id: str) -> str:
+def load_system_prompt(prompt_id: str, *, extra_dirs: Iterable[Path] = ()) -> str:
     builtins: dict[str, Path] = {p.name.lower(): p.path for p in SystemPrompt}
     # Experiment variants may reference bundled .md files not in the enum.
     fallback = (PROMPTS_DIR / prompt_id).with_suffix(".md")
     if fallback.is_file():
         builtins.setdefault(prompt_id.lower(), fallback)
-    return load_prompt(prompt_id, setting_name="system_prompt_id", builtins=builtins)
+    return load_prompt(
+        prompt_id,
+        setting_name="system_prompt_id",
+        builtins=builtins,
+        extra_dirs=extra_dirs,
+    )
 
 
 __all__ = [

@@ -8,6 +8,7 @@ from vibe.core.types import LLMMessage, Role
 from vibe.core.utils.tokens import approx_token_count, truncate_middle_to_tokens
 
 COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000
+EXTRACTIVE_SUMMARY_MAX_TOKENS = 3_000
 _PREVIOUS_USER_MESSAGES_OPEN = "<previous_user_messages>"
 _PREVIOUS_USER_MESSAGES_CLOSE = "</previous_user_messages>"
 _COMPACTION_SUMMARY_OPEN = "<compaction_summary>"
@@ -128,3 +129,47 @@ def collect_prior_user_messages(
 
     selected.reverse()
     return selected
+
+
+def _first_line(text: str, limit: int = 200) -> str:
+    line = text.strip().splitlines()[0].strip() if text.strip() else ""
+    return line[:limit]
+
+
+def build_extractive_summary(
+    messages: Sequence[LLMMessage], *, max_tokens: int = EXTRACTIVE_SUMMARY_MAX_TOKENS
+) -> str:
+    """Structural, no-LLM summary of a transcript for degraded-mode compaction.
+
+    Used as a fallback when the compaction LLM call fails (outage, rate limit),
+    so a model error does not erase the entire session trace. Prior user
+    messages are preserved separately by ``collect_prior_user_messages`` and
+    rendered around this summary, so this focuses on what the agent did:
+    assistant turn intent (first line) and tool calls with result status lines.
+    """
+    lines = [
+        "Structural trace of prior turns (auto-generated; the model-generated "
+        "summary was unavailable for this compaction):"
+    ]
+    for msg in messages:
+        if msg.role == Role.assistant:
+            content = msg.content or ""
+            intent = (
+                "[content previously elided]"
+                if content.startswith("<vibe_")
+                else _first_line(content)
+            )
+            if intent:
+                lines.append(f"- assistant: {intent}")
+            for tc in msg.tool_calls or ():
+                lines.append(f"  - called tool: {tc.function.name}")
+        elif msg.role == Role.tool:
+            content = msg.content or ""
+            status = (
+                "[result previously compressed]"
+                if content.startswith("<vibe_")
+                else _first_line(content)
+            )
+            lines.append(f"  - {msg.name or 'tool'} result: {status}")
+    text = "\n".join(lines)
+    return truncate_middle_to_tokens(text, max_tokens)

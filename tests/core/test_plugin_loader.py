@@ -65,6 +65,26 @@ def test_path_escape_is_rejected(tmp_path) -> None:
     assert res.agent_paths == []
 
 
+def test_prompts_component_collected_into_prompt_paths(tmp_path) -> None:
+    # The plugin manifest advertises a `prompts` component; it must land in
+    # PluginLoadResult.prompt_paths and be folded onto config by
+    # apply_plugin_result (previously declared but dropped on the floor).
+    _make_plugin(
+        tmp_path,
+        "withprompts",
+        'name = "withprompts"\n',
+        dirs=["prompts"],
+    )
+    res = load_plugins_from_fs([], [tmp_path])
+    assert res.plugins == ["withprompts"]
+    assert any(p.name == "prompts" for p in res.prompt_paths)
+
+    config = build_test_vibe_config()
+    before = list(config.prompt_paths)
+    apply_plugin_result(config, res)
+    assert config.prompt_paths == [*before, *res.prompt_paths]
+
+
 def test_name_collision_is_an_issue(tmp_path) -> None:
     a = tmp_path / "a"
     b = tmp_path / "b"

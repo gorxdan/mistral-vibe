@@ -140,6 +140,15 @@ class VibeConfigSchema(ConfigSchema):
             "Each path may be absolute or relative to the current working directory."
         ),
     )
+    prompt_paths: Annotated[list[Path], WithConcatMerge()] = Field(
+        default_factory=list,
+        description=(
+            "Additional directories to search for custom prompt (.md) files. "
+            "Searched before the builtin prompts, so an id here overrides a "
+            "builtin of the same stem. Each path may be absolute or relative "
+            "to the current working directory."
+        ),
+    )
     plugin_paths: Annotated[list[Path], WithConcatMerge()] = Field(
         default_factory=list,
         description="Plugin root directories (each containing a plugin.toml).",
@@ -262,9 +271,9 @@ class VibeConfigSchema(ConfigSchema):
     vim_keybindings: Annotated[bool, WithReplaceMerge()] = False
     disable_welcome_banner_animation: Annotated[bool, WithReplaceMerge()] = False
     autocopy_to_clipboard: Annotated[bool, WithReplaceMerge()] = True
-    file_watcher_for_autocomplete: Annotated[bool, WithReplaceMerge()] = False
+    file_watcher_for_autocomplete: Annotated[bool, WithReplaceMerge()] = True
     displayed_workdir: Annotated[str, WithReplaceMerge()] = ""
-    context_warnings: Annotated[bool, WithReplaceMerge()] = False
+    context_warnings: Annotated[bool, WithReplaceMerge()] = True
     voice_mode_enabled: Annotated[bool, WithReplaceMerge()] = False
     narrator_enabled: Annotated[bool, WithReplaceMerge()] = False
     bypass_tool_permissions: Annotated[bool, WithReplaceMerge()] = False
@@ -272,8 +281,9 @@ class VibeConfigSchema(ConfigSchema):
     enable_telemetry: Annotated[bool, WithReplaceMerge()] = True
     system_prompt_id: Annotated[str, WithReplaceMerge()] = SystemPrompt.CLI
     compaction_prompt_id: Annotated[str, WithReplaceMerge()] = UtilityPrompt.COMPACT
-    include_commit_signature: Annotated[bool, WithReplaceMerge()] = False
+    include_commit_signature: Annotated[bool, WithReplaceMerge()] = True
     include_humanizer_guidance: Annotated[bool, WithReplaceMerge()] = True
+    caveman_thinking: Annotated[bool, WithReplaceMerge()] = True
     include_model_info: Annotated[bool, WithReplaceMerge()] = True
     include_project_context: Annotated[bool, WithReplaceMerge()] = True
     include_prompt_detail: Annotated[bool, WithReplaceMerge()] = True

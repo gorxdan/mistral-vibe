@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from vibe.core.compaction import (
+    build_extractive_summary,
     collect_prior_user_messages,
     parse_previous_user_messages,
     render_compaction_context,
 )
-from vibe.core.types import LLMMessage, Role
+from vibe.core.types import FunctionCall, LLMMessage, Role, ToolCall
 
 _PREFIX = "Another language model started to solve this problem"
 
@@ -149,3 +150,45 @@ def test_only_assistant_and_system_around_users() -> None:
     out = collect_prior_user_messages(messages, _PREFIX)
     assert [m.content for m in out] == ["u1", "u2"]
     assert all(m.role == Role.user for m in out)
+
+
+def test_extractive_summary_captures_assistant_intent_and_tools() -> None:
+    messages = [
+        LLMMessage(
+            role=Role.assistant,
+            content="I will read the config file.",
+            tool_calls=[
+                ToolCall(
+                    id="c1",
+                    index=0,
+                    function=FunctionCall(name="read", arguments='{"file_path":"x"}'),
+                )
+            ],
+        ),
+        LLMMessage(
+            role=Role.tool, content="port: 8080", tool_call_id="c1", name="read"
+        ),
+    ]
+    summary = build_extractive_summary(messages)
+    assert "Structural trace" in summary
+    assert "I will read the config file." in summary
+    assert "read" in summary  # tool name appears
+    assert "port: 8080" in summary  # tool result first line
+
+
+def test_extractive_summary_marks_elided_content() -> None:
+    messages = [
+        LLMMessage(role=Role.assistant, content="<vibe_snipped> 300 tokens elided"),
+        LLMMessage(
+            role=Role.tool, content="<vibe_microcompacted> [...]", tool_call_id="c1"
+        ),
+    ]
+    summary = build_extractive_summary(messages)
+    assert "[content previously elided]" in summary
+    assert "[result previously compressed]" in summary
+
+
+def test_extractive_summary_respects_token_budget() -> None:
+    messages = [LLMMessage(role=Role.assistant, content="line " + "z" * 10_000)]
+    summary = build_extractive_summary(messages, max_tokens=10)
+    assert "[... truncated ...]" in summary

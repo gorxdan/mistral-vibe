@@ -15,6 +15,7 @@ Backends, by platform:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -22,6 +23,8 @@ import sys
 import tempfile
 
 from vibe.core.utils import is_windows
+
+logger = logging.getLogger(__name__)
 
 # Env vars allowed through when scrubbing (everything else — API keys, tokens,
 # cloud creds — is dropped). LC_* is allowed by prefix below.
@@ -73,6 +76,47 @@ def detect_backend(override: str = "auto") -> str:
     return "none"
 
 
+# BUBBLEWRAP_INSTALL_NUDGE is surfaced to the user (UI toast / startup issue)
+# when the sandbox is enabled with containment but only the `unshare` backend
+# is available. The goal is to convert a silent limitation into a one-time
+# actionable prompt: install bubblewrap for real filesystem confinement.
+BUBBLEWRAP_INSTALL_NUDGE = (
+    "Sandbox is enabled, but bubblewrap (bwrap) isn't installed — only the "
+    "'unshare' fallback is available, which provides namespace isolation but "
+    "NO filesystem write confinement: sandboxed commands can still read/write "
+    "anywhere you can. Install bubblewrap for real containment:\n"
+    "  Debian/Ubuntu: sudo apt install bubblewrap\n"
+    "  Fedora/RHEL:   sudo dnf install bubblewrap\n"
+    "  Arch:          sudo pacman -S bubblewrap\n"
+    "  macOS:         brew install bubblewrap\n"
+    "(or disable the sandbox / set backend='unshare' to silence this)"
+)
+
+
+def unshare_confinement_nudge(
+    *,
+    sandbox_enabled: bool,
+    backend_override: str,
+    write_dirs: list[str],
+    allow_network: bool,
+) -> str | None:
+    """Return the install-bubblewrap nudge message when the resolved backend is
+    `unshare` and the user asked for containment it cannot enforce; else None.
+
+    Pure (no side effects) so callers can invoke it freely to decide whether to
+    surface a UI prompt. Mirrors the runtime WARNING in build_sandbox_command,
+    but lifted to a one-time startup/first-use prompt instead of a per-command
+    log line.
+    """
+    if not sandbox_enabled:
+        return None
+    if detect_backend(backend_override) != "unshare":
+        return None
+    if not write_dirs and allow_network:
+        return None
+    return BUBBLEWRAP_INSTALL_NUDGE
+
+
 def scrub_env(base: dict[str, str], passthrough: list[str]) -> dict[str, str]:
     """Keep only an allowlist of env vars (drops secrets), plus passthrough."""
     allowed = _ENV_ALLOWLIST | set(passthrough)
@@ -103,6 +147,21 @@ def build_sandbox_command(
     if backend == "bwrap":
         return _bwrap_argv(spec), "bwrap", None
     if backend == "unshare":
+        # The unshare backend provides PID/IPC/net namespace isolation but NO
+        # filesystem write confinement: it does not remount / read-only or
+        # bind-mount write_roots. If the spec asks for containment the user can
+        # reasonably believe is enforced, warn loudly so they know it is not —
+        # this is the common case on minimal containers/CI without bubblewrap,
+        # i.e. exactly the hosts where people reach for sandboxing.
+        if spec.write_roots or not spec.allow_network:
+            logger.warning(
+                "sandbox backend 'unshare' provides namespace isolation but NO "
+                "filesystem write confinement or network enforcement: write_roots "
+                "and allow_network are IGNORED. Commands can still read/write "
+                "anywhere the running user can. Install bubblewrap (bwrap) for "
+                "real containment, or accept this by setting backend='unshare' "
+                "explicitly."
+            )
         return _unshare_argv(spec), "unshare", None
     if backend == "sandbox-exec":
         argv, profile = _seatbelt_argv(spec)
@@ -111,21 +170,26 @@ def build_sandbox_command(
 
 
 def _bwrap_argv(spec: SandboxSpec) -> list[str]:
+    # bwrap applies operations left to right inside the new namespace, so the
+    # read-only root bind MUST precede the pseudo-filesystem overlays. Placing
+    # --ro-bind / / after --dev/--proc/--tmpfs layers the read-only root over
+    # them and makes /tmp (etc.) read-only, breaking any command that writes to
+    # /tmp (mktemp, pip, compilers, editors, sort, ...).
     argv = [
         "bwrap",
         "--die-with-parent",
         "--unshare-pid",
         "--unshare-uts",
         "--unshare-ipc",
+        "--ro-bind",
+        "/",
+        "/",
         "--dev",
         "/dev",
         "--proc",
         "/proc",
         "--tmpfs",
         "/tmp",
-        "--ro-bind",
-        "/",
-        "/",
     ]
     if not spec.allow_network:
         argv.append("--unshare-net")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from textual.app import ComposeResult
@@ -31,6 +31,8 @@ class BannerState:
     hooks_count: int = 0
     plan_description: str | None = None
     safety_judge: str | None = None
+    # Optional feature toggles surfaced as a startup checklist ([x]/[ ] per flag).
+    features: list[tuple[str, bool]] = field(default_factory=list)
 
 
 class Banner(Static):
@@ -71,6 +73,10 @@ class Banner(Static):
                 with Horizontal(classes="banner-line"):
                     yield NoMarkupStatic("", id="banner-meta-counts")
                 with Horizontal(classes="banner-line"):
+                    yield NoMarkupStatic(
+                        self._features_text(self._initial_state), id="banner-features"
+                    )
+                with Horizontal(classes="banner-line"):
                     yield NoMarkupStatic("Type ", classes="banner-meta")
                     yield NoMarkupStatic("/help", classes="banner-cmd")
                     yield NoMarkupStatic(" for more information", classes="banner-meta")
@@ -84,6 +90,9 @@ class Banner(Static):
         self.query_one("#banner-model", NoMarkupStatic).update(self.state.active_model)
         self.query_one("#banner-meta-counts", NoMarkupStatic).update(
             self._format_meta_counts()
+        )
+        self.query_one("#banner-features", NoMarkupStatic).update(
+            self._format_features()
         )
         self.query_one("#banner-user-plan", NoMarkupStatic).update(self._format_plan())
 
@@ -139,7 +148,45 @@ class Banner(Static):
             hooks_count=hooks_count,
             plan_description=plan_description,
             safety_judge=safety_judge,
+            features=Banner._feature_flags(config),
         )
+
+    @staticmethod
+    def _feature_flags(config: VibeConfig) -> list[tuple[str, bool]]:
+        """Curated optional-feature toggles for the startup checklist.
+
+        Defensive against partial/Mock configs: every access falls back to a
+        safe default, and provider-derived flags are only computed when
+        ``providers`` is a real list (Mock configs return a non-iterable Mock).
+        """
+        shaping = getattr(config, "context_shaping", None)
+
+        def _on(obj: object, attr: str) -> bool:
+            return bool(getattr(obj, attr, False))
+
+        providers = getattr(config, "providers", None)
+        discover = cache = False
+        if isinstance(providers, list):
+            discover = any(getattr(p, "discover_models", False) for p in providers)
+            cache = any(
+                getattr(getattr(p, "cache", None), "mode", "off") == "explicit"
+                for p in providers
+            )
+        return [
+            ("snip", _on(getattr(shaping, "snip", None), "enabled")),
+            ("microcompact", _on(getattr(shaping, "microcompact", None), "enabled")),
+            ("context-warnings", _on(config, "context_warnings")),
+            ("file-watcher", _on(config, "file_watcher_for_autocomplete")),
+            ("commit-signature", _on(config, "include_commit_signature")),
+            ("memory", _on(getattr(config, "memory", None), "enabled")),
+            ("safety-judge", _on(getattr(config, "safety_judge", None), "enabled")),
+            (
+                "output-escalation",
+                _on(getattr(config, "max_output_escalation", None), "enabled"),
+            ),
+            ("model-discovery", bool(discover)),
+            ("provider-cache", bool(cache)),
+        ]
 
     def _format_meta_counts(self) -> str:
         parts = [_pluralize(self.state.models_count, "model")]
@@ -168,6 +215,22 @@ class Banner(Static):
         if self.state.safety_judge:
             parts.append(f"🛡 judge:{self.state.safety_judge}")
         return " · ".join(parts)
+
+    def _format_features(self) -> str:
+        return self._features_text(self.state)
+
+    @staticmethod
+    def _features_text(state: BannerState) -> str:
+        # Startup checklist of optional feature toggles. Empty (e.g. partial
+        # config in unit tests) renders as a blank line to keep the layout.
+        # Seeded at compose time from _initial_state (not just the reactive
+        # update) so the line is present in the very first rendered frame.
+        if not state.features:
+            return ""
+        tags = [
+            f"[{'x' if on else ' '}] {label}" for label, on in state.features
+        ]
+        return "Features:  " + "  ".join(tags)
 
     def _format_plan(self) -> str:
         return (

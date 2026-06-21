@@ -27,9 +27,7 @@ def _content(tokens: int) -> str:
 
 
 def _config(**shaping) -> object:
-    shaping.setdefault(
-        "snip", SnipConfig(keep_recent_turns=1, min_message_tokens=50)
-    )
+    shaping.setdefault("snip", SnipConfig(keep_recent_turns=1, min_message_tokens=50))
     shaping.setdefault("cache_prefix_guard_tokens", 50)
     cfg = build_test_vibe_config(context_shaping=ContextShapingConfig(**shaping))
     cfg.models[0].auto_compact_threshold = THRESHOLD
@@ -77,9 +75,7 @@ async def test_snip_elides_oldest_large_and_preserves_bookends() -> None:
     assert ctx.messages[1].content == "please do the thing"
     assert ctx.messages[-1].content == "recent reply"
     # At least one big message got elided.
-    assert any(
-        (m.content or "").startswith("<vibe_snipped>") for m in ctx.messages
-    )
+    assert any((m.content or "").startswith("<vibe_snipped>") for m in ctx.messages)
 
 
 @pytest.mark.asyncio
@@ -173,3 +169,36 @@ async def test_microcompact_truncates_oldest_oversized() -> None:
     compressed = [m for m in ctx.messages if "[... truncated ...]" in (m.content or "")]
     assert len(compressed) == 1
     assert ctx.messages[-1].content == "recent reply"  # suffix untouched
+
+
+@pytest.mark.asyncio
+async def test_microcompact_tags_with_sentinel() -> None:
+    cfg = _config(
+        microcompact=MicrocompactConfig(
+            enabled=True, high_watermark=0.6, target=0.5, per_message_cap_tokens=100
+        )
+    )
+    ctx = _ctx(_history(), cfg)
+    await MicrocompactMiddleware().before_turn(ctx)
+    tagged = [
+        m for m in ctx.messages if (m.content or "").startswith("<vibe_microcompacted>")
+    ]
+    assert len(tagged) == 1
+
+
+@pytest.mark.asyncio
+async def test_microcompact_is_idempotent() -> None:
+    cfg = _config(
+        microcompact=MicrocompactConfig(
+            enabled=True,
+            high_watermark=0.6,
+            target=0.5,
+            per_message_cap_tokens=100,
+            max_blocks_per_turn=10,  # exhaust the band in one pass
+        )
+    )
+    ctx = _ctx(_history(), cfg)
+    await MicrocompactMiddleware().before_turn(ctx)
+    snapshot = [m.content for m in ctx.messages]
+    await MicrocompactMiddleware().before_turn(ctx)
+    assert [m.content for m in ctx.messages] == snapshot

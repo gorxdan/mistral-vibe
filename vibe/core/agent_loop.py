@@ -26,7 +26,11 @@ from pydantic import BaseModel
 from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
-from vibe.core.compaction import collect_prior_user_messages, render_compaction_context
+from vibe.core.compaction import (
+    build_extractive_summary,
+    collect_prior_user_messages,
+    render_compaction_context,
+)
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.experiments import ExperimentManager
 from vibe.core.experiments.client import RemoteEvalClient
@@ -61,6 +65,7 @@ from vibe.core.middleware import (
     ResetReason,
     SnipMiddleware,
     TokenLimitMiddleware,
+    ToolResultBudgetMiddleware,
     TurnLimitMiddleware,
     make_plan_agent_reminder,
 )
@@ -106,6 +111,7 @@ from vibe.core.tools.permissions import (
     RequiredPermission,
 )
 from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
+from vibe.core.tools.tool_result_store import ToolResultStore
 from vibe.core.tracing import agent_span, set_tool_result, tool_span
 from vibe.core.trusted_folders import has_agents_md_file
 from vibe.core.types import (
@@ -171,6 +177,17 @@ logger = logging.getLogger(__name__)
 # blobs; this keeps one oversized result from blowing the context window (which
 # would otherwise hard-fail the turn). ~100k chars ≈ 25k tokens.
 MAX_TOOL_RESULT_CHARS = 100_000
+
+# Inline preview size (head 75% + tail 25%) when a result exceeds the cap and is
+# persisted to disk. Deliberately smaller than the cap so one oversized result
+# no longer costs ~25k tokens of context; the full output is recoverable via the
+# `read` tool using the path surfaced in the preview marker.
+TOOL_RESULT_PREVIEW_CHARS = 12_000
+
+# Aggregate cap on all tool results from a single parallel-tool-call turn.
+# Prevents N medium results (each under the per-result cap) from collectively
+# flooding context. Full content is persisted before any inline compression.
+AGGREGATE_TOOL_RESULT_CHARS = 200_000
 
 
 class ToolExecutionResponse(StrEnum):
@@ -357,6 +374,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         self.enable_streaming = enable_streaming
         self.middleware_pipeline = MiddlewarePipeline()
+        self.tool_result_store = ToolResultStore(
+            session_dir_getter=lambda: self.session_logger.session_dir
+        )
         self._setup_middleware()
 
         self.session_id = generate_session_id()
@@ -392,9 +412,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._judge_verdict_cache: OrderedDict[
             tuple[str, str, tuple[str, ...]], JudgeVerdict
         ] = OrderedDict()
-        self._judge_verdict_cache_maxsize: int = (
-            config.safety_judge.verdict_cache_size
-        )
+        self._judge_verdict_cache_maxsize: int = config.safety_judge.verdict_cache_size
         # Judge model alias the cached verdicts were produced under. When the
         # configured judge model changes mid-session, the cache is cleared so a
         # verdict from one model is never reused under another.
@@ -437,6 +455,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self.workflow_status_callback: (
             Callable[[str | None], list[dict[str, Any]]] | None
         ) = None
+        self.workflow_results_callback: Callable[..., dict[str, Any]] | None = None
         self.workflow_stop_callback: (
             Callable[[str | None, bool], dict[str, Any] | Awaitable[dict[str, Any]]]
             | None
@@ -948,6 +967,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         # Cheap, local context shapers run before the LLM-summary fallback.
         # Both no-op when disabled (read their config live), so registration is
         # unconditional and a mid-session config edit takes effect immediately.
+        self.middleware_pipeline.add(
+            ToolResultBudgetMiddleware(
+                self.tool_result_store,
+                AGGREGATE_TOOL_RESULT_CHARS,
+                keep_recent_messages=self.config.context_shaping.snip.keep_recent_turns,
+            )
+        )
         self.middleware_pipeline.add(SnipMiddleware())
         self.middleware_pipeline.add(MicrocompactMiddleware())
         self.middleware_pipeline.add(AutoCompactMiddleware())
@@ -1008,11 +1034,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 pass
 
     async def _run_compaction(
-        self,
-        old_tokens: int,
-        threshold: int,
-        *,
-        trigger: str = "auto",
+        self, old_tokens: int, threshold: int, *, trigger: str = "auto"
     ) -> AsyncGenerator[BaseEvent, None]:
         """Run history compaction, emitting start/end events + telemetry.
 
@@ -1023,7 +1045,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         """
         old_session_id = self.session_id
         old_parent_session_id = self.parent_session_id
+        old_cached = self.stats.last_turn_cached_tokens
         tool_call_id = str(uuid4())
+
+        logger.debug(
+            "compaction started (trigger=%s): context=%d threshold=%d cached=%d. "
+            "Expect a cache-read drop on the next turn — this is expected, not a "
+            "provider cache failure.",
+            trigger,
+            old_tokens,
+            threshold,
+            old_cached,
+        )
 
         yield CompactStartEvent(
             tool_call_id=tool_call_id,
@@ -1033,9 +1066,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         # Notify pre-compaction hooks (observe-only; never blocks compaction).
         try:
-            async for ev in self._run_pre_compact_hooks(
-                trigger, old_tokens, threshold
-            ):
+            async for ev in self._run_pre_compact_hooks(trigger, old_tokens, threshold):
                 yield ev
         except Exception as e:
             logger.warning("pre_compact hook failed (%s); compacting anyway", e)
@@ -1069,6 +1100,30 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return ConversationContext(
             messages=self.messages, stats=self.stats, config=self.config
         )
+
+    async def _try_reactive_shaping(self) -> bool:
+        """Aggressively run snip + microcompact to recover from a context
+        overflow without the paid compaction call.
+
+        Returns True only if the shapers actually reduced the estimated token
+        count (i.e. there was old history worth compressing). Mutates
+        ``self.messages`` in place via the shapers.
+        """
+        threshold = self.config.get_active_model().auto_compact_threshold
+        if threshold <= 0:
+            return False
+        ctx = self._get_context()
+        snip = SnipMiddleware()
+        microcompact = MicrocompactMiddleware()
+        start = snip._estimated_tokens(ctx)
+        for _ in range(12):  # bounded; microcompact does ~1 block/call
+            before = snip._estimated_tokens(ctx)
+            await snip.before_turn(ctx)
+            await microcompact.before_turn(ctx)
+            after = snip._estimated_tokens(ctx)
+            if after >= before:  # no further progress
+                break
+        return snip._estimated_tokens(ctx) < start
 
     def _build_backend_metadata(
         self, call_type: TelemetryCallType | None = None
@@ -1111,9 +1166,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         mem = self.config.memory
         model = None
         if mem.model:
-            model = next(
-                (m for m in self.config.models if m.alias == mem.model), None
-            )
+            model = next((m for m in self.config.models if m.alias == mem.model), None)
         if model is None:
             model = self.config.compaction_model or self.config.get_active_model()
         if not self.config.is_model_available(model):
@@ -1296,10 +1349,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         yield UserMessageEvent(content=user_msg, message_id=user_message.message_id)
 
-        block_reason, injected_ctx, hook_events = (
-            await self._dispatch_user_prompt_submit_hooks(
-                user_msg, user_message.message_id, bool(images)
-            )
+        (
+            block_reason,
+            injected_ctx,
+            hook_events,
+        ) = await self._dispatch_user_prompt_submit_hooks(
+            user_msg, user_message.message_id, bool(images)
         )
         for hook_event in hook_events:
             yield hook_event
@@ -1314,8 +1369,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 f"reason: {block_reason}"
             )
             blocked = LLMMessage(
-                role=Role.assistant,
-                content=f"Prompt blocked by hook: {block_reason}",
+                role=Role.assistant, content=f"Prompt blocked by hook: {block_reason}"
             )
             self.messages.append(blocked)
             yield AssistantEvent(
@@ -1346,6 +1400,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             should_break_loop = False
             first_llm_turn = True
             emergency_compacted = False
+            shaping_attempted = False
             # Output-escalation state is scoped to this user turn.
             self._max_output_override = None
             self._response_too_long_attempts = 0
@@ -1371,15 +1426,21 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                             user_cancelled = True
                         yield event
                 except ContextTooLongError:
-                    # Self-heal: compact once and retry the turn rather than
-                    # dead-ending with a manual /rewind+/compact message. If it
+                    # Self-heal: first try the cheap shapers aggressively (no LLM
+                    # call) to chip away at old history, and only fall back to the
+                    # nuclear LLM-summary compaction if they can't recover. If it
                     # recurs after compaction, surface the error as before.
                     if emergency_compacted:
                         raise
+                    if not shaping_attempted:
+                        shaping_attempted = True
+                        logger.warning(
+                            "Context overflow; trying reactive shaping before "
+                            "compaction"
+                        )
+                        if await self._try_reactive_shaping():
+                            continue
                     emergency_compacted = True
-                    logger.warning(
-                        "Context overflow; emergency-compacting and retrying turn"
-                    )
                     threshold = self.config.get_active_model().auto_compact_threshold
                     async for ev in self._run_compaction(
                         self.stats.context_tokens, threshold, trigger="emergency"
@@ -1394,8 +1455,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     if fallback is None:
                         raise
                     logger.warning(
-                        "Active model rate-limited; falling back to %r",
-                        fallback.alias,
+                        "Active model rate-limited; falling back to %r", fallback.alias
                     )
                     continue
                 except ResponseTooLongError:
@@ -1622,7 +1682,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent | None
         ] = asyncio.Queue()
 
-        readers = [tc for tc in tool_calls if getattr(tc.tool_class, "read_only", False)]
+        readers = [
+            tc for tc in tool_calls if getattr(tc.tool_class, "read_only", False)
+        ]
         writers = [
             tc for tc in tool_calls if not getattr(tc.tool_class, "read_only", False)
         ]
@@ -1840,6 +1902,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 terminal_emulator=self.terminal_emulator,
                 launch_workflow_callback=self.launch_workflow_callback,
                 workflow_status_callback=self.workflow_status_callback,
+                workflow_results_callback=self.workflow_results_callback,
                 workflow_stop_callback=self.workflow_stop_callback,
                 team_dir_callback=self.team_dir_callback,
                 background_registry=self.background_registry,
@@ -1913,7 +1976,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 return ToolDecision(
                     verdict=ToolExecutionResponse.SKIP,
                     approval_type=ToolPermission.NEVER,
-                    feedback=ctx.reason or f"Tool '{tool_name}' is permanently disabled",
+                    feedback=ctx.reason
+                    or f"Tool '{tool_name}' is permanently disabled",
                 )
             uncovered = [
                 rp
@@ -1935,10 +1999,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return await self._ask_approval(tool_name, args, tool_call_id, uncovered)
 
     async def _judge_tool_safety(
-        self,
-        tool_name: str,
-        args: BaseModel,
-        uncovered: list[RequiredPermission],
+        self, tool_name: str, args: BaseModel, uncovered: list[RequiredPermission]
     ) -> ToolDecision | None:
         """Consult the LLM safety judge for an ASK-gated call.
 
@@ -1985,14 +2046,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             # Refusal is otherwise invisible (looks identical to judge-off):
             # log it so it's clear the judge ran and deferred to the user.
             logger.info(
-                "Safety judge deferred tool %r to user: %s",
-                tool_name,
-                verdict.reason,
+                "Safety judge deferred tool %r to user: %s", tool_name, verdict.reason
             )
             return None
-        logger.info(
-            "Safety judge auto-approved tool %r: %s", tool_name, verdict.reason
-        )
+        logger.info("Safety judge auto-approved tool %r: %s", tool_name, verdict.reason)
         return ToolDecision(
             verdict=ToolExecutionResponse.EXECUTE,
             approval_type=ToolPermission.ALWAYS,
@@ -2080,24 +2137,21 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             verdict=verdict, approval_type=ToolPermission.ASK, feedback=feedback
         )
 
-    @staticmethod
-    def _apply_tool_result_budget(text: str) -> str:
-        """Cap a tool result to ``MAX_TOOL_RESULT_CHARS``, keeping head + tail.
+    def _apply_tool_result_budget(self, tool_call: ResolvedToolCall, text: str) -> str:
+        """Cap a tool result's inline size.
 
         A single oversized result (large file read, chatty MCP tool) can push
-        the context past the model limit and hard-fail the turn. Truncate in the
-        middle with a marker so both the start and the end stay visible.
+        the context past the model limit and hard-fail the turn. Results over
+        ``MAX_TOOL_RESULT_CHARS`` are persisted in full to the session log and
+        replaced inline with a smaller head+tail preview naming the persisted
+        path (recoverable via the ``read`` tool). When persistence is off, fall
+        back to permanent middle-truncation at the cap.
         """
-        if len(text) <= MAX_TOOL_RESULT_CHARS:
-            return text
-        head = MAX_TOOL_RESULT_CHARS * 3 // 4
-        tail = MAX_TOOL_RESULT_CHARS - head
-        elided = len(text) - head - tail
-        return (
-            f"{text[:head]}\n\n"
-            f"…[{elided} characters elided: tool result exceeded the "
-            f"{MAX_TOOL_RESULT_CHARS}-char budget]…\n\n"
-            f"{text[-tail:]}"
+        return self.tool_result_store.shape(
+            tool_call.call_id,
+            text,
+            preview_chars=TOOL_RESULT_PREVIEW_CHARS,
+            hard_cap=MAX_TOOL_RESULT_CHARS,
         )
 
     def _handle_tool_response(
@@ -2109,7 +2163,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         result: dict[str, Any] | None = None,
         span: trace.Span | None = None,
     ) -> None:
-        text = self._apply_tool_result_budget(text)
+        text = self._apply_tool_result_budget(tool_call, text)
         self.messages.append(
             LLMMessage.model_validate(
                 self.format_handler.create_tool_response_message(tool_call, text)
@@ -2511,8 +2565,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             )
 
             summary_prefix = UtilityPrompt.COMPACT_SUMMARY_PREFIX.read()
+            history_snapshot = list(self.messages)
             prior_user_messages = collect_prior_user_messages(
-                list(self.messages), summary_prefix
+                history_snapshot, summary_prefix
             )
 
             summary_request = self.config.compaction_prompt
@@ -2522,25 +2577,37 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 )
             self.stats.steps += 1
 
-            with self.messages.silent():
-                self.messages.append(
-                    LLMMessage(role=Role.user, content=summary_request)
-                )
-                summary_result = await self._chat(
-                    model_override=self.config.get_compaction_model()
-                )
+            summary_content = ""
+            try:
+                with self.messages.silent():
+                    self.messages.append(
+                        LLMMessage(role=Role.user, content=summary_request)
+                    )
+                    summary_result = await self._chat(
+                        model_override=self.config.get_compaction_model()
+                    )
 
-            if summary_result.usage is None:
-                raise AgentLoopLLMResponseError(
-                    "Usage data missing in compaction summary response"
-                )
-            summary_content = (summary_result.message.content or "").strip()
-            has_tool_calls = bool(summary_result.message.tool_calls)
-            if has_tool_calls or not summary_content:
+                if summary_result.usage is None:
+                    raise AgentLoopLLMResponseError(
+                        "Usage data missing in compaction summary response"
+                    )
+                summary_content = (summary_result.message.content or "").strip()
+                has_tool_calls = bool(summary_result.message.tool_calls)
+                if has_tool_calls or not summary_content:
+                    if self.config.raise_on_compaction_failure:
+                        reason = "tool_call" if has_tool_calls else "empty_summary"
+                        raise CompactionFailedError(reason)
+                    summary_content = ""
+            except Exception:
                 if self.config.raise_on_compaction_failure:
-                    reason = "tool_call" if has_tool_calls else "empty_summary"
-                    raise CompactionFailedError(reason)
-                summary_content = summary_content or "(no summary available)"
+                    raise
+                logger.warning(
+                    "compaction summary call failed; using extractive fallback"
+                )
+                summary_content = ""
+
+            if not summary_content:
+                summary_content = build_extractive_summary(history_snapshot)
 
             system_message = self.messages[0]
             compaction_context = render_compaction_context(

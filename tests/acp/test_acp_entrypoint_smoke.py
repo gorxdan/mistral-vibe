@@ -176,8 +176,8 @@ async def test_vibe_acp_initialize_and_new_session(vibe_home_dir: Path) -> None:
 
     try:
         assert initialize_response.protocol_version == PROTOCOL_VERSION
-        assert initialize_response.agent_info.name == "@mistralai/mistral-vibe"
-        assert initialize_response.agent_info.title == "Mistral Vibe"
+        assert initialize_response.agent_info.name == "chaton"
+        assert initialize_response.agent_info.title == "Chaton"
 
         session = await asyncio.wait_for(
             conn.new_session(cwd=str(Path.cwd()), mcp_servers=[]), timeout=10

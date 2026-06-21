@@ -354,7 +354,9 @@ async def test_compact_raises_on_empty_summary_when_flag_enabled() -> None:
 
 @pytest.mark.asyncio
 async def test_compact_falls_back_when_flag_disabled() -> None:
-    """With the flag off (default), empty content uses the legacy fallback."""
+    """With the flag off (default), empty content falls back to the extractive
+    structural trace rather than failing.
+    """
     backend = FakeBackend([[mock_llm_chunk(content="")]])
     cfg = build_test_vibe_config(models=make_test_models(auto_compact_threshold=999))
     agent = build_test_agent_loop(config=cfg, backend=backend)
@@ -362,7 +364,44 @@ async def test_compact_falls_back_when_flag_disabled() -> None:
     agent.stats.context_tokens = 100
 
     summary = await agent.compact()
-    assert summary == "(no summary available)"
+    assert "Structural trace of prior turns" in summary
+
+
+@pytest.mark.asyncio
+async def test_compact_falls_back_on_llm_error() -> None:
+    """When the compaction LLM call raises, the extractive fallback keeps the
+    session alive instead of propagating the failure.
+    """
+
+    class _RaisingBackend(FakeBackend):
+        async def complete(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("compaction model unavailable")
+
+    backend = _RaisingBackend([[mock_llm_chunk(content="unused")]])
+    cfg = build_test_vibe_config(models=make_test_models(auto_compact_threshold=999))
+    agent = build_test_agent_loop(config=cfg, backend=backend)
+    agent.messages.append(
+        LLMMessage(
+            role=Role.assistant,
+            content="I will read the file.",
+            tool_calls=[
+                ToolCall(
+                    id="c1",
+                    index=0,
+                    function=FunctionCall(name="read", arguments='{"file_path":"/x"}'),
+                )
+            ],
+        )
+    )
+    agent.messages.append(
+        LLMMessage(role=Role.tool, content="file contents here", tool_call_id="c1")
+    )
+    agent.stats.context_tokens = 100
+
+    summary = await agent.compact()
+    assert "Structural trace" in summary
+    assert "I will read the file." in summary
+    assert "read" in summary
 
 
 @pytest.mark.asyncio

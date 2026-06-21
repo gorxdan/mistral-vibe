@@ -49,6 +49,7 @@ class PluginLoadResult(BaseModel):
     skill_paths: list[Path] = Field(default_factory=list)
     tool_paths: list[Path] = Field(default_factory=list)
     workflow_paths: list[Path] = Field(default_factory=list)
+    prompt_paths: list[Path] = Field(default_factory=list)
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     hooks: list[HookConfig] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)

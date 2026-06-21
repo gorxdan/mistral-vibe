@@ -63,6 +63,7 @@ def make_config(
         include_model_info=False,
         include_commit_signature=False,
         include_humanizer_guidance=False,
+        caveman_thinking=False,
         enabled_tools=enabled_tools or [],
         tools=tools or {},
     )
