@@ -246,17 +246,17 @@ all confirmed against code and fixed here:
 
 1. **Editor was under-isolated.** Original predicate ("no allowlist = isolate")
    missed `editor` (`models.py:337` has an allowlist yet writes). Fixed: the
-   predicate now also triggers when the allowlist contains a write tool.
-   *Note: the existing workflow rule (`runtime.py:575`) has this same latent
-   gap; the generalized predicate supersedes it and should be pointed at from
-   `_validate_workflow_profile` too.*
+   predicate now also triggers when the allowlist contains a write tool. The
+   workflow rule (`_validate_workflow_profile`) now calls
+   `profile_requires_isolation` too, so `editor` is forced to
+   `isolation='worktree'` on both the `task()` and workflow paths.
 2. **Reviewer/debugger/security premise was false.** The draft assumed their
    bash was destructive; `_REVIEW_BASH_DENYLIST` (`models.py:149-171`)
    hard-denies destructive commands. They are read-jailed and stay in-process.
    The original Open Question #1 (isolate them via a stricter rule) is dropped.
 3. **`--agent auto-approve` hardcode** (`runtime.py:1412-1413`) would have made
    every isolated `task()` run as auto-approve, ignoring the requested profile.
-   Fixed: thread the real `agent` through.
+   Fixed: thread the real `agent` through (regression test added).
 
 The review also surfaced four omitted behavior changes, now in *Delivery* above:
 approval bypass, edit-visibility (→ `deliver=True` default for `task()`),
@@ -281,8 +281,8 @@ passthrough.
 - Streaming results from isolated subagents (v1 returns final stdout only).
 - `--parent-hooks` / `--parent-session` passthrough to restore hook/log locality.
 - Changing `task()` to accept a `contract=` (workflow-only concept).
-- Isolating the default workflow in-process agent beyond the existing
-  `isolation="worktree"` opt-in — workflows already enforce isolation for
-  full-tool profiles; this design's predicate fix should also be applied to
-  `_validate_workflow_profile` so `editor` is caught there too (a one-line
-  follow-up, noted above, not a separate spec).
+
+The workflow-path predicate wiring (formerly listed here as a one-line
+follow-up) landed in `d30c2e7`: `_validate_workflow_profile` now calls
+`profile_requires_isolation`, so `editor` is forced to `isolation='worktree'`
+on both the `task()` and workflow paths.
