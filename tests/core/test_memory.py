@@ -271,3 +271,58 @@ def test_project_memory_dir_hashes_trusted_root(monkeypatch, tmp_path) -> None:
     assert created == expected
     assert created.is_dir()
     assert (created / ".origin").read_text().strip() == str(root.resolve())
+
+
+def test_project_memory_dir_shared_across_worktrees(monkeypatch, tmp_path) -> None:
+    # All worktrees of one repo must resolve to ONE memory namespace so multiple
+    # agents/sessions on the same project share project memory regardless of
+    # which worktree path they run from.
+    import subprocess
+
+    from vibe.core.memory import store as store_mod
+
+    main = tmp_path / "main"
+    main.mkdir()
+    wt = tmp_path / "wt"
+    try:
+        subprocess.run(["git", "init", "-q", str(main)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(main),
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(main), "worktree", "add", "-q", str(wt)], check=True
+        )
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("git or git worktree unavailable")
+
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe_home"))
+
+    class _Mgr:
+        def __init__(self, roots: list) -> None:
+            self.project_roots = roots
+
+    monkeypatch.setattr(
+        "vibe.core.config.harness_files.get_harness_files_manager", lambda: _Mgr([main])
+    )
+    ns_main = store_mod.project_memory_dir()
+    monkeypatch.setattr(
+        "vibe.core.config.harness_files.get_harness_files_manager", lambda: _Mgr([wt])
+    )
+    ns_wt = store_mod.project_memory_dir()
+
+    assert ns_main is not None and ns_wt is not None
+    assert ns_main == ns_wt, "worktrees of one repo must share a memory namespace"

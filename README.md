@@ -595,7 +595,7 @@ max_inject_chars = 8000     # hard cap on total injected body text
 timeout = 20.0              # selector LLM timeout; on timeout, no memories
 ```
 
-Memories are written via the `manage_memory` tool. By default they are **global** (shared across every project). Pass `scope = "project"` to write to the current trusted project's private namespace under `~/.vibe/memory/projects/<hash>/` (keyed by `sha256` of the resolved working directory). Project memories never live inside the repo, so they cannot be committed, and they shadow same-id global memories for that project only. `scope = "project"` requires a trusted project directory.
+Memories are written via the `manage_memory` tool. By default they are **global** (shared across every project). Pass `scope = "project"` to write to the current trusted project's private namespace under `~/.vibe/memory/projects/<hash>/`. The namespace is keyed by the repository's git common dir, so every session and every git worktree of one repo shares the same project memory; different repos (and non-git directories) stay isolated. Project memories never live inside the repo, so they cannot be committed, and they shadow same-id global memories for that project only. `scope = "project"` requires a trusted project directory.
 
 ### TLS and Corporate Certificate Authorities
 

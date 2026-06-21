@@ -15,6 +15,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 
 import yaml
@@ -173,13 +174,39 @@ class MemoryStore:
             raise
 
 
+def _project_identity(workdir: Path) -> Path:
+    """Stable per-project identity for *workdir*.
+
+    Git's common dir is shared by the main worktree and every linked worktree
+    of one repo, so sessions across all of them collapse to one memory
+    namespace (the multi-agent/multi-worktree case). Older git returns it
+    relative, so resolve against workdir. Falls back to the workdir itself
+    outside git (per-path isolation).
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(workdir), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return workdir.resolve()
+    common = Path(out.stdout.strip())
+    common = common.resolve() if common.is_absolute() else (workdir / common).resolve()
+    return common if common.exists() else workdir.resolve()
+
+
 def project_memory_dir(*, create: bool = False) -> Path | None:
     """Current project's memory namespace under ``~/.vibe``, or ``None``.
 
     Per-project memories live UNDER ``~/.vibe`` (never in the repo) so they
     can't be committed — this is why project memory is on by default. The
-    namespace is ``sha256(resolved trusted workdir)[:16]``. Returns ``None``
-    when there's no trusted project (so the caller falls back to global only).
+    namespace is keyed by the project identity (see ``_project_identity``): all
+    sessions and worktrees of one git repo share it; different repos (and
+    non-git dirs) stay isolated. Returns ``None`` when there's no trusted
+    project (caller falls back to global only).
     """
     try:
         from vibe.core.config.harness_files import get_harness_files_manager
@@ -189,14 +216,14 @@ def project_memory_dir(*, create: bool = False) -> Path | None:
         return None
     if not roots:
         return None
-    resolved = roots[0].resolve()
-    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:16]
+    identity = _project_identity(roots[0])
+    digest = hashlib.sha256(str(identity).encode("utf-8")).hexdigest()[:16]
     ns = VIBE_HOME.path / "memory" / "projects" / digest
     if create:
         ns.mkdir(parents=True, exist_ok=True)
-        # Stamp the resolved path so an opaque hash dir stays debuggable.
+        # Stamp the identity so an opaque hash dir stays debuggable.
         origin = ns / ".origin"
         if not origin.exists():
             with contextlib.suppress(OSError):
-                origin.write_text(f"{resolved}\n", encoding="utf-8")
+                origin.write_text(f"{identity}\n", encoding="utf-8")
     return ns
