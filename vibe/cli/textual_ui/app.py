@@ -3810,20 +3810,16 @@ class VibeApp(App):  # noqa: PLR0904
         return resolve_searxng_settings(self.config.tools)
 
     async def _searxng_autostart(self) -> None:
-        """Bring a configured-but-down SearXNG up at session start.
-
-        No-op for the common case (no ``searxng_url`` set) so Mistral-only users
-        pay nothing. Failures are logged, never fatal to the session.
-        """
         try:
             settings = self._searxng_settings()
+            # No-op for the common case (no searxng_url), so Mistral-only users
+            # pay nothing; failures are logged, never fatal to the session.
             if not (settings.url and settings.manage and settings.autostart):
                 return
             outcome = await ensure_running(settings)
             if outcome.started:
                 self.notify(
-                    f"Started local SearXNG ({settings.effective_url})",
-                    markup=False,
+                    f"Started local SearXNG ({settings.effective_url})", markup=False
                 )
             elif outcome.attempted and not outcome.ok:
                 self.notify(
@@ -3835,9 +3831,9 @@ class VibeApp(App):  # noqa: PLR0904
             logger.warning("SearXNG autostart failed", exc_info=exc)
 
     async def _searxng_teardown(self) -> None:
-        """Stop the SearXNG container on exit, but only if vibe started it."""
         try:
             settings = self._searxng_settings()
+            # stop_all_started stops only containers vibe itself launched.
             await stop_all_started(enabled=settings.stop_on_exit)
         except Exception as exc:
             logger.warning("SearXNG teardown failed", exc_info=exc)
