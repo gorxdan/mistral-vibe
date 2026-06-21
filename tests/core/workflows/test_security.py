@@ -297,6 +297,36 @@ def test_lint_flags_coroutine_as_pipeline_stage() -> None:
     assert v and v[0].rule == "non-thunk-arg"
 
 
+def test_lint_flags_late_binding_lambda_over_loop() -> None:
+    # Classic footgun: lambda reads the loop var at call time -> all collapse to
+    # the last item (silent: wrong labels/profiles).
+    src = (
+        "async def main():\n"
+        '    return await parallel(*[lambda: agent(a["p"], label=a["k"]) '
+        "for a in areas])\n"
+    )
+    v = [x for x in lint_script(src) if x.rule == "late-binding-closure"]
+    assert v and "a" in v[0].detail
+
+
+def test_lint_allows_coroutine_comprehension() -> None:
+    # The new canonical fan-out: coroutines, no lambda — binds correctly.
+    src = (
+        "async def main():\n"
+        '    return await parallel(*[agent(a["p"], label=a["k"]) for a in areas])\n'
+    )
+    assert not [x for x in lint_script(src) if x.rule == "late-binding-closure"]
+
+
+def test_lint_allows_default_bound_lambda_over_loop() -> None:
+    # Capturing the loop var as a default arg is the other valid fix.
+    src = (
+        "async def main():\n"
+        '    return await parallel(*[lambda a=a: agent(a["p"]) for a in areas])\n'
+    )
+    assert not [x for x in lint_script(src) if x.rule == "late-binding-closure"]
+
+
 def test_check_script_combines_safety_and_correctness() -> None:
     # Unsafe import (safety) + genuinely undefined name (correctness) together.
     src = (

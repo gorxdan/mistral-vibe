@@ -51,13 +51,18 @@ phases, coroutine fan-out, filtered results, structured return):
 # find -> verify -> synthesize. `args` is the invocation input.
 SCHEMA = {"type": "object",
           "properties": {"findings": {"type": "array"}}}
+LENSES = ["correctness", "security", "concurrency"]  # fan out over a list
 
 async def main():
     phase("find")
-    found = await parallel(
-        agent("TODO: finder prompt for lens A", schema=SCHEMA),
-        agent("TODO: finder prompt for lens B", schema=SCHEMA),
-    )
+    # Fan out with a comprehension of COROUTINES — no lambda. The loop var binds
+    # correctly per item. Do NOT write `lambda: agent(lens...)` over a loop: that
+    # late-binds and every agent collapses to the LAST lens (silent, wrong).
+    found = await parallel(*[
+        agent(f"Review through the {lens} lens. TODO: details.",
+              label=lens, schema=SCHEMA)
+        for lens in LENSES
+    ])
     items = [f for r in found if r for f in r.get("findings", [])]
     if not items:
         return {"summary": "nothing found", "items": []}
@@ -77,6 +82,7 @@ async def main():
 
 1. **Use schemas for structured output** — pass `schema=` to `agent()` for JSON-validated responses; unknown keys are stripped, not fatal
 2. **Use `parallel` for independent same-stage work; use `pipeline` for multi-stage per-item flows** where each stage consumes the prior stage's output (e.g. find→verify→synthesize), with no barrier between items' stages
+   - **Fan out over a list with `parallel(*[agent(...) for x in items])`** — a comprehension of coroutines. Per-item args (`label=x["key"]`, `agent=x["profile"]`) bind correctly. Do **not** use `lambda: agent(x...)` over a loop var — Python late-binding makes every thunk read the **last** `x` (silent: wrong labels/profiles). The validator flags this
 3. **Cap concurrency with `max_concurrency=`** — pass it to `parallel`/`pipeline` instead of hand-rolling chunked waves, especially when a provider allows only 1-3 concurrent agents
 4. **Declare phases with `phase()` for progress tracking**
 5. **Guard loops with `budget.remaining()`** — stop when budget is exhausted

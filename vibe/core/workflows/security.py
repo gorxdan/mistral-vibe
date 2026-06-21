@@ -380,10 +380,83 @@ def _thunk_misuse(tree: ast.AST) -> list[Violation]:
     return violations
 
 
+def _late_binding_lambda(tree: ast.AST) -> list[Violation]:
+    """Flag the classic Python late-binding footgun: a `lambda` inside a
+    comprehension that reads the comprehension's loop variable in its body
+    WITHOUT capturing it as a default arg. The body resolves the name at CALL
+    time, so every lambda collapses to the loop's LAST value — e.g.
+    `parallel(*[lambda: agent(a["prompt"], label=a["key"]) for a in areas])`
+    runs every agent with the last area's label/profile. Silent (no crash), just
+    wrong. Fix: drop the lambda and pass the coroutine directly
+    (`parallel(*[agent(...) for a in areas])`), or bind a default (`lambda a=a:`).
+    """
+    violations: list[Violation] = []
+    comp_types = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
+
+    def target_names(generators: list[ast.comprehension]) -> set[str]:
+        names: set[str] = set()
+        for gen in generators:
+            for n in ast.walk(gen.target):
+                if isinstance(n, ast.Name):
+                    names.add(n.id)
+        return names
+
+    def param_names(lam: ast.Lambda) -> set[str]:
+        a = lam.args
+        names = {arg.arg for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs)}
+        if a.vararg:
+            names.add(a.vararg.arg)
+        if a.kwarg:
+            names.add(a.kwarg.arg)
+        return names
+
+    reported: set[tuple[int, int]] = set()
+    for comp in ast.walk(tree):
+        if not isinstance(comp, comp_types):
+            continue
+        loop_vars = target_names(comp.generators)
+        if not loop_vars:
+            continue
+        elts = (
+            [comp.key, comp.value]
+            if isinstance(comp, ast.DictComp)
+            else [comp.elt]
+        )
+        for elt in elts:
+            for lam in ast.walk(elt):
+                if not isinstance(lam, ast.Lambda):
+                    continue
+                loads = {
+                    n.id
+                    for n in ast.walk(lam.body)
+                    if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                }
+                risky = (loop_vars & loads) - param_names(lam)
+                if not risky or (lam.lineno, lam.col_offset) in reported:
+                    continue
+                reported.add((lam.lineno, lam.col_offset))
+                names = ", ".join(sorted(risky))
+                pick = sorted(risky)[0]
+                violations.append(
+                    Violation(
+                        lam.lineno,
+                        lam.col_offset,
+                        "late-binding-closure",
+                        f"lambda reads loop var(s) {{{names}}} at call time inside a "
+                        f"comprehension — they collapse to the LAST value. Drop the "
+                        f"lambda and pass the coroutine directly "
+                        f"(parallel(*[agent(...) for ...])), or bind a default "
+                        f"(lambda {pick}={pick}: ...).",
+                    )
+                )
+    return violations
+
+
 def lint_script(source: str) -> list[Violation]:
     """Correctness lint (distinct from validate_script's safety gate): catches
-    the exec-time / silent-failure classes that pass the AST safety check but
-    crash or misbehave once running — undefined names and coroutine-as-thunk.
+    classes that PASS the AST safety check but crash or silently misbehave once
+    running — undefined names, a coroutine used as a pipeline stage, and the
+    late-binding-closure footgun in lambda thunks over a comprehension.
 
     Returns violations sorted by (line, col). Empty list means clean.
     """
@@ -394,6 +467,7 @@ def lint_script(source: str) -> list[Violation]:
 
     violations = _undefined_names(tree, _bound_names(tree))
     violations.extend(_thunk_misuse(tree))
+    violations.extend(_late_binding_lambda(tree))
     violations.sort(key=lambda v: (v.line, v.col))
     return violations
 
