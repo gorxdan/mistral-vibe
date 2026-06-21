@@ -63,6 +63,7 @@ Always go through `uv` — never invoke bare `python` or `pip`.
 - Raise `ToolError` for user-facing failures; raise `ToolPermissionError` for authorization failures.
 - Declare permission with `ToolPermission` (`ALWAYS` / `ASK` / `NEVER`); honor it consistently.
 - Prefer the dedicated search tools over the shell: `glob` to find files by name, `grep` to search file contents — not Bash `find` / `grep` / `sed`. Reserve Bash for genuine system and git operations. (Also enforced in the `bash` tool prompt.)
+- For semantic code questions use the `lsp` tool, not `grep`: `go_to_definition` / `find_references` / `hover` (type info) / `incoming_calls` / `outgoing_calls` / `document_symbol`. Rule: questions about a *symbol* (where is it defined, who calls it, what's its type) → `lsp`; questions about *text* (a string, a log line, a config value) → `grep`. `grep` misses re-exports, alias imports, and overloads; `lsp` resolves them. If `lsp` reports no server for the extension, fall back to `grep`.
 
 ## Logging & errors
 

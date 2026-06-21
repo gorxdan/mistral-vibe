@@ -87,10 +87,12 @@ class Lsp(
 ):
     read_only: ClassVar[bool] = True
     description: ClassVar[str] = (
-        "Query a Language Server Protocol server for code intelligence: "
-        "go-to-definition, find-references, hover, document/workspace symbols, "
-        "go-to-implementation, and call hierarchy. Requires LSP installed "
-        "(/lspstall) and a server configured for the file's language."
+        "Query a language server for semantic code intelligence: "
+        "go-to-definition, find-references, hover (type info), "
+        "document/workspace symbols, go-to-implementation, and call hierarchy. "
+        "Prefer this over grep when you need to resolve a symbol, trace its "
+        "callers/callees, or read its type — it understands imports, overloads, "
+        "and generated code that textual search cannot."
     )
 
     @classmethod
