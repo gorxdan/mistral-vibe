@@ -400,6 +400,133 @@ def _parse_stats(stderr_text: str) -> dict[str, int] | None:
     return None
 
 
+@dataclass
+class IsolatedResult:
+    """Outcome of an isolated-agent run.
+
+    ``worktree_path``/``branch`` are set only when the worktree was kept for
+    recovery (delivery skipped or ff refused); None on clean delivery.
+    """
+
+    output: str
+    stats: dict[str, int] | None = None
+    delivered: bool = False
+    worktree_path: str | None = None
+    branch: str | None = None
+
+
+async def run_isolated_agent(
+    prompt: str, agent: str, *, label: str | None, max_turns: int, deliver: bool = False
+) -> IsolatedResult:
+    """Run *agent* as a ``vibe -p`` subprocess in a fresh git worktree.
+
+    Shared implementation for the workflow isolated executor and the
+    ``task()`` tool's isolation path. Creates an ephemeral worktree off HEAD,
+    runs the agent there, and on success optionally ff-merges the branch back
+    into the parent repo. The worktree is removed on clean delivery; kept
+    (with its branch) for manual recovery when delivery was skipped or refused.
+
+    Unlike the legacy executor, the requested *agent* profile is threaded into
+    the subprocess cmd (the old code hardcoded ``auto-approve``).
+    """
+    import os
+    import shlex
+    import signal
+    import sys
+
+    from vibe.core.worktree.ephemeral import (
+        create_ephemeral_worktree,
+        deliver_ephemeral_worktree,
+        remove_ephemeral_worktree,
+    )
+
+    wt = create_ephemeral_worktree(Path.cwd(), label or agent)
+    try:
+        base = os.environ.get("VIBE_ISOLATED_EXECUTOR_CMD")
+        prefix = shlex.split(base) if base else [sys.executable, "-m", "vibe"]
+        cmd = [
+            *prefix,
+            "-p",
+            prompt,
+            "--agent",
+            agent,
+            "--trust",
+            "--output",
+            "text",
+            "--max-turns",
+            str(max_turns),
+        ]
+        env = os.environ.copy()
+        env["VIBE_WORKFLOW_EMIT_STATS"] = "1"
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(wt.path),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            # Reap the whole group AND wait before the finally removes the
+            # worktree — otherwise `git worktree remove` races a process that
+            # still owns the worktree as its cwd (EBUSY -> leak).
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=3.0)
+                except TimeoutError:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    await proc.wait()
+            except (ProcessLookupError, PermissionError):
+                pass
+            raise
+        stderr_text = (stderr or b"").decode("utf-8", "replace")
+        if proc.returncode != 0:
+            raise WorkflowError(
+                f"isolated agent subprocess failed (rc={proc.returncode}): "
+                f"{stderr_text[:300]}"
+            )
+        output = (stdout or b"").decode("utf-8", "replace")
+        delivered = deliver and deliver_ephemeral_worktree(wt)
+        result = IsolatedResult(
+            output=output, stats=_parse_stats(stderr_text), delivered=delivered
+        )
+        try:
+            _maybe_reap_isolated_worktree(wt, delivered, result)
+        except (OSError, RuntimeError) as e:
+            logger.warning("isolated worktree cleanup failed: %s", e)
+        return result
+    except (OSError, RuntimeError, WorkflowError):
+        # On failure the worktree may hold partial work; keep it for recovery.
+        try:
+            remove_ephemeral_worktree(wt, keep_if_changed=True)
+        except (OSError, RuntimeError) as e:
+            logger.warning("isolated worktree cleanup failed: %s", e)
+        raise
+
+
+def _maybe_reap_isolated_worktree(
+    wt: Any, delivered: bool, result: IsolatedResult
+) -> None:
+    """Remove the worktree unless it holds undelivered recoverable work.
+
+    On clean delivery the work is in the parent, so force-remove. Otherwise ask
+    the helper to keep a changed worktree; if it kept one (returned False), stamp
+    the recovery handle onto *result* so the caller can ``git merge <branch>``.
+    """
+    from vibe.core.worktree.ephemeral import remove_ephemeral_worktree
+
+    if delivered:
+        remove_ephemeral_worktree(wt, keep_if_changed=False)
+        return
+    removed = remove_ephemeral_worktree(wt, keep_if_changed=True)
+    if not removed:
+        result.worktree_path = str(wt.path)
+        result.branch = wt.branch
+
+
 class AgentLoopFactory(Protocol):
     def __call__(
         self, prompt: str, *, agent: str, parent_context: InvokeContext | None
@@ -1410,7 +1537,7 @@ class WorkflowRuntime:
                 "-p",
                 prompt,
                 "--agent",
-                "auto-approve",
+                agent,
                 "--trust",
                 "--output",
                 "text",

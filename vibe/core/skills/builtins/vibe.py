@@ -225,6 +225,16 @@ searxng_container_name = "vibe-searxng"
 searxng_port = 8888
 searxng_autostart = true                 # start at session start if down
 searxng_stop_on_exit = true              # stop on exit, only if vibe started it
+
+# Task tool isolation: write-capable subagents run in their own git worktree
+# so destructive commands/edits can't race the parent tree or sibling agents.
+# "auto" (default) isolates only write-capable profiles (worker/auto-approve/
+# editor, and any profile with write_file/edit or un-jailed bash); read-only
+# and read-jailed profiles (explore/research/planner/reviewer/debugger/
+# security) stay in-process for speed. "always" isolates every subagent;
+# "off" forces in-process (the historical behavior).
+[tools.task]
+isolation = "auto"
 ```
 
 When `searxng_manage` is on and docker/podman is available, vibe starts a

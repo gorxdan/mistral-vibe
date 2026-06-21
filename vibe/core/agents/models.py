@@ -101,6 +101,36 @@ class AgentProfile:
         )
 
 
+# Tools whose presence in an enabled_tools allowlist means the profile can write
+# destructively and must run in its own worktree.
+_WRITE_TOOLS = {"write_file", "edit"}
+
+
+def profile_requires_isolation(profile: AgentProfile) -> bool:
+    """True if *profile* can mutate files or run unrestricted shell, and so
+    must run in an isolated worktree to avoid racing other agents or the live
+    checkout.
+
+    - No ``enabled_tools`` allowlist -> full tool set (incl. write) -> isolate.
+    - Allowlist contains a write tool (write_file/edit) -> isolate.
+    - Allowlist contains ``bash`` *without* a denylist jail -> isolate. The
+      reviewer/debugger/security profiles ship a read-only bash jail
+      (``overrides['tools']['bash']['denylist']`` hard-denies rm/git reset/etc.),
+      so they are safe in-process; an un-jailed bash can rm -rf, so isolate.
+    """
+    overrides = profile.overrides or {}
+    tools = overrides.get("enabled_tools")
+    if not tools:
+        return True
+    if any(t in _WRITE_TOOLS for t in tools):
+        return True
+    if "bash" in tools:
+        bash_cfg = (overrides.get("tools") or {}).get("bash") or {}
+        if not bash_cfg.get("denylist"):
+            return True
+    return False
+
+
 CHAT_AGENT_TOOLS = ["grep", "read", "ask_user_question", "task"]
 
 
@@ -128,46 +158,173 @@ def _plan_overrides() -> dict[str, Any]:
 # -o, shell redirects) are deliberately NOT allowlisted — they fall to ASK
 # rather than auto-run, since a prefix policy can't prove they won't write.
 _REVIEW_BASH_ALLOWLIST = [
-    "cd", "echo", "pwd", "true", "false",
+    "cd",
+    "echo",
+    "pwd",
+    "true",
+    "false",
     # git inspection (read-only)
-    "git diff", "git log", "git status", "git show", "git blame",
-    "git rev-parse", "git diff-tree", "git ls-files", "git ls-tree",
-    "git cat-file", "git shortlog", "git describe", "git for-each-ref",
-    "git rev-list", "git name-rev", "git merge-base", "git grep",
-    "git branch --list", "git branch -a", "git branch -v", "git tag --list",
+    "git diff",
+    "git log",
+    "git status",
+    "git show",
+    "git blame",
+    "git rev-parse",
+    "git diff-tree",
+    "git ls-files",
+    "git ls-tree",
+    "git cat-file",
+    "git shortlog",
+    "git describe",
+    "git for-each-ref",
+    "git rev-list",
+    "git name-rev",
+    "git merge-base",
+    "git grep",
+    "git branch --list",
+    "git branch -a",
+    "git branch -v",
+    "git tag --list",
     # file reading / inspection
-    "cat", "head", "tail", "wc", "file", "stat", "ls", "tree",
-    "diff", "comm", "nl", "column", "jq", "grep", "rg", "ag",
-    "whoami", "date", "which", "type", "uname", "basename", "dirname",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "file",
+    "stat",
+    "ls",
+    "tree",
+    "diff",
+    "comm",
+    "nl",
+    "column",
+    "jq",
+    "grep",
+    "rg",
+    "ag",
+    "whoami",
+    "date",
+    "which",
+    "type",
+    "uname",
+    "basename",
+    "dirname",
     # test / lint / typecheck runners (run the repo's own checks)
-    "pytest", "python -m pytest", "python3 -m pytest", "tox",
-    "ruff", "mypy", "pyright", "flake8", "bandit",
-    "npm test", "npm run test", "yarn test", "pnpm test", "jest", "vitest",
-    "eslint", "tsc", "cargo test", "cargo check", "cargo clippy",
-    "go test", "go vet", "make test", "make check", "make lint",
+    "pytest",
+    "python -m pytest",
+    "python3 -m pytest",
+    "tox",
+    "ruff",
+    "mypy",
+    "pyright",
+    "flake8",
+    "bandit",
+    "npm test",
+    "npm run test",
+    "yarn test",
+    "pnpm test",
+    "jest",
+    "vitest",
+    "eslint",
+    "tsc",
+    "cargo test",
+    "cargo check",
+    "cargo clippy",
+    "go test",
+    "go vet",
+    "make test",
+    "make check",
+    "make lint",
 ]
 _REVIEW_BASH_DENYLIST = [
     # git mutation / network
-    "git commit", "git push", "git pull", "git fetch", "git reset",
-    "git checkout", "git switch", "git restore", "git clean", "git add",
-    "git rm", "git mv", "git stash", "git merge", "git rebase",
-    "git cherry-pick", "git revert", "git apply", "git am", "git update-ref",
-    "git gc", "git filter-branch", "git config", "git remote",
-    "git tag -d", "git branch -d", "git branch -D", "git worktree",
+    "git commit",
+    "git push",
+    "git pull",
+    "git fetch",
+    "git reset",
+    "git checkout",
+    "git switch",
+    "git restore",
+    "git clean",
+    "git add",
+    "git rm",
+    "git mv",
+    "git stash",
+    "git merge",
+    "git rebase",
+    "git cherry-pick",
+    "git revert",
+    "git apply",
+    "git am",
+    "git update-ref",
+    "git gc",
+    "git filter-branch",
+    "git config",
+    "git remote",
+    "git tag -d",
+    "git branch -d",
+    "git branch -D",
+    "git worktree",
     # filesystem mutation
-    "rm", "rmdir", "mv", "cp", "dd", "shred", "truncate", "ln",
-    "chmod", "chown", "chgrp", "sed -i", "perl -i", "tee", "install",
+    "rm",
+    "rmdir",
+    "mv",
+    "cp",
+    "dd",
+    "shred",
+    "truncate",
+    "ln",
+    "chmod",
+    "chown",
+    "chgrp",
+    "sed -i",
+    "perl -i",
+    "tee",
+    "install",
     # network / exfil
-    "curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "sftp",
-    "rsync", "telnet",
+    "curl",
+    "wget",
+    "nc",
+    "ncat",
+    "netcat",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "telnet",
     # package installs / privilege / system control
-    "sudo", "su", "pip install", "pip3 install", "pip uninstall",
-    "npm install", "npm i", "npm uninstall", "yarn add", "pnpm add",
-    "apt", "apt-get", "brew", "cargo install", "go install", "gem install",
-    "kill", "killall", "pkill", "systemctl", "service", "mount", "umount",
-    "crontab", "reboot", "shutdown",
+    "sudo",
+    "su",
+    "pip install",
+    "pip3 install",
+    "pip uninstall",
+    "npm install",
+    "npm i",
+    "npm uninstall",
+    "yarn add",
+    "pnpm add",
+    "apt",
+    "apt-get",
+    "brew",
+    "cargo install",
+    "go install",
+    "gem install",
+    "kill",
+    "killall",
+    "pkill",
+    "systemctl",
+    "service",
+    "mount",
+    "umount",
+    "crontab",
+    "reboot",
+    "shutdown",
     # interactive / write-capable editors
-    "vim", "vi", "nano", "emacs",
+    "vim",
+    "vi",
+    "nano",
+    "emacs",
 ]
 
 
@@ -295,10 +452,7 @@ PLANNER = AgentProfile(
     ),
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
-    overrides={
-        "enabled_tools": ["read", "grep"],
-        "system_prompt_id": "planner",
-    },
+    overrides={"enabled_tools": ["read", "grep"], "system_prompt_id": "planner"},
 )
 
 SECURITY = AgentProfile(

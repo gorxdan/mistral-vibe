@@ -262,6 +262,17 @@ The review also surfaced four omitted behavior changes, now in *Delivery* above:
 approval bypass, edit-visibility (→ `deliver=True` default for `task()`),
 hook/session-log locality, and the missing recovery handle on `TaskResult`.
 
+## Implementation status: landed
+
+Implemented in `profile_requires_isolation` (`agents/models.py`), the shared
+`run_isolated_agent` + `IsolatedResult` (`workflows/runtime.py`), the
+`task.isolation` config + `_run_isolated` branch (`tools/builtins/task.py`),
+and the `--agent` hardcode fix in `_default_isolated_executor`. Covered by
+`tests/core/test_agents_models.py` (6 predicate tests incl. the editor case).
+pyright clean, ruff clean, 310 task+workflow tests pass. Known follow-ups
+deferred per Out-of-scope: warm subprocess pools, result streaming, hook/log
+passthrough.
+
 ---
 
 ## Out of scope (explicit)
