@@ -159,16 +159,24 @@ class Task(
         worktree_path: str | None = None
         branch: str | None = None
         try:
-            result = await run_isolated_agent(
-                task_text,
-                args.agent,
-                label=args.agent,
-                max_turns=DEFAULT_ISOLATED_MAX_TURNS,
-                deliver=True,
-            )
-            response_text = result.output
-            worktree_path = result.worktree_path
-            branch = result.branch
+            denied = await self._judge_isolated_spawn(task_text, args.agent, ctx)
+            if denied is not None:
+                # Judge denied the delegation (or user declined at the approval
+                # prompt). Fail the TaskResult cleanly rather than raising so the
+                # tool surfaces the denial in-band; no subprocess is spawned.
+                completed = False
+                response_text = f"[Isolated subagent denied by safety judge: {denied}]"
+            else:
+                result = await run_isolated_agent(
+                    task_text,
+                    args.agent,
+                    label=args.agent,
+                    max_turns=DEFAULT_ISOLATED_MAX_TURNS,
+                    deliver=True,
+                )
+                response_text = result.output
+                worktree_path = result.worktree_path
+                branch = result.branch
         except Exception as e:
             completed = False
             response_text = f"[Isolated subagent error: {e}]"
@@ -181,6 +189,50 @@ class Task(
             worktree_path=worktree_path,
             branch=branch,
         )
+
+    async def _judge_isolated_spawn(
+        self, prompt: str, agent: str, ctx: InvokeContext
+    ) -> str | None:
+        """Pre-flight safety judge for an isolated subagent spawn.
+
+        Isolated subagents run as an auto-approved ``vibe -p`` subprocess, so
+        the host's per-tool judge never sees their calls. This judges the
+        subagent's *prompt* (the task the lead gave it) before the subprocess
+        starts. Mirrors ``WorkflowRuntime._judge_isolated_spawn``.
+
+        Returns ``None`` to proceed; returns the judge's (or user's) denial
+        reason to skip the spawn. Fail-open when no judge is configured or the
+        judge is unusable — the launch-time script/CLI judge already ran.
+        """
+        factory = getattr(ctx, "safety_judge_factory", None)
+        if factory is None:
+            return None
+        try:
+            judge = factory()
+        except Exception:
+            return None
+        if judge is None:
+            return None
+        verdict = await judge.judge(
+            "launch_workflow", prompt, [f"isolated '{agent}' subagent spawn"]
+        )
+        if verdict.safe:
+            return None
+        # Deferred to the user. Surface via the host approval callback if one is
+        # wired; otherwise fail closed (deny the spawn).
+        approval_callback = getattr(ctx, "approval_callback", None)
+        if approval_callback is None:
+            return verdict.reason
+        from vibe.core.types import ApprovalResponse
+
+        response, _feedback = await approval_callback(
+            f"task_isolated:{agent}",
+            None,
+            f"task-isolated-spawn-{agent}",
+            None,
+            verdict.reason,
+        )
+        return None if response == ApprovalResponse.YES else verdict.reason
 
     async def run(
         self, args: TaskArgs, ctx: InvokeContext | None = None

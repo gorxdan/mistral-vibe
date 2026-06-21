@@ -228,3 +228,122 @@ class TestTaskToolExecution:
             assert isinstance(result, TaskResult)
             assert result.completed is False
             assert "Simulated error" in result.response
+
+
+class TestIsolatedSpawnJudgeGate:
+    """The pre-flight safety judge runs before any isolated subprocess spawn."""
+
+    @pytest.fixture
+    def ctx(self) -> InvokeContext:
+        config = build_test_vibe_config(
+            include_project_context=False, include_prompt_detail=False
+        )
+        manager = AgentManager(lambda: config)
+        return InvokeContext(
+            tool_call_id="test-call-id",
+            agent_manager=manager,
+            terminal_emulator=TerminalEmulator.VSCODE,
+        )
+
+    @staticmethod
+    def _ctx_with_factory(
+        ctx: InvokeContext, factory, approval_callback=None
+    ) -> InvokeContext:
+        from dataclasses import replace
+
+        return replace(
+            ctx, safety_judge_factory=factory, approval_callback=approval_callback
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_judge_factory_proceeds(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        # No safety_judge_factory -> fail open (proceed), so the gate returns None.
+        gate = task_tool._judge_isolated_spawn("prompt", "worker", ctx)
+        assert await gate is None
+
+    @pytest.mark.asyncio
+    async def test_judge_safe_proceeds(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        from vibe.core.tools.safety_judge import JudgeVerdict
+
+        class _SafeJudge:
+            async def judge(self, kind, prompt, context):
+                return JudgeVerdict(safe=True, reason="ok")
+
+        ctx = self._ctx_with_factory(ctx, lambda: _SafeJudge())
+        assert await task_tool._judge_isolated_spawn("prompt", "worker", ctx) is None
+
+    @pytest.mark.asyncio
+    async def test_judge_deny_without_callback_blocks(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        from vibe.core.tools.safety_judge import JudgeVerdict
+
+        class _DenyJudge:
+            async def judge(self, kind, prompt, context):
+                return JudgeVerdict(safe=False, reason="rm -rf detected")
+
+        cctx = self._ctx_with_factory(ctx, lambda: _DenyJudge(), approval_callback=None)
+        reason = await task_tool._judge_isolated_spawn("prompt", "worker", cctx)
+        assert reason == "rm -rf detected"
+
+    @pytest.mark.asyncio
+    async def test_judge_deny_then_user_approves_proceeds(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        from vibe.core.tools.safety_judge import JudgeVerdict
+        from vibe.core.types import ApprovalResponse
+
+        class _DenyJudge:
+            async def judge(self, kind, prompt, context):
+                return JudgeVerdict(safe=False, reason="looks risky")
+
+        async def approve(*args, **kwargs):
+            return ApprovalResponse.YES, None
+
+        cctx = self._ctx_with_factory(
+            ctx, lambda: _DenyJudge(), approval_callback=approve
+        )
+        assert await task_tool._judge_isolated_spawn("prompt", "worker", cctx) is None
+
+    @pytest.mark.asyncio
+    async def test_factory_raising_fails_open(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        def boom():
+            raise RuntimeError("judge down")
+
+        cctx = self._ctx_with_factory(ctx, boom)
+        # Factory raised -> treat as no judge -> proceed.
+        assert await task_tool._judge_isolated_spawn("prompt", "worker", cctx) is None
+
+    @pytest.mark.asyncio
+    async def test_denied_isolated_spawn_does_not_spawn_subprocess(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        # End-to-end: when the judge denies, run_isolated_agent is never called
+        # and the TaskResult reports the denial in-band (completed=False).
+        from vibe.core.tools.safety_judge import JudgeVerdict
+
+        class _DenyJudge:
+            async def judge(self, kind, prompt, context):
+                return JudgeVerdict(safe=False, reason="destructive task")
+
+        cctx = self._ctx_with_factory(ctx, lambda: _DenyJudge(), approval_callback=None)
+        args = TaskArgs(task="rm -rf everything", agent="worker")
+
+        with (
+            patch("vibe.core.tools.builtins.task.run_isolated_agent") as mock_run,
+            patch(
+                "vibe.core.tools.builtins.task.profile_requires_isolation",
+                return_value=True,
+            ),
+        ):
+            result = await collect_result(task_tool.run(args, cctx))
+            assert mock_run.call_count == 0
+            assert isinstance(result, TaskResult)
+            assert result.completed is False
+            assert "destructive task" in result.response
