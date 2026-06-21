@@ -2783,19 +2783,46 @@ class VibeApp(App):  # noqa: PLR0904
     async def _install_lsp(self, **kwargs: Any) -> None:
         current = list(self.agent_loop.base_config.installed_components)
         if "lsp" in current:
+            from vibe.core.lsp import get_lsp_manager
+
+            manager = get_lsp_manager()
+            count = len(manager.servers) if manager else 0
             await self._mount_and_scroll(
-                UserCommandMessage("LSP feature is already installed.")
+                UserCommandMessage(
+                    f"LSP is already installed ({count} server(s) configured). "
+                    "Run /lsp for details."
+                )
             )
             return
         VibeConfig.save_updates({"installed_components": sorted([*current, "lsp"])})
         await self._reload_config()
-        await self._mount_and_scroll(
-            UserCommandMessage(
-                "LSP feature installed. Add [[lsp_servers]] entries in config.toml "
-                "to configure language servers (e.g. pyright-langserver for Python). "
-                "The server binary must be on your PATH."
+
+        from vibe.core.lsp import get_lsp_manager
+
+        manager = get_lsp_manager()
+        if manager and manager.servers:
+            lines = ["LSP enabled. Detected language servers:", ""]
+            for server in manager.servers.values():
+                exts = ", ".join(sorted(server.config.languages.keys()))
+                lines.append(f"  - {server.config.name} ({exts})")
+            lines.append("")
+            lines.append(
+                "The lsp tool is now available; diagnostics surface "
+                "automatically after edits. Run /lsp to check status."
             )
-        )
+        else:
+            from vibe.core.lsp._defaults import PRESETS
+
+            lines = [
+                "LSP enabled, but no language servers were found on your PATH.",
+                "Install one to get started:",
+                "",
+            ]
+            for preset in PRESETS.values():
+                lines.append(f"  - {preset.display_name}: {preset.install_hint}")
+            lines.append("")
+            lines.append("Then run /lsp to confirm detection.")
+        await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
 
     async def _uninstall_lsp(self, **kwargs: Any) -> None:
         current = list(self.agent_loop.base_config.installed_components)

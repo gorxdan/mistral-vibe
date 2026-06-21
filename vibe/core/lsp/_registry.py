@@ -32,7 +32,15 @@ class DiagnosticRegistry:
             return
         path = path_from_uri(uri)
         raw = params.get("diagnostics") or []
-        diagnostics = [Diagnostic.from_lsp(d) for d in raw]
+        # Only surface errors and warnings to the model. Hints/info (unused
+        # params, unreachable code, style nits) are noise that burns context
+        # without driving any fix the model should make.
+        diagnostics = [
+            Diagnostic.from_lsp(d)
+            for d in raw
+            if int(d.get("severity", DiagnosticSeverity.ERROR))
+            <= DiagnosticSeverity.WARNING
+        ]
         if not diagnostics:
             return
         with self._lock:
