@@ -5,7 +5,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 import tomllib
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from textual.events import Resize
@@ -52,6 +52,8 @@ from vibe.setup.onboarding.screens.browser_sign_in import (
     SIGN_IN_URL_HELP_PREFIX,
     BrowserSignInScreen,
 )
+from vibe.setup.onboarding.screens.custom_provider import CustomProviderScreen
+from vibe.setup.onboarding.screens.provider_selection import ProviderSelectionScreen
 from vibe.setup.onboarding.screens.theme_selection import THEMES, ThemeSelectionScreen
 
 CONSOLE_URL = "https://console.mistral.ai"
@@ -253,11 +255,19 @@ async def _pass_welcome_screen(pilot: Pilot) -> None:
 
 async def _pass_theme_selection_screen(pilot: Pilot) -> None:
     await pilot.press("enter")
+    await _wait_for(
+        lambda: isinstance(pilot.app.screen, ProviderSelectionScreen), pilot
+    )
+
+
+async def _confirm_default_provider(pilot: Pilot) -> None:
+    await pilot.press("enter")
 
 
 async def _show_auth_method(pilot: Pilot) -> None:
     await _pass_welcome_screen(pilot)
     await _pass_theme_selection_screen(pilot)
+    await _confirm_default_provider(pilot)
     await _wait_for(lambda: isinstance(pilot.app.screen, AuthMethodScreen), pilot)
 
 
@@ -285,6 +295,7 @@ async def test_ui_keeps_manual_flow_when_browser_sign_in_is_unsupported() -> Non
     async with app.run_test() as pilot:
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
+        await _confirm_default_provider(pilot)
         await _wait_for(lambda: isinstance(pilot.app.screen, ApiKeyScreen), pilot)
         input_widget = app.screen.query_one("#key", Input)
         await pilot.press(*api_key_value)
@@ -1162,6 +1173,8 @@ async def test_ui_can_pick_a_theme_and_saves_selection() -> None:
         assert app.theme == target_theme
 
         await pilot.press("enter")
+        await _wait_for(lambda: isinstance(app.screen, ProviderSelectionScreen), pilot)
+        await _confirm_default_provider(pilot)
         await _wait_for(lambda: isinstance(app.screen, AuthMethodScreen), pilot)
 
     config_path = VIBE_HOME.path / "config.toml"
@@ -1278,3 +1291,138 @@ def test_persist_api_key_sends_onboarding_telemetry_with_entrypoint_metadata(
     assert recorded_metadata["client_name"] == "vibe_cli"
     assert recorded_metadata["client_version"] == "1.0.0"
     assert "session_id" not in recorded_metadata
+
+
+def _config_toml_dict() -> dict[str, Any]:
+    return tomllib.loads((VIBE_HOME.path / "config.toml").read_text(encoding="utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_provider_selection_glm_preset_persists_config_and_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    api_key_value = "sk-zai-onboarding-test-key"
+
+    app = OnboardingApp()
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press("down", "enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, ApiKeyScreen), pilot)
+
+        assert (
+            app.screen.query_one("#api-key-provider-link", Link).url == "https://z.ai"
+        )
+        assert app.screen.query_one("#key", Input) is not None
+
+        await pilot.press(*api_key_value)
+        await pilot.press("enter")
+        await _wait_for(lambda: app.return_value is not None, pilot, timeout=2.0)
+
+    assert app.return_value == "completed"
+    env_contents = _saved_env_contents()
+    assert "ZAI_API_KEY" in env_contents
+    assert api_key_value in env_contents
+
+    config = _config_toml_dict()
+    assert config["active_model"] == "glm"
+    assert "zai" in [p["name"] for p in config["providers"]]
+    glm_models = [m for m in config["models"] if m.get("alias") == "glm"]
+    assert len(glm_models) == 1
+    assert glm_models[0]["provider"] == "zai"
+
+
+@pytest.mark.asyncio
+async def test_provider_selection_kimi_preset_carries_user_agent_header() -> None:
+    api_key_value = "sk-kimi-onboarding-test-key"
+    app = OnboardingApp()
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press("down", "down", "enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, ApiKeyScreen), pilot)
+        await pilot.press(*api_key_value)
+        await pilot.press("enter")
+        await _wait_for(lambda: app.return_value is not None, pilot, timeout=2.0)
+
+    assert app.return_value == "completed"
+    config = _config_toml_dict()
+    assert config["active_model"] == "kimi"
+    kimi_providers = [p for p in config["providers"] if p.get("name") == "kimi"]
+    assert kimi_providers and kimi_providers[0]["extra_headers"]["User-Agent"]
+
+
+@pytest.mark.asyncio
+async def test_provider_selection_ollama_without_server_stays_on_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "127.0.0.1:1")
+    app = OnboardingApp()
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press("down", "down", "down", "enter")
+
+        await _wait_for(
+            lambda: (
+                isinstance(pilot.app.screen, ProviderSelectionScreen)
+                and pilot.app.screen.query_one(
+                    "#provider-selection-status", NoMarkupStatic
+                ).has_class("error")
+            ),
+            pilot,
+            timeout=5.0,
+        )
+
+        status = str(
+            pilot.app.screen.query_one(
+                "#provider-selection-status", NoMarkupStatic
+            ).render()
+        )
+        assert "No Ollama server found" in status
+        assert app.return_value is None
+
+
+@pytest.mark.asyncio
+async def test_provider_selection_custom_routes_to_api_key_and_persists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    api_key_value = "sk-custom-onboarding-test-key"
+    app = OnboardingApp()
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press("down", "down", "down", "down", "enter")
+        await _wait_for(
+            lambda: isinstance(pilot.app.screen, CustomProviderScreen), pilot
+        )
+
+        custom_screen = pilot.app.screen
+        custom_screen.query_one(
+            "#custom-base-url", Input
+        ).value = "https://api.deepseek.com/v1"
+        custom_screen.query_one("#custom-model", Input).value = "deepseek-chat"
+        env_input = custom_screen.query_one("#custom-env-var", Input)
+        env_input.value = "DEEPSEEK_API_KEY"
+        env_input.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, ApiKeyScreen), pilot)
+        await pilot.press(*api_key_value)
+        await pilot.press("enter")
+        await _wait_for(lambda: app.return_value is not None, pilot, timeout=2.0)
+
+    assert app.return_value == "completed"
+    config = _config_toml_dict()
+    assert config["active_model"] == "deepseek-chat"
+    names = [p["name"] for p in config["providers"]]
+    assert "deepseek-chat" in names
+    provider = next(p for p in config["providers"] if p["name"] == "deepseek-chat")
+    assert provider["api_key_env_var"] == "DEEPSEEK_API_KEY"
+    assert "DEEPSEEK_API_KEY" in _saved_env_contents()

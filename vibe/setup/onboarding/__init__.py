@@ -6,17 +6,21 @@ from typing import Any
 
 from rich import print as rprint
 from textual.app import App
+from textual.screen import Screen
 
 from vibe.cli.clipboard import try_copy_text_to_clipboard
-from vibe.core.config import VibeConfig
+from vibe.core.config import DEFAULT_PROVIDERS, ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.paths import GLOBAL_ENV_FILE
 from vibe.core.telemetry.types import EntrypointMetadata
+from vibe.core.types import Backend
 from vibe.setup.auth import BrowserSignInService, HttpBrowserSignInGateway
 from vibe.setup.onboarding.context import OnboardingContext
 from vibe.setup.onboarding.screens import (
     ApiKeyScreen,
     AuthMethodScreen,
     BrowserSignInScreen,
+    CustomProviderScreen,
+    ProviderSelectionScreen,
     ThemeSelectionScreen,
     WelcomeScreen,
 )
@@ -57,38 +61,80 @@ class OnboardingApp(App[str | None]):
         self._browser_sign_in_service_factory = self._resolve_browser_sign_in_factory(
             browser_sign_in_service_factory
         )
+        self._installed_dynamic_screens: set[str] = set()
 
     def on_mount(self) -> None:
         self.theme = "ansi-dark"
 
-        theme_next = "auth_method" if self.supports_browser_sign_in else "api_key"
-        welcome_screen = WelcomeScreen(next_screen="theme_selection")
-        self.install_screen(welcome_screen, "welcome")
+        self.install_screen(WelcomeScreen(next_screen="theme_selection"), "welcome")
         self.install_screen(
-            ThemeSelectionScreen(next_screen=theme_next), "theme_selection"
+            ThemeSelectionScreen(next_screen="provider_selection"), "theme_selection"
         )
         self.install_screen(
+            ProviderSelectionScreen(resolved_provider_name=self._provider.name),
+            "provider_selection",
+        )
+        self.install_screen(CustomProviderScreen(), "custom_provider")
+        self.push_screen("welcome")
+
+    def _install_screen_once(self, name: str, screen: Screen[str | None]) -> None:
+        if name in self._installed_dynamic_screens:
+            self.uninstall_screen(name)
+            self._installed_dynamic_screens.discard(name)
+        self.install_screen(screen, name)
+        self._installed_dynamic_screens.add(name)
+
+    def install_api_key_screen(
+        self,
+        provider: ProviderConfig,
+        *,
+        help_url: str | None = None,
+        pending_model: ModelConfig | None = None,
+    ) -> None:
+        self._provider = provider
+        self._install_screen_once(
+            "api_key",
             ApiKeyScreen(
-                self._provider,
+                provider,
                 vibe_base_url=self._vibe_base_url,
                 entrypoint_metadata=self._entrypoint_metadata,
+                help_url=help_url,
+                pending_model=pending_model,
             ),
-            "api_key",
         )
+
+    def _mistral_provider(self) -> ProviderConfig:
+        if (
+            self._provider.name == "mistral"
+            or self._provider.backend == Backend.MISTRAL
+        ):
+            return self._provider
+        return DEFAULT_PROVIDERS[0]
+
+    def install_mistral_screens(self) -> None:
+        provider = self._mistral_provider()
+        self._provider = provider
+        if (
+            self._browser_sign_in_service_factory is None
+            and provider.supports_browser_sign_in
+        ):
+            self._browser_sign_in_service_factory = (
+                self._build_browser_sign_in_service_factory()
+            )
+        self.install_api_key_screen(provider)
         if self._browser_sign_in_service_factory is not None:
-            self.install_screen(AuthMethodScreen(self._provider), "auth_method")
-            self.install_screen(
+            self._install_screen_once("auth_method", AuthMethodScreen(provider))
+            self._install_screen_once(
+                "browser_sign_in",
                 BrowserSignInScreen(
-                    self._provider,
+                    provider,
                     self._browser_sign_in_service_factory,
                     copy_sign_in_url=self._copy_sign_in_url,
                     entrypoint_metadata=self._entrypoint_metadata,
                     success_exit_delay=self._browser_sign_in_success_delay,
                     sign_in_url_help_delay=self._browser_sign_in_url_help_delay,
                 ),
-                "browser_sign_in",
             )
-        self.push_screen("welcome")
 
     @property
     def supports_browser_sign_in(self) -> bool:
@@ -149,6 +195,4 @@ def run_onboarding(
                 f"You may need to set it manually in {GLOBAL_ENV_FILE.path}[/]\n"
             )
         case "completed":
-            rprint(
-                '\nSetup complete 🎉. Run "chaton" to start using the Chaton CLI.\n'
-            )
+            rprint('\nSetup complete 🎉. Run "chaton" to start using the Chaton CLI.\n')

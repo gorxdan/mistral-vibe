@@ -12,13 +12,15 @@ from textual.widgets import Input, Link
 from vibe.cli.clipboard import copy_selection_to_clipboard
 from vibe.cli.textual_ui.widgets.banner.petit_chat import PetitChat
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
-from vibe.core.config import DEFAULT_VIBE_BASE_URL, ProviderConfig
+from vibe.core.config import DEFAULT_VIBE_BASE_URL, ModelConfig, ProviderConfig
+from vibe.core.logger import logger
 from vibe.core.telemetry.types import EntrypointMetadata
 from vibe.setup.auth.api_key_persistence import (
     persist_api_key,
     resolve_api_key_provider,
 )
 from vibe.setup.onboarding.base import OnboardingScreen
+from vibe.setup.onboarding.provider_presets import apply_provider_config
 
 MISTRAL_PROVIDER_NAME = "mistral"
 MISTRAL_PROVIDER_HELP_NAME = "Chaton"
@@ -41,17 +43,28 @@ class ApiKeyScreen(OnboardingScreen):
         *,
         vibe_base_url: str = DEFAULT_VIBE_BASE_URL,
         entrypoint_metadata: EntrypointMetadata | None = None,
+        help_url: str | None = None,
+        pending_model: ModelConfig | None = None,
     ) -> None:
         super().__init__()
         self.provider = resolve_api_key_provider(provider)
         self._vibe_base_url = vibe_base_url
         self._entrypoint_metadata = entrypoint_metadata
+        self._help_url = help_url
+        self._pending_model = pending_model
+
+    @property
+    def _resolved_help_url(self) -> str | None:
+        if self._help_url is not None:
+            return self._help_url
+        if self.provider.name == MISTRAL_PROVIDER_NAME:
+            return f"{self._vibe_base_url.rstrip('/')}/code/extensions?focus=key"
+        return None
 
     def _compose_provider_link(self) -> ComposeResult:
-        if self.provider.name != MISTRAL_PROVIDER_NAME:
+        help_url = self._resolved_help_url
+        if help_url is None:
             return
-
-        help_url = f"{self._vibe_base_url.rstrip('/')}/code/extensions?focus=key"
         yield Link(help_url, url=help_url, id="api-key-provider-link")
 
     def _compose_config_docs(self) -> ComposeResult:
@@ -88,7 +101,7 @@ class ApiKeyScreen(OnboardingScreen):
                         classes="onboarding-heading",
                     )
                     yield NoMarkupStatic(
-                        f"Visit {help_name} to generate or copy your Chaton key",
+                        f"Visit {help_name} to generate or copy your API key",
                         id="api-key-subtitle",
                     )
                     yield from self._compose_provider_link()
@@ -125,11 +138,19 @@ class ApiKeyScreen(OnboardingScreen):
             self._save_and_finish(event.value)
 
     def _save_and_finish(self, api_key: str) -> None:
-        self.app.exit(
-            persist_api_key(
-                self.provider, api_key, entrypoint_metadata=self._entrypoint_metadata
-            )
+        result = persist_api_key(
+            self.provider, api_key, entrypoint_metadata=self._entrypoint_metadata
         )
+        if result == "completed" and self._pending_model is not None:
+            try:
+                apply_provider_config(self.provider, self._pending_model)
+            except (OSError, ValueError) as err:
+                logger.warning(
+                    "Failed to persist provider choice for provider=%s: %s",
+                    self.provider.name,
+                    err,
+                )
+        self.app.exit(result)
 
     def on_mouse_up(self, event: MouseUp) -> None:
         copy_selection_to_clipboard(self.app)

@@ -235,6 +235,95 @@ ThemeSelectionScreen #enter-hint {
 }
 
 /* =============================================================================
+   Provider Selection Screen
+   ============================================================================= */
+
+#provider-selection-title {
+    color: $mistral_orange_title;
+}
+
+#provider-selection-subtitle {
+    width: 100%;
+    margin-left: 2;
+    margin-bottom: 2;
+    color: $text;
+    text-style: bold;
+}
+
+#provider-selection-options {
+    width: 100%;
+    height: auto;
+}
+
+.provider-option-row {
+    margin: 0 0 1 0;
+}
+
+.provider-option-marker {
+    width: 2;
+    height: 3;
+    content-align: center middle;
+    color: transparent;
+}
+
+.provider-option-marker.selected {
+    color: $mistral_orange;
+}
+
+.provider-option {
+    color: $foreground-muted;
+    border-title-align: right;
+    border-title-color: $primary;
+    border-title-style: bold;
+}
+
+.provider-option.selected {
+    border: solid $browser_sign_in_card_border;
+    border-left: solid $mistral_orange;
+    color: $text;
+}
+
+.provider-status {
+    width: 100%;
+    margin-top: 1;
+    padding-left: 2;
+    color: $foreground-muted;
+}
+
+.provider-status.error {
+    color: $error;
+}
+
+/* =============================================================================
+   Custom Provider Screen
+   ============================================================================= */
+
+#custom-provider-title {
+    color: $mistral_orange_title;
+}
+
+#custom-provider-subtitle {
+    width: 100%;
+    margin-left: 2;
+    margin-bottom: 2;
+    color: $text;
+    text-style: bold;
+}
+
+.custom-input-box {
+    width: 100%;
+    height: auto;
+    margin-bottom: 1;
+}
+
+#custom-provider-feedback {
+    width: 100%;
+    margin-top: 1;
+    padding-left: 2;
+    color: $foreground-muted;
+}
+
+/* =============================================================================
    Browser Sign-In Screen
    ============================================================================= */
 
