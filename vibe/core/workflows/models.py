@@ -62,7 +62,13 @@ class SchemaValidationFailure(BaseModel):
     ``strict_schema=True`` on the runtime, in which case ``spawn_agent`` raises
     ``SchemaValidationError`` instead.
 
-    Scripts check for failure with ``isinstance(result, SchemaValidationFailure)``.
+    Scripts check for failure with ``isinstance(result, SchemaValidationFailure)``
+    — but they don't have to. This is also a falsy, dict-like empty value so the
+    common idioms degrade gracefully instead of crashing the whole run on one
+    failed agent: the canonical filter ``[r for r in results if r]`` drops it
+    (like the ``None`` from a raised agent), and ``r.get("findings", [])`` returns
+    the default. The failure detail stays available via ``.error`` /
+    ``.schema_errors`` / ``.raw_response``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -70,6 +76,12 @@ class SchemaValidationFailure(BaseModel):
     raw_response: str
     error: str
     schema_errors: list[str] = Field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        return False
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return default
 
 
 class PhaseReport(BaseModel):

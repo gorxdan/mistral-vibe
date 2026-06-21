@@ -181,6 +181,22 @@ async def test_spawn_agent_schema_returns_failure_after_max_retries() -> None:
     assert result.schema_errors  # last_errors captured
 
 
+async def test_schema_failure_is_falsy_and_dict_like() -> None:
+    # A schema-failed result degrades gracefully so one bad agent does not crash
+    # the whole run: it is falsy (the canonical `[r for r in ... if r]` filter
+    # drops it like a None) and `.get(...)` returns the default rather than
+    # raising AttributeError. Detail stays inspectable.
+    f = SchemaValidationFailure(
+        raw_response="not json", error="Schema validation failed", schema_errors=["x"]
+    )
+    assert not f
+    assert f.get("findings", []) == []
+    assert f.get("anything") is None
+    assert [r for r in [f, {"ok": 1}] if r] == [{"ok": 1}]
+    assert isinstance(f, SchemaValidationFailure)
+    assert f.schema_errors == ["x"]
+
+
 async def test_spawn_agent_schema_raises_after_max_retries_strict() -> None:
     # strict_schema=True preserves the legacy hard-fail behavior.
     schema = {

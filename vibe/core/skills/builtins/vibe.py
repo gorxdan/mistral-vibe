@@ -816,6 +816,12 @@ plus per-agent `response`/`error`/`schema_errors`. For finished runs the return
 value is persisted across sessions. Use `workflow_status` for live progress
 only.
 
+Inside the script, an `agent(schema=...)` whose output can't be validated after
+retries returns a **falsy, dict-like** `SchemaValidationFailure` (not a dict):
+`[r for r in results if r]` drops it, `r.get(k, default)` is safe, and
+`isinstance(r, SchemaValidationFailure)` / `r.schema_errors` expose the detail —
+so one failed agent degrades the batch instead of crashing the whole run.
+
 ### Task Manager (background processes, workflows, teams, loops)
 
 `/tasks` (or `/workflows`, or `ctrl+w`) opens the Tasks pane — a unified monitor
