@@ -83,17 +83,31 @@ class ContractReport(BaseModel):
         return f"contract failed ({len(self.violations)} violation(s)): {detail}{more}"
 
 
-class ContractFailure(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class ContractFailure(dict):
+    """Falsy dict returned when an isolated agent's contract fails. Mirrors
+    SchemaValidationFailure: the nested ContractReport is stored as JSON-safe
+    data (``model_dump``), so it survives ``json.dumps(results)`` -- the
+    previous pydantic form crashed the run via the nested model.
 
-    report: ContractReport
-    error: str
+    Filter with ``[r for r in results if r]`` (truthiness), NOT
+    ``isinstance(r, dict)``; it is a dict subclass. The report is plain dict
+    data: ``failure.report["passed"]`` / ``failure["report"]["violations"]``.
+    """
+
+    def __init__(self, *, report: Any, error: str = "") -> None:
+        report_data = (
+            report.model_dump(mode="json") if hasattr(report, "model_dump") else report
+        )
+        super().__init__(report=report_data, error=error)
 
     def __bool__(self) -> bool:
         return False
 
-    def get(self, key: str, default: Any = None) -> Any:
-        return default
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
 
 
 def _confine(root: Path, rel: str) -> Path | None:

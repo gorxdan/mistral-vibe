@@ -162,5 +162,36 @@ def test_contract_failure_is_falsy_and_dict_like(root: Path) -> None:
     failure = ContractFailure(report=report, error="contract failed")
     assert not failure
     assert failure.get("anything", "default") == "default"
-    assert failure.report is report
-    assert not failure.report.passed
+    # The report is carried as JSON-safe data, not the live pydantic object: a
+    # ContractFailure must round-trip through json.dumps (the live form crashed
+    # on the nested ContractReport), and the data must be inspectable.
+    assert failure.report == report.model_dump(mode="json")
+    assert not failure.report["passed"]
+
+
+def test_contract_failure_is_json_serializable(root: Path) -> None:
+    # Regression for the same crash class as SchemaValidationFailure: a
+    # ContractFailure flowing into a workflow script's json.dumps(results) used
+    # to raise "Object of type ContractReport is not JSON serializable" and kill
+    # the whole run. It is now a dict subclass with JSON-safe nested data.
+    import json
+
+    report = verify_contract(root, _spec(outputs=[{"path": "absent.py"}]))
+    failure = ContractFailure(report=report, error="contract failed")
+    payload = json.dumps([failure, {"gate": "delivered"}])
+    assert json.loads(payload) == [
+        {"report": report.model_dump(mode="json"), "error": "contract failed"},
+        {"gate": "delivered"},
+    ]
+
+
+def test_contract_failure_truthiness_filter_unaffected_by_dict_subclass(
+    root: Path,
+) -> None:
+    # The documented discriminator is truthiness; isinstance(r, dict) would now
+    # wrongly include the failure since it is a dict subclass. Pin both halves.
+    report = verify_contract(root, _spec(outputs=[{"path": "absent.py"}]))
+    failure = ContractFailure(report=report, error="contract failed")
+    good = {"gate": "delivered"}
+    assert [r for r in [failure, good] if r] == [good]
+    assert [r for r in [failure, good] if isinstance(r, dict)] == [failure, good]

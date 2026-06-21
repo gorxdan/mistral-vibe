@@ -1,17 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
 import shlex
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from git import Repo
 import pytest
 
-import vibe.core.worktree.ephemeral as ephemeral
 from vibe.core.workflows.contract import ContractFailure, ContractReport, ContractSpec
 from vibe.core.workflows.runtime import WorkflowRuntime
+import vibe.core.worktree.ephemeral as ephemeral
 
 _FAKE_VIBE_WRITE = """\
 import os, sys
@@ -102,7 +102,10 @@ def test_isolated_failure_value_returns_contract_failure() -> None:
     failed = ContractReport(passed=False, violations=[])
     result = rt._isolated_failure_value(failed, None, [], "boom", "raw")
     assert isinstance(result, ContractFailure)
-    assert result.report is failed
+    # The report is carried as JSON-safe data (model_dump), not the live object,
+    # so the failure survives json.dumps. The passed flag round-trips.
+    assert result.report == failed.model_dump(mode="json")
+    assert not result.report["passed"]
     assert not result
 
 
