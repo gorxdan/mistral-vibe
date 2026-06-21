@@ -231,8 +231,6 @@ class TestTaskToolExecution:
 
 
 class TestIsolatedSpawnJudgeGate:
-    """The pre-flight safety judge runs before any isolated subprocess spawn."""
-
     @pytest.fixture
     def ctx(self) -> InvokeContext:
         config = build_test_vibe_config(
