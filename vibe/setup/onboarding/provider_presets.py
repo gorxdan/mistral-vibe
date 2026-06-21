@@ -9,6 +9,8 @@ KIMI_API_BASE = "https://api.kimi.com/coding/v1"
 KIMI_USER_AGENT = "KimiCLI/1.47.0"
 ZAI_HELP_URL = "https://z.ai"
 KIMI_HELP_URL = "https://kimi.com"
+MINIMAX_API_BASE = "https://api.minimax.io/v1"
+MINIMAX_HELP_URL = "https://platform.minimax.io/user-center/payment/token-plan"
 
 CUSTOM_PROVIDER_NAME = "custom"
 
@@ -80,6 +82,32 @@ PRESETS: list[ProviderPreset] = [
             output_price=4.0,
             supports_images=True,
             auto_compact_threshold=200000,
+        ),
+    ),
+    ProviderPreset(
+        key="minimax",
+        label="MiniMax (Token Plan)",
+        description=(
+            "MiniMax-M3 via the MiniMax Token Plan endpoint. Requires a "
+            "MINIMAX_API_KEY (Subscription Key)."
+        ),
+        requires_api_key=True,
+        help_url=MINIMAX_HELP_URL,
+        provider=ProviderConfig(
+            name="minimax",
+            api_base=MINIMAX_API_BASE,
+            api_key_env_var="MINIMAX_API_KEY",
+            api_style="openai-responses",
+        ),
+        model=ModelConfig(
+            name="MiniMax-M3",
+            provider="minimax",
+            alias="minimax",
+            thinking="high",
+            input_price=0.0,
+            output_price=0.0,
+            supports_images=True,
+            auto_compact_threshold=400000,
         ),
     ),
     ProviderPreset(

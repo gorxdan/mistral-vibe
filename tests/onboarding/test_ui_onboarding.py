@@ -1356,6 +1356,33 @@ async def test_provider_selection_kimi_preset_carries_user_agent_header() -> Non
 
 
 @pytest.mark.asyncio
+async def test_provider_selection_minimax_preset_uses_responses_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    api_key_value = "sk-minimax-onboarding-test-key"
+    app = OnboardingApp()
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press("down", "down", "down", "enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, ApiKeyScreen), pilot)
+        await pilot.press(*api_key_value)
+        await pilot.press("enter")
+        await _wait_for(lambda: app.return_value is not None, pilot, timeout=2.0)
+
+    assert app.return_value == "completed"
+    config = _config_toml_dict()
+    assert config["active_model"] == "minimax"
+    provider = next(p for p in config["providers"] if p.get("name") == "minimax")
+    assert provider["api_base"] == "https://api.minimax.io/v1"
+    assert provider["api_key_env_var"] == "MINIMAX_API_KEY"
+    assert provider["api_style"] == "openai-responses"
+    assert "MINIMAX_API_KEY" in _saved_env_contents()
+
+
+@pytest.mark.asyncio
 async def test_provider_selection_ollama_without_server_stays_on_screen(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1365,7 +1392,7 @@ async def test_provider_selection_ollama_without_server_stays_on_screen(
     async with app.run_test() as pilot:
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
-        await pilot.press("down", "down", "down", "enter")
+        await pilot.press("down", "down", "down", "down", "enter")
 
         await _wait_for(
             lambda: (
@@ -1398,7 +1425,7 @@ async def test_provider_selection_custom_routes_to_api_key_and_persists(
     async with app.run_test() as pilot:
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
-        await pilot.press("down", "down", "down", "down", "enter")
+        await pilot.press("down", "down", "down", "down", "down", "enter")
         await _wait_for(
             lambda: isinstance(pilot.app.screen, CustomProviderScreen), pilot
         )
