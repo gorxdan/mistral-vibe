@@ -77,6 +77,7 @@ PRESETS: list[ProviderPreset] = [
             name="kimi-k2.7-code",
             provider="kimi",
             alias="kimi",
+            temperature=1.0,
             thinking="high",
             input_price=0.95,
             output_price=4.0,
