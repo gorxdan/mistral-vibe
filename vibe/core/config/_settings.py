@@ -677,6 +677,82 @@ MCPServer = Annotated[
 ]
 
 
+class LSPServer(BaseModel):
+    """Configuration for a single Language Server Protocol server.
+
+    A server owns one or more file extensions; the LSP manager routes a file
+    to the first matching server. Multi-language support is achieved by
+    declaring one ``[[lsp_servers]]`` entry per language.
+    """
+
+    name: str = Field(description="Short alias identifying this language server.")
+    command: str | list[str] = Field(
+        description="Executable and its arguments to launch the server (stdio transport)."
+    )
+    languages: dict[str, str] = Field(
+        description=(
+            "Mapping of file extension (with dot, e.g. '.py') to LSP language id "
+            "(e.g. 'python'). The server claims ownership of these extensions."
+        ),
+    )
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Environment variables to set for the language server process.",
+    )
+    cwd: str | None = Field(
+        default=None, description="Working directory for the language server process."
+    )
+    initialization_options: dict[str, Any] | None = Field(default=None)
+    root_uri: str | None = Field(
+        default=None,
+        description=(
+            "Workspace root URI passed during initialize. Defaults to the current "
+            "project directory when omitted."
+        ),
+    )
+    startup_timeout_sec: float = Field(default=20.0, gt=0)
+    request_timeout_sec: float = Field(default=10.0, gt=0)
+
+    @field_validator("name", mode="after")
+    @classmethod
+    def _normalize_name(cls, v: str) -> str:
+        normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", v).strip("_-")
+        if not normalized:
+            raise ValueError("LSP server name must contain at least one identifier char")
+        return normalized[:256]
+
+    @field_validator("languages", mode="after")
+    @classmethod
+    def _must_have_languages(cls, v: dict[str, str]) -> dict[str, str]:
+        if not v:
+            raise ValueError("an LSP server must declare at least one language/extension")
+        return v
+
+    def argv(self) -> list[str]:
+        base = (
+            shlex.split(self.command)
+            if isinstance(self.command, str)
+            else list(self.command or [])
+        )
+        return [*base, *self.args] if self.args else base
+
+    def to_server_config(self) -> Any:
+        from vibe.core.lsp._server import ServerConfig
+
+        return ServerConfig(
+            name=self.name,
+            command=self.argv(),
+            languages=dict(self.languages),
+            env=dict(self.env),
+            cwd=self.cwd,
+            root_uri=self.root_uri,
+            initialization_options=self.initialization_options,
+            startup_timeout=self.startup_timeout_sec,
+            request_timeout=self.request_timeout_sec,
+        )
+
+
 class ConnectorConfig(BaseModel):
     name: str = Field(description="Normalized connector alias to match against.")
     disabled: bool = Field(
@@ -949,6 +1025,14 @@ class VibeConfig(BaseSettings):
     mcp_servers: list[MCPServer] = Field(
         default_factory=list, description="Preferred MCP server configuration entries."
     )
+    lsp_servers: list[LSPServer] = Field(
+        default_factory=list,
+        description=(
+            "Language Server Protocol servers. Each entry owns one or more file "
+            "extensions; declare one entry per language. The feature is opt-in: "
+            "install it with /lspstall before configuring servers."
+        ),
+    )
     enable_connectors: bool = Field(
         default=True,
         description=(
@@ -1026,6 +1110,13 @@ class VibeConfig(BaseSettings):
         default_factory=list,
         description=(
             "A list of opt-in builtin agent names that have been explicitly installed."
+        ),
+    )
+    installed_components: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Opt-in feature components explicitly installed via their setup command "
+            "(e.g. /lspstall adds 'lsp'). Components stay dormant until listed here."
         ),
     )
     default_agent: str = Field(
