@@ -218,7 +218,7 @@ async def main():
                 )
                 for path in files
             ])
-            if isinstance(r, dict)
+            if r
         ]
 
     # Reconcile in code — do NOT let a model decide the gate. Fail CLOSED:

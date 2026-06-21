@@ -939,10 +939,11 @@ value is persisted across sessions. Use `workflow_status` for live progress
 only.
 
 Inside the script, an `agent(schema=...)` whose output can't be validated after
-retries returns a **falsy, dict-like** `SchemaValidationFailure` (not a dict):
-`[r for r in results if r]` drops it, `r.get(k, default)` is safe, and
-`isinstance(r, SchemaValidationFailure)` / `r.schema_errors` expose the detail —
-so one failed agent degrades the batch instead of crashing the whole run.
+retries returns a **falsy** `SchemaValidationFailure` (a `dict` subclass): filter
+with `[r for r in results if r]` (NOT `isinstance(r, dict)`, which would now
+wrongly include it), `r.get(k, default)` is safe, `json.dumps(results)` will not
+crash, and `isinstance(r, SchemaValidationFailure)` / `r.schema_errors` expose
+the detail — so one failed agent degrades the batch instead of crashing the run.
 
 ### Task Manager (background processes, workflows, teams, loops)
 

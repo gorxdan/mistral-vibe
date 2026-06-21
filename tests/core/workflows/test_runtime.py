@@ -199,6 +199,41 @@ async def test_schema_failure_is_falsy_and_dict_like() -> None:
     assert f.schema_errors == ["x"]
 
 
+def test_schema_failure_is_json_serializable() -> None:
+    # Regression for the wf-2 root cause: a SchemaValidationFailure flowing into
+    # a workflow script's json.dumps(results) crashed the whole run with
+    # "Object of type SchemaValidationFailure is not JSON serializable". It is
+    # now a dict subclass, so it serializes as a plain dict and one failed agent
+    # degrades the batch instead of killing it.
+    import json
+
+    f = SchemaValidationFailure(
+        raw_response="not json",
+        error="Schema validation failed after 3 attempts",
+        schema_errors=["$.findings[0].severity: 'medium' not in enum"],
+    )
+    payload = json.dumps([f, {"findings": []}])
+    assert json.loads(payload) == [
+        {
+            "raw_response": "not json",
+            "error": "Schema validation failed after 3 attempts",
+            "schema_errors": ["$.findings[0].severity: 'medium' not in enum"],
+        },
+        {"findings": []},
+    ]
+
+
+def test_schema_failure_truthiness_filter_unaffected_by_dict_subclass() -> None:
+    # The documented discriminator is truthiness. Filter with `if r`, never
+    # `isinstance(r, dict)` (which now wrongly includes the failure since it is
+    # a dict subclass). Pin both halves of that contract.
+    f = SchemaValidationFailure(raw_response="x", error="bad")
+    good = {"findings": [1, 2]}
+    assert [r for r in [f, good] if r] == [good]
+    # Guard against the anti-pattern: this is documented NOT to discriminate.
+    assert [r for r in [f, good] if isinstance(r, dict)] == [f, good]
+
+
 async def test_parallel_accepts_bare_coroutines_and_thunks() -> None:
     # Headline change: parallel() takes coroutines directly (the natural fan-out
     # form) as well as zero-arg thunks, and mixes them; the list form works too.
@@ -1624,7 +1659,7 @@ async def test_agent_budget_ceiling_cancels_spendy_agent() -> None:
         budget_total=1_000_000,
         agent_budget_ceiling=50_000,  # well below the 200K the mock reports
     )
-    result = await rt.spawn_agent("spend", label="spendy")
+    await rt.spawn_agent("spend", label="spendy")
     phase = next(iter(rt._phases.values()))
     assert len(phase.agent_results) == 1
     assert phase.agent_results[0].completed is False

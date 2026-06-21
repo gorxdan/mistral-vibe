@@ -92,7 +92,7 @@ async def main():
             phase="Verify",
             schema=VERDICT_SCHEMA,
         )
-        return {**claim, **verdict} if isinstance(verdict, dict) else {**claim, "verified": False, "reason": "verification failed"}
+        return {**claim, **verdict} if verdict else {**claim, "verified": False, "reason": "verification failed"}
 
     verdicts = await pipeline(claims, verify_claim)
     verified = [v for v in verdicts if v.get("verified")]

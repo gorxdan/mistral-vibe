@@ -53,35 +53,42 @@ class AgentResult(BaseModel):
         return self.tokens_in + self.tokens_out
 
 
-class SchemaValidationFailure(BaseModel):
-    """Structured return value when an agent exhausts its schema-retry budget.
+class SchemaValidationFailure(dict):
+    """Falsy dict returned (not raised) by ``spawn_agent`` when a schema-tagged
+    agent exhausts its retries in non-strict mode. A ``dict`` subclass, not a
+    pydantic model, so it survives ``json.dumps(results)`` -- the previous form
+    crashed the whole run on one failed agent.
 
-    Returned (not raised) by ``WorkflowRuntime.spawn_agent`` in the default
-    non-strict mode so a workflow script never silently loses the agent's raw
-    output to ``None``. Callers that want the legacy hard-fail behavior can set
-    ``strict_schema=True`` on the runtime, in which case ``spawn_agent`` raises
-    ``SchemaValidationError`` instead.
-
-    Scripts check for failure with ``isinstance(result, SchemaValidationFailure)``
-    — but they don't have to. This is also a falsy, dict-like empty value so the
-    common idioms degrade gracefully instead of crashing the whole run on one
-    failed agent: the canonical filter ``[r for r in results if r]`` drops it
-    (like the ``None`` from a raised agent), and ``r.get("findings", [])`` returns
-    the default. The failure detail stays available via ``.error`` /
-    ``.schema_errors`` / ``.raw_response``.
+    Filter with ``[r for r in results if r]`` (truthiness), NOT
+    ``isinstance(r, dict)``: it is a dict subclass, so isinstance would wrongly
+    keep it. ``isinstance(r, SchemaValidationFailure)`` / ``r.schema_errors``
+    still work for introspection.
     """
 
-    model_config = ConfigDict(extra="forbid")
-
-    raw_response: str
-    error: str
-    schema_errors: list[str] = Field(default_factory=list)
+    def __init__(
+        self,
+        *,
+        raw_response: str = "",
+        error: str = "",
+        schema_errors: list[str] | None = None,
+    ) -> None:
+        super().__init__(
+            raw_response=raw_response,
+            error=error,
+            schema_errors=list(schema_errors or []),
+        )
 
     def __bool__(self) -> bool:
         return False
 
-    def get(self, key: str, default: Any = None) -> Any:
-        return default
+    def __getattr__(self, name: str) -> Any:
+        # Attribute-style access (``f.schema_errors``). Real dict attributes
+        # resolve first and never reach here; raise AttributeError so hasattr()
+        # behaves correctly.
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
 
 
 class PhaseReport(BaseModel):

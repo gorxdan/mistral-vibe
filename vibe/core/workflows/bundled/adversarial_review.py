@@ -143,7 +143,7 @@ async def main():
     findings = [
         f
         for r in reviews
-        if isinstance(r, dict)
+        if r
         for f in r.get("findings", [])
     ]
     log(f"{len(findings)} candidate finding(s) across lenses")
@@ -177,7 +177,7 @@ async def main():
             phase="Verify",
             schema=VERDICT_SCHEMA,
         )
-        if isinstance(verdict, dict):
+        if verdict:
             return {
                 **finding,
                 "verdict": verdict.get("verdict", "uncertain"),
