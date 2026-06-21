@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
+import pytest
+from textual.app import App, ComposeResult
+
 from tests.conftest import build_test_vibe_config
 from vibe.cli.textual_ui.widgets.banner.banner import Banner, BannerState
+from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.core.config import ContextShapingConfig, VibeConfig
 from vibe.core.config._settings import (
     MemoryConfig,
@@ -96,3 +100,61 @@ def test_format_features_empty_when_no_flags() -> None:
     banner = _banner()
     banner.state = BannerState()
     assert banner._format_features() == ""
+
+
+def _all_flags() -> list[tuple[str, bool]]:
+    return Banner._feature_flags(build_test_vibe_config())
+
+
+def test_features_text_single_line_when_width_unbounded() -> None:
+    out = Banner._features_text(BannerState(features=_all_flags()), max_width=None)
+    assert out.count("\n") == 0
+    assert out.startswith("Features:  ")
+    assert "[x] snip" in out
+
+
+def test_features_text_wraps_to_multiple_lines_under_narrow_width() -> None:
+    out = Banner._features_text(BannerState(features=_all_flags()), max_width=50)
+    lines = out.split("\n")
+    assert len(lines) >= 2
+    assert lines[0].startswith("Features:  ")
+    # No wrapped line exceeds the budget.
+    assert all(len(line) <= 50 for line in lines)
+    # Continuation lines indent under the feature list (len("Features:  ") == 11).
+    for line in lines[1:]:
+        assert line.startswith(" " * 11)
+        assert not line[11:].startswith(" ")  # tag text, not extra spaces
+
+
+def test_features_text_keeps_each_tag_atomic_when_wrapping() -> None:
+    flags = [("snip", True), ("memory", False)]
+    out = Banner._features_text(BannerState(features=flags), max_width=20)
+    # Both tags present whole; neither split across the wrap.
+    assert "[x] snip" in out
+    assert "[ ] memory" in out
+
+
+class _BannerApp(App[None]):
+    def __init__(self, banner: Banner) -> None:
+        super().__init__()
+        self._banner = banner
+
+    def compose(self) -> ComposeResult:
+        yield self._banner
+
+
+@pytest.mark.asyncio
+async def test_mounted_banner_reflows_features_on_terminal_resize() -> None:
+    banner = _banner()
+    banner.state = BannerState(features=_all_flags())
+
+    async with _BannerApp(banner).run_test(size=(220, 24)) as pilot:
+        wide = str(banner.query_one("#banner-features", NoMarkupStatic).render())
+        assert "\n" not in wide
+
+        await pilot.resize_terminal(45, 24)
+        await pilot.pause()
+        narrow = str(banner.query_one("#banner-features", NoMarkupStatic).render())
+        assert "\n" in narrow
+        for line in narrow.split("\n"):
+            assert len(line) <= 45

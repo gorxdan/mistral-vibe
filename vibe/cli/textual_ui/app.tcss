@@ -1325,7 +1325,7 @@ NarratorStatus {
 
 #banner-features {
     width: auto;
-    height: 1;
+    height: auto;
 }
 
 .banner-cmd {

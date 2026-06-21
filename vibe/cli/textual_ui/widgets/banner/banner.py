@@ -5,6 +5,7 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalGroup
+from textual.events import Resize
 from textual.reactive import reactive
 from textual.widgets import Static
 
@@ -17,6 +18,9 @@ from vibe.core.skills.manager import SkillManager
 
 def _pluralize(count: int, singular: str) -> str:
     return f"{count} {singular}{'s' if count != 1 else ''}"
+
+
+_FEATURES_PREFIX = "Features:  "
 
 
 @dataclass
@@ -84,6 +88,13 @@ class Banner(Static):
     def on_mount(self) -> None:
         self.state = self._initial_state
 
+    def on_resize(self, event: Resize) -> None:
+        if not self.is_attached:
+            return
+        self.query_one("#banner-features", NoMarkupStatic).update(
+            self._format_features()
+        )
+
     def watch_state(self) -> None:
         if not self.is_attached:
             return
@@ -133,9 +144,7 @@ class Banner(Static):
         active_model = config.get_active_model()
         judge = getattr(config, "safety_judge", None)
         safety_judge = (
-            (judge.model or "on")
-            if judge and judge.enabled and judge.model
-            else None
+            (judge.model or "on") if judge and judge.enabled and judge.model else None
         )
         return BannerState(
             active_model=f"{active_model.alias}[{active_model.thinking}]",
@@ -217,20 +226,47 @@ class Banner(Static):
         return " · ".join(parts)
 
     def _format_features(self) -> str:
-        return self._features_text(self.state)
+        return self._features_text(self.state, max_width=self._features_max_width())
+
+    def _features_max_width(self) -> int | None:
+        # Terminal width is the real constraint: the banner is laid out with
+        # width:auto, so the widget's own size is content-driven and unreliable.
+        # #banner-container reserves one column of right padding (app.tcss).
+        if not self.is_attached:
+            return None
+        width = self.app.size.width
+        if width <= 0:
+            return None
+        return max(1, width - 1)
 
     @staticmethod
-    def _features_text(state: BannerState) -> str:
+    def _features_text(state: BannerState, max_width: int | None = None) -> str:
         # Startup checklist of optional feature toggles. Empty (e.g. partial
         # config in unit tests) renders as a blank line to keep the layout.
         # Seeded at compose time from _initial_state (not just the reactive
         # update) so the line is present in the very first rendered frame.
         if not state.features:
             return ""
-        tags = [
-            f"[{'x' if on else ' '}] {label}" for label, on in state.features
-        ]
-        return "Features:  " + "  ".join(tags)
+        tags = [f"[{'x' if on else ' '}] {label}" for label, on in state.features]
+        # Narrow terminals / unattached (unit-test) widgets: one line, let the
+        # container clip rather than guess. The first tag can't be dropped, so
+        # we always place it even if the prefix alone already overflows.
+        if max_width is None or max_width <= len(_FEATURES_PREFIX) + len(tags[0]):
+            return _FEATURES_PREFIX + "  ".join(tags)
+        indent = " " * len(_FEATURES_PREFIX)
+        sep = "  "
+        lines: list[str] = []
+        current = _FEATURES_PREFIX
+        for tag in tags:
+            is_first_on_line = current == _FEATURES_PREFIX and not lines
+            addition = tag if is_first_on_line else sep + tag
+            if len(current) + len(addition) <= max_width or is_first_on_line:
+                current += addition
+            else:
+                lines.append(current)
+                current = indent + tag
+        lines.append(current)
+        return "\n".join(lines)
 
     def _format_plan(self) -> str:
         return (
