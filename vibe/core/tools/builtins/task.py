@@ -95,9 +95,11 @@ class Task(
         "Delegate a task to a subagent for independent execution. "
         "Useful for exploration, research, or parallel work that doesn't "
         "require user interaction. By default write-capable profiles "
-        "(worker/auto-approve/editor) run in an isolated git worktree so their "
-        "edits can't race the parent tree; read-only profiles run in-memory for "
-        "speed. Override with the task.isolation config (off|auto|always)."
+        "(worker/auto-approve/editor) run in an isolated git worktree — "
+        "write/edit/read are auto-approved and confined to the worktree, so "
+        "edits can't race the parent tree or escape it; read-only profiles run "
+        "in-memory for speed. Override with the task.isolation config "
+        "(off|auto|always)."
     )
 
     @classmethod

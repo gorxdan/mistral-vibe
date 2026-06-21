@@ -1254,6 +1254,46 @@ async def test_isolated_executor_threads_requested_profile_not_auto_approve(
     assert "auto-approve" not in argv
 
 
+async def test_isolated_executor_passes_auto_approve_and_worktree_root_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: the isolated subprocess used to SKIP every write/edit/bash
+    # because the child had no approval callback (the critical flaw). _spawn_isolated
+    # must hand the child VIBE_ISOLATED_AUTO_APPROVE (so programmatic wires an
+    # auto-yes callback) and VIBE_ISOLATED_WORKTREE_ROOT (so file tools confine
+    # themselves to the worktree). Both flow through the child env.
+    from pathlib import Path
+
+    import vibe.core.worktree.ephemeral as eph
+
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt-env")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 7
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"out", b"")
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        captured["env"] = kwargs.get("env", {})
+        captured["cwd"] = kwargs.get("cwd")
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    await rt._default_isolated_executor("do it", "worker", "lbl", 40)
+    env = captured["env"]
+    assert env.get("VIBE_ISOLATED_AUTO_APPROVE") == "1"
+    assert env.get("VIBE_ISOLATED_WORKTREE_ROOT") == str(fake_wt.path)
+    # cwd is the worktree so relative paths resolve inside it.
+    assert captured["cwd"] == str(fake_wt.path)
+
+
 async def test_validate_workflow_profile_rejects_editor_without_isolation() -> None:
     # editor has an enabled_tools allowlist (read/grep/write_file/edit) yet
     # writes files. The old 'no allowlist = isolate' proxy missed it; the

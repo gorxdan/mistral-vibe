@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 from pathlib import Path, PurePath
 
 from vibe.core.scratchpad import is_scratchpad_path
-from vibe.core.tools.base import ToolPermission
+from vibe.core.tools.base import ToolError, ToolPermission
 from vibe.core.tools.permissions import (
     PermissionContext,
     PermissionScope,
@@ -123,3 +124,32 @@ def resolve_file_tool_permission(
         )
 
     return None
+
+
+def isolated_worktree_root() -> Path | None:
+    """The worktree root when running as an isolated subprocess, else None.
+
+    Set by ``run_isolated_agent`` via ``VIBE_ISOLATED_WORKTREE_ROOT`` so the
+    file tools spawned in the subprocess can confine themselves to the worktree.
+    """
+    raw = os.environ.get("VIBE_ISOLATED_WORKTREE_ROOT")
+    return Path(raw).resolve() if raw else None
+
+
+def enforce_isolated_confine(path: Path) -> None:
+    """Raise ``ToolError`` if *path* resolves outside the isolated worktree.
+
+    No-op unless running as an isolated subprocess. When active, resolves *path*
+    (following symlinks) and rejects anything not under the worktree root — the
+    hard boundary that lets the subprocess auto-approve write/edit/read without
+    an absolute-path escape into the parent repo or ``~/.vibe``.
+    """
+    root = isolated_worktree_root()
+    if root is None:
+        return
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise ToolError(
+            f"Refusing to touch {resolved}: isolated subagent is confined to its "
+            f"worktree ({root})."
+        )

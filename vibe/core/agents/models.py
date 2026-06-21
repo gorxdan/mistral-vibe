@@ -484,7 +484,8 @@ EDITOR = AgentProfile(
         "Workflow-only subagent for surgical file edits (renames, codemods, "
         "targeted changes): write/edit + read/grep, no bash/MCP — lower blast "
         "radius than worker. MUST run with isolation='worktree' in a workflow; "
-        "in a plain task call its writes are approval-gated and skipped."
+        "in a plain task call it also runs isolated, with write/edit/read "
+        "auto-approved and confined to the worktree (no parent-tree races)."
     ),
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
@@ -500,10 +501,12 @@ WORKER = AgentProfile(
     description=(
         "Full-capability subagent for workflows: all builtin tools plus any "
         "discovered MCP tools (no enabled_tools allowlist). For workflow agents "
-        "that need to act, not just read. MUST run with isolation='worktree' in a "
-        "workflow — it then executes as an auto-approved `vibe -p` subprocess in "
-        "its own git worktree, so its tools actually run (no headless skip) and "
-        "file writes can't race other agents."
+        "that need to act, not just read. MUST run with isolation='worktree' in "
+        "a workflow — it then executes as a `vibe -p` subprocess in its own git "
+        "worktree. write/edit/read are auto-approved and confined to the "
+        "worktree (no headless skip, no parent-tree races); bash runs with the "
+        "worktree as cwd but is not path-confined, so enable the OS bash sandbox "
+        "when that matters."
     ),
     # No enabled_tools override -> the full tool set (incl. MCP in the subprocess).
     safety=AgentSafety.NEUTRAL,

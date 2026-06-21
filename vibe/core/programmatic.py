@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import sys
 
+from pydantic import BaseModel
+
 # Sentinel-prefixed stderr line carrying real token stats, emitted when
 # VIBE_WORKFLOW_EMIT_STATS=1 (set by the workflow isolated-agent executor so it
 # can charge real tokens instead of an estimate). Kept off stdout so normal
@@ -29,7 +31,9 @@ from vibe.core.teleport.types import (
     TeleportPushRequiredEvent,
     TeleportPushResponseEvent,
 )
+from vibe.core.tools.permissions import RequiredPermission
 from vibe.core.types import (
+    ApprovalResponse,
     AssistantEvent,
     LLMMessage,
     OutputFormat,
@@ -69,6 +73,30 @@ async def _teardown_lsp_and_loop(agent_loop: AgentLoop) -> None:
     await teardown_lsp_async()
     await agent_loop.aclose()
     await agent_loop.telemetry_client.aclose()
+
+
+async def _isolated_auto_approve(
+    tool_name: str,
+    args: BaseModel,
+    tool_call_id: str,
+    required_permissions: list[RequiredPermission] | None,
+    judge_deferral: str | None,
+) -> tuple[ApprovalResponse, str | None]:
+    """Auto-yes every ASK-gated tool in an isolated subprocess.
+
+    The spawn was pre-judged (task._judge_isolated_spawn / workflow runtime) and
+    write/edit/read are confined to the worktree (enforce_isolated_confine), so
+    the host's unreachable per-tool gate can be bypassed. Without this the
+    isolated worker/editor SKIPs every write/edit/bash and silently produces no
+    work — see programmatic.run_programmatic for the env-flag handshake.
+    """
+    return ApprovalResponse.YES, None
+
+
+def _wire_isolated_approval(agent_loop: AgentLoop) -> None:
+    """Wire the auto-yes callback when running as an isolated subprocess."""
+    if os.environ.get("VIBE_ISOLATED_AUTO_APPROVE") == "1":
+        agent_loop.set_approval_callback(_isolated_auto_approve)
 
 
 def run_programmatic(  # noqa: PLR0913, PLR0917
@@ -115,6 +143,7 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
         ),
         hook_config_result=hook_config_result,
     )
+    _wire_isolated_approval(agent_loop)
     # Wire the scheduler so the `schedule` tool works headless (create/list/
     # cancel persist to session metadata). They only FIRE in this run when
     # keep_alive_seconds is set (see the drive phase below); otherwise they

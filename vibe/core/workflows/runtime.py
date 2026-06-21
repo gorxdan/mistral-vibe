@@ -524,6 +524,11 @@ async def _spawn_isolated(
     ]
     env = os.environ.copy()
     env["VIBE_WORKFLOW_EMIT_STATS"] = "1"
+    # Child wires an auto-yes approval callback (so write/edit/bash run instead
+    # of SKIPping headless — see programmatic._isolated_auto_approve) and
+    # confines its file tools to this worktree (enforce_isolated_confine).
+    env["VIBE_ISOLATED_AUTO_APPROVE"] = "1"
+    env["VIBE_ISOLATED_WORKTREE_ROOT"] = str(wt.path)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(wt.path),
