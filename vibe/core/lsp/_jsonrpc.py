@@ -99,7 +99,7 @@ class JsonRpcConnection:
             self._read_task.cancel()
             try:
                 await self._read_task
-            except Exception:
+            except (asyncio.CancelledError, Exception):
                 pass
             self._read_task = None
         try:
