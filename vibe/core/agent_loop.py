@@ -190,6 +190,20 @@ TOOL_RESULT_PREVIEW_CHARS = 12_000
 # flooding context. Full content is persisted before any inline compression.
 AGGREGATE_TOOL_RESULT_CHARS = 200_000
 
+# Safety-judge input window. _serialize_args hands the judge only this many
+# chars of the serialized tool args. A destructive tail hidden past the cut is
+# invisible to the judge, so (a) a sentinel is appended to the truncated repr
+# warning the model it is judging a PARTIAL payload, and (b) _judge_tool_safety
+# force-defers to the user when such a truncated call also carries a risk flag
+# (uncovered permission) — never auto-approving on a blind prefix.
+JUDGE_ARGS_LIMIT = 4000
+JUDGE_ARGS_TRUNCATED_SENTINEL = (
+    "\n\n...[TRUNCATED — the judge sees only the first "
+    f"{JUDGE_ARGS_LIMIT} chars of these arguments. A destructive payload "
+    "could be hidden beyond this point; do not auto-approve on the basis of "
+    "the visible prefix.]"
+)
+
 
 class ToolExecutionResponse(StrEnum):
     SKIP = auto()
@@ -2034,10 +2048,31 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self._judge_verdict_cache.clear()
             self._judge_model_alias_for_cache = judge_model
         # args_key is a hash of the FULL serialized args so two calls differing
-        # only past the 4000-char judge-input truncation get distinct keys;
-        # args_repr is the truncated string the judge actually sees.
-        args_key, args_repr = self._serialize_args(args)
+        # only past the judge-input window get distinct cache keys; args_repr is
+        # what the judge actually sees (capped at JUDGE_ARGS_LIMIT, with a
+        # sentinel appended when truncated).
+        args_key, args_repr, truncated = self._serialize_args(args)
         flagged_reasons = [rp.label for rp in uncovered]
+        # Truncation blind spot: when the args exceed the judge's input window,
+        # a destructive tail can hide beyond what the model sees. This method is
+        # only reached for ASK-gated calls, and `uncovered` non-empty means a
+        # risk flag already surfaced — so a truncated payload here would let the
+        # judge rule on a blind prefix while a real flag exists. Force-defer to
+        # the user instead of trusting an auto-approve on a partial payload. The
+        # sentinel in args_repr is a second line of defense for any truncated
+        # payload that still reaches the judge (e.g. via a direct caller).
+        if truncated and uncovered:
+            self.pending_judge_deferral = (
+                "arguments were truncated past the judge's input window; the "
+                "hidden tail cannot be verified safe"
+            )
+            logger.info(
+                "Safety judge force-deferred tool %r to user: args truncated "
+                "past the %d-char input window",
+                tool_name,
+                JUDGE_ARGS_LIMIT,
+            )
+            return None
         cache_key = (tool_name, args_key, tuple(flagged_reasons))
         # Reuse a real verdict for an identical call instead of re-querying the
         # judge model. Fail-closed verdicts (verdict.failed) are never stored,
@@ -2070,21 +2105,32 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
     @staticmethod
-    def _serialize_args(args: BaseModel) -> tuple[str, str]:
-        """Return ``(cache_key_fingerprint, judge_input_repr)`` for tool args.
+    def _serialize_args(args: BaseModel) -> tuple[str, str, bool]:
+        """Return ``(cache_key_fingerprint, judge_input_repr, truncated)``.
 
         The fingerprint hashes the FULL serialized form, so two calls that share
-        an identical 4000-char truncation but differ further on get distinct
-        cache keys. Hashing keeps each key constant-size regardless of how large
-        the args are (e.g. ``write_file`` content). The repr is the 4000-char
-        slice actually handed to the judge model, unchanged from prior behavior.
+        an identical truncation but differ further on get distinct cache keys.
+        Hashing keeps each key constant-size regardless of how large the args
+        are (e.g. ``write_file`` content).
+
+        The repr is the slice handed to the judge model. When the full args
+        exceed ``JUDGE_ARGS_LIMIT``, the slice is capped and a sentinel is
+        appended so the judge knows it is judging a PARTIAL payload — a
+        destructive tail can hide beyond the cut. ``truncated`` lets the caller
+        (``_judge_tool_safety``) force-defer rather than trust the judge on a
+        payload it cannot fully see.
         """
         try:
             blob = args.model_dump_json()
         except Exception:
             blob = str(args)
         digest = hashlib.sha256(blob.encode("utf-8", errors="replace")).hexdigest()
-        return digest, blob[:4000]
+        truncated = len(blob) > JUDGE_ARGS_LIMIT
+        if truncated:
+            repr_ = blob[:JUDGE_ARGS_LIMIT] + JUDGE_ARGS_TRUNCATED_SENTINEL
+        else:
+            repr_ = blob
+        return digest, repr_, truncated
 
     def _judge_verdict_cache_get(
         self, key: tuple[str, str, tuple[str, ...]]

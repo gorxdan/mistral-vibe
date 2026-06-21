@@ -397,8 +397,9 @@ async def test_calls_differing_only_past_truncation_do_not_collide() -> None:
     # past the truncation point, so the judge would see the same args_repr.
     dangerous = BashArgs(command=f"echo {padding}; rm -rf /important")
 
-    args_key_a, repr_a = AgentLoop._serialize_args(benign)
-    args_key_b, repr_b = AgentLoop._serialize_args(dangerous)
+    args_key_a, repr_a, trunc_a = AgentLoop._serialize_args(benign)
+    args_key_b, repr_b, trunc_b = AgentLoop._serialize_args(dangerous)
+    assert trunc_a is True and trunc_b is True
     assert repr_a == repr_b, "fixture premise: judge sees identical truncated args"
     assert args_key_a != args_key_b, "full-args fingerprint must distinguish them"
 
@@ -430,6 +431,70 @@ async def test_cache_cleared_when_judge_model_changes() -> None:
     assert len(fake.calls) == 2, (
         "cached verdict must be dropped when the judge model changes"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Truncation blind spot: sentinel + force-defer                               #
+# --------------------------------------------------------------------------- #
+
+
+def test_serialize_args_appends_sentinel_only_when_truncated() -> None:
+    short = BashArgs(command="ls")
+    _, repr_short, trunc_short = AgentLoop._serialize_args(short)
+    assert trunc_short is False
+    assert "TRUNCATED" not in repr_short
+
+    # A benign prefix longer than the judge window hides a destructive tail.
+    long_cmd = "echo " + ("a" * 4200) + "; rm -rf ~"
+    _, repr_long, trunc_long = AgentLoop._serialize_args(BashArgs(command=long_cmd))
+    assert trunc_long is True
+    assert "TRUNCATED" in repr_long, "truncated repr must warn the judge it is partial"
+    # The destructive tail sits past the cut and must NOT reach the judge.
+    assert "rm -rf ~" not in repr_long
+
+
+@pytest.mark.asyncio
+async def test_truncated_args_with_risk_flag_force_defer_skipping_judge() -> None:
+    """A truncated payload whose destructive tail is invisible to the judge must
+    never be auto-approved. _judge_tool_safety force-defers to the user instead
+    of consulting the judge on a blind prefix (regression for the truncation
+    bypass found in red-team round 2)."""
+    loop = build_test_agent_loop()
+    # A permissive judge that would approve anything — it must never be asked.
+    fake = _FakeJudge(safe=True, reason="visible prefix looks benign")
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    approval = _NoteCapturingApproval(ApprovalResponse.NO)
+    loop.approval_callback = approval
+
+    # >4000-char benign prefix hides `rm -rf ~`; the real Bash resolver surfaces
+    # an uncovered COMMAND_PATTERN / OUTSIDE_DIRECTORY flag for it.
+    args = BashArgs(command="echo " + ("a" * 4200) + "; rm -rf ~")
+    decision = await loop._should_execute_tool(_bash(), args, "trunc-1")
+
+    assert decision.judge_approved is False, (
+        "truncated payload must not be auto-approved by the judge"
+    )
+    assert fake.calls == [], "judge must not be consulted on a truncated payload"
+    assert approval.called is True, "must defer to the user"
+    assert approval.judge_note and "truncated" in approval.judge_note.lower()
+
+
+@pytest.mark.asyncio
+async def test_truncated_args_without_risk_flag_still_consults_judge() -> None:
+    """Truncation alone (no uncovered permission) does not force-defer: the
+    sentinel in the repr lets the judge decide. Guards against over-blocking
+    large but unflagged payloads and preserves the cache-keying contract."""
+    loop = build_test_agent_loop()
+    fake = _FakeJudge(safe=True, reason="benign")
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
+
+    args = BashArgs(command="echo " + ("a" * 4200))
+    # No uncovered permissions -> _judge_tool_safety is reached with uncovered=[]
+    # and must still query the judge (no force-defer).
+    await loop._judge_tool_safety("bash", args, [])
+
+    assert len(fake.calls) == 1, "unflagged truncated call must still reach the judge"
 
 
 # --------------------------------------------------------------------------- #
