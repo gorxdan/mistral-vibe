@@ -49,7 +49,13 @@ class TaskArgs(BaseModel):
 
 class TaskResult(BaseModel):
     response: str = Field(description="The accumulated response from the subagent")
-    turns_used: int = Field(description="Number of turns the subagent used")
+    turns_used: int | None = Field(
+        default=None,
+        description=(
+            "Number of turns the subagent used. None when unknown (isolated "
+            "subagents run in a subprocess that does not report turn count)."
+        ),
+    )
     completed: bool = Field(description="Whether the task completed normally")
     isolated: bool = Field(
         default=False, description="Whether the subagent ran in an isolated worktree."
@@ -105,6 +111,11 @@ class Task(
     def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
         result = event.result
         if isinstance(result, TaskResult):
+            # turns_used is None for isolated subagents (subprocess doesn't
+            # report it); omit the count instead of showing a misleading "0".
+            if result.turns_used is None:
+                msg = "Agent interrupted" if not result.completed else "Agent completed"
+                return ToolResultDisplay(success=result.completed, message=msg)
             turn_word = "turn" if result.turns_used == 1 else "turns"
             if not result.completed:
                 return ToolResultDisplay(
@@ -183,7 +194,7 @@ class Task(
 
         yield TaskResult(
             response=response_text,
-            turns_used=0,
+            turns_used=None,  # isolated subprocess doesn't report turn count
             completed=completed,
             isolated=True,
             worktree_path=worktree_path,
@@ -214,7 +225,7 @@ class Task(
         if judge is None:
             return None
         verdict = await judge.judge(
-            "launch_workflow", prompt, [f"isolated '{agent}' subagent spawn"]
+            "task", prompt, [f"isolated '{agent}' subagent spawn"]
         )
         if verdict.safe:
             return None
