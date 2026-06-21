@@ -4,6 +4,7 @@ import asyncio
 from contextlib import aclosing
 import json
 import os
+from pathlib import Path
 import sys
 
 # Sentinel-prefixed stderr line carrying real token stats, emitted when
@@ -19,6 +20,7 @@ from vibe.core.config import VibeConfig
 from vibe.core.hooks.models import HookConfigResult
 from vibe.core.logger import logger
 from vibe.core.loop import LoopManager
+from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
 from vibe.core.output_formatters import create_formatter
 from vibe.core.schedule_driver import ScheduleDriver
 from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
@@ -61,6 +63,12 @@ async def _drive_scheduled_loops(
     driver = ScheduleDriver(scheduler, can_fire=lambda: True, fire=_fire)
     deadline = asyncio.get_running_loop().time() + keep_alive_seconds
     await driver.run_until_idle(deadline=deadline)
+
+
+async def _teardown_lsp_and_loop(agent_loop: AgentLoop) -> None:
+    await teardown_lsp_async()
+    await agent_loop.aclose()
+    await agent_loop.telemetry_client.aclose()
 
 
 def run_programmatic(  # noqa: PLR0913, PLR0917
@@ -113,6 +121,7 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
     # persist and fire on a later interactive/ACP resume of the session.
     scheduler = LoopManager(agent_loop.session_logger)
     agent_loop.set_scheduler(scheduler)
+    setup_lsp_for_config(config, lambda: config, Path.cwd())
     logger.info("USER: %s", prompt)
 
     async def _async_run() -> str | None:
@@ -168,8 +177,7 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
             return formatter.finalize()
         finally:
             agent_loop.emit_session_closed_telemetry()
-            await agent_loop.aclose()
-            await agent_loop.telemetry_client.aclose()
+            await _teardown_lsp_and_loop(agent_loop)
 
     try:
         return asyncio.run(_async_run())
