@@ -101,7 +101,9 @@ async def test_phase_binds_subsequent_agents_implicitly() -> None:
 
     phases = {p.name: p for p in rt._phases.values()}
     assert any(r.label == "a" for r in phases["audit"].agent_results), "a in audit"
-    assert any(r.label == "b" for r in phases["explicit"].agent_results), "b in explicit"
+    assert any(r.label == "b" for r in phases["explicit"].agent_results), (
+        "b in explicit"
+    )
     assert any(r.label == "c" for r in phases["default"].agent_results), "c in default"
 
 
@@ -242,8 +244,7 @@ async def test_spawn_agent_schema_failure_survives_parallel() -> None:
         "required": ["answer"],
     }
     rt = WorkflowRuntime(
-        agent_loop_factory=make_factory(response_text="not json"),
-        schema_retries=1,
+        agent_loop_factory=make_factory(response_text="not json"), schema_retries=1
     )
     single = await rt.spawn_agent("a", schema=schema)
     assert isinstance(single, SchemaValidationFailure)
@@ -381,8 +382,7 @@ async def test_parallel_max_concurrency_caps_in_flight_below_global() -> None:
     ns = rt.build_script_namespace()
     agent = ns["agent"]
     await rt.parallel(
-        *[(lambda i=i: agent(f"p{i}")) for i in range(8)],
-        max_concurrency=3,
+        *[(lambda i=i: agent(f"p{i}")) for i in range(8)], max_concurrency=3
     )
     assert max_active[0] <= 3, (
         f"per-call cap should bound concurrency to 3, saw {max_active[0]}"
@@ -403,9 +403,7 @@ async def test_pipeline_max_concurrency_caps_in_flight_items() -> None:
     async def stage(prev, item, index):
         return await agent(item)
 
-    await rt.pipeline(
-        [f"p{i}" for i in range(8)], stage, max_concurrency=2
-    )
+    await rt.pipeline([f"p{i}" for i in range(8)], stage, max_concurrency=2)
     assert max_active[0] <= 2, (
         f"per-call cap should bound pipeline concurrency to 2, saw {max_active[0]}"
     )
@@ -689,10 +687,14 @@ async def test_parallel_partial_failure_surfaces_count_in_summary(
     def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
         calls["n"] += 1
         if calls["n"] == 2:
-            return _raising_factory()(prompt, agent=agent, parent_context=parent_context)
+            return _raising_factory()(
+                prompt, agent=agent, parent_context=parent_context
+            )
         return make_factory()(prompt, agent=agent, parent_context=parent_context)
 
-    rt = WorkflowRuntime(agent_loop_factory=factory, max_agents=10, budget_total=1_000_000)
+    rt = WorkflowRuntime(
+        agent_loop_factory=factory, max_agents=10, budget_total=1_000_000
+    )
     script = """
 async def main():
     results = await parallel(
@@ -716,10 +718,14 @@ async def test_live_status_reports_per_phase_failure_breakdown() -> None:
     def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
         calls["n"] += 1
         if calls["n"] == 2:
-            return _raising_factory()(prompt, agent=agent, parent_context=parent_context)
+            return _raising_factory()(
+                prompt, agent=agent, parent_context=parent_context
+            )
         return make_factory()(prompt, agent=agent, parent_context=parent_context)
 
-    rt = WorkflowRuntime(agent_loop_factory=factory, max_agents=10, budget_total=1_000_000)
+    rt = WorkflowRuntime(
+        agent_loop_factory=factory, max_agents=10, budget_total=1_000_000
+    )
     script = """
 async def main():
     phase("audit")
@@ -1065,9 +1071,13 @@ async def test_isolated_agent_with_schema_parses_output() -> None:
         "required": ["ok"],
     }
     rt = WorkflowRuntime(
-        agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=stub
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        isolated_executor=stub,
     )
-    assert await rt.spawn_agent("x", schema=schema, isolation="worktree") == {"ok": True}
+    assert await rt.spawn_agent("x", schema=schema, isolation="worktree") == {
+        "ok": True
+    }
 
 
 async def test_isolated_agent_bad_json_returns_failure() -> None:
@@ -1079,7 +1089,9 @@ async def test_isolated_agent_bad_json_returns_failure() -> None:
 
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
     rt = WorkflowRuntime(
-        agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=stub
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        isolated_executor=stub,
     )
     result = await rt.spawn_agent("x", schema=schema, isolation="worktree")
     assert isinstance(result, SchemaValidationFailure)
@@ -1107,7 +1119,9 @@ async def test_isolated_agent_executor_failure_raises_workflow_error() -> None:
         raise RuntimeError("subprocess died")
 
     rt = WorkflowRuntime(
-        agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=boom
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        isolated_executor=boom,
     )
     with pytest.raises(WorkflowError, match="isolated agent failed"):
         await rt.spawn_agent("x", isolation="worktree")
@@ -1122,11 +1136,14 @@ async def test_isolated_agent_charges_budget_estimate() -> None:
     """BUDGET-001: isolated agents can't surface real tokens, so they must charge
     the reserved estimate against budget_total (not 0) to keep the cap enforced.
     """
+
     async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
         return "done"
 
     rt = WorkflowRuntime(
-        agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=stub
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        isolated_executor=stub,
     )
     await rt.spawn_agent("x", isolation="worktree", budget_estimate=12_345)
     assert rt._budget.spent() == 12_345
@@ -1136,6 +1153,7 @@ async def test_isolation_not_cross_cached_with_inprocess() -> None:
     """CACHE-002: an isolated result must not satisfy a later in-process call with
     the same prompt/agent/phase (different execution semantics + accounting).
     """
+
     async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
         return "ISOLATED"
 
@@ -1162,7 +1180,9 @@ async def test_default_isolated_executor_spawns_subprocess(
     removed: list[Any] = []
     fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt")})()
     monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
-    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: removed.append(wt))
+    monkeypatch.setattr(
+        eph, "remove_ephemeral_worktree", lambda wt, **k: removed.append(wt)
+    )
 
     captured: dict[str, Any] = {}
 
@@ -1181,7 +1201,9 @@ async def test_default_isolated_executor_spawns_subprocess(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
     rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
-    out, stats = await rt._default_isolated_executor("do it", "auto-approve", "lbl", 40)
+    out, stats, _ = await rt._default_isolated_executor(
+        "do it", "auto-approve", "lbl", 40
+    )
 
     assert out == "agent output"
     assert stats is None  # no stats line on stderr in this fake
@@ -1204,7 +1226,9 @@ async def test_default_isolated_executor_reaps_and_cleans_on_cancel(
     removed: list[Any] = []
     fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt2")})()
     monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
-    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: removed.append(wt))
+    monkeypatch.setattr(
+        eph, "remove_ephemeral_worktree", lambda wt, **k: removed.append(wt)
+    )
 
     waited = [False]
 
@@ -1266,7 +1290,7 @@ async def test_default_isolated_executor_parses_stats(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
     rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
-    out, stats = await rt._default_isolated_executor("p", "auto-approve", "l", 40)
+    out, stats, _ = await rt._default_isolated_executor("p", "auto-approve", "l", 40)
     assert out == "result"
     assert stats == {"prompt_tokens": 111, "completion_tokens": 22}
 
@@ -1278,7 +1302,9 @@ async def test_isolated_agent_charges_real_tokens_when_stats_present() -> None:
         return ("done", {"prompt_tokens": 100, "completion_tokens": 50})
 
     rt = WorkflowRuntime(
-        agent_loop_factory=make_factory(), budget_total=1_000_000, isolated_executor=stub
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        isolated_executor=stub,
     )
     await rt.spawn_agent("x", isolation="worktree", budget_estimate=99_999)
     assert rt._budget.spent() == 150  # real tokens, not the 99,999 estimate
@@ -1375,7 +1401,9 @@ async def test_live_agent_visible_and_retired_around_execution() -> None:
     ]
 
 
-async def test_live_tokens_do_not_double_count_with_finalized(runtime: WorkflowRuntime) -> None:
+async def test_live_tokens_do_not_double_count_with_finalized(
+    runtime: WorkflowRuntime,
+) -> None:
     """An agent is counted live XOR finalized. With one finished and one live,
     the live total is the sum without overlap.
     """
@@ -1523,7 +1551,9 @@ async def main():
     }
 
 
-async def test_fetch_messages_unknown_channel_is_empty(runtime: WorkflowRuntime) -> None:
+async def test_fetch_messages_unknown_channel_is_empty(
+    runtime: WorkflowRuntime,
+) -> None:
     script = """
 async def main():
     return {"n": len(fetch_messages("nope"))}
@@ -1702,9 +1732,7 @@ async def test_isolated_worker_judge_approved_proceeds() -> None:
     judge = _StubJudge(safe=True, reason="read-only refactor")
     approval = _RecordingApprovalCB(ApprovalResponse.YES)
     ctx = InvokeContext(
-        tool_call_id="t",
-        safety_judge_factory=lambda: judge,
-        approval_callback=approval,
+        tool_call_id="t", safety_judge_factory=lambda: judge, approval_callback=approval
     )
     rt = WorkflowRuntime(
         parent_context=ctx,
@@ -1734,9 +1762,7 @@ async def test_isolated_worker_judge_deferred_surfaces_to_host() -> None:
     judge = _StubJudge(safe=False, reason="could force-push")
     approval = _RecordingApprovalCB(ApprovalResponse.YES)
     ctx = InvokeContext(
-        tool_call_id="t",
-        safety_judge_factory=lambda: judge,
-        approval_callback=approval,
+        tool_call_id="t", safety_judge_factory=lambda: judge, approval_callback=approval
     )
     rt = WorkflowRuntime(
         parent_context=ctx,
@@ -1766,9 +1792,7 @@ async def test_isolated_worker_user_denial_raises_workflow_error() -> None:
     judge = _StubJudge(safe=False, reason="destructive")
     approval = _RecordingApprovalCB(ApprovalResponse.NO)
     ctx = InvokeContext(
-        tool_call_id="t",
-        safety_judge_factory=lambda: judge,
-        approval_callback=approval,
+        tool_call_id="t", safety_judge_factory=lambda: judge, approval_callback=approval
     )
     rt = WorkflowRuntime(
         parent_context=ctx,
@@ -1862,7 +1886,9 @@ async def test_cancel_agent_aborts_one_in_flight_without_killing_others() -> Non
 
     # Release the survivor and let it finish.
     proceed.set()
-    await asyncio.wait_for(asyncio.gather(task_a, task_b, return_exceptions=True), timeout=2.0)
+    await asyncio.wait_for(
+        asyncio.gather(task_a, task_b, return_exceptions=True), timeout=2.0
+    )
 
 
 async def test_cancel_agent_unknown_or_finished_returns_false() -> None:

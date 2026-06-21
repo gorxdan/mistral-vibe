@@ -78,7 +78,9 @@ async def test_default_isolated_executor_end_to_end(
     monkeypatch.setattr(ephemeral, "remove_ephemeral_worktree", spy_remove)
 
     rt = WorkflowRuntime()  # factory unused; the executor is called directly
-    output, stats = await rt._default_isolated_executor("hi", "auto-approve", "lbl", 40)
+    output, stats, _ = await rt._default_isolated_executor(
+        "hi", "auto-approve", "lbl", 40
+    )
 
     # Real subprocess output captured; real sentinel parsed into stats.
     assert "ISO-OUTPUT-OK" in output
@@ -89,7 +91,7 @@ async def test_default_isolated_executor_end_to_end(
     cwd_line = next(ln for ln in output.splitlines() if ln.startswith("CWD="))
     from pathlib import Path
 
-    assert Path(cwd_line[len("CWD="):]).resolve() == wt_path.resolve()
+    assert Path(cwd_line[len("CWD=") :]).resolve() == wt_path.resolve()
 
     # Worktree was cleaned up (clean tree -> removed).
     assert not wt_path.exists()

@@ -22,6 +22,12 @@ from vibe.core.workflows.budget import (
     ReadOnlyBudget,
     Reservation,
 )
+from vibe.core.workflows.contract import (
+    ContractFailure,
+    ContractReport,
+    ContractSpec,
+    verify_contract,
+)
 from vibe.core.workflows.models import (
     AgentResult,
     CachedAgentResult,
@@ -87,14 +93,15 @@ def _strip_code_fences(text: str) -> str:
     """Strip a surrounding markdown code fence so schema-tagged agent responses
     wrapped in ```...``` (or ```json...```) still parse. A leading fence is the
     most common cause of spurious schema-validation failure, which previously
-    discarded completed agent work before the delivery-recovery path existed."""
+    discarded completed agent work before the delivery-recovery path existed.
+    """
     s = text.strip()
     if s.startswith("```"):
         first_nl = s.find("\n")
         if first_nl != -1:
             s = s[first_nl + 1 :]
         if s.endswith("```"):
-            s = s[: -3]
+            s = s[:-3]
     return s.strip()
 
 
@@ -195,9 +202,7 @@ def _dedup_by(items: Any, key: Callable[[Any], Any]) -> list[Any]:
 
 
 def _merge_by(
-    items: Any,
-    key: Callable[[Any], Any],
-    merge: Callable[[Any, Any], Any],
+    items: Any, key: Callable[[Any], Any], merge: Callable[[Any, Any], Any]
 ) -> list[Any]:
     """Group ``items`` by ``key`` and fold each group with ``merge``.
 
@@ -260,8 +265,7 @@ DEFAULT_ISOLATED_MAX_TURNS = 40
 # max_turns) -> the agent's text output. Injectable so tests can stub the
 # worktree + subprocess; the default runs `vibe -p` in a fresh git worktree.
 IsolatedExecutor = Callable[
-    [str, str, str | None, int],
-    Awaitable["str | tuple[str, dict[str, int] | None]"],
+    [str, str, str | None, int], Awaitable["str | tuple[str, dict[str, int] | None]"]
 ]
 
 
@@ -386,7 +390,7 @@ def _parse_stats(stderr_text: str) -> dict[str, int] | None:
     for line in reversed(stderr_text.splitlines()):
         if line.startswith(_ISOLATED_STATS_SENTINEL):
             try:
-                data = json.loads(line[len(_ISOLATED_STATS_SENTINEL):])
+                data = json.loads(line[len(_ISOLATED_STATS_SENTINEL) :])
                 return {
                     "prompt_tokens": int(data.get("prompt_tokens", 0)),
                     "completion_tokens": int(data.get("completion_tokens", 0)),
@@ -523,11 +527,7 @@ class WorkflowRuntime:
         self._phases[phase_name].agent_results.append(result)
 
     def _register_live(
-        self,
-        agent: str,
-        model: str | None,
-        label: str | None,
-        phase: str | None,
+        self, agent: str, model: str | None, label: str | None, phase: str | None
     ) -> _LiveAgent:
         live_id = f"la-{self._next_live_id}"
         self._next_live_id += 1
@@ -554,7 +554,8 @@ class WorkflowRuntime:
         subagent, and a full-tool profile (no enabled_tools allowlist, e.g.
         'worker') must run isolated — its write tools would race the shared tree
         and its ASK tools auto-skip headless. No-op when the profile can't be
-        resolved (e.g. no agent_manager in unit contexts)."""
+        resolved (e.g. no agent_manager in unit contexts).
+        """
         ctx = self.parent_context
         if not ctx or not ctx.agent_manager:
             return
@@ -602,7 +603,9 @@ class WorkflowRuntime:
         try:
             judge = ctx.safety_judge_factory()
         except Exception:
-            logger.debug("safety judge factory raised; skipping worker pre-judge", exc_info=True)
+            logger.debug(
+                "safety judge factory raised; skipping worker pre-judge", exc_info=True
+            )
             return
         if judge is None:
             return
@@ -646,6 +649,19 @@ class WorkflowRuntime:
                 f"Isolated worker spawn denied by user (judge: {verdict.reason})"
             )
 
+    @staticmethod
+    def _resolve_contract(
+        contract: dict | None, isolation: str | None
+    ) -> ContractSpec | None:
+        if contract is None:
+            return None
+        if isolation != "worktree":
+            raise WorkflowError(
+                "contract= requires isolation='worktree' (it validates the "
+                "files an isolated code agent wrote)"
+            )
+        return ContractSpec.model_validate(contract)
+
     async def spawn_agent(
         self,
         prompt: str,
@@ -658,41 +674,21 @@ class WorkflowRuntime:
         budget_estimate: int | None = None,
         isolation: str | None = None,
         strip_unknown: bool = True,
-    ) -> str | dict[str, Any] | SchemaValidationFailure:
-        # i5: implicit phase binding. An explicit phase= kwarg always wins;
-        # otherwise inherit the ambient phase set by the last phase() call.
+        contract: dict | None = None,
+    ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure:
+        contract_spec = self._resolve_contract(contract, isolation)
         effective_phase = phase if phase is not None else self._current_phase
         cache_key = _prompt_hash(prompt, agent, effective_phase, isolation)
         if cached := self._cache.get(cache_key):
             self._log(f"cache hit: {label or agent}")
             self._record_cached_result(cached)
             return cached.response
-
-        # Reject non-subagents and require isolation for full-tool profiles
-        # (e.g. 'worker') before reserving budget / counting the agent.
-        self._validate_workflow_profile(agent, isolation)
-
-        # Isolated workers run auto-approved inside their subprocess and can't
-        # prompt the host per-tool, so judge each worker's prompt at spawn via
-        # the host's safety judge. On deferral, route through the host approval
-        # callback (the deferral reason is threaded as judge_note) so the user
-        # can approve/deny the specific worker. In-process subagents consult the
-        # judge per-tool like any agent, so they're not pre-judged here.
-        if isolation == "worktree":
-            await self._judge_isolated_spawn(prompt, agent, label)
-
-        if self._agent_count >= self.max_agents:
-            raise AgentCapExceeded(
-                f"Agent cap reached: {self._agent_count}/{self.max_agents}"
-            )
-
-        reservation = self._budget.reserve(budget_estimate)
-        self._agent_count += 1
-
+        reservation = await self._prepare_spawn(
+            prompt, agent, isolation, label, budget_estimate
+        )
         async with self._semaphore:
-            # Pause gate: when cleared, agents holding a semaphore slot wait
-            # here so no new agent work starts until unpause(). Returns
-            # immediately when the run is not paused.
+            # Pause gate: when cleared, agents holding a semaphore slot wait here
+            # so no new agent work starts until unpause(). No-op when not paused.
             await self._run_gate.wait()
             if isolation == "worktree":
                 return await self._run_isolated_agent(
@@ -705,6 +701,7 @@ class WorkflowRuntime:
                     reservation=reservation,
                     cache_key=cache_key,
                     strip_unknown=strip_unknown,
+                    contract=contract_spec,
                 )
             if isolation is not None:
                 raise WorkflowError(
@@ -721,6 +718,30 @@ class WorkflowRuntime:
                 cache_key=cache_key,
                 strip_unknown=strip_unknown,
             )
+
+    async def _prepare_spawn(
+        self,
+        prompt: str,
+        agent: str,
+        isolation: str | None,
+        label: str | None,
+        budget_estimate: int | None,
+    ) -> Reservation:
+        # Validate the profile, judge isolated spawns, enforce the agent cap, and
+        # reserve budget. Called only on a cache miss.
+        self._validate_workflow_profile(agent, isolation)
+        # Isolated workers run auto-approved in their subprocess and can't prompt
+        # the host per-tool, so judge each worker's prompt at spawn. In-process
+        # subagents consult the judge per-tool, so they're not pre-judged here.
+        if isolation == "worktree":
+            await self._judge_isolated_spawn(prompt, agent, label)
+        if self._agent_count >= self.max_agents:
+            raise AgentCapExceeded(
+                f"Agent cap reached: {self._agent_count}/{self.max_agents}"
+            )
+        reservation = self._budget.reserve(budget_estimate)
+        self._agent_count += 1
+        return reservation
 
     async def _run_agent(
         self,
@@ -753,17 +774,18 @@ class WorkflowRuntime:
         # budget-ceiling check only fires on event boundaries, so the watchdog
         # is the backstop for pathological hangs. Cancelled in _retire_live.
         if self.agent_timeout_s is not None:
+            timeout_s = self.agent_timeout_s
 
             async def _timeout_watchdog() -> None:
                 try:
-                    await asyncio.sleep(self.agent_timeout_s)
+                    await asyncio.sleep(timeout_s)
                     if (
                         not live.cancel_requested
                         and live.task is not None
                         and not live.task.done()
                     ):
                         live.cancel_requested = True
-                        live.error = f"agent timed out after {self.agent_timeout_s}s"
+                        live.error = f"agent timed out after {timeout_s}s"
                         live.task.cancel()
                 except asyncio.CancelledError:
                     pass
@@ -1120,7 +1142,9 @@ class WorkflowRuntime:
         # is reflected as live XOR finalized, never both (which would double its
         # tokens in the live view + finalized phases).
         if live is not None:
-            self._retire_live(live, status="completed" if completed else "failed", error=error)
+            self._retire_live(
+                live, status="completed" if completed else "failed", error=error
+            )
 
         if completed:
             self._cache[cache_key] = CachedAgentResult(
@@ -1167,82 +1191,42 @@ class WorkflowRuntime:
         reservation: Reservation,
         cache_key: str,
         strip_unknown: bool = True,
-    ) -> str | dict[str, Any] | SchemaValidationFailure:
+        contract: ContractSpec | None = None,
+    ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure:
         """Run an isolation='worktree' agent: a `vibe -p` subprocess in a fresh
         git worktree, so file mutations cannot collide with other agents. The
-        worktree's branch is kept for manual merge if the agent changed files."""
+        worktree's branch is kept for manual merge if the agent changed files.
+        """
         effective_prompt = prompt + (
             build_prompt_fallback(schema) if schema is not None else ""
         )
-        executor = self.isolated_executor or self._default_isolated_executor
-        completed = True
-        error_msg: str | None = None
-        output = ""
-        stats: dict[str, int] | None = None
-        # Isolated agents run as a subprocess; their token usage is unknowable
-        # until they exit and emit stats. The live tracker therefore shows 0
-        # while running (honest), then finalize records the real total.
         live = self._register_live(agent=agent, model=model, label=label, phase=phase)
         live.task = asyncio.current_task()
-        try:
-            result = await executor(
-                effective_prompt, agent, label, DEFAULT_ISOLATED_MAX_TURNS
+        # contract needs the worktree's files, so only the default executor
+        # (which owns the worktree lifecycle) supports it.
+        if contract is not None and self.isolated_executor is not None:
+            raise WorkflowError(
+                "contract= is not supported with a custom isolated_executor "
+                "(it requires the default worktree executor)"
             )
-            # Executor may return just the output (str) or (output, stats).
-            if isinstance(result, tuple):
-                output, stats = result
-            else:
-                output = result
-        except (AgentCapExceeded, BudgetExhausted):
-            raise
-        except asyncio.CancelledError:
-            # A whole-run stop re-raises; a targeted cancel_agent() sets
-            # cancel_requested on the live agent and we swallow the cancel so
-            # the run continues with the remaining agents, recording this one
-            # as failed below.
-            if not live.cancel_requested:
-                raise
+        (
+            output,
+            stats,
+            contract_report,
+            completed,
+            error_msg,
+        ) = await self._execute_isolated(effective_prompt, agent, label, contract, live)
+        if completed and contract_report is not None and not contract_report.passed:
             completed = False
-            error_msg = "cancelled by user"
-        except Exception as e:
-            completed = False
-            error_msg = str(e)
-
-        response: str | dict[str, Any] = output
-        schema_errors: list[str] = []
-        if completed and schema is not None:
-            try:
-                parsed = json.loads(_strip_code_fences(output))
-            except json.JSONDecodeError as e:
-                completed = False
-                error_msg = f"isolated agent returned invalid JSON: {e}"
-                schema_errors = [str(e)]
-            else:
-                if strip_unknown:
-                    parsed = strip_unknown_properties(parsed, schema)
-                errors = validate_against_schema(parsed, schema)
-                if errors:
-                    completed = False
-                    error_msg = "; ".join(str(err) for err in errors)
-                    schema_errors = [str(err) for err in errors]
-                else:
-                    response = parsed
-
-        # Charge real subprocess tokens when the executor surfaced them; else
-        # fall back to the reserved estimate so the budget cap stays enforced
-        # (charging 0 would make isolated agents spend nothing against the cap).
-        if stats is not None:
-            tokens_in = int(stats.get("prompt_tokens", 0))
-            tokens_out = int(stats.get("completion_tokens", 0))
-        else:
-            tokens_in, tokens_out = 0, reservation.estimate
-            if completed:
-                logger.info(
-                    "workflow: isolated agent %s emitted no token stats; charging "
-                    "the estimate (%d)",
-                    label or agent,
-                    reservation.estimate,
-                )
+            error_msg = contract_report.summary()
+        response, schema_errors, completed, error_msg = (
+            self._finalize_isolated_response(
+                output, schema, strip_unknown, completed, error_msg
+            )
+        )
+        tokens_in, tokens_out = self._charge_isolated_tokens(
+            stats, reservation, completed, label, agent
+        )
         self._finalize_agent(
             prompt=prompt,
             response=response,
@@ -1260,27 +1244,147 @@ class WorkflowRuntime:
             schema_errors=schema_errors,
         )
         if not completed:
-            # Schema/JSON failures (output produced but didn't validate) return a
-            # structured SchemaValidationFailure so parallel._safe doesn't lose
-            # the output to None. Subprocess crashes (executor raised, or output
-            # was empty) still raise WorkflowError. strict_schema forces a raise
-            # for schema failures. Mirrors the in-process _run_agent path.
-            if schema is not None and schema_errors:
-                if self.strict_schema:
-                    raise SchemaValidationError(
-                        error_msg or "isolated agent schema validation failed"
-                    )
-                return SchemaValidationFailure(
-                    raw_response=output,
-                    error=error_msg or "isolated agent schema validation failed",
-                    schema_errors=schema_errors,
-                )
+            failure = self._isolated_failure_value(
+                contract_report, schema, schema_errors, error_msg, output
+            )
+            if failure is not None:
+                return failure
             raise WorkflowError(f"isolated agent failed: {error_msg}")
         return response
 
+    async def _execute_isolated(
+        self,
+        effective_prompt: str,
+        agent: str,
+        label: str | None,
+        contract: ContractSpec | None,
+        live: Any,
+    ) -> tuple[str, dict[str, int] | None, ContractReport | None, bool, str | None]:
+        # Run the isolated executor and fold exceptions into the (output, stats,
+        # report, completed, error) tuple the caller consumes.
+        try:
+            if self.isolated_executor is not None:
+                # Custom test seam: returns output (str) or (output, stats).
+                raw = await self.isolated_executor(
+                    effective_prompt, agent, label, DEFAULT_ISOLATED_MAX_TURNS
+                )
+                if isinstance(raw, tuple):
+                    output, stats = raw
+                else:
+                    output, stats = raw, None
+                return output, stats, None, True, None
+            output, stats, contract_report = await self._default_isolated_executor(
+                effective_prompt,
+                agent,
+                label,
+                DEFAULT_ISOLATED_MAX_TURNS,
+                contract=contract,
+            )
+            return output, stats, contract_report, True, None
+        except (AgentCapExceeded, BudgetExhausted):
+            raise
+        except asyncio.CancelledError:
+            # Whole-run stop re-raises; a targeted cancel sets cancel_requested so
+            # the run continues, recording this agent as failed below.
+            if not live.cancel_requested:
+                raise
+            return "", None, None, False, "cancelled by user"
+        except Exception as e:
+            return "", None, None, False, str(e)
+
+    def _finalize_isolated_response(
+        self,
+        output: str,
+        schema: dict | None,
+        strip_unknown: bool,
+        completed: bool,
+        error_msg: str | None,
+    ) -> tuple[str | dict[str, Any], list[str], bool, str | None]:
+        response: str | dict[str, Any] = output
+        if not completed or schema is None:
+            return response, [], completed, error_msg
+        parsed_response, schema_errors = self._parse_isolated_schema(
+            output, schema, strip_unknown
+        )
+        if schema_errors:
+            return response, schema_errors, False, "; ".join(schema_errors)
+        if parsed_response is not None:
+            response = parsed_response
+        return response, schema_errors, completed, error_msg
+
+    def _charge_isolated_tokens(
+        self,
+        stats: dict[str, int] | None,
+        reservation: Reservation,
+        completed: bool,
+        label: str | None,
+        agent: str,
+    ) -> tuple[int, int]:
+        if stats is not None:
+            return int(stats.get("prompt_tokens", 0)), int(
+                stats.get("completion_tokens", 0)
+            )
+        # Fall back to the reserved estimate so the budget cap stays enforced
+        # (charging 0 would let isolated agents spend nothing against the cap).
+        if completed:
+            logger.info(
+                "workflow: isolated agent %s emitted no token stats; charging "
+                "the estimate (%d)",
+                label or agent,
+                reservation.estimate,
+            )
+        return 0, reservation.estimate
+
+    def _isolated_failure_value(
+        self,
+        contract_report: ContractReport | None,
+        schema: dict | None,
+        schema_errors: list[str],
+        error_msg: str | None,
+        output: str,
+    ) -> SchemaValidationFailure | ContractFailure | None:
+        # Map a not-completed isolated agent to its structured failure value, or
+        # None when there is nothing recoverable (caller raises WorkflowError).
+        if contract_report is not None and not contract_report.passed:
+            return ContractFailure(
+                report=contract_report, error=error_msg or "contract failed"
+            )
+        if schema is None or not schema_errors:
+            return None
+        if self.strict_schema:
+            raise SchemaValidationError(
+                error_msg or "isolated agent schema validation failed"
+            )
+        return SchemaValidationFailure(
+            raw_response=output,
+            error=error_msg or "isolated agent schema validation failed",
+            schema_errors=schema_errors,
+        )
+
+    @staticmethod
+    def _parse_isolated_schema(
+        output: str, schema: dict, strip_unknown: bool
+    ) -> tuple[str | dict[str, Any] | None, list[str]]:
+        try:
+            parsed = json.loads(_strip_code_fences(output))
+        except json.JSONDecodeError as e:
+            return None, [f"isolated agent returned invalid JSON: {e}"]
+        if strip_unknown:
+            parsed = strip_unknown_properties(parsed, schema)
+        errors = validate_against_schema(parsed, schema)
+        if errors:
+            return None, [str(err) for err in errors]
+        return parsed, []
+
     async def _default_isolated_executor(
-        self, prompt: str, agent: str, label: str | None, max_turns: int
-    ) -> tuple[str, dict[str, int] | None]:
+        self,
+        prompt: str,
+        agent: str,
+        label: str | None,
+        max_turns: int,
+        *,
+        contract: ContractSpec | None = None,
+    ) -> tuple[str, dict[str, int] | None, ContractReport | None]:
         import os
         from pathlib import Path
         import shlex
@@ -1289,10 +1393,12 @@ class WorkflowRuntime:
 
         from vibe.core.worktree.ephemeral import (
             create_ephemeral_worktree,
+            deliver_ephemeral_worktree,
             remove_ephemeral_worktree,
         )
 
         wt = create_ephemeral_worktree(Path.cwd(), label or agent)
+        contract_report: ContractReport | None = None
         try:
             # The binary prefix is overridable (tests point it at a fake `vibe`);
             # unset -> the real `vibe` module. Everything else (worktree, cwd,
@@ -1300,9 +1406,16 @@ class WorkflowRuntime:
             base = os.environ.get("VIBE_ISOLATED_EXECUTOR_CMD")
             prefix = shlex.split(base) if base else [sys.executable, "-m", "vibe"]
             cmd = [
-                *prefix, "-p", prompt,
-                "--agent", "auto-approve", "--trust",
-                "--output", "text", "--max-turns", str(max_turns),
+                *prefix,
+                "-p",
+                prompt,
+                "--agent",
+                "auto-approve",
+                "--trust",
+                "--output",
+                "text",
+                "--max-turns",
+                str(max_turns),
             ]
             env = os.environ.copy()
             # Ask the child to emit real token stats on stderr so we can charge
@@ -1342,11 +1455,25 @@ class WorkflowRuntime:
                     f"isolated agent subprocess failed (rc={proc.returncode}): "
                     f"{stderr_text[:300]}"
                 )
-            return (stdout or b"").decode("utf-8", "replace"), _parse_stats(stderr_text)
+            output = (stdout or b"").decode("utf-8", "replace")
+            # Validate against the live worktree before the finally removes it;
+            # on pass, ff-merge the work into the parent so it lands.
+            if contract is not None:
+                contract_report = verify_contract(wt.path, contract)
+                if contract_report.passed:
+                    contract_report.delivered = deliver_ephemeral_worktree(wt)
+            return output, _parse_stats(stderr_text), contract_report
         finally:
-            remove_ephemeral_worktree(wt)
+            # Delivered -> work is in the parent, force-remove. Otherwise keep
+            # so an agent's undelivered (failed contract or ff refused) work
+            # stays recoverable.
+            remove_ephemeral_worktree(
+                wt, keep_if_changed=not (contract_report and contract_report.delivered)
+            )
 
-    def parallel(self, *thunks: Any, max_concurrency: int | None = None) -> _AwaitableResult:
+    def parallel(
+        self, *thunks: Any, max_concurrency: int | None = None
+    ) -> _AwaitableResult:
         """Run items concurrently and return their results in order (barrier).
 
         Each item may be a **coroutine** (``parallel(agent(...), agent(...))``) or
@@ -1534,7 +1661,8 @@ class WorkflowRuntime:
             budget_estimate: int | None = None,
             isolation: str | None = None,
             strip_unknown: bool = True,
-        ) -> str | dict[str, Any] | SchemaValidationFailure:
+            contract: dict | None = None,
+        ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure:
             return await self.spawn_agent(
                 prompt,
                 agent=agent,
@@ -1545,6 +1673,7 @@ class WorkflowRuntime:
                 budget_estimate=budget_estimate,
                 isolation=isolation,
                 strip_unknown=strip_unknown,
+                contract=contract,
             )
 
         async def _workflow(name: str, args: Any = None) -> Any:
@@ -1612,7 +1741,7 @@ class WorkflowRuntime:
             )
 
         namespace = self.build_script_namespace(args)
-        exec(source, namespace)  # noqa: S102 — sandboxed namespace, validated above
+        exec(source, namespace)
         main_fn = cast("Callable[[], Awaitable[Any]]", namespace.get("main"))
         if main_fn is None:
             raise WorkflowError(
@@ -1656,22 +1785,19 @@ class WorkflowRuntime:
                 continue
             completed = sum(1 for r in report.agent_results if r.completed)
             failed_results = [r for r in report.agent_results if not r.completed]
-            phases.append(
-                {
-                    "name": name,
-                    "agents": len(report.agent_results),
-                    "tokens": report.tokens_total,
-                    # Per-phase pass/fail breakdown so observers (workflow_status
-                    # tool, /workflows list) can see which agents failed without
-                    # waiting for the run to finish and parsing the summary string.
-                    "completed": completed,
-                    "failed": len(failed_results),
-                    "failed_details": [
-                        {"label": r.label, "error": r.error}
-                        for r in failed_results
-                    ],
-                }
-            )
+            phases.append({
+                "name": name,
+                "agents": len(report.agent_results),
+                "tokens": report.tokens_total,
+                # Per-phase pass/fail breakdown so observers (workflow_status
+                # tool, /workflows list) can see which agents failed without
+                # waiting for the run to finish and parsing the summary string.
+                "completed": completed,
+                "failed": len(failed_results),
+                "failed_details": [
+                    {"label": r.label, "error": r.error} for r in failed_results
+                ],
+            })
         live = [
             {
                 "agent_id": la.agent_id,
