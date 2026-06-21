@@ -11,7 +11,7 @@ import pytest
 from vibe.core.agents.models import BUILTIN_AGENTS, AgentType
 from vibe.core.workflows.manager import WorkflowManager
 from vibe.core.workflows.runtime import WorkflowRuntime
-from vibe.core.workflows.security import validate_script
+from vibe.core.workflows.security import check_script, validate_script
 
 pytestmark = pytest.mark.asyncio
 
@@ -88,6 +88,42 @@ def test_adversarial_review_discovered() -> None:
 def test_adversarial_review_sandbox_clean() -> None:
     violations = validate_script(_source())
     assert not violations, f"sandbox violations: {[str(v) for v in violations]}"
+
+
+def test_security_fix_verify_discovered() -> None:
+    mgr = WorkflowManager(lambda: _make_config())
+    assert "security-fix-verify" in mgr.get_workflow_names()
+    info = mgr.get_workflow("security-fix-verify")
+    assert info is not None
+    assert info.is_bundled is True
+    assert "async def main" in info.source
+    assert info.description
+
+
+def test_security_fix_verify_gate_clean() -> None:
+    # Must pass the very gate it enforces (safety + correctness lint).
+    mgr = WorkflowManager(lambda: _make_config())
+    info = mgr.get_workflow("security-fix-verify")
+    assert info is not None
+    violations = check_script(info.source)
+    assert not violations, f"violations: {[str(v) for v in violations]}"
+
+
+async def test_security_fix_verify_requires_findings() -> None:
+    # No findings -> error gate, no agents spawned (cheap misuse guard).
+    mgr = WorkflowManager(lambda: _make_config())
+    info = mgr.get_workflow("security-fix-verify")
+    assert info is not None
+    rt = WorkflowRuntime(
+        agent_loop_factory=_factory("{}"),
+        max_agents=100,
+        budget_total=1_000_000,
+    )
+    result = await rt.run(
+        info.source, args={"base": "main", "branch": "x", "findings": []}
+    )
+    assert result.return_value["gate"] == "error"
+    assert rt._agent_count == 0
 
 
 def test_reviewer_agent_is_bash_capable_subagent() -> None:

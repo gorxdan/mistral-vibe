@@ -792,6 +792,11 @@ workflows override bundled ones on name collision.
 - `/deep-research <question>` — fans out web searches across 5 angles, extracts
   claims with structured output, verifies each claim via pipeline, synthesizes a
   cited report from verified claims only.
+- `/security-fix-verify <args>` — pre-merge gate for a security FIX branch.
+  Refute-only (default-to-broken) per-finding panel + regression hunt; anything
+  not provable from the repo (DB columns, runtime permissions, event shapes)
+  hard-blocks as a runtime check. Emits a human review packet — never pushes.
+  `args = {base, branch, findings:[{id, original, must_be_true, file, commit?}]}`.
 
 ### Launching Workflows
 
