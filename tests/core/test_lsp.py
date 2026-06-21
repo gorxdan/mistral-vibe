@@ -184,3 +184,42 @@ def test_diagnostic_dedup_key_stable() -> None:
     assert d.dedup_key == d.dedup_key
     assert "test" in d.dedup_key
     assert d.label == "error"
+
+
+def test_ensure_manager_returns_none_when_not_installed(monkeypatch) -> None:
+    from vibe.core.lsp import clear_lsp_manager
+    from vibe.core.tools.builtins.lsp import Lsp, LspConfig, LspState
+
+    clear_lsp_manager()
+    monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: False))
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+    assert tool._ensure_manager() is None
+
+
+def test_ensure_manager_lazy_initializes_when_installed(monkeypatch) -> None:
+    from vibe.core.lsp import clear_lsp_manager, get_lsp_manager
+    from vibe.core.tools.builtins.lsp import Lsp, LspConfig, LspState
+
+    clear_lsp_manager()
+    assert get_lsp_manager() is None
+    monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
+
+    initialized: list[bool] = []
+
+    def fake_setup(config, getter, root):
+        initialized.append(True)
+        mgr = LSPManager()
+        mgr.initialize()
+        from vibe.core.lsp._manager import init_lsp_manager
+
+        init_lsp_manager(mgr)
+        return mgr
+
+    monkeypatch.setattr("vibe.core.lsp._lifecycle.setup_lsp_for_config", fake_setup)
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+    mgr = tool._ensure_manager()
+    assert mgr is not None
+    assert initialized == [True]
+    tool._ensure_manager()
+    assert initialized == [True]
+    clear_lsp_manager()

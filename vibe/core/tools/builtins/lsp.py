@@ -104,21 +104,53 @@ class Lsp(
     def resolve_permission(self, args: LspArgs) -> PermissionContext | None:
         return PermissionContext(permission=self.config.permission)
 
+    @staticmethod
+    def _lsp_installed() -> bool:
+        # Read the persisted flag without depending on InvokeContext carrying
+        # VibeConfig (it doesn't). VibeConfig.load is cached and cheap.
+        from vibe.core.config import VibeConfig
+
+        return "lsp" in VibeConfig.load().installed_components
+
+    def _ensure_manager(self) -> Any:
+        """Return the process LSP manager, lazy-initializing if needed.
+
+        A session that started before /lspstall was run (or before a server
+        binary landed on PATH) never had setup_lsp_for_config called, so the
+        singleton is None even though installed_components says "lsp". Calling
+        the tool then self-heals: if the flag is set, initialize on first use.
+        """
+        manager = get_lsp_manager()
+        if manager is not None:
+            return manager
+        if not self._lsp_installed():
+            return None
+        from vibe.core.config import VibeConfig
+        from vibe.core.lsp._lifecycle import setup_lsp_for_config
+
+        config = VibeConfig.load()
+        return setup_lsp_for_config(config, lambda: config, Path.cwd())
+
     async def run(
         self, args: LspArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | LspResult, None]:
-        manager = get_lsp_manager()
+        manager = self._ensure_manager()
         if manager is None:
-            raise ToolError(
-                "LSP is not installed. Run /lspstall and configure a server "
-                "under [[lsp_servers]] in config.toml."
-            )
+            installed = self._lsp_installed()
+            if installed:
+                raise ToolError(
+                    "LSP is enabled but no language server is running in this "
+                    "session. Restart vibe, or install a server pyright/"
+                    "typescript-language-server/etc. on PATH and run /lspstall."
+                )
+            raise ToolError("LSP is not enabled. Run /lspstall to enable it.")
         file_path = self._resolve_path(args.file_path)
         server = manager.get_server_for_file(file_path)
         if server is None:
             raise ToolError(
                 f"No LSP server configured for {Path(file_path).suffix or 'extensionless'} files. "
-                "Add a [[lsp_servers]] entry with a matching language."
+                "Run /lspstall to re-detect installed servers, or add a "
+                "[[lsp_servers]] entry with a matching language."
             )
 
         position_required = args.operation in {
