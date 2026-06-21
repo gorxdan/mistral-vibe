@@ -14,6 +14,7 @@ from mistralai.client.models import (
     ToolReferenceChunk,
 )
 import pytest
+import respx
 
 from tests.conftest import build_test_vibe_config
 from tests.mock.utils import collect_result
@@ -28,6 +29,7 @@ from vibe.core.tools.builtins.websearch import (
     WebSearchConfig,
     WebSearchResult,
     WebSearchSource,
+    resolve_searxng_settings,
 )
 from vibe.core.tools.manager import ToolManager
 from vibe.core.types import Backend, ToolResultEvent
@@ -452,27 +454,27 @@ async def test_run_searxng_success(monkeypatch):
     config = WebSearchConfig(searxng_url="http://localhost:8080")
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
 
-    mock_response = httpx.Response(
-        200,
-        json={
-            "query": "python asyncio",
-            "results": [
-                {
-                    "title": "Async IO",
-                    "url": "https://docs.python.org/3/library/asyncio.html",
-                    "content": "Asyncio library documentation.",
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "query": "python asyncio",
+                    "results": [
+                        {
+                            "title": "Async IO",
+                            "url": "https://docs.python.org/3/library/asyncio.html",
+                            "content": "Asyncio library documentation.",
+                        },
+                        {
+                            "title": "Tutorial",
+                            "url": "https://realpython.com/async-python/",
+                            "content": "Real Python asyncio tutorial.",
+                        },
+                    ],
                 },
-                {
-                    "title": "Tutorial",
-                    "url": "https://realpython.com/async-python/",
-                    "content": "Real Python asyncio tutorial.",
-                },
-            ],
-        },
-        request=httpx.Request("GET", "http://localhost:8080/search"),
-    )
-
-    with patch("httpx.AsyncClient.get", AsyncMock(return_value=mock_response)):
+            )
+        )
         result = await collect_result(ws.run(WebSearchArgs(query="python asyncio")))
 
     assert result.query == "python asyncio"
@@ -489,13 +491,10 @@ async def test_run_searxng_empty_results(monkeypatch):
     config = WebSearchConfig(searxng_url="http://localhost:8080")
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
 
-    mock_response = httpx.Response(
-        200,
-        json={"query": "xyzabc123", "results": []},
-        request=httpx.Request("GET", "http://localhost:8080/search"),
-    )
-
-    with patch("httpx.AsyncClient.get", AsyncMock(return_value=mock_response)):
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            return_value=httpx.Response(200, json={"query": "xyzabc123", "results": []})
+        )
         result = await collect_result(ws.run(WebSearchArgs(query="xyzabc123")))
 
     assert result.query == "xyzabc123"
@@ -509,11 +508,11 @@ async def test_run_searxng_http_error(monkeypatch):
     config = WebSearchConfig(searxng_url="http://localhost:8080")
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
 
-    with patch(
-        "httpx.AsyncClient.get",
-        AsyncMock(side_effect=httpx.ConnectError("Connection refused")),
-    ):
-        with pytest.raises(ToolError, match="SearXNG request failed"):
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            side_effect=httpx.ConnectError("Connection refused")
+        )
+        with pytest.raises(ToolError, match="is not responding"):
             await collect_result(ws.run(WebSearchArgs(query="test")))
 
 
@@ -523,13 +522,10 @@ async def test_run_searxng_invalid_json(monkeypatch):
     config = WebSearchConfig(searxng_url="http://localhost:8080")
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
 
-    mock_response = httpx.Response(
-        200,
-        text="not json",
-        request=httpx.Request("GET", "http://localhost:8080/search"),
-    )
-
-    with patch("httpx.AsyncClient.get", AsyncMock(return_value=mock_response)):
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            return_value=httpx.Response(200, text="not json")
+        )
         with pytest.raises(ToolError, match="Invalid JSON from SearXNG"):
             await collect_result(ws.run(WebSearchArgs(query="test")))
 
@@ -554,6 +550,40 @@ def _reset_searxng_state(monkeypatch):
     searxng.reset_state()
 
 
+def test_resolve_searxng_settings_defaults():
+    settings = resolve_searxng_settings({})
+    assert settings.url is None
+    assert settings.manage is True
+    assert settings.port == 8888
+    assert settings.autostart is True
+    assert settings.stop_on_exit is True
+
+
+def test_resolve_searxng_settings_reads_values():
+    settings = resolve_searxng_settings({
+        "web_search": {
+            "searxng_url": "http://x:9",
+            "searxng_manage": False,
+            "searxng_port": 9,
+        }
+    })
+    assert settings.url == "http://x:9"
+    assert settings.manage is False
+    assert settings.port == 9
+
+
+def test_resolve_searxng_settings_env_url_fallback(monkeypatch):
+    monkeypatch.setenv("SEARXNG_URL", "http://env:1")
+    settings = resolve_searxng_settings({})
+    assert settings.url == "http://env:1"
+
+
+def test_resolve_searxng_settings_explicit_url_beats_env(monkeypatch):
+    monkeypatch.setenv("SEARXNG_URL", "http://env")
+    settings = resolve_searxng_settings({"web_search": {"searxng_url": "http://x"}})
+    assert settings.url == "http://x"
+
+
 def _ctx_with_callback(answer_label: str) -> InvokeContext:
     async def callback(args):
         return AskUserQuestionResult(
@@ -570,9 +600,10 @@ async def test_searxng_down_non_interactive_raises_actionable_error(monkeypatch)
     config = WebSearchConfig(searxng_url="http://localhost:8080")
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
 
-    with patch(
-        "httpx.AsyncClient.get", AsyncMock(side_effect=httpx.ConnectError("refused"))
-    ):
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
         with pytest.raises(ToolError, match="is not responding"):
             await collect_result(ws.run(WebSearchArgs(query="q")))
 
@@ -590,15 +621,18 @@ async def test_searxng_down_prompt_start_recovers(monkeypatch):
         "vibe.core.tools.builtins.websearch.ensure_running",
         AsyncMock(return_value=StartOutcome(ok=True, started=True)),
     )
-    ok_response = httpx.Response(
-        200,
-        json={"results": [{"title": "T", "url": "http://u", "content": "c"}]},
-        request=httpx.Request("GET", "http://localhost:8080/search"),
-    )
-    with patch(
-        "httpx.AsyncClient.get",
-        AsyncMock(side_effect=[httpx.ConnectError("refused"), ok_response]),
-    ):
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            side_effect=[
+                httpx.ConnectError("refused"),
+                httpx.Response(
+                    200,
+                    json={
+                        "results": [{"title": "T", "url": "http://u", "content": "c"}]
+                    },
+                ),
+            ]
+        )
         ctx = _ctx_with_callback("Start SearXNG")
         result = await collect_result(ws.run(WebSearchArgs(query="q"), ctx))
 
@@ -618,9 +652,10 @@ async def test_searxng_down_prompt_start_failure_raises(monkeypatch):
         "vibe.core.tools.builtins.websearch.ensure_running",
         AsyncMock(return_value=StartOutcome(ok=False, detail="boom")),
     )
-    with patch(
-        "httpx.AsyncClient.get", AsyncMock(side_effect=httpx.ConnectError("refused"))
-    ):
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
         ctx = _ctx_with_callback("Start SearXNG")
         with pytest.raises(ToolError, match="Could not start SearXNG"):
             await collect_result(ws.run(WebSearchArgs(query="q"), ctx))
@@ -638,9 +673,10 @@ async def test_searxng_down_prompt_mistral_once_falls_back(monkeypatch):
     )
     response = _make_response(content=[TextChunk(text="Mistral answer")])
 
-    with patch(
-        "httpx.AsyncClient.get", AsyncMock(side_effect=httpx.ConnectError("refused"))
-    ):
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
         with patch.object(Mistral, "beta", create=True) as mock_beta:
             mock_beta.conversations.start_async = AsyncMock(return_value=response)
             with patch.object(Mistral, "__aenter__", return_value=None):
@@ -664,9 +700,10 @@ async def test_searxng_down_prompt_stop_asking_sets_session_skip(monkeypatch):
     )
     response = _make_response(content=[TextChunk(text="Mistral answer")])
 
-    with patch(
-        "httpx.AsyncClient.get", AsyncMock(side_effect=httpx.ConnectError("refused"))
-    ):
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
         with patch.object(Mistral, "beta", create=True) as mock_beta:
             mock_beta.conversations.start_async = AsyncMock(return_value=response)
             with patch.object(Mistral, "__aenter__", return_value=None):
@@ -686,11 +723,10 @@ async def test_session_skip_bypasses_searxng(monkeypatch):
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
     response = _make_response(content=[TextChunk(text="Mistral answer")])
 
-    # SearXNG must not be touched at all; any GET would be a bug.
-    with patch(
-        "httpx.AsyncClient.get",
-        AsyncMock(side_effect=AssertionError("SearXNG should be skipped")),
-    ):
+    with respx.mock(assert_all_called=False) as mock:
+        route = mock.get("http://localhost:8080/search").mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
         with patch.object(Mistral, "beta", create=True) as mock_beta:
             mock_beta.conversations.start_async = AsyncMock(return_value=response)
             with patch.object(Mistral, "__aenter__", return_value=None):
@@ -698,6 +734,7 @@ async def test_session_skip_bypasses_searxng(monkeypatch):
                     result = await collect_result(ws.run(WebSearchArgs(query="q")))
 
     assert result.answer == "Mistral answer"
+    assert not route.called  # SearXNG skipped for the session, never queried
 
 
 @pytest.mark.asyncio
@@ -713,9 +750,10 @@ async def test_searxng_down_prompt_start_retry_still_down_raises(monkeypatch):
     )
     # The container is reported started, but the retry still cannot connect:
     # the user must see an actionable ToolError, not a raw httpx.ConnectError.
-    with patch(
-        "httpx.AsyncClient.get", AsyncMock(side_effect=httpx.ConnectError("refused"))
-    ):
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
         ctx = _ctx_with_callback("Start SearXNG")
         with pytest.raises(ToolError, match="is not responding"):
             await collect_result(ws.run(WebSearchArgs(query="q"), ctx))
@@ -725,12 +763,10 @@ async def test_searxng_down_prompt_start_retry_still_down_raises(monkeypatch):
 async def test_searxng_malformed_url_raises_tool_error(monkeypatch):
     config = WebSearchConfig(searxng_url="http://localhost:notaport")
     ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
-    # httpx.InvalidURL is not an HTTPError; it must still surface as a ToolError.
-    with patch(
-        "httpx.AsyncClient.get", AsyncMock(side_effect=httpx.InvalidURL("Invalid port"))
-    ):
-        with pytest.raises(ToolError, match="Invalid SearXNG URL"):
-            await collect_result(ws.run(WebSearchArgs(query="q")))
+    # httpx raises InvalidURL (not an HTTPError) for a malformed URL; it must
+    # still surface as a ToolError rather than escape the tool.
+    with pytest.raises(ToolError, match="Invalid SearXNG URL"):
+        await collect_result(ws.run(WebSearchArgs(query="q")))
 
 
 @pytest.mark.asyncio
@@ -759,9 +795,10 @@ async def test_searxng_down_prompt_footer_not_blamed_on_engine_when_unmanaged(
 
     ctx = InvokeContext(tool_call_id="t1", user_input_callback=callback)
     response = _make_response(content=[TextChunk(text="Mistral answer")])
-    with patch(
-        "httpx.AsyncClient.get", AsyncMock(side_effect=httpx.ConnectError("refused"))
-    ):
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
         with patch.object(Mistral, "beta", create=True) as mock_beta:
             mock_beta.conversations.start_async = AsyncMock(return_value=response)
             with patch.object(Mistral, "__aenter__", return_value=None):

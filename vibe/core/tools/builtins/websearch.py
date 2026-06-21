@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 import os
-from typing import TYPE_CHECKING, ClassVar, final
+from typing import TYPE_CHECKING, Any, ClassVar, final
 
 import httpx
 from mistralai.client import Mistral
@@ -16,7 +16,7 @@ from mistralai.client.models import (
 from pydantic import BaseModel, Field
 
 from vibe.core.config import DEFAULT_MISTRAL_API_ENV_KEY, VibeConfig
-from vibe.core.search.searxng import (
+from vibe.core.search import (
     DEFAULT_CONTAINER_NAME as DEFAULT_SEARXNG_CONTAINER_NAME,
     DEFAULT_IMAGE as DEFAULT_SEARXNG_IMAGE,
     DEFAULT_PORT as DEFAULT_SEARXNG_PORT,
@@ -105,6 +105,24 @@ class WebSearchConfig(BaseToolConfig):
         default=True,
         description="Stop the SearXNG container on exit, but only if vibe started it.",
     )
+
+
+def _settings_from_config(config: WebSearchConfig) -> SearxngSettings:
+    return SearxngSettings(
+        url=config.searxng_url or os.getenv("SEARXNG_URL"),
+        manage=config.searxng_manage,
+        image=config.searxng_image,
+        container_name=config.searxng_container_name,
+        port=config.searxng_port,
+        autostart=config.searxng_autostart,
+        stop_on_exit=config.searxng_stop_on_exit,
+        health_timeout=config.searxng_timeout,
+    )
+
+
+def resolve_searxng_settings(tools: Mapping[str, Any]) -> SearxngSettings:
+    config = WebSearchConfig.model_validate(tools.get("web_search", {}) or {})
+    return _settings_from_config(config)
 
 
 class WebSearch(
@@ -234,26 +252,14 @@ class WebSearch(
         )
 
     def _searxng_settings(self) -> SearxngSettings:
-        return SearxngSettings(
-            url=self.config.searxng_url or os.getenv("SEARXNG_URL"),
-            manage=self.config.searxng_manage,
-            image=self.config.searxng_image,
-            container_name=self.config.searxng_container_name,
-            port=self.config.searxng_port,
-            autostart=self.config.searxng_autostart,
-            stop_on_exit=self.config.searxng_stop_on_exit,
-            health_timeout=self.config.searxng_timeout,
-        )
+        return _settings_from_config(self.config)
 
     async def _run_searxng(
         self, args: WebSearchArgs, settings: SearxngSettings, ctx: InvokeContext | None
     ) -> WebSearchResult | None:
-        """Query SearXNG, recovering from a down instance.
-
-        Returns the result, or ``None`` when the user opts to fall back to
-        Mistral for this search. Raises ``ToolError`` only when SearXNG is
-        unreachable and no recovery is possible (e.g. non-interactive).
-        """
+        # Returns the result, or None when the user opts to fall back to Mistral
+        # for this search. Raises ToolError only when SearXNG is unreachable and
+        # no recovery is possible (e.g. non-interactive).
         assert settings.url is not None
         try:
             return await self._searxng_request(args, settings.url)

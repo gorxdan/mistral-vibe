@@ -214,7 +214,23 @@ disabled_tools = ["webfetch"]
 # Per-tool configuration
 [tools.bash]
 allowlist = ["git", "npm", "python"]
+
+# Web search backend. With no searxng_url, web_search uses Mistral web search.
+# Set searxng_url (or the SEARXNG_URL env var) to use a local SearXNG instance.
+[tools.web_search]
+searxng_url = "http://localhost:8888"   # enables SearXNG; persisted via onboarding too
+searxng_manage = true                    # let vibe run the container (docker/podman)
+searxng_image = "searxng/searxng:latest"
+searxng_container_name = "vibe-searxng"
+searxng_port = 8888
+searxng_autostart = true                 # start at session start if down
+searxng_stop_on_exit = true              # stop on exit, only if vibe started it
 ```
+
+When `searxng_manage` is on and docker/podman is available, vibe starts a
+configured-but-down SearXNG at session start and stops it on exit (only if vibe
+started it); a mid-search down instance prompts to start it or fall back to
+Mistral. See `docs/searxng-setup.md`.
 
 **Special case — `find` command:** Even if `find` is in the bash allowlist,
 Vibe detects `-exec`, `-execdir`, `-ok`, and `-okdir` predicates and will
@@ -519,10 +535,18 @@ timeout = 20.0                   # Per-selection LLM timeout
 
 **Scopes.** Memories are global by default (shared across every project). Pass
 `scope = "project"` to the `manage_memory` tool to write to the current trusted
-project's private namespace (`~/.vibe/memory/projects/<hash>/`, keyed by
-`sha256(resolved workdir)[:16]`). Project memories live under `~/.vibe` (never in
-the repo), so they cannot be committed; they shadow same-id global memories for
-that project only. `scope = "project"` requires a trusted project directory.
+project's private namespace (`~/.vibe/memory/projects/<hash>/`). Project memories
+live under `~/.vibe` (never in the repo), so they cannot be committed; they shadow
+same-id global memories for that project only. `scope = "project"` requires a
+trusted project directory.
+
+**Multi-session / multi-agent.** The project namespace is keyed by the repo's
+git common dir, not the working-directory path, so every session and every git
+worktree of one repository shares the same project memory. Different repos (and
+non-git directories) stay isolated. To run several agents on one project without
+colliding on git's shared index, give each its own worktree
+(`git worktree add <path>`) — memory follows the repo, so all worktrees see the
+same notes.
 
 ### Pattern Matching
 

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+import respx
 
 from vibe.core.search import searxng
 from vibe.core.search.searxng import SearxngSettings
@@ -67,62 +68,20 @@ def test_session_skip_toggles():
     assert searxng.session_skipped() is True
 
 
-def test_from_mapping_defaults():
-    settings = SearxngSettings.from_mapping({})
-    assert settings.url is None
-    assert settings.manage is True
-    assert settings.port == 8888
-    assert settings.autostart is True
-    assert settings.stop_on_exit is True
-
-
-def test_from_mapping_reads_values():
-    settings = SearxngSettings.from_mapping({
-        "searxng_url": "http://x:9",
-        "searxng_manage": False,
-        "searxng_port": 9,
-    })
-    assert settings.url == "http://x:9"
-    assert settings.manage is False
-    assert settings.port == 9
-
-
-def test_from_mapping_env_url_fallback():
-    settings = SearxngSettings.from_mapping({}, env_url="http://env:1")
-    assert settings.url == "http://env:1"
-
-
-def test_from_mapping_explicit_url_beats_env():
-    settings = SearxngSettings.from_mapping(
-        {"searxng_url": "http://x"}, env_url="http://env"
-    )
-    assert settings.url == "http://x"
-
-
-def test_from_mapping_ignores_wrong_types():
-    settings = SearxngSettings.from_mapping({
-        "searxng_port": "not-an-int",
-        "searxng_manage": "yes",
-    })
-    assert settings.port == 8888
-    assert settings.manage is True
+@pytest.mark.asyncio
+async def test_health_check_ok():
+    with respx.mock() as mock:
+        mock.get("http://x/search").mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        assert await searxng.health_check("http://x") is True
 
 
 @pytest.mark.asyncio
-async def test_health_check_ok(monkeypatch):
-    response = httpx.Response(
-        200, json={"results": []}, request=httpx.Request("GET", "http://x/search")
-    )
-    monkeypatch.setattr("httpx.AsyncClient.get", AsyncMock(return_value=response))
-    assert await searxng.health_check("http://x") is True
-
-
-@pytest.mark.asyncio
-async def test_health_check_down(monkeypatch):
-    monkeypatch.setattr(
-        "httpx.AsyncClient.get", AsyncMock(side_effect=httpx.ConnectError("refused"))
-    )
-    assert await searxng.health_check("http://x") is False
+async def test_health_check_down():
+    with respx.mock() as mock:
+        mock.get("http://x/search").mock(side_effect=httpx.ConnectError("refused"))
+        assert await searxng.health_check("http://x") is False
 
 
 @pytest.mark.asyncio

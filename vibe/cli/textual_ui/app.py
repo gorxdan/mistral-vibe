@@ -175,11 +175,7 @@ from vibe.core.log_reader import LogReader
 from vibe.core.logger import logger
 from vibe.core.paths import HISTORY_FILE
 from vibe.core.rewind import RewindError
-from vibe.core.search.searxng import (
-    SearxngSettings,
-    ensure_running,
-    stop_all_started,
-)
+from vibe.core.search import SearxngSettings, ensure_running, stop_all_started
 from vibe.core.session.image_snapshot import ImageSnapshotError, snapshot_image
 from vibe.core.session.resume_sessions import (
     RemoteResumeResult,
@@ -214,6 +210,7 @@ from vibe.core.tools.builtins.ask_user_question import (
     Choice,
     Question,
 )
+from vibe.core.tools.builtins.websearch import resolve_searxng_settings
 from vibe.core.tools.connectors import compute_connector_counts
 from vibe.core.tools.mcp_settings import persist_mcp_toggle
 from vibe.core.tools.permissions import RequiredPermission
@@ -3810,10 +3807,7 @@ class VibeApp(App):  # noqa: PLR0904
             self.exit(result=self._get_session_resume_info())
 
     def _searxng_settings(self) -> SearxngSettings:
-        return SearxngSettings.from_mapping(
-            self.config.tools.get("web_search", {}),
-            env_url=os.getenv("SEARXNG_URL"),
-        )
+        return resolve_searxng_settings(self.config.tools)
 
     async def _searxng_autostart(self) -> None:
         """Bring a configured-but-down SearXNG up at session start.

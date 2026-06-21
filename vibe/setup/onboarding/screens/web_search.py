@@ -12,7 +12,7 @@ from vibe.cli.textual_ui.widgets.banner.petit_chat import PetitChat
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.core.config import MissingAPIKeyError, VibeConfig
 from vibe.core.logger import logger
-from vibe.core.search.searxng import DEFAULT_PORT, default_url, detect_engine
+from vibe.core.search import DEFAULT_PORT, default_url, detect_engine
 from vibe.setup.onboarding.base import OnboardingScreen
 
 NAV_HINT = "Use arrows to navigate - Enter Select - Esc Cancel"
