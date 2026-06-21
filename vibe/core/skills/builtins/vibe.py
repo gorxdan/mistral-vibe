@@ -303,6 +303,37 @@ url = "https://mcp.example.com"
 api_key_env = "MCP_API_KEY"
 ```
 
+### LSP (Language Server Protocol)
+
+Opt-in code intelligence. Install with `/lspstall` (remove with `/unlspstall`);
+servers stay dormant until listed in `installed_components`. Declare one
+`[[lsp_servers]]` entry per language; the binary must be on `PATH`. Surfaces
+the `lsp` tool (definitions, references, hover, symbols, call hierarchy) and
+auto-injects server diagnostics into the next turn after `edit`/`write_file`.
+
+```toml
+installed_components = ["lsp"]
+
+[[lsp_servers]]
+name = "pyright"
+command = "pyright-langserver"
+args = ["--stdio"]
+languages = { ".py" = "python" }
+
+[[lsp_servers]]
+name = "typescript"
+command = "typescript-language-server"
+args = ["--stdio"]
+languages = { ".ts" = "typescript", ".tsx" = "typescriptreact", ".js" = "javascript", ".jsx" = "javascriptreact" }
+
+[[lsp_servers]]
+name = "rust-analyzer"
+command = "rust-analyzer"
+languages = { ".rs" = "rust" }
+```
+
+`/lsp` shows configured-server status (state + extensions + last error).
+
 ### Connectors
 
 Mistral connectors are auto-discovered when the active provider is Mistral
@@ -634,6 +665,9 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/proxy-setup` - Configure proxy and SSL certificate settings
 - `/leanstall` - Install the Lean 4 agent (leanstral)
 - `/unleanstall` - Uninstall the Lean 4 agent
+- `/lspstall` - Install the LSP code-intelligence feature (enables the `lsp` tool and passive diagnostics)
+- `/unlspstall` - Uninstall the LSP feature
+- `/lsp` - Show LSP feature and configured-server status
 - `/data-retention` - Show data retention information
 - `/teleport` - Teleport session to Vibe Code Web (only available when Vibe Code is enabled)
 - `/effort` - Select effort mode: `normal` (turn-by-turn) or `le-chaton` (max thinking + auto-workflow planning)

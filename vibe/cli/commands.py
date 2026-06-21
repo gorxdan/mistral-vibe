@@ -173,6 +173,11 @@ class CommandRegistry:
                 description="Uninstall the LSP feature",
                 handler="_uninstall_lsp",
             ),
+            "lsp": Command(
+                aliases=frozenset(["/lsp"]),
+                description="Show LSP feature and server status",
+                handler="_show_lsp_status",
+            ),
             "rewind": Command(
                 aliases=frozenset(["/rewind"]),
                 description="Rewind to a previous message",

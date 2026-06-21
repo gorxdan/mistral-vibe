@@ -2806,6 +2806,37 @@ class VibeApp(App):  # noqa: PLR0904
         })
         await self._reload_config()
 
+    async def _show_lsp_status(self, **kwargs: Any) -> None:
+        installed = "lsp" in self.agent_loop.base_config.installed_components
+        if not installed:
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    "LSP feature is not installed. Run /lspstall to enable it."
+                )
+            )
+            return
+        from vibe.core.lsp import get_lsp_manager
+
+        manager = get_lsp_manager()
+        if manager is None or not manager.servers:
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    "LSP is installed but no servers are configured. "
+                    "Add [[lsp_servers]] entries in config.toml "
+                    "(e.g. pyright-langserver for Python)."
+                )
+            )
+            return
+        lines = ["## LSP servers", ""]
+        for name, server in manager.servers.items():
+            state = server.state.value
+            exts = ", ".join(sorted(server.config.languages.keys()))
+            line = f"- **{name}** ({state}) — {exts}"
+            if server.last_error:
+                line += f"\n  error: {server.last_error}"
+            lines.append(line)
+        await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
+
     async def _clear_history(self, **kwargs: Any) -> None:
         try:
             self._reset_ui_state()

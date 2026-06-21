@@ -800,6 +800,46 @@ startup_timeout_sec = 15
 tool_timeout_sec = 120
 ```
 
+### LSP (Language Server Protocol)
+
+Vibe can talk to language servers for semantic code intelligence: go-to-definition, find-references, hover, document/workspace symbols, implementation lookup, and call hierarchy. It also surfaces diagnostics (errors, warnings) from the server into the agent's next turn after you edit a file, so the model sees compile/type errors without an explicit tool call.
+
+The feature is **opt-in**. Install it with `/lspstall` (run `/unlspstall` to remove). Then declare one `[[lsp_servers]]` entry per language you want supported. Each entry owns one or more file extensions; declare one entry per language. The server binary must be on your `PATH` — Vibe does not install language servers for you.
+
+```toml
+# Python via pyright (npm install -g pyright  OR  pip install pyright)
+[[lsp_servers]]
+name = "pyright"
+command = "pyright-langserver"
+args = ["--stdio"]
+languages = { ".py" = "python" }
+
+# TypeScript / JavaScript (npm install -g typescript-language-server typescript)
+[[lsp_servers]]
+name = "typescript"
+command = "typescript-language-server"
+args = ["--stdio"]
+languages = { ".ts" = "typescript", ".tsx" = "typescriptreact", ".js" = "javascript", ".jsx" = "javascriptreact" }
+
+# Rust (rustup component add rust-analyzer)
+[[lsp_servers]]
+name = "rust-analyzer"
+command = "rust-analyzer"
+languages = { ".rs" = "rust" }
+```
+
+Key fields:
+
+- `name`: Short alias identifying the server (shown by `/lsp`).
+- `command`: Executable (and optional inline args) to launch the server. stdio transport only.
+- `args`: Additional arguments appended to `command`.
+- `languages`: Mapping of file extension (with dot, e.g. `.py`) to LSP language id (e.g. `python`). The server claims ownership of these extensions; the first matching server wins for each extension.
+- `env`, `cwd`: Environment variables and working directory for the server process.
+- `root_uri`: Workspace root URI (defaults to the current project directory).
+- `startup_timeout_sec` (default 20), `request_timeout_sec` (default 10).
+
+Once configured, the `lsp` tool becomes available to the model and `/lsp` shows server state. Diagnostics published by servers are automatically surfaced to the model on the next turn after any `edit` or `write_file` call.
+
 ### Hooks (Experimental)
 
 Hooks wire arbitrary shell commands into Vibe's lifecycle to gate, audit, or rewrite agent behavior. **Experimental**, gated behind:

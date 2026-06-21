@@ -131,6 +131,7 @@ from vibe.core.data_retention import DATA_RETENTION_MESSAGE
 from vibe.core.feedback import record_feedback_asked, should_show_feedback
 from vibe.core.hooks.config import load_hooks_from_fs
 from vibe.core.loop import LoopManager
+from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
 from vibe.core.paths import GLOBAL_ENV_FILE
 from vibe.core.plugins.integration import load_and_apply_plugins
 from vibe.core.proxy_setup import (
@@ -1164,6 +1165,11 @@ class VibeAcpAgentLoop(AcpAgent):
         self._apply_client_project_name(new_config)
         _merge_non_interactive_disabled_tools(new_config)
         await session.agent_loop.reload_with_initial_messages(base_config=new_config)
+        setup_lsp_for_config(
+            new_config,
+            lambda: session.agent_loop.base_config,
+            Path.cwd(),
+        )
 
     async def _apply_model_change(self, session: AcpSessionLoop, model_id: str) -> bool:
         model_aliases = [model.alias for model in session.agent_loop.config.models]
@@ -1570,6 +1576,7 @@ class VibeAcpAgentLoop(AcpAgent):
         if deferred_init_thread is not None and deferred_init_thread.is_alive():
             await asyncio.to_thread(deferred_init_thread.join)
 
+        await teardown_lsp_async()
         await agent_loop.aclose()
         await agent_loop.telemetry_client.aclose()
 
@@ -1962,6 +1969,11 @@ class VibeAcpAgentLoop(AcpAgent):
         self._apply_client_project_name(new_config)
         _merge_non_interactive_disabled_tools(new_config)
         await session.agent_loop.reload_with_initial_messages(base_config=new_config)
+        setup_lsp_for_config(
+            new_config,
+            lambda: session.agent_loop.base_config,
+            Path.cwd(),
+        )
 
     async def _handle_reload(
         self, session: AcpSessionLoop, text_prompt: str, message_id: str
