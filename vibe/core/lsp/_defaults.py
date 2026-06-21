@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import shutil
 
 from vibe.core.config import LSPServer
 
@@ -102,3 +103,17 @@ def preset_for_extension(ext: str) -> ServerPreset | None:
             if key.lower().lstrip(".") == normalized:
                 return preset
     return None
+
+
+def preset_binary_on_path(preset: ServerPreset) -> bool:
+    return shutil.which(preset.detection_command[0]) is not None
+
+
+def available_presets() -> list[ServerPreset]:
+    """Presets whose server binary is installed on PATH.
+
+    These are the languages Vibe can support without any config: the moment
+    LSP is enabled (installed_components), every available preset is
+    registered and lazy-started on first use of a matching file.
+    """
+    return [p for p in PRESETS.values() if preset_binary_on_path(p)]
