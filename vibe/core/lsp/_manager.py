@@ -161,10 +161,34 @@ def uris_equal(a: str, b: str) -> bool:
     return path_from_uri(a) == path_from_uri(b)
 
 
+_global_manager: LSPManager | None = None
+
+
+def init_lsp_manager(manager: LSPManager) -> None:
+    """Install ``manager`` as the process-wide LSP singleton."""
+    global _global_manager
+    _global_manager = manager
+
+
+def get_lsp_manager() -> LSPManager | None:
+    """Return the process LSP manager, or ``None`` if LSP is not active."""
+    return _global_manager
+
+
+def clear_lsp_manager() -> None:
+    """Drop the singleton reference (does not shut the manager down)."""
+    global _global_manager
+    _global_manager = None
+
+
 __all__ = [
     "LSPError",
     "LSPManager",
     "LSPNotConnectedError",
     "LSPServerSource",
     "ServerState",
+    "clear_lsp_manager",
+    "get_lsp_manager",
+    "init_lsp_manager",
+    "uris_equal",
 ]
