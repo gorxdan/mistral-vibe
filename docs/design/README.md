@@ -22,6 +22,7 @@ control, `cached_tokens` visibility).
 | 4 | [prompt-caching](prompt-caching.md) | Managed prompt caching + cache telemetry | **M** | sound_with_fixes |
 | 5 | [memory](memory.md) | File-based auto-memory (LLM-selected, no embeddings) | **L** | sound_with_fixes |
 | 6 | [hooks](hooks.md) | Hook breadth (6 new events) + plugin/bundle model | **XL** | sound_with_fixes |
+| 7 | [subagent-isolation](subagent-isolation.md) | Default worktree isolation for write-capable agents (`task()` + workflow) | **M** | sound_with_fixes |
 
 All six are **independent** (no cross-spec dependencies) — they can be built in
 any order or in parallel.
