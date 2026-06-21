@@ -56,11 +56,13 @@ class EventHandler:
         get_tools_collapsed: Callable[[], bool],
         on_profile_changed: Callable[[], None] | None = None,
         is_remote: bool = False,
+        on_code_file_edited: Callable[[str], None] | None = None,
     ) -> None:
         self.mount_callback = mount_callback
         self.get_tools_collapsed = get_tools_collapsed
         self.on_profile_changed = on_profile_changed
         self.is_remote = is_remote
+        self.on_code_file_edited = on_code_file_edited
         self.tool_calls: dict[str, ToolCallMessage] = {}
         self.current_compact: CompactMessage | None = None
         self.current_streaming_message: AssistantMessage | None = None
@@ -238,6 +240,17 @@ class EventHandler:
             self._tool_call_anchors[tool_call_id] = tool_result
             if tool_call_id in self.tool_calls:
                 del self.tool_calls[tool_call_id]
+
+        if (
+            self.on_code_file_edited
+            and event.result is not None
+            and event.tool_name in {"edit", "write_file"}
+        ):
+            path = getattr(event.result, "file", None) or getattr(
+                event.result, "path", None
+            )
+            if path:
+                self.on_code_file_edited(str(path))
 
     async def _handle_tool_stream(self, event: ToolStreamEvent) -> None:
         tool_call = self.tool_calls.get(event.tool_call_id)

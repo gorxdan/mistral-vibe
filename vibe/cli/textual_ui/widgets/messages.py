@@ -20,9 +20,10 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Markdown, Static
+from textual.widgets import Button, Markdown, Static
 from textual.widgets._markdown import MarkdownStream
 from watchfiles import awatch
 
@@ -400,6 +401,43 @@ class VscodeExtensionPromoMessage(Static):
 
     def compose(self) -> ComposeResult:
         yield Markdown(self._content)
+
+
+class LspInstallCallout(Static):
+    """One-time prompt offering to enable LSP when a code file is edited.
+
+    Emits a Textual message the host app can subscribe to. Buttons:
+    Enable (accepts) / Not now (declines). Either dismisses the callout.
+    """
+
+    class Accepted(Message):
+        pass
+
+    class Declined(Message):
+        pass
+
+    def __init__(self, language_display_name: str) -> None:
+        super().__init__()
+        self.add_class("lsp-install-callout")
+        self._language = language_display_name
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="lsp-callout-container"):
+            yield Markdown(
+                f"**LSP available for {self._language}.** "
+                "Enable code intelligence (definitions, references, hover, "
+                "diagnostics) for this session and future ones?"
+            )
+            with Horizontal(classes="lsp-callout-buttons"):
+                yield Button("Enable", id="lsp-enable", variant="success")
+                yield Button("Not now", id="lsp-dismiss", variant="default")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "lsp-enable":
+            self.post_message(self.Accepted())
+        elif event.button.id == "lsp-dismiss":
+            self.post_message(self.Declined())
+        await self.remove()
 
 
 class InterruptMessage(Static):

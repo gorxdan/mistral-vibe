@@ -93,6 +93,7 @@ from vibe.cli.textual_ui.widgets.messages import (
     BashOutputMessage,
     ErrorMessage,
     InterruptMessage,
+    LspInstallCallout,
     SlashCommandMessage,
     StreamingMessageBase,
     TeleportUserMessage,
@@ -174,7 +175,7 @@ from vibe.core.hooks.models import HookStartEvent
 from vibe.core.log_reader import LogReader
 from vibe.core.logger import logger
 from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
-from vibe.core.paths import HISTORY_FILE
+from vibe.core.paths import CACHE_FILE, HISTORY_FILE
 from vibe.core.rewind import RewindError
 from vibe.core.search import SearxngSettings, ensure_running, stop_all_started
 from vibe.core.session.image_snapshot import ImageSnapshotError, snapshot_image
@@ -471,6 +472,7 @@ class VibeApp(App):  # noqa: PLR0904
         self.history_file = HISTORY_FILE.path
 
         self._tools_collapsed = True
+        self._lsp_nudge_shown_this_session = False
         self._windowing = SessionWindowing(load_more_batch_size=LOAD_MORE_BATCH_SIZE)
         self._load_more = HistoryLoadMoreManager()
         self._tool_call_map: dict[str, str] | None = None
@@ -722,6 +724,7 @@ class VibeApp(App):  # noqa: PLR0904
             get_tools_collapsed=lambda: self._tools_collapsed,
             on_profile_changed=self._on_profile_changed,
             is_remote=self._remote_manager.is_active,
+            on_code_file_edited=self._maybe_nudge_lsp,
         )
 
         self._chat_input_container = self.query_one(ChatInputContainer)
@@ -2836,6 +2839,50 @@ class VibeApp(App):  # noqa: PLR0904
                 line += f"\n  error: {server.last_error}"
             lines.append(line)
         await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
+
+    def _maybe_nudge_lsp(self, file_path: str) -> None:
+        if self._lsp_nudge_shown_this_session:
+            return
+        from vibe.core.lsp._nudge import evaluate_nudge, record_first_prompted
+
+        decision = evaluate_nudge(
+            file_path, self.agent_loop.base_config, CACHE_FILE.path
+        )
+        if decision.kind == "first_prompt":
+            record_first_prompted(CACHE_FILE.path)
+            self._lsp_nudge_shown_this_session = True
+            self.call_after_refresh(
+                lambda: self._mount_lsp_callout(decision.preset_display_name)
+            )
+        elif decision.kind == "reminder":
+            # One reminder per session; then silent until next session.
+            self._lsp_nudge_shown_this_session = True
+            self.notify(
+                f"LSP is available for {decision.preset_display_name}. "
+                "Run /lspstall to enable.",
+                timeout=10,
+            )
+
+    async def _mount_lsp_callout(self, language_display_name: str) -> None:
+        await self._mount_and_scroll(LspInstallCallout(language_display_name))
+
+    def on_lsp_install_callout_accepted(
+        self, event: LspInstallCallout.Accepted
+    ) -> None:
+        current = list(self.agent_loop.base_config.installed_components)
+        if "lsp" not in current:
+            VibeConfig.save_updates({"installed_components": sorted([*current, "lsp"])})
+            asyncio.create_task(self._reload_config())
+        self.notify("LSP enabled.", timeout=4)
+
+    def on_lsp_install_callout_declined(
+        self, event: LspInstallCallout.Declined
+    ) -> None:
+        from vibe.core.lsp._nudge import record_declined
+
+        record_declined(CACHE_FILE.path)
+        self._lsp_nudge_shown_this_session = True
+        self.notify("You can enable LSP later with /lspstall.", timeout=6)
 
     async def _clear_history(self, **kwargs: Any) -> None:
         try:
