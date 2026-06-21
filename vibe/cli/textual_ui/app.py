@@ -2782,19 +2782,11 @@ class VibeApp(App):  # noqa: PLR0904
 
     async def _install_lsp(self, **kwargs: Any) -> None:
         current = list(self.agent_loop.base_config.installed_components)
-        if "lsp" in current:
-            from vibe.core.lsp import get_lsp_manager
-
-            manager = get_lsp_manager()
-            count = len(manager.servers) if manager else 0
-            await self._mount_and_scroll(
-                UserCommandMessage(
-                    f"LSP is already installed ({count} server(s) configured). "
-                    "Run /lsp for details."
-                )
-            )
-            return
-        VibeConfig.save_updates({"installed_components": sorted([*current, "lsp"])})
+        if "lsp" not in current:
+            VibeConfig.save_updates({"installed_components": sorted([*current, "lsp"])})
+        # Always reload so the manager re-syncs from the latest installed
+        # package code + PATH-discovered presets. Without this, a process
+        # that started before a code/package update keeps a stale manager.
         await self._reload_config()
 
         from vibe.core.lsp import get_lsp_manager
@@ -2821,7 +2813,7 @@ class VibeApp(App):  # noqa: PLR0904
             for preset in PRESETS.values():
                 lines.append(f"  - {preset.display_name}: {preset.install_hint}")
             lines.append("")
-            lines.append("Then run /lsp to confirm detection.")
+            lines.append("Then run /lspstall again to re-detect.")
         await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
 
     async def _uninstall_lsp(self, **kwargs: Any) -> None:
@@ -2846,14 +2838,28 @@ class VibeApp(App):  # noqa: PLR0904
             )
             return
         from vibe.core.lsp import get_lsp_manager
+        from vibe.core.lsp._defaults import PRESETS, available_presets
 
         manager = get_lsp_manager()
         if manager is None or not manager.servers:
+            available = available_presets()
+            if available:
+                names = ", ".join(p.display_name for p in available)
+                hint = (
+                    f"Detected on PATH: {names}. Run /lspstall to re-sync, "
+                    "or restart vibe if you just installed."
+                )
+            else:
+                hints = [
+                    f"  - {p.display_name}: {p.install_hint}" for p in PRESETS.values()
+                ]
+                hint = (
+                    "No language server binaries on PATH. Install one:\n"
+                    + "\n".join(hints)
+                )
             await self._mount_and_scroll(
                 UserCommandMessage(
-                    "LSP is installed but no servers are configured. "
-                    "Add [[lsp_servers]] entries in config.toml "
-                    "(e.g. pyright-langserver for Python)."
+                    f"LSP is installed but no servers are active.\n\n{hint}"
                 )
             )
             return
