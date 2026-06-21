@@ -160,6 +160,13 @@ class ManageMemory(
         )
         meta = meta.model_copy(update={"updated": today, "scope": scope})
         body = args.body if args.body is not None else existing.body
+        # Tier change: unlink the old tier's file so it can't shadow the new one
+        # (project shadows user by id; a stale project file would win over a
+        # freshly-written user file and make the re-scope invisible).
+        if scope != existing.metadata.scope:
+            store.remove_from_tier(
+                args.id, project=(existing.metadata.scope == "project")
+            )
         if scope == "project":
             project_memory_dir(create=True)
         store.upsert(

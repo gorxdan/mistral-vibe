@@ -18,6 +18,7 @@ import re
 import subprocess
 import tempfile
 
+from pydantic import ValidationError
 import yaml
 
 from vibe.core.memory.models import _SLUG, MemoryEntry, MemoryMetadata
@@ -80,8 +81,10 @@ class MemoryStore:
         return entries
 
     def _load_file(self, path: Path) -> MemoryEntry | None:
+        from vibe.core.utils.io import read_safe
+
         try:
-            content = path.read_text(encoding="utf-8")
+            content = read_safe(path).text
         except OSError as e:
             self.issues.append(f"{path.name}: unreadable ({e})")
             return None
@@ -94,7 +97,7 @@ class MemoryStore:
         frontmatter.setdefault("title", frontmatter["id"])
         try:
             meta = MemoryMetadata.model_validate(frontmatter)
-        except Exception as e:
+        except ValidationError as e:
             self.issues.append(f"{path.name}: invalid frontmatter ({e})")
             return None
         return MemoryEntry(metadata=meta, body=body.strip())
@@ -141,6 +144,25 @@ class MemoryStore:
         self._atomic_write(path, doc)
         self._cache = None  # invalidate
         return path
+
+    def remove_from_tier(self, memory_id: str, *, project: bool) -> bool:
+        """Remove the memory from ONE tier only (user xor project).
+
+        Used on tier change so the old tier's file does not shadow the new one
+        (project shadows user by id; without this, a project->user re-scope is
+        invisible because the stale project file keeps winning).
+        """
+        if not _ID_RE.match(memory_id):
+            return False
+        target = (
+            self._project_dirs[0] if project and self._project_dirs else self._user_dir
+        )
+        path = target / f"{memory_id}.md"
+        if path.exists():
+            path.unlink()
+            self._cache = None
+            return True
+        return False
 
     def delete(self, memory_id: str) -> bool:
         # Validate against the slug pattern before interpolating into a path:

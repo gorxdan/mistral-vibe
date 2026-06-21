@@ -223,6 +223,29 @@ def test_delete_clears_all_tiers(tmp_path) -> None:
     assert store.get("dup") is None
 
 
+def test_remove_from_tier_unlinks_one_tier_only(tmp_path) -> None:
+    user = tmp_path / "user"
+    proj = tmp_path / "proj"
+    store = MemoryStore(user_dir=user, project_dirs=[proj])
+    store.upsert(_entry("m", body="U"), project=False)
+    store.upsert(_proj_entry("m", body="P"), project=True)
+
+    # Re-scope project -> user: remove the project file so it can't shadow.
+    assert store.remove_from_tier("m", project=True) is True
+    assert not (proj / "m.md").exists()
+    assert (user / "m.md").exists()
+    # The read now reflects the user file, not a stale shadow.
+    assert store.get("m").body == "U"
+
+
+def test_remove_from_tier_rejects_traversal_id(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    victim = tmp_path.parent / "victim-tier.md"
+    victim.write_text("keep")
+    assert store.remove_from_tier("../../victim-tier", project=False) is False
+    assert victim.exists()
+
+
 def test_index_line_tags_project_scope_only() -> None:
     assert "(project)" not in _entry("a").index_line()
     assert "(project)" in _proj_entry("b").index_line()
