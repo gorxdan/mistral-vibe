@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import ClassVar, NamedTuple
 
@@ -10,6 +10,7 @@ from vibe.core.autocompletion.file_indexer.store import (
     build_ascii_mask,
 )
 from vibe.core.autocompletion.fuzzy import fuzzy_match
+from vibe.core.autocompletion.menu import MenuEntry
 
 DEFAULT_MAX_ENTRIES_TO_PROCESS = 32000
 DEFAULT_TARGET_MATCHES = 100
@@ -30,19 +31,35 @@ class Completer:
         return None
 
 
+CommandEntry = MenuEntry | tuple[str, str]
+
+
 class CommandCompleter(Completer):
-    def __init__(self, entries: Callable[[], list[tuple[str, str]]]) -> None:
+    def __init__(self, entries: Callable[[], Sequence[CommandEntry]]) -> None:
         self._get_entries = entries
 
+    def _normalized_entries(self) -> dict[str, MenuEntry]:
+        # Dedupe by alias, last occurrence wins (later registrations override an
+        # earlier description) while preserving first-seen ordering.
+        entries: dict[str, MenuEntry] = {}
+        for raw in self._get_entries():
+            entry = MenuEntry.coerce(raw)
+            entries[entry.alias] = entry
+        return entries
+
     def _build_lookup(self) -> tuple[list[str], dict[str, str]]:
-        descriptions: dict[str, str] = {}
-        for alias, description in self._get_entries():
-            descriptions[alias] = description
-        return list(descriptions.keys()), descriptions
+        entries = self._normalized_entries()
+        descriptions = {alias: entry.description for alias, entry in entries.items()}
+        return list(entries.keys()), descriptions
 
     def _head_word(self, text: str, cursor_pos: int) -> str:
         head = text.split(" ", 1)[0]
         return head[1 : min(cursor_pos, len(head))].lower()
+
+    def head_query(self, text: str, cursor_pos: int) -> str:
+        if not text.startswith("/"):
+            return ""
+        return self._head_word(text, cursor_pos)
 
     _PROMOTED_BOOSTS: ClassVar[dict[str, float]] = {"/help": 2.0, "/config": 1.0}
 
@@ -79,6 +96,17 @@ class CommandCompleter(Completer):
         return [
             (alias, descriptions.get(alias, ""))
             for alias in self._fuzzy_filter(aliases, search_str)
+        ]
+
+    def get_menu_entries(self, text: str, cursor_pos: int) -> list[MenuEntry]:
+        if not text.startswith("/"):
+            return []
+
+        entries = self._normalized_entries()
+        search_str = "/" + self._head_word(text, cursor_pos)
+        return [
+            entries[alias]
+            for alias in self._fuzzy_filter(list(entries.keys()), search_str)
         ]
 
     def get_replacement_range(

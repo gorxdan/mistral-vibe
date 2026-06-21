@@ -26,6 +26,7 @@ from vibe.cli.textual_ui.widgets.chat_input.text_area import ChatTextArea
 from vibe.cli.voice_manager.voice_manager_port import VoiceManagerPort
 from vibe.core.agents import AgentSafety
 from vibe.core.autocompletion.completers import CommandCompleter, PathCompleter
+from vibe.core.autocompletion.menu import MenuEntry, MenuGroup, MenuRow
 
 SAFETY_BORDER_CLASSES: dict[AgentSafety, str] = {
     AgentSafety.SAFE: "border-safe",
@@ -84,15 +85,25 @@ class ChatInputContainer(Vertical):
         ])
         self._body: ChatInputBody | None = None
 
-    def _get_slash_entries(self) -> list[tuple[str, str]]:
-        entries = [
-            (alias, command.description)
-            for command in self._command_registry.commands.values()
-            for alias in sorted(command.aliases)
-        ]
+    def _get_slash_entries(self) -> list[MenuEntry]:
+        commands = sorted(
+            (
+                MenuEntry(alias, command.description, MenuGroup.COMMAND)
+                for command in self._command_registry.commands.values()
+                for alias in sorted(command.aliases)
+            ),
+            key=lambda entry: entry.alias,
+        )
+        skills: list[MenuEntry] = []
         if self._skill_entries_getter:
-            entries.extend(self._skill_entries_getter())
-        return sorted(entries)
+            skills = sorted(
+                (
+                    MenuEntry(alias, description, MenuGroup.SKILL)
+                    for alias, description in self._skill_entries_getter()
+                ),
+                key=lambda entry: entry.alias,
+            )
+        return [*commands, *skills]
 
     def compose(self) -> ComposeResult:
         yield CompletionPopup()
@@ -158,6 +169,14 @@ class ChatInputContainer(Vertical):
             return
         popup.update_suggestions(suggestions, selected_index)
         self._position_popup(popup, suggestions)
+
+    def render_slash_menu(self, rows: list[MenuRow], selected_index: int) -> None:
+        try:
+            popup = self.query_one(CompletionPopup)
+        except Exception:
+            return
+        popup.update_menu(rows, selected_index)
+        self._position_popup(popup, [(row.text, row.description) for row in rows])
 
     def clear_completion_suggestions(self) -> None:
         try:

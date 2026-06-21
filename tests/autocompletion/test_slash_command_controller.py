@@ -7,6 +7,7 @@ from textual import events
 from vibe.cli.autocompletion.base import CompletionResult, CompletionView
 from vibe.cli.autocompletion.slash_command import SlashCommandController
 from vibe.core.autocompletion.completers import CommandCompleter
+from vibe.core.autocompletion.menu import MenuEntry, MenuGroup, MenuRow, RowKind
 
 
 class Suggestion(NamedTuple):
@@ -19,6 +20,11 @@ class SuggestionEvent(NamedTuple):
     selected_index: int
 
 
+class MenuEvent(NamedTuple):
+    rows: list[MenuRow]
+    selected_index: int
+
+
 class Replacement(NamedTuple):
     start: int
     end: int
@@ -28,6 +34,7 @@ class Replacement(NamedTuple):
 class StubView(CompletionView):
     def __init__(self) -> None:
         self.suggestion_events: list[SuggestionEvent] = []
+        self.menu_events: list[MenuEvent] = []
         self.reset_count = 0
         self.replacements: list[Replacement] = []
 
@@ -36,6 +43,15 @@ class StubView(CompletionView):
     ) -> None:
         typed = [Suggestion(alias, description) for alias, description in suggestions]
         self.suggestion_events.append(SuggestionEvent(typed, selected_index))
+
+    def render_slash_menu(self, rows: list[MenuRow], selected_index: int) -> None:
+        self.menu_events.append(MenuEvent(list(rows), selected_index))
+        items = [(index, row) for index, row in enumerate(rows) if row.selectable]
+        typed = [Suggestion(row.text, row.description) for _, row in items]
+        item_selected = next(
+            (pos for pos, (index, _) in enumerate(items) if index == selected_index), 0
+        )
+        self.suggestion_events.append(SuggestionEvent(typed, item_selected))
 
     def clear_completion_suggestions(self) -> None:
         self.reset_count += 1
@@ -305,3 +321,106 @@ def test_callable_entries_reflects_enabled_disabled_skills() -> None:
     controller.on_text_changed("/", cursor_index=1)
     suggestions, _ = view.suggestion_events[-1]
     assert [s.alias for s in suggestions] == ["/review", "/deploy"]
+
+
+def make_grouped_controller(
+    *, skill_cap: int = 8
+) -> tuple[SlashCommandController, StubView]:
+    entries = [
+        MenuEntry("/help", "Show help", MenuGroup.COMMAND),
+        MenuEntry("/config", "Edit config", MenuGroup.COMMAND),
+        MenuEntry("/review", "Review code", MenuGroup.SKILL),
+        MenuEntry("/deep-research", "Research", MenuGroup.SKILL),
+        MenuEntry("/verify", "Verify", MenuGroup.SKILL),
+    ]
+    completer = CommandCompleter(lambda: entries)
+    view = StubView()
+    controller = SlashCommandController(completer, view, skill_cap=skill_cap)
+    return controller, view
+
+
+def _skills_header_index(rows: list[MenuRow]) -> int:
+    return next(
+        index
+        for index, row in enumerate(rows)
+        if row.kind is RowKind.HEADER and row.text.startswith("SKILLS")
+    )
+
+
+def test_bare_slash_groups_commands_then_skills_under_headers() -> None:
+    controller, view = make_grouped_controller()
+
+    controller.on_text_changed("/", cursor_index=1)
+
+    rows = view.menu_events[-1].rows
+    assert rows[0].kind is RowKind.HEADER
+    assert rows[0].text == "COMMANDS"
+
+    skills_at = _skills_header_index(rows)
+    command_items = [r.text for r in rows[1:skills_at] if r.kind is RowKind.ITEM]
+    skill_items = [r.text for r in rows[skills_at + 1 :] if r.kind is RowKind.ITEM]
+
+    assert command_items == ["/help", "/config"]
+    assert skill_items == ["/review", "/deep-research", "/verify"]
+    assert "(3 — type to filter)" in rows[skills_at].text
+
+
+def test_no_headers_when_only_commands_present() -> None:
+    completer = CommandCompleter(lambda: [("/help", "h"), ("/config", "c")])
+    view = StubView()
+    controller = SlashCommandController(completer, view)
+
+    controller.on_text_changed("/", cursor_index=1)
+
+    rows = view.menu_events[-1].rows
+    assert all(row.kind is RowKind.ITEM for row in rows)
+
+
+def test_arrow_navigation_skips_headers_and_lands_only_on_items() -> None:
+    controller, view = make_grouped_controller()
+
+    controller.on_text_changed("/", cursor_index=1)
+    selected_rows = [view.menu_events[-1].selected_index]
+    for _ in range(5):
+        controller.on_key(key_event("down"), text="/", cursor_index=1)
+        selected_rows.append(view.menu_events[-1].selected_index)
+
+    rows = view.menu_events[-1].rows
+    assert all(rows[index].kind is RowKind.ITEM for index in selected_rows)
+    # five items, so the sixth "down" wraps back to the first item
+    assert selected_rows[0] == selected_rows[-1]
+
+
+def test_enter_on_a_skill_inserts_the_skill_alias() -> None:
+    controller, view = make_grouped_controller()
+
+    controller.on_text_changed("/", cursor_index=1)
+    controller.on_key(key_event("down"), text="/", cursor_index=1)  # /help -> /config
+    controller.on_key(key_event("down"), text="/", cursor_index=1)  # -> /review
+
+    result = controller.on_key(key_event("enter"), text="/", cursor_index=1)
+
+    assert result is CompletionResult.SUBMIT
+    assert view.replacements[-1] == Replacement(0, 1, "/review")
+
+
+def test_bare_slash_caps_skills_with_hint_and_typing_reveals_all() -> None:
+    entries = [MenuEntry("/cmd", "c", MenuGroup.COMMAND)]
+    entries += [MenuEntry(f"/skill-{i}", f"s{i}", MenuGroup.SKILL) for i in range(5)]
+    completer = CommandCompleter(lambda: entries)
+    view = StubView()
+    controller = SlashCommandController(completer, view, skill_cap=2)
+
+    controller.on_text_changed("/", cursor_index=1)
+    rows = view.menu_events[-1].rows
+    shown_skills = [
+        r for r in rows if r.kind is RowKind.ITEM and r.text.startswith("/skill")
+    ]
+    assert len(shown_skills) == 2
+    assert any(r.kind is RowKind.HINT and "+3 more" in r.text for r in rows)
+
+    controller.on_text_changed("/skill", cursor_index=6)
+    rows = view.menu_events[-1].rows
+    shown_skills = [r for r in rows if r.kind is RowKind.ITEM]
+    assert len(shown_skills) == 5
+    assert all(row.kind is not RowKind.HINT for row in rows)

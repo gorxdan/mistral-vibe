@@ -3,6 +3,8 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Protocol
 
+from vibe.core.autocompletion.menu import MenuRow
+
 
 class CompletionResult(StrEnum):
     IGNORED = "ignored"
@@ -14,6 +16,8 @@ class CompletionView(Protocol):
     def render_completion_suggestions(
         self, suggestions: list[tuple[str, str]], selected_index: int
     ) -> None: ...
+
+    def render_slash_menu(self, rows: list[MenuRow], selected_index: int) -> None: ...
 
     def clear_completion_suggestions(self) -> None: ...
 

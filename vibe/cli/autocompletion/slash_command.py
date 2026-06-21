@@ -4,21 +4,34 @@ from textual import events
 
 from vibe.cli.autocompletion.base import CompletionResult, CompletionView
 from vibe.core.autocompletion.completers import CommandCompleter
+from vibe.core.autocompletion.menu import (
+    DEFAULT_SKILL_PREVIEW_CAP,
+    MenuRow,
+    build_menu_rows,
+    first_selectable_index,
+)
 
 
 class SlashCommandController:
-    def __init__(self, completer: CommandCompleter, view: CompletionView) -> None:
+    def __init__(
+        self,
+        completer: CommandCompleter,
+        view: CompletionView,
+        *,
+        skill_cap: int = DEFAULT_SKILL_PREVIEW_CAP,
+    ) -> None:
         self._completer = completer
         self._view = view
-        self._suggestions: list[tuple[str, str]] = []
+        self._rows: list[MenuRow] = []
         self._selected_index = 0
+        self._skill_cap = skill_cap
 
     def can_handle(self, text: str, cursor_index: int) -> bool:
         return text.startswith("/")
 
     def reset(self) -> None:
-        if self._suggestions:
-            self._suggestions.clear()
+        if self._rows:
+            self._rows = []
             self._selected_index = 0
             self._view.clear_completion_suggestions()
 
@@ -31,20 +44,28 @@ class SlashCommandController:
             self.reset()
             return
 
-        suggestions = self._completer.get_completion_items(text, cursor_index)
-        if suggestions:
-            self._suggestions = suggestions
-            self._selected_index = 0
-            self._view.render_completion_suggestions(
-                self._suggestions, self._selected_index
-            )
-        else:
+        entries = self._completer.get_menu_entries(text, cursor_index)
+        if not entries:
             self.reset()
+            return
+
+        query_empty = self._completer.head_query(text, cursor_index) == ""
+        rows = build_menu_rows(
+            entries, query_empty=query_empty, skill_cap=self._skill_cap
+        )
+        first = first_selectable_index(rows)
+        if first is None:
+            self.reset()
+            return
+
+        self._rows = rows
+        self._selected_index = first
+        self._view.render_slash_menu(rows, first)
 
     def on_key(
         self, event: events.Key, text: str, cursor_index: int
     ) -> CompletionResult:
-        if not self._suggestions:
+        if not self._rows:
             return CompletionResult.IGNORED
 
         match event.key:
@@ -69,27 +90,36 @@ class SlashCommandController:
 
         return result
 
+    def _selectable_indices(self) -> list[int]:
+        return [i for i, row in enumerate(self._rows) if row.selectable]
+
     def _move_selection(self, delta: int) -> None:
-        if not self._suggestions:
+        indices = self._selectable_indices()
+        if not indices:
             return
 
-        count = len(self._suggestions)
-        self._selected_index = (self._selected_index + delta) % count
-        self._view.render_completion_suggestions(
-            self._suggestions, self._selected_index
-        )
+        try:
+            position = indices.index(self._selected_index)
+        except ValueError:
+            position = 0
+        position = (position + delta) % len(indices)
+        self._selected_index = indices[position]
+        self._view.render_slash_menu(self._rows, self._selected_index)
 
     def _apply_selected_completion(self, text: str, cursor_index: int) -> bool:
-        if not self._suggestions:
+        if not self._rows:
             return False
 
-        alias, _ = self._suggestions[self._selected_index]
+        row = self._rows[self._selected_index]
+        if not row.selectable:
+            return False
+
         replacement_range = self._completer.get_replacement_range(text, cursor_index)
         if replacement_range is None:
             self.reset()
             return False
 
         start, end = replacement_range
-        self._view.replace_completion_range(start, end, alias)
+        self._view.replace_completion_range(start, end, row.text)
         self.reset()
         return True
