@@ -431,7 +431,13 @@ def _late_binding_lambda(tree: ast.AST) -> list[Violation]:
                     for n in ast.walk(lam.body)
                     if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
                 }
-                risky = (loop_vars & loads) - param_names(lam)
+                # Subtract names rebound INSIDE the body too (inner-comprehension
+                # targets, nested-lambda params, walrus). `loads` descends nested
+                # scopes, so without this a loop var that is shadowed/rebound in a
+                # nested scope (e.g. `[lambda: [a for a in inner] for a in outer]`)
+                # is a false positive — and the lint hard-rejects valid scripts.
+                shadowed = param_names(lam) | _bound_names(lam.body)
+                risky = (loop_vars & loads) - shadowed
                 if not risky or (lam.lineno, lam.col_offset) in reported:
                     continue
                 reported.add((lam.lineno, lam.col_offset))

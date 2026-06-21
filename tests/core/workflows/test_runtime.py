@@ -197,6 +197,23 @@ async def test_schema_failure_is_falsy_and_dict_like() -> None:
     assert f.schema_errors == ["x"]
 
 
+async def test_parallel_accepts_bare_coroutines_and_thunks() -> None:
+    # Headline change: parallel() takes coroutines directly (the natural fan-out
+    # form) as well as zero-arg thunks, and mixes them; the list form works too.
+    # A non-awaitable/non-callable item fails loud instead of silently dropping.
+    rt = WorkflowRuntime(agent_loop_factory=make_factory())
+
+    async def co(v: int) -> int:
+        return v
+
+    assert await rt.parallel(co(1), co(2)) == [1, 2]
+    assert await rt.parallel(lambda: co(3), lambda: co(4)) == [3, 4]
+    assert await rt.parallel(co(5), lambda: co(6)) == [5, 6]
+    assert await rt.parallel([co(7), co(8)]) == [7, 8]
+    with pytest.raises(WorkflowError):
+        await rt.parallel(123)
+
+
 async def test_spawn_agent_schema_raises_after_max_retries_strict() -> None:
     # strict_schema=True preserves the legacy hard-fail behavior.
     schema = {

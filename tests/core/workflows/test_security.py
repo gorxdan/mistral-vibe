@@ -327,6 +327,35 @@ def test_lint_allows_default_bound_lambda_over_loop() -> None:
     assert not [x for x in lint_script(src) if x.rule == "late-binding-closure"]
 
 
+def test_lint_allows_lambda_rebinding_loop_var_in_inner_comprehension() -> None:
+    # The loop var is REBOUND by an inner comprehension inside the lambda body,
+    # so there is no late-binding bug — must NOT be flagged (was a false positive
+    # that hard-rejected valid scripts).
+    src = (
+        "async def main():\n"
+        "    return await parallel(*[lambda: [a * 2 for a in inner] for a in outer])\n"
+    )
+    assert not [x for x in lint_script(src) if x.rule == "late-binding-closure"]
+
+
+def test_lint_allows_lambda_rebinding_loop_var_in_nested_lambda() -> None:
+    src = (
+        "async def main():\n"
+        "    return await parallel(*[lambda: (lambda a: a)(1) for a in xs])\n"
+    )
+    assert not [x for x in lint_script(src) if x.rule == "late-binding-closure"]
+
+
+def test_lint_still_flags_genuine_capture_alongside_inner_rebind() -> None:
+    # `n` is genuinely late-bound; `a` is rebound by the inner generator. Only n.
+    src = (
+        "async def main():\n"
+        "    return await parallel(*[lambda: sum(a for a in range(n)) for n in nums])\n"
+    )
+    v = [x for x in lint_script(src) if x.rule == "late-binding-closure"]
+    assert v and "{n}" in v[0].detail
+
+
 def test_check_script_combines_safety_and_correctness() -> None:
     # Unsafe import (safety) + genuinely undefined name (correctness) together.
     src = (

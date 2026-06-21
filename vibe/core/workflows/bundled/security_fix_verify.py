@@ -196,7 +196,12 @@ async def main():
         phase="scope",
         schema=FILES_SCHEMA,
     )
-    files = (scope.get("files", []) if isinstance(scope, dict) else [])[:12]
+    if isinstance(scope, dict):
+        files = scope.get("files", [])[:12]
+        scope_failed = False
+    else:
+        files = []
+        scope_failed = True
 
     phase("regression-hunt")
     regress = []
@@ -216,22 +221,51 @@ async def main():
             if isinstance(r, dict)
         ]
 
-    # Reconcile in code — do NOT let a model decide the gate. Anything not
-    # provably resolved blocks; runtime-only claims block until proven.
+    # Reconcile in code — do NOT let a model decide the gate. Fail CLOSED:
+    # anything not provably resolved blocks, and runtime-only claims block until
+    # proven. The regression pass must be symmetric with the verify pass (which
+    # blocks on ANY non-`sound` verdict regardless of detail) — a regression
+    # verdict that is not an explicit `no_regressions` blocks even if its
+    # optional detail field is empty, and a result missing its verdict blocks.
     blocked = [r for r in verify_results if r["status"] == "blocked"]
+    regress_blocking = [
+        r for r in regress if r.get("verdict", "regression_found") != "no_regressions"
+    ]
+
+    _UNSPEC = "(unspecified runtime-only claim — prove before merge)"
     runtime_checks = []
     for r in verify_results:
         for p in r["panel"]:
-            if p.get("verdict") == "needs_runtime_check" and p.get("runtime_check_required"):
-                runtime_checks.append({"finding": r["id"], "check": p["runtime_check_required"]})
-    regressions = [r for r in regress if r.get("verdict") == "regression_found"]
+            if p.get("verdict") == "needs_runtime_check":
+                runtime_checks.append(
+                    {"finding": r["id"], "check": p.get("runtime_check_required") or _UNSPEC}
+                )
     for r in regress:
-        if r.get("verdict") == "needs_runtime_check" and r.get("runtime_check_required"):
-            runtime_checks.append({"concern": "regression", "check": r["runtime_check_required"]})
+        if r.get("verdict") == "needs_runtime_check":
+            runtime_checks.append(
+                {"concern": "regression", "check": r.get("runtime_check_required") or _UNSPEC}
+            )
+
+    regressions = [r for r in regress if r.get("verdict") == "regression_found"]
+
+    # A failed scope or a dropped regression agent is a hole in the safety net —
+    # block on it rather than silently skipping collateral-file coverage.
+    if scope_failed:
+        runtime_checks.append({
+            "concern": "scope",
+            "check": "scope agent failed to enumerate changed files; the "
+            "regression hunt did not run — re-run before merge.",
+        })
+    elif len(regress) < len(files):
+        runtime_checks.append({
+            "concern": "regression",
+            "check": f"{len(files) - len(regress)} regression agent(s) failed; "
+            "those files were not audited — re-run before merge.",
+        })
 
     gate = (
         "blocked"
-        if (blocked or regressions or runtime_checks)
+        if (blocked or regress_blocking or runtime_checks)
         else "ready_for_human_review"
     )
 
