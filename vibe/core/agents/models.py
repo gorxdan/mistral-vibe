@@ -137,10 +137,11 @@ CHAT_AGENT_TOOLS = ["grep", "read", "ask_user_question", "task"]
 def _plan_overrides() -> dict[str, Any]:
     plans_pattern = str(PLANS_DIR.path / "*")
     return {
+        "base_disabled": ["enter_plan_mode"],
         "tools": {
             "write_file": {"permission": "never", "allowlist": [plans_pattern]},
             "edit": {"permission": "never", "allowlist": [plans_pattern]},
-        }
+        },
     }
 
 

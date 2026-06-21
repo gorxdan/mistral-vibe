@@ -340,6 +340,10 @@ class TestAgentProfileOverrides:
         overrides = BUILTIN_AGENTS[BuiltinAgentName.DEFAULT].overrides
         assert "exit_plan_mode" in overrides.get("base_disabled", [])
 
+    def test_plan_agent_disables_enter_plan_mode(self) -> None:
+        overrides = BUILTIN_AGENTS[BuiltinAgentName.PLAN].overrides
+        assert "enter_plan_mode" in overrides.get("base_disabled", [])
+
     def test_auto_approve_agent_sets_bypass_tool_permissions(self) -> None:
         overrides = BUILTIN_AGENTS[BuiltinAgentName.AUTO_APPROVE].overrides
         assert overrides.get("bypass_tool_permissions") is True

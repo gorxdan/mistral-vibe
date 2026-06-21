@@ -222,6 +222,7 @@ def _run_programmatic_mode(
         *config.disabled_tools,
         "ask_user_question",
         "exit_plan_mode",
+        "enter_plan_mode",
     ]
     programmatic_prompt = args.prompt or stdin_prompt
     if not programmatic_prompt:
