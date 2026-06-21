@@ -1216,6 +1216,74 @@ async def test_default_isolated_executor_spawns_subprocess(
     assert removed == [fake_wt]  # worktree cleaned up
 
 
+async def test_isolated_executor_threads_requested_profile_not_auto_approve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: _spawn_isolated used to hardcode --agent auto-approve,
+    # discarding the requested profile. The cmd must carry the real agent.
+    from pathlib import Path
+
+    import vibe.core.worktree.ephemeral as eph
+
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
+
+    captured: list[Any] = []
+
+    class _FakeProc:
+        pid = 4242
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"out", b"")
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        captured.append(args)
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    await rt._default_isolated_executor(
+        "do it", "editor", "lbl", 40
+    )  # editor, NOT auto-approve
+    argv = captured[0]
+    # The requested profile appears right after --agent; auto-approve must not.
+    agent_idx = argv.index("--agent")
+    assert argv[agent_idx + 1] == "editor"
+    assert "auto-approve" not in argv
+
+
+async def test_validate_workflow_profile_rejects_editor_without_isolation() -> None:
+    # editor has an enabled_tools allowlist (read/grep/write_file/edit) yet
+    # writes files. The old 'no allowlist = isolate' proxy missed it; the
+    # generalized predicate must force it to isolation='worktree'.
+    from dataclasses import dataclass, field
+
+    from vibe.core.agents.models import AgentType
+    from vibe.core.tools.base import InvokeContext
+
+    @dataclass
+    class _Profile:
+        agent_type: AgentType = AgentType.SUBAGENT
+        overrides: dict = field(
+            default_factory=lambda: {
+                "enabled_tools": ["read", "grep", "write_file", "edit"]
+            }
+        )
+
+    class _Manager:
+        def get_agent(self, name: str) -> _Profile:
+            if name == "editor":
+                return _Profile()
+            raise ValueError(name)
+
+    ctx = InvokeContext(tool_call_id="wf-tool", agent_manager=_Manager())
+    rt = WorkflowRuntime(parent_context=ctx, max_agents=10, budget_total=1_000_000)
+    with pytest.raises(WorkflowError, match="isolation='worktree'"):
+        await rt.spawn_agent("refactor foo", agent="editor")
+
+
 async def test_default_isolated_executor_reaps_and_cleans_on_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

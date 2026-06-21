@@ -734,10 +734,10 @@ class WorkflowRuntime:
 
     def _validate_workflow_profile(self, agent: str, isolation: str | None) -> None:
         """Validate the requested agent profile for a workflow spawn: it must be a
-        subagent, and a full-tool profile (no enabled_tools allowlist, e.g.
-        'worker') must run isolated — its write tools would race the shared tree
-        and its ASK tools auto-skip headless. No-op when the profile can't be
-        resolved (e.g. no agent_manager in unit contexts).
+        subagent, and a write-capable profile (per profile_requires_isolation)
+        must run isolated — its write tools would race the shared tree and its
+        ASK tools auto-skip headless. No-op when the profile can't be resolved
+        (e.g. no agent_manager in unit contexts).
         """
         ctx = self.parent_context
         if not ctx or not ctx.agent_manager:
@@ -746,7 +746,7 @@ class WorkflowRuntime:
             profile = ctx.agent_manager.get_agent(agent)
         except ValueError:
             return
-        from vibe.core.agents.models import AgentType
+        from vibe.core.agents.models import AgentType, profile_requires_isolation
 
         agent_type = getattr(profile, "agent_type", AgentType.SUBAGENT)
         if agent_type != AgentType.SUBAGENT:
@@ -754,10 +754,9 @@ class WorkflowRuntime:
                 f"Agent '{agent}' is a {agent_type.value} agent. "
                 f"Only subagents can be used in workflows."
             )
-        overrides = getattr(profile, "overrides", {}) or {}
-        if isolation != "worktree" and not overrides.get("enabled_tools"):
+        if isolation != "worktree" and profile_requires_isolation(profile):
             raise WorkflowError(
-                f"Agent '{agent}' has no tool allowlist (full tools incl. write); "
+                f"Agent '{agent}' can write or run unrestricted shell; "
                 f"in a workflow it must run with isolation='worktree'."
             )
 
