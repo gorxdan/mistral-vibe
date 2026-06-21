@@ -163,6 +163,16 @@ class CommandRegistry:
                 description="Uninstall the Lean 4 agent",
                 handler="_uninstall_lean",
             ),
+            "lspstall": Command(
+                aliases=frozenset(["/lspstall"]),
+                description="Install the LSP code-intelligence feature",
+                handler="_install_lsp",
+            ),
+            "unlspstall": Command(
+                aliases=frozenset(["/unlspstall"]),
+                description="Uninstall the LSP feature",
+                handler="_uninstall_lsp",
+            ),
             "rewind": Command(
                 aliases=frozenset(["/rewind"]),
                 description="Rewind to a previous message",

@@ -173,6 +173,7 @@ from vibe.core.data_retention import DATA_RETENTION_MESSAGE
 from vibe.core.hooks.models import HookStartEvent
 from vibe.core.log_reader import LogReader
 from vibe.core.logger import logger
+from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
 from vibe.core.paths import HISTORY_FILE
 from vibe.core.rewind import RewindError
 from vibe.core.search import SearxngSettings, ensure_running, stop_all_started
@@ -540,9 +541,7 @@ class VibeApp(App):  # noqa: PLR0904
         self._background_registry = BackgroundRegistry()
         self._background_registry.attach_workflow_runner(lambda: self._workflow_runner)
         self._background_registry.attach_team_manager(lambda: self._team_manager)
-        self._background_registry.attach_loop_manager(
-            lambda: self._loop_runner.manager
-        )
+        self._background_registry.attach_loop_manager(lambda: self._loop_runner.manager)
         self.agent_loop.background_registry = self._background_registry
 
     def _configure_startup_options(self, startup: StartupOptions | None) -> None:
@@ -799,9 +798,7 @@ class VibeApp(App):  # noqa: PLR0904
                 if nudge:
                     self.notify(nudge, severity="warning", markup=False, timeout=15)
         except Exception:
-            logger.debug(
-                "bubblewrap install nudge skipped", exc_info=True
-            )
+            logger.debug("bubblewrap install nudge skipped", exc_info=True)
 
     async def _watch_init_completion(self) -> None:
         """Show 'Initializing' loading indicator until background init finishes."""
@@ -988,8 +985,7 @@ class VibeApp(App):  # noqa: PLR0904
         """Fold queued prompts into the running agent turn (double-enter)."""
         if await self._queue.inject_now():
             self.notify(
-                "Injected — the agent will pick this up at the next step.",
-                timeout=3,
+                "Injected — the agent will pick this up at the next step.", timeout=3
             )
 
     def _is_busy(self) -> bool:
@@ -1226,9 +1222,7 @@ class VibeApp(App):  # noqa: PLR0904
         await self._handle_voice_settings_closed(message.changes)
         await self._switch_to_input_app()
 
-    async def _handle_config_settings_closed(
-        self, changes: dict[str, Any]
-    ) -> None:
+    async def _handle_config_settings_closed(self, changes: dict[str, Any]) -> None:
         if changes:
             VibeConfig.save_updates(changes)
             await self._reload_config()
@@ -2711,6 +2705,10 @@ class VibeApp(App):  # noqa: PLR0904
             await self._resolve_plan()
             self._narrator_manager.sync()
 
+            setup_lsp_for_config(
+                base_config, lambda: self.agent_loop.base_config, Path.cwd()
+            )
+
             # Re-discover workflows so new/changed/removed scripts (and the
             # disable_workflows flag) take effect without a restart.
             self._workflow_manager = WorkflowManager(lambda: self.agent_loop.config)
@@ -2776,6 +2774,35 @@ class VibeApp(App):  # noqa: PLR0904
             return
         VibeConfig.save_updates({
             "installed_agents": [a for a in current if a != "lean"]
+        })
+        await self._reload_config()
+
+    async def _install_lsp(self, **kwargs: Any) -> None:
+        current = list(self.agent_loop.base_config.installed_components)
+        if "lsp" in current:
+            await self._mount_and_scroll(
+                UserCommandMessage("LSP feature is already installed.")
+            )
+            return
+        VibeConfig.save_updates({"installed_components": sorted([*current, "lsp"])})
+        await self._reload_config()
+        await self._mount_and_scroll(
+            UserCommandMessage(
+                "LSP feature installed. Add [[lsp_servers]] entries in config.toml "
+                "to configure language servers (e.g. pyright-langserver for Python). "
+                "The server binary must be on your PATH."
+            )
+        )
+
+    async def _uninstall_lsp(self, **kwargs: Any) -> None:
+        current = list(self.agent_loop.base_config.installed_components)
+        if "lsp" not in current:
+            await self._mount_and_scroll(
+                UserCommandMessage("LSP feature is not installed.")
+            )
+            return
+        VibeConfig.save_updates({
+            "installed_components": [c for c in current if c != "lsp"]
         })
         await self._reload_config()
 
@@ -2873,9 +2900,7 @@ class VibeApp(App):  # noqa: PLR0904
                 return
             stopped = await self._background_registry.stop(target)
             if stopped:
-                await self._mount_and_scroll(
-                    UserCommandMessage(f"Stopped `{target}`.")
-                )
+                await self._mount_and_scroll(UserCommandMessage(f"Stopped `{target}`."))
             else:
                 await self._mount_and_scroll(
                     ErrorMessage(
@@ -2907,7 +2932,10 @@ class VibeApp(App):  # noqa: PLR0904
             from vibe.core.hooks.models import HookSessionContext
 
             transcript = ""
-            if loop.session_logger.enabled and loop.session_logger.session_dir is not None:
+            if (
+                loop.session_logger.enabled
+                and loop.session_logger.session_dir is not None
+            ):
                 transcript = str(loop.session_logger.messages_filepath.resolve())
             return HookSessionContext(
                 session_id=loop.session_id,
@@ -2917,9 +2945,7 @@ class VibeApp(App):  # noqa: PLR0904
             )
 
         return TeamManager(
-            loop.session_id,
-            hooks_manager=loop.hooks_manager,
-            hook_context=hook_context,
+            loop.session_id, hooks_manager=loop.hooks_manager, hook_context=hook_context
         )
 
     async def _team_command(self, cmd_args: str = "", **kwargs: Any) -> None:  # noqa: PLR0912
@@ -3007,7 +3033,9 @@ class VibeApp(App):  # noqa: PLR0904
                         return
                     task = await self._team_manager.add_team_task(rest.strip())
                     await self._mount_and_scroll(
-                        UserCommandMessage(f"Created task `{task.id}`: {task.description}")
+                        UserCommandMessage(
+                            f"Created task `{task.id}`: {task.description}"
+                        )
                     )
                 elif sub == "done":
                     # `task done <id> [result]` — rest is "<id> [result words]".
@@ -3218,23 +3246,17 @@ class VibeApp(App):  # noqa: PLR0904
         out: list[dict] = []
         for entry in runs:
             status = entry.runtime.live_status()
-            out.append(
-                {
-                    "run_id": entry.run_id,
-                    "status": entry.status.value,
-                    "elapsed_s": round(entry.elapsed, 1),
-                    "name": None,
-                    **status,
-                }
-            )
+            out.append({
+                "run_id": entry.run_id,
+                "status": entry.status.value,
+                "elapsed_s": round(entry.elapsed, 1),
+                "name": None,
+                **status,
+            })
         return out
 
     def _workflow_results_for_tool(
-        self,
-        run_id: str,
-        *,
-        phase: str | None = None,
-        raw: bool = False,
+        self, run_id: str, *, phase: str | None = None, raw: bool = False
     ) -> dict[str, Any]:
         """Back the workflow_results model tool (i1): return the actual agent
         outputs for a run, tagged with completion status. Sources finalized
@@ -3275,14 +3297,12 @@ class VibeApp(App):  # noqa: PLR0904
         agent_results: list[dict[str, Any]] = []
         for p in run_phases:
             completed = sum(1 for r in p.agent_results if r.completed)
-            phase_summaries.append(
-                {
-                    "name": p.name,
-                    "agents": len(p.agent_results),
-                    "completed": completed,
-                    "failed": len(p.agent_results) - completed,
-                }
-            )
+            phase_summaries.append({
+                "name": p.name,
+                "agents": len(p.agent_results),
+                "completed": completed,
+                "failed": len(p.agent_results) - completed,
+            })
             for r in p.agent_results:
                 response: Any = r.response
                 if (
@@ -3291,22 +3311,19 @@ class VibeApp(App):  # noqa: PLR0904
                     and len(response) > cap
                 ):
                     response = (
-                        response[:cap]
-                        + "\n…(truncated; pass raw=true for full text)"
+                        response[:cap] + "\n…(truncated; pass raw=true for full text)"
                     )
-                agent_results.append(
-                    {
-                        "label": r.label,
-                        "agent": r.agent,
-                        "phase": p.name,
-                        "completed": r.completed,
-                        "response": response,
-                        "error": r.error,
-                        "tokens_in": r.tokens_in,
-                        "tokens_out": r.tokens_out,
-                        "schema_errors": list(r.schema_errors),
-                    }
-                )
+                agent_results.append({
+                    "label": r.label,
+                    "agent": r.agent,
+                    "phase": p.name,
+                    "completed": r.completed,
+                    "response": response,
+                    "error": r.error,
+                    "tokens_in": r.tokens_in,
+                    "tokens_out": r.tokens_out,
+                    "schema_errors": list(r.schema_errors),
+                })
 
         return {
             "run_id": run_id,
@@ -3380,9 +3397,7 @@ class VibeApp(App):  # noqa: PLR0904
         return {
             "stopped": False,
             "stopped_run_ids": [],
-            "message": (
-                f"Could not stop `{run_id}` — not found or already finished."
-            ),
+            "message": (f"Could not stop `{run_id}` — not found or already finished."),
         }
 
     def _team_dir_for_tool(self) -> str | None:
@@ -3553,14 +3568,12 @@ class VibeApp(App):  # noqa: PLR0904
                 resp = getattr(ar, "response", None)
                 if resp in (None, "", []):
                     continue
-                out.append(
-                    (
-                        getattr(ar, "label", None),
-                        resp,
-                        getattr(ar, "error", None),
-                        list(getattr(ar, "schema_errors", []) or []),
-                    )
-                )
+                out.append((
+                    getattr(ar, "label", None),
+                    resp,
+                    getattr(ar, "error", None),
+                    list(getattr(ar, "schema_errors", []) or []),
+                ))
         return out
 
     async def _persist_workflow_snapshots(self) -> None:
@@ -3794,6 +3807,7 @@ class VibeApp(App):  # noqa: PLR0904
             await self._background_registry.shutdown()
         except Exception as exc:
             logger.error("Failed to reap background processes on exit", exc_info=exc)
+        await teardown_lsp_async()
         self._log_reader.shutdown()
         await self._voice_manager.close()
         await self._narrator_manager.close()
