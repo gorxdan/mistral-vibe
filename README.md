@@ -683,6 +683,30 @@ Notes:
 - MCP tool names use underscores, e.g., `serena_list` not `serena.list`.
 - Regex patterns are matched against the full tool name using fullmatch.
 
+### Web Search Backend (SearXNG)
+
+The `web_search` tool uses Mistral's web search by default — no setup required. For a private, self-hosted backend you can point it at a local [SearXNG](https://github.com/searxng/searxng) instance instead. First-run onboarding offers this choice, and you can configure it directly under `[tools.web_search]`:
+
+```toml
+[tools.web_search]
+searxng_url = "http://localhost:8888"   # presence of this enables SearXNG
+searxng_manage = true                    # let vibe run the container (docker/podman)
+searxng_image = "searxng/searxng:latest"
+searxng_container_name = "vibe-searxng"
+searxng_port = 8888
+searxng_autostart = true                 # start at session start if down
+searxng_stop_on_exit = true              # stop on exit — only if vibe started it
+```
+
+Lifecycle, when `searxng_manage` is on and a container engine (`docker` or `podman`) is available:
+
+- **Session start** — if SearXNG is configured but not reachable, vibe starts the container (creating it on first use) and stops it on exit, but only if vibe was the one that started it. A container you started yourself is left untouched.
+- **During a search** — if the instance is down, vibe prompts you to start it, fall back to Mistral for that search, or use Mistral for the rest of the session.
+
+Set `searxng_manage = false` to point at a SearXNG instance you manage yourself (e.g. a remote one); vibe will then only query it, never start or stop it. The `SEARXNG_URL` environment variable is also honored and takes the place of `searxng_url`.
+
+See [docs/searxng-setup.md](docs/searxng-setup.md) for details.
+
 ### MCP Server Configuration
 
 You can configure MCP (Model Context Protocol) servers to extend Vibe's capabilities. Add MCP server configurations under the `mcp_servers` section:

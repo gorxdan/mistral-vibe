@@ -22,6 +22,7 @@ from vibe.setup.onboarding.screens import (
     CustomProviderScreen,
     ProviderSelectionScreen,
     ThemeSelectionScreen,
+    WebSearchScreen,
     WelcomeScreen,
 )
 from vibe.setup.onboarding.screens.browser_sign_in import (
@@ -68,7 +69,10 @@ class OnboardingApp(App[str | None]):
 
         self.install_screen(WelcomeScreen(next_screen="theme_selection"), "welcome")
         self.install_screen(
-            ThemeSelectionScreen(next_screen="provider_selection"), "theme_selection"
+            ThemeSelectionScreen(next_screen="web_search"), "theme_selection"
+        )
+        self.install_screen(
+            WebSearchScreen(next_screen="provider_selection"), "web_search"
         )
         self.install_screen(
             ProviderSelectionScreen(resolved_provider_name=self._provider.name),

@@ -6,6 +6,7 @@ from vibe.setup.onboarding.screens.browser_sign_in import BrowserSignInScreen
 from vibe.setup.onboarding.screens.custom_provider import CustomProviderScreen
 from vibe.setup.onboarding.screens.provider_selection import ProviderSelectionScreen
 from vibe.setup.onboarding.screens.theme_selection import ThemeSelectionScreen
+from vibe.setup.onboarding.screens.web_search import WebSearchScreen
 from vibe.setup.onboarding.screens.welcome import WelcomeScreen
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "CustomProviderScreen",
     "ProviderSelectionScreen",
     "ThemeSelectionScreen",
+    "WebSearchScreen",
     "WelcomeScreen",
 ]

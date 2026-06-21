@@ -175,6 +175,11 @@ from vibe.core.log_reader import LogReader
 from vibe.core.logger import logger
 from vibe.core.paths import HISTORY_FILE
 from vibe.core.rewind import RewindError
+from vibe.core.search.searxng import (
+    SearxngSettings,
+    ensure_running,
+    stop_all_started,
+)
 from vibe.core.session.image_snapshot import ImageSnapshotError, snapshot_image
 from vibe.core.session.resume_sessions import (
     RemoteResumeResult,
@@ -757,6 +762,7 @@ class VibeApp(App):  # noqa: PLR0904
         self._show_config_issues()
 
         self.run_worker(self._watch_init_completion(), exclusive=False)
+        self.run_worker(self._searxng_autostart(), exclusive=False)
 
         if self._show_resume_picker:
             self.run_worker(self._show_session_picker(), exclusive=False)
@@ -3784,6 +3790,7 @@ class VibeApp(App):  # noqa: PLR0904
         await self._loop_runner.stop()
         await self._workflow_runner.stop_all()
         await self._stop_teams()
+        await self._searxng_teardown()
         # Reap backgrounded processes so a forgotten dev server doesn't orphan
         # to init when vibe exits. Teams/workflows are already reaped above.
         try:
@@ -3801,6 +3808,45 @@ class VibeApp(App):  # noqa: PLR0904
             logger.error("Failed to close telemetry client during exit", exc_info=exc)
         finally:
             self.exit(result=self._get_session_resume_info())
+
+    def _searxng_settings(self) -> SearxngSettings:
+        return SearxngSettings.from_mapping(
+            self.config.tools.get("web_search", {}),
+            env_url=os.getenv("SEARXNG_URL"),
+        )
+
+    async def _searxng_autostart(self) -> None:
+        """Bring a configured-but-down SearXNG up at session start.
+
+        No-op for the common case (no ``searxng_url`` set) so Mistral-only users
+        pay nothing. Failures are logged, never fatal to the session.
+        """
+        try:
+            settings = self._searxng_settings()
+            if not (settings.url and settings.manage and settings.autostart):
+                return
+            outcome = await ensure_running(settings)
+            if outcome.started:
+                self.notify(
+                    f"Started local SearXNG ({settings.effective_url})",
+                    markup=False,
+                )
+            elif outcome.attempted and not outcome.ok:
+                self.notify(
+                    f"SearXNG unavailable: {outcome.detail}",
+                    severity="warning",
+                    markup=False,
+                )
+        except Exception as exc:
+            logger.warning("SearXNG autostart failed", exc_info=exc)
+
+    async def _searxng_teardown(self) -> None:
+        """Stop the SearXNG container on exit, but only if vibe started it."""
+        try:
+            settings = self._searxng_settings()
+            await stop_all_started(enabled=settings.stop_on_exit)
+        except Exception as exc:
+            logger.warning("SearXNG teardown failed", exc_info=exc)
 
     def _make_default_voice_manager(self) -> VoiceManager:
         try:
@@ -4598,6 +4644,7 @@ class VibeApp(App):  # noqa: PLR0904
         # Reap trusted teammate subprocesses on force-quit too — otherwise the
         # dominant TUI exit path orphans them (only graceful /exit cleaned up).
         await self._stop_teams()
+        await self._searxng_teardown()
 
         self._log_reader.shutdown()
         self._narrator_manager.cancel()

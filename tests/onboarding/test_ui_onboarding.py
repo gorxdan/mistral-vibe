@@ -55,6 +55,7 @@ from vibe.setup.onboarding.screens.browser_sign_in import (
 from vibe.setup.onboarding.screens.custom_provider import CustomProviderScreen
 from vibe.setup.onboarding.screens.provider_selection import ProviderSelectionScreen
 from vibe.setup.onboarding.screens.theme_selection import THEMES, ThemeSelectionScreen
+from vibe.setup.onboarding.screens.web_search import WebSearchScreen
 
 CONSOLE_URL = "https://console.mistral.ai"
 BROWSER_AUTH_API_URL = "https://console.mistral.ai/api"
@@ -254,6 +255,13 @@ async def _pass_welcome_screen(pilot: Pilot) -> None:
 
 
 async def _pass_theme_selection_screen(pilot: Pilot) -> None:
+    await pilot.press("enter")
+    await _wait_for(lambda: isinstance(pilot.app.screen, WebSearchScreen), pilot)
+    await _pass_web_search_screen(pilot)
+
+
+async def _pass_web_search_screen(pilot: Pilot) -> None:
+    # Default selection is Mistral web search, which persists nothing.
     await pilot.press("enter")
     await _wait_for(
         lambda: isinstance(pilot.app.screen, ProviderSelectionScreen), pilot
@@ -1173,7 +1181,8 @@ async def test_ui_can_pick_a_theme_and_saves_selection() -> None:
         assert app.theme == target_theme
 
         await pilot.press("enter")
-        await _wait_for(lambda: isinstance(app.screen, ProviderSelectionScreen), pilot)
+        await _wait_for(lambda: isinstance(app.screen, WebSearchScreen), pilot)
+        await _pass_web_search_screen(pilot)
         await _confirm_default_provider(pilot)
         await _wait_for(lambda: isinstance(app.screen, AuthMethodScreen), pilot)
 
@@ -1182,6 +1191,42 @@ async def test_ui_can_pick_a_theme_and_saves_selection() -> None:
     config_contents = config_path.read_text(encoding="utf-8")
     config_dict = tomllib.loads(config_contents)
     assert config_dict.get("theme") == target_theme
+
+
+@pytest.mark.asyncio
+async def test_ui_web_search_searxng_choice_persists_config() -> None:
+    app = OnboardingApp()
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await pilot.press("enter")
+        await _wait_for(lambda: isinstance(app.screen, WebSearchScreen), pilot)
+        # Move to "Local SearXNG" (second option) and confirm.
+        await pilot.press("down", "enter")
+        await _wait_for(lambda: isinstance(app.screen, ProviderSelectionScreen), pilot)
+
+    config_path = VIBE_HOME.path / "config.toml"
+    config_dict = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    web_search = config_dict.get("tools", {}).get("web_search", {})
+    assert web_search.get("searxng_url") == "http://localhost:8888"
+    assert web_search.get("searxng_manage") is True
+    assert web_search.get("searxng_autostart") is True
+
+
+@pytest.mark.asyncio
+async def test_ui_web_search_mistral_choice_persists_nothing() -> None:
+    app = OnboardingApp()
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await pilot.press("enter")
+        await _wait_for(lambda: isinstance(app.screen, WebSearchScreen), pilot)
+        # Default selection is Mistral; confirm without moving.
+        await _pass_web_search_screen(pilot)
+
+    config_path = VIBE_HOME.path / "config.toml"
+    config_dict = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert "web_search" not in config_dict.get("tools", {})
 
 
 def test_api_key_screen_falls_back_to_mistral_for_provider_without_env_key() -> None:

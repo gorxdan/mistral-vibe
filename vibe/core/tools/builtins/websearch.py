@@ -16,6 +16,16 @@ from mistralai.client.models import (
 from pydantic import BaseModel, Field
 
 from vibe.core.config import DEFAULT_MISTRAL_API_ENV_KEY, VibeConfig
+from vibe.core.search.searxng import (
+    DEFAULT_CONTAINER_NAME as DEFAULT_SEARXNG_CONTAINER_NAME,
+    DEFAULT_IMAGE as DEFAULT_SEARXNG_IMAGE,
+    DEFAULT_PORT as DEFAULT_SEARXNG_PORT,
+    SearxngSettings,
+    detect_engine,
+    ensure_running,
+    session_skipped,
+    skip_session,
+)
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -24,12 +34,22 @@ from vibe.core.tools.base import (
     ToolError,
     ToolPermission,
 )
+from vibe.core.tools.builtins.ask_user_question import (
+    AskUserQuestionArgs,
+    AskUserQuestionResult,
+    Choice,
+    Question,
+)
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from vibe.core.types import ToolStreamEvent
 from vibe.core.utils.http import build_ssl_context, get_server_url_from_api_base
 
 if TYPE_CHECKING:
     from vibe.core.types import ToolCallEvent, ToolResultEvent
+
+_DOWN_CHOICE_START = "Start SearXNG"
+_DOWN_CHOICE_MISTRAL_ONCE = "Use Mistral this time"
+_DOWN_CHOICE_MISTRAL_STOP = "Use Mistral, stop asking"
 
 
 class WebSearchSource(BaseModel):
@@ -60,6 +80,30 @@ class WebSearchConfig(BaseToolConfig):
     )
     searxng_timeout: int = Field(
         default=30, description="HTTP timeout in seconds for SearXNG requests."
+    )
+    searxng_manage: bool = Field(
+        default=True,
+        description="Let vibe start/stop a local SearXNG container (docker/podman).",
+    )
+    searxng_image: str = Field(
+        default=DEFAULT_SEARXNG_IMAGE,
+        description="Container image used when vibe manages SearXNG.",
+    )
+    searxng_container_name: str = Field(
+        default=DEFAULT_SEARXNG_CONTAINER_NAME,
+        description="Container name used when vibe manages SearXNG.",
+    )
+    searxng_port: int = Field(
+        default=DEFAULT_SEARXNG_PORT,
+        description="Host port that the managed SearXNG container is exposed on.",
+    )
+    searxng_autostart: bool = Field(
+        default=True,
+        description="Start SearXNG at session start if it is configured but down.",
+    )
+    searxng_stop_on_exit: bool = Field(
+        default=True,
+        description="Stop the SearXNG container on exit, but only if vibe started it.",
     )
 
 
@@ -97,10 +141,13 @@ class WebSearch(
         self, args: WebSearchArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | WebSearchResult, None]:
         config = self._resolve_config(ctx)
-        searxng_url = self.config.searxng_url or os.getenv("SEARXNG_URL")
-        if searxng_url:
-            yield await self._run_searxng(args, searxng_url)
-            return
+        settings = self._searxng_settings()
+        if settings.url and not session_skipped():
+            result = await self._run_searxng(args, settings, ctx)
+            if result is not None:
+                yield result
+                return
+            # result is None: the user opted to use Mistral for this search.
 
         api_key_env_var = self._api_key_env_var(config)
         api_key = os.getenv(api_key_env_var)
@@ -186,10 +233,127 @@ class WebSearch(
             query=query, answer=answer, sources=list(sources.values())
         )
 
-    async def _run_searxng(self, args: WebSearchArgs, searxng_url: str) -> WebSearchResult:
+    def _searxng_settings(self) -> SearxngSettings:
+        return SearxngSettings(
+            url=self.config.searxng_url or os.getenv("SEARXNG_URL"),
+            manage=self.config.searxng_manage,
+            image=self.config.searxng_image,
+            container_name=self.config.searxng_container_name,
+            port=self.config.searxng_port,
+            autostart=self.config.searxng_autostart,
+            stop_on_exit=self.config.searxng_stop_on_exit,
+            health_timeout=self.config.searxng_timeout,
+        )
+
+    async def _run_searxng(
+        self, args: WebSearchArgs, settings: SearxngSettings, ctx: InvokeContext | None
+    ) -> WebSearchResult | None:
+        """Query SearXNG, recovering from a down instance.
+
+        Returns the result, or ``None`` when the user opts to fall back to
+        Mistral for this search. Raises ``ToolError`` only when SearXNG is
+        unreachable and no recovery is possible (e.g. non-interactive).
+        """
+        assert settings.url is not None
+        try:
+            return await self._searxng_request(args, settings.url)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            down_detail = str(exc)
+
+        if ctx is None or ctx.user_input_callback is None:
+            raise ToolError(self._searxng_down_message(settings, down_detail))
+
+        return await self._handle_searxng_down(args, settings, ctx)
+
+    async def _handle_searxng_down(
+        self, args: WebSearchArgs, settings: SearxngSettings, ctx: InvokeContext
+    ) -> WebSearchResult | None:
+        engine = detect_engine() if settings.manage else None
+        choice = await self._prompt_searxng_down(ctx, settings, engine)
+
+        if choice == _DOWN_CHOICE_START and engine is not None:
+            outcome = await ensure_running(settings, engine=engine)
+            if not outcome.ok:
+                raise ToolError(f"Could not start SearXNG: {outcome.detail}.")
+            assert settings.url is not None
+            try:
+                return await self._searxng_request(args, settings.url)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                # The container came up healthy but the search still couldn't
+                # connect (race / instant flap). Surface an actionable error
+                # rather than leaking the raw transport exception.
+                raise ToolError(self._searxng_down_message(settings, str(exc))) from exc
+
+        if choice == _DOWN_CHOICE_MISTRAL_STOP:
+            skip_session()
+
+        # "Use Mistral this time", "stop asking", or cancelled: fall back.
+        return None
+
+    async def _prompt_searxng_down(
+        self, ctx: InvokeContext, settings: SearxngSettings, engine: str | None
+    ) -> str:
+        options: list[Choice] = []
+        if engine is not None:
+            options.append(
+                Choice(
+                    label=_DOWN_CHOICE_START,
+                    description=f"Launch the {engine} container and retry the search.",
+                )
+            )
+        options.append(
+            Choice(
+                label=_DOWN_CHOICE_MISTRAL_ONCE,
+                description="Run this one search via Mistral web search.",
+            )
+        )
+        options.append(
+            Choice(
+                label=_DOWN_CHOICE_MISTRAL_STOP,
+                description="Use Mistral for the rest of this session.",
+            )
+        )
+
+        # Only blame a missing engine when vibe is actually meant to manage the
+        # container; with searxng_manage=false the missing Start option is the
+        # user's own choice, not a missing docker/podman.
+        footer: str | None = None
+        if engine is None and settings.manage:
+            footer = "No docker/podman found — install one to let vibe start SearXNG."
+        question = Question(
+            question=f"SearXNG ({settings.url}) is not responding. What next?",
+            header="SearXNG",
+            options=options,
+            hide_other=True,
+        )
+        assert ctx.user_input_callback is not None
+        result = await ctx.user_input_callback(
+            AskUserQuestionArgs(questions=[question], footer_note=footer)
+        )
+        if (
+            isinstance(result, AskUserQuestionResult)
+            and not result.cancelled
+            and result.answers
+        ):
+            return result.answers[0].answer
+        return _DOWN_CHOICE_MISTRAL_ONCE
+
+    def _searxng_down_message(self, settings: SearxngSettings, detail: str) -> str:
+        engine = detect_engine() if settings.manage else None
+        return (
+            f"SearXNG request failed: {settings.url} is not responding ({detail}). "
+            f"Start it with: {settings.start_command(engine)} — or unset "
+            "tools.web_search.searxng_url to use Mistral web search."
+        )
+
+    async def _searxng_request(
+        self, args: WebSearchArgs, searxng_url: str
+    ) -> WebSearchResult:
         ssl_context = build_ssl_context()
         async with httpx.AsyncClient(
-            follow_redirects=True, verify=ssl_context, timeout=self.config.searxng_timeout
+            follow_redirects=True,
+            verify=ssl_context,
+            timeout=self.config.searxng_timeout,
         ) as client:
             try:
                 response = await client.get(
@@ -197,6 +361,13 @@ class WebSearch(
                     params={"q": args.query, "format": "json"},
                 )
                 response.raise_for_status()
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                # Surfaced to the caller as "SearXNG is down" for recovery.
+                raise
+            except httpx.InvalidURL as exc:
+                # InvalidURL is not an HTTPError; classify it explicitly so a
+                # malformed searxng_url still surfaces as a ToolError.
+                raise ToolError(f"Invalid SearXNG URL: {exc}") from exc
             except httpx.HTTPError as exc:
                 raise ToolError(f"SearXNG request failed: {exc}") from exc
 
@@ -208,9 +379,7 @@ class WebSearch(
             results = data.get("results", [])
             if not results:
                 return WebSearchResult(
-                    query=args.query,
-                    answer="No results found.",
-                    sources=[],
+                    query=args.query, answer="No results found.", sources=[]
                 )
 
             parts: list[str] = []
@@ -230,9 +399,7 @@ class WebSearch(
 
             answer = "\n".join(parts).strip()
             return WebSearchResult(
-                query=args.query,
-                answer=answer,
-                sources=list(sources.values()),
+                query=args.query, answer=answer, sources=list(sources.values())
             )
 
     @classmethod
