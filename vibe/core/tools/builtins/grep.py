@@ -211,8 +211,10 @@ class Grep(
 ):
     read_only: ClassVar[bool] = True
     description: ClassVar[str] = (
-        "Recursively search files for a regex pattern using ripgrep (rg) or grep. "
-        "Respects .gitignore and .codeignore files by default when using ripgrep."
+        "Recursively search file contents for a regex pattern (ripgrep-backed, "
+        ".gitignore-aware). Use for text-level questions — error messages, log "
+        "lines, string literals, config values. For symbol-level questions "
+        "(definitions, references, type info) prefer the `lsp` tool."
     )
 
     def resolve_permission(self, args: GrepArgs) -> PermissionContext | None:
