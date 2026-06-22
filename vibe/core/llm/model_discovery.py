@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-import logging
 import math
 import os
 from typing import TYPE_CHECKING, Any
@@ -27,13 +26,12 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from vibe.core.config import ModelConfig, ProviderConfig
+from vibe.core.logger import logger
 from vibe.core.types import Backend
 from vibe.core.utils.http import build_ssl_context
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_DISCOVERY_TIMEOUT = 2.0
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"

@@ -50,7 +50,7 @@ class _FakeWorkflowRunner:
         self.paused: list[str] = []
         self.unpaused: list[str] = []
 
-    def _find_run(self, run_id: str) -> _FakeRunEntry | None:
+    def find_run(self, run_id: str) -> _FakeRunEntry | None:
         return next((r for r in self.runs if r.run_id == run_id), None)
 
     def pause(self, run_id: str) -> bool:

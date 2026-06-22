@@ -1,14 +1,7 @@
 from __future__ import annotations
 
-import logging
-
-from vibe.core.hooks._handler import (
-    HookExternalAttrs,
-    HookHandler,
-    HookRetryState,
-    _append_text,
-    _HookAction,
-)
+from vibe.core.hooks._handler import HookRetryState, _append_text
+from vibe.core.hooks._port import HookExternalAttrs, HookHandler, _HookAction
 from vibe.core.hooks.config import HookConfig
 from vibe.core.hooks.models import (
     AfterToolInvocation,
@@ -18,9 +11,8 @@ from vibe.core.hooks.models import (
     HookStructuredResponse,
     HookTextReplacement,
 )
+from vibe.core.logger import logger
 from vibe.core.utils.matching import name_matches
-
-logger = logging.getLogger(__name__)
 
 
 def _as_after(invocation: HookInvocation) -> AfterToolInvocation:
@@ -30,7 +22,6 @@ def _as_after(invocation: HookInvocation) -> AfterToolInvocation:
             f" {type(invocation).__name__}"
         )
     return invocation
-
 
 class AfterToolHandler(HookHandler):
     """Deny → replace ``tool_output_text`` with ``reason`` (then append

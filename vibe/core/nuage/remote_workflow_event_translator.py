@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator, Callable
 import json
 from typing import Any, cast
 
-from jsonpatch import JsonPatch, JsonPatchException  # type: ignore[import-untyped]
+from jsonpatch import JsonPatch, JsonPatchException
 from pydantic import BaseModel, ValidationError
 
 from vibe.core.logger import logger
@@ -149,7 +149,8 @@ class _RemoteTool(
         self, args: RemoteToolArgs, ctx: Any = None
     ) -> AsyncGenerator[ToolStreamEvent | RemoteToolResult, None]:
         raise ToolError("Remote workflow tools cannot be invoked locally")
-        yield  # type: ignore[misc]
+        if False:  # pragma: no cover
+            yield
 
 
 _REMOTE_TOOL_CACHE: dict[str, type[_RemoteTool]] = {}

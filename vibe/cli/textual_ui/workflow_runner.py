@@ -195,7 +195,7 @@ class WorkflowRunner:
         runtime_run.status = WorkflowStatus.STOPPED
         runtime_run.finished_at = time.monotonic()
         try:
-            runtime_run.budget = entry.runtime._budget.snapshot()  # type: ignore[attr-defined]
+            runtime_run.budget = entry.runtime.budget_snapshot()
         except Exception:
             runtime_run.budget = BudgetSnapshot(total=None, reserved=0, spent=0)
         return WorkflowResult(
@@ -244,7 +244,7 @@ class WorkflowRunner:
                     logger.warning("Failed to persist workflow snapshot", exc_info=True)
 
     def get_snapshot(self, run_id: str) -> WorkflowRunSnapshot | None:
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None:
             return None
         return entry.runtime.snapshot(
@@ -298,7 +298,7 @@ class WorkflowRunner:
         return sink
 
     async def stop(self, run_id: str) -> bool:
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None or entry.task is None:
             return False
         if entry.task.done():
@@ -315,7 +315,7 @@ class WorkflowRunner:
 
         Returns False if the run is missing or already finalized.
         """
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None or entry.result is not None:
             return False
         entry.runtime.pause()
@@ -323,7 +323,7 @@ class WorkflowRunner:
 
     def unpause(self, run_id: str) -> bool:
         """Resume a paused run. Returns False if the run is missing/finished."""
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None or entry.result is not None:
             return False
         entry.runtime.unpause()
@@ -336,7 +336,7 @@ class WorkflowRunner:
         The run continues with the remaining agents; the cancelled agent is
         recorded as failed.
         """
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None or entry.result is not None:
             return False
         return entry.runtime.cancel_agent(agent_id)
@@ -350,7 +350,7 @@ class WorkflowRunner:
                 except asyncio.CancelledError:
                     pass
 
-    def _find_run(self, run_id: str) -> WorkflowRunEntry | None:
+    def find_run(self, run_id: str) -> WorkflowRunEntry | None:
         return next((r for r in self._runs if r.run_id == run_id), None)
 
     def _prune_finished_runs(self) -> None:

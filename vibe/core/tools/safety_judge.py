@@ -21,15 +21,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 
 from pydantic import BaseModel
 
 from vibe.core.config import ModelConfig, ProviderConfig, SafetyJudgeConfig
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
+from vibe.core.logger import logger
 from vibe.core.types import LLMMessage, Role
-
-logger = logging.getLogger(__name__)
 
 # Shared across both judge prompts: the injection-defense preamble and the
 # JSON-only output contract. Factored so the two stay in lockstep; only the
@@ -48,7 +46,6 @@ _JSON_FOOTER = (
     'When in doubt, respond {"safe": false, ...}.'
 )
 
-
 _SYSTEM_PROMPT = f"""\
 {_INJECTION_GUARD}
 
@@ -65,7 +62,6 @@ Rule UNSAFE if the call could plausibly:
 Rule SAFE only for clearly benign, local, read-only or easily-reversible operations (inspecting files, listing, searching, status checks).
 
 {_JSON_FOOTER}"""
-
 
 _WORKFLOW_SYSTEM_PROMPT = f"""\
 {_INJECTION_GUARD}
@@ -87,7 +83,6 @@ Rule SAFE for scripts whose agents are read-only/explore profiles, or whose muta
 
 {_JSON_FOOTER}
 Name the risky surface in your reason."""
-
 
 # Per-tool system prompts. Tools whose argument is a workflow script get a
 # prompt that reasons about the script's planned agent surface instead of

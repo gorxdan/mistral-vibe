@@ -792,7 +792,7 @@ class BackgroundRegistry:
         runner = self._workflow_runner_ref()
         if runner is None or not task_id.startswith("wf-"):
             return False
-        entry = runner._find_run(task_id)  # type: ignore[attr-defined]
+        entry = runner.find_run(task_id)
         if entry is None or getattr(entry, "result", None) is not None:
             return False
         if getattr(entry, "is_paused", False):

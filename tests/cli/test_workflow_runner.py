@@ -441,7 +441,7 @@ async def test_finished_runs_are_capped(monkeypatch: pytest.MonkeyPatch) -> None
         rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_concurrent=2)
         rid = runner.launch(script, runtime=rt)
         launched.append(rid)
-        await runner._find_run(rid).task  # finish before the next launch
+        await runner.find_run(rid).task  # finish before the next launch
 
     ids = [r.run_id for r in runner.runs]
     assert launched == ["wf-1", "wf-2", "wf-3", "wf-4", "wf-5", "wf-6"]

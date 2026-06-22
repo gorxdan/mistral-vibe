@@ -13,6 +13,8 @@ class _FakeMgr:
         self.config_file = config_file
         self.user_config_file = user_config_file
 
+    trusted_workdir: Path | None = None
+
 
 def test_deep_merge_override_wins_per_key() -> None:
     base = {"a": 1, "b": {"x": 1, "y": 2}, "c": [1, 2]}

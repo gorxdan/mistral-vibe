@@ -25,6 +25,7 @@ from git.exc import GitCommandError
 from vibe.core.config import WorktreeConfig
 from vibe.core.logger import logger
 from vibe.core.trusted_folders import trusted_folders_manager
+from vibe.core.utils.io import read_safe
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
@@ -444,7 +445,7 @@ class WorktreeManager:
         git_dir = repo_root / ".git"
         # In a worktree, .git is a file pointing to the real git dir.
         if git_dir.is_file():
-            content = git_dir.read_text().strip()
+            content = read_safe(git_dir).text.strip()
             if content.startswith("gitdir:"):
                 git_dir = Path(content.split("gitdir:", 1)[1].strip())
                 if not git_dir.is_absolute():

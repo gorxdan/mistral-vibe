@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 import tomllib
 from typing import Any
 
 import tomli_w
 
-logger = logging.getLogger(__name__)
+from vibe.core.logger import logger
 
 
 def read_cache(cache_path: Path) -> dict[str, Any]:

@@ -11,12 +11,13 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from pydantic import BaseModel
 
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
+from vibe.core.workflows._port import AgentLoopFactory
 from vibe.core.workflows.budget import (
     Budget,
     BudgetExhausted,
@@ -31,6 +32,7 @@ from vibe.core.workflows.contract import (
 )
 from vibe.core.workflows.models import (
     AgentResult,
+    BudgetSnapshot,
     CachedAgentResult,
     PhaseReport,
     SchemaValidationFailure,
@@ -638,10 +640,22 @@ def _maybe_reap_isolated_worktree(
         result.branch = wt.branch
 
 
-class AgentLoopFactory(Protocol):
-    def __call__(
-        self, prompt: str, *, agent: str, parent_context: InvokeContext | None
-    ) -> AgentLoop: ...
+@dataclass(frozen=True)
+class _FinalizeArgs:
+    prompt: str
+    response: str | dict[str, Any]
+    label: str | None
+    phase: str | None
+    tokens_in: int
+    tokens_out: int
+    reservation: Reservation
+    completed: bool
+    error: str | None
+    cache_key: str
+    agent: str
+    model: str | None = None
+    live: _LiveAgent | None = None
+    schema_errors: list[str] | None = None
 
 
 @dataclass
@@ -697,6 +711,9 @@ class WorkflowRuntime:
         self._budget = Budget(total=self.budget_total)
         self._run_gate = asyncio.Event()
         self._run_gate.set()
+
+    def budget_snapshot(self) -> BudgetSnapshot:
+        return self._budget.snapshot()
 
     def pause(self) -> None:
         """Pause the run: in-flight agents continue, new agents block."""
@@ -1112,6 +1129,7 @@ class WorkflowRuntime:
 
             if schema is None:
                 self._finalize_agent(
+                    _FinalizeArgs(
                     prompt=prompt,
                     response=response_text,
                     label=label,
@@ -1125,6 +1143,8 @@ class WorkflowRuntime:
                     agent=agent,
                     model=model,
                     live=live,
+                
+                    )
                 )
                 return response_text
 
@@ -1138,6 +1158,7 @@ class WorkflowRuntime:
                 errors = validate_against_schema(parsed, schema)
                 if not errors:
                     self._finalize_agent(
+                        _FinalizeArgs(
                         prompt=prompt,
                         response=parsed,
                         label=label,
@@ -1151,6 +1172,8 @@ class WorkflowRuntime:
                         agent=agent,
                         model=model,
                         live=live,
+                    
+                        )
                     )
                     return parsed
                 last_errors = [str(e) for e in errors]
@@ -1170,6 +1193,7 @@ class WorkflowRuntime:
             # means act() raised. Surface the real error instead of a misleading
             # SchemaValidationError.
             self._finalize_agent(
+                _FinalizeArgs(
                 prompt=prompt,
                 response="".join(accumulated),
                 label=label,
@@ -1183,6 +1207,8 @@ class WorkflowRuntime:
                 agent=agent,
                 model=model,
                 live=live,
+            
+                )
             )
             # A targeted cancel is an expected outcome, not a failure to
             # surface: the agent is already recorded as failed above, so return
@@ -1198,6 +1224,7 @@ class WorkflowRuntime:
             # schemaless path above): the agent crashed, it didn't produce
             # invalid output.
             self._finalize_agent(
+                _FinalizeArgs(
                 prompt=prompt,
                 response="".join(accumulated),
                 label=label,
@@ -1211,6 +1238,8 @@ class WorkflowRuntime:
                 agent=agent,
                 model=model,
                 live=live,
+            
+                )
             )
             if live.cancel_requested:
                 return "".join(accumulated)
@@ -1224,6 +1253,7 @@ class WorkflowRuntime:
             f"Schema validation failed after {self.schema_retries + 1} attempts"
         )
         self._finalize_agent(
+            _FinalizeArgs(
             prompt=prompt,
             response="".join(accumulated),
             label=label,
@@ -1238,6 +1268,8 @@ class WorkflowRuntime:
             model=model,
             live=live,
             schema_errors=list(last_errors),
+        
+            )
         )
         if self.strict_schema:
             raise SchemaValidationError(
@@ -1339,61 +1371,44 @@ class WorkflowRuntime:
                 ) * m.output_price
         return 0.0
 
-    def _finalize_agent(  # noqa: PLR0913
-        self,
-        *,
-        prompt: str,
-        response: str | dict[str, Any],
-        label: str | None,
-        phase: str | None,
-        tokens_in: int,
-        tokens_out: int,
-        reservation: Reservation,
-        completed: bool,
-        error: str | None,
-        cache_key: str,
-        agent: str,
-        model: str | None = None,
-        live: _LiveAgent | None = None,
-        schema_errors: list[str] | None = None,
-    ) -> None:
-        self._budget.reconcile(reservation, tokens_in, tokens_out)
+    def _finalize_agent(self, args: _FinalizeArgs) -> None:
+        self._budget.reconcile(args.reservation, args.tokens_in, args.tokens_out)
 
-        cost = self._compute_cost(tokens_in, tokens_out, model)
-        schema_errs = schema_errors or []
+        cost = self._compute_cost(args.tokens_in, args.tokens_out, args.model)
+        schema_errs = args.schema_errors or []
         result = AgentResult(
-            label=label,
-            phase=phase,
-            agent=agent,
-            prompt=prompt,
-            response=response,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
+            label=args.label,
+            phase=args.phase,
+            agent=args.agent,
+            prompt=args.prompt,
+            response=args.response,
+            tokens_in=args.tokens_in,
+            tokens_out=args.tokens_out,
             cost=cost,
-            completed=completed,
-            error=error,
+            completed=args.completed,
+            error=args.error,
             schema_errors=schema_errs,
         )
         self._record_agent_result(result)
         # Retire the live tracker the moment its result is recorded, so an agent
         # is reflected as live XOR finalized, never both (which would double its
         # tokens in the live view + finalized phases).
-        if live is not None:
+        if args.live is not None:
             self._retire_live(
-                live, status="completed" if completed else "failed", error=error
+                args.live, status="completed" if args.completed else "failed", error=args.error
             )
 
-        if completed:
-            self._cache[cache_key] = CachedAgentResult(
-                prompt_hash=cache_key,
-                agent=agent,
-                label=label,
-                phase=phase,
-                response=response,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                completed=completed,
-                error=error,
+        if args.completed:
+            self._cache[args.cache_key] = CachedAgentResult(
+                prompt_hash=args.cache_key,
+                agent=args.agent,
+                label=args.label,
+                phase=args.phase,
+                response=args.response,
+                tokens_in=args.tokens_in,
+                tokens_out=args.tokens_out,
+                completed=args.completed,
+                error=args.error,
                 schema_errors=schema_errs,
             )
 
@@ -1465,6 +1480,7 @@ class WorkflowRuntime:
             stats, reservation, completed, label, agent
         )
         self._finalize_agent(
+            _FinalizeArgs(
             prompt=prompt,
             response=response,
             label=label,
@@ -1479,6 +1495,8 @@ class WorkflowRuntime:
             model=model,
             live=live,
             schema_errors=schema_errors,
+        
+            )
         )
         if not completed:
             failure = self._isolated_failure_value(

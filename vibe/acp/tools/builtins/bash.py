@@ -83,7 +83,7 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
                     session_id=session_id, terminal_id=terminal_id
                 )
             except Exception as e:
-                logger.error(f"Failed to release terminal: {e!r}")
+                logger.error("Failed to release terminal: %r", e)
 
     @classmethod
     def get_summary(cls, args: BashArgs) -> str:
@@ -111,7 +111,7 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
                     session_id=session_id, terminal_id=terminal_id
                 )
             except Exception as e:
-                logger.error(f"Failed to kill terminal: {e!r}")
+                logger.error("Failed to kill terminal: %r", e)
 
             raise self._build_timeout_error(command, timeout)
 

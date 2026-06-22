@@ -15,16 +15,14 @@ Backends, by platform:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import logging
 import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
 
+from vibe.core.logger import logger
 from vibe.core.utils import is_windows
-
-logger = logging.getLogger(__name__)
 
 # Env vars allowed through when scrubbing (everything else — API keys, tokens,
 # cloud creds — is dropped). LC_* is allowed by prefix below.

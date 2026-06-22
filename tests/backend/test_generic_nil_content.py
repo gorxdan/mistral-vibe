@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 
 from vibe.core.config import ProviderConfig
+from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.generic import OpenAIAdapter
 from vibe.core.types import FunctionCall, LLMMessage, Role, ToolCall
 
@@ -34,6 +35,7 @@ def _provider() -> ProviderConfig:
 
 def _serialized_messages(messages: list[LLMMessage]) -> list[dict[str, object]]:
     req = OpenAIAdapter().prepare_request(
+        RequestParams(
         model_name="m",
         messages=messages,
         temperature=0.2,
@@ -42,6 +44,8 @@ def _serialized_messages(messages: list[LLMMessage]) -> list[dict[str, object]]:
         tool_choice=None,
         enable_streaming=False,
         provider=_provider(),
+    
+        )
     )
     return json.loads(req.body)["messages"]
 

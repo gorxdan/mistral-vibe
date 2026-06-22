@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import signal
 
+from vibe.core.logger import logger
 from vibe.core.utils.platform import is_windows
-
-logger = logging.getLogger(__name__)
 
 
 async def kill_async_subprocess(
@@ -63,7 +61,6 @@ async def kill_async_subprocess(
         pass
     finally:
         _close_transport(proc)
-
 
 def _close_transport(proc: asyncio.subprocess.Process) -> None:
     """Close the subprocess transport to prevent 'Event loop is closed' errors.

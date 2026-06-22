@@ -5,6 +5,7 @@ import json
 import pytest
 
 from vibe.core.config import ProviderConfig
+from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.reasoning_adapter import ReasoningAdapter
 from vibe.core.types import (
     AvailableFunction,
@@ -43,7 +44,7 @@ def _prepare(adapter, provider, messages, **kwargs):
         provider=provider,
     )
     defaults.update(kwargs)
-    return json.loads(adapter.prepare_request(**defaults).body)
+    return json.loads(adapter.prepare_request(RequestParams(**defaults)).body)
 
 
 class TestReasoningEffort:

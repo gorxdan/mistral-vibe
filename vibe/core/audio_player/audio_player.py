@@ -119,7 +119,7 @@ class AudioPlayer:
         if not sd:
             raise RuntimeError("sounddevice is not available")
         if status:
-            logger.warning(f"Audio playback callback status: {status}")
+            logger.warning("Audio playback callback status: %s", status)
 
         bytes_needed = frames * self._frame_size
         chunk = self._audio_data[self._position : self._position + bytes_needed]

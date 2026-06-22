@@ -47,7 +47,7 @@ def bootstrap_config_files() -> None:
             with config_file.open("wb") as f:
                 tomli_w.dump(VibeConfig.create_default(), f)
         except Exception as e:
-            logger.error(f"Could not create default config file: {e}")
+            logger.error("Could not create default config file: %s", e)
             raise
 
     history_file = HISTORY_FILE.path
@@ -56,7 +56,7 @@ def bootstrap_config_files() -> None:
             history_file.parent.mkdir(parents=True, exist_ok=True)
             history_file.write_text("Hello Vibe!\n", "utf-8")
         except Exception as e:
-            logger.error(f"Could not create history file: {e}")
+            logger.error("Could not create history file: %s", e)
             raise
 
 

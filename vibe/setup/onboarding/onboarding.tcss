@@ -516,6 +516,10 @@ ThemeSelectionScreen #enter-hint {
 
 #feedback.success {
     color: $text-muted;
+
+    &:ansi {
+        text-style: dim;
+    }
 }
 
 #config-docs-label {

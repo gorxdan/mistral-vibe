@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 
 from vibe.core.config import ProviderConfig
+from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.vertex import (
     VertexAnthropicAdapter,
     VertexCredentials,
@@ -77,6 +78,7 @@ class TestPrepareRequest:
     def test_basic_request(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-3-5-sonnet",
             messages=messages,
             temperature=0.5,
@@ -85,6 +87,8 @@ class TestPrepareRequest:
             tool_choice=None,
             enable_streaming=False,
             provider=provider,
+        
+            )
         )
 
         payload = json.loads(req.body)
@@ -101,6 +105,7 @@ class TestPrepareRequest:
     def test_streaming_request(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-3-5-sonnet",
             messages=messages,
             temperature=0.5,
@@ -109,6 +114,8 @@ class TestPrepareRequest:
             tool_choice=None,
             enable_streaming=True,
             provider=provider,
+        
+            )
         )
 
         payload = json.loads(req.body)
@@ -119,6 +126,7 @@ class TestPrepareRequest:
         """Vertex AI doesn't support the same beta features as direct Anthropic API."""
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-3-5-sonnet",
             messages=messages,
             temperature=0.5,
@@ -127,6 +135,8 @@ class TestPrepareRequest:
             tool_choice=None,
             enable_streaming=False,
             provider=provider,
+        
+            )
         )
 
         # Vertex AI doesn't support prompt-caching or other beta features
@@ -135,6 +145,7 @@ class TestPrepareRequest:
     def test_with_extended_thinking(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-3-5-sonnet",
             messages=messages,
             temperature=0.5,
@@ -144,6 +155,8 @@ class TestPrepareRequest:
             enable_streaming=False,
             provider=provider,
             thinking="medium",
+        
+            )
         )
 
         payload = json.loads(req.body)
@@ -164,6 +177,7 @@ class TestPrepareRequest:
             )
         ]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-3-5-sonnet",
             messages=messages,
             temperature=0.5,
@@ -172,6 +186,8 @@ class TestPrepareRequest:
             tool_choice=None,
             enable_streaming=False,
             provider=provider,
+        
+            )
         )
 
         payload = json.loads(req.body)
@@ -187,6 +203,7 @@ class TestPrepareRequest:
         )
         with pytest.raises(ValueError, match="project_id"):
             adapter.prepare_request(
+                RequestParams(
                 model_name="claude-3-5-sonnet",
                 messages=[LLMMessage(role=Role.user, content="Hello")],
                 temperature=0.5,
@@ -195,6 +212,8 @@ class TestPrepareRequest:
                 tool_choice=None,
                 enable_streaming=False,
                 provider=provider,
+            
+                )
             )
 
     def test_missing_region(self, adapter):
@@ -206,6 +225,7 @@ class TestPrepareRequest:
         )
         with pytest.raises(ValueError, match="region"):
             adapter.prepare_request(
+                RequestParams(
                 model_name="claude-3-5-sonnet",
                 messages=[LLMMessage(role=Role.user, content="Hello")],
                 temperature=0.5,
@@ -214,11 +234,14 @@ class TestPrepareRequest:
                 tool_choice=None,
                 enable_streaming=False,
                 provider=provider,
+            
+                )
             )
 
     def test_default_max_tokens(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-3-5-sonnet",
             messages=messages,
             temperature=0.5,
@@ -227,6 +250,8 @@ class TestPrepareRequest:
             tool_choice=None,
             enable_streaming=False,
             provider=provider,
+        
+            )
         )
 
         payload = json.loads(req.body)

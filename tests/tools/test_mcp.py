@@ -294,8 +294,8 @@ class TestMCPStderrCapture:
                     w = None
                 finally:
                     time.sleep(0.05)
-                debug_mock.assert_any_call("[MCP stderr] hello stderr")
-                debug_mock.assert_any_call("[MCP stderr] second line")
+                debug_mock.assert_any_call("[MCP stderr] %s", "hello stderr")
+                debug_mock.assert_any_call("[MCP stderr] %s", "second line")
         finally:
             if w_fd >= 0:
                 try:
@@ -314,7 +314,7 @@ class TestMCPStderrCapture:
             async with _mcp_stderr_capture() as stream:
                 stream.write("captured line\n")
             time.sleep(0.05)
-            debug_mock.assert_called_with("[MCP stderr] captured line")
+            debug_mock.assert_called_with("[MCP stderr] %s", "captured line")
 
     @pytest.mark.asyncio
     async def test_mcp_stderr_capture_ignores_empty_lines(self):

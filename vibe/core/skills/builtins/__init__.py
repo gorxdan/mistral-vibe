@@ -4,3 +4,5 @@ from vibe.core.skills.builtins.vibe import SKILL as VIBE_SKILL
 from vibe.core.skills.models import SkillInfo
 
 BUILTIN_SKILLS: dict[str, SkillInfo] = {skill.name: skill for skill in [VIBE_SKILL]}
+
+__all__ = ["BUILTIN_SKILLS"]

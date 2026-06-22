@@ -34,6 +34,8 @@ from vibe.setup.onboarding.screens.browser_sign_in import (
     CopySignInUrl,
 )
 
+__all__ = ["OnboardingApp", "run_onboarding"]
+
 
 class OnboardingApp(App[str | None]):
     CSS_PATH = "onboarding.tcss"

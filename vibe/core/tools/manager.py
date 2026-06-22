@@ -352,7 +352,7 @@ class ToolManager:
         try:
             connector_tools = await self._connector_registry.get_tools_async()
         except Exception as exc:
-            logger.warning(f"Connector integration failed: {exc}")
+            logger.warning("Connector integration failed: %s", exc)
             with self._lock:
                 self._purge_connector_state()
             return
@@ -360,7 +360,7 @@ class ToolManager:
         with self._lock:
             self._purge_connector_state()
             self._all_tools.update(connector_tools)
-        logger.info(f"Connector integration registered {len(connector_tools)} tools")
+        logger.info("Connector integration registered %s tools", len(connector_tools))
 
     async def refresh_remote_tools_async(self) -> None:
         """Force MCP and connector re-discovery for the current config."""
@@ -402,10 +402,10 @@ class ToolManager:
         if isinstance(mcp_result, BaseException):
             if raise_on_mcp_failure:
                 raise mcp_result
-            logger.warning(f"MCP integration failed: {mcp_result}")
+            logger.warning("MCP integration failed: %s", mcp_result)
 
         if isinstance(connector_result, BaseException):
-            logger.warning(f"Connector integration failed: {connector_result}")
+            logger.warning("Connector integration failed: %s", connector_result)
 
     def get_tool_config(self, tool_name: str) -> BaseToolConfig:
         with self._lock:

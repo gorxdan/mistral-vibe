@@ -27,6 +27,7 @@ from tests.backend.data.openai_responses import (
     TOOL_CONVERSATION_PARAMS,
 )
 from vibe.core.config import ModelConfig, ProviderConfig
+from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.generic import GenericBackend
 from vibe.core.llm.backend.openai_responses import OpenAIResponsesAdapter
 from vibe.core.types import (
@@ -84,7 +85,7 @@ def _prepare(adapter, provider, messages, **kwargs):
         provider=provider,
     )
     defaults.update(kwargs)
-    return json.loads(adapter.prepare_request(**defaults).body)
+    return json.loads(adapter.prepare_request(RequestParams(**defaults)).body)
 
 
 def _assert_chunk_matches(result: LLMChunk, expected_result: ResultData) -> None:

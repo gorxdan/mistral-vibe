@@ -3,13 +3,17 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import json
-import logging
 from typing import TYPE_CHECKING, Any, ClassVar, TypedDict, cast
 
 from pydantic import TypeAdapter
 
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
-from vibe.core.llm.backend.base import APIAdapter, PreparedRequest
+from vibe.core.llm.backend.adapter_port import (
+    APIAdapter,
+    PreparedRequest,
+    RequestParams,
+)
+from vibe.core.logger import logger
 from vibe.core.types import (
     AvailableTool,
     FunctionCall,
@@ -24,15 +28,11 @@ from vibe.core.types import (
 if TYPE_CHECKING:
     from vibe.core.config import ProviderConfig
 
-logger = logging.getLogger(__name__)
-
 _EMPTY_USAGE = LLMUsage(prompt_tokens=0, completion_tokens=0)
-
 
 class _ResponsesUsageData(TypedDict, total=False):
     input_tokens: int
     output_tokens: int
-
 
 class _ResponsesFunctionCallItem(TypedDict, total=False):
     type: str
@@ -41,16 +41,13 @@ class _ResponsesFunctionCallItem(TypedDict, total=False):
     name: str
     arguments: str
 
-
 class _ResponsesContentBlock(TypedDict, total=False):
     type: str
     text: str
 
-
 class _ResponsesSummaryBlock(TypedDict, total=False):
     type: str
     text: str
-
 
 class _ResponsesMessageItem(TypedDict, total=False):
     type: str
@@ -59,22 +56,18 @@ class _ResponsesMessageItem(TypedDict, total=False):
     phase: str
     content: list[_ResponsesContentBlock]
 
-
 class _ResponsesReasoningItem(TypedDict, total=False):
     type: str
     encrypted_content: str
     summary: list[_ResponsesSummaryBlock]
 
-
 class _ResponsesObject(TypedDict, total=False):
     usage: _ResponsesUsageData | None
     output: list[dict[str, Any]]
 
-
 class _ResponsesErrorData(TypedDict, total=False):
     type: str
     message: str
-
 
 class _ResponsesStreamEvent(TypedDict, total=False):
     type: str
@@ -87,14 +80,12 @@ class _ResponsesStreamEvent(TypedDict, total=False):
     response: _ResponsesObject
     error: _ResponsesErrorData
 
-
 _RESPONSES_OBJECT_ADAPTER = TypeAdapter(_ResponsesObject)
 _RESPONSES_STREAM_EVENT_ADAPTER = TypeAdapter(_ResponsesStreamEvent)
 _RESPONSES_FUNCTION_CALL_ITEM_ADAPTER = TypeAdapter(_ResponsesFunctionCallItem)
 _RESPONSES_MESSAGE_ITEM_ADAPTER = TypeAdapter(_ResponsesMessageItem)
 _RESPONSES_REASONING_ITEM_ADAPTER = TypeAdapter(_ResponsesReasoningItem)
 _RESPONSES_ERROR_DATA_ADAPTER = TypeAdapter(_ResponsesErrorData)
-
 
 @dataclass(slots=True)
 class _ResponsesToolCallState:
@@ -103,7 +94,6 @@ class _ResponsesToolCallState:
     arguments: str = ""
     name_emitted: bool = False
     arguments_emitted: bool = False
-
 
 class _OpenAIResponsesStreamParser:
     def __init__(self) -> None:
@@ -406,7 +396,6 @@ class _OpenAIResponsesStreamParser:
         "error": _on_error,
     }
 
-
 class OpenAIResponsesAdapter(APIAdapter):
     endpoint: ClassVar[str] = "/responses"
 
@@ -542,22 +531,18 @@ class OpenAIResponsesAdapter(APIAdapter):
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
-    def prepare_request(  # noqa: PLR0913
-        self,
-        *,
-        model_name: str,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        enable_streaming: bool,
-        provider: ProviderConfig,
-        api_key: str | None = None,
-        thinking: str = "off",
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
-    ) -> PreparedRequest:
+    def prepare_request(self, params: RequestParams) -> PreparedRequest:
+        model_name = params.model_name
+        messages = params.messages
+        temperature = params.temperature
+        tools = params.tools
+        max_tokens = params.max_tokens
+        tool_choice = params.tool_choice
+        enable_streaming = params.enable_streaming
+        api_key = params.api_key
+        thinking = params.thinking
+        response_format = params.response_format
+        extra_body = params.extra_body
         del extra_body  # generic-backend feature; not used by this path
         input_items = self._convert_messages(messages)
 
@@ -692,51 +677,28 @@ class ChatGPTResponsesAdapter(OpenAIResponsesAdapter):
                 rest.append(msg)
         return "\n\n".join(system_parts), rest
 
-    def prepare_request(  # noqa: PLR0913
-        self,
-        *,
-        model_name: str,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        enable_streaming: bool,
-        provider: ProviderConfig,
-        api_key: str | None = None,
-        thinking: str = "off",
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
-    ) -> PreparedRequest:
-        del extra_body  # not used by this path
-        instructions, conversation = self._split_system(messages)
-        input_items = self._convert_messages(conversation)
+    def prepare_request(self, params: RequestParams) -> PreparedRequest:
+        # Reuse the parent payload (it converts messages + builds the body),
+        # then post-process: hoist system messages into `instructions`, request
+        # encrypted reasoning when thinking is on, and force tool_choice. Doing
+        # the work via super().prepare_request(params) avoids re-deriving the
+        # payload here and keeps the override focused on the ChatGPT deltas.
+        base = super().prepare_request(params)
+        body = json.loads(base.body.decode("utf-8"))
 
-        payload = self.build_payload(
-            model_name=model_name,
-            input_items=input_items,
-            temperature=temperature,
-            tools=tools,
-            max_tokens=max_tokens,
-            tool_choice=tool_choice,
-            thinking=thinking,
-            enable_streaming=enable_streaming,
-            response_format=response_format,
-        )
+        instructions, conversation = self._split_system(params.messages)
+        # Rebuild the input list from the system-stripped conversation; the
+        # parent saw the original messages, so its input still has system rows.
+        body["input"] = self._convert_messages(conversation)
+        body["instructions"] = instructions or self._DEFAULT_INSTRUCTIONS
 
-        # The ChatGPT backend rejects an empty/absent instructions field.
-        payload["instructions"] = instructions or self._DEFAULT_INSTRUCTIONS
-
-        effort = payload.get("reasoning", {}).get("effort")
+        effort = body.get("reasoning", {}).get("effort")
         if effort and effort != "none":
-            # Request encrypted reasoning + a summary, mirroring codex.
-            payload["include"] = ["reasoning.encrypted_content"]
-            payload["reasoning"]["summary"] = "auto"
+            body["include"] = ["reasoning.encrypted_content"]
+            body["reasoning"]["summary"] = "auto"
 
-        # codex always sends an explicit tool_choice on this backend.
-        if tools and "tool_choice" not in payload:
-            payload["tool_choice"] = "auto"
+        if params.tools and "tool_choice" not in body:
+            body["tool_choice"] = "auto"
 
-        headers = self.build_headers(api_key)
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        return PreparedRequest(self.endpoint, headers, body)
+        new_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        return PreparedRequest(base.endpoint, base.headers, new_body)

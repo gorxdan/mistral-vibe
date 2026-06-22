@@ -403,7 +403,7 @@ class TasksApp(Container):
             "wf-"
         ):
             return None
-        entry = self._workflow_runner._find_run(self._selected_task_id)  # type: ignore[attr-defined]
+        entry = self._workflow_runner.find_run(self._selected_task_id)
         if entry is None:
             return None
         return _WorkflowScriptRef(

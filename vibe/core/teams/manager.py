@@ -17,6 +17,7 @@ from vibe.core.paths import VIBE_HOME
 from vibe.core.teams.mailbox import Mailbox
 from vibe.core.teams.models import Task, TeamConfig, TeamMember
 from vibe.core.teams.task_store import TaskStore
+from vibe.core.utils.io import read_safe
 
 if TYPE_CHECKING:
     from vibe.core.hooks.manager import HooksManager
@@ -84,7 +85,7 @@ class TeamManager:
     def _load_config(self) -> TeamConfig:
         lock = FileLock(str(self._config_lock), timeout=5)
         with lock:
-            return TeamConfig.model_validate_json(self._config_file.read_text())
+            return TeamConfig.model_validate_json(read_safe(self._config_file).text)
 
     def _save_config(self, config: TeamConfig) -> None:
         lock = FileLock(str(self._config_lock), timeout=5)

@@ -5,11 +5,12 @@ import math
 import re
 import secrets
 import time
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
 from vibe.core.logger import logger
+from vibe.core.scheduler_port import Scheduler
 from vibe.core.types import ScheduledLoop
 
 if TYPE_CHECKING:
@@ -30,23 +31,6 @@ __all__ = [
     "format_duration",
     "parse_interval",
 ]
-
-
-@runtime_checkable
-class Scheduler(Protocol):
-    """The slice of LoopManager the model-facing `schedule` tool needs. Passed
-    into InvokeContext so the tool mutates the SAME live manager the runner
-    polls (so newly-scheduled loops actually fire).
-    """
-
-    @property
-    def loops(self) -> list[ScheduledLoop]: ...
-
-    async def add_loop(
-        self, interval_seconds: int, prompt: str, *, recurring: bool = True
-    ) -> ScheduledLoop: ...
-
-    async def cancel(self, target: str) -> int: ...
 
 
 MIN_INTERVAL_SECONDS = 30

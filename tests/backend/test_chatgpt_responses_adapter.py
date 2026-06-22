@@ -17,6 +17,7 @@ import respx
 
 from vibe.core.auth import openai_oauth as oauth
 from vibe.core.config import ModelConfig, ProviderConfig
+from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.generic import GenericBackend
 from vibe.core.llm.backend.openai_responses import ChatGPTResponsesAdapter
 from vibe.core.types import AvailableFunction, AvailableTool, LLMMessage, Role
@@ -57,7 +58,7 @@ def _provider() -> ProviderConfig:
 
 def _prepare(messages, *, thinking="high", tools=None) -> dict:
     adapter = ChatGPTResponsesAdapter()
-    req = adapter.prepare_request(
+    params = RequestParams(
         model_name="gpt-5.1-codex",
         messages=messages,
         temperature=0.2,
@@ -69,7 +70,7 @@ def _prepare(messages, *, thinking="high", tools=None) -> dict:
         api_key="access-1",
         thinking=thinking,
     )
-    return json.loads(req.body)
+    return json.loads(adapter.prepare_request(params).body)
 
 
 def test_system_message_hoisted_to_instructions() -> None:

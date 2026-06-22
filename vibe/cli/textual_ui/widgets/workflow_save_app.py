@@ -8,7 +8,7 @@ project (``.vibe/workflows/``) and personal (``~/.vibe/workflows/``).
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -62,9 +62,9 @@ class WorkflowSaveApp(Container):
         script_source: str,
         default_name: str | None = None,
         default_location: str = "project",
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
-        super().__init__(id="workflow-save-app", **kwargs)  # type: ignore[arg-type]
+        super().__init__(id="workflow-save-app", **kwargs)
         self.run_id = run_id
         self.script_source = script_source
         self._name_default = default_name or _default_name(run_id)

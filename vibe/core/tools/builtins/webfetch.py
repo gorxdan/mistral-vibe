@@ -194,7 +194,7 @@ class WebFetch(
         except (socket.gaierror, OSError) as e:
             # Fail closed: if we cannot resolve and validate, refuse rather
             # than let httpx re-resolve (possibly to a private IP) unchecked.
-            raise ToolError(f"SSRF validation failed: could not resolve {host}: {e}")
+            raise ToolError(f"SSRF validation failed: could not resolve {host}: {e}") from e
 
         pinned: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
         for info in infos:
@@ -308,7 +308,7 @@ class WebFetch(
         except httpx.TimeoutException:
             raise ToolError(f"Request timed out after {timeout} seconds")
         except httpx.RequestError as e:
-            raise ToolError(f"Failed to fetch URL: {e}")
+            raise ToolError(f"Failed to fetch URL: {e}") from e
 
         if response.is_error:
             raise ToolError(

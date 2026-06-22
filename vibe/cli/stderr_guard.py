@@ -6,6 +6,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 import os
 import sys
+from typing import IO, TextIO, cast
 
 
 def _cleanup(
@@ -15,11 +16,11 @@ def _cleanup(
     saved_stderr: object,
 ) -> None:
     """Restore sys.stderr / sys.__stderr__ and fd 2, ignoring errors."""
-    sys.__stderr__ = saved_dunder  # type: ignore[assignment]
-    sys.stderr = saved_stderr  # type: ignore[assignment]
+    sys.__stderr__ = cast("TextIO | None", saved_dunder)
+    sys.stderr = cast("TextIO | None", saved_stderr)
     if render_file is not None:
         try:
-            render_file.close()  # type: ignore[union-attr]
+            cast("IO[str]", render_file).close()
         except Exception:
             pass
     if render_fd is not None:
@@ -76,7 +77,7 @@ def stderr_guard() -> Generator[None]:
             render_fd, "w", closefd=False, errors="backslashreplace"
         )
 
-        sys.__stderr__ = render_file  # type: ignore[assignment]
+        sys.__stderr__ = cast("TextIO | None", render_file)
         sys.stderr = render_file
     except Exception:
         _cleanup(render_file, render_fd, saved_dunder, saved_stderr)

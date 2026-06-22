@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 
-from vibe.core.tools.base import BaseTool
+from vibe.core.llm.models import (
+    FailedToolCall,
+    ParsedMessage,
+    ParsedToolCall,
+    ResolvedMessage,
+    ResolvedToolCall,
+)
 from vibe.core.types import (
     AvailableFunction,
     AvailableTool,
@@ -16,43 +22,6 @@ from vibe.core.types import (
 
 if TYPE_CHECKING:
     from vibe.core.tools.manager import ToolManager
-
-
-class ParsedToolCall(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    tool_name: str
-    raw_args: dict[str, Any]
-    call_id: str = ""
-
-
-class ResolvedToolCall(BaseModel):
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-    tool_name: str
-    tool_class: type[BaseTool]
-    validated_args: BaseModel
-    call_id: str = ""
-
-    @property
-    def args_dict(self) -> dict[str, Any]:
-        return self.validated_args.model_dump()
-
-
-class FailedToolCall(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    tool_name: str
-    call_id: str
-    error: str
-
-
-class ParsedMessage(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    tool_calls: list[ParsedToolCall]
-
-
-class ResolvedMessage(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    tool_calls: list[ResolvedToolCall]
-    failed_calls: list[FailedToolCall] = Field(default_factory=list)
 
 
 class APIToolFormatHandler:

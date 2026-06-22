@@ -146,7 +146,7 @@ class TomlFileSettingsSource(PydanticBaseSettingsSource):
         # trust must not extend to arbitrary absolute paths the project can
         # name. Drop any entry that escapes the project root, with a warning,
         # before the value reaches the field validator / loader.
-        project_root = mgr._trusted_workdir  # type: ignore[attr-defined]
+        project_root = mgr.trusted_workdir
         if project_root is not None and isinstance(data.get("plugin_paths"), list):
             root_resolved = Path(project_root).resolve()
             kept: list[Any] = []

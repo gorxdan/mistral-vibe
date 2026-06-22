@@ -393,7 +393,7 @@ EXPLORE = AgentProfile(
     description="Read-only subagent for codebase exploration",
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
-    overrides={"enabled_tools": ["grep", "read"], "system_prompt_id": "explore"},
+    overrides={"enabled_tools": ["grep", "read", "lsp"], "system_prompt_id": "explore"},
 )
 
 RESEARCH = AgentProfile(
@@ -403,7 +403,7 @@ RESEARCH = AgentProfile(
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["grep", "read", "web_search", "web_fetch"],
+        "enabled_tools": ["grep", "read", "lsp", "web_search", "web_fetch"],
         "system_prompt_id": "explore",
     },
 )
@@ -419,7 +419,7 @@ REVIEWER = AgentProfile(
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["read", "grep", "bash"],
+        "enabled_tools": ["read", "grep", "lsp", "bash"],
         "system_prompt_id": "explore",
         **_review_bash_overrides(),
     },
@@ -438,7 +438,7 @@ DEBUGGER = AgentProfile(
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["read", "grep", "bash"],
+        "enabled_tools": ["read", "grep", "lsp", "bash"],
         "system_prompt_id": "debugger",
         **_review_bash_overrides(),
     },
@@ -454,7 +454,7 @@ PLANNER = AgentProfile(
     ),
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
-    overrides={"enabled_tools": ["read", "grep"], "system_prompt_id": "planner"},
+    overrides={"enabled_tools": ["read", "grep", "lsp"], "system_prompt_id": "planner"},
 )
 
 SECURITY = AgentProfile(
@@ -472,7 +472,7 @@ SECURITY = AgentProfile(
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["read", "grep", "bash"],
+        "enabled_tools": ["read", "grep", "lsp", "bash"],
         "system_prompt_id": "security",
         **_review_bash_overrides(),
     },
@@ -491,7 +491,7 @@ EDITOR = AgentProfile(
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
     overrides={
-        "enabled_tools": ["read", "grep", "write_file", "edit"],
+        "enabled_tools": ["read", "grep", "lsp", "write_file", "edit"],
         "system_prompt_id": "editor",
     },
 )

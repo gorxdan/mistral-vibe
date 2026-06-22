@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from vibe.cli.turn_summary.port import TurnSummaryPort, TurnSummaryResult
+from vibe.cli.turn_summary.models import TurnSummaryResult
+from vibe.cli.turn_summary.turn_summary_port import TurnSummaryPort
 from vibe.core.types import BaseEvent
 
 

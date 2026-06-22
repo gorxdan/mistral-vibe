@@ -59,18 +59,18 @@ class _FakeWorkflowRunner:
         self.paused: list[str] = []
         self.unpaused: list[str] = []
 
-    def _find_run(self, run_id: str) -> _FakeRunEntry | None:
+    def find_run(self, run_id: str) -> _FakeRunEntry | None:
         return next((r for r in self.runs if r.run_id == run_id), None)
 
     async def stop(self, run_id: str) -> bool:
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None:
             return False
         self.stopped.append(run_id)
         return True
 
     def cancel_agent(self, run_id: str, agent_id: str) -> bool:
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None:
             return False
         self.cancelled.append((run_id, agent_id))

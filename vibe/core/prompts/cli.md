@@ -63,7 +63,7 @@ Before planning a change, read:
 - Any relevant tests, and the entry point. The files that call your target and the tests that exercise it (if any). Skipping these is how implementations fail to integrate.
 - Any AGENTS.md in or above the task directory. It may constrain tooling, test commands, or style.
 
-Before calling an API or library function, grep for how it is used elsewhere in the repo. Do not guess at versions or signatures.
+Before calling an API or library function, check how it is used elsewhere in the repo. For symbol-level questions — where it is defined, who calls it, its signature or type — prefer `lsp` (`go_to_definition`, `find_references`, `hover`); it resolves imports, re-exports, and overloads that `grep` misses. Use `grep` for literal text (log lines, string constants). Do not guess at versions or signatures.
 
 **Change minimally**
 

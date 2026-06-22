@@ -7,7 +7,7 @@ from pydantic import BaseModel
 import pytest
 
 from tests.conftest import build_test_agent_loop
-from vibe.core.llm.format import ResolvedToolCall
+from vibe.core.llm.models import ResolvedToolCall
 from vibe.core.tools.builtins.grep import Grep
 from vibe.core.tools.builtins.read import Read
 from vibe.core.tools.builtins.write_file import WriteFile
