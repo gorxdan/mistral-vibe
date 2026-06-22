@@ -6,8 +6,7 @@ import httpx
 import pytest
 
 from vibe.core.teleport.errors import ServiceTeleportError
-from vibe.core.teleport.nuage import (
-    NuageClient,
+from vibe.core.teleport.models import (
     NuageContext,
     NuageDiff,
     NuageMessage,
@@ -15,6 +14,7 @@ from vibe.core.teleport.nuage import (
     NuageRequest,
     NuageTextPart,
 )
+from vibe.core.teleport.nuage import NuageClient
 
 
 def _request() -> NuageRequest:

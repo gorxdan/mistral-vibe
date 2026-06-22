@@ -19,7 +19,7 @@ from vibe.core.teleport.errors import (
     ServiceTeleportNotSupportedError,
 )
 from vibe.core.teleport.git import GitRepoInfo
-from vibe.core.teleport.nuage import DEFAULT_NUAGE_PROJECT_NAME
+from vibe.core.teleport.models import DEFAULT_NUAGE_PROJECT_NAME
 from vibe.core.teleport.teleport import TeleportService
 from vibe.core.teleport.types import (
     TeleportCheckingGitEvent,

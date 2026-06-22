@@ -14,8 +14,7 @@ from vibe.core.config import VibeConfig
 from vibe.core.session.session_logger import SessionLogger
 from vibe.core.teleport.errors import ServiceTeleportError
 from vibe.core.teleport.git import GitRepoInfo, GitRepository
-from vibe.core.teleport.nuage import (
-    NuageClient,
+from vibe.core.teleport.models import (
     NuageContext,
     NuageDiff,
     NuageMessage,
@@ -23,6 +22,7 @@ from vibe.core.teleport.nuage import (
     NuageRequest,
     NuageTextPart,
 )
+from vibe.core.teleport.nuage import NuageClient
 from vibe.core.teleport.types import (
     TeleportCheckingGitEvent,
     TeleportCompleteEvent,
