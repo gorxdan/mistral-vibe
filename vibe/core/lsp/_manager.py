@@ -162,17 +162,30 @@ def uris_equal(a: str, b: str) -> bool:
 
 
 _global_manager: LSPManager | None = None
+_global_generation: int = 0
 
 
-def init_lsp_manager(manager: LSPManager) -> None:
-    """Install ``manager`` as the process-wide LSP singleton."""
-    global _global_manager
+def init_lsp_manager(manager: LSPManager) -> int:
+    """Install ``manager`` as the process-wide LSP singleton.
+
+    Returns the new generation counter. Callers that captured a generation
+    before doing async work can compare against the return to detect that a
+    newer setup superseded them.
+    """
+    global _global_manager, _global_generation
+    _global_generation += 1
     _global_manager = manager
+    return _global_generation
 
 
 def get_lsp_manager() -> LSPManager | None:
     """Return the process LSP manager, or ``None`` if LSP is not active."""
     return _global_manager
+
+
+def current_lsp_generation() -> int:
+    """Monotonic counter bumped on every ``init_lsp_manager`` install."""
+    return _global_generation
 
 
 def clear_lsp_manager() -> None:
@@ -188,6 +201,7 @@ __all__ = [
     "LSPServerSource",
     "ServerState",
     "clear_lsp_manager",
+    "current_lsp_generation",
     "get_lsp_manager",
     "init_lsp_manager",
     "uris_equal",

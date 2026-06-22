@@ -7,6 +7,8 @@ from pathlib import Path
 from vibe.core.logger import logger
 from vibe.core.lsp._manager import get_lsp_manager
 
+_MAX_NOTIFY_BYTES = 10 * 1024 * 1024
+
 
 async def notify_file_changed(path: str | Path, text: str) -> None:
     """Tell the LSP server that ``path`` was modified.
@@ -18,6 +20,8 @@ async def notify_file_changed(path: str | Path, text: str) -> None:
     """
     manager = get_lsp_manager()
     if manager is None:
+        return
+    if len(text) > _MAX_NOTIFY_BYTES:
         return
     try:
         server = manager.get_server_for_file(path)

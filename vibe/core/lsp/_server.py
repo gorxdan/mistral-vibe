@@ -7,12 +7,21 @@ from typing import Any
 
 from vibe.core.logger import logger
 from vibe.core.lsp._jsonrpc import JsonRpcConnection
-from vibe.core.lsp._types import LSPError, LSPProtocolError, ServerState, uri_from_path
+from vibe.core.lsp._types import (
+    LSPError,
+    LSPProtocolError,
+    LSPServerCrashedError,
+    ServerState,
+    uri_from_path,
+)
 
 DEFAULT_STARTUP_TIMEOUT = 20.0
 DEFAULT_REQUEST_TIMEOUT = 10.0
+DEFAULT_MAX_RESTARTS = 3
 _CONTENT_MODIFIED_RETRIES = 3
 _CONTENT_MODIFIED_BACKOFF = (0.25, 0.5, 1.0)
+_STDERR_TAIL = 10
+_STDERR_DRAIN_WAIT = 0.5
 
 
 @dataclass
@@ -26,6 +35,7 @@ class ServerConfig:
     initialization_options: dict[str, Any] | None = None
     startup_timeout: float = DEFAULT_STARTUP_TIMEOUT
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT
+    max_restarts: int = DEFAULT_MAX_RESTARTS
 
     def matches(self, extension: str) -> bool:
         ext = extension.lower().lstrip(".")
@@ -53,6 +63,9 @@ class LanguageServer:
         self._last_error: str | None = None
         self._crash_watcher: asyncio.Task[None] | None = None
         self._pending_handlers: list[tuple[str, Any]] = []
+        self._stderr_lines: list[str] = []
+        self._stderr_done: asyncio.Event = asyncio.Event()
+        self._crash_count = 0
 
     @property
     def state(self) -> ServerState:
@@ -65,6 +78,14 @@ class LanguageServer:
     @property
     def last_error(self) -> str | None:
         return self._last_error
+
+    @property
+    def crash_count(self) -> int:
+        return self._crash_count
+
+    @property
+    def restarts_exhausted(self) -> bool:
+        return self._crash_count >= self.config.max_restarts
 
     @property
     def supports_diagnostics(self) -> bool:
@@ -82,15 +103,33 @@ class LanguageServer:
                 return
             self._state = ServerState.STARTING
             self._last_error = None
+            self._stderr_lines.clear()
+            self._stderr_done = asyncio.Event()
             try:
                 await self._spawn()
                 await self._initialize()
             except (LSPError, OSError) as exc:
-                self._last_error = str(exc)
+                await self._await_stderr_drain()
+                if self._last_error is None:
+                    self._last_error = self._with_stderr(str(exc) or type(exc).__name__)
                 self._state = ServerState.ERRORED
                 await self._force_kill()
+                if isinstance(exc, LSPError):
+                    raise type(exc)(self._last_error) from exc
                 raise
             self._state = ServerState.RUNNING
+
+    def _with_stderr(self, base: str) -> str:
+        tail = "; ".join(self._stderr_lines[-_STDERR_TAIL:])
+        return f"{base}; stderr: {tail}" if tail else base
+
+    async def _await_stderr_drain(self) -> None:
+        if self._proc is None:
+            return
+        try:
+            await asyncio.wait_for(self._stderr_done.wait(), timeout=_STDERR_DRAIN_WAIT)
+        except TimeoutError:
+            pass
 
     async def _spawn(self) -> None:
         env = {**os.environ, **self.config.env}
@@ -192,28 +231,41 @@ class LanguageServer:
             await proc.wait()
         except asyncio.CancelledError:
             raise
-        if self._state in {ServerState.RUNNING, ServerState.STARTING}:
-            self._last_error = f"server exited (code {proc.returncode})"
-            self._state = ServerState.ERRORED
-            if self._conn is not None:
-                await self._conn.close()
+        if self._state not in {ServerState.RUNNING, ServerState.STARTING}:
+            return
+        self._crash_count += 1
+        try:
+            await asyncio.wait_for(self._stderr_done.wait(), timeout=_STDERR_DRAIN_WAIT)
+        except TimeoutError:
+            pass
+        base = (
+            f"server exited (code {proc.returncode}); "
+            f"{self.config.max_restarts - self._crash_count} restarts left"
+        )
+        self._last_error = self._with_stderr(base)
+        self._state = ServerState.ERRORED
+        if self._conn is not None:
+            await self._conn.close()
 
     async def _drain_stderr(self) -> None:
         proc = self._proc
         if proc is None or proc.stderr is None:
+            self._stderr_done.set()
             return
         try:
             while True:
                 line = await proc.stderr.readline()
                 if not line:
                     break
-                logger.debug(
-                    "lsp %s stderr: %s",
-                    self.config.name,
-                    line.decode("utf-8", "replace").rstrip(),
-                )
+                text = line.decode("utf-8", "replace").rstrip()
+                self._stderr_lines.append(text)
+                if len(self._stderr_lines) > _STDERR_TAIL:
+                    self._stderr_lines.pop(0)
+                logger.debug("lsp %s stderr: %s", self.config.name, text)
         except (asyncio.CancelledError, OSError):
             pass
+        finally:
+            self._stderr_done.set()
 
     async def send_request(
         self, method: str, params: dict[str, Any] | None = None
@@ -237,9 +289,11 @@ class LanguageServer:
     async def ensure_started(self) -> None:
         if self._state == ServerState.RUNNING:
             return
-        if self._state == ServerState.ERRORED:
-            await self.start()
-            return
+        if self.restarts_exhausted:
+            raise LSPServerCrashedError(
+                f"{self.config.name} crashed {self._crash_count} times; "
+                f"restart cap ({self.config.max_restarts}) exhausted"
+            )
         await self.start()
 
     async def did_open(self, path: str, text: str, language_id: str) -> None:

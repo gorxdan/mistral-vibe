@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from enum import StrEnum, auto
 from pathlib import Path
@@ -205,6 +206,9 @@ class Lsp(
             if position is not None:
                 params["position"] = position
             raw, _ = await manager.send_request(file_path, method, params)
+            if formatter is self._format_locations:
+                filtered = await self._filter_gitignored(self._as_location_list(raw))
+                return formatter(label, filtered)
             return formatter(label, raw)
         if args.operation is LspOperation.HOVER:
             raw, _ = await manager.send_request(
@@ -303,6 +307,7 @@ class Lsp(
             if args.operation is LspOperation.INCOMING_CALLS
             else "Outgoing calls"
         )
+        out = await self._filter_gitignored(out)
         return self._format_locations(label, out)
 
     def _format_locations(self, label: str, raw: Any) -> LspResult:
@@ -394,6 +399,133 @@ class Lsp(
             out.extend(Lsp._as_location_list(item))
         return out
 
+    _GIT_CHECK_BATCH = 50
+    _GIT_CHECK_TIMEOUT = 5.0
+    _REVPARSE_TIMEOUT = 3.0
+
+    async def _filter_gitignored(
+        self, locations: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not locations:
+            return locations
+        cwd = Path.cwd()
+        repo_root = await self._repo_toplevel(cwd)
+        seen_ignored: dict[str, bool] = {}
+        kept: list[dict[str, Any]] = []
+        for i in range(0, len(locations), self._GIT_CHECK_BATCH):
+            batch = locations[i : i + self._GIT_CHECK_BATCH]
+            paths = [path_from_uri(loc.get("uri", "")) for loc in batch]
+            verdicts = await self._check_ignore(cwd, repo_root, paths)
+            for loc, verdict in zip(batch, verdicts, strict=False):
+                key = path_from_uri(loc.get("uri", ""))
+                if key in seen_ignored:
+                    ignored = seen_ignored[key]
+                else:
+                    ignored = verdict
+                    seen_ignored[key] = verdict
+                if not ignored:
+                    kept.append(loc)
+        return kept
+
+    async def _repo_toplevel(self, cwd: Path) -> Path | None:
+        """Resolve the repo root containing ``cwd``. ``None`` if not a git
+        repo or git is unavailable. A path outside this root is not subject
+        to the repo's ignore rules and is reported not-ignored by the caller.
+        Cached per-cwd on the tool instance.
+        """
+        cached = getattr(self, "_cached_repo_root", None)
+        if cached is not None and cached[0] == cwd:
+            return cached[1]
+        root: Path | None = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "rev-parse",
+                "--show-toplevel",
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=self._REVPARSE_TIMEOUT
+            )
+            if proc.returncode == 0:
+                top = stdout.decode("utf-8", "replace").strip()
+                if top:
+                    root = Path(top)
+        except (OSError, FileNotFoundError, TimeoutError):
+            root = None
+        try:
+            self._cached_repo_root = (cwd, root)
+        except AttributeError:
+            pass
+        return root
+
+    async def _check_ignore(
+        self, cwd: Path, repo_root: Path | None, paths: list[str]
+    ) -> list[bool]:
+        # Partition before invoking git: a single out-of-repo path (common —
+        # any definition resolving into site-packages/typeshed) makes
+        # ``git check-ignore`` abort with exit 128 and empty stdout, which
+        # would otherwise read as "nothing ignored" and leak the whole batch.
+        # Only in-repo paths can be ignored by this repo; out-of-repo paths
+        # default to not-ignored. Membership is compared lexically (no symlink
+        # resolution): git applies ignore rules to the path as written, so an
+        # in-repo symlink whose target is outside still counts as in-repo and
+        # is handed to git, which knows how to ignore it.
+        verdicts: dict[str, bool] = {}
+        to_check: list[str] = []
+        for p in paths:
+            if not Path(p).exists():
+                verdicts[p] = False
+            elif repo_root is not None and not self._path_within(repo_root, Path(p)):
+                verdicts[p] = False
+            else:
+                to_check.append(p)
+        if not to_check:
+            return [verdicts.get(p, False) for p in paths]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "check-ignore",
+                "--no-index",
+                *to_check,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except (OSError, FileNotFoundError):
+            return [verdicts.get(p, False) for p in paths]
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=self._GIT_CHECK_TIMEOUT
+            )
+        except TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            return [verdicts.get(p, False) for p in paths]
+        # check-ignore exits 0 if any path is ignored, 1 if none match. Any
+        # other code (e.g. 128 fatal) means the output is not trustworthy;
+        # fail open rather than read empty stdout as "kept".
+        if proc.returncode not in {0, 1}:
+            return [verdicts.get(p, False) for p in paths]
+        ignored_set = {
+            Path(line.decode("utf-8", "replace").strip().split(":", 1)[-1]).resolve()
+            for line in stdout.splitlines()
+            if line.strip()
+        }
+        return [verdicts.get(p, Path(p).resolve() in ignored_set) for p in paths]
+
+    @staticmethod
+    def _path_within(root: Path, path: Path) -> bool:
+        try:
+            Path(path).relative_to(root)
+        except ValueError:
+            return False
+        return True
+
     @staticmethod
     def _extract_markup(contents: Any) -> str:
         if isinstance(contents, str):
@@ -424,6 +556,12 @@ class Lsp(
             raise ToolError(f"File not found at: {path}")
         if path.is_dir():
             raise ToolError(f"Path is a directory, not a file: {path}")
+        size = path.stat().st_size
+        if size > _MAX_FILE_BYTES:
+            raise ToolError(
+                f"File is {size / 1024 / 1024:.1f} MiB; LSP rejects files over "
+                f"{_MAX_FILE_BYTES / 1024 / 1024:.0f} MiB to avoid stalling the server."
+            )
         return str(path)
 
     @classmethod

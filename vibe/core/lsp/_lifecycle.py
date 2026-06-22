@@ -8,6 +8,7 @@ from vibe.core.lsp._config_bridge import ConfigServerSource
 from vibe.core.lsp._manager import (
     LSPManager,
     clear_lsp_manager,
+    current_lsp_generation,
     get_lsp_manager,
     init_lsp_manager,
 )
@@ -29,6 +30,7 @@ def setup_lsp_for_config(
     if "lsp" not in getattr(config, "installed_components", []):
         teardown_lsp()
         return None
+    started_at = current_lsp_generation()
     prior = get_lsp_manager()
     if prior is not None:
         try:
@@ -41,6 +43,13 @@ def setup_lsp_for_config(
                 loop.run_until_complete(prior.shutdown())
         except Exception:
             logger.debug("prior lsp manager shutdown failed", exc_info=True)
+    if current_lsp_generation() != started_at:
+        logger.debug(
+            "lsp setup superseded by a newer generation %d->%d; not installing",
+            started_at,
+            current_lsp_generation(),
+        )
+        return get_lsp_manager()
     manager = LSPManager(source=ConfigServerSource(config_getter))
     manager.set_root(root_path)
     manager.initialize()

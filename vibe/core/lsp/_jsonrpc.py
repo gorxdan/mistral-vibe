@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 import json
+import os
 from typing import Any
 
 from vibe.core.logger import logger
@@ -16,6 +17,7 @@ from vibe.core.lsp._types import (
 JsonRpcHandler = Callable[[dict[str, Any]], Awaitable[Any | None]]
 _HEADER_TERM = b"\r\n\r\n"
 _LINE_TERM = b"\r\n"
+_TRACE = os.environ.get("VIBE_LSP_TRACE", "") in {"1", "true", "TRUE"}
 
 
 class _RequestCancelled(Exception):
@@ -109,6 +111,12 @@ class JsonRpcConnection:
             pass
 
     async def _write(self, payload: dict[str, Any]) -> None:
+        if _TRACE:
+            logger.debug(
+                "lsp jsonrpc >>> %s id=%s",
+                payload.get("method", "?"),
+                payload.get("id", "-"),
+            )
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         header = (
             f"Content-Length: {len(body)}\r\n"
@@ -159,6 +167,13 @@ class JsonRpcConnection:
         return 0
 
     async def _dispatch(self, message: dict[str, Any]) -> None:
+        if _TRACE:
+            kind = (
+                "response"
+                if "id" in message and "method" not in message
+                else message.get("method", "?")
+            )
+            logger.debug("lsp jsonrpc <<< %s id=%s", kind, message.get("id", "-"))
         if "id" in message and "method" in message:
             await self._handle_reverse_request(message)
         elif "id" in message:

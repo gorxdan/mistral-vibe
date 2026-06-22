@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import shutil
+import subprocess
 
 from vibe.core.config import LSPServer
+from vibe.core.logger import logger
 
 
 @dataclass(frozen=True)
@@ -31,7 +33,7 @@ _PYRIGHT = ServerPreset(
         args=["--stdio"],
     ),
     install_hint="npm install -g pyright  (or: pip install pyright)",
-    detection_command=("pyright-langserver", "--version"),
+    detection_command=("pyright", "--version"),
 )
 
 _TSLANGUAGE = ServerPreset(
@@ -105,15 +107,86 @@ def preset_for_extension(ext: str) -> ServerPreset | None:
     return None
 
 
-def preset_binary_on_path(preset: ServerPreset) -> bool:
-    return shutil.which(preset.detection_command[0]) is not None
+_PROBE_TIMEOUT = 3.0
+
+
+@dataclass(frozen=True)
+class PresetProbe:
+    """Outcome of probing a preset's binary.
+
+    status is one of:
+      - "available": binary present and version probe exits 0
+      - "absent"   : binary not on PATH (nothing to surface but an install hint)
+      - "broken"   : binary present but probe failed; ``stderr``/``returncode``
+                     explain why (e.g. a rustup proxy for an uninstalled
+                     component). Broken presets are excluded from the server
+                     registry but surfaced in /lsp status so the user knows the
+                     language is installed-but-not-working instead of silent.
+    """
+
+    preset: ServerPreset
+    status: str
+    returncode: int | None = None
+    stderr: str = ""
+
+
+def _probe(preset: ServerPreset) -> PresetProbe:
+    if shutil.which(preset.detection_command[0]) is None:
+        return PresetProbe(preset=preset, status="absent")
+    try:
+        result = subprocess.run(
+            preset.detection_command,
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return PresetProbe(
+            preset=preset, status="broken", stderr=str(exc)
+        )
+    if result.returncode == 0:
+        return PresetProbe(preset=preset, status="available")
+    return PresetProbe(
+        preset=preset,
+        status="broken",
+        returncode=result.returncode,
+        stderr=(result.stderr or result.stdout).strip(),
+    )
+
+
+def preset_probe_passes(preset: ServerPreset) -> bool:
+    return _probe(preset).status == "available"
 
 
 def available_presets() -> list[ServerPreset]:
-    """Presets whose server binary is installed on PATH.
+    usable: list[ServerPreset] = []
+    for probe in (p for p in (_probe(preset) for preset in PRESETS.values())):
+        if probe.status == "available":
+            usable.append(probe.preset)
+        elif probe.status == "broken":
+            logger.warning(
+                "lsp preset %s on PATH but probe %s failed; excluded",
+                probe.preset.key,
+                probe.preset.detection_command,
+            )
+    return usable
 
-    These are the languages Vibe can support without any config: the moment
-    LSP is enabled (installed_components), every available preset is
-    registered and lazy-started on first use of a matching file.
+
+def broken_presets() -> list[PresetProbe]:
+    """Presets whose binary is on PATH but fails its probe.
+
+    Surfaced in /lsp status so a user with a half-installed toolchain (e.g. a
+    rustup proxy missing the rust-analyzer component) gets an actionable
+    message instead of the language silently disappearing.
     """
-    return [p for p in PRESETS.values() if preset_binary_on_path(p)]
+    return [
+        probe
+        for probe in (_probe(preset) for preset in PRESETS.values())
+        if probe.status == "broken"
+    ]
+
+
+def preset_states() -> list[PresetProbe]:
+    """Probe result for every preset, in declaration order."""
+    return [probe for probe in (_probe(preset) for preset in PRESETS.values())]
