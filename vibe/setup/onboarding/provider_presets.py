@@ -165,8 +165,11 @@ PRESETS: list[ProviderPreset] = [
             api_style=OPENAI_CHATGPT_API_STYLE,
             # OAuth tokens are resolved from the token store, not an env var.
             api_key_env_var="",
-            # Model discovery needs an API key; the subscription list is fixed.
-            discover_models=False,
+            # Discover the subscription's model set from the codex /models
+            # endpoint via the stored OAuth token (no API key needed). The
+            # single model block below remains the default; discovery fills the
+            # picker with everything the plan permits.
+            discover_models=True,
         ),
         model=ModelConfig(
             name="gpt-5.5",

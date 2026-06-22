@@ -145,6 +145,37 @@ def _auth_headers(provider: ProviderConfig) -> dict[str, str]:
     return {}
 
 
+def _is_chatgpt_provider(provider: ProviderConfig) -> bool:
+    """Whether this provider targets the ChatGPT-subscription (codex) backend."""
+    return provider.api_style == "openai-chatgpt"
+
+
+async def _chatgpt_headers(provider: ProviderConfig) -> dict[str, str]:
+    """Auth headers for the codex /models endpoint, or {} if not signed in.
+
+    Resolves (and refreshes) the ChatGPT OAuth token from the on-disk store,
+    mirroring the generic backend's credential path. Discovery is best-effort,
+    so any OAuth failure yields ``{}`` and the caller skips the request.
+    """
+    del provider  # credentials come from the shared token store, not the provider
+    from vibe.core.auth.openai_oauth import (
+        OpenAIOAuthError,
+        resolve_chatgpt_credentials,
+    )
+
+    try:
+        creds = await resolve_chatgpt_credentials()
+    except OpenAIOAuthError as exc:
+        logger.debug("ChatGPT discovery skipped (no credentials): %s", exc)
+        return {}
+    return {"Authorization": f"Bearer {creds.access_token}", **creds.auth_headers()}
+
+
+# Field names the codex backend advertises for a model's context window on
+# /models. Both are optional; either is authoritative when present.
+_CHATGPT_CTX_KEYS = ("context_window", "max_context_window")
+
+
 async def _get_json(
     client: httpx.AsyncClient, url: str, headers: dict[str, str], provider_name: str
 ) -> Any | None:
@@ -176,6 +207,38 @@ async def _fetch_v1_models(
         for item in items
         if isinstance(item, dict) and isinstance(item.get("id"), str)
     ]
+
+
+async def _fetch_chatgpt_models(
+    provider: ProviderConfig, client: httpx.AsyncClient
+) -> list[RawModel]:
+    """Parse the codex ``/models`` endpoint into RawModels.
+
+    The ChatGPT-subscription backend wraps the list under ``models`` (not
+    ``data``), identifies each entry by ``slug`` (not ``id``), and gates picker
+    visibility via ``visibility == "list"`` — non-list entries (e.g.
+    ``codex-auto-review``) are dropped. Auth is the OAuth bearer resolved from
+    the token store; when there is no signed-in session the request is skipped.
+    """
+    headers = await _chatgpt_headers(provider)
+    if not headers:
+        return []
+    url = f"{provider.api_base.rstrip('/')}/models"
+    data = await _get_json(client, url, headers, provider.name)
+    items = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    out: list[RawModel] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("visibility") != "list":
+            continue
+        slug = item.get("slug")
+        if not isinstance(slug, str):
+            continue
+        out.append(RawModel(slug, _ctx_value(item, _CHATGPT_CTX_KEYS)))
+    return out
 
 
 def _is_ollama_provider(provider: ProviderConfig) -> bool:
@@ -235,6 +298,8 @@ async def fetch_models(
             timeout=httpx.Timeout(timeout), verify=build_ssl_context()
         )
     try:
+        if _is_chatgpt_provider(provider):
+            return await _fetch_chatgpt_models(provider, client)
         models = await _fetch_v1_models(provider, client)
         if models and _is_ollama_provider(provider):
             tag_ctx = await _fetch_ollama_context_lengths(provider, client)

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 import respx
 
 from tests.conftest import build_test_vibe_config
+from vibe.core.auth import openai_oauth as oauth
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.llm.model_discovery import (
     DiscoveredModel,
@@ -510,3 +512,115 @@ def test_persist_does_not_duplicate_existing_provider(
     # provider already persisted -> not appended again
     assert "providers" not in upd
     assert [m["alias"] for m in upd["models"]] == ["g"]
+
+
+# --- ChatGPT (codex) discovery ---------------------------------------------
+
+CHATGPT_MODELS_URL = f"{oauth.OPENAI_CHATGPT_API_BASE}/models"
+
+
+def _chatgpt_provider(**kw: object) -> ProviderConfig:
+    defaults: dict[str, object] = {
+        "name": "openai-chatgpt",
+        "api_base": oauth.OPENAI_CHATGPT_API_BASE,
+        "api_style": "openai-chatgpt",
+        "api_key_env_var": "",
+        "backend": "generic",
+        "discover_models": True,
+    }
+    defaults.update(kw)
+    return ProviderConfig(**defaults)  # type: ignore[arg-type]
+
+
+def _seed_chatgpt_session() -> None:
+    """Seed the OAuth token store so resolve_chatgpt_credentials() succeeds."""
+    oauth.save_tokens(
+        oauth.OpenAIOAuthTokens(
+            access_token="access-1",
+            refresh_token="refresh-1",
+            account_id="acct_123",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_models_parses_chatgpt_models_endpoint() -> None:
+    _seed_chatgpt_session()
+    respx.get(CHATGPT_MODELS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "models": [
+                    {"slug": "gpt-5.5", "visibility": "list", "context_window": 272000},
+                    {"slug": "gpt-5.4", "visibility": "list"},
+                    {"slug": "codex-auto-review", "visibility": "hide"},
+                    {"slug": "ghost", "visibility": "none"},
+                ]
+            },
+        )
+    )
+    out = await fetch_models(_chatgpt_provider())
+    assert out == [RawModel("gpt-5.5", 272000), RawModel("gpt-5.4", None)]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_models_chatgpt_sends_oauth_bearer() -> None:
+    _seed_chatgpt_session()
+    route = respx.get(CHATGPT_MODELS_URL).mock(
+        return_value=httpx.Response(200, json={"models": []})
+    )
+    await fetch_models(_chatgpt_provider())
+    headers = route.calls.last.request.headers
+    assert headers["Authorization"] == "Bearer access-1"
+    assert headers["ChatGPT-Account-ID"] == "acct_123"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_models_chatgpt_empty_when_not_authenticated() -> None:
+    # No token store -> resolve raises OpenAINotAuthenticatedError -> skip request.
+    route = respx.get(CHATGPT_MODELS_URL).mock(
+        return_value=httpx.Response(
+            200, json={"models": [{"slug": "gpt-5.5", "visibility": "list"}]}
+        )
+    )
+    assert await fetch_models(_chatgpt_provider()) == []
+    assert not route.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_discover_extra_models_includes_chatgpt_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Suppress the auto-detected ollama candidate so only chatgpt is probed.
+    monkeypatch.setattr(
+        "vibe.core.llm.model_discovery.candidate_local_providers", lambda: []
+    )
+    _seed_chatgpt_session()
+    config = build_test_vibe_config(
+        providers=[_chatgpt_provider()],
+        models=[
+            ModelConfig(name="gpt-5.5", provider="openai-chatgpt", alias="gpt-5.5")
+        ],
+    )
+    respx.get(CHATGPT_MODELS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "models": [
+                    {"slug": "gpt-5.5", "visibility": "list"},
+                    {"slug": "gpt-5.4", "visibility": "list"},
+                    {"slug": "codex-auto-review", "visibility": "hide"},
+                ]
+            },
+        )
+    )
+    out = await discover_extra_models(config)
+
+    assert {dm.model.name for dm in out} == {"gpt-5.4"}
+    assert all(dm.provider.name == "openai-chatgpt" for dm in out)
+    assert all(dm.ephemeral is False for dm in out)

@@ -48,6 +48,15 @@ def test_preset_for_provider_name_resolves_openai() -> None:
     assert preset.key == "openai"
 
 
+def test_openai_chatgpt_preset_discovers_models() -> None:
+    preset = next((p for p in PRESETS if p.key == "openai-chatgpt"), None)
+    assert preset is not None
+    assert preset.provider is not None
+    # Discovery queries the codex /models endpoint via the stored OAuth token,
+    # so the picker reflects the subscription's full model set.
+    assert preset.provider.discover_models is True
+
+
 def test_apply_openai_preset_persists_provider_and_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
