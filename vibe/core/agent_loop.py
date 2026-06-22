@@ -121,6 +121,7 @@ from vibe.core.types import (
     ApprovalCallback,
     ApprovalResponse,
     AssistantEvent,
+    BackgroundTaskCompletedEvent,
     BaseEvent,
     CompactEndEvent,
     CompactStartEvent,
@@ -1443,6 +1444,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
                 self.stats.steps += 1
                 user_cancelled = False
+                # Drain async-subagent completions queued by the background
+                # registry before the next LLM turn, so the model sees each
+                # completed delegation as context. No-op when nothing is pending
+                # (the common case). Each completion also emits a typed event
+                # for the UI; the user-role message carries the result text.
+                async for ev in self._drain_async_agent_completions():
+                    yield ev
                 if first_llm_turn:
                     self._is_user_prompt_call = True
                     first_llm_turn = False
@@ -1572,6 +1580,41 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return PlanReviewEndedEvent()
 
         return None
+
+    async def _drain_async_agent_completions(
+    self,
+    ) -> AsyncGenerator[BackgroundTaskCompletedEvent]:
+        """Yield one event per completed async subagent queued by the background
+        registry, and append a matching user-role message so the model sees
+        each result as context for the upcoming turn. No-op without a registry
+        or when no completions are pending.
+        """
+        registry = self.background_registry
+        if registry is None:
+            return
+        for rec in registry.pop_async_completions():
+            summary = (
+                rec.response if rec.response else f"[{rec.agent} produced no output]"
+            )
+            if rec.error:
+                summary += f"\n[error: {rec.error}]"
+            label = getattr(rec, "label", None) or rec.agent
+            message = (
+                f"[background subagent {rec.task_id} ({label}) "
+                f"{'completed' if rec.completed else 'failed'}]\n{summary}"
+            )
+            self.messages.append(
+                LLMMessage(role=Role.user, content=message, injected=True)
+            )
+            yield BackgroundTaskCompletedEvent(
+                task_id=rec.task_id,
+                agent=rec.agent,
+                response=rec.response,
+                completed=rec.completed,
+                worktree_path=rec.worktree_path,
+                branch=rec.branch,
+                error=rec.error,
+            )
 
     async def _perform_llm_turn(self) -> AsyncGenerator[BaseEvent, None]:
         if self.enable_streaming:

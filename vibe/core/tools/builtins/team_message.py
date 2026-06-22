@@ -6,6 +6,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
+from vibe.core.teams.models import Message, MessageKind
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -33,10 +34,46 @@ def _resolve_team_dir(ctx: InvokeContext) -> Path:
     raw = ctx.team_dir_callback()
     if not raw:
         raise ToolError(
-            "No active team. Spawn a teammate first with /team spawn "
-            "<name> <prompt>."
+            "No active team. Spawn a teammate first with /team spawn <name> <prompt>."
         )
     return Path(raw)
+
+
+def _format_message(msg: Message) -> str:
+    """Render a single inbox message for the lead, structured-kind aware.
+
+    Structured kinds get a typed prefix so the lead can recognize and act on
+    them; TEXT stays a plain prose line. A PERMISSION_REQUEST is framed as a
+    question the lead should answer via team_message(send_message) with a
+    PERMISSION_RESPONSE addressed back to the requester.
+    """
+    match msg.kind:
+        case MessageKind.PERMISSION_REQUEST:
+            tool = msg.payload.get("tool", "unknown")
+            request_id = msg.payload.get("request_id", msg.id)
+            description = msg.payload.get("description", msg.content)
+            return (
+                f"[PERMISSION_REQUEST id={request_id} from={msg.from_name} "
+                f"tool={tool}] {description}\n"
+                f"Reply with team_message(send_message, to_name={msg.from_name}, "
+                f"kind=PERMISSION_RESPONSE, payload={{'request_id': '{request_id}', "
+                f"'decision': 'allow' | 'deny'}})."
+            )
+        case MessageKind.PERMISSION_RESPONSE:
+            decision = msg.payload.get("decision", "?")
+            request_id = msg.payload.get("request_id", "?")
+            reason = msg.payload.get("reason")
+            tail = f" reason: {reason}" if reason else ""
+            return (
+                f"[PERMISSION_RESPONSE id={request_id} from={msg.from_name} "
+                f"decision={decision}]{tail}"
+            )
+        case MessageKind.PLAN_APPROVAL:
+            return f"[PLAN_APPROVAL from={msg.from_name}] {msg.content}"
+        case MessageKind.SHUTDOWN:
+            return f"[SHUTDOWN from={msg.from_name}] {msg.content}"
+        case _:
+            return f"[from {msg.from_name}] {msg.content}"
 
 
 class TeamMessageArgs(BaseModel):
@@ -51,6 +88,21 @@ class TeamMessageArgs(BaseModel):
     )
     content: str | None = Field(
         default=None, description="Message body for send_message."
+    )
+    kind: MessageKind = Field(
+        default=MessageKind.TEXT,
+        description=(
+            "Message kind. TEXT is the default free-form prose. "
+            "PERMISSION_RESPONSE is the lead's reply to a teammate's "
+            "PERMISSION_REQUEST (payload must carry request_id + decision)."
+        ),
+    )
+    payload: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Structured payload for non-TEXT kinds. For PERMISSION_RESPONSE: "
+            "{'request_id': str, 'decision': 'allow' | 'deny', 'reason'?: str}."
+        ),
     )
 
 
@@ -99,9 +151,7 @@ class TeamMessage(
     def get_status_text(cls) -> str:
         return "Team messaging"
 
-    def resolve_permission(
-        self, args: TeamMessageArgs
-    ) -> PermissionContext | None:
+    def resolve_permission(self, args: TeamMessageArgs) -> PermissionContext | None:
         # Sending a message steers a (trusted, auto-approved) teammate, so ask.
         # Reads are side-effect-free but routing through the same permission
         # keeps the surface simple; the host can approve both.
@@ -124,24 +174,40 @@ class TeamMessage(
                     raise ToolError(
                         "to_name and content are required for send_message."
                     )
-                msg = mailbox.send(_LEAD_NAME, args.to_name, args.content)
+                msg = mailbox.send(
+                    _LEAD_NAME,
+                    args.to_name,
+                    args.content,
+                    kind=args.kind,
+                    payload=args.payload,
+                )
                 yield TeamMessageResult(
                     action=args.action,
-                    message=f"Sent message to {args.to_name}.",
+                    message=f"Sent {args.kind.value} message to {args.to_name}.",
                     messages=[msg.model_dump(mode="json")],
                 )
             case "read_messages":
                 msgs = mailbox.read(_LEAD_NAME, mark_read=True)
+                formatted = "\n".join(_format_message(m) for m in msgs)
                 yield TeamMessageResult(
                     action=args.action,
-                    message=f"{len(msgs)} message(s) in lead inbox.",
+                    message=(
+                        f"{len(msgs)} message(s) in lead inbox:\n{formatted}"
+                        if formatted
+                        else "0 messages in lead inbox."
+                    ),
                     messages=[m.model_dump(mode="json") for m in msgs],
                 )
             case "unread_messages":
                 msgs = mailbox.get_unread(_LEAD_NAME)
+                formatted = "\n".join(_format_message(m) for m in msgs)
                 yield TeamMessageResult(
                     action=args.action,
-                    message=f"{len(msgs)} unread message(s) in lead inbox.",
+                    message=(
+                        f"{len(msgs)} unread message(s) in lead inbox:\n{formatted}"
+                        if formatted
+                        else "0 unread messages in lead inbox."
+                    ),
                     messages=[m.model_dump(mode="json") for m in msgs],
                 )
             case _:

@@ -8,7 +8,7 @@ from uuid import uuid4
 from filelock import FileLock
 
 from vibe.core.logger import logger
-from vibe.core.teams.models import Message
+from vibe.core.teams.models import Message, MessageKind
 
 # A recipient name becomes a path component (the per-recipient inbox dir). These
 # names reach the mailbox from model-controlled tool args, so they must be a
@@ -32,7 +32,15 @@ class Mailbox:
     def _inbox(self, name: str) -> Path:
         return self._mailbox_dir / _safe_name(name)
 
-    def send(self, from_name: str, to_name: str, content: str) -> Message:
+    def send(
+        self,
+        from_name: str,
+        to_name: str,
+        content: str,
+        *,
+        kind: MessageKind = MessageKind.TEXT,
+        payload: dict | None = None,
+    ) -> Message:
         # Validate both names: to_name forms the inbox path; from_name is
         # recorded on the message and used as a recipient elsewhere.
         _safe_name(from_name)
@@ -43,6 +51,8 @@ class Mailbox:
             to_name=to_name,
             content=content,
             timestamp=time.time(),
+            kind=kind,
+            payload=dict(payload) if payload else {},
         )
         inbox.mkdir(parents=True, exist_ok=True)
         msg_file = inbox / f"{msg.id}.json"

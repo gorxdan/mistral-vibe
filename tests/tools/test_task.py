@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +14,7 @@ from vibe.core.telemetry.types import TerminalEmulator
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError, ToolPermission
 from vibe.core.tools.builtins.task import Task, TaskArgs, TaskResult, TaskToolConfig
 from vibe.core.tools.permissions import PermissionContext
+from vibe.core.tools.safety_judge import JudgeVerdict
 from vibe.core.types import AssistantEvent, LLMMessage, Role
 
 
@@ -345,3 +348,123 @@ class TestIsolatedSpawnJudgeGate:
             assert isinstance(result, TaskResult)
             assert result.completed is False
             assert "destructive task" in result.response
+
+
+class TestAsyncRun:
+    """async_run=true — non-blocking isolated delegation."""
+
+    @pytest.fixture
+    def ctx(self) -> InvokeContext:
+        config = build_test_vibe_config(
+            include_project_context=False, include_prompt_detail=False
+        )
+        manager = AgentManager(lambda: config)
+        return InvokeContext(
+            tool_call_id="test-call-id",
+            agent_manager=manager,
+            terminal_emulator=TerminalEmulator.VSCODE,
+        )
+
+    @pytest.mark.asyncio
+    async def test_async_run_rejected_for_read_only_profile(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        # explore is read-only and in-process; async_run is not meaningful.
+        args = TaskArgs(task="do something", agent="explore", async_run=True)
+        with pytest.raises(ToolError) as exc:
+            await collect_result(task_tool.run(args, ctx))
+        msg = str(exc.value)
+        assert "async_run=True requires an isolated" in msg
+        assert "launch_workflow" in msg
+
+    @pytest.mark.asyncio
+    async def test_async_run_returns_immediately_with_task_id(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        from vibe.core.tools.background import BackgroundRegistry
+
+        registry = BackgroundRegistry()
+        ctx_with_registry = replace(ctx, background_registry=registry)
+
+        async def fake_run():
+            return None
+
+        args = TaskArgs(task="do work", agent="worker", async_run=True)
+        with (
+            patch("vibe.core.tools.builtins.task.profile_requires_isolation", return_value=True),
+            patch(
+                "vibe.core.tools.builtins.task.run_isolated_agent",
+                side_effect=fake_run,
+            ) as mock_run,
+        ):
+            result = await collect_result(task_tool.run(args, ctx_with_registry))
+
+        assert isinstance(result, TaskResult)
+        assert result.task_id is not None
+        assert result.task_id.startswith("asub-")
+        assert result.completed is False
+        assert result.isolated is True
+        # The isolated runner was invoked (the asyncio.Task was scheduled).
+        await asyncio.sleep(0.01)
+        assert mock_run.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_run_without_registry_falls_back_to_blocking(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        # ctx has no background_registry wired — the tool must fall back to the
+        # synchronous isolated path rather than failing hard.
+        args = TaskArgs(task="do work", agent="worker", async_run=True)
+
+        class _FakeIsolatedResult:
+            output = "isolated result"
+            returncode = 0
+            worktree_path = None
+            branch = None
+
+        async def fake_run(*a, **kw):
+            return _FakeIsolatedResult()
+
+        with (
+            patch("vibe.core.tools.builtins.task.profile_requires_isolation", return_value=True),
+            patch(
+                "vibe.core.tools.builtins.task.run_isolated_agent",
+                side_effect=fake_run,
+            ),
+        ):
+            result = await collect_result(task_tool.run(args, ctx))
+
+        assert isinstance(result, TaskResult)
+        # Blocking path returned the isolated result, not a task_id.
+        assert result.task_id is None
+        assert "isolated result" in result.response
+
+    @pytest.mark.asyncio
+    async def test_async_run_judge_denial_returns_incomplete(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        from vibe.core.tools.background import BackgroundRegistry
+
+        registry = BackgroundRegistry()
+
+        class _DenyJudge:
+            async def judge(self, kind, prompt, context):
+                return JudgeVerdict(safe=False, reason="too destructive")
+
+        ctx_with_judge = replace(
+            ctx,
+            background_registry=registry,
+            safety_judge_factory=lambda: _DenyJudge(),
+        )
+        args = TaskArgs(task="rm -rf everything", agent="worker", async_run=True)
+        with (
+            patch("vibe.core.tools.builtins.task.profile_requires_isolation", return_value=True),
+            patch("vibe.core.tools.builtins.task.run_isolated_agent") as mock_run,
+        ):
+            result = await collect_result(task_tool.run(args, ctx_with_judge))
+
+        assert isinstance(result, TaskResult)
+        assert result.completed is False
+        assert "too destructive" in result.response
+        assert result.task_id is None
+        assert mock_run.call_count == 0

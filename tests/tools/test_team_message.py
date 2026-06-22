@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from tests.mock.utils import collect_result
+from vibe.core.teams.models import MessageKind
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
 from vibe.core.tools.builtins.team_message import (
     TeamMessage,
@@ -14,9 +15,7 @@ from vibe.core.tools.builtins.team_message import (
 
 
 def _make_tool() -> TeamMessage:
-    return TeamMessage(
-        config_getter=lambda: TeamMessageConfig(), state=BaseToolState()
-    )
+    return TeamMessage(config_getter=lambda: TeamMessageConfig(), state=BaseToolState())
 
 
 def _ctx(team_dir: str | None) -> InvokeContext:
@@ -71,7 +70,9 @@ async def test_unread_messages(tmp_path: Path) -> None:
     mailbox.send("worker", "lead", "first")
     mailbox.send("worker", "lead", "second")
     result = await collect_result(
-        _make_tool().run(TeamMessageArgs(action="unread_messages"), ctx=_ctx(str(tmp_path)))
+        _make_tool().run(
+            TeamMessageArgs(action="unread_messages"), ctx=_ctx(str(tmp_path))
+        )
     )
     assert result.messages is not None
     assert len(result.messages) == 2
@@ -81,9 +82,7 @@ async def test_unread_messages(tmp_path: Path) -> None:
 async def test_errors_when_no_active_team() -> None:
     with pytest.raises(ToolError, match="No active team"):
         await collect_result(
-            _make_tool().run(
-                TeamMessageArgs(action="read_messages"), ctx=_ctx(None)
-            )
+            _make_tool().run(TeamMessageArgs(action="read_messages"), ctx=_ctx(None))
         )
 
 
@@ -99,3 +98,53 @@ async def test_unknown_action_errors(tmp_path: Path) -> None:
         await collect_result(
             _make_tool().run(TeamMessageArgs(action="nope"), ctx=_ctx(str(tmp_path)))
         )
+
+
+@pytest.mark.asyncio
+async def test_read_renders_permission_request(tmp_path: Path) -> None:
+    from vibe.core.teams.mailbox import Mailbox
+    from vibe.core.teams.models import MessageKind
+
+    Mailbox(tmp_path).send(
+        "worker",
+        "lead",
+        "approve rm -rf",
+        kind=MessageKind.PERMISSION_REQUEST,
+        payload={
+            "request_id": "req-9",
+            "tool": "bash",
+            "description": "rm -rf /tmp/x",
+        },
+    )
+
+    result = await collect_result(
+        _make_tool().run(TeamMessageArgs(action="read_messages"), ctx=_ctx(str(tmp_path)))
+    )
+    assert "[PERMISSION_REQUEST id=req-9" in result.message
+    assert "tool=bash" in result.message
+    assert "team_message" in result.message  # reply hint
+
+
+@pytest.mark.asyncio
+async def test_send_permission_response_includes_payload(tmp_path: Path) -> None:
+    result = await collect_result(
+        _make_tool().run(
+            TeamMessageArgs(
+                action="send_message",
+                to_name="worker",
+                content="no",
+                kind=MessageKind.PERMISSION_RESPONSE,
+                payload={
+                    "request_id": "req-9",
+                    "decision": "deny",
+                    "reason": "destructive",
+                },
+            ),
+            ctx=_ctx(str(tmp_path)),
+        )
+    )
+    assert "permission_response" in result.message
+    assert result.messages
+    sent = result.messages[0]
+    assert sent["kind"] == "permission_response"
+    assert sent["payload"]["decision"] == "deny"

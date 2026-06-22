@@ -58,3 +58,24 @@ def test_write_tool_in_allowlist_isolates() -> None:
 def test_read_only_allowlist_stays_in_process() -> None:
     p = _profile({"enabled_tools": ["read", "grep", "web_search", "web_fetch"]})
     assert not profile_requires_isolation(p)
+
+
+def test_coordinator_profile_is_registered_and_constrained() -> None:
+    profile = BUILTIN_AGENTS[BuiltinAgentName.COORDINATOR]
+    assert profile.agent_type is AgentType.AGENT
+    assert profile.safety is AgentSafety.SAFE
+    overrides = profile.overrides
+    enabled = overrides.get("enabled_tools")
+    assert isinstance(enabled, list)
+    # Orchestration surface present
+    for tool in ("task", "launch_workflow", "team", "team_message", "read", "grep"):
+        assert tool in enabled
+    # No direct write/bash paths
+    for forbidden in ("bash", "write_file", "edit"):
+        assert forbidden not in enabled
+    assert overrides.get("system_prompt_id") == "coordinator"
+
+
+def test_coordinator_profile_does_not_isolate() -> None:
+    # Read-only allowlist (no bash, no write/edit) -> stays in process.
+    assert not profile_requires_isolation(BUILTIN_AGENTS[BuiltinAgentName.COORDINATOR])

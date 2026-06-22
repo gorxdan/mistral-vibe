@@ -23,3 +23,24 @@ Use `task` to delegate work to a subagent for independent execution.
 - **`worker` is the exception** — it has the full tool set (including writes), but it is meant for workflows with `isolation='worktree'`, where it runs as an auto-approved subprocess. In a plain `task` call a `worker`'s write/exec tools are approval-gated like any other, so don't rely on a `task`-spawned `worker` to actually mutate files — do edits yourself.
 - Subagents **cannot ask the user questions** — give each a self-contained brief with everything it needs.
 - Results are returned as text when the subagent completes.
+
+## Non-blocking delegation (`async_run=true`)
+
+For isolated (write-capable) subagents — `worker`, `editor`, `auto-approve`, or any
+profile with `bash`/`write_file`/`edit` — pass `async_run=true` to launch the
+subagent in the background and get a `task_id` back immediately instead of
+blocking until completion.
+
+- The subagent runs as an isolated subprocess in its own git worktree, exactly
+  like the synchronous isolated path; only the parent's wait is removed.
+- `async_run=true` is rejected for read-only in-process profiles (e.g. `explore`)
+  — they share the parent's event loop, so "async" would not unblock it. Use
+  `launch_workflow` with `parallel()` for in-process fan-out instead.
+- The running task is visible via the `background` tool and cancellable with
+  `background stop <task_id>`.
+- Completion surfaces at the top of the next parent turn as a
+  `BackgroundTaskCompletedEvent` carrying the subagent's response.
+
+Use it for fan-out: 3+ independent write-capable delegations where the parent
+should keep working instead of waiting serially. For scripted fan-out with a
+budget cap and schema validation, prefer `launch_workflow`.
