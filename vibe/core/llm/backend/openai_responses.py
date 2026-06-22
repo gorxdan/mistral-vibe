@@ -409,6 +409,38 @@ class _OpenAIResponsesStreamParser:
     }
 
 
+def _normalize_schema_for_strict(node: Any) -> Any:
+    """Return a deep copy of *node* normalized for OpenAI Responses strict mode.
+
+    The Responses API's ``text.format`` validation rejects schemas that lack
+    ``additionalProperties: false`` and don't list every property in
+    ``required``. Workflow schemas are user-authored and lenient (our own
+    validation handles extras and optional fields), so this normalizer rewrites
+    a copy to be wire-compliant before sending. The original schema is never
+    mutated and remains the source of truth for our own validation.
+    """
+    if not isinstance(node, dict):
+        return node
+    result = dict(node)
+
+    props = result.get("properties")
+    if isinstance(props, dict):
+        result["additionalProperties"] = False
+        result["properties"] = {
+            k: _normalize_schema_for_strict(v) for k, v in props.items()
+        }
+        result["required"] = list(result["properties"].keys())
+
+    if isinstance(result.get("items"), dict):
+        result["items"] = _normalize_schema_for_strict(result["items"])
+
+    for key in ("anyOf", "oneOf", "allOf"):
+        if isinstance(result.get(key), list):
+            result[key] = [_normalize_schema_for_strict(s) for s in result[key]]
+
+    return result
+
+
 class OpenAIResponsesAdapter(APIAdapter):
     endpoint: ClassVar[str] = "/responses"
 
@@ -434,11 +466,14 @@ class OpenAIResponsesAdapter(APIAdapter):
         # ({type, json_schema: {name, schema}}). The Responses API requires the
         # fields flat under text.format: {type, name, schema}. Un-nest so the
         # server does not reject with "Missing required parameter: text.format.name".
+        # The schema is also normalized for strict mode (additionalProperties:
+        # false, all properties required) so the server does not reject with
+        # "Invalid schema ... additionalProperties is required to be false".
         if nested := response_format.get("json_schema"):
             return {
                 "type": response_format.get("type", "json_schema"),
                 "name": nested.get("name", "workflow_output"),
-                "schema": nested.get("schema", {}),
+                "schema": _normalize_schema_for_strict(nested.get("schema", {})),
             }
         return response_format
 
