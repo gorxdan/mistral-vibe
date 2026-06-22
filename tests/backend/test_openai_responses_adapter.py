@@ -401,6 +401,52 @@ class TestPrepareRequest:
             "Authorization": "Bearer secret",
         }
 
+    def test_response_format_omitted_when_none(self, adapter, provider):
+        payload = _prepare(
+            adapter, provider, [LLMMessage(role=Role.user, content="Hi")]
+        )
+        assert "text" not in payload
+
+    def test_chat_completions_response_format_flattened_to_text_format(
+        self, adapter, provider
+    ):
+        # This is the shape produced by workflows.schema.build_response_format,
+        # i.e. the Chat Completions API layout with name/schema nested under
+        # json_schema. The Responses API requires them flat under text.format.
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "schema": {"type": "object", "properties": {"x": {"type": "string"}}},
+                "name": "workflow_output",
+            },
+        }
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.user, content="Hi")],
+            response_format=response_format,
+        )
+        assert payload["text"]["format"] == {
+            "type": "json_schema",
+            "name": "workflow_output",
+            "schema": {"type": "object", "properties": {"x": {"type": "string"}}},
+        }
+        assert "json_schema" not in payload["text"]["format"]
+
+    def test_flat_response_format_passed_through_unchanged(self, adapter, provider):
+        flat = {
+            "type": "json_schema",
+            "name": "workflow_output",
+            "schema": {"type": "object"},
+        }
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.user, content="Hi")],
+            response_format=flat,
+        )
+        assert payload["text"]["format"] == flat
+
 
 class TestParseNonStreamingResponse:
     def test_simple_text_response(self, adapter, provider):

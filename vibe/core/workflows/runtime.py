@@ -11,10 +11,11 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar, cast
 
 from pydantic import BaseModel
 
+from vibe.core.llm.exceptions import BackendError
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
 from vibe.core.workflows._port import AgentLoopFactory
@@ -1000,6 +1001,20 @@ class WorkflowRuntime:
         self._agent_count += 1
         return reservation
 
+    @staticmethod
+    def _is_structured_output_rejection(
+        error: BaseException, *, has_response_format: bool, can_retry: bool
+    ) -> TypeGuard[BackendError]:
+        # True only when the provider rejected the response_format payload itself
+        # (not the content) and a retry slot remains. Used to drop response_format
+        # and retry on the prompt-level JSON fallback.
+        return (
+            has_response_format
+            and can_retry
+            and isinstance(error, BackendError)
+            and error.is_structured_output_rejected
+        )
+
     async def _run_agent(
         self,
         *,
@@ -1116,6 +1131,29 @@ class WorkflowRuntime:
                 error_msg = live.error or "cancelled by user"
                 break
             except Exception as e:
+                # Graceful structured-output degradation: if the provider rejected
+                # the response_format payload itself (e.g. Responses API seeing the
+                # Chat Completions schema shape), drop response_format and retry on
+                # the next attempt using the prompt-level JSON fallback already
+                # appended to effective_prompt. Costs ~0 tokens (the 400 fires
+                # before streaming) and turns a hard run failure into a transparent
+                # fallback. Only when a retry slot remains.
+                if self._is_structured_output_rejection(
+                    e,
+                    has_response_format=response_format is not None,
+                    can_retry=attempt < self.schema_retries,
+                ):
+                    logger.warning(
+                        "Provider rejected structured-output response_format "
+                        "(status=%s, detail=%s); retrying without it. "
+                        "Prompt-level JSON schema fallback remains active.",
+                        e.status,
+                        e.parsed_error,
+                    )
+                    response_format = None
+                    completed = True
+                    error_msg = None
+                    continue
                 completed = False
                 error_msg = str(e)
                 break
@@ -1133,20 +1171,19 @@ class WorkflowRuntime:
             if schema is None:
                 self._finalize_agent(
                     _FinalizeArgs(
-                    prompt=prompt,
-                    response=response_text,
-                    label=label,
-                    phase=phase,
-                    tokens_in=tokens_in,
-                    tokens_out=tokens_out,
-                    reservation=reservation,
-                    completed=completed,
-                    error=error_msg,
-                    cache_key=cache_key,
-                    agent=agent,
-                    model=model,
-                    live=live,
-                
+                        prompt=prompt,
+                        response=response_text,
+                        label=label,
+                        phase=phase,
+                        tokens_in=tokens_in,
+                        tokens_out=tokens_out,
+                        reservation=reservation,
+                        completed=completed,
+                        error=error_msg,
+                        cache_key=cache_key,
+                        agent=agent,
+                        model=model,
+                        live=live,
                     )
                 )
                 return response_text
@@ -1162,20 +1199,19 @@ class WorkflowRuntime:
                 if not errors:
                     self._finalize_agent(
                         _FinalizeArgs(
-                        prompt=prompt,
-                        response=parsed,
-                        label=label,
-                        phase=phase,
-                        tokens_in=tokens_in,
-                        tokens_out=tokens_out,
-                        reservation=reservation,
-                        completed=completed,
-                        error=error_msg,
-                        cache_key=cache_key,
-                        agent=agent,
-                        model=model,
-                        live=live,
-                    
+                            prompt=prompt,
+                            response=parsed,
+                            label=label,
+                            phase=phase,
+                            tokens_in=tokens_in,
+                            tokens_out=tokens_out,
+                            reservation=reservation,
+                            completed=completed,
+                            error=error_msg,
+                            cache_key=cache_key,
+                            agent=agent,
+                            model=model,
+                            live=live,
                         )
                     )
                     return parsed
@@ -1197,20 +1233,19 @@ class WorkflowRuntime:
             # SchemaValidationError.
             self._finalize_agent(
                 _FinalizeArgs(
-                prompt=prompt,
-                response="".join(accumulated),
-                label=label,
-                phase=phase,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                reservation=reservation,
-                completed=False,
-                error=error_msg,
-                cache_key=cache_key,
-                agent=agent,
-                model=model,
-                live=live,
-            
+                    prompt=prompt,
+                    response="".join(accumulated),
+                    label=label,
+                    phase=phase,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    reservation=reservation,
+                    completed=False,
+                    error=error_msg,
+                    cache_key=cache_key,
+                    agent=agent,
+                    model=model,
+                    live=live,
                 )
             )
             # A targeted cancel is an expected outcome, not a failure to
@@ -1228,20 +1263,19 @@ class WorkflowRuntime:
             # invalid output.
             self._finalize_agent(
                 _FinalizeArgs(
-                prompt=prompt,
-                response="".join(accumulated),
-                label=label,
-                phase=phase,
-                tokens_in=tokens_in,
-                tokens_out=tokens_out,
-                reservation=reservation,
-                completed=False,
-                error=error_msg,
-                cache_key=cache_key,
-                agent=agent,
-                model=model,
-                live=live,
-            
+                    prompt=prompt,
+                    response="".join(accumulated),
+                    label=label,
+                    phase=phase,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    reservation=reservation,
+                    completed=False,
+                    error=error_msg,
+                    cache_key=cache_key,
+                    agent=agent,
+                    model=model,
+                    live=live,
                 )
             )
             if live.cancel_requested:
@@ -1257,21 +1291,20 @@ class WorkflowRuntime:
         )
         self._finalize_agent(
             _FinalizeArgs(
-            prompt=prompt,
-            response="".join(accumulated),
-            label=label,
-            phase=phase,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            reservation=reservation,
-            completed=False,
-            error=schema_error_summary,
-            cache_key=cache_key,
-            agent=agent,
-            model=model,
-            live=live,
-            schema_errors=list(last_errors),
-        
+                prompt=prompt,
+                response="".join(accumulated),
+                label=label,
+                phase=phase,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                reservation=reservation,
+                completed=False,
+                error=schema_error_summary,
+                cache_key=cache_key,
+                agent=agent,
+                model=model,
+                live=live,
+                schema_errors=list(last_errors),
             )
         )
         if self.strict_schema:
@@ -1398,7 +1431,9 @@ class WorkflowRuntime:
         # tokens in the live view + finalized phases).
         if args.live is not None:
             self._retire_live(
-                args.live, status="completed" if args.completed else "failed", error=args.error
+                args.live,
+                status="completed" if args.completed else "failed",
+                error=args.error,
             )
 
         if args.completed:
@@ -1484,21 +1519,20 @@ class WorkflowRuntime:
         )
         self._finalize_agent(
             _FinalizeArgs(
-            prompt=prompt,
-            response=response,
-            label=label,
-            phase=phase,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            reservation=reservation,
-            completed=completed,
-            error=error_msg,
-            cache_key=cache_key,
-            agent=agent,
-            model=model,
-            live=live,
-            schema_errors=schema_errors,
-        
+                prompt=prompt,
+                response=response,
+                label=label,
+                phase=phase,
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                reservation=reservation,
+                completed=completed,
+                error=error_msg,
+                cache_key=cache_key,
+                agent=agent,
+                model=model,
+                live=live,
+                schema_errors=schema_errors,
             )
         )
         if not completed:
