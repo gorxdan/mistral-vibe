@@ -121,3 +121,33 @@ class TestBackendErrorIsResponseTooLong:
     def test_false_when_substring_missing(self) -> None:
         err = _make_error(status=422, body_text="some unrelated error")
         assert not err.is_response_too_long
+
+
+class TestBackendErrorIsStructuredOutputRejected:
+    @pytest.mark.parametrize(
+        ("status", "body_text"),
+        [
+            # OpenAI Responses API rejecting the text.format payload
+            (
+                400,
+                '{"error":{"message":"Missing required parameter: \'text.format.name\'."}}',
+            ),
+            # Chat Completions providers that reject response_format outright
+            (400, "response_format is not supported by this model"),
+            (422, "unknown parameter: json_schema"),
+        ],
+    )
+    def test_true(self, status: int, body_text: str) -> None:
+        err = _make_error(status=status, body_text=body_text)
+        assert err.is_structured_output_rejected
+
+    @pytest.mark.parametrize("status", [500, 401, 429])
+    def test_false_on_unrelated_status(self, status: int) -> None:
+        err = _make_error(status=status, body_text="response_format boom")
+        assert not err.is_structured_output_rejected
+
+    def test_false_on_400_without_format_substring(self) -> None:
+        # A 400 about the message content, not the format, must not trigger
+        # structured-output degradation.
+        err = _make_error(status=400, body_text="invalid model id")
+        assert not err.is_structured_output_rejected

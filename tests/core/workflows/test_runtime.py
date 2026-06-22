@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from vibe.core.llm.exceptions import BackendError, PayloadSummary
 from vibe.core.types import (
     ApprovalResponse,
     AssistantEvent,
@@ -265,6 +266,119 @@ async def test_spawn_agent_schema_raises_after_max_retries_strict() -> None:
     )
     with pytest.raises(SchemaValidationError):
         await rt.spawn_agent("test", schema=schema)
+
+
+def _structured_output_rejection() -> BackendError:
+    # Mirrors the openai-chatgpt Responses-API 400 that killed wf-1 before the
+    # fix: the provider rejected the response_format payload itself.
+    return BackendError(
+        provider="openai-chatgpt",
+        endpoint="/responses",
+        status=400,
+        reason="Bad Request",
+        headers={},
+        body_text=(
+            '{"error":{"message":"Missing required parameter: \'text.format.name\'."}}'
+        ),
+        parsed_error="Missing required parameter: 'text.format.name'.",
+        model="gpt-5.5",
+        payload_summary=PayloadSummary(
+            model="gpt-5.5",
+            message_count=2,
+            approx_chars=100,
+            temperature=0.2,
+            has_tools=True,
+            tool_choice="auto",
+        ),
+    )
+
+
+@dataclass
+class _RejectStructuredOutputThenJsonLoop:
+    # Raises a structured-output rejection while response_format is set, then
+    # returns valid JSON once response_format has been dropped (degraded retry).
+    stats: MockStats = field(default_factory=MockStats)
+
+    async def act(
+        self, prompt: str, *, response_format: Any = None
+    ) -> AsyncGenerator[AssistantEvent | ReasoningEvent | UserMessageEvent, None]:
+        if response_format is not None:
+            raise _structured_output_rejection()
+        yield AssistantEvent(content='{"answer": "42"}', message_id="a1")
+
+
+@dataclass
+class _Always500Loop:
+    stats: MockStats = field(default_factory=MockStats)
+
+    async def act(
+        self, prompt: str, *, response_format: Any = None
+    ) -> AsyncGenerator[AssistantEvent | ReasoningEvent | UserMessageEvent, None]:
+        raise BackendError(
+            provider="test",
+            endpoint="/responses",
+            status=500,
+            reason="Internal Server Error",
+            headers={},
+            body_text="boom",
+            parsed_error="boom",
+            model="m",
+            payload_summary=_make_payload_summary(),
+        )
+
+
+def _make_payload_summary() -> PayloadSummary:
+    return PayloadSummary(
+        model="m",
+        message_count=1,
+        approx_chars=1,
+        temperature=0.2,
+        has_tools=False,
+        tool_choice=None,
+    )
+
+
+async def test_spawn_agent_degrades_structured_output_on_provider_rejection() -> None:
+    # Regression for wf-1: when the provider rejects the response_format payload
+    # itself (400 "text.format.name"), the runtime drops response_format and
+    # retries on the prompt-level JSON fallback instead of failing the agent.
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    calls = [0]
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        calls[0] += 1
+        return _RejectStructuredOutputThenJsonLoop(stats=MockStats())
+
+    rt = WorkflowRuntime(agent_loop_factory=factory, schema_retries=2)
+    result = await rt.spawn_agent("test", schema=schema)
+    assert result == {"answer": "42"}
+    # First attempt rejected the format; second (degraded, no response_format)
+    # returned valid JSON.
+    assert calls[0] == 2
+
+
+async def test_spawn_agent_does_not_degrade_on_unrelated_backend_error() -> None:
+    # A 500 is not a structured-output rejection: it must surface as a real
+    # failure, not silently retry without response_format.
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    calls = [0]
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        calls[0] += 1
+        return _Always500Loop(stats=MockStats())
+
+    rt = WorkflowRuntime(agent_loop_factory=factory, schema_retries=2)
+    with pytest.raises(WorkflowError):
+        await rt.spawn_agent("test", schema=schema)
+    assert calls[0] == 1
 
 
 async def test_spawn_agent_schema_failure_survives_parallel() -> None:

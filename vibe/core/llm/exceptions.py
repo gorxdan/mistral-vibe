@@ -26,6 +26,12 @@ _CONTEXT_TOO_LONG_SUBSTRINGS = (
 
 _RESPONSE_TOO_LONG_SUBSTRINGS = ("max_tokens_exceeded", "finish_reason=length")
 
+_STRUCTURED_OUTPUT_REJECTION_SUBSTRINGS = (
+    "text.format",
+    "response_format",
+    "json_schema",
+)
+
 
 class ErrorDetail(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -79,6 +85,17 @@ class BackendError(RuntimeError):
             return False
         body = (self.body_text or "").lower()
         return any(s in body for s in _RESPONSE_TOO_LONG_SUBSTRINGS)
+
+    @property
+    def is_structured_output_rejected(self) -> bool:
+        # 400/422 where the provider rejected the response_format / text.format
+        # payload itself (e.g. an adapter sent a schema shape the endpoint does
+        # not understand). Retrying without response_format, relying on the
+        # prompt-level JSON fallback, recovers gracefully.
+        if self.status not in {HTTPStatus.BAD_REQUEST, HTTPStatus.UNPROCESSABLE_ENTITY}:
+            return False
+        body = (self.body_text or "").lower()
+        return any(s in body for s in _STRUCTURED_OUTPUT_REJECTION_SUBSTRINGS)
 
     def _fmt(self) -> str:
         if self.status == HTTPStatus.UNAUTHORIZED:
