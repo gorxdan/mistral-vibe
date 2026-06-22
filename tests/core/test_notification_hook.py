@@ -87,7 +87,7 @@ async def _drive_tool(loop, tool_name: str) -> list[tuple[str, str | None]]:
     """
     from vibe.core.agent_loop import ToolDecision, ToolExecutionResponse
     from vibe.core.agent_loop_hooks import _BeforeToolResolution
-    from vibe.core.llm.format import ResolvedToolCall
+    from vibe.core.llm.models import ResolvedToolCall
     from vibe.core.tools.base import ToolPermission
     from vibe.core.tools.builtins.ask_user_question import AskUserQuestion
 
@@ -152,7 +152,7 @@ async def test_cancel_during_question_notification_does_not_mark_tool_started() 
 
     from vibe.core.agent_loop import ToolDecision, ToolExecutionResponse
     from vibe.core.agent_loop_hooks import _BeforeToolResolution
-    from vibe.core.llm.format import ResolvedToolCall
+    from vibe.core.llm.models import ResolvedToolCall
     from vibe.core.tools.base import ToolPermission
     from vibe.core.tools.builtins.ask_user_question import AskUserQuestion
 

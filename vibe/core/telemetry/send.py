@@ -11,7 +11,7 @@ import httpx
 
 from vibe import __version__
 from vibe.core.config import ProviderConfig, VibeConfig
-from vibe.core.llm.format import ResolvedToolCall
+from vibe.core.llm.models import ResolvedToolCall
 from vibe.core.logger import logger
 from vibe.core.telemetry.build_metadata import build_base_metadata
 from vibe.core.telemetry.types import (

@@ -4,7 +4,7 @@ import pytest
 
 from tests.conftest import build_test_agent_loop
 from vibe.core.agent_loop import ToolDecision, ToolExecutionResponse
-from vibe.core.llm.format import ResolvedToolCall
+from vibe.core.llm.models import ResolvedToolCall
 from vibe.core.tools.base import ToolError
 from vibe.core.tools.builtins.workflow_results import (
     WorkflowResults,

@@ -49,7 +49,7 @@ from vibe.core.hooks.models import (
     ToolStatus,
     UserPromptSubmitInvocation,
 )
-from vibe.core.llm.format import ResolvedToolCall
+from vibe.core.llm.models import ResolvedToolCall
 from vibe.core.logger import logger
 from vibe.core.types import ToolResultEvent
 from vibe.core.utils import (

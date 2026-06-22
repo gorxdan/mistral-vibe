@@ -41,12 +41,8 @@ from vibe.core.hooks.manager import HooksManager
 from vibe.core.hooks.models import HookConfigResult, HookEvent
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
 from vibe.core.llm.exceptions import BackendError
-from vibe.core.llm.format import (
-    APIToolFormatHandler,
-    FailedToolCall,
-    ResolvedMessage,
-    ResolvedToolCall,
-)
+from vibe.core.llm.format import APIToolFormatHandler
+from vibe.core.llm.models import FailedToolCall, ResolvedMessage, ResolvedToolCall
 from vibe.core.llm.types import BackendLike
 from vibe.core.logger import logger
 from vibe.core.lsp._integration import drain_diagnostics_into

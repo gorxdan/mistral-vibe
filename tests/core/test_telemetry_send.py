@@ -11,7 +11,7 @@ import pytest
 from tests.conftest import build_test_vibe_config
 from tests.stubs.fake_tool import FakeTool, FakeToolArgs
 from vibe.core.agent_loop import ToolDecision, ToolExecutionResponse
-from vibe.core.llm.format import ResolvedToolCall
+from vibe.core.llm.models import ResolvedToolCall
 from vibe.core.telemetry.build_metadata import (
     build_base_metadata,
     build_request_metadata,
