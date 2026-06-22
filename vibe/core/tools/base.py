@@ -78,9 +78,9 @@ class InvokeContext:
     # plus optional phase filter / raw flag. Used by the workflow_results tool
     # to recover work from completed/stopped/partially-failed runs on demand,
     # instead of relying solely on the one-shot completion delivery.
-    workflow_results_callback: (
-        Callable[..., dict[str, Any]] | None
-    ) = field(default=None)
+    workflow_results_callback: Callable[..., dict[str, Any]] | None = field(
+        default=None
+    )
     # Stops one run (run_id) or all runs (all_runs=True). Async because
     # WorkflowRunner.stop awaits the cancelled task. Returns a dict with
     # stopped / stopped_run_ids / message. Wired to the WorkflowRunner.

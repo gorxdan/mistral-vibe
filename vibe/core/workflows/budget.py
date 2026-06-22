@@ -127,12 +127,10 @@ class ReadOnlyBudget:
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError(
-            "budget is read-only in workflow scripts; cannot set attribute "
-            f"{name!r}"
+            f"budget is read-only in workflow scripts; cannot set attribute {name!r}"
         )
 
     def __delattr__(self, name: str) -> None:
         raise AttributeError(
-            "budget is read-only in workflow scripts; cannot delete attribute "
-            f"{name!r}"
+            f"budget is read-only in workflow scripts; cannot delete attribute {name!r}"
         )

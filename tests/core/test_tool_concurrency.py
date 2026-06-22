@@ -40,9 +40,7 @@ async def test_writers_run_sequentially_readers_run_parallel() -> None:
         await asyncio.sleep(0.02)
         events.append(f"end:{tc.tool_name}")
         yield ToolResultEvent(
-            tool_name=tc.tool_name,
-            tool_class=tc.tool_class,
-            tool_call_id=tc.call_id,
+            tool_name=tc.tool_name, tool_class=tc.tool_class, tool_call_id=tc.call_id
         )
 
     loop._process_one_tool_call = fake_process  # type: ignore[method-assign]

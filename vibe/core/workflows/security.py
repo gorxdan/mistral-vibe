@@ -417,11 +417,7 @@ def _late_binding_lambda(tree: ast.AST) -> list[Violation]:
         loop_vars = target_names(comp.generators)
         if not loop_vars:
             continue
-        elts = (
-            [comp.key, comp.value]
-            if isinstance(comp, ast.DictComp)
-            else [comp.elt]
-        )
+        elts = [comp.key, comp.value] if isinstance(comp, ast.DictComp) else [comp.elt]
         for elt in elts:
             for lam in ast.walk(elt):
                 if not isinstance(lam, ast.Lambda):

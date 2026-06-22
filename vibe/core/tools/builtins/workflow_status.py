@@ -86,9 +86,7 @@ class WorkflowStatus(
     def get_status_text(cls) -> str:
         return "Querying workflow status"
 
-    def resolve_permission(
-        self, args: WorkflowStatusArgs
-    ) -> PermissionContext | None:
+    def resolve_permission(self, args: WorkflowStatusArgs) -> PermissionContext | None:
         return PermissionContext(permission=ToolPermission.ALWAYS)
 
     async def run(

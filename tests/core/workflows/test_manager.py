@@ -143,9 +143,7 @@ def test_description_with_colon_parsed_via_yaml(tmp_path: Path) -> None:
 
 def test_malformed_frontmatter_falls_back_to_stem(tmp_path: Path) -> None:
     wf_file = tmp_path / "broken.py"
-    wf_file.write_text(
-        "---\nname: [unclosed\n---\nasync def main():\n    return {}\n"
-    )
+    wf_file.write_text("---\nname: [unclosed\n---\nasync def main():\n    return {}\n")
     mgr = WorkflowManager(lambda: _make_config(workflow_paths=[tmp_path]))
     info = mgr.get_workflow("broken")
     assert info is not None  # name falls back to the filename stem
@@ -158,7 +156,9 @@ def test_malformed_frontmatter_falls_back_to_stem(tmp_path: Path) -> None:
 
 
 class _FakeHarness:
-    def __init__(self, project_dirs: list[Path], roots: list[Path] | None = None) -> None:
+    def __init__(
+        self, project_dirs: list[Path], roots: list[Path] | None = None
+    ) -> None:
         self.project_workflows_dirs = project_dirs
         self.project_roots = roots or []
         self.user_workflows_dirs = []
@@ -214,9 +214,7 @@ def test_save_slug_falls_back_when_name_has_no_alnum(
     assert path.name == "workflow.py"
 
 
-def test_save_location_user_uses_global_dir(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_save_location_user_uses_global_dir(tmp_path: Path, monkeypatch) -> None:
     """location='user' must write to ~/.vibe/workflows regardless of project dirs."""
     project_dir = tmp_path / "proj-wf"
     user_dir = tmp_path / "user-wf"
@@ -241,9 +239,7 @@ def test_save_location_user_uses_global_dir(
     assert path.name == "audit.py"
 
 
-def test_save_location_project_uses_project_dir(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_save_location_project_uses_project_dir(tmp_path: Path, monkeypatch) -> None:
     """location='project' writes to the closest project workflows dir."""
     project_dir = tmp_path / "proj-wf"
     monkeypatch.setattr(

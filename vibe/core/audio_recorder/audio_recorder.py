@@ -47,6 +47,7 @@ def __getattr__(name: str) -> Any:
         return globals()["sd"]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+
 DEFAULT_SAMPLE_RATE = 48_000
 DEFAULT_CHANNELS = 1
 DTYPE = "int16"

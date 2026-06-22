@@ -322,11 +322,9 @@ def _forbidden_control_char_reason(command: str) -> str | None:
     if match is None:
         return None
     char = match.group(0)
-    label = {
-        "\r": "carriage return (\\r)",
-        "\x00": "NUL",
-        "\x7f": "DEL",
-    }.get(char, f"control char U+{ord(char):04X}")
+    label = {"\r": "carriage return (\\r)", "\x00": "NUL", "\x7f": "DEL"}.get(
+        char, f"control char U+{ord(char):04X}"
+    )
     return (
         f"Command contains {label}, which has no legitimate use in a single "
         "command string and can make the security validator disagree with the "
@@ -633,9 +631,7 @@ class Bash(
             required.extend(guardrail_permission.required_permissions)
         if not required:
             if blocker is not None:
-                return PermissionContext(
-                    permission=ToolPermission.ASK, reason=blocker
-                )
+                return PermissionContext(permission=ToolPermission.ASK, reason=blocker)
             return None
 
         return PermissionContext(
@@ -694,8 +690,7 @@ class Bash(
             global _sandbox_unavailable_warned
             if not _sandbox_unavailable_warned:
                 logger.warning(
-                    "bash sandbox enabled but no backend available; "
-                    "running unsandboxed"
+                    "bash sandbox enabled but no backend available; running unsandboxed"
                 )
                 _sandbox_unavailable_warned = True
             return None, None, _get_base_env()
@@ -754,9 +749,7 @@ class Bash(
         kwargs: dict[Literal["start_new_session"], bool] = (
             {} if is_windows() else {"start_new_session": True}
         )
-        sandbox_argv, _profile_path, run_env = self._resolve_sandbox(
-            ctx, args.command
-        )
+        sandbox_argv, _profile_path, run_env = self._resolve_sandbox(ctx, args.command)
         shell_exe = _get_shell_executable()
         try:
             if sandbox_argv is not None:
@@ -804,7 +797,7 @@ class Bash(
             log_handle.close()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=1.0)
-            except (TimeoutError, Exception):  # noqa: BLE001
+            except (TimeoutError, Exception):
                 pass
             raise
 

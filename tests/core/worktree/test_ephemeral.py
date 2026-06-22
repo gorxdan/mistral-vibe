@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from git import Repo
+import pytest
 
 from vibe.core.worktree.ephemeral import (
     create_ephemeral_worktree,

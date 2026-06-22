@@ -56,9 +56,7 @@ def test_anthropic_compat_tags_last_system_and_user_str_content() -> None:
 
 def test_anthropic_compat_handles_list_content() -> None:
     cache = ProviderCacheConfig(mode="explicit", style="anthropic-compat")
-    msgs = [
-        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
-    ]
+    msgs = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
     build_cache_hint(_provider(cache), msgs)
     assert msgs[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}
 
@@ -85,11 +83,20 @@ def test_anthropic_parse_populates_cached_tokens() -> None:
 
 
 def test_cache_hit_ratio() -> None:
-    assert AgentStats(session_prompt_tokens=100, session_cached_tokens=80).cache_hit_ratio == 0.8
+    assert (
+        AgentStats(session_prompt_tokens=100, session_cached_tokens=80).cache_hit_ratio
+        == 0.8
+    )
     # clamp at 1.0 if a provider over-reports
-    assert AgentStats(session_prompt_tokens=100, session_cached_tokens=200).cache_hit_ratio == 1.0
+    assert (
+        AgentStats(session_prompt_tokens=100, session_cached_tokens=200).cache_hit_ratio
+        == 1.0
+    )
     # div-by-zero guard
-    assert AgentStats(session_prompt_tokens=0, session_cached_tokens=0).cache_hit_ratio == 0.0
+    assert (
+        AgentStats(session_prompt_tokens=0, session_cached_tokens=0).cache_hit_ratio
+        == 0.0
+    )
 
 
 def test_llm_usage_sums_cached_tokens() -> None:

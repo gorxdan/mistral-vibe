@@ -32,10 +32,7 @@ class TestDefaultName:
 class TestWorkflowSaveAppMessages:
     def test_save_confirmed_carries_fields(self) -> None:
         msg = WorkflowSaveApp.SaveConfirmed(
-            run_id="wf-1",
-            script_source="src",
-            name="audit",
-            location="user",
+            run_id="wf-1", script_source="src", name="audit", location="user"
         )
         assert msg.run_id == "wf-1"
         assert msg.script_source == "src"
@@ -65,10 +62,10 @@ class TestWorkflowSaveAppBindings:
 
 
 class TestWorkflowSaveAppActions:
-    def _make(self, monkeypatch: pytest.MonkeyPatch, name_value: str = "my-audit") -> tuple[WorkflowSaveApp, _FakeInput]:
-        app = WorkflowSaveApp(
-            run_id="wf-3", script_source="async def main(): return 1"
-        )
+    def _make(
+        self, monkeypatch: pytest.MonkeyPatch, name_value: str = "my-audit"
+    ) -> tuple[WorkflowSaveApp, _FakeInput]:
+        app = WorkflowSaveApp(run_id="wf-3", script_source="async def main(): return 1")
         fake_input = _FakeInput(name_value)
         # query_one returns the fake input for the name field; actions call it
         # instead of a real (app-bound) Textual Input widget.

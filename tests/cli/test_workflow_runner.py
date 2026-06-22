@@ -72,7 +72,8 @@ async def main():
 
 async def test_launch_records_args_for_snapshot() -> None:
     """WF-RESUME-01: launch args must be recorded on the entry so snapshots (and
-    therefore resume) carry them — otherwise resume re-runs with args=None."""
+    therefore resume) carry them — otherwise resume re-runs with args=None.
+    """
 
     async def mount(w: Any) -> None:
         pass
@@ -148,7 +149,7 @@ async def test_on_complete_fires_at_most_once_per_entry() -> None:
     runner = WorkflowRunner(mount=mount, on_complete=on_complete)
     rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_concurrent=1)
     script = "async def main():\n    return {}\n"
-    run_id = runner.launch(script, runtime=rt)
+    runner.launch(script, runtime=rt)
     entry = runner.runs[0]
     await entry.task
     assert fire_count["n"] == 1, "callback should fire exactly once on completion"
@@ -157,7 +158,6 @@ async def test_on_complete_fires_at_most_once_per_entry() -> None:
     # Simulate a re-fire (e.g. resume replay attempting to deliver again):
     # constructing a fresh _run_workflow call against the same entry must NOT
     # fire the callback a second time.
-    from vibe.cli.textual_ui.workflow_runner import WorkflowRunEntry
 
     # Manually re-run the delivery path against the already-delivered entry.
     if runner._on_complete and not entry.delivered:  # guard mirrors _run_workflow
@@ -240,11 +240,11 @@ async def main():
     assert completed_results[0].return_value == {"done": True}
 
 
-def _result(*, summary: str, return_value: Any, status: WorkflowStatus) -> WorkflowResult:
+def _result(
+    *, summary: str, return_value: Any, status: WorkflowStatus
+) -> WorkflowResult:
     return WorkflowResult(
-        return_value=return_value,
-        run=WorkflowRun(status=status),
-        summary=summary,
+        return_value=return_value, run=WorkflowRun(status=status), summary=summary
     )
 
 
@@ -264,7 +264,11 @@ def test_format_workflow_delivery_includes_return_value() -> None:
 
 
 def test_format_workflow_delivery_omits_absent_return_value() -> None:
-    result = _result(summary="Workflow failed: 0 tokens", return_value=None, status=WorkflowStatus.FAILED)
+    result = _result(
+        summary="Workflow failed: 0 tokens",
+        return_value=None,
+        status=WorkflowStatus.FAILED,
+    )
     payload = VibeApp._format_workflow_delivery(result)
     assert payload == "Workflow failed: 0 tokens"
     assert "Result:" not in payload
@@ -373,9 +377,7 @@ async def main():
     return {"r": r}
 """
     cached = CachedAgentResult(
-        prompt_hash="abc123",
-        agent="explore",
-        response="cached answer",
+        prompt_hash="abc123", agent="explore", response="cached answer"
     )
     snapshot = WorkflowRunSnapshot(
         run_id="wf-1",

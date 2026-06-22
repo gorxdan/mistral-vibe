@@ -34,10 +34,7 @@ print(",".join(leaked))
 
 def test_app_import_does_not_pull_heavy_optional_deps() -> None:
     result = subprocess.run(
-        [sys.executable, "-c", _PROBE],
-        capture_output=True,
-        text=True,
-        timeout=120,
+        [sys.executable, "-c", _PROBE], capture_output=True, text=True, timeout=120
     )
     assert result.returncode == 0, (
         f"probe failed (rc={result.returncode}):\n{result.stderr[-2000:]}"

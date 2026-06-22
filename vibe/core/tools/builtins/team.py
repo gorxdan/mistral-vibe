@@ -44,10 +44,16 @@ class TeamArgs(BaseModel):
         )
     )
     task_id: str | None = Field(default=None, description="Task id for claim/complete.")
-    description: str | None = Field(default=None, description="Result text for complete_task.")
+    description: str | None = Field(
+        default=None, description="Result text for complete_task."
+    )
     to_name: str | None = Field(default=None, description="Recipient for send_message.")
-    content: str | None = Field(default=None, description="Message body for send_message.")
-    mark_read: bool = Field(default=True, description="Mark messages read on read_messages.")
+    content: str | None = Field(
+        default=None, description="Message body for send_message."
+    )
+    mark_read: bool = Field(
+        default=True, description="Mark messages read on read_messages."
+    )
 
 
 class TeamResult(BaseModel):
@@ -115,7 +121,9 @@ class Team(
         # mark-read another teammate's inbox.
         name = os.environ.get("VIBE_TEAMMATE_NAME")
         if not name:
-            raise ToolError("Cannot determine teammate identity (VIBE_TEAMMATE_NAME is unset).")
+            raise ToolError(
+                "Cannot determine teammate identity (VIBE_TEAMMATE_NAME is unset)."
+            )
         return name
 
     async def run(
@@ -127,14 +135,11 @@ class Team(
             case "list_tasks":
                 tasks = [t.model_dump(mode="json") for t in task_store.get_all_tasks()]
                 yield TeamResult(
-                    action=args.action,
-                    message=f"{len(tasks)} task(s).",
-                    tasks=tasks,
+                    action=args.action, message=f"{len(tasks)} task(s).", tasks=tasks
                 )
             case "available_tasks":
                 tasks = [
-                    t.model_dump(mode="json")
-                    for t in task_store.get_available_tasks()
+                    t.model_dump(mode="json") for t in task_store.get_available_tasks()
                 ]
                 yield TeamResult(
                     action=args.action,
@@ -175,7 +180,9 @@ class Team(
                 )
             case "send_message":
                 if not args.to_name or args.content is None:
-                    raise ToolError("to_name and content are required for send_message.")
+                    raise ToolError(
+                        "to_name and content are required for send_message."
+                    )
                 from_name = self._self_name()
                 msg = mailbox.send(from_name, args.to_name, args.content)
                 yield TeamResult(

@@ -130,9 +130,9 @@ async def test_blocked_prompt_is_redacted_from_transcript() -> None:
 
     user_msgs = [m for m in loop.messages if m.role.value == "user"]
     assert user_msgs, "user slot retained for transcript coherence"
-    assert "sk-supersecret" not in "".join(
-        m.content or "" for m in user_msgs
-    ), "raw denied prompt must not persist"
+    assert "sk-supersecret" not in "".join(m.content or "" for m in user_msgs), (
+        "raw denied prompt must not persist"
+    )
     assert any("redacted" in (m.content or "") for m in user_msgs)
 
 

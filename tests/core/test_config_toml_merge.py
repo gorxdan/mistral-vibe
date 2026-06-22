@@ -41,8 +41,7 @@ def test_load_toml_merges_project_over_user(tmp_path: Path) -> None:
     """
     user_file = tmp_path / "user.toml"
     user_file.write_text(
-        'active_model = "glm"\n'
-        '[[models]]\nalias = "glm"\nprovider = "zai"\n'
+        'active_model = "glm"\n[[models]]\nalias = "glm"\nprovider = "zai"\n'
     )
     project_file = tmp_path / "project.toml"
     project_file.write_text(
