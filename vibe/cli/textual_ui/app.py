@@ -427,7 +427,7 @@ class VibeApp(App):  # noqa: PLR0904
         patch_driver_parser(driver_class)
         return driver_class
 
-    def __init__(  # noqa: PLR0915
+    def __init__(
         self,
         agent_loop: AgentLoop,
         startup: StartupOptions | None = None,
@@ -443,45 +443,27 @@ class VibeApp(App):  # noqa: PLR0904
     ) -> None:
         super().__init__(**kwargs)
         self.agent_loop = agent_loop
+        self._init_core_state(
+            update_notifier, update_cache_repository, current_version,
+            plan_offer_gateway, vscode_extension_promo,
+        )
+        self._init_managers(voice_manager, narrator_manager, terminal_notifier)
+        self._init_ui_state()
+        self._init_workflow_and_commands(startup)
+
+    def _init_core_state(
+        self,
+        update_notifier: UpdateGateway | None,
+        update_cache_repository: UpdateCacheRepository | None,
+        current_version: str,
+        plan_offer_gateway: WhoAmIGateway | None,
+        vscode_extension_promo: VscodeExtensionPromo | None,
+    ) -> None:
         self._plan_info: PlanInfo | None = None
-        self._voice_manager: VoiceManagerPort = (
-            voice_manager or self._make_default_voice_manager()
-        )
-        self._terminal_notifier = terminal_notifier or TextualNotificationAdapter(
-            self,
-            get_enabled=lambda: self.config.enable_notifications,
-            default_title="Chaton",
-        )
         self._agent_running = False
         self._interrupt_requested = False
         self._agent_task: asyncio.Task | None = None
         self._bash_task: asyncio.Task | None = None
-        self._queue = QueueController(self._build_queue_ports())
-        self._remote_manager = RemoteSessionManager()
-        self._remote_resume = RemoteResumeSessions(lambda: self.config)
-        self._resume_merge_task: asyncio.Task[None] | None = None
-
-        self._loading_widget: LoadingWidget | None = None
-        self._pending_approval: asyncio.Future | None = None
-        self._pending_question: asyncio.Future | None = None
-        self._user_interaction_lock = asyncio.Lock()
-
-        self.event_handler: EventHandler | None = None
-
-        self._chat_input_container: ChatInputContainer | None = None
-        self._current_bottom_app: BottomApp = BottomApp.Input
-
-        self.history_file = HISTORY_FILE.path
-
-        self._tools_collapsed = True
-        self._lsp_nudge_shown_this_session = False
-        self._recent_edited_exts: collections.deque[str] = collections.deque(maxlen=16)
-        self._windowing = SessionWindowing(load_more_batch_size=LOAD_MORE_BATCH_SIZE)
-        self._load_more = HistoryLoadMoreManager()
-        self._tool_call_map: dict[str, str] | None = None
-        self._history_widget_indices: WeakKeyDictionary[Widget, int] = (
-            WeakKeyDictionary()
-        )
         self._update_notifier = update_notifier
         self._update_cache_repository = update_cache_repository
         self._current_version = current_version
@@ -492,7 +474,47 @@ class VibeApp(App):  # noqa: PLR0904
             and _is_vscode_family_terminal()
             and should_show_promo(vscode_extension_promo.initial_state)
         )
-        self._configure_startup_options(startup)
+
+    def _init_managers(
+        self,
+        voice_manager: VoiceManagerPort | None,
+        narrator_manager: NarratorManagerPort | None,
+        terminal_notifier: NotificationPort | None,
+    ) -> None:
+        self._voice_manager: VoiceManagerPort = (
+            voice_manager or self._make_default_voice_manager()
+        )
+        self._terminal_notifier = terminal_notifier or TextualNotificationAdapter(
+            self,
+            get_enabled=lambda: self.config.enable_notifications,
+            default_title="Chaton",
+        )
+        self._narrator_manager: NarratorManagerPort = (
+            narrator_manager or self._make_default_narrator_manager()
+        )
+
+    def _init_ui_state(self) -> None:
+        self._queue = QueueController(self._build_queue_ports())
+        self._remote_manager = RemoteSessionManager()
+        self._remote_resume = RemoteResumeSessions(lambda: self.config)
+        self._resume_merge_task: asyncio.Task[None] | None = None
+        self._loading_widget: LoadingWidget | None = None
+        self._pending_approval: asyncio.Future | None = None
+        self._pending_question: asyncio.Future | None = None
+        self._user_interaction_lock = asyncio.Lock()
+        self.event_handler: EventHandler | None = None
+        self._chat_input_container: ChatInputContainer | None = None
+        self._current_bottom_app: BottomApp = BottomApp.Input
+        self.history_file = HISTORY_FILE.path
+        self._tools_collapsed = True
+        self._lsp_nudge_shown_this_session = False
+        self._recent_edited_exts: collections.deque[str] = collections.deque(maxlen=16)
+        self._windowing = SessionWindowing(load_more_batch_size=LOAD_MORE_BATCH_SIZE)
+        self._load_more = HistoryLoadMoreManager()
+        self._tool_call_map: dict[str, str] | None = None
+        self._history_widget_indices: WeakKeyDictionary[Widget, int] = (
+            WeakKeyDictionary()
+        )
         self._last_escape_time: float | None = None
         self._quit_manager = QuitManager(self)
         self._banner: Banner | None = None
@@ -503,14 +525,12 @@ class VibeApp(App):  # noqa: PLR0904
         self._log_reader = LogReader()
         self._debug_console: DebugConsole | None = None
         self._switch_agent_generation = 0
-        self._narrator_manager: NarratorManagerPort = (
-            narrator_manager or self._make_default_narrator_manager()
-        )
-
         self._rewind_mode = False
         self._rewind_highlighted_widget: UserMessage | None = None
         self._fatal_init_error = False
         self._force_quit_task: asyncio.Task[None] | None = None
+
+    def _init_workflow_and_commands(self, startup: StartupOptions | None) -> None:
         self.commands = self._build_command_registry()
         self._loop_runner = ScheduledLoopRunner(
             self.agent_loop.session_logger,
@@ -521,8 +541,6 @@ class VibeApp(App):  # noqa: PLR0904
             mount=self._mount_and_scroll,
             tools_collapsed=lambda: self._tools_collapsed,
         )
-        # Let the `schedule` tool enqueue into the live runner the model can't
-        # reach the slash command, but it can call the tool.
         self.agent_loop.set_scheduler(self._loop_runner.manager)
         self._workflow_runner = WorkflowRunner(
             mount=self._mount_and_scroll,
@@ -539,15 +557,12 @@ class VibeApp(App):  # noqa: PLR0904
         self.agent_loop.workflow_stop_callback = self._workflow_stop_for_tool
         self.agent_loop.team_dir_callback = self._team_dir_for_tool
         self._team_manager: TeamManager | None = None
-        # Unified background-task registry. Owns bash-backgrounded processes and
-        # aggregates workflows/teams/loops for the Tasks pane (ctrl+w) and the
-        # `background` tool. Adapters read lazily so a lazily-created owner
-        # (TeamManager) is picked up when it appears.
         self._background_registry = BackgroundRegistry()
         self._background_registry.attach_workflow_runner(lambda: self._workflow_runner)
         self._background_registry.attach_team_manager(lambda: self._team_manager)
         self._background_registry.attach_loop_manager(lambda: self._loop_runner.manager)
         self.agent_loop.background_registry = self._background_registry
+        self._configure_startup_options(startup)
 
     def _configure_startup_options(self, startup: StartupOptions | None) -> None:
         opts = startup or StartupOptions()
@@ -3139,7 +3154,7 @@ class VibeApp(App):  # noqa: PLR0904
             loop.session_id, hooks_manager=loop.hooks_manager, hook_context=hook_context
         )
 
-    async def _team_command(self, cmd_args: str = "", **kwargs: Any) -> None:  # noqa: PLR0912
+    async def _team_command(self, cmd_args: str = "", **kwargs: Any) -> None:
         from vibe.cli.textual_ui.widgets.messages import (
             ErrorMessage,
             UserCommandMessage,
@@ -3165,113 +3180,13 @@ class VibeApp(App):  # noqa: PLR0904
 
         match verb:
             case "spawn":
-                if len(parts) < 3:
-                    await self._mount_and_scroll(
-                        ErrorMessage("Usage: /team spawn <name> <prompt>")
-                    )
-                    return
-                name = parts[1]
-                prompt = parts[2]
-                if self._team_manager is None:
-                    self._team_manager = self._build_team_manager()
-                await self._team_manager.spawn_teammate(name, prompt)
-                await self._mount_and_scroll(
-                    UserCommandMessage(f"Spawned teammate `{name}`.")
-                )
-
+                await self._team_spawn(parts, ErrorMessage, UserCommandMessage)
             case "stop" | "cancel" | "kill":
-                if self._team_manager is None:
-                    await self._mount_and_scroll(UserCommandMessage("No team active."))
-                    return
-                if len(parts) < 2:
-                    await self._mount_and_scroll(
-                        ErrorMessage("Usage: /team stop <name|all>")
-                    )
-                    return
-                target = parts[1]
-                if target == "all":
-                    await self._team_manager.stop_all()
-                    await self._mount_and_scroll(
-                        UserCommandMessage("Stopped all teammates.")
-                    )
-                else:
-                    stopped = await self._team_manager.stop_teammate(target)
-                    if stopped:
-                        await self._mount_and_scroll(
-                            UserCommandMessage(f"Stopped teammate `{target}`.")
-                        )
-                    else:
-                        await self._mount_and_scroll(
-                            ErrorMessage(f"Could not stop `{target}`.")
-                        )
-
+                await self._team_stop(parts, ErrorMessage, UserCommandMessage)
             case "cleanup":
-                if self._team_manager is not None:
-                    self._team_manager.cleanup()
-                    self._team_manager = None
-                    await self._mount_and_scroll(UserCommandMessage("Team cleaned up."))
-
+                await self._team_cleanup(UserCommandMessage)
             case "task":
-                if self._team_manager is None:
-                    self._team_manager = self._build_team_manager()
-                sub = parts[1].lower() if len(parts) >= 2 else "list"
-                rest = parts[2] if len(parts) >= 3 else ""
-                if sub == "add":
-                    if not rest.strip():
-                        await self._mount_and_scroll(
-                            ErrorMessage("Usage: /team task add <description>")
-                        )
-                        return
-                    task = await self._team_manager.add_team_task(rest.strip())
-                    await self._mount_and_scroll(
-                        UserCommandMessage(
-                            f"Created task `{task.id}`: {task.description}"
-                        )
-                    )
-                elif sub == "done":
-                    # `task done <id> [result]` — rest is "<id> [result words]".
-                    id_and_result = rest.split(None, 1) if rest else []
-                    if not id_and_result:
-                        await self._mount_and_scroll(
-                            ErrorMessage("Usage: /team task done <id> [result]")
-                        )
-                        return
-                    task_id = id_and_result[0]
-                    result = id_and_result[1] if len(id_and_result) > 1 else None
-                    task = await self._team_manager.complete_team_task(task_id, result)
-                    if task is None:
-                        await self._mount_and_scroll(
-                            ErrorMessage(f"No such task `{task_id}`.")
-                        )
-                    else:
-                        await self._mount_and_scroll(
-                            UserCommandMessage(f"Completed task `{task.id}`.")
-                        )
-                elif sub in {"list", "ls"}:
-                    store = self._team_manager.task_store
-                    store.reload()  # reflect tasks claimed/completed by teammates
-                    tasks = store.get_all_tasks()
-                    if not tasks:
-                        await self._mount_and_scroll(UserCommandMessage("No tasks."))
-                        return
-                    rows = [
-                        "| ID | Status | Assignee | Description |",
-                        "|----|--------|----------|-------------|",
-                    ]
-                    for t in tasks:
-                        rows.append(
-                            f"| {t.id} | {t.status.value} | {t.assignee or '-'} | "
-                            f"{t.description} |"
-                        )
-                    await self._mount_and_scroll(UserCommandMessage("\n".join(rows)))
-                else:
-                    await self._mount_and_scroll(
-                        ErrorMessage(
-                            f"Unknown /team task subcommand: `{sub}`.\n"
-                            "Usage: /team task [add <desc>|done <id> [result]|list]"
-                        )
-                    )
-
+                await self._team_task(parts, ErrorMessage, UserCommandMessage)
             case _:
                 await self._mount_and_scroll(
                     ErrorMessage(
@@ -3280,6 +3195,120 @@ class VibeApp(App):  # noqa: PLR0904
                         "task <add|done|list>|cleanup]"
                     )
                 )
+
+    async def _team_spawn(
+        self, parts: list[str], ErrorMessage: type, UserCommandMessage: type
+    ) -> None:
+        _MIN_PARTS_FOR_SPAWN = 3
+        if len(parts) < _MIN_PARTS_FOR_SPAWN:
+            await self._mount_and_scroll(
+                ErrorMessage("Usage: /team spawn <name> <prompt>")
+            )
+            return
+        name = parts[1]
+        prompt = parts[2]
+        if self._team_manager is None:
+            self._team_manager = self._build_team_manager()
+        await self._team_manager.spawn_teammate(name, prompt)
+        await self._mount_and_scroll(
+            UserCommandMessage(f"Spawned teammate `{name}`.")
+        )
+
+    async def _team_stop(
+        self, parts: list[str], ErrorMessage: type, UserCommandMessage: type
+    ) -> None:
+        if self._team_manager is None:
+            await self._mount_and_scroll(UserCommandMessage("No team active."))
+            return
+        if len(parts) < 2:
+            await self._mount_and_scroll(
+                ErrorMessage("Usage: /team stop <name|all>")
+            )
+            return
+        target = parts[1]
+        if target == "all":
+            await self._team_manager.stop_all()
+            await self._mount_and_scroll(
+                UserCommandMessage("Stopped all teammates.")
+            )
+        else:
+            stopped = await self._team_manager.stop_teammate(target)
+            if stopped:
+                await self._mount_and_scroll(
+                    UserCommandMessage(f"Stopped teammate `{target}`.")
+                )
+            else:
+                await self._mount_and_scroll(
+                    ErrorMessage(f"Could not stop `{target}`.")
+                )
+
+    async def _team_cleanup(self, UserCommandMessage: type) -> None:
+        if self._team_manager is not None:
+            self._team_manager.cleanup()
+            self._team_manager = None
+            await self._mount_and_scroll(UserCommandMessage("Team cleaned up."))
+
+    async def _team_task(
+        self, parts: list[str], ErrorMessage: type, UserCommandMessage: type
+    ) -> None:
+        if self._team_manager is None:
+            self._team_manager = self._build_team_manager()
+        sub = parts[1].lower() if len(parts) >= 2 else "list"
+        rest = parts[2] if len(parts) >= 3 else ""
+        if sub == "add":
+            if not rest.strip():
+                await self._mount_and_scroll(
+                    ErrorMessage("Usage: /team task add <description>")
+                )
+                return
+            task = await self._team_manager.add_team_task(rest.strip())
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    f"Created task `{task.id}`: {task.description}"
+                )
+            )
+        elif sub == "done":
+            id_and_result = rest.split(None, 1) if rest else []
+            if not id_and_result:
+                await self._mount_and_scroll(
+                    ErrorMessage("Usage: /team task done <id> [result]")
+                )
+                return
+            task_id = id_and_result[0]
+            task_result = id_and_result[1] if len(id_and_result) > 1 else None
+            task = await self._team_manager.complete_team_task(task_id, task_result)
+            if task is None:
+                await self._mount_and_scroll(
+                    ErrorMessage(f"No such task `{task_id}`.")
+                )
+            else:
+                await self._mount_and_scroll(
+                    UserCommandMessage(f"Completed task `{task.id}`.")
+                )
+        elif sub in {"list", "ls"}:
+            store = self._team_manager.task_store
+            store.reload()
+            tasks = store.get_all_tasks()
+            if not tasks:
+                await self._mount_and_scroll(UserCommandMessage("No tasks."))
+                return
+            rows = [
+                "| ID | Status | Assignee | Description |",
+                "|----|--------|----------|-------------|",
+            ]
+            for t in tasks:
+                rows.append(
+                    f"| {t.id} | {t.status.value} | {t.assignee or '-'} | "
+                    f"{t.description} |"
+                )
+            await self._mount_and_scroll(UserCommandMessage("\n".join(rows)))
+        else:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"Unknown /team task subcommand: `{sub}`.\n"
+                    "Usage: /team task [add <desc>|done <id> [result]|list]"
+                )
+            )
 
     async def _switch_to_tasks_app(self) -> None:
         await self._switch_from_input(
@@ -4240,8 +4269,6 @@ class VibeApp(App):  # noqa: PLR0904
                 widget_cls = self._BOTTOM_APP_WIDGET.get(app)
                 if widget_cls is not None:
                     self.query_one(widget_cls).focus()
-                else:
-                    assert_never(app)
         except Exception:
             pass
 

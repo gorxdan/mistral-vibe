@@ -370,7 +370,7 @@ class WorkflowRunner:
         drop = {id(r) for r in finished[:excess]}
         self._runs = [r for r in self._runs if id(r) not in drop]
 
-    async def handle_command(self, cmd_args: str) -> Widget:  # noqa: PLR0911
+    async def handle_command(self, cmd_args: str) -> Widget:
         cmd_args = cmd_args.strip()
         if not cmd_args or cmd_args in {"list", "ls"}:
             return UserCommandMessage(_format_run_list(self._runs))
@@ -380,51 +380,57 @@ class WorkflowRunner:
 
         match verb:
             case "stop" | "cancel" | "kill":
-                if len(parts) < _MIN_PARTS_FOR_STOP:
-                    return ErrorMessage("Usage: /workflows stop <run-id>")
-                target_id = parts[1].strip()
-                if target_id == "all":
-                    await self.stop_all()
-                    return UserCommandMessage("Stopped all workflow runs.")
-                stopped = await self.stop(target_id)
-                if stopped:
-                    return UserCommandMessage(f"Stopped workflow `{target_id}`.")
-                return ErrorMessage(
-                    f"Could not stop `{target_id}` — not found or already finished."
-                )
-
+                return await self._cmd_stop(parts)
             case "snapshot" | "snap":
-                if len(parts) < _MIN_PARTS_FOR_STOP:
-                    return ErrorMessage("Usage: /workflows snapshot <run-id>")
-                target_id = parts[1].strip()
-                snap = self.get_snapshot(target_id)
-                if snap is None:
-                    return ErrorMessage(f"Run `{target_id}` not found.")
-                return UserCommandMessage(
-                    f"Snapshot of `{target_id}`: {snap.cached_count} cached results, "
-                    f"{snap.budget_spent} tokens spent, status: {snap.status.value}"
-                )
-
+                return await self._cmd_snapshot(parts)
             case "resume":
-                if len(parts) < _MIN_PARTS_FOR_STOP:
-                    return ErrorMessage("Usage: /workflows resume <run-id>")
-                target_id = parts[1].strip()
-                snapshot = self._load_snapshot_for_resume(target_id)
-                if snapshot is None:
-                    return ErrorMessage(
-                        f"No persisted snapshot for `{target_id}` in this session."
-                    )
-                runtime = self._resume_runtime_factory()
-                if runtime is None:
-                    return ErrorMessage("Cannot resume: no runtime factory configured.")
-                new_id = self.resume(target_id, snapshot, runtime=runtime)
-                return UserCommandMessage(
-                    f"Resumed workflow `{target_id}` as `{new_id}` "
-                    f"({snapshot.cached_count} cached results restored)."
-                )
-
+                return await self._cmd_resume(parts)
             case _:
                 return ErrorMessage(
                     f"Unknown /workflows subcommand: `{verb}`.\n"
                     "Usage: /workflows [list|stop <id|all>|snapshot <id>|resume <id>]"
                 )
+
+    async def _cmd_stop(self, parts: list[str]) -> Widget:
+        if len(parts) < _MIN_PARTS_FOR_STOP:
+            return ErrorMessage("Usage: /workflows stop <run-id>")
+        target_id = parts[1].strip()
+        if target_id == "all":
+            await self.stop_all()
+            return UserCommandMessage("Stopped all workflow runs.")
+        stopped = await self.stop(target_id)
+        if stopped:
+            return UserCommandMessage(f"Stopped workflow `{target_id}`.")
+        return ErrorMessage(
+            f"Could not stop `{target_id}` — not found or already finished."
+        )
+
+    async def _cmd_snapshot(self, parts: list[str]) -> Widget:
+        if len(parts) < _MIN_PARTS_FOR_STOP:
+            return ErrorMessage("Usage: /workflows snapshot <run-id>")
+        target_id = parts[1].strip()
+        snap = self.get_snapshot(target_id)
+        if snap is None:
+            return ErrorMessage(f"Run `{target_id}` not found.")
+        return UserCommandMessage(
+            f"Snapshot of `{target_id}`: {snap.cached_count} cached results, "
+            f"{snap.budget_spent} tokens spent, status: {snap.status.value}"
+        )
+
+    async def _cmd_resume(self, parts: list[str]) -> Widget:
+        if len(parts) < _MIN_PARTS_FOR_STOP:
+            return ErrorMessage("Usage: /workflows resume <run-id>")
+        target_id = parts[1].strip()
+        snapshot = self._load_snapshot_for_resume(target_id)
+        if snapshot is None:
+            return ErrorMessage(
+                f"No persisted snapshot for `{target_id}` in this session."
+            )
+        runtime = self._resume_runtime_factory()
+        if runtime is None:
+            return ErrorMessage("Cannot resume: no runtime factory configured.")
+        new_id = self.resume(target_id, snapshot, runtime=runtime)
+        return UserCommandMessage(
+            f"Resumed workflow `{target_id}` as `{new_id}` "
+            f"({snapshot.cached_count} cached results restored)."
+        )
