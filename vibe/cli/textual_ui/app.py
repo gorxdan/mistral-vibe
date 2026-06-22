@@ -4269,8 +4269,6 @@ class VibeApp(App):  # noqa: PLR0904
                 widget_cls = self._BOTTOM_APP_WIDGET.get(app)
                 if widget_cls is not None:
                     self.query_one(widget_cls).focus()
-                else:
-                    assert_never(app)
         except Exception:
             pass
 
