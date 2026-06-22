@@ -1545,7 +1545,7 @@ async def test_provider_selection_chatgpt_sign_in_persists_config() -> None:
 
     assert app.return_value == "completed"
     config = _config_toml_dict()
-    assert config["active_model"] == "gpt-5.1-codex"
+    assert config["active_model"] == "gpt-5.5"
     assert "openai-chatgpt" in [p["name"] for p in config["providers"]]
 
 
