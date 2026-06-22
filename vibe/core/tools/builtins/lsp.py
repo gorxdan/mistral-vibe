@@ -221,7 +221,11 @@ class Lsp(
                 file_path, "workspace/symbol", {"query": query}
             )
             return self._format_symbols(f"Workspace symbols matching '{query}'", raw)
-        if args.operation in {LspOperation.INCOMING_CALLS, LspOperation.OUTGOING_CALLS}:
+        if args.operation in {
+            LspOperation.PREPARE_CALL_HIERARCHY,
+            LspOperation.INCOMING_CALLS,
+            LspOperation.OUTGOING_CALLS,
+        }:
             return await self._call_hierarchy(
                 manager, args, file_path, text_doc, position or {}
             )
@@ -255,12 +259,6 @@ class Lsp(
                 self._format_symbols,
                 None,
             ),
-            LspOperation.PREPARE_CALL_HIERARCHY: (
-                "textDocument/prepareCallHierarchy",
-                "Call hierarchy items",
-                self._format_call_items,
-                None,
-            ),
         }
 
     async def _call_hierarchy(
@@ -271,20 +269,40 @@ class Lsp(
         text_doc: dict[str, Any],
         position: dict[str, int],
     ) -> LspResult:
-        items, _ = await manager.send_request(
-            file_path,
-            "textDocument/prepareCallHierarchy",
-            {**text_doc, "position": position},
+        items = await self._prepare_call_hierarchy_at(
+            manager, file_path, text_doc, position
         )
         if not items:
-            label = (
-                "Incoming calls"
-                if args.operation is LspOperation.INCOMING_CALLS
-                else "Outgoing calls"
+            # prepareCallHierarchy is stricter than hover/references: it needs
+            # the cursor exactly on the callable's identifier (its
+            # selectionRange). An agent passing a column on the `fn`/`def`
+            # keyword or leading whitespace gets an empty result. Resolve the
+            # deepest document symbol spanning the position and retry at its
+            # selectionRange.start so the request lands on the identifier.
+            resolved = await self._resolve_callable_position(
+                manager, file_path, text_doc, position
             )
+            if resolved is not None and resolved != position:
+                items = await self._prepare_call_hierarchy_at(
+                    manager, file_path, text_doc, resolved
+                )
+
+        if args.operation is LspOperation.PREPARE_CALL_HIERARCHY:
+            return self._format_call_items("Call hierarchy items", items)
+
+        label = (
+            "Incoming calls"
+            if args.operation is LspOperation.INCOMING_CALLS
+            else "Outgoing calls"
+        )
+        if not items:
             return LspResult(
                 operation=str(args.operation),
-                summary=f"{label}: no call hierarchy at position.",
+                summary=(
+                    f"{label}: no callable at line {position.get('line', 0) + 1}. "
+                    "Set character to the function/method name, or use "
+                    "find_references (carries the same caller info) as a fallback."
+                ),
             )
         method = (
             "callHierarchy/incomingCalls"
@@ -295,20 +313,103 @@ class Lsp(
         for item in items[:5]:
             raw, _ = await manager.send_request(file_path, method, {"item": item})
             for call in raw or []:
+                # LSP: CallHierarchyIncomingCall carries `from` (the caller);
+                # CallHierarchyOutgoingCall carries `to` (the callee).
                 target = (
-                    call.get("to")
+                    call.get("from")
                     if args.operation is LspOperation.INCOMING_CALLS
-                    else call.get("from")
+                    else call.get("to")
                 )
                 if target:
                     out.append(target)
-        label = (
-            "Incoming calls"
-            if args.operation is LspOperation.INCOMING_CALLS
-            else "Outgoing calls"
-        )
         out = await self._filter_gitignored(out)
         return self._format_locations(label, out)
+
+    async def _prepare_call_hierarchy_at(
+        self,
+        manager: Any,
+        file_path: str,
+        text_doc: dict[str, Any],
+        position: dict[str, int],
+    ) -> list[dict[str, Any]]:
+        raw, _ = await manager.send_request(
+            file_path,
+            "textDocument/prepareCallHierarchy",
+            {**text_doc, "position": position},
+        )
+        return self._as_item_list(raw)
+
+    @staticmethod
+    def _as_item_list(raw: Any) -> list[dict[str, Any]]:
+        if not raw:
+            return []
+        if isinstance(raw, dict):
+            return [raw]
+        return [x for x in raw if isinstance(x, dict)]
+
+    async def _resolve_callable_position(
+        self,
+        manager: Any,
+        file_path: str,
+        text_doc: dict[str, Any],
+        position: dict[str, int],
+    ) -> dict[str, int] | None:
+        raw, _ = await manager.send_request(
+            file_path, "textDocument/documentSymbol", text_doc
+        )
+        if not raw:
+            return None
+        node = self._deepest_symbol_at(raw, position)
+        if node is None:
+            return None
+        # DocumentSymbol carries selectionRange (the identifier); SymbolInformation
+        # carries a location.range instead.
+        if isinstance(node.get("selectionRange"), dict):
+            start = (node.get("selectionRange") or {}).get("start") or {}
+        else:
+            start = ((node.get("location") or {}).get("range") or {}).get("start") or {}
+        line = start.get("line")
+        character = start.get("character")
+        if line is None or character is None:
+            return None
+        return {"line": int(line), "character": int(character)}
+
+    @classmethod
+    def _deepest_symbol_at(
+        cls, symbols: list[Any], position: dict[str, int]
+    ) -> dict[str, Any] | None:
+        best: dict[str, Any] | None = None
+        for sym in symbols:
+            if not isinstance(sym, dict):
+                continue
+            if "selectionRange" in sym:
+                rng = sym.get("range")
+            else:
+                rng = (sym.get("location") or {}).get("range")
+            if not isinstance(rng, dict) or not cls._range_contains(rng, position):
+                continue
+            best = sym
+            children = sym.get("children")
+            if isinstance(children, list):
+                deeper = cls._deepest_symbol_at(children, position)
+                if deeper is not None:
+                    best = deeper
+        return best
+
+    @staticmethod
+    def _range_contains(rng: dict[str, Any], position: dict[str, int]) -> bool:
+        start = rng.get("start") or {}
+        end = rng.get("end") or {}
+        pl, pc = position.get("line", 0), position.get("character", 0)
+        sl, sc = start.get("line", 0), start.get("character", 0)
+        el, ec = end.get("line", 0), end.get("character", 0)
+        if pl < sl or pl > el:
+            return False
+        if pl == sl and pc < sc:
+            return False
+        if pl == el and pc > ec:
+            return False
+        return True
 
     def _format_locations(self, label: str, raw: Any) -> LspResult:
         items = self._as_location_list(raw)

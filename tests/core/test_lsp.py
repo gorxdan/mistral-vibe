@@ -460,6 +460,203 @@ async def test_resolve_path_rejects_oversized_file(tmp_path) -> None:
         tool._resolve_path(str(big))
 
 
+class _FakeCallHierarchyManager:
+    """Replays canned responses keyed by (method, position) and records the
+    sequence of requests so tests assert retry behavior.
+    """
+
+    def __init__(
+        self,
+        prepare_responses: dict[tuple[int, int], list[dict]],
+        document_symbols: list[dict],
+        call_edges: dict[str, list[dict]] | None = None,
+    ) -> None:
+        self._prepare = prepare_responses
+        self._symbols = document_symbols
+        self._edges = call_edges or {}
+        self.requests: list[tuple[str, dict]] = []
+
+    async def send_request(self, file_path: str, method: str, params: dict):
+        self.requests.append((method, params))
+        if method == "textDocument/prepareCallHierarchy":
+            pos = params.get("position") or {}
+            return self._prepare.get(
+                (pos.get("line", -1), pos.get("character", -1)), []
+            ), None
+        if method == "textDocument/documentSymbol":
+            return self._symbols, None
+        if method in {"callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"}:
+            item = (params.get("item") or {}).get("name", "")
+            return self._edges.get(item, []), None
+        return None, None
+
+
+def _make_lsp_tool():
+    from vibe.core.tools.builtins.lsp import Lsp, LspConfig, LspState
+
+    return Lsp(config_getter=lambda: LspConfig(), state=LspState())
+
+
+def _fn_symbol(name: str, sel_start: tuple[int, int], rng_end: tuple[int, int]):
+    # A DocumentSymbol whose identifier (selectionRange) is at sel_start.
+    return {
+        "name": name,
+        "kind": 12,
+        "range": {
+            "start": {"line": sel_start[0], "character": 0},
+            "end": {"line": rng_end[0], "character": rng_end[1]},
+        },
+        "selectionRange": {
+            "start": {"line": sel_start[0], "character": sel_start[1]},
+            "end": {"line": sel_start[0], "character": sel_start[1] + len(name)},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_call_hierarchy_resolves_off_identifier_position_and_retries() -> None:
+    # The agent passed character=1 (on the `fn`/`def` keyword), not on the
+    # identifier. prepareCallHierarchy at (10,0) returns []; the tool resolves
+    # via documentSymbol to the identifier at (10,4) and retries successfully.
+    from vibe.core.tools.builtins.lsp import LspOperation
+
+    tool = _make_lsp_tool()
+    # identifier `foo` starts at line 10 (0-based), char 4.
+    symbols = [_fn_symbol("foo", (10, 4), (12, 0))]
+    manager = _FakeCallHierarchyManager(
+        prepare_responses={(10, 4): [{"name": "foo"}]},
+        document_symbols=symbols,
+        call_edges={"foo": [{"from": {"name": "caller", "uri": "file:///x.rs"}}]},
+    )
+    args = type(
+        "A", (), {"operation": LspOperation.INCOMING_CALLS, "file_path": "/x.rs"}
+    )()
+    result = await tool._call_hierarchy(
+        manager,
+        args,
+        "/x.rs",
+        {"textDocument": {"uri": "file:///x.rs"}},
+        {"line": 10, "character": 0},
+    )
+    # First prepare at (10,0) empty -> documentSymbol -> retry prepare at (10,4).
+    prepare_positions = [
+        p["position"]
+        for m, p in manager.requests
+        if m == "textDocument/prepareCallHierarchy"
+    ]
+    assert prepare_positions == [
+        {"line": 10, "character": 0},
+        {"line": 10, "character": 4},
+    ]
+    # Incoming edge carries `from` (the caller) per LSP spec.
+    assert result.locations
+    assert any("caller" in (loc.get("name") or "") for loc in result.locations)
+
+
+@pytest.mark.asyncio
+async def test_call_hierarchy_no_retry_when_position_already_on_identifier() -> None:
+    # Position lands exactly on the identifier: prepare succeeds first try, no
+    # documentSymbol lookup, no retry.
+    from vibe.core.tools.builtins.lsp import LspOperation
+
+    tool = _make_lsp_tool()
+    symbols = [_fn_symbol("foo", (10, 4), (12, 0))]
+    manager = _FakeCallHierarchyManager(
+        prepare_responses={(10, 4): [{"name": "foo"}]},
+        document_symbols=symbols,
+        call_edges={"foo": [{"from": {"name": "caller", "uri": "file:///x.rs"}}]},
+    )
+    args = type("A", (), {"operation": LspOperation.INCOMING_CALLS})()
+    result = await tool._call_hierarchy(
+        manager,
+        args,
+        "/x.rs",
+        {"textDocument": {"uri": "file:///x.rs"}},
+        {"line": 10, "character": 4},
+    )
+    methods = [m for m, _ in manager.requests]
+    assert methods == [
+        "textDocument/prepareCallHierarchy",
+        "callHierarchy/incomingCalls",
+    ]
+    assert result.locations
+
+
+@pytest.mark.asyncio
+async def test_outgoing_calls_extract_to_field_not_from() -> None:
+    # Locks the corrected direction: CallHierarchyOutgoingCall carries `to`
+    # (the callee). A stray `from` must be ignored.
+    from vibe.core.tools.builtins.lsp import LspOperation
+
+    tool = _make_lsp_tool()
+    symbols = [_fn_symbol("foo", (2, 4), (4, 0))]
+    manager = _FakeCallHierarchyManager(
+        prepare_responses={(2, 4): [{"name": "foo"}]},
+        document_symbols=symbols,
+        call_edges={
+            "foo": [
+                {"to": {"name": "bar", "uri": "file:///x.rs"}},
+                {"from": {"name": "stray", "uri": "file:///x.rs"}},
+            ]
+        },
+    )
+    args = type("A", (), {"operation": LspOperation.OUTGOING_CALLS})()
+    result = await tool._call_hierarchy(
+        manager,
+        args,
+        "/x.rs",
+        {"textDocument": {"uri": "file:///x.rs"}},
+        {"line": 2, "character": 4},
+    )
+    names = {loc.get("name") for loc in result.locations}
+    assert "bar" in names
+    assert "stray" not in names
+
+
+@pytest.mark.asyncio
+async def test_call_hierarchy_actionable_message_when_genuinely_empty() -> None:
+    # No callable anywhere at the position and documentSymbol finds nothing
+    # spanning it: surface an actionable fallback message pointing to
+    # find_references instead of a bare "no call hierarchy at position".
+    from vibe.core.tools.builtins.lsp import LspOperation
+
+    tool = _make_lsp_tool()
+    manager = _FakeCallHierarchyManager(prepare_responses={}, document_symbols=[])
+    args = type("A", (), {"operation": LspOperation.INCOMING_CALLS})()
+    result = await tool._call_hierarchy(
+        manager,
+        args,
+        "/x.rs",
+        {"textDocument": {"uri": "file:///x.rs"}},
+        {"line": 99, "character": 0},
+    )
+    assert "no callable at line 100" in result.summary
+    assert "find_references" in result.summary
+
+
+def test_range_contains_bounds() -> None:
+    from vibe.core.tools.builtins.lsp import Lsp
+
+    rng = {"start": {"line": 5, "character": 4}, "end": {"line": 9, "character": 1}}
+    assert Lsp._range_contains(rng, {"line": 5, "character": 4})
+    assert Lsp._range_contains(rng, {"line": 7, "character": 0})
+    assert Lsp._range_contains(rng, {"line": 9, "character": 1})
+    assert not Lsp._range_contains(rng, {"line": 5, "character": 3})
+    assert not Lsp._range_contains(rng, {"line": 9, "character": 2})
+    assert not Lsp._range_contains(rng, {"line": 4, "character": 9})
+
+
+def test_deepest_symbol_at_picks_innermost() -> None:
+    from vibe.core.tools.builtins.lsp import Lsp
+
+    inner = _fn_symbol("inner", (3, 8), (3, 20))
+    outer = _fn_symbol("outer", (1, 0), (5, 0))
+    outer["children"] = [inner]
+    node = Lsp._deepest_symbol_at([outer], {"line": 3, "character": 10})
+    assert node is not None
+    assert node["name"] == "inner"
+
+
 @pytest.mark.asyncio
 async def test_notify_file_changed_skips_oversized_text(monkeypatch) -> None:
     from vibe.core.lsp import _integration as integration
@@ -492,9 +689,7 @@ def test_nudge_returns_install_hint_when_server_binary_absent(
     # No presets available, none broken -> rust binary absent.
     monkeypatch.setattr(nudge, "available_presets", lambda: [])
     monkeypatch.setattr(nudge, "broken_presets", lambda: [])
-    monkeypatch.setattr(
-        nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER
-    )
+    monkeypatch.setattr(nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER)
     # Fresh nudge state.
     monkeypatch.setattr(nudge, "_read_nudge_state", lambda _: {})
     decision = nudge.evaluate_nudge(
@@ -516,9 +711,7 @@ def test_nudge_returns_skip_when_server_binary_broken(monkeypatch, tmp_path) -> 
         "broken_presets",
         lambda: [PresetProbe(preset=_RUST_ANALYZER, status="broken")],
     )
-    monkeypatch.setattr(
-        nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER
-    )
+    monkeypatch.setattr(nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER)
     monkeypatch.setattr(nudge, "_read_nudge_state", lambda _: {})
     decision = nudge.evaluate_nudge(
         "/x/main.rs", _config_without_lsp(), tmp_path / "cache.json"
@@ -534,9 +727,7 @@ def test_nudge_returns_first_prompt_when_server_available_and_lsp_off(
 
     monkeypatch.setattr(nudge, "available_presets", lambda: [_RUST_ANALYZER])
     monkeypatch.setattr(nudge, "broken_presets", lambda: [])
-    monkeypatch.setattr(
-        nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER
-    )
+    monkeypatch.setattr(nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER)
     monkeypatch.setattr(nudge, "_read_nudge_state", lambda _: {})
     decision = nudge.evaluate_nudge(
         "/x/main.rs", _config_without_lsp(), tmp_path / "cache.json"
@@ -550,9 +741,7 @@ def test_nudge_returns_skip_when_lsp_already_installed(monkeypatch, tmp_path) ->
 
     monkeypatch.setattr(nudge, "available_presets", lambda: [_RUST_ANALYZER])
     monkeypatch.setattr(nudge, "broken_presets", lambda: [])
-    monkeypatch.setattr(
-        nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER
-    )
+    monkeypatch.setattr(nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER)
     decision = nudge.evaluate_nudge(
         "/x/main.rs", _config_with_lsp(), tmp_path / "cache.json"
     )
@@ -567,17 +756,14 @@ def test_install_hint_nudge_silent_after_decline_within_interval(
 
     monkeypatch.setattr(nudge, "available_presets", lambda: [])
     monkeypatch.setattr(nudge, "broken_presets", lambda: [])
-    monkeypatch.setattr(
-        nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER
-    )
+    monkeypatch.setattr(nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER)
     monkeypatch.setattr(
         nudge,
         "_read_nudge_state",
         lambda _: {"hint_declined:rust": True, "hint_shown:rust": 1},
     )
     decision = nudge.evaluate_nudge(
-        "/x/main.rs", _config_without_lsp(), tmp_path / "cache.json",
-        turns_since_last=2,
+        "/x/main.rs", _config_without_lsp(), tmp_path / "cache.json", turns_since_last=2
     )
     assert decision.kind == "silent"
 
@@ -590,16 +776,16 @@ def test_install_hint_nudge_reminder_after_decline_and_interval(
 
     monkeypatch.setattr(nudge, "available_presets", lambda: [])
     monkeypatch.setattr(nudge, "broken_presets", lambda: [])
-    monkeypatch.setattr(
-        nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER
-    )
+    monkeypatch.setattr(nudge, "preset_for_extension", lambda ext: _RUST_ANALYZER)
     monkeypatch.setattr(
         nudge,
         "_read_nudge_state",
         lambda _: {"hint_declined:rust": True, "hint_shown:rust": 1},
     )
     decision = nudge.evaluate_nudge(
-        "/x/main.rs", _config_without_lsp(), tmp_path / "cache.json",
+        "/x/main.rs",
+        _config_without_lsp(),
+        tmp_path / "cache.json",
         turns_since_last=nudge.REMINDER_INTERVAL_TURNS,
     )
     assert decision.kind == "install_hint"
@@ -618,10 +804,14 @@ def test_broken_presets_returns_only_broken(monkeypatch) -> None:
             stderr="rustup-proxy: Unknown binary",
         ),
     ]
-    monkeypatch.setattr(defaults, "_probe", lambda preset: next(
-        (p for p in probes if p.preset.key == preset.key),
-        PresetProbe(preset=preset, status="absent"),
-    ))
+    monkeypatch.setattr(
+        defaults,
+        "_probe",
+        lambda preset: next(
+            (p for p in probes if p.preset.key == preset.key),
+            PresetProbe(preset=preset, status="absent"),
+        ),
+    )
     broken = defaults.broken_presets()
     assert [p.preset.key for p in broken] == ["rust"]
     assert "rustup-proxy" in broken[0].stderr
@@ -632,9 +822,7 @@ def test_preset_states_returns_all_in_declaration_order(monkeypatch) -> None:
     from vibe.core.lsp._defaults import _PYRIGHT, PresetProbe
 
     monkeypatch.setattr(
-        defaults,
-        "_probe",
-        lambda preset: PresetProbe(preset=preset, status="absent"),
+        defaults, "_probe", lambda preset: PresetProbe(preset=preset, status="absent")
     )
     states = defaults.preset_states()
     assert [p.status for p in states] == ["absent"] * len(states)
