@@ -118,6 +118,63 @@ async def test_resume_picker_shows_renamed_session_title(
 
 
 @pytest.mark.asyncio
+async def test_resume_picker_finds_sessions_under_worktree_isolation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Sessions are recorded with original_working_directory() (the real repo
+    # root), but under worktree isolation Path.cwd() is the worktree path. The
+    # picker must still find sessions recorded against the original root.
+    from vibe.core.worktree.manager import WorktreeHandle, worktree_manager
+
+    config = build_test_vibe_config(
+        session_logging=_enabled_session_config(tmp_path), vibe_code_enabled=False
+    )
+    app = build_test_vibe_app(config=config)
+    logger = app.agent_loop.session_logger
+    assert logger.session_dir is not None
+    assert logger.session_metadata is not None
+
+    original_root = tmp_path / "original-repo"
+    original_root.mkdir()
+
+    logger.session_dir.mkdir(parents=True)
+    existing_metadata = {
+        **logger.session_metadata.model_dump(),
+        "environment": {"working_directory": str(original_root)},
+        "end_time": "2024-01-01T12:05:00Z",
+        "total_messages": 1,
+    }
+    logger.metadata_filepath.write_text(json.dumps(existing_metadata), encoding="utf-8")
+    logger.messages_filepath.write_text(
+        '{"role": "user", "content": "Original prompt"}\n', encoding="utf-8"
+    )
+
+    captured_picker = None
+
+    async def capture_picker(picker):
+        nonlocal captured_picker
+        captured_picker = picker
+
+    monkeypatch.setattr(app, "_switch_from_input", capture_picker)
+    worktree_manager._active = WorktreeHandle(
+        original_repo_root=original_root,
+        worktree_path=tmp_path / "wt",
+        branch="test-worktree",
+        create_head_sha="abc123",
+    )
+
+    try:
+        async with app.run_test() as pilot:
+            await app._show_session_picker()
+            await pilot.pause()
+    finally:
+        worktree_manager._active = None
+
+    assert captured_picker is not None
+    assert f"local:{logger.session_id}" in captured_picker._latest_messages
+
+
+@pytest.mark.asyncio
 async def test_rename_command_requires_title(tmp_path: Path) -> None:
     config = build_test_vibe_config(session_logging=_enabled_session_config(tmp_path))
     app = build_test_vibe_app(config=config)

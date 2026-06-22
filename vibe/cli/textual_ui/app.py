@@ -2472,13 +2472,19 @@ class VibeApp(App):  # noqa: PLR0904
         await self._remote_resume.aclose()
 
     async def _show_session_picker(self, **kwargs: Any) -> None:
+        from vibe.core.worktree.manager import original_working_directory
+
         await self._cancel_resume_merge()
         remote_list_timeout = max(float(self.config.api_timeout), 10.0)
         remote_task = self._remote_resume.start(remote_list_timeout)
 
-        # If there are no local sessions, show the remote picker directly
+        # Match how sessions are recorded: session_logger stores
+        # original_working_directory(), not the worktree path that
+        # Path.cwd() resolves to under worktree isolation.
         if not self.config.session_logging.enabled or not (
-            local_sessions := list_local_resume_sessions(self.config, str(Path.cwd()))
+            local_sessions := list_local_resume_sessions(
+                self.config, original_working_directory()
+            )
         ):
             await self._show_session_picker_remote_only(remote_task)
             return
