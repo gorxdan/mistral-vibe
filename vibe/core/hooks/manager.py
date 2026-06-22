@@ -5,14 +5,16 @@ from collections.abc import AsyncGenerator
 from vibe.core.hooks._after_tool import AfterToolHandler
 from vibe.core.hooks._before_tool import BeforeToolHandler
 from vibe.core.hooks._handler import (
-    HookExternalAttrs,
-    HookHandler,
     HookOutputError,
     HookRetryState,
     _failure_reason,
+    _parse_structured_response,
+)
+from vibe.core.hooks._port import (
+    HookExternalAttrs,
+    HookHandler,
     _HookAction,
     _HookYield,
-    _parse_structured_response,
 )
 from vibe.core.hooks._post_agent_turn import PostAgentTurnHandler
 from vibe.core.hooks._session_start import SessionStartHandler

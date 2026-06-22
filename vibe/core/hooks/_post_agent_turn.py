@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-from vibe.core.hooks._handler import (
-    _MAX_RETRIES,
-    HookHandler,
-    HookRetryState,
-    _HookAction,
-)
+from vibe.core.hooks._handler import _MAX_RETRIES, HookRetryState
+from vibe.core.hooks._port import HookHandler, _HookAction
 from vibe.core.hooks.config import HookConfig
 from vibe.core.hooks.models import (
     HookEndEvent,
