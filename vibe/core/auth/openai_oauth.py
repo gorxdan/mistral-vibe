@@ -62,7 +62,7 @@ OPENAI_CHATGPT_API_BASE: Final = "https://chatgpt.com/backend-api/codex"
 # originator; the backend may reject unknown values, so we present as codex_cli_rs.
 # Overridable for forward-compat when OpenAI bumps the accepted version.
 OPENAI_ORIGINATOR: Final = os.getenv("CHATON_CODEX_ORIGINATOR", "codex_cli_rs")
-OPENAI_CODEX_VERSION: Final = os.getenv("CHATON_CODEX_VERSION", "0.56.0")
+OPENAI_CODEX_VERSION: Final = os.getenv("CHATON_CODEX_VERSION", "0.142.0")
 
 
 class OpenAIOAuthError(RuntimeError):
