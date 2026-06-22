@@ -813,6 +813,9 @@ the `skill` tool loads the full instructions on demand.
 
 - `VIBE_HOME` - Override the Vibe home directory (default: `~/.vibe`)
 - `MISTRAL_API_KEY` - API key for Mistral provider
+- `OPENAI_API_KEY` - API key for the OpenAI provider (platform.openai.com,
+  pay-per-token). Not required for the "Sign in with ChatGPT" subscription
+  flow, which stores OAuth tokens in `$VIBE_HOME/auth/openai.json`.
 - `VIBE_ACTIVE_MODEL` - Override active model
 - `VIBE_*` - Any config field can be overridden with the `VIBE_` prefix
 - `LOG_LEVEL` - Logging level for `$VIBE_HOME/logs/vibe.log`. One of `DEBUG`,

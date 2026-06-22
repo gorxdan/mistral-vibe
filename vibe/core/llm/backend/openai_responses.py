@@ -659,3 +659,84 @@ class OpenAIResponsesAdapter(APIAdapter):
         return self._stream_parser.parse(
             _RESPONSES_STREAM_EVENT_ADAPTER.validate_python(data)
         )
+
+
+class ChatGPTResponsesAdapter(OpenAIResponsesAdapter):
+    """Responses adapter for the ChatGPT-subscription backend (codex).
+
+    The wire format matches the platform Responses API, but the
+    ``chatgpt.com/backend-api/codex`` endpoint has two extra requirements,
+    reverse-engineered from openai/codex:
+
+    * a non-empty ``instructions`` string is mandatory (the backend rejects
+      requests with "Instructions are not valid" otherwise), so system messages
+      are hoisted out of ``input`` into ``instructions``;
+    * encrypted reasoning must be requested via ``include`` and echoed back
+      across turns, which the base adapter already round-trips via
+      ``reasoning_state``.
+    """
+
+    _DEFAULT_INSTRUCTIONS: ClassVar[str] = (
+        "You are a coding assistant operating in a terminal-based coding harness."
+    )
+
+    @staticmethod
+    def _split_system(messages: Sequence[LLMMessage]) -> tuple[str, list[LLMMessage]]:
+        system_parts: list[str] = []
+        rest: list[LLMMessage] = []
+        for msg in messages:
+            if msg.role == Role.system:
+                if msg.content:
+                    system_parts.append(msg.content)
+            else:
+                rest.append(msg)
+        return "\n\n".join(system_parts), rest
+
+    def prepare_request(  # noqa: PLR0913
+        self,
+        *,
+        model_name: str,
+        messages: Sequence[LLMMessage],
+        temperature: float,
+        tools: list[AvailableTool] | None,
+        max_tokens: int | None,
+        tool_choice: StrToolChoice | AvailableTool | None,
+        enable_streaming: bool,
+        provider: ProviderConfig,
+        api_key: str | None = None,
+        thinking: str = "off",
+        response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
+    ) -> PreparedRequest:
+        del extra_body  # not used by this path
+        instructions, conversation = self._split_system(messages)
+        input_items = self._convert_messages(conversation)
+
+        payload = self.build_payload(
+            model_name=model_name,
+            input_items=input_items,
+            temperature=temperature,
+            tools=tools,
+            max_tokens=max_tokens,
+            tool_choice=tool_choice,
+            thinking=thinking,
+            enable_streaming=enable_streaming,
+            response_format=response_format,
+        )
+
+        # The ChatGPT backend rejects an empty/absent instructions field.
+        payload["instructions"] = instructions or self._DEFAULT_INSTRUCTIONS
+
+        effort = payload.get("reasoning", {}).get("effort")
+        if effort and effort != "none":
+            # Request encrypted reasoning + a summary, mirroring codex.
+            payload["include"] = ["reasoning.encrypted_content"]
+            payload["reasoning"]["summary"] = "auto"
+
+        # codex always sends an explicit tool_choice on this backend.
+        if tools and "tool_choice" not in payload:
+            payload["tool_choice"] = "auto"
+
+        headers = self.build_headers(api_key)
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return PreparedRequest(self.endpoint, headers, body)

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from vibe.core.auth.openai_oauth import (
+    OPENAI_CHATGPT_API_BASE,
+    OPENAI_CHATGPT_API_STYLE,
+)
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 
 ZAI_API_BASE = "https://api.z.ai/api/coding/paas/v4"
@@ -11,6 +15,8 @@ ZAI_HELP_URL = "https://z.ai"
 KIMI_HELP_URL = "https://kimi.com"
 MINIMAX_API_BASE = "https://api.minimax.io/v1"
 MINIMAX_HELP_URL = "https://platform.minimax.io/user-center/payment/token-plan"
+OPENAI_API_BASE = "https://api.openai.com/v1"
+OPENAI_HELP_URL = "https://platform.openai.com/api-keys"
 
 CUSTOM_PROVIDER_NAME = "custom"
 
@@ -107,6 +113,66 @@ PRESETS: list[ProviderPreset] = [
             thinking="high",
             input_price=0.0,
             output_price=0.0,
+            supports_images=True,
+            auto_compact_threshold=400000,
+        ),
+    ),
+    ProviderPreset(
+        key="openai",
+        label="OpenAI (API key)",
+        description=(
+            "OpenAI platform models (GPT-5.x, o-series) via the Responses API. "
+            "Requires an OPENAI_API_KEY from platform.openai.com (pay-per-token "
+            "billing — this is NOT a ChatGPT subscription). Available models "
+            "are detected automatically."
+        ),
+        requires_api_key=True,
+        help_url=OPENAI_HELP_URL,
+        provider=ProviderConfig(
+            name="openai",
+            api_base=OPENAI_API_BASE,
+            api_key_env_var="OPENAI_API_KEY",
+            api_style="openai-responses",
+        ),
+        model=ModelConfig(
+            name="gpt-5.1",
+            provider="openai",
+            alias="gpt-5.1",
+            thinking="high",
+            # Pricing left at 0.0; OpenAI model line evolves quickly and the
+            # picker live-discovers the current /v1/models list. Override per
+            # model in config if you want cost tracking.
+            input_price=0.0,
+            output_price=0.0,
+            supports_images=True,
+            auto_compact_threshold=400000,
+        ),
+    ),
+    ProviderPreset(
+        key="openai-chatgpt",
+        label="Sign in with ChatGPT",
+        description=(
+            "Use your ChatGPT Plus/Pro/Team subscription instead of an API key "
+            "(no per-token billing). Opens a browser to sign in. Unofficial: "
+            "routes through OpenAI's ChatGPT backend and may break if OpenAI "
+            "changes it."
+        ),
+        requires_api_key=False,
+        badge="Subscription",
+        provider=ProviderConfig(
+            name="openai-chatgpt",
+            api_base=OPENAI_CHATGPT_API_BASE,
+            api_style=OPENAI_CHATGPT_API_STYLE,
+            # OAuth tokens are resolved from the token store, not an env var.
+            api_key_env_var="",
+            # Model discovery needs an API key; the subscription list is fixed.
+            discover_models=False,
+        ),
+        model=ModelConfig(
+            name="gpt-5.1-codex",
+            provider="openai-chatgpt",
+            alias="gpt-5.1-codex",
+            thinking="high",
             supports_images=True,
             auto_compact_threshold=400000,
         ),

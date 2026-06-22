@@ -503,6 +503,29 @@ active_model = "kimi"
 
 Custom providers/models are **merged** with the built-in Mistral defaults, so you keep Mistral available while adding others. Switch models at runtime with the `/model` slash command.
 
+#### OpenAI
+
+Pick **OpenAI (API key)** in `--setup`, or add it to `config.toml`:
+
+```toml
+[[providers]]
+name = "openai"
+api_base = "https://api.openai.com/v1"
+api_key_env_var = "OPENAI_API_KEY"
+api_style = "openai-responses"   # OpenAI's Responses API
+
+[[models]]
+name = "gpt-5.1"
+provider = "openai"
+alias = "gpt-5.1"
+thinking = "high"
+supports_images = true
+```
+
+Put `OPENAI_API_KEY=sk-...` in `~/.vibe/.env`. This is **pay-per-token** platform billing. The model picker live-discovers the available models from `/v1/models`, so the `[[models]]` block above just sets a starting default.
+
+To use a **ChatGPT Plus/Pro subscription** instead (no per-token billing), pick **Sign in with ChatGPT** in `--setup` — it runs the OAuth sign-in and stores tokens in `$VIBE_HOME/auth/openai.json`. This routes through OpenAI's unofficial ChatGPT backend and is provided as a convenience; it can break if OpenAI changes that endpoint.
+
 #### Adding OpenAI-compatible providers (Kimi K2.7, GLM-5.2/ZAI)
 
 Most third-party coding models expose an OpenAI-compatible `/chat/completions` endpoint and stream reasoning in a `reasoning_content` field — the exact shape Vibe's generic backend expects, so no code changes are required. Use `api_style = "openai"` (the default): Vibe captures the streamed `reasoning_content` and displays it, and both Kimi and GLM default to thinking **enabled**, so reasoning works without Vibe needing to send any effort parameter.
@@ -589,7 +612,7 @@ How it fits the existing controls:
 
 - It only fills the **approval prompt** gap. Calls your denylist/guardrails mark as denied (`NEVER`) are still hard-blocked — the judge never sees them.
 - `--auto-approve` is unchanged: it still bypasses everything (including the judge).
-- It **fails closed**. No usable judge model, an API error, a timeout, a refusal, or an unparseable answer all fall back to the normal human prompt.
+- It **fails closed**. No usable judge model, an API error, a timeout, a refusal, or an unparsable answer all fall back to the normal human prompt.
 - Every judge auto-approval is logged.
 
 > **Security note.** An LLM judge is a probabilistic gate, not a guarantee. The tool call it evaluates is authored by the (untrusted) main model, so a compromised or jailbroken main model could in principle craft a call designed to fool the judge. Keep your denylist authoritative, prefer a judge model from a different provider than your active model, and treat this as convenience, not a sandbox.

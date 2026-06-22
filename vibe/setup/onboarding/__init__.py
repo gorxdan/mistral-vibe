@@ -14,11 +14,14 @@ from vibe.core.paths import GLOBAL_ENV_FILE
 from vibe.core.telemetry.types import EntrypointMetadata
 from vibe.core.types import Backend
 from vibe.setup.auth import BrowserSignInService, HttpBrowserSignInGateway
+from vibe.setup.auth.openai_sign_in import OpenAISignInService
 from vibe.setup.onboarding.context import OnboardingContext
+from vibe.setup.onboarding.provider_presets import ProviderPreset
 from vibe.setup.onboarding.screens import (
     ApiKeyScreen,
     AuthMethodScreen,
     BrowserSignInScreen,
+    ChatGPTSignInScreen,
     CustomProviderScreen,
     ProviderSelectionScreen,
     ThemeSelectionScreen,
@@ -44,6 +47,7 @@ class OnboardingApp(App[str | None]):
         browser_sign_in_success_delay: float = SUCCESS_EXIT_DELAY_SECONDS,
         browser_sign_in_url_help_delay: float = SIGN_IN_URL_HELP_DELAY_SECONDS,
         copy_sign_in_url: CopySignInUrl | None = None,
+        openai_sign_in_service_factory: Callable[[], OpenAISignInService] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -61,6 +65,9 @@ class OnboardingApp(App[str | None]):
         self._copy_sign_in_url = copy_sign_in_url or self._copy_sign_in_url_to_clipboard
         self._browser_sign_in_service_factory = self._resolve_browser_sign_in_factory(
             browser_sign_in_service_factory
+        )
+        self._openai_sign_in_service_factory = openai_sign_in_service_factory or (
+            lambda: OpenAISignInService()
         )
         self._installed_dynamic_screens: set[str] = set()
 
@@ -104,6 +111,22 @@ class OnboardingApp(App[str | None]):
                 entrypoint_metadata=self._entrypoint_metadata,
                 help_url=help_url,
                 pending_model=pending_model,
+            ),
+        )
+
+    def install_openai_chatgpt_screen(self, preset: ProviderPreset) -> None:
+        if preset.provider is None or preset.model is None:
+            msg = "openai-chatgpt preset must define a provider and model."
+            raise AssertionError(msg)
+        self._provider = preset.provider
+        self._install_screen_once(
+            "openai_chatgpt_sign_in",
+            ChatGPTSignInScreen(
+                preset.provider,
+                preset.model,
+                self._openai_sign_in_service_factory,
+                copy_sign_in_url=self._copy_sign_in_url,
+                success_exit_delay=self._browser_sign_in_success_delay,
             ),
         )
 

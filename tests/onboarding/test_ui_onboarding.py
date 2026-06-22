@@ -53,6 +53,10 @@ from vibe.setup.onboarding.screens.browser_sign_in import (
     BrowserSignInScreen,
 )
 from vibe.setup.onboarding.screens.custom_provider import CustomProviderScreen
+from vibe.setup.onboarding.screens.openai_chatgpt_sign_in import (
+    ERROR_HINT as CHATGPT_ERROR_HINT,
+    ChatGPTSignInScreen,
+)
 from vibe.setup.onboarding.screens.provider_selection import ProviderSelectionScreen
 from vibe.setup.onboarding.screens.theme_selection import THEMES, ThemeSelectionScreen
 from vibe.setup.onboarding.screens.web_search import WebSearchScreen
@@ -1437,7 +1441,9 @@ async def test_provider_selection_ollama_without_server_stays_on_screen(
     async with app.run_test() as pilot:
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
-        await pilot.press("down", "down", "down", "down", "enter")
+        # Presets: mistral, zai, kimi, minimax, openai, openai-chatgpt, ollama,
+        # custom -> ollama is row 6.
+        await pilot.press(*(["down"] * 6), "enter")
 
         await _wait_for(
             lambda: (
@@ -1470,7 +1476,9 @@ async def test_provider_selection_custom_routes_to_api_key_and_persists(
     async with app.run_test() as pilot:
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
-        await pilot.press("down", "down", "down", "down", "down", "enter")
+        # Presets: mistral, zai, kimi, minimax, openai, openai-chatgpt, ollama,
+        # custom -> custom is row 7.
+        await pilot.press(*(["down"] * 7), "enter")
         await _wait_for(
             lambda: isinstance(pilot.app.screen, CustomProviderScreen), pilot
         )
@@ -1498,3 +1506,84 @@ async def test_provider_selection_custom_routes_to_api_key_and_persists(
     provider = next(p for p in config["providers"] if p["name"] == "deepseek-chat")
     assert provider["api_key_env_var"] == "DEEPSEEK_API_KEY"
     assert "DEEPSEEK_API_KEY" in _saved_env_contents()
+
+
+class _StubChatGPTSignIn:
+    """Stand-in for OpenAISignInService that skips the real browser/network."""
+
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self._error = error
+
+    async def authenticate(
+        self, *, on_url: Callable[[str], None] | None = None
+    ) -> None:
+        if on_url is not None:
+            on_url("https://auth.openai.com/oauth/authorize?state=test")
+        if self._error is not None:
+            raise self._error
+
+
+# openai-chatgpt is the 6th preset (index 5): down x5 from the top.
+_CHATGPT_PRESET_INDEX = 5
+
+
+@pytest.mark.asyncio
+async def test_provider_selection_chatgpt_sign_in_persists_config() -> None:
+    app = OnboardingApp(
+        openai_sign_in_service_factory=lambda: _StubChatGPTSignIn(),
+        browser_sign_in_success_delay=0,
+    )
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press(*(["down"] * _CHATGPT_PRESET_INDEX), "enter")
+        await _wait_for(
+            lambda: isinstance(pilot.app.screen, ChatGPTSignInScreen), pilot
+        )
+        await _wait_for(lambda: app.return_value is not None, pilot, timeout=2.0)
+
+    assert app.return_value == "completed"
+    config = _config_toml_dict()
+    assert config["active_model"] == "gpt-5.1-codex"
+    assert "openai-chatgpt" in [p["name"] for p in config["providers"]]
+
+
+@pytest.mark.asyncio
+async def test_provider_selection_chatgpt_sign_in_shows_error() -> None:
+    from vibe.core.auth.openai_oauth import OpenAIOAuthError
+
+    app = OnboardingApp(
+        openai_sign_in_service_factory=lambda: _StubChatGPTSignIn(
+            error=OpenAIOAuthError("sign-in blew up")
+        ),
+        browser_sign_in_success_delay=0,
+    )
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press(*(["down"] * _CHATGPT_PRESET_INDEX), "enter")
+        await _wait_for(
+            lambda: isinstance(pilot.app.screen, ChatGPTSignInScreen), pilot
+        )
+        await _wait_for(
+            lambda: (
+                str(
+                    pilot.app.screen.query_one(
+                        "#chatgpt-sign-in-hint", NoMarkupStatic
+                    ).render()
+                )
+                == CHATGPT_ERROR_HINT
+            ),
+            pilot,
+        )
+
+        # Stays on the screen; does not complete onboarding.
+        assert app.return_value is None
+        status = str(
+            pilot.app.screen.query_one(
+                "#chatgpt-sign-in-status", NoMarkupStatic
+            ).render()
+        )
+        assert "sign-in blew up" in status

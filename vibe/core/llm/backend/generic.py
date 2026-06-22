@@ -11,7 +11,10 @@ import httpx
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
 from vibe.core.llm.backend.anthropic import AnthropicAdapter
 from vibe.core.llm.backend.base import APIAdapter, PreparedRequest
-from vibe.core.llm.backend.openai_responses import OpenAIResponsesAdapter
+from vibe.core.llm.backend.openai_responses import (
+    ChatGPTResponsesAdapter,
+    OpenAIResponsesAdapter,
+)
 from vibe.core.llm.backend.reasoning_adapter import ReasoningAdapter
 from vibe.core.llm.exceptions import BackendErrorBuilder
 from vibe.core.types import (
@@ -233,6 +236,8 @@ def _get_adapter(api_style: str) -> APIAdapter:
     """Load the adapter for the given API style."""
     if api_style == "openai-responses":
         return OpenAIResponsesAdapter()
+    if api_style == "openai-chatgpt":
+        return ChatGPTResponsesAdapter()
     if api_style not in _ADAPTERS:
         if api_style == "vertex-anthropic":
             from vibe.core.llm.backend.vertex import VertexAnthropicAdapter
@@ -280,6 +285,27 @@ class GenericBackend:
             await self._client.aclose()
             self._client = None
 
+    async def _resolve_auth(self) -> tuple[str | None, dict[str, str]]:
+        """Resolve the request credential and any auth-bound headers.
+
+        For normal providers this is just the static env-var API key. For the
+        ChatGPT-subscription provider (``api_style="openai-chatgpt"``) it loads
+        (and refreshes) the OAuth access token and returns the identity headers
+        the ChatGPT backend requires (account id, originator, version).
+        """
+        if getattr(self._provider, "api_style", "openai") == "openai-chatgpt":
+            from vibe.core.auth.openai_oauth import resolve_chatgpt_credentials
+
+            creds = await resolve_chatgpt_credentials()
+            return creds.access_token, creds.auth_headers()
+
+        api_key = (
+            os.getenv(self._provider.api_key_env_var)
+            if self._provider.api_key_env_var
+            else None
+        )
+        return api_key, {}
+
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
@@ -304,11 +330,7 @@ class GenericBackend:
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> LLMChunk:
-        api_key = (
-            os.getenv(self._provider.api_key_env_var)
-            if self._provider.api_key_env_var
-            else None
-        )
+        api_key, auth_headers = await self._resolve_auth()
 
         api_style = getattr(self._provider, "api_style", "openai")
         adapter = _get_adapter(api_style)
@@ -329,6 +351,8 @@ class GenericBackend:
         )
 
         headers = req.headers
+        if auth_headers:
+            headers.update(auth_headers)
         if extra_headers:
             headers.update(extra_headers)
 
@@ -376,11 +400,7 @@ class GenericBackend:
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
-        api_key = (
-            os.getenv(self._provider.api_key_env_var)
-            if self._provider.api_key_env_var
-            else None
-        )
+        api_key, auth_headers = await self._resolve_auth()
 
         api_style = getattr(self._provider, "api_style", "openai")
         adapter = _get_adapter(api_style)
@@ -401,6 +421,8 @@ class GenericBackend:
         )
 
         headers = req.headers
+        if auth_headers:
+            headers.update(auth_headers)
         if extra_headers:
             headers.update(extra_headers)
 

@@ -123,6 +123,9 @@ class ProviderSelectionScreen(OnboardingScreen):
                 self.app.switch_screen("custom_provider")
             case "ollama":
                 self._start_ollama_probe()
+            case "openai-chatgpt":
+                cast("OnboardingApp", self.app).install_openai_chatgpt_screen(preset)
+                self.app.switch_screen("openai_chatgpt_sign_in")
             case "mistral":
                 cast("OnboardingApp", self.app).install_mistral_screens()
                 target = (
