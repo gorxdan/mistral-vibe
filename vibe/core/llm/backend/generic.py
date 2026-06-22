@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 import httpx
 
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
-from vibe.core.llm.backend.adapter_port import APIAdapter, PreparedRequest
+from vibe.core.llm.backend.adapter_port import (
+    APIAdapter,
+    PreparedRequest,
+    RequestParams,
+)
 from vibe.core.llm.backend.anthropic import AnthropicAdapter
 from vibe.core.llm.backend.openai_responses import OpenAIResponsesAdapter
 from vibe.core.llm.backend.reasoning_adapter import ReasoningAdapter
@@ -126,22 +130,11 @@ class OpenAIAdapter(APIAdapter):
         msg_dict["content"] = parts
         return msg_dict
 
-    def prepare_request(  # noqa: PLR0913
-        self,
-        *,
-        model_name: str,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        enable_streaming: bool,
-        provider: ProviderConfig,
-        api_key: str | None = None,
-        thinking: str = "off",
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
-    ) -> PreparedRequest:
+    def prepare_request(self, params: RequestParams) -> PreparedRequest:
+        messages = params.messages
+        enable_streaming = params.enable_streaming
+        provider = params.provider
+        extra_body = params.extra_body
         field_name = provider.reasoning_field_name
         converted_messages = [self._to_api_message(msg, field_name) for msg in messages]
 
@@ -159,13 +152,13 @@ class OpenAIAdapter(APIAdapter):
             extra_body = merged
 
         payload = self.build_payload(
-            model_name,
+            params.model_name,
             converted_messages,
-            temperature,
-            tools,
-            max_tokens,
-            tool_choice,
-            response_format,
+            params.temperature,
+            params.tools,
+            params.max_tokens,
+            params.tool_choice,
+            params.response_format,
             extra_body,
         )
 
@@ -176,7 +169,7 @@ class OpenAIAdapter(APIAdapter):
                 stream_options["stream_tool_calls"] = True
             payload["stream_options"] = stream_options
 
-        headers = self.build_headers(api_key)
+        headers = self.build_headers(params.api_key)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
         return PreparedRequest(self.endpoint, headers, body)
@@ -314,18 +307,20 @@ class GenericBackend:
         adapter = _get_adapter(api_style)
 
         req = adapter.prepare_request(
-            model_name=model.name,
-            messages=messages,
-            temperature=temperature,
-            tools=tools,
-            max_tokens=max_tokens,
-            tool_choice=tool_choice,
-            enable_streaming=False,
-            provider=self._provider,
-            api_key=api_key,
-            thinking=model.thinking,
-            response_format=response_format,
-            extra_body=extra_body,
+            RequestParams(
+                model_name=model.name,
+                messages=messages,
+                temperature=temperature,
+                tools=tools,
+                max_tokens=max_tokens,
+                tool_choice=tool_choice,
+                enable_streaming=False,
+                provider=self._provider,
+                api_key=api_key,
+                thinking=model.thinking,
+                response_format=response_format,
+                extra_body=extra_body,
+            )
         )
 
         headers = req.headers
@@ -386,18 +381,20 @@ class GenericBackend:
         adapter = _get_adapter(api_style)
 
         req = adapter.prepare_request(
-            model_name=model.name,
-            messages=messages,
-            temperature=temperature,
-            tools=tools,
-            max_tokens=max_tokens,
-            tool_choice=tool_choice,
-            enable_streaming=True,
-            provider=self._provider,
-            api_key=api_key,
-            thinking=model.thinking,
-            response_format=response_format,
-            extra_body=extra_body,
+            RequestParams(
+                model_name=model.name,
+                messages=messages,
+                temperature=temperature,
+                tools=tools,
+                max_tokens=max_tokens,
+                tool_choice=tool_choice,
+                enable_streaming=True,
+                provider=self._provider,
+                api_key=api_key,
+                thinking=model.thinking,
+                response_format=response_format,
+                extra_body=extra_body,
+            )
         )
 
         headers = req.headers

@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypedDict, cast
 from pydantic import TypeAdapter
 
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
-from vibe.core.llm.backend.adapter_port import APIAdapter, PreparedRequest
+from vibe.core.llm.backend.adapter_port import (
+    APIAdapter,
+    PreparedRequest,
+    RequestParams,
+)
 from vibe.core.logger import logger
 from vibe.core.types import (
     AvailableTool,
@@ -527,22 +531,18 @@ class OpenAIResponsesAdapter(APIAdapter):
             headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
-    def prepare_request(  # noqa: PLR0913
-        self,
-        *,
-        model_name: str,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        enable_streaming: bool,
-        provider: ProviderConfig,
-        api_key: str | None = None,
-        thinking: str = "off",
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
-    ) -> PreparedRequest:
+    def prepare_request(self, params: RequestParams) -> PreparedRequest:
+        model_name = params.model_name
+        messages = params.messages
+        temperature = params.temperature
+        tools = params.tools
+        max_tokens = params.max_tokens
+        tool_choice = params.tool_choice
+        enable_streaming = params.enable_streaming
+        api_key = params.api_key
+        thinking = params.thinking
+        response_format = params.response_format
+        extra_body = params.extra_body
         del extra_body  # generic-backend feature; not used by this path
         input_items = self._convert_messages(messages)
 

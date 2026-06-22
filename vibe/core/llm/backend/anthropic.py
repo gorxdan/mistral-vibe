@@ -7,7 +7,11 @@ from typing import Any, ClassVar
 
 from vibe.core.config import ProviderConfig
 from vibe.core.llm.backend._image import to_base64 as _to_base64
-from vibe.core.llm.backend.adapter_port import APIAdapter, PreparedRequest
+from vibe.core.llm.backend.adapter_port import (
+    APIAdapter,
+    PreparedRequest,
+    RequestParams,
+)
 from vibe.core.types import (
     AvailableTool,
     FunctionCall,
@@ -457,33 +461,20 @@ class AnthropicAdapter(APIAdapter):
 
         return payload
 
-    def prepare_request(  # noqa: PLR0913
-        self,
-        *,
-        model_name: str,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        enable_streaming: bool,
-        provider: ProviderConfig,
-        api_key: str | None = None,
-        thinking: str = "off",
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
-    ) -> PreparedRequest:
-        del extra_body  # generic-backend feature; not used by the Anthropic path
+    def prepare_request(self, params: RequestParams) -> PreparedRequest:
+        model_name = params.model_name
+        messages = params.messages
+        tools = params.tools
+        max_tokens = params.max_tokens
+        tool_choice = params.tool_choice
+        enable_streaming = params.enable_streaming
+        api_key = params.api_key
+        _ = params.response_format  # interface parity; Anthropic has no such field
+        _ = params.extra_body  # generic-backend feature; not used by the Anthropic path
         system_prompt, converted_messages = self._mapper.prepare_messages(messages)
         converted_tools = self._mapper.prepare_tools(tools)
         converted_tool_choice = self._mapper.prepare_tool_choice(tool_choice)
 
-        # response_format is accepted for interface parity with the
-        # OpenAI-compatible backends, but the Anthropic Messages API has no such
-        # field (native structured output would require a tool-use round-trip).
-        # Workflow schema enforcement relies on the prompt fallback the runtime
-        # appends (build_prompt_fallback), so it is intentionally not forwarded.
-        _ = response_format
         payload = self._build_payload(
             model_name=model_name,
             system_prompt=system_prompt,
@@ -492,7 +483,7 @@ class AnthropicAdapter(APIAdapter):
             max_tokens=max_tokens,
             tool_choice=converted_tool_choice,
             stream=enable_streaming,
-            thinking=thinking,
+            thinking=params.thinking,
         )
 
         headers = {

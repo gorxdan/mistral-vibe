@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 import json
 import threading
 from typing import Any, ClassVar
@@ -9,10 +8,8 @@ import google.auth
 import google.auth.credentials
 from google.auth.transport.requests import Request
 
-from vibe.core.config import ProviderConfig
-from vibe.core.llm.backend.adapter_port import PreparedRequest
+from vibe.core.llm.backend.adapter_port import PreparedRequest, RequestParams
 from vibe.core.llm.backend.anthropic import AnthropicAdapter
-from vibe.core.types import AvailableTool, LLMMessage, StrToolChoice
 
 
 def build_vertex_base_url(region: str) -> str:
@@ -64,23 +61,12 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         super().__init__()
         self.credentials = VertexCredentials()
 
-    def prepare_request(  # noqa: PLR0913
-        self,
-        *,
-        model_name: str,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        enable_streaming: bool,
-        provider: ProviderConfig,
-        api_key: str | None = None,
-        thinking: str = "off",
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
-    ) -> PreparedRequest:
-        del extra_body  # generic-backend feature; not used by the Vertex path
+    def prepare_request(self, params: RequestParams) -> PreparedRequest:
+        messages = params.messages
+        enable_streaming = params.enable_streaming
+        provider = params.provider
+        _ = params.response_format  # interface parity; unused by Vertex path
+        _ = params.extra_body  # interface parity; unused by Vertex path
         project_id = provider.project_id
         region = provider.region
 
@@ -90,13 +76,9 @@ class VertexAnthropicAdapter(AnthropicAdapter):
             raise ValueError("region is required in provider config for Vertex AI")
 
         system_prompt, converted_messages = self._mapper.prepare_messages(messages)
-        converted_tools = self._mapper.prepare_tools(tools)
-        converted_tool_choice = self._mapper.prepare_tool_choice(tool_choice)
+        converted_tools = self._mapper.prepare_tools(params.tools)
+        converted_tool_choice = self._mapper.prepare_tool_choice(params.tool_choice)
 
-        # response_format is accepted for interface parity but unused: Vertex
-        # serves Claude via the Anthropic Messages API (no response_format
-        # field). Structured output relies on the runtime's prompt fallback.
-        _ = response_format
         payload: dict[str, Any] = {
             "anthropic_version": "vertex-2023-10-16",
             "messages": converted_messages,
@@ -104,8 +86,8 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         self._apply_thinking_config(
             payload,
             messages=converted_messages,
-            max_tokens=max_tokens,
-            thinking=thinking,
+            max_tokens=params.max_tokens,
+            thinking=params.thinking,
         )
 
         if system_blocks := self._build_system_blocks(system_prompt):
@@ -129,7 +111,7 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         }
 
         endpoint = build_vertex_endpoint(
-            region, project_id, model_name, streaming=enable_streaming
+            region, project_id, params.model_name, streaming=enable_streaming
         )
         base_url = build_vertex_base_url(region)
 

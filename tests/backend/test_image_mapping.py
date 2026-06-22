@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from vibe.core.llm.backend.adapter_port import APIAdapter
+from vibe.core.llm.backend.adapter_port import APIAdapter, RequestParams
 from vibe.core.llm.backend.anthropic import AnthropicAdapter
 from vibe.core.llm.backend.generic import OpenAIAdapter
 from vibe.core.llm.backend.mistral import MistralMapper
@@ -56,7 +56,7 @@ def _adapter_payload(
         "api_key": "k",
     }
     kwargs.update(overrides)
-    prepared = adapter.prepare_request(**kwargs)
+    prepared = adapter.prepare_request(RequestParams(**kwargs))
     return json.loads(prepared.body.decode("utf-8"))
 
 

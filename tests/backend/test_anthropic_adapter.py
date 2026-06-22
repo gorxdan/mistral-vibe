@@ -5,6 +5,7 @@ import json
 import pytest
 
 from vibe.core.config import ProviderConfig
+from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.anthropic import AnthropicAdapter, AnthropicMapper
 from vibe.core.types import (
     AvailableFunction,
@@ -302,6 +303,7 @@ class TestAdapterPrepareRequest:
     def test_basic(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-sonnet-4-20250514",
             messages=messages,
             temperature=0.5,
@@ -310,6 +312,8 @@ class TestAdapterPrepareRequest:
             tool_choice=None,
             enable_streaming=False,
             provider=provider,
+        
+            )
         )
 
         payload = json.loads(req.body)
@@ -322,6 +326,7 @@ class TestAdapterPrepareRequest:
     def test_beta_features(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-sonnet-4-20250514",
             messages=messages,
             temperature=0.5,
@@ -330,6 +335,8 @@ class TestAdapterPrepareRequest:
             tool_choice=None,
             enable_streaming=False,
             provider=provider,
+        
+            )
         )
         assert "prompt-caching-2024-07-31" in req.headers["anthropic-beta"]
         assert "interleaved-thinking-2025-05-14" in req.headers["anthropic-beta"]
@@ -338,6 +345,7 @@ class TestAdapterPrepareRequest:
     def test_api_key_header(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-sonnet-4-20250514",
             messages=messages,
             temperature=0.5,
@@ -347,12 +355,15 @@ class TestAdapterPrepareRequest:
             enable_streaming=False,
             provider=provider,
             api_key="sk-test-key",
+        
+            )
         )
         assert req.headers["x-api-key"] == "sk-test-key"
 
     def test_streaming(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-sonnet-4-20250514",
             messages=messages,
             temperature=0.5,
@@ -361,12 +372,15 @@ class TestAdapterPrepareRequest:
             tool_choice=None,
             enable_streaming=True,
             provider=provider,
+        
+            )
         )
         assert json.loads(req.body)["stream"] is True
 
     def test_default_max_tokens(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-sonnet-4-20250514",
             messages=messages,
             temperature=0.5,
@@ -375,12 +389,15 @@ class TestAdapterPrepareRequest:
             tool_choice=None,
             enable_streaming=False,
             provider=provider,
+        
+            )
         )
         assert json.loads(req.body)["max_tokens"] == AnthropicAdapter.DEFAULT_MAX_TOKENS
 
     def test_with_thinking(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-sonnet-4-20250514",
             messages=messages,
             temperature=0.5,
@@ -390,6 +407,8 @@ class TestAdapterPrepareRequest:
             enable_streaming=False,
             provider=provider,
             thinking="medium",
+        
+            )
         )
         payload = json.loads(req.body)
         assert payload["thinking"] == {"type": "adaptive", "display": "summarized"}
@@ -403,6 +422,7 @@ class TestAdapterPrepareRequest:
             LLMMessage(role=Role.user, content="Hello"),
         ]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-sonnet-4-20250514",
             messages=messages,
             temperature=0.5,
@@ -411,6 +431,8 @@ class TestAdapterPrepareRequest:
             tool_choice=None,
             enable_streaming=False,
             provider=provider,
+        
+            )
         )
         payload = json.loads(req.body)
         assert payload["system"][0]["cache_control"] == {"type": "ephemeral"}
@@ -427,6 +449,7 @@ class TestAdapterPrepareRequest:
             )
         ]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-sonnet-4-20250514",
             messages=messages,
             temperature=0.5,
@@ -435,6 +458,8 @@ class TestAdapterPrepareRequest:
             tool_choice=None,
             enable_streaming=False,
             provider=provider,
+        
+            )
         )
         payload = json.loads(req.body)
         assert len(payload["tools"]) == 1
@@ -444,6 +469,7 @@ class TestAdapterPrepareRequest:
     def test_thinking_levels(self, adapter, provider, level):
         messages = [LLMMessage(role=Role.user, content="Hello")]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-sonnet-4-20250514",
             messages=messages,
             temperature=0.5,
@@ -453,6 +479,8 @@ class TestAdapterPrepareRequest:
             enable_streaming=False,
             provider=provider,
             thinking=level,
+        
+            )
         )
         payload = json.loads(req.body)
         assert payload["thinking"] == {"type": "adaptive", "display": "summarized"}
@@ -472,6 +500,7 @@ class TestAdapterPrepareRequest:
             LLMMessage(role=Role.user, content="Follow up"),
         ]
         req = adapter.prepare_request(
+            RequestParams(
             model_name="claude-sonnet-4-20250514",
             messages=messages,
             temperature=0.5,
@@ -480,6 +509,8 @@ class TestAdapterPrepareRequest:
             tool_choice=None,
             enable_streaming=False,
             provider=provider,
+        
+            )
         )
         payload = json.loads(req.body)
         assert payload["thinking"] == {"type": "adaptive", "display": "summarized"}

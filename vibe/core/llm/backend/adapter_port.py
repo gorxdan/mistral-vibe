@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol
 
 from vibe.core.types import AvailableTool, LLMChunk, LLMMessage, StrToolChoice
@@ -16,25 +17,26 @@ class PreparedRequest(NamedTuple):
     base_url: str = ""
 
 
+@dataclass(frozen=True)
+class RequestParams:
+    model_name: str
+    messages: Sequence[LLMMessage]
+    temperature: float
+    tools: list[AvailableTool] | None
+    max_tokens: int | None
+    tool_choice: StrToolChoice | AvailableTool | None
+    enable_streaming: bool
+    provider: ProviderConfig
+    api_key: str | None = None
+    thinking: str = "off"
+    response_format: dict[str, Any] | None = None
+    extra_body: dict[str, Any] | None = None
+
+
 class APIAdapter(Protocol):
     endpoint: ClassVar[str]
 
-    def prepare_request(  # noqa: PLR0913
-        self,
-        *,
-        model_name: str,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        enable_streaming: bool,
-        provider: ProviderConfig,
-        api_key: str | None = None,
-        thinking: str = "off",
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
-    ) -> PreparedRequest: ...
+    def prepare_request(self, params: RequestParams) -> PreparedRequest: ...
 
     def parse_response(
         self, data: dict[str, Any], provider: ProviderConfig
