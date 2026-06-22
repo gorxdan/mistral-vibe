@@ -30,6 +30,7 @@ class SystemPrompt(Prompt):
     TESTS = auto()
     LEAN = auto()
     MINIMAL = auto()
+    COORDINATOR = auto()
 
 
 class UtilityPrompt(Prompt):

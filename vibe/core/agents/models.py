@@ -50,6 +50,7 @@ class BuiltinAgentName(StrEnum):
     EDITOR = "editor"
     WORKER = "worker"
     LEAN = "lean"
+    COORDINATOR = "coordinator"
 
 
 @dataclass(frozen=True)
@@ -554,6 +555,44 @@ LEAN = AgentProfile(
     },
 )
 
+# Read-only orchestration tools — no bash, no write/edit. The coordinator
+# investigates with read/grep/glob, delegates every concrete action to a
+# subagent via task/launch_workflow, and coordinates teammates. Write-capable
+# subagents it spawns still isolate in their own worktree under task.isolation.
+_COORDINATOR_TOOLS = [
+    "task",
+    "launch_workflow",
+    "workflow_status",
+    "workflow_results",
+    "workflow_stop",
+    "team",
+    "team_message",
+    "read",
+    "grep",
+    "glob",
+    "todo",
+    "ask_user_question",
+    "manage_memory",
+    "skill",
+]
+
+COORDINATOR = AgentProfile(
+    name=BuiltinAgentName.COORDINATOR,
+    display_name="Coordinator",
+    description=(
+        "Orchestration-only lead: delegates to subagents via task/launch_workflow "
+        "and coordinates teammates, but cannot write files or run bash directly. "
+        "Use for fan-out-and-synthesize workflows where the lead should stay "
+        "above the implementation."
+    ),
+    safety=AgentSafety.SAFE,
+    agent_type=AgentType.AGENT,
+    overrides={
+        "enabled_tools": list(_COORDINATOR_TOOLS),
+        "system_prompt_id": "coordinator",
+    },
+)
+
 BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.DEFAULT: DEFAULT,
     BuiltinAgentName.PLAN: PLAN,
@@ -568,4 +607,5 @@ BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.EDITOR: EDITOR,
     BuiltinAgentName.WORKER: WORKER,
     BuiltinAgentName.LEAN: LEAN,
+    BuiltinAgentName.COORDINATOR: COORDINATOR,
 }
