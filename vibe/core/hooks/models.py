@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import auto
 from pathlib import Path
-from typing import Any, Literal, Self, assert_never
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -198,128 +199,107 @@ HookInvocation = (
 )
 
 
-def build_invocation(  # noqa: PLR0913
+def _build_before_tool(base: dict[str, Any], f: dict[str, Any]) -> BeforeToolInvocation:
+    if f.get("tool_name") is None or f.get("tool_call_id") is None:
+        raise ValueError("tool_name and tool_call_id are required for before_tool hooks")
+    return BeforeToolInvocation(
+        **base, tool_name=f["tool_name"], tool_call_id=f["tool_call_id"], tool_input=f.get("tool_input") or {}
+    )
+
+
+def _build_after_tool(base: dict[str, Any], f: dict[str, Any]) -> AfterToolInvocation:
+    if f.get("tool_name") is None or f.get("tool_call_id") is None or f.get("tool_status") is None:
+        raise ValueError("tool_name, tool_call_id, and tool_status are required for after_tool hooks")
+    return AfterToolInvocation(
+        **base,
+        tool_name=f["tool_name"],
+        tool_call_id=f["tool_call_id"],
+        tool_input=f.get("tool_input") or {},
+        tool_status=f["tool_status"],
+        tool_output=f.get("tool_output"),
+        tool_output_text=f.get("tool_output_text", ""),
+        tool_error=f.get("tool_error"),
+        duration_ms=f.get("duration_ms", 0.0),
+    )
+
+
+def _build_teammate_idle(base: dict[str, Any], f: dict[str, Any]) -> TeammateIdleInvocation:
+    if f.get("teammate_name") is None:
+        raise ValueError("teammate_name is required for teammate_idle hooks")
+    return TeammateIdleInvocation(**base, teammate_name=f["teammate_name"], teammate_session_id=f.get("teammate_session_id"))
+
+
+def _build_task_created(base: dict[str, Any], f: dict[str, Any]) -> TaskCreatedInvocation:
+    if f.get("task_id") is None or f.get("task_description") is None:
+        raise ValueError("task_id and task_description are required for task_created hooks")
+    return TaskCreatedInvocation(**base, task_id=f["task_id"], task_description=f["task_description"], assignee=f.get("assignee"))
+
+
+def _build_task_completed(base: dict[str, Any], f: dict[str, Any]) -> TaskCompletedInvocation:
+    if f.get("task_id") is None or f.get("teammate_name") is None:
+        raise ValueError("task_id and teammate_name are required for task_completed hooks")
+    return TaskCompletedInvocation(**base, task_id=f["task_id"], teammate_name=f["teammate_name"], result=f.get("result"))
+
+
+def _build_pre_compact(base: dict[str, Any], f: dict[str, Any]) -> PreCompactInvocation:
+    if f.get("trigger") is None:
+        raise ValueError("trigger is required for pre_compact hooks")
+    return PreCompactInvocation(
+        **base, trigger=f["trigger"], current_context_tokens=f.get("current_context_tokens") or 0, threshold=f.get("threshold") or 0
+    )
+
+
+def _build_user_prompt_submit(base: dict[str, Any], f: dict[str, Any]) -> UserPromptSubmitInvocation:
+    if f.get("prompt") is None:
+        raise ValueError("prompt is required for user_prompt_submit hooks")
+    return UserPromptSubmitInvocation(**base, prompt=f["prompt"], message_id=f.get("message_id"), has_images=f.get("has_images", False))
+
+
+def _build_stop(base: dict[str, Any], f: dict[str, Any]) -> StopInvocation:
+    return StopInvocation(**base, stop_hook_active=f.get("stop_hook_active", False))
+
+
+def _build_session_start(base: dict[str, Any], f: dict[str, Any]) -> SessionStartInvocation:
+    return SessionStartInvocation(**base, source=f.get("source") or "startup")
+
+
+def _build_session_end(base: dict[str, Any], f: dict[str, Any]) -> SessionEndInvocation:
+    return SessionEndInvocation(**base, reason=f.get("reason") or "exit")
+
+
+def _build_notification(base: dict[str, Any], f: dict[str, Any]) -> NotificationInvocation:
+    if f.get("notification_type") is None:
+        raise ValueError("notification_type is required for notification hooks")
+    return NotificationInvocation(**base, notification_type=f["notification_type"], message=f.get("message", ""), tool_name=f.get("tool_name"))
+
+
+_INVOCATION_BUILDERS: dict[HookType, Callable[[dict[str, Any], dict[str, Any]], HookInvocation]] = {
+    HookType.POST_AGENT_TURN: lambda base, f: PostAgentTurnInvocation(**base),
+    HookType.BEFORE_TOOL: _build_before_tool,
+    HookType.AFTER_TOOL: _build_after_tool,
+    HookType.TEAMMATE_IDLE: _build_teammate_idle,
+    HookType.TASK_CREATED: _build_task_created,
+    HookType.TASK_COMPLETED: _build_task_completed,
+    HookType.PRE_COMPACT: _build_pre_compact,
+    HookType.USER_PROMPT_SUBMIT: _build_user_prompt_submit,
+    HookType.STOP: _build_stop,
+    HookType.SESSION_START: _build_session_start,
+    HookType.SESSION_END: _build_session_end,
+    HookType.NOTIFICATION: _build_notification,
+}
+
+
+def build_invocation(
     hook_type: HookType,
     ctx: HookSessionContext,
-    *,
-    tool_name: str | None = None,
-    tool_call_id: str | None = None,
-    tool_input: dict[str, Any] | None = None,
-    tool_status: ToolStatus | None = None,
-    tool_output: dict[str, Any] | None = None,
-    tool_output_text: str = "",
-    tool_error: str | None = None,
-    duration_ms: float = 0.0,
-    teammate_name: str | None = None,
-    teammate_session_id: str | None = None,
-    task_id: str | None = None,
-    task_description: str | None = None,
-    assignee: str | None = None,
-    result: str | None = None,
-    trigger: str | None = None,
-    current_context_tokens: int | None = None,
-    threshold: int | None = None,
-    prompt: str | None = None,
-    message_id: str | None = None,
-    has_images: bool = False,
-    stop_hook_active: bool = False,
-    source: str | None = None,
-    reason: str | None = None,
-    notification_type: str | None = None,
-    message: str = "",
+    **fields: Any,
 ) -> HookInvocation:
     """Build the right HookInvocation subclass for *hook_type*."""
     base = ctx.model_dump()
-    match hook_type:
-        case HookType.POST_AGENT_TURN:
-            return PostAgentTurnInvocation(**base)
-        case HookType.BEFORE_TOOL:
-            if tool_name is None or tool_call_id is None:
-                raise ValueError(
-                    "tool_name and tool_call_id are required for before_tool hooks"
-                )
-            return BeforeToolInvocation(
-                **base,
-                tool_name=tool_name,
-                tool_call_id=tool_call_id,
-                tool_input=tool_input or {},
-            )
-        case HookType.AFTER_TOOL:
-            if tool_name is None or tool_call_id is None or tool_status is None:
-                raise ValueError(
-                    "tool_name, tool_call_id, and tool_status are required"
-                    " for after_tool hooks"
-                )
-            return AfterToolInvocation(
-                **base,
-                tool_name=tool_name,
-                tool_call_id=tool_call_id,
-                tool_input=tool_input or {},
-                tool_status=tool_status,
-                tool_output=tool_output,
-                tool_output_text=tool_output_text,
-                tool_error=tool_error,
-                duration_ms=duration_ms,
-            )
-        case HookType.TEAMMATE_IDLE:
-            if teammate_name is None:
-                raise ValueError("teammate_name is required for teammate_idle hooks")
-            return TeammateIdleInvocation(
-                **base,
-                teammate_name=teammate_name,
-                teammate_session_id=teammate_session_id,
-            )
-        case HookType.TASK_CREATED:
-            if task_id is None or task_description is None:
-                raise ValueError(
-                    "task_id and task_description are required for task_created hooks"
-                )
-            return TaskCreatedInvocation(
-                **base,
-                task_id=task_id,
-                task_description=task_description,
-                assignee=assignee,
-            )
-        case HookType.TASK_COMPLETED:
-            if task_id is None or teammate_name is None:
-                raise ValueError(
-                    "task_id and teammate_name are required for task_completed hooks"
-                )
-            return TaskCompletedInvocation(
-                **base, task_id=task_id, teammate_name=teammate_name, result=result
-            )
-        case HookType.PRE_COMPACT:
-            if trigger is None:
-                raise ValueError("trigger is required for pre_compact hooks")
-            return PreCompactInvocation(
-                **base,
-                trigger=trigger,
-                current_context_tokens=current_context_tokens or 0,
-                threshold=threshold or 0,
-            )
-        case HookType.USER_PROMPT_SUBMIT:
-            if prompt is None:
-                raise ValueError("prompt is required for user_prompt_submit hooks")
-            return UserPromptSubmitInvocation(
-                **base, prompt=prompt, message_id=message_id, has_images=has_images
-            )
-        case HookType.STOP:
-            return StopInvocation(**base, stop_hook_active=stop_hook_active)
-        case HookType.SESSION_START:
-            return SessionStartInvocation(**base, source=source or "startup")
-        case HookType.SESSION_END:
-            return SessionEndInvocation(**base, reason=reason or "exit")
-        case HookType.NOTIFICATION:
-            if notification_type is None:
-                raise ValueError("notification_type is required for notification hooks")
-            return NotificationInvocation(
-                **base,
-                notification_type=notification_type,
-                message=message,
-                tool_name=tool_name,
-            )
-        case _:
-            assert_never(hook_type)
+    builder = _INVOCATION_BUILDERS.get(hook_type)
+    if builder is None:
+        raise ValueError(f"Unknown hook type: {hook_type!r}")
+    return builder(base, fields)
 
 
 class HookExecutionResult(BaseModel):
