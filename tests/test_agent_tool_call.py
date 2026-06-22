@@ -1091,6 +1091,8 @@ async def test_stage_injected_message_folds_into_running_turn() -> None:
       flight when it was staged, and BEFORE the assistant turn that follows,
     - nothing remains staged once the turn ends.
     """
+    # Turn 1: tool call. Turn 2: plain assistant message (loop would end here).
+    # Turn 3: only reached if something forces continuation.
     tool_call = make_todo_tool_call("call_stage")
     backend = FakeBackend([
         [mock_llm_chunk(content="Working.", tool_calls=[tool_call])],

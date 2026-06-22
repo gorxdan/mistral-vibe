@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
-import logging
 import os
 from pathlib import Path
 import secrets
@@ -29,10 +28,9 @@ import urllib.parse
 
 import httpx
 
+from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
 from vibe.core.utils.http import build_ssl_context
-
-logger = logging.getLogger(__name__)
 
 # --- Codex OAuth client constants (from openai/codex codex-rs/login) ---------
 # The public, first-party Codex client id. Reusing it is what makes a ChatGPT
@@ -146,8 +144,9 @@ def decode_jwt_claims(token: str) -> dict[str, Any]:
     over TLS); we only need to read its claims, mirroring codex which also does
     not verify the signature locally.
     """
+    _JWT_MIN_PARTS = 2  # JWT = header.payload.signature
     parts = token.split(".")
-    if len(parts) < 2:  # noqa: PLR2004 - JWT = header.payload.signature
+    if len(parts) < _JWT_MIN_PARTS:
         raise OpenAIOAuthError("Malformed JWT: expected at least two segments.")
     try:
         payload = json.loads(_b64url_decode(parts[1]))

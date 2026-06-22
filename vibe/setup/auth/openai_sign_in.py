@@ -13,7 +13,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import errno
-import logging
 import urllib.parse
 import webbrowser
 
@@ -27,8 +26,7 @@ from vibe.core.auth.openai_oauth import (
     generate_state,
     save_tokens,
 )
-
-logger = logging.getLogger(__name__)
+from vibe.core.logger import logger
 
 _LOGIN_TIMEOUT_SECONDS = 300.0
 _MIN_REQUEST_LINE_PARTS = 2

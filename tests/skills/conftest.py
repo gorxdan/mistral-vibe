@@ -43,7 +43,7 @@ def create_skill(
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     frontmatter: dict[str, object] = {"name": name, "description": description}
-    if summary:
+    if summary is not None:
         frontmatter["summary"] = summary
     if license:
         frontmatter["license"] = license
