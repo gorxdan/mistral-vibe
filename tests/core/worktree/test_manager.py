@@ -504,6 +504,8 @@ class TestAutoFf:
         assert (temp_repo / "agent.txt").read_text() == "agent work\n"
         assert not root.is_dirty(untracked_files=True)
         assert not handle.worktree_path.exists()
+        # The redundant mergeback stash was dropped (no accumulation).
+        assert root.git.stash("list") == ""
 
     def test_auto_ff_held_when_concurrent_edit_changes_original(
         self, manager: WorktreeManager, temp_repo: Path
@@ -642,28 +644,83 @@ class TestGc:
         manager._gc_abandoned_worktrees(root, WorktreeConfig(gc_age_days=7))
         assert "vibe/merged-old" not in [b.name for b in root.branches]
 
-    def test_gc_keeps_unmerged_branch(
-        self, manager: WorktreeManager, tmp_path: Path
-    ):
+    def test_gc_keeps_unmerged_branch(self, manager: WorktreeManager, tmp_path: Path):
         root = self._old_repo(tmp_path)
-        _commit_branch_ahead(
-            root, Path(root.working_tree_dir), "vibe/unmerged-old"
-        )
+        _commit_branch_ahead(root, Path(root.working_tree_dir), "vibe/unmerged-old")
         os.chdir(root.working_tree_dir)
 
         manager._gc_abandoned_worktrees(root, WorktreeConfig(gc_age_days=7))
         # Unmerged work is never GC'd regardless of age.
         assert "vibe/unmerged-old" in [b.name for b in root.branches]
 
-    def test_gc_disabled_when_age_zero(
-        self, manager: WorktreeManager, tmp_path: Path
-    ):
+    def test_gc_disabled_when_age_zero(self, manager: WorktreeManager, tmp_path: Path):
         root = self._old_repo(tmp_path)
         root.git.branch("vibe/merged-old", "HEAD")
         os.chdir(root.working_tree_dir)
 
         manager._gc_abandoned_worktrees(root, WorktreeConfig(gc_age_days=0))
         assert "vibe/merged-old" in [b.name for b in root.branches]
+
+    def test_lists_stranded_branch_that_is_substring_of_live(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
+        """A stranded branch whose name is a substring of a LIVE worktree branch
+        must not be hidden by a loose substring liveness test.
+        """
+        os.chdir(str(temp_repo))
+        root = Repo(str(temp_repo))
+        _commit_branch_ahead(root, temp_repo, "vibe/foo")  # stranded, unmerged
+        live = temp_repo.parent / "live_foobar"
+        root.git.worktree("add", str(live), "-b", "vibe/foobar", "HEAD")
+        try:
+            names = [
+                s.branch
+                for s in manager.list_stranded_branches(
+                    WorktreeConfig(branch_prefix="vibe/")
+                )
+            ]
+            assert "vibe/foo" in names  # not masked by the live "vibe/foobar"
+            assert "vibe/foobar" not in names  # live -> excluded
+        finally:
+            root.git.worktree("remove", "--force", str(live))
+
+
+# ---------------------------------------------------------------------------
+# Stash-bracket helpers (used by the dirty-start fast-forward)
+# ---------------------------------------------------------------------------
+
+
+class TestStashBracketHelpers:
+    def test_stash_ref_resolved_by_message(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
+        # `git stash list` prefixes the subject with "On <branch>: ", so the
+        # resolver must match the message as a suffix, not by equality.
+        os.chdir(str(temp_repo))
+        root = Repo(str(temp_repo))
+        (temp_repo / "src.py").write_text("dirty\n")
+        msg = "vibe-mergeback vibe/x 111 222"
+        root.git.stash("push", "-m", msg)
+        ref = manager._stash_ref_for_message(root, msg)
+        assert ref == "stash@{0}"
+        root.git.stash("drop", ref)
+
+    def test_restore_stash_pops_back_dirt(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
+        # Models the ff-refused-after-stash failure path: the live dirt must be
+        # popped back, never abandoned in an orphaned stash with a clean tree.
+        os.chdir(str(temp_repo))
+        root = Repo(str(temp_repo))
+        (temp_repo / "src.py").write_text("dirty edit\n")
+        msg = "vibe-mergeback vibe/y 333 444"
+        root.git.stash("push", "-m", msg)
+        assert not root.is_dirty()  # stashed -> clean
+
+        manager._restore_stash(root, msg)
+
+        assert (temp_repo / "src.py").read_text() == "dirty edit\n"  # restored
+        assert root.git.stash("list") == ""  # no orphaned stash
 
 
 # ---------------------------------------------------------------------------

@@ -333,3 +333,47 @@ closer to `EphemeralWorktree` (`vibe/core/worktree/ephemeral.py`) than to
 `WorktreeManager` — wired into the ACP session lifecycle. That is substantial
 new code and is tracked as a separate change. ACP stays unwired (unchanged
 from today) until then.
+
+---
+
+## Dirty-start merge-back + stranded-work recovery (follow-up, landed)
+
+The host default above flipped `merge` to `auto-ff`, but `_try_auto_ff` refused
+on *any* dirty original tree. When a session started dirty (the common case —
+the user's uncommitted edits stay in the live tree all session), the refusal
+fired every exit and the work stranded on the `vibe/*` branch. The ephemeral
+path compounded it: a refused delivery kept the whole worktree *directory* on
+disk, accumulating unboundedly under `VIBE_HOME/worktrees`.
+
+Fixed in three layers (`manager.py`, `ephemeral.py`, `runtime.py`,
+`worktree_cmd.py`):
+
+- **Auto-land dirty-start work.** `_try_auto_ff` now fingerprints the original
+  tree's carried-relevant dirt (sha256 of the carry patch) at enter
+  (`WorktreeHandle.entry_dirty_fingerprint`) and again at exit. If the tree is
+  clean → plain `--ff-only`. If the live dirt still matches the fingerprint →
+  `_stash_ff_drop`: stash the live dirt (excluding the same untracked
+  `carry_ignored` paths the carry excluded, so an untracked `.env` is never
+  swept), `--ff-only` (which re-materialises dirt + agent work, since the WIP
+  commit already contains the carried dirt), then **drop** the now-redundant
+  stash. If the fingerprint changed — a concurrent writer added uncommitted work
+  the branch does not contain — the merge is **held** (branch kept) so that work
+  is never dropped. Stash entries are located by a unique message, not a raw SHA
+  (`git stash drop/pop` reject SHAs). This supersedes the "refuses if the
+  original tree is dirty" behavior noted in the Host-default section above.
+- **Ephemeral leak fix.** `remove_ephemeral_worktree(keep_if_changed=True)`
+  commits the agent's work onto the branch, then force-removes the *directory*
+  while keeping the branch ref — the recoverable unit is a cheap branch, not a
+  whole checkout. The stash-drop logic is **not** shared with this path (it has
+  no carry-dirty, so a drop there would lose the parent's dirt).
+- **Visibility + recovery.** `print_startup_report` surfaces unmerged `vibe/*`
+  branches at interactive startup (the prior orphan log was file-only, invisible
+  at the WARNING default). `_gc_abandoned_worktrees` deletes only merged-and-old
+  orphan branches (never unmerged work, never a live worktree). A
+  `vibe worktree {list,merge,discard}` subcommand (pre-dispatched before the
+  positional-prompt parser) lists/recovers/clears them. New `WorktreeConfig`
+  fields: `report_on_startup`, `gc_age_days`.
+- **Steering.** The worktree system-prompt sections and the editor/coordinator
+  profiles nudge shell-capable agents to commit finished work with a real
+  message (the WIP auto-save remains the backstop for tool-restricted profiles
+  like `editor`, which has no shell).

@@ -488,7 +488,7 @@ class WorktreeManager:
         if config.gc_age_days <= 0:
             return
         try:
-            wt_list = repo.git.worktree("list", "--porcelain")
+            live = self._live_worktree_branches(repo)
             names = repo.git.branch(
                 "--list", f"{config.branch_prefix}*", "--format=%(refname:short)"
             )
@@ -498,7 +498,7 @@ class WorktreeManager:
         cutoff = time.time() - config.gc_age_days * 86400
         for raw in names.splitlines():
             name = raw.strip()
-            if not name or name in wt_list:
+            if not name or name in live:
                 continue  # live worktree -> active session, never touch
             if not self._is_ancestor(repo, name, "HEAD"):
                 continue  # unmerged work -> keep for recovery, never discard
@@ -530,10 +530,7 @@ class WorktreeManager:
         already merged into HEAD, and empty branches (tip == HEAD).
         """
         repo = self._get_repo(Path.cwd())
-        try:
-            wt_list = repo.git.worktree("list", "--porcelain")
-        except GitCommandError:
-            wt_list = ""
+        live = self._live_worktree_branches(repo)
         try:
             names = repo.git.branch(
                 "--list", f"{config.branch_prefix}*", "--format=%(refname:short)"
@@ -544,7 +541,7 @@ class WorktreeManager:
         stranded: list[StrandedBranch] = []
         for raw in names.splitlines():
             name = raw.strip()
-            if not name or name in wt_list:
+            if not name or name in live:
                 continue  # empty line or a live worktree's branch (active)
             if self._is_ancestor(repo, name, "HEAD"):
                 continue  # already merged into HEAD — GC reclaims it
@@ -603,6 +600,24 @@ class WorktreeManager:
             return True
         except GitCommandError:
             return False
+
+    def _live_worktree_branches(self, repo: Repo) -> set[str]:
+        """Short refnames of branches checked out in a live worktree.
+
+        Parsed exactly from ``git worktree list --porcelain`` (``branch
+        refs/heads/<ref>`` lines) — a substring test against the raw porcelain
+        text would false-positive when one branch name is a prefix of another
+        (e.g. ``vibe/foo`` inside ``vibe/foobar``), hiding stranded work.
+        """
+        try:
+            out = repo.git.worktree("list", "--porcelain")
+        except GitCommandError:
+            return set()
+        live: set[str] = set()
+        for line in out.splitlines():
+            if line.startswith("branch refs/heads/"):
+                live.add(line[len("branch refs/heads/") :].strip())
+        return live
 
     def _get_repo(self, path: Path) -> Repo:
         """Get a GitPython Repo for *path*, searching parent dirs."""
@@ -754,7 +769,9 @@ class WorktreeManager:
             return None
         for line in out.splitlines():
             ref, _, msg = line.strip().partition(" ")
-            if msg == message:
+            # `git stash list` formats the subject as "On <branch>: <message>",
+            # so match the unique message as a suffix, not by equality.
+            if msg.endswith(message):
                 return ref
         return None
 
