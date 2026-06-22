@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from vibe.cli.turn_summary.port import (
+from vibe.cli.turn_summary.turn_summary_port import (
     TurnSummaryData,
     TurnSummaryPort,
     TurnSummaryResult,
