@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from enum import StrEnum, auto
 import fnmatch
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 import re
 import shutil
 from typing import TYPE_CHECKING, ClassVar
@@ -89,6 +89,11 @@ class GlobArgs(BaseModel):
     max_results: int | None = Field(
         default=None, description="Override the default cap on returned paths."
     )
+    offset: int = Field(
+        default=0,
+        ge=0,
+        description="Skip this many matches before returning (for pagination).",
+    )
     use_default_ignore: bool = Field(
         default=True,
         description="Whether to respect .gitignore/.vibeignore and default excludes.",
@@ -146,6 +151,24 @@ def _is_excluded(rel_str: str, name: str, is_dir: bool, exclude: list[str]) -> b
     return False
 
 
+_GLOB_METACHARS = re.compile(r"[*?[\{]")
+
+
+def _split_pattern(pattern: str, root: Path) -> tuple[Path, str]:
+    # ripgrep --glob and the walk matcher only take relative patterns, so an
+    # absolute glob must be split into a literal-prefix root + relative tail.
+    if not PurePath(pattern).is_absolute():
+        return root, pattern
+    match = _GLOB_METACHARS.search(pattern)
+    if match is None:
+        return Path(pattern).parent, Path(pattern).name
+    static_prefix = pattern[: match.start()]
+    last_sep = max(static_prefix.rfind("/"), static_prefix.rfind("\\"))
+    if last_sep < 0:
+        return root, pattern
+    return Path(static_prefix[:last_sep]), pattern[last_sep + 1 :]
+
+
 class Glob(
     BaseTool[GlobArgs, GlobResult, GlobToolConfig, BaseToolState],
     ToolUIData[GlobArgs, GlobResult],
@@ -174,16 +197,26 @@ class Glob(
     ) -> AsyncGenerator[ToolStreamEvent | GlobResult, None]:
         self._validate_args(args)
         root = self._resolve_root(args.path)
+        search_root, relative_pattern = _split_pattern(args.pattern, root)
+        if search_root != root:
+            if not search_root.exists():
+                raise ToolError(f"Path does not exist: {search_root}")
+            if not search_root.is_dir():
+                raise ToolError(f"Path is not a directory: {search_root}")
         exclude = self._collect_exclude_patterns()
         backend = self._detect_backend()
 
         if backend is GlobBackend.RIPGREP:
-            paths = await self._run_ripgrep(args, root, exclude)
+            paths = await self._run_ripgrep(
+                search_root, relative_pattern, args, exclude
+            )
         else:
-            paths = await asyncio.to_thread(self._walk_files, args, root, exclude)
+            paths = await asyncio.to_thread(
+                self._walk_files, search_root, relative_pattern, args, exclude
+            )
 
         cap = args.max_results or self.config.default_max_results
-        ordered, was_truncated = self._sort_and_cap(paths, cap)
+        ordered, was_truncated = self._sort_and_cap(paths, cap, args.offset)
 
         yield GlobResult(
             paths=ordered, match_count=len(ordered), was_truncated=was_truncated
@@ -194,6 +227,8 @@ class Glob(
             raise ToolError("Empty glob pattern provided.")
 
     def _resolve_root(self, raw_path: str) -> Path:
+        if raw_path.startswith("\\\\") or raw_path.startswith("//"):
+            raise ToolError(f"UNC paths are not supported: {raw_path}")
         path = Path(raw_path).expanduser()
         if not path.is_absolute():
             path = Path.cwd() / path
@@ -224,26 +259,28 @@ class Glob(
         return patterns
 
     async def _run_ripgrep(
-        self, args: GlobArgs, root: Path, exclude: list[str]
+        self, search_root: Path, pattern: str, args: GlobArgs, exclude: list[str]
     ) -> list[Path]:
         cmd = ["rg", "--files", "--no-messages"]
         if not args.use_default_ignore:
             cmd.append("--no-ignore")
-        cmd.extend(["--glob", args.pattern])
-        for pattern in exclude:
-            cmd.extend(["--glob", f"!{pattern}"])
-        cmd.append(str(root))
+        cmd.extend(["--glob", pattern])
+        for pattern_excl in exclude:
+            cmd.extend(["--glob", f"!{pattern_excl}"])
+        cmd.append(str(search_root))
 
         stdout = await self._execute(cmd)
         return [Path(line) for line in stdout.splitlines() if line]
 
-    def _walk_files(self, args: GlobArgs, root: Path, exclude: list[str]) -> list[Path]:
-        matcher = _compile_glob(args.pattern)
-        basename_only = "/" not in args.pattern
+    def _walk_files(
+        self, search_root: Path, pattern: str, args: GlobArgs, exclude: list[str]
+    ) -> list[Path]:
+        matcher = _compile_glob(pattern)
+        basename_only = "/" not in pattern
         ignore: IgnoreRules | None = None
         if args.use_default_ignore:
             ignore = IgnoreRules()
-            ignore.ensure_for_root(root)
+            ignore.ensure_for_root(search_root)
         results: list[Path] = []
         seen: set[tuple[int, int]] = set()
 
@@ -266,7 +303,7 @@ class Glob(
                     is_dir = entry.is_dir(follow_symlinks=False)
                 except OSError:
                     continue
-                rel_str = Path(entry.path).relative_to(root).as_posix()
+                rel_str = Path(entry.path).relative_to(search_root).as_posix()
                 if ignore is not None and ignore.should_ignore(rel_str, name, is_dir):
                     continue
                 if _is_excluded(rel_str, name, is_dir, exclude):
@@ -278,15 +315,18 @@ class Glob(
                 if matcher.match(target):
                     results.append(Path(entry.path))
 
-        visit(root)
+        visit(search_root)
         return results
 
-    def _sort_and_cap(self, paths: list[Path], cap: int) -> tuple[list[str], bool]:
+    def _sort_and_cap(
+        self, paths: list[Path], cap: int, offset: int = 0
+    ) -> tuple[list[str], bool]:
         ordered = sorted(paths, key=_safe_mtime, reverse=True)
-        was_truncated = len(ordered) > cap
-        return [str(path) for path in ordered[:cap]], was_truncated
+        was_truncated = len(ordered) > offset + cap
+        return [str(path) for path in ordered[offset : offset + cap]], was_truncated
 
     async def _execute(self, cmd: list[str]) -> str:
+        proc: asyncio.subprocess.Process | None = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -297,7 +337,6 @@ class Glob(
                     proc.communicate(), timeout=self.config.default_timeout
                 )
             except TimeoutError:
-                await kill_async_subprocess(proc, kill_process_group=False)
                 raise ToolError(
                     f"Glob search timed out after {self.config.default_timeout}s"
                 )
@@ -321,8 +360,13 @@ class Glob(
 
         except ToolError:
             raise
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             raise ToolError(f"Error running glob: {exc}") from exc
+        finally:
+            if proc is not None:
+                await kill_async_subprocess(proc, kill_process_group=False)
 
     @classmethod
     def format_call_display(cls, args: GlobArgs) -> ToolCallDisplay:
