@@ -4,11 +4,8 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from vibe.cli.turn_summary.turn_summary_port import (
-    TurnSummaryData,
-    TurnSummaryPort,
-    TurnSummaryResult,
-)
+from vibe.cli.turn_summary.models import TurnSummaryData, TurnSummaryResult
+from vibe.cli.turn_summary.turn_summary_port import TurnSummaryPort
 from vibe.core.config import ModelConfig
 from vibe.core.llm.types import BackendLike
 from vibe.core.logger import logger

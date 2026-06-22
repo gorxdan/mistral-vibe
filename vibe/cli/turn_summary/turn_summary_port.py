@@ -3,21 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
-from pydantic import BaseModel, Field
-
+from vibe.cli.turn_summary.models import TurnSummaryResult
 from vibe.core.types import BaseEvent
-
-
-class TurnSummaryData(BaseModel):
-    user_message: str
-    message_id: str | None = None
-    assistant_fragments: list[str] = Field(default_factory=list)
-    error: str | None = None
-
-
-class TurnSummaryResult(BaseModel):
-    generation: int
-    summary: str | None
 
 
 class TurnSummaryPort(ABC):
