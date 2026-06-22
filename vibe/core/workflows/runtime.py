@@ -11,12 +11,13 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from pydantic import BaseModel
 
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
+from vibe.core.workflows._port import AgentLoopFactory
 from vibe.core.workflows.budget import (
     Budget,
     BudgetExhausted,
@@ -639,10 +640,7 @@ def _maybe_reap_isolated_worktree(
         result.branch = wt.branch
 
 
-class AgentLoopFactory(Protocol):
-    def __call__(
-        self, prompt: str, *, agent: str, parent_context: InvokeContext | None
-    ) -> AgentLoop: ...
+
 
 
 @dataclass
