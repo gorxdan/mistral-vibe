@@ -473,6 +473,198 @@ class TestAutoFf:
         # Branch should still exist.
         assert handle.branch in [b.name for b in root_repo.branches]
 
+    def test_auto_ff_lands_over_dirty_start(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
+        """Session started with a dirty tree still auto-merges on exit: both the
+        user's pre-existing edit and the agent's work land in the original tree.
+        """
+        os.chdir(str(temp_repo))
+        root = Repo(str(temp_repo))
+        # Dirty start: an uncommitted edit to a tracked file.
+        (temp_repo / "src.py").write_text("print('user edit')\n")
+
+        config = WorktreeConfig(mode="on", merge="auto-ff", cleanup="remove")
+        handle = manager.enter("test", config)
+        assert handle is not None
+        assert handle.entry_dirty_fingerprint is not None
+
+        # Agent does disjoint work in the worktree and commits.
+        (handle.worktree_path / "agent.txt").write_text("agent work\n")
+        wt_repo = Repo(str(handle.worktree_path))
+        wt_repo.git.add("-A")
+        wt_repo.git.commit("-m", "agent commit")
+
+        manager.exit(handle)
+
+        # Both the user's dirty edit AND the agent's work landed; tree is clean
+        # (the user's previously-uncommitted edit is now committed) and the
+        # worktree directory was reclaimed.
+        assert (temp_repo / "src.py").read_text() == "print('user edit')\n"
+        assert (temp_repo / "agent.txt").read_text() == "agent work\n"
+        assert not root.is_dirty(untracked_files=True)
+        assert not handle.worktree_path.exists()
+
+    def test_auto_ff_held_when_concurrent_edit_changes_original(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
+        """If the original tree changes after enter (a concurrent writer), the
+        merge is held so that concurrent work is never swept into the stash and
+        dropped — the branch is kept for a manual merge instead.
+        """
+        os.chdir(str(temp_repo))
+        root = Repo(str(temp_repo))
+        (temp_repo / "src.py").write_text("print('user edit')\n")  # dirty start
+
+        config = WorktreeConfig(mode="on", merge="auto-ff", cleanup="remove")
+        handle = manager.enter("test", config)
+        assert handle is not None
+
+        # Concurrent writer adds work to the original tree AFTER enter — the
+        # carried fingerprint no longer matches.
+        (temp_repo / "concurrent.txt").write_text("concurrent\n")
+
+        (handle.worktree_path / "agent.txt").write_text("agent\n")
+        wt_repo = Repo(str(handle.worktree_path))
+        wt_repo.git.add("-A")
+        wt_repo.git.commit("-m", "agent")
+
+        manager.exit(handle)
+
+        # Merge held: branch kept, concurrent + user work preserved untouched,
+        # agent work stays on the branch (not force-landed).
+        assert handle.branch in [b.name for b in root.branches]
+        assert (temp_repo / "concurrent.txt").read_text() == "concurrent\n"
+        assert (temp_repo / "src.py").read_text() == "print('user edit')\n"
+        assert not (temp_repo / "agent.txt").exists()
+
+    def test_auto_ff_over_dirty_preserves_untracked_carry_ignored(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
+        """An untracked carry_ignored file (e.g. .env) is excluded from the carry
+        and must survive the exit stash-bracket rather than being swept + dropped.
+        """
+        os.chdir(str(temp_repo))
+        (temp_repo / "src.py").write_text("print('user edit')\n")  # tracked dirt
+        (temp_repo / ".env").write_text("SECRET=1\n")  # untracked carry_ignored
+
+        config = WorktreeConfig(
+            mode="on", merge="auto-ff", cleanup="remove", carry_ignored=[".env"]
+        )
+        handle = manager.enter("test", config)
+        assert handle is not None
+
+        (handle.worktree_path / "agent.txt").write_text("agent\n")
+        wt_repo = Repo(str(handle.worktree_path))
+        wt_repo.git.add("-A")
+        wt_repo.git.commit("-m", "agent")
+
+        manager.exit(handle)
+
+        # .env preserved verbatim; the agent's work landed; user edit landed.
+        assert (temp_repo / ".env").read_text() == "SECRET=1\n"
+        assert (temp_repo / "agent.txt").read_text() == "agent\n"
+        assert (temp_repo / "src.py").read_text() == "print('user edit')\n"
+
+
+# ---------------------------------------------------------------------------
+# Stranded-branch reporting + GC
+# ---------------------------------------------------------------------------
+
+
+def _commit_branch_ahead(
+    root: Repo, base_wt: Path, branch: str, *, base: str = "HEAD"
+) -> None:
+    """Create *branch* off *base* with one commit ahead, via a temp worktree."""
+    wt = base_wt.parent / f"_tmp_{branch.replace('/', '_')}"
+    root.git.worktree("add", str(wt), "-b", branch, base)
+    (wt / f"{branch.replace('/', '_')}.txt").write_text("work\n")
+    r = Repo(str(wt))
+    r.git.add("-A")
+    r.git.commit("-m", f"work on {branch}")
+    root.git.worktree("remove", "--force", str(wt))
+
+
+class TestStrandedBranches:
+    def test_lists_unmerged_orphan_branch(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
+        os.chdir(str(temp_repo))
+        root = Repo(str(temp_repo))
+        _commit_branch_ahead(root, temp_repo, "vibe/old-session")
+
+        stranded = manager.list_stranded_branches(WorktreeConfig(branch_prefix="vibe/"))
+        names = [s.branch for s in stranded]
+        assert "vibe/old-session" in names
+        entry = next(s for s in stranded if s.branch == "vibe/old-session")
+        assert entry.ahead == 1
+
+    def test_excludes_merged_and_empty_branches(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
+        os.chdir(str(temp_repo))
+        root = Repo(str(temp_repo))
+        # Merged/empty branch pointing at HEAD — nothing to recover.
+        root.git.branch("vibe/empty", "HEAD")
+
+        stranded = manager.list_stranded_branches(WorktreeConfig(branch_prefix="vibe/"))
+        assert "vibe/empty" not in [s.branch for s in stranded]
+
+
+class TestGc:
+    @staticmethod
+    def _old_repo(tmp_path: Path) -> Repo:
+        repo_dir = tmp_path / "gcrepo"
+        repo_dir.mkdir()
+        root = Repo.init(str(repo_dir))
+        old = "2020-01-01T00:00:00"
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_DATE": old,
+            "GIT_COMMITTER_DATE": old,
+            "GIT_AUTHOR_NAME": "T",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "T",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        (repo_dir / "f.txt").write_text("x\n")
+        root.git.add("-A")
+        root.git.execute(["git", "commit", "-m", "old base"], env=env)
+        return root
+
+    def test_gc_deletes_merged_old_branch(
+        self, manager: WorktreeManager, tmp_path: Path
+    ):
+        root = self._old_repo(tmp_path)
+        root.git.branch("vibe/merged-old", "HEAD")  # merged (==HEAD), old date
+        os.chdir(root.working_tree_dir)
+
+        manager._gc_abandoned_worktrees(root, WorktreeConfig(gc_age_days=7))
+        assert "vibe/merged-old" not in [b.name for b in root.branches]
+
+    def test_gc_keeps_unmerged_branch(
+        self, manager: WorktreeManager, tmp_path: Path
+    ):
+        root = self._old_repo(tmp_path)
+        _commit_branch_ahead(
+            root, Path(root.working_tree_dir), "vibe/unmerged-old"
+        )
+        os.chdir(root.working_tree_dir)
+
+        manager._gc_abandoned_worktrees(root, WorktreeConfig(gc_age_days=7))
+        # Unmerged work is never GC'd regardless of age.
+        assert "vibe/unmerged-old" in [b.name for b in root.branches]
+
+    def test_gc_disabled_when_age_zero(
+        self, manager: WorktreeManager, tmp_path: Path
+    ):
+        root = self._old_repo(tmp_path)
+        root.git.branch("vibe/merged-old", "HEAD")
+        os.chdir(root.working_tree_dir)
+
+        manager._gc_abandoned_worktrees(root, WorktreeConfig(gc_age_days=0))
+        assert "vibe/merged-old" in [b.name for b in root.branches]
+
 
 # ---------------------------------------------------------------------------
 # Crash recovery

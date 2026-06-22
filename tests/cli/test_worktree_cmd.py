@@ -1,0 +1,97 @@
+"""Tests for the `vibe worktree` maintenance subcommand."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from git import Repo
+import pytest
+
+from vibe.cli.worktree_cmd import run_worktree_command
+
+
+@pytest.fixture(autouse=True)
+def _restore_cwd():
+    original = os.getcwd()
+    yield
+    os.chdir(original)
+
+
+def _repo_with_orphan_branch(tmp_path: Path) -> tuple[Repo, str]:
+    """A repo with one unmerged `vibe/*` branch (no live worktree)."""
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    root = Repo.init(str(repo_dir))
+    with root.config_writer() as cw:
+        cw.set_value("user", "name", "T")
+        cw.set_value("user", "email", "t@t")
+    (repo_dir / "f.txt").write_text("base\n")
+    root.git.add("-A")
+    root.git.commit("-m", "base")
+
+    wt = tmp_path / "wt"
+    root.git.worktree("add", str(wt), "-b", "vibe/orphan", "HEAD")
+    (wt / "work.txt").write_text("agent work\n")
+    r = Repo(str(wt))
+    r.git.add("-A")
+    r.git.commit("-m", "agent work")
+    root.git.worktree("remove", "--force", str(wt))
+    os.chdir(str(repo_dir))
+    return root, "vibe/orphan"
+
+
+def test_list_shows_unmerged_branch(tmp_path: Path, capsys) -> None:
+    _repo_with_orphan_branch(tmp_path)
+    assert run_worktree_command(["list"]) == 0
+    out = capsys.readouterr().out
+    assert "vibe/orphan" in out
+    assert "vibe worktree merge vibe/orphan" in out
+
+
+def test_list_empty(tmp_path: Path, capsys) -> None:
+    repo_dir = tmp_path / "clean"
+    repo_dir.mkdir()
+    root = Repo.init(str(repo_dir))
+    with root.config_writer() as cw:
+        cw.set_value("user", "name", "T")
+        cw.set_value("user", "email", "t@t")
+    (repo_dir / "f.txt").write_text("x\n")
+    root.git.add("-A")
+    root.git.commit("-m", "base")
+    os.chdir(str(repo_dir))
+    assert run_worktree_command(["list"]) == 0
+    assert "No worktree branches" in capsys.readouterr().out
+
+
+def test_merge_lands_branch(tmp_path: Path) -> None:
+    root, branch = _repo_with_orphan_branch(tmp_path)
+    assert run_worktree_command(["merge", branch]) == 0
+    # The branch's work is now in HEAD.
+    assert (Path(root.working_tree_dir) / "work.txt").read_text() == "agent work\n"
+
+
+def test_merge_refuses_dirty_tree(tmp_path: Path) -> None:
+    root, branch = _repo_with_orphan_branch(tmp_path)
+    (Path(root.working_tree_dir) / "f.txt").write_text("dirty\n")
+    assert run_worktree_command(["merge", branch]) == 1
+    # Branch unmerged, work not landed.
+    assert not (Path(root.working_tree_dir) / "work.txt").exists()
+
+
+def test_discard_force_deletes_branch(tmp_path: Path) -> None:
+    root, branch = _repo_with_orphan_branch(tmp_path)
+    assert run_worktree_command(["discard", branch, "--force"]) == 0
+    assert branch not in [b.name for b in root.branches]
+
+
+def test_discard_unmerged_aborts_without_tty(tmp_path: Path) -> None:
+    # No -f and no tty -> input() EOFErrors -> treated as "no" -> aborts, branch kept.
+    root, branch = _repo_with_orphan_branch(tmp_path)
+    assert run_worktree_command(["discard", branch]) == 1
+    assert branch in [b.name for b in root.branches]
+
+
+def test_unknown_action(tmp_path: Path) -> None:
+    os.chdir(str(tmp_path))
+    assert run_worktree_command(["bogus"]) == 2

@@ -347,7 +347,17 @@ class WorktreeManager:
         """
         import subprocess
 
+        wtd = repo.working_tree_dir
+        if wtd is None:
+            raise RuntimeError("Cannot resolve working tree dir (bare repo?)")
+        repo_root = Path(wtd)
+
+        # `git rev-parse --git-path index` is resolved relative to where git ran
+        # (the repo root), not the process cwd — which at exit is the worktree.
+        # Anchor it to repo_root so the path is correct regardless of cwd.
         index_path = Path(repo.git.rev_parse("--git-path", "index"))
+        if not index_path.is_absolute():
+            index_path = repo_root / index_path
         with tempfile.NamedTemporaryFile(
             suffix=".idx", delete=False, dir=str(index_path.parent)
         ) as tmp:
@@ -356,10 +366,6 @@ class WorktreeManager:
 
         try:
             env = dict(os.environ, GIT_INDEX_FILE=str(tmp_idx))
-            wtd = repo.working_tree_dir
-            if wtd is None:
-                raise RuntimeError("Cannot resolve working tree dir (bare repo?)")
-            repo_root = Path(wtd)
 
             # add -N . adds all untracked files as intent-to-add so they
             # appear in the diff.  Gitignored files are skipped automatically.
@@ -754,7 +760,8 @@ class WorktreeManager:
 
     def _restore_stash(self, repo: Repo, message: str) -> None:
         """Pop the stash back onto the tree (used when the merge could not land,
-        so the user's live changes are never abandoned in the stash list)."""
+        so the user's live changes are never abandoned in the stash list).
+        """
         ref = self._stash_ref_for_message(repo, message)
         if ref is None:
             return

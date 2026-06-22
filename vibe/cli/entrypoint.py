@@ -200,6 +200,14 @@ def check_and_resolve_trusted_folder(cwd: Path) -> None:
 
 
 def main() -> None:
+    # Pre-dispatch the `worktree` maintenance subcommand before the main parser,
+    # whose positional `initial_prompt` would otherwise swallow it. Runs without
+    # config/trust/harness setup — it only touches git.
+    if sys.argv[1:2] == ["worktree"]:
+        from vibe.cli.worktree_cmd import run_worktree_command
+
+        sys.exit(run_worktree_command(sys.argv[2:]))
+
     args = parse_arguments()
 
     if args.workdir:
