@@ -411,7 +411,82 @@ def _get_headless_section() -> str:
     )
 
 
-def get_universal_system_prompt(  # noqa: PLR0912, PLR0914, PLR0915
+def _build_prompt_detail_sections(
+    tool_manager: ToolManager,
+    skill_manager: SkillManager,
+    agent_manager: AgentManager,
+    scratchpad_dir: Path | None,
+) -> list[str]:
+    sections = [_get_os_system_prompt()]
+    tool_prompts = []
+    for tool_class in tool_manager.available_tools.values():
+        if prompt := tool_class.get_tool_prompt():
+            tool_prompts.append(prompt)
+    if tool_prompts:
+        sections.append("\n---\n".join(tool_prompts))
+
+    skills_section = _get_available_skills_section(skill_manager)
+    if skills_section:
+        sections.append(skills_section)
+
+    subagents_section = _get_available_subagents_section(agent_manager)
+    if subagents_section:
+        sections.append(subagents_section)
+        sections.append(_get_orchestration_section())
+
+    sections.extend(filter(None, [_get_scratchpad_section(scratchpad_dir)]))
+    return sections
+
+
+def _build_project_context_sections(
+    config: VibeConfig, include_git_status: bool
+) -> list[str]:
+    sections: list[str] = []
+    is_dangerous, reason = is_dangerous_directory()
+    if is_dangerous:
+        template = UtilityPrompt.DANGEROUS_DIRECTORY.read()
+        context = Template(template).safe_substitute(
+            reason=reason.lower(), abs_path=Path(".").resolve()
+        )
+    else:
+        context = ProjectContextProvider(
+            config=config.project_context, root_path=Path.cwd()
+        ).get_full_context(include_git_status=include_git_status)
+    sections.append(context)
+
+    mgr = get_harness_files_manager()
+    cwd_resolved = Path.cwd().resolve()
+    extra_roots = [r for r in mgr.project_roots if r.resolve() != cwd_resolved]
+    if extra_roots:
+        dirs_lines = "\n".join(f" - {d}" for d in extra_roots)
+        sections.append(
+            "Additional working directories (treated with the same "
+            "file-access permissions as the primary working directory):\n"
+            + dirs_lines
+        )
+
+    user_doc = mgr.load_user_doc()
+    project_docs = mgr.load_project_docs()
+    doc_sections: list[str] = []
+    if user_doc.strip():
+        doc_sections.append(
+            f"## User instructions\n\nContents of {VIBE_HOME.path}/AGENTS.md (user-level instructions):\n\n{user_doc.strip()}"
+        )
+    if project_docs:
+        doc_sections.append("## Project instructions (checked into the codebase)")
+    for doc_dir, doc_content in project_docs:
+        doc_sections.append(
+            f"Contents of {doc_dir}/AGENTS.md:\n\n{doc_content.strip()}"
+        )
+    if doc_sections:
+        template = UtilityPrompt.AGENTS_DOC.read()
+        sections.append(
+            Template(template).safe_substitute(sections="\n\n".join(doc_sections))
+        )
+    return sections
+
+
+def get_universal_system_prompt(
     tool_manager: ToolManager,
     config: VibeConfig,
     skill_manager: SkillManager,
@@ -440,69 +515,14 @@ def get_universal_system_prompt(  # noqa: PLR0912, PLR0914, PLR0915
         sections.append(f"Your model name is: `{config.active_model}`")
 
     if config.include_prompt_detail:
-        sections.append(_get_os_system_prompt())
-        tool_prompts = []
-        for tool_class in tool_manager.available_tools.values():
-            if prompt := tool_class.get_tool_prompt():
-                tool_prompts.append(prompt)
-        if tool_prompts:
-            sections.append("\n---\n".join(tool_prompts))
-
-        skills_section = _get_available_skills_section(skill_manager)
-        if skills_section:
-            sections.append(skills_section)
-
-        subagents_section = _get_available_subagents_section(agent_manager)
-        if subagents_section:
-            sections.append(subagents_section)
-            sections.append(_get_orchestration_section())
-
-        sections.extend(filter(None, [_get_scratchpad_section(scratchpad_dir)]))
+        sections.extend(
+            _build_prompt_detail_sections(
+                tool_manager, skill_manager, agent_manager, scratchpad_dir
+            )
+        )
 
     if config.include_project_context:
-        is_dangerous, reason = is_dangerous_directory()
-        if is_dangerous:
-            template = UtilityPrompt.DANGEROUS_DIRECTORY.read()
-            context = Template(template).safe_substitute(
-                reason=reason.lower(), abs_path=Path(".").resolve()
-            )
-        else:
-            context = ProjectContextProvider(
-                config=config.project_context, root_path=Path.cwd()
-            ).get_full_context(include_git_status=include_git_status)
-
-        sections.append(context)
-
-        mgr = get_harness_files_manager()
-        cwd_resolved = Path.cwd().resolve()
-        extra_roots = [r for r in mgr.project_roots if r.resolve() != cwd_resolved]
-        if extra_roots:
-            dirs_lines = "\n".join(f" - {d}" for d in extra_roots)
-            sections.append(
-                "Additional working directories (treated with the same "
-                "file-access permissions as the primary working directory):\n"
-                + dirs_lines
-            )
-
-        user_doc = mgr.load_user_doc()
-        project_docs = mgr.load_project_docs()
-
-        doc_sections: list[str] = []
-        if user_doc.strip():
-            doc_sections.append(
-                f"## User instructions\n\nContents of {VIBE_HOME.path}/AGENTS.md (user-level instructions):\n\n{user_doc.strip()}"
-            )
-        if project_docs:
-            doc_sections.append("## Project instructions (checked into the codebase)")
-        for doc_dir, doc_content in project_docs:
-            doc_sections.append(
-                f"Contents of {doc_dir}/AGENTS.md:\n\n{doc_content.strip()}"
-            )
-        if doc_sections:
-            template = UtilityPrompt.AGENTS_DOC.read()
-            sections.append(
-                Template(template).safe_substitute(sections="\n\n".join(doc_sections))
-            )
+        sections.extend(_build_project_context_sections(config, include_git_status))
 
     if getattr(config, "effort_mode", "normal") == "le-chaton" and not getattr(
         config, "disable_workflows", False
