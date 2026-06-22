@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import collections
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
@@ -94,6 +95,7 @@ from vibe.cli.textual_ui.widgets.messages import (
     ErrorMessage,
     InterruptMessage,
     LspInstallCallout,
+    LspInstallHintCallout,
     SlashCommandMessage,
     StreamingMessageBase,
     TeleportUserMessage,
@@ -114,6 +116,7 @@ from vibe.cli.textual_ui.widgets.proxy_setup_app import ProxySetupApp
 from vibe.cli.textual_ui.widgets.question_app import QuestionApp
 from vibe.cli.textual_ui.widgets.rewind_app import RewindApp
 from vibe.cli.textual_ui.widgets.session_picker import SessionPickerApp
+from vibe.cli.textual_ui.widgets.tasks_app import TasksApp
 from vibe.cli.textual_ui.widgets.teleport_message import TeleportMessage
 from vibe.cli.textual_ui.widgets.theme_picker import ThemePickerApp, sorted_theme_names
 from vibe.cli.textual_ui.widgets.thinking_picker import ThinkingPickerApp
@@ -123,7 +126,6 @@ from vibe.cli.textual_ui.widgets.tool_widgets import (
 )
 from vibe.cli.textual_ui.widgets.voice_app import VoiceApp
 from vibe.cli.textual_ui.widgets.workflow_save_app import WorkflowSaveApp
-from vibe.cli.textual_ui.widgets.tasks_app import TasksApp
 from vibe.cli.textual_ui.windowing import (
     HISTORY_RESUME_TAIL_MESSAGES,
     LOAD_MORE_BATCH_SIZE,
@@ -136,7 +138,6 @@ from vibe.cli.textual_ui.windowing import (
     sync_backfill_state,
 )
 from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
-from vibe.core.tools.background import BackgroundRegistry
 from vibe.cli.update_notifier import (
     GitHubUpdateGateway,
     UpdateCacheRepository,
@@ -205,6 +206,7 @@ from vibe.core.teleport.types import (
     TeleportPushResponseEvent,
     TeleportStartingWorkflowEvent,
 )
+from vibe.core.tools.background import BackgroundRegistry
 from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.builtins.ask_user_question import (
     AskUserQuestionArgs,
@@ -473,6 +475,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         self._tools_collapsed = True
         self._lsp_nudge_shown_this_session = False
+        self._recent_edited_exts: collections.deque[str] = collections.deque(maxlen=16)
         self._windowing = SessionWindowing(load_more_batch_size=LOAD_MORE_BATCH_SIZE)
         self._load_more = HistoryLoadMoreManager()
         self._tool_call_map: dict[str, str] | None = None
@@ -2803,18 +2806,56 @@ class VibeApp(App):  # noqa: PLR0904
                 "automatically after edits. Run /lsp to check status."
             )
         else:
-            from vibe.core.lsp._defaults import PRESETS
-
-            lines = [
-                "LSP enabled, but no language servers were found on your PATH.",
-                "Install one to get started:",
-                "",
-            ]
-            for preset in PRESETS.values():
-                lines.append(f"  - {preset.display_name}: {preset.install_hint}")
-            lines.append("")
-            lines.append("Then run /lspstall again to re-detect.")
+            lines = self._lsp_install_hint_lines(
+                lead="LSP enabled, but no language servers were found on your PATH.",
+                footer="Then run /lspstall again to re-detect.",
+            )
         await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
+
+    def _recent_preset_keys(self) -> list[str]:
+        """Preset keys ordered by how recently the user edited their files."""
+        from vibe.core.lsp._defaults import preset_for_extension
+
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for ext in self._recent_edited_exts:
+            preset = preset_for_extension(ext)
+            if preset is None or preset.key in seen:
+                continue
+            seen.add(preset.key)
+            ordered.append(preset.key)
+        return ordered
+
+    def _lsp_install_hint_lines(self, *, lead: str, footer: str) -> list[str]:
+        """Install-hint list, context-aware + with broken-preset callouts.
+
+        Presets whose language the user has recently edited are pinned to the
+        top (most-recent first); the rest follow in declaration order. Broken
+        presets (binary present but probe failed) get a dedicated callout line
+        so the user can tell "installed-but-broken" from "not installed".
+        """
+        from vibe.core.lsp._defaults import PRESETS, broken_presets
+
+        recent = self._recent_preset_keys()
+        pinned = [PRESETS[k] for k in recent if k in PRESETS]
+        rest = [p for k, p in PRESETS.items() if k not in recent]
+        ordered = pinned + rest
+        lines = [lead, "", "Install one to get started:", ""]
+        for preset in ordered:
+            lines.append(f"  - {preset.display_name}: {preset.install_hint}")
+        broken = broken_presets()
+        if broken:
+            lines.append("")
+            lines.append("Installed but not working (probe failed):")
+            for probe in broken:
+                detail = probe.stderr or f"exit {probe.returncode}"
+                lines.append(
+                    f"  - {probe.preset.display_name}: reinstall "
+                    f"({probe.preset.install_hint}) — {detail}"
+                )
+        lines.append("")
+        lines.append(footer)
+        return lines
 
     async def _uninstall_lsp(self, **kwargs: Any) -> None:
         current = list(self.agent_loop.base_config.installed_components)
@@ -2838,7 +2879,7 @@ class VibeApp(App):  # noqa: PLR0904
             )
             return
         from vibe.core.lsp import get_lsp_manager
-        from vibe.core.lsp._defaults import PRESETS, available_presets
+        from vibe.core.lsp._defaults import available_presets
 
         manager = get_lsp_manager()
         if manager is None or not manager.servers:
@@ -2850,13 +2891,11 @@ class VibeApp(App):  # noqa: PLR0904
                     "or restart vibe if you just installed."
                 )
             else:
-                hints = [
-                    f"  - {p.display_name}: {p.install_hint}" for p in PRESETS.values()
-                ]
-                hint = (
-                    "No language server binaries on PATH. Install one:\n"
-                    + "\n".join(hints)
+                hint_lines = self._lsp_install_hint_lines(
+                    lead="No language server binaries on PATH.",
+                    footer="Run /lspstall to re-detect after installing.",
                 )
+                hint = "\n".join(hint_lines)
             await self._mount_and_scroll(
                 UserCommandMessage(
                     f"LSP is installed but no servers are active.\n\n{hint}"
@@ -2874,9 +2913,16 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
 
     def _maybe_nudge_lsp(self, file_path: str) -> None:
+        ext = Path(file_path).suffix.lower()
+        if ext:
+            self._recent_edited_exts.appendleft(ext)
         if self._lsp_nudge_shown_this_session:
             return
-        from vibe.core.lsp._nudge import evaluate_nudge, record_first_prompted
+        from vibe.core.lsp._nudge import (
+            evaluate_nudge,
+            record_first_prompted,
+            record_install_hint_shown,
+        )
 
         decision = evaluate_nudge(
             file_path, self.agent_loop.base_config, CACHE_FILE.path
@@ -2895,6 +2941,35 @@ class VibeApp(App):  # noqa: PLR0904
                 "Run /lspstall to enable.",
                 timeout=10,
             )
+        elif decision.kind == "install_hint":
+            preset_key = self._preset_key_for_display_name(decision.preset_display_name)
+            if preset_key is None:
+                return
+            record_install_hint_shown(preset_key, CACHE_FILE.path)
+            self._lsp_nudge_shown_this_session = True
+            self.call_after_refresh(
+                lambda: self._mount_lsp_install_hint_callout(
+                    decision.preset_display_name,
+                    decision.install_hint,
+                    preset_key,
+                )
+            )
+
+    @staticmethod
+    def _preset_key_for_display_name(display_name: str) -> str | None:
+        from vibe.core.lsp._defaults import PRESETS
+
+        return next(
+            (p.key for p in PRESETS.values() if p.display_name == display_name),
+            None,
+        )
+
+    async def _mount_lsp_install_hint_callout(
+        self, language_display_name: str, install_hint: str, preset_key: str
+    ) -> None:
+        await self._mount_and_scroll(
+            LspInstallHintCallout(language_display_name, install_hint, preset_key)
+        )
 
     async def _mount_lsp_callout(self, language_display_name: str) -> None:
         await self._mount_and_scroll(LspInstallCallout(language_display_name))
@@ -2916,6 +2991,14 @@ class VibeApp(App):  # noqa: PLR0904
         record_declined(CACHE_FILE.path)
         self._lsp_nudge_shown_this_session = True
         self.notify("You can enable LSP later with /lspstall.", timeout=6)
+
+    def on_lsp_install_hint_callout_dismissed(
+        self, event: LspInstallHintCallout.Dismissed
+    ) -> None:
+        from vibe.core.lsp._nudge import record_install_hint_declined
+
+        record_install_hint_declined(event.preset_key, CACHE_FILE.path)
+        self._lsp_nudge_shown_this_session = True
 
     async def _clear_history(self, **kwargs: Any) -> None:
         try:
@@ -3848,7 +3931,7 @@ class VibeApp(App):  # noqa: PLR0904
             return
 
         sub = cmd_args.strip().lower()
-        if sub in ("", "status"):
+        if sub in {"", "status"}:
             from git import Repo
 
             repo = Repo(str(wt.worktree_path))

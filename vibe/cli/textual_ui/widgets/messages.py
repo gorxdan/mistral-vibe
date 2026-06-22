@@ -440,6 +440,44 @@ class LspInstallCallout(Static):
         await self.remove()
 
 
+class LspInstallHintCallout(Static):
+    """Tells the user how to install the language server for the file they
+    just edited.
+
+    Shown when the matching server binary is absent (not broken — broken
+    states go in /lsp status). Single Dismiss button: the user has to run a
+    shell command to install, so there's no in-app Enable action.
+    """
+
+    class Dismissed(Message):
+        def __init__(self, preset_key: str) -> None:
+            super().__init__()
+            self.preset_key = preset_key
+
+    def __init__(self, language_display_name: str, install_hint: str, preset_key: str) -> None:
+        super().__init__()
+        self.add_class("lsp-install-callout")
+        self._language = language_display_name
+        self._hint = install_hint
+        self._preset_key = preset_key
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="lsp-callout-container"):
+            yield Markdown(
+                f"**No language server found for {self._language}.** "
+                "Install it to get definitions, references, and diagnostics:\n\n"
+                f"```\n{self._hint}\n```\n\n"
+                "Then run `/lspstall` to enable."
+            )
+            with Horizontal(classes="lsp-callout-buttons"):
+                yield Button("Dismiss", id="lsp-hint-dismiss", variant="default")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "lsp-hint-dismiss":
+            self.post_message(self.Dismissed(self._preset_key))
+        await self.remove()
+
+
 class InterruptMessage(Static):
     def __init__(self) -> None:
         super().__init__()
