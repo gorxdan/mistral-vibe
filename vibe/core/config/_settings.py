@@ -153,9 +153,8 @@ class TomlFileSettingsSource(PydanticBaseSettingsSource):
             for entry in data["plugin_paths"]:
                 try:
                     resolved = Path(str(entry)).expanduser().resolve()
-                    contained = (
-                        resolved == root_resolved
-                        or resolved.is_relative_to(root_resolved)
+                    contained = resolved == root_resolved or resolved.is_relative_to(
+                        root_resolved
                     )
                 except (OSError, ValueError):
                     contained = False
@@ -243,7 +242,7 @@ class SafetyJudgeConfig(BaseSettings):
     (the ``ASK`` path) are first shown to a separate "judge" model. If the judge
     deems the call safe, it runs without a prompt. The judge can never override
     hard denials (denylist / ``NEVER``) and fails closed: any error, timeout, or
-    unparseable response falls back to the normal human prompt.
+    unparsable response falls back to the normal human prompt.
     """
 
     model_config = SettingsConfigDict(extra="ignore")
@@ -389,10 +388,10 @@ class WorktreeConfig(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    mode: Literal["off", "on", "auto-by-entrypoint"] = "auto-by-entrypoint"
+    mode: Literal["off", "on", "auto-by-entrypoint"] = "on"
     base_dir: str = ""
     branch_prefix: str = "vibe/"
-    merge: Literal["manual", "auto-ff"] = "manual"
+    merge: Literal["manual", "auto-ff"] = "auto-ff"
     cleanup: Literal["remove", "keep"] = "remove"
     carry_dirty: bool = True
     carry_ignored: list[str] = Field(
@@ -693,7 +692,7 @@ class LSPServer(BaseModel):
         description=(
             "Mapping of file extension (with dot, e.g. '.py') to LSP language id "
             "(e.g. 'python'). The server claims ownership of these extensions."
-        ),
+        )
     )
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(
@@ -719,14 +718,18 @@ class LSPServer(BaseModel):
     def _normalize_name(cls, v: str) -> str:
         normalized = re.sub(r"[^a-zA-Z0-9_-]", "_", v).strip("_-")
         if not normalized:
-            raise ValueError("LSP server name must contain at least one identifier char")
+            raise ValueError(
+                "LSP server name must contain at least one identifier char"
+            )
         return normalized[:256]
 
     @field_validator("languages", mode="after")
     @classmethod
     def _must_have_languages(cls, v: dict[str, str]) -> dict[str, str]:
         if not v:
-            raise ValueError("an LSP server must declare at least one language/extension")
+            raise ValueError(
+                "an LSP server must declare at least one language/extension"
+            )
         return v
 
     def argv(self) -> list[str]:

@@ -620,7 +620,17 @@ vibe --max-price DOLLARS            # Max cost limit (programmatic mode)
 vibe --max-tokens N                 # Max total session tokens (programmatic mode)
 vibe --enabled-tools TOOL           # Enable specific tools (repeatable)
 vibe --output text|json|streaming   # Output format (programmatic mode)
+vibe --worktree                     # Force worktree isolation ON (overrides mode="off")
+vibe --no-worktree                  # Force worktree isolation OFF for this invocation
 ```
+
+Worktree isolation is **on by default** for the interactive CLI and `vibe -p`:
+writes land on a throwaway branch that fast-forward merges back into the
+original HEAD on clean exit. If the original tree is dirty or HEAD moved
+(another agent committed), the merge is held and the branch stays for a manual
+`git merge`. Set `worktree.mode = "off"` in config to disable persistently, or
+`"auto-by-entrypoint"` for the legacy programmatic-only split. ACP is not
+isolated (multi-session-per-process; tracked as a follow-up).
 
 ## Built-in Agents
 

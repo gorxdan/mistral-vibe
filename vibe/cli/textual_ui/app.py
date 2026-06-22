@@ -2949,9 +2949,7 @@ class VibeApp(App):  # noqa: PLR0904
             self._lsp_nudge_shown_this_session = True
             self.call_after_refresh(
                 lambda: self._mount_lsp_install_hint_callout(
-                    decision.preset_display_name,
-                    decision.install_hint,
-                    preset_key,
+                    decision.preset_display_name, decision.install_hint, preset_key
                 )
             )
 
@@ -2960,8 +2958,7 @@ class VibeApp(App):  # noqa: PLR0904
         from vibe.core.lsp._defaults import PRESETS
 
         return next(
-            (p.key for p in PRESETS.values() if p.display_name == display_name),
-            None,
+            (p.key for p in PRESETS.values() if p.display_name == display_name), None
         )
 
     async def _mount_lsp_install_hint_callout(
@@ -3924,8 +3921,9 @@ class VibeApp(App):  # noqa: PLR0904
         if wt is None:
             await self._mount_and_scroll(
                 UserCommandMessage(
-                    "No worktree is active. Relaunch with `--worktree` to enable "
-                    'isolation, or set `worktree.mode = "on"` in config.'
+                    "No worktree is active. Isolation is on by default — "
+                    "relaunch without `--no-worktree` to enable it, or set "
+                    '`worktree.mode = "on"` in config.'
                 )
             )
             return

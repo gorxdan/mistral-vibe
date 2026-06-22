@@ -5,11 +5,9 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 from git import Repo
-from git.exc import GitCommandError
+import pytest
 
 from vibe.core.config import WorktreeConfig
 from vibe.core.worktree.manager import (
@@ -19,7 +17,6 @@ from vibe.core.worktree.manager import (
     worktree_enabled,
     worktree_manager,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -92,6 +89,27 @@ class TestWorktreeEnabled:
         config = VibeConfig.load(worktree=WorktreeConfig(mode="auto-by-entrypoint"))
         assert worktree_enabled(config, programmatic=False, cli_flag=True)
 
+    def test_default_mode_is_on(self):
+        # Regression for the host-default flip: WorktreeConfig() with no
+        # explicit mode must default to "on", and worktree_enabled() must
+        # return True for both the interactive CLI and programmatic entrypoints
+        # under that default. Previously defaulted to "auto-by-entrypoint"
+        # (programmatic-only).
+        from vibe.core.config import VibeConfig
+
+        config = VibeConfig.load()
+        assert config.worktree.mode == "on"
+        assert worktree_enabled(config, programmatic=False)  # interactive CLI
+        assert worktree_enabled(config, programmatic=True)  # vibe -p
+
+    def test_default_merge_is_auto_ff(self):
+        # Companion to the mode flip: clean sessions should auto-ff-merge on
+        # exit rather than leaving a throwaway branch for manual merge.
+        from vibe.core.config import VibeConfig
+
+        config = VibeConfig.load()
+        assert config.worktree.merge == "auto-ff"
+
 
 # ---------------------------------------------------------------------------
 # original_working_directory()
@@ -123,7 +141,9 @@ class TestOriginalWorkingDirectory:
 
 
 class TestEnterBasic:
-    def test_enter_creates_worktree_and_chdirs(self, manager: WorktreeManager, temp_repo: Path):
+    def test_enter_creates_worktree_and_chdirs(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on")
         handle = manager.enter("test", config)
@@ -140,14 +160,18 @@ class TestEnterBasic:
         wt_repo = Repo(str(handle.worktree_path))
         assert wt_repo.head.commit.hexsha == handle.create_head_sha
 
-    def test_enter_records_active_handle(self, manager: WorktreeManager, temp_repo: Path):
+    def test_enter_records_active_handle(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on")
         handle = manager.enter("test", config)
 
         assert manager.active is handle
 
-    def test_enter_creates_branch_with_prefix(self, manager: WorktreeManager, temp_repo: Path):
+    def test_enter_creates_branch_with_prefix(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on", branch_prefix="wt/")
         handle = manager.enter("label", config)
@@ -155,7 +179,9 @@ class TestEnterBasic:
         assert handle is not None
         assert handle.branch.startswith("wt/label-")
 
-    def test_enter_uses_configured_base_dir(self, manager: WorktreeManager, temp_repo: Path, tmp_path: Path):
+    def test_enter_uses_configured_base_dir(
+        self, manager: WorktreeManager, temp_repo: Path, tmp_path: Path
+    ):
         os.chdir(str(temp_repo))
         custom_base = tmp_path / "custom-wt"
         config = WorktreeConfig(mode="on", base_dir=str(custom_base))
@@ -171,7 +197,9 @@ class TestEnterBasic:
 
 
 class TestNestedGuard:
-    def test_enter_refuses_when_already_active(self, manager: WorktreeManager, temp_repo: Path):
+    def test_enter_refuses_when_already_active(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on")
         handle = manager.enter("first", config)
@@ -231,7 +259,9 @@ class TestExit:
         repo = Repo(str(temp_repo))
         assert branch in [b.name for b in repo.branches]
 
-    def test_exit_chdirs_back_to_original(self, manager: WorktreeManager, temp_repo: Path):
+    def test_exit_chdirs_back_to_original(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on")
         handle = manager.enter("test", config)
@@ -241,7 +271,9 @@ class TestExit:
         manager.exit(handle)
         assert Path.cwd() == temp_repo.resolve()
 
-    def test_exit_wip_commits_dirty_state(self, manager: WorktreeManager, temp_repo: Path):
+    def test_exit_wip_commits_dirty_state(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on", cleanup="remove")
         handle = manager.enter("test", config)
@@ -258,7 +290,9 @@ class TestExit:
         commit_msg = repo.git.log(handle.branch, "--oneline", "-1")
         assert "WIP" in commit_msg
 
-    def test_exit_keeps_worktree_on_keep_mode(self, manager: WorktreeManager, temp_repo: Path):
+    def test_exit_keeps_worktree_on_keep_mode(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on", cleanup="keep")
         handle = manager.enter("test", config)
@@ -275,7 +309,9 @@ class TestExit:
 
 
 class TestDirtyCarry:
-    def test_carries_tracked_modifications(self, manager: WorktreeManager, temp_repo: Path):
+    def test_carries_tracked_modifications(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         # Make the original repo dirty.
         (temp_repo / "src.py").write_text("print('modified in original')\n")
@@ -371,7 +407,9 @@ class TestSymlinkDeps:
         assert wt_nm.is_symlink()
         assert (wt_nm / "some_pkg" / "index.js").read_text() == "module.exports = 1;\n"
 
-    def test_symlinks_recorded_in_handle(self, manager: WorktreeManager, temp_repo: Path):
+    def test_symlinks_recorded_in_handle(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         (temp_repo / "node_modules").mkdir()
 
@@ -388,7 +426,9 @@ class TestSymlinkDeps:
 
 
 class TestAutoFf:
-    def test_auto_ff_succeeds_when_head_unchanged(self, manager: WorktreeManager, temp_repo: Path):
+    def test_auto_ff_succeeds_when_head_unchanged(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on", merge="auto-ff", cleanup="remove")
         handle = manager.enter("test", config)
@@ -407,7 +447,9 @@ class TestAutoFf:
         log = root_repo.git.log("--oneline", "-2")
         assert "Test commit" in log
 
-    def test_auto_ff_falls_back_when_head_moved(self, manager: WorktreeManager, temp_repo: Path):
+    def test_auto_ff_falls_back_when_head_moved(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on", merge="auto-ff", cleanup="remove")
         handle = manager.enter("test", config)
@@ -446,7 +488,9 @@ class TestCrashRecovery:
         assert handle is not None
         manager.exit(handle)
 
-    def test_collision_free_branch_names(self, manager: WorktreeManager, temp_repo: Path):
+    def test_collision_free_branch_names(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on")
         handle1 = manager.enter("test", config)
@@ -489,7 +533,9 @@ class TestFullLifecycle:
         assert Path.cwd() == original_cwd.resolve()
         assert manager.active is None
 
-    def test_worktree_has_tracked_files(self, manager: WorktreeManager, temp_repo: Path):
+    def test_worktree_has_tracked_files(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
         os.chdir(str(temp_repo))
         config = WorktreeConfig(mode="on")
         handle = manager.enter("test", config)

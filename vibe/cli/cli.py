@@ -341,12 +341,15 @@ def run_cli(args: argparse.Namespace) -> None:
             from vibe.core.worktree.manager import worktree_enabled, worktree_manager
 
             worktree_handle = None
-            if worktree_enabled(config, programmatic=False, cli_flag=args.worktree):
+            # --no-worktree forces isolation off for this invocation (overrides
+            # the default mode="on"). --worktree forces it on (overrides
+            # mode="off"). Otherwise worktree_enabled() resolves per config.
+            if not args.no_worktree and worktree_enabled(
+                config, programmatic=False, cli_flag=args.worktree
+            ):
                 worktree_handle = worktree_manager.enter("cli", config.worktree)
                 if worktree_handle is not None and not config.displayed_workdir:
-                    config.displayed_workdir = str(
-                        worktree_handle.original_repo_root
-                    )
+                    config.displayed_workdir = str(worktree_handle.original_repo_root)
             try:
                 try:
                     agent_loop = AgentLoop(

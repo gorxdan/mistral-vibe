@@ -519,6 +519,10 @@ def get_universal_system_prompt(  # noqa: PLR0912, PLR0914, PLR0915
             f"branch `{wt.branch}`, not the user's live checkout. Commit "
             f"logically and report the branch name. Task subagents share this "
             f"worktree — there is no per-subagent filesystem isolation.\n\n"
+            f"On a clean exit your branch is fast-forward merged back into the "
+            f"original HEAD automatically; if the original tree is dirty or HEAD "
+            f"moved (e.g. another agent committed), the merge is held and the "
+            f"branch stays for a manual `git merge`.\n\n"
             f"Original repo root: `{wt.original_repo_root}`"
         )
 

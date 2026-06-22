@@ -286,3 +286,50 @@ The workflow-path predicate wiring (formerly listed here as a one-line
 follow-up) landed in `d30c2e7`: `_validate_workflow_profile` now calls
 `profile_requires_isolation`, so `editor` is forced to `isolation='worktree'`
 on both the `task()` and workflow paths.
+
+---
+
+## Host default isolation (follow-up, landed)
+
+The subagent isolation above covers `task()` and workflow agents. The *host*
+agent (the interactive CLI and `vibe -p`) ran in the user's live checkout by
+default, behind `--worktree` / `mode="auto-by-entrypoint"`. That left the host
+racing any other writer sharing the checkout — the lead's index could pick up
+teammate or sibling-session work, and commits needed pathspec gymnastics to
+avoid shipping someone else's changes.
+
+Closed by flipping two `WorktreeConfig` defaults in `vibe/core/config/_settings.py`:
+
+- `mode`: `"auto-by-entrypoint"` → `"on"`. The interactive CLI and `vibe -p`
+  now default to worktree isolation. `worktree_enabled()` is unchanged; its
+  existing callers (`cli.py`, `programmatic.py`) go ON under the new default.
+- `merge`: `"manual"` → `"auto-ff"`. Clean sessions fast-forward back into the
+  original HEAD on exit. `_try_auto_ff` still refuses safely if the original
+  tree is dirty or HEAD moved (`manager.py:529-540`), so under contention the
+  branch is kept for a manual merge — isolation prevents races, and when the
+  tree is contended the human decides the merge.
+
+Opt-out: `--no-worktree` (interactive CLI) forces isolation off for one
+invocation; `mode="off"` disables it persistently; `mode="auto-by-entrypoint"`
+restores the legacy programmatic-only split. `--worktree` is kept as an
+explicit override.
+
+### ACP: deferred (architecture blocker)
+
+ACP was intended to inherit the host default but cannot. `WorktreeManager` is
+a process-wide singleton with a nested-enter guard that raises on re-entry,
+and it works via `os.chdir` (one process cwd). ACP supports **multiple
+concurrent sessions** in one process (`acp_agent_loop.py:361`:
+`self.sessions: dict[str, AcpSessionLoop]`), each with its own `cwd`. Wiring
+`worktree_manager.enter()` into ACP's `new_session` means session B crashes on
+the nested guard (or clobbers session A's cwd if the guard is bypassed).
+
+The programmatic path is one-shot (one session per process), and the CLI is
+one interactive session per process — both fit the `WorktreeManager` model.
+ACP does not.
+
+ACP isolation needs a per-session worktree mechanism without process chdir —
+closer to `EphemeralWorktree` (`vibe/core/worktree/ephemeral.py`) than to
+`WorktreeManager` — wired into the ACP session lifecycle. That is substantial
+new code and is tracked as a separate change. ACP stays unwired (unchanged
+from today) until then.
