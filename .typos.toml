@@ -5,3 +5,4 @@ extend-ignore-re = ["(?m)^.*(#|//)\\s*typos:disable-line$", "datas"]
 iterm = "iterm"
 ITERM = "ITERM"
 asend = "asend"
+oll = "oll"
