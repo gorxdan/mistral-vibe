@@ -515,9 +515,9 @@ api_key_env_var = "OPENAI_API_KEY"
 api_style = "openai-responses"   # OpenAI's Responses API
 
 [[models]]
-name = "gpt-5.1"
+name = "gpt-5.5"
 provider = "openai"
-alias = "gpt-5.1"
+alias = "gpt-5.5"
 thinking = "high"
 supports_images = true
 ```

@@ -135,9 +135,9 @@ PRESETS: list[ProviderPreset] = [
             api_style="openai-responses",
         ),
         model=ModelConfig(
-            name="gpt-5.1",
+            name="gpt-5.5",
             provider="openai",
-            alias="gpt-5.1",
+            alias="gpt-5.5",
             thinking="high",
             # Pricing left at 0.0; OpenAI model line evolves quickly and the
             # picker live-discovers the current /v1/models list. Override per
@@ -169,9 +169,9 @@ PRESETS: list[ProviderPreset] = [
             discover_models=False,
         ),
         model=ModelConfig(
-            name="gpt-5.1-codex",
+            name="gpt-5.5",
             provider="openai-chatgpt",
-            alias="gpt-5.1-codex",
+            alias="gpt-5.5",
             thinking="high",
             supports_images=True,
             auto_compact_threshold=400000,
