@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import patch
 
 from tests.conftest import build_test_vibe_config
-from vibe.core.nuage.events import (
+from vibe.core.nuage.models import (
     CustomTaskCanceled,
     CustomTaskCanceledAttributes,
     CustomTaskCompleted,

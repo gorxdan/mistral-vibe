@@ -9,7 +9,8 @@ from pydantic import BaseModel, ValidationError
 
 from vibe.core.logger import logger
 from vibe.core.nuage.agent_models import AgentCompletionState
-from vibe.core.nuage.events import (
+from vibe.core.nuage.events import WorkflowEvent
+from vibe.core.nuage.models import (
     CustomTaskCanceled,
     CustomTaskCompleted,
     CustomTaskFailed,
@@ -20,10 +21,10 @@ from vibe.core.nuage.events import (
     JSONPatchPayload,
     JSONPatchReplace,
     JSONPayload,
-    WorkflowEvent,
     WorkflowExecutionCanceled,
     WorkflowExecutionCompleted,
     WorkflowExecutionFailed,
+    WorkflowExecutionStatus,
 )
 from vibe.core.nuage.remote_workflow_event_models import (
     AgentToolCallState,
@@ -42,7 +43,6 @@ from vibe.core.nuage.remote_workflow_event_models import (
     WorkingState,
     parse_tool_ui_state,
 )
-from vibe.core.nuage.workflow import WorkflowExecutionStatus
 from vibe.core.tools.base import BaseTool, BaseToolConfig, BaseToolState, ToolError
 from vibe.core.tools.ui import ToolUIData
 from vibe.core.types import (

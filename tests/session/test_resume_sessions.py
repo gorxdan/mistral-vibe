@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vibe.core.nuage.workflow import (
+from vibe.core.nuage.models import (
     WorkflowExecutionListResponse,
     WorkflowExecutionStatus,
     WorkflowExecutionWithoutResultResponse,

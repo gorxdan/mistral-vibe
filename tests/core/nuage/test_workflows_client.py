@@ -7,8 +7,11 @@ import pytest
 
 from vibe.core.nuage.client import WorkflowsClient
 from vibe.core.nuage.exceptions import ErrorCode, WorkflowsException
-from vibe.core.nuage.streaming import StreamEvent, StreamEventsQueryParams
-from vibe.core.nuage.workflow import WorkflowExecutionStatus
+from vibe.core.nuage.models import (
+    StreamEvent,
+    StreamEventsQueryParams,
+    WorkflowExecutionStatus,
+)
 
 
 def _make_client() -> WorkflowsClient:

@@ -17,12 +17,11 @@ from vibe.core.nuage.agent_models import (
 from vibe.core.nuage.client import WorkflowsClient
 from vibe.core.nuage.events import WorkflowEvent
 from vibe.core.nuage.exceptions import ErrorCode, WorkflowsException
+from vibe.core.nuage.models import StreamEventsQueryParams, WorkflowExecutionStatus
 from vibe.core.nuage.remote_workflow_event_translator import (
     PendingInputRequest,
     RemoteWorkflowEventTranslator,
 )
-from vibe.core.nuage.streaming import StreamEventsQueryParams
-from vibe.core.nuage.workflow import WorkflowExecutionStatus
 from vibe.core.tools.manager import ToolManager
 from vibe.core.types import AgentStats, BaseEvent, LLMMessage, Role
 

@@ -9,9 +9,10 @@ from pydantic import BaseModel
 
 from vibe.core.logger import logger
 from vibe.core.nuage.exceptions import ErrorCode, WorkflowsException
-from vibe.core.nuage.streaming import StreamEvent, StreamEventsQueryParams
-from vibe.core.nuage.workflow import (
+from vibe.core.nuage.models import (
     SignalWorkflowResponse,
+    StreamEvent,
+    StreamEventsQueryParams,
     UpdateWorkflowResponse,
     WorkflowExecutionListResponse,
     WorkflowExecutionStatus,

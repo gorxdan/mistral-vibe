@@ -10,7 +10,7 @@ from typing import Literal, NamedTuple, Protocol
 from vibe.core.config import VibeConfig
 from vibe.core.logger import logger
 from vibe.core.nuage.client import WorkflowsClient
-from vibe.core.nuage.workflow import (
+from vibe.core.nuage.models import (
     WorkflowExecutionListResponse,
     WorkflowExecutionStatus,
 )
