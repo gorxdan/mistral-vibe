@@ -284,7 +284,8 @@ class LanguageServer:
                     await asyncio.sleep(_CONTENT_MODIFIED_BACKOFF[attempt])
                     continue
                 raise
-        raise last_exc  # type: ignore[misc]
+        assert last_exc is not None
+        raise last_exc
 
     async def ensure_started(self) -> None:
         if self._state == ServerState.RUNNING:
