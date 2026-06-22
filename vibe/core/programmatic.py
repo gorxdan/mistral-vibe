@@ -23,7 +23,7 @@ from vibe.core.hooks.models import HookConfigResult
 from vibe.core.logger import logger
 from vibe.core.loop import LoopManager
 from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
-from vibe.core.output_formatters import create_formatter
+from vibe.core.output_formatters import OutputFormatter, create_formatter
 from vibe.core.schedule_driver import ScheduleDriver
 from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
 from vibe.core.telemetry.types import ClientMetadata
@@ -51,7 +51,7 @@ _DEFAULT_CLIENT_METADATA = ClientMetadata(name="vibe_programmatic", version=__ve
 async def _drive_scheduled_loops(
     agent_loop: AgentLoop,
     scheduler: LoopManager,
-    formatter: object,
+    formatter: OutputFormatter,
     keep_alive_seconds: int,
 ) -> None:
     """Fire due scheduled loops as further turns until they drain (one-shots)
@@ -62,7 +62,7 @@ async def _drive_scheduled_loops(
         logger.info("Firing scheduled loop %s: %s", due.id, due.prompt)
         async with aclosing(agent_loop.act(due.prompt)) as events:
             async for event in events:
-                formatter.on_event(event)  # type: ignore[attr-defined]
+                formatter.on_event(event)
 
     driver = ScheduleDriver(scheduler, can_fire=lambda: True, fire=_fire)
     deadline = asyncio.get_running_loop().time() + keep_alive_seconds

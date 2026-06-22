@@ -365,8 +365,12 @@ def _thunk_misuse(tree: ast.AST) -> list[Violation]:
         positional = [a for a in node.args if not isinstance(a, ast.Starred)]
         # pipeline's first positional is `items` (data); the rest are stages.
         for a in positional[1:]:
-            if is_spawn_call(a):
-                callee = a.func.id  # type: ignore[union-attr]
+            if (
+                isinstance(a, ast.Call)
+                and is_spawn_call(a)
+                and isinstance(a.func, ast.Name)
+            ):
+                callee = a.func.id
                 violations.append(
                     Violation(
                         a.lineno,
