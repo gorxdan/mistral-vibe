@@ -70,6 +70,7 @@ class FakeRemoteResumeClient:
 def enabled_vibe_code_config() -> MagicMock:
     config = MagicMock()
     config.vibe_code_enabled = True
+    config.is_active_model_mistral = MagicMock(return_value=True)
     config.vibe_code_api_key = "test-key"
     config.vibe_code_base_url = "https://test.example.com"
     config.api_timeout = 30
@@ -252,6 +253,24 @@ class TestRemoteResumeSessions:
         config = MagicMock()
         config.vibe_code_enabled = False
         config.vibe_code_api_key = "key"
+        created_clients: list[FakeRemoteResumeClient] = []
+
+        def client_factory(_config: object) -> FakeRemoteResumeClient:
+            client = FakeRemoteResumeClient()
+            created_clients.append(client)
+            return client
+
+        remote = RemoteResumeSessions(lambda: config, client_factory)
+
+        result = await remote.fetch(10.0)
+
+        assert result == RemoteResumeResult([], None)
+        assert created_clients == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_skips_when_active_model_is_not_mistral(self) -> None:
+        config = enabled_vibe_code_config()
+        config.is_active_model_mistral = MagicMock(return_value=False)
         created_clients: list[FakeRemoteResumeClient] = []
 
         def client_factory(_config: object) -> FakeRemoteResumeClient:

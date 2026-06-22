@@ -184,9 +184,14 @@ class RemoteResumeSessions:
 
     async def fetch(self, timeout: float) -> RemoteResumeResult:
         config = self._get_config()
-        if not config.vibe_code_enabled or not config.vibe_code_api_key:
+        if (
+            not config.vibe_code_enabled
+            or not config.is_active_model_mistral()
+            or not config.vibe_code_api_key
+        ):
             logger.debug(
-                "Remote resume listing skipped: missing Vibe Code configuration"
+                "Remote resume listing skipped: Mistral cloud sessions "
+                "unavailable (disabled, non-Mistral provider, or missing API key)"
             )
             return RemoteResumeResult([], None)
         try:
