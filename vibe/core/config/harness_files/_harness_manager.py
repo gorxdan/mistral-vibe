@@ -36,7 +36,7 @@ class HarnessFilesManager:
         return self.cwd or Path.cwd()
 
     @property
-    def _trusted_workdir(self) -> Path | None:
+    def trusted_workdir(self) -> Path | None:
         """Return cwd if project source is enabled and trusted, else None."""
         if "project" not in self.sources:
             return None
@@ -47,7 +47,7 @@ class HarnessFilesManager:
 
     @property
     def config_file(self) -> Path | None:
-        workdir = self._trusted_workdir
+        workdir = self.trusted_workdir
         if workdir is not None:
             candidate = workdir / ".vibe" / "config.toml"
             if candidate.is_file():
@@ -68,7 +68,7 @@ class HarnessFilesManager:
         root-level discovery; cwd preserves walk-up semantics for AGENTS.md).
         """
         add_dirs = dedup_paths(self._additional_dirs)
-        workdir = self._trusted_workdir
+        workdir = self.trusted_workdir
         if workdir is None:
             return add_dirs
         w = workdir.resolve()

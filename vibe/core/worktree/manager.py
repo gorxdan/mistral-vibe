@@ -25,6 +25,7 @@ from git.exc import GitCommandError
 from vibe.core.config import WorktreeConfig
 from vibe.core.logger import logger
 from vibe.core.trusted_folders import trusted_folders_manager
+from vibe.core.utils.io import read_safe
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
@@ -232,7 +233,9 @@ class WorktreeManager:
         try:
             self._do_exit(handle)
         except Exception as exc:
-            logger.error("Worktree teardown failed: %s. Worktree kept for recovery.", exc)
+            logger.error(
+                "Worktree teardown failed: %s. Worktree kept for recovery.", exc
+            )
         finally:
             self._active = None
 
@@ -442,7 +445,7 @@ class WorktreeManager:
         git_dir = repo_root / ".git"
         # In a worktree, .git is a file pointing to the real git dir.
         if git_dir.is_file():
-            content = git_dir.read_text().strip()
+            content = read_safe(git_dir).text.strip()
             if content.startswith("gitdir:"):
                 git_dir = Path(content.split("gitdir:", 1)[1].strip())
                 if not git_dir.is_absolute():
@@ -493,7 +496,9 @@ class WorktreeManager:
                 check=True,
                 capture_output=True,
             )
-            logger.info("WIP-committed dirty worktree state to branch %s", handle.branch)
+            logger.info(
+                "WIP-committed dirty worktree state to branch %s", handle.branch
+            )
             return True
         except GitCommandError as exc:
             # repo.git.add("-A") is GitPython and raises GitCommandError (not
@@ -507,7 +512,9 @@ class WorktreeManager:
         except subprocess.CalledProcessError as exc:
             err = (exc.stderr or b"").decode("utf-8", errors="replace")
             if "nothing to commit" in err.lower():
-                logger.debug("Nothing to WIP-commit in worktree %s", handle.worktree_path)
+                logger.debug(
+                    "Nothing to WIP-commit in worktree %s", handle.worktree_path
+                )
                 return True
             logger.warning("WIP-commit failed: %s. Worktree kept for recovery.", err)
             return False
@@ -528,10 +535,16 @@ class WorktreeManager:
                 )
                 return False
             if root_repo.is_dirty(untracked_files=False):
-                logger.info("Auto-ff skipped: original tree is dirty. Manual merge needed.")
+                logger.info(
+                    "Auto-ff skipped: original tree is dirty. Manual merge needed."
+                )
                 return False
             root_repo.git.merge("--ff-only", handle.branch)
-            logger.info("Auto-ff merged branch %s into %s", handle.branch, handle.original_repo_root)
+            logger.info(
+                "Auto-ff merged branch %s into %s",
+                handle.branch,
+                handle.original_repo_root,
+            )
             return True
         except (GitCommandError, Exception) as exc:
             logger.info("Auto-ff failed, manual merge needed: %s", exc)

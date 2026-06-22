@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from vibe.core.hooks._handler import (
     HookExternalAttrs,
     HookHandler,
@@ -18,9 +16,8 @@ from vibe.core.hooks.models import (
     HookToolDenial,
     HookToolInputRewrite,
 )
+from vibe.core.logger import logger
 from vibe.core.utils.matching import name_matches
-
-logger = logging.getLogger(__name__)
 
 
 def _as_before(invocation: HookInvocation) -> BeforeToolInvocation:
@@ -30,7 +27,6 @@ def _as_before(invocation: HookInvocation) -> BeforeToolInvocation:
             f" {type(invocation).__name__}"
         )
     return invocation
-
 
 class BeforeToolHandler(HookHandler):
     """Deny → ``HookToolDenial``; ``tool_input`` rewrite → one

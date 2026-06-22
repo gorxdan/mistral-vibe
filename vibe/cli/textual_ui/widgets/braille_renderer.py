@@ -6,6 +6,7 @@ import math
 # for more details on braille characters encoding, see: https://en.wikipedia.org/wiki/Braille_Patterns
 
 _BRAILLE_DOT_COUNT = 8
+_BRAILLE_SPECIAL_ROW_INDEX = 3
 
 
 def _braille_dot_index(x: int, y: int) -> int:
@@ -17,7 +18,7 @@ def _braille_dot_index(x: int, y: int) -> int:
     | 3 6
     V 7 8
     """
-    if y < 3:  # noqa: PLR2004
+    if y < _BRAILLE_SPECIAL_ROW_INDEX:
         return y + 1 + 3 * x
     return 7 + x
 

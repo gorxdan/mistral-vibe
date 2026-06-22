@@ -17,17 +17,19 @@ from vibe.cli.textual_ui.widgets.spinner import SpinnerMixin, SpinnerType
 
 DEFAULT_LOADING_STATUS = "Generating"
 _DEBOUNCE_HINT_TEXT = "[dim italic]typing detected, waiting…[/]"
+_SECONDS_PER_MINUTE = 60
+_MINUTES_PER_HOUR = 60
 
 
 def _format_elapsed(seconds: int) -> str:
-    if seconds < 60:  # noqa: PLR2004
+    if seconds < _SECONDS_PER_MINUTE:
         return f"{seconds}s"
 
-    minutes, secs = divmod(seconds, 60)
-    if minutes < 60:  # noqa: PLR2004
+    minutes, secs = divmod(seconds, _SECONDS_PER_MINUTE)
+    if minutes < _MINUTES_PER_HOUR:
         return f"{minutes}m{secs}s"
 
-    hours, mins = divmod(minutes, 60)
+    hours, mins = divmod(minutes, _MINUTES_PER_HOUR)
     return f"{hours}h{mins}m{secs}s"
 
 

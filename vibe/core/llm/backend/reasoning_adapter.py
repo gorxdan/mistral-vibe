@@ -6,7 +6,7 @@ from typing import Any, ClassVar
 
 from vibe.core.config import ProviderConfig
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
-from vibe.core.llm.backend.base import APIAdapter, PreparedRequest
+from vibe.core.llm.backend.adapter_port import APIAdapter, PreparedRequest
 from vibe.core.types import (
     AvailableTool,
     FunctionCall,

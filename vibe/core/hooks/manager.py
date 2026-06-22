@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-import logging
 
 from vibe.core.hooks._after_tool import AfterToolHandler
 from vibe.core.hooks._before_tool import BeforeToolHandler
@@ -33,9 +32,6 @@ from vibe.core.hooks.models import (
 )
 from vibe.core.tracing import hook_span
 
-logger = logging.getLogger(__name__)
-
-
 _TEAM_LIFECYCLE_HANDLER = TeamLifecycleHandler()
 
 _HANDLERS: dict[HookType, HookHandler] = {
@@ -58,7 +54,6 @@ _HANDLERS: dict[HookType, HookHandler] = {
     HookType.SESSION_END: _TEAM_LIFECYCLE_HANDLER,
     HookType.NOTIFICATION: _TEAM_LIFECYCLE_HANDLER,
 }
-
 
 class HooksManager:
     """Orchestrates hook subprocesses and dispatches their results to the

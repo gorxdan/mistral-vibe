@@ -31,6 +31,7 @@ from vibe.core.workflows.contract import (
 )
 from vibe.core.workflows.models import (
     AgentResult,
+    BudgetSnapshot,
     CachedAgentResult,
     PhaseReport,
     SchemaValidationFailure,
@@ -697,6 +698,9 @@ class WorkflowRuntime:
         self._budget = Budget(total=self.budget_total)
         self._run_gate = asyncio.Event()
         self._run_gate.set()
+
+    def budget_snapshot(self) -> BudgetSnapshot:
+        return self._budget.snapshot()
 
     def pause(self) -> None:
         """Pause the run: in-flight agents continue, new agents block."""

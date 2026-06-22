@@ -65,9 +65,9 @@ class VibeConfigSchema(ConfigSchema):
     fallback_models: Annotated[list[str], WithReplaceMerge()] = Field(
         default_factory=list
     )
-    max_output_escalation: Annotated[
-        MaxOutputEscalationConfig, WithReplaceMerge()
-    ] = Field(default_factory=MaxOutputEscalationConfig)
+    max_output_escalation: Annotated[MaxOutputEscalationConfig, WithReplaceMerge()] = (
+        Field(default_factory=MaxOutputEscalationConfig)
+    )
     context_shaping: Annotated[ContextShapingConfig, WithReplaceMerge()] = Field(
         default_factory=ContextShapingConfig
     )
@@ -154,12 +154,10 @@ class VibeConfigSchema(ConfigSchema):
         description="Plugin root directories (each containing a plugin.toml).",
     )
     enabled_plugins: Annotated[list[str], WithConcatMerge()] = Field(
-        default_factory=list,
-        description="Glob/regex allowlist of plugin names.",
+        default_factory=list, description="Glob/regex allowlist of plugin names."
     )
     disabled_plugins: Annotated[list[str], WithConcatMerge()] = Field(
-        default_factory=list,
-        description="Glob/regex denylist of plugin names.",
+        default_factory=list, description="Glob/regex denylist of plugin names."
     )
     enabled_agents: Annotated[list[str], WithConcatMerge()] = Field(
         default_factory=list,

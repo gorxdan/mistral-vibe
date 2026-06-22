@@ -101,9 +101,7 @@ async def test_workflows_command_opens_monitor_while_busy(vibe_app: VibeApp) -> 
 
         assert vibe_app._current_bottom_app == BottomApp.Tasks
         assert len(vibe_app._input_queue) == 0
-        assert not any(
-            "cannot be queued" in n.message for n in vibe_app._notifications
-        )
+        assert not any("cannot be queued" in n.message for n in vibe_app._notifications)
 
 
 @pytest.mark.asyncio
@@ -125,9 +123,7 @@ async def test_workflows_subcommand_runs_inline_while_busy(vibe_app: VibeApp) ->
 
         assert vibe_app._current_bottom_app == BottomApp.Input
         assert len(vibe_app._input_queue) == 0
-        assert not any(
-            "cannot be queued" in n.message for n in vibe_app._notifications
-        )
+        assert not any("cannot be queued" in n.message for n in vibe_app._notifications)
 
 
 @pytest.mark.asyncio
@@ -149,9 +145,7 @@ async def test_non_allowlisted_slash_still_rejected_while_busy(
         await pilot.pause(0.05)
 
         assert vibe_app._current_bottom_app == BottomApp.Input
-        assert any(
-            "cannot be queued" in n.message for n in vibe_app._notifications
-        )
+        assert any("cannot be queued" in n.message for n in vibe_app._notifications)
 
 
 @pytest.mark.asyncio
@@ -292,9 +286,7 @@ async def test_double_enter_injects_queued_prompt_into_running_turn(
         # Second Enter on empty input folds the queued prompt into the turn.
         chat_input.value = ""
         await pilot.press("enter")
-        await _wait_until(
-            pilot, lambda: len(vibe_app._input_queue) == 0, timeout=2.0
-        )
+        await _wait_until(pilot, lambda: len(vibe_app._input_queue) == 0, timeout=2.0)
 
         assert len(vibe_app._input_queue) == 0
         staged = vibe_app.agent_loop._pending_injected_messages
@@ -320,9 +312,7 @@ async def test_double_enter_stops_at_queued_bash(vibe_app: VibeApp) -> None:
 
         chat_input.value = ""
         await pilot.press("enter")
-        await _wait_until(
-            pilot, lambda: len(vibe_app._input_queue) == 1, timeout=2.0
-        )
+        await _wait_until(pilot, lambda: len(vibe_app._input_queue) == 1, timeout=2.0)
 
         assert len(vibe_app._input_queue) == 1
         assert vibe_app._input_queue.items[0].kind == QueuedItemKind.BASH
@@ -334,9 +324,7 @@ async def test_double_enter_stops_at_queued_bash(vibe_app: VibeApp) -> None:
 
 
 @pytest.mark.asyncio
-async def test_double_enter_noop_without_queued_messages(
-    vibe_app: VibeApp,
-) -> None:
+async def test_double_enter_noop_without_queued_messages(vibe_app: VibeApp) -> None:
     async with vibe_app.run_test() as pilot:
         vibe_app._agent_running = True
         chat_input = vibe_app.query_one(ChatInputContainer)
@@ -372,12 +360,11 @@ async def test_double_enter_assigns_distinct_incrementing_widget_indices(
 
         chat_input.value = ""
         await pilot.press("enter")
-        await _wait_until(
-            pilot, lambda: len(vibe_app._input_queue) == 0, timeout=2.0
-        )
+        await _wait_until(pilot, lambda: len(vibe_app._input_queue) == 0, timeout=2.0)
 
         staged_widgets = [
-            w for w in vibe_app.query(UserMessage)
+            w
+            for w in vibe_app.query(UserMessage)
             if w.message_index is not None and not w.pending
         ]
         indices = sorted(w.message_index for w in staged_widgets)
@@ -391,5 +378,3 @@ async def test_double_enter_assigns_distinct_incrementing_widget_indices(
         assert indices[0] >= base, (
             f"first staged index {indices[0]} below history length {base}"
         )
-
-

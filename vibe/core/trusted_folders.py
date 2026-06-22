@@ -13,6 +13,7 @@ from vibe.core.paths import (
     TRUSTED_FOLDERS_FILE,
     find_local_config_dirs,
 )
+from vibe.core.utils.io import read_safe
 
 
 class WorkspaceTrustDecision(StrEnum):
@@ -50,7 +51,7 @@ def _is_git_repo_root(path: Path) -> bool:
         # .git/worktrees/<name> directory. Validate the gitdir pointer so a
         # stray plain file named .git is not mistaken for a repo root.
         if git.is_file():
-            return git.read_text(errors="ignore").lstrip().startswith("gitdir:")
+            return read_safe(git).text.lstrip().startswith("gitdir:")
         return False
     except OSError as e:
         logger.warning("Skipping unreadable git path=%s: %s", git, e)

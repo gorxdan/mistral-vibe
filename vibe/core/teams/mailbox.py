@@ -9,6 +9,7 @@ from filelock import FileLock
 
 from vibe.core.logger import logger
 from vibe.core.teams.models import Message
+from vibe.core.utils.io import read_safe
 
 # A recipient name becomes a path component (the per-recipient inbox dir). These
 # names reach the mailbox from model-controlled tool args, so they must be a
@@ -61,7 +62,7 @@ class Mailbox:
         pairs: list[tuple[Path, Message]] = []
         for msg_file in inbox.glob("*.json"):
             try:
-                msg = Message.model_validate_json(msg_file.read_text())
+                msg = Message.model_validate_json(read_safe(msg_file).text)
             except Exception as e:
                 logger.warning("Failed to read message %s: %s", msg_file, e)
                 continue

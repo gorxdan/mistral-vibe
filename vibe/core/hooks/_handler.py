@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import json
-import logging
 from typing import NamedTuple, TypedDict
 
 from pydantic import ValidationError
@@ -20,11 +19,7 @@ from vibe.core.hooks.models import (
     HookUserMessage,
 )
 
-logger = logging.getLogger(__name__)
-
-
 _MAX_RETRIES = 3
-
 
 _HookYield = (
     HookEvent
@@ -35,11 +30,9 @@ _HookYield = (
     | HookTextReplacement
 )
 
-
 class HookExternalAttrs(TypedDict, total=False):
     tool_name: str
     tool_call_id: str
-
 
 class _HookAction(NamedTuple):
     events: list[_HookYield]
@@ -47,7 +40,6 @@ class _HookAction(NamedTuple):
     # the current one.
     next_invocation: HookInvocation | None
     should_break: bool
-
 
 class HookRetryState:
     def __init__(self) -> None:
@@ -68,13 +60,11 @@ class HookRetryState:
     def should_retry(self, hook_name: str) -> bool:
         return self._counts.get(hook_name, 0) < _MAX_RETRIES
 
-
 class HookOutputError(ValueError):
     """Hook stdout was non-empty but did not match the structured-response
     spec. The manager treats this as a hook failure (warning by default,
     deny / clear under ``strict``).
     """
-
 
 def _parse_structured_response(stdout: str) -> HookStructuredResponse | None:
     """Return the parsed response, or ``None`` for an empty stdout.
@@ -100,7 +90,6 @@ def _parse_structured_response(stdout: str) -> HookStructuredResponse | None:
             f"stdout JSON did not match the hook response schema: {e}"
         ) from e
 
-
 def _failure_reason(result: HookExecutionResult) -> str:
     # Prefer stderr: stdout is reserved for the JSON response and is
     # likely empty / garbage when the hook crashed.
@@ -108,12 +97,10 @@ def _failure_reason(result: HookExecutionResult) -> str:
         return "timed out"
     return result.stderr or result.stdout or f"exited with code {result.exit_code}"
 
-
 def _append_text(base: str, addition: str) -> str:
     if not base:
         return addition
     return f"{base}\n{addition}"
-
 
 class HookHandler(ABC):
     """Per-type hook semantics. Stateless singleton; per-run state is

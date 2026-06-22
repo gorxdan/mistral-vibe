@@ -87,7 +87,7 @@ The `description` (≤300 chars) is the only field shown to the selector besides
 ## Edge cases
 - Empty memory dir or dir absent: index() empty -> selection skipped, no section emitted.
 - Malformed frontmatter / non-mapping YAML / missing required fields: skip that file, record a MemoryConfig issue (like SkillManager.config_issues), continue — one bad file never breaks discovery.
-- Selector returns ids not in the store, duplicates, >K, or non-list: filter to known ids, dedupe, clamp to max_selected; if the whole response is unparseable -> [].
+- Selector returns ids not in the store, duplicates, >K, or non-list: filter to known ids, dedupe, clamp to max_selected; if the whole response is unparsable -> [].
 - Selector LLM down / rate-limited / times out: fail to empty selection; turn proceeds with zero memories (must NOT trigger the model-failover/rate-limit path used for the main call).
 - Memory bodies exceed max_inject_chars: include in rank order until the cap; never inject a partially-truncated body that corrupts meaning — drop whole entries.
 - Project source untrusted: project_memory_dirs returns [] (trust gate), so only user memories load; manage_memory project writes blocked unless project_writes && trusted.

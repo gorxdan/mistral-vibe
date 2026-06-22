@@ -14,9 +14,7 @@ from vibe.core.tools.builtins.team_message import (
 
 
 def _make_tool() -> TeamMessage:
-    return TeamMessage(
-        config_getter=lambda: TeamMessageConfig(), state=BaseToolState()
-    )
+    return TeamMessage(config_getter=lambda: TeamMessageConfig(), state=BaseToolState())
 
 
 def _ctx(team_dir: str | None) -> InvokeContext:
@@ -71,7 +69,9 @@ async def test_unread_messages(tmp_path: Path) -> None:
     mailbox.send("worker", "lead", "first")
     mailbox.send("worker", "lead", "second")
     result = await collect_result(
-        _make_tool().run(TeamMessageArgs(action="unread_messages"), ctx=_ctx(str(tmp_path)))
+        _make_tool().run(
+            TeamMessageArgs(action="unread_messages"), ctx=_ctx(str(tmp_path))
+        )
     )
     assert result.messages is not None
     assert len(result.messages) == 2
@@ -81,9 +81,7 @@ async def test_unread_messages(tmp_path: Path) -> None:
 async def test_errors_when_no_active_team() -> None:
     with pytest.raises(ToolError, match="No active team"):
         await collect_result(
-            _make_tool().run(
-                TeamMessageArgs(action="read_messages"), ctx=_ctx(None)
-            )
+            _make_tool().run(TeamMessageArgs(action="read_messages"), ctx=_ctx(None))
         )
 
 

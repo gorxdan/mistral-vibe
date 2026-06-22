@@ -85,7 +85,7 @@ def _stderr_logger_thread(read_fd: int) -> None:
         for line in iter(f.readline, b""):
             decoded = decode_safe(line, from_subprocess=True).text.rstrip()
             if decoded:
-                logger.debug(f"[MCP stderr] {decoded}")
+                logger.debug("[MCP stderr] %s", decoded)
 
 
 @contextlib.asynccontextmanager

@@ -47,9 +47,7 @@ class ScheduleConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ASK
 
 
-class Schedule(
-    BaseTool[ScheduleArgs, ScheduleResult, ScheduleConfig, BaseToolState],
-):
+class Schedule(BaseTool[ScheduleArgs, ScheduleResult, ScheduleConfig, BaseToolState]):
     description: ClassVar[str] = (
         "Schedule a future turn instead of blocking on `sleep`. `create` arms a "
         "timer that re-prompts you with `prompt` after `interval` (recurring, or "

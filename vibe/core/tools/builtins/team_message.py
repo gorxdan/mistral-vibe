@@ -33,8 +33,7 @@ def _resolve_team_dir(ctx: InvokeContext) -> Path:
     raw = ctx.team_dir_callback()
     if not raw:
         raise ToolError(
-            "No active team. Spawn a teammate first with /team spawn "
-            "<name> <prompt>."
+            "No active team. Spawn a teammate first with /team spawn <name> <prompt>."
         )
     return Path(raw)
 
@@ -99,9 +98,7 @@ class TeamMessage(
     def get_status_text(cls) -> str:
         return "Team messaging"
 
-    def resolve_permission(
-        self, args: TeamMessageArgs
-    ) -> PermissionContext | None:
+    def resolve_permission(self, args: TeamMessageArgs) -> PermissionContext | None:
         # Sending a message steers a (trusted, auto-approved) teammate, so ask.
         # Reads are side-effect-free but routing through the same permission
         # keeps the surface simple; the host can approve both.

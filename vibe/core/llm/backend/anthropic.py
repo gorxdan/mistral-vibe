@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 from vibe.core.config import ProviderConfig
 from vibe.core.llm.backend._image import to_base64 as _to_base64
-from vibe.core.llm.backend.base import APIAdapter, PreparedRequest
+from vibe.core.llm.backend.adapter_port import APIAdapter, PreparedRequest
 from vibe.core.types import (
     AvailableTool,
     FunctionCall,

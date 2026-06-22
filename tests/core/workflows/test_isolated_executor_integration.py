@@ -21,11 +21,11 @@ from typing import Any
 from git import Repo
 import pytest
 
-import vibe.core.worktree.ephemeral as ephemeral
-from vibe.core.config import MCPStdio
-from vibe.core.workflows.runtime import WorkflowRuntime
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from tests.stubs.fake_mcp_registry import FakeMCPRegistry
+from vibe.core.config import MCPStdio
+from vibe.core.workflows.runtime import WorkflowRuntime
+import vibe.core.worktree.ephemeral as ephemeral
 
 _FAKE_VIBE = """\
 import json, os, sys

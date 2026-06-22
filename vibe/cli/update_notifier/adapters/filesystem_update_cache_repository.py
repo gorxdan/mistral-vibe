@@ -10,6 +10,7 @@ from vibe.cli.update_notifier.ports.update_cache_repository import (
     UpdateCacheRepository,
 )
 from vibe.core.paths import VIBE_HOME
+from vibe.core.utils.io import read_safe
 
 _CACHE_SECTION = "update_cache"
 
@@ -49,7 +50,7 @@ class FileSystemUpdateCacheRepository(UpdateCacheRepository):
             return section
 
         try:
-            data = json.loads(self._legacy_json.read_text())
+            data = json.loads(read_safe(self._legacy_json).text)
         except (OSError, json.JSONDecodeError):
             return None
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from enum import StrEnum
-import logging
 from os import getenv
 
 from vibe.cli.plan_offer.ports.whoami_gateway import (
@@ -16,22 +15,19 @@ from vibe.core.config import (
     DEFAULT_VIBE_BASE_URL,
     ProviderConfig,
 )
+from vibe.core.logger import logger
 from vibe.core.types import Backend
-
-logger = logging.getLogger(__name__)
 
 
 class MistralCodePlanName(StrEnum):
     FREE = "F"
     ENTERPRISE = "E"
 
-
 class ChatPlanName(StrEnum):
     FREE = "FREE"
     INDIVIDUAL = "INDIVIDUAL"
     EDU = "EDU"
     TEAM = "TEAM"
-
 
 class PlanInfo:
     plan_type: WhoAmIPlanType
@@ -90,7 +86,6 @@ class PlanInfo:
             and self.plan_name.upper() == MistralCodePlanName.ENTERPRISE
         )
 
-
 async def decide_plan_offer(api_key: str | None, gateway: WhoAmIGateway) -> PlanInfo:
     if not api_key:
         return PlanInfo(WhoAmIPlanType.UNKNOWN)
@@ -103,7 +98,6 @@ async def decide_plan_offer(api_key: str | None, gateway: WhoAmIGateway) -> Plan
         logger.warning("Failed to fetch plan status.", exc_info=True)
     return PlanInfo(WhoAmIPlanType.UNKNOWN)
 
-
 def resolve_api_key_for_plan(provider: ProviderConfig) -> str | None:
     api_env_key = DEFAULT_MISTRAL_API_ENV_KEY
 
@@ -111,7 +105,6 @@ def resolve_api_key_for_plan(provider: ProviderConfig) -> str | None:
         api_env_key = provider.api_key_env_var
 
     return getenv(api_env_key)
-
 
 def plan_offer_cta(
     payload: PlanInfo | None, *, vibe_base_url: str = DEFAULT_VIBE_BASE_URL
@@ -127,7 +120,6 @@ def plan_offer_cta(
         or payload.is_free_mistral_code_plan()
     ):
         return f"### Unlock more with Vibe - [Upgrade to Vibe Pro]({vibe_api_key_url})"
-
 
 def plan_title(payload: PlanInfo | None) -> str | None:  # noqa: PLR0911
     if not payload:

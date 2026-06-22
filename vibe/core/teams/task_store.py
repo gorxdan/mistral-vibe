@@ -8,6 +8,7 @@ from filelock import FileLock
 
 from vibe.core.logger import logger
 from vibe.core.teams.models import Task, TaskStatus
+from vibe.core.utils.io import read_safe
 
 
 class TaskStore:
@@ -26,7 +27,7 @@ class TaskStore:
         if not self._tasks_file.exists():
             return {}
         try:
-            data = json.loads(self._tasks_file.read_text())
+            data = json.loads(read_safe(self._tasks_file).text)
             return {t["id"]: Task.model_validate(t) for t in data.get("tasks", [])}
         except Exception as e:
             logger.warning("Failed to load tasks from %s: %s", self._tasks_file, e)

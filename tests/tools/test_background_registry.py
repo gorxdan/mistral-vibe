@@ -1,19 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
+import time
 from typing import Any
 
 import pytest
 
-from vibe.core.tools.background import (
-    BackgroundRegistry,
-    TaskCategory,
-    _team_status,
-)
-
+from vibe.core.tools.background import BackgroundRegistry, TaskCategory, _team_status
 
 # ---------------------------------------------------------------------------
 # Fakes — stand in for WorkflowRunner / TeamManager / LoopManager so the
@@ -64,18 +59,18 @@ class _FakeWorkflowRunner:
         self.paused: list[str] = []
         self.unpaused: list[str] = []
 
-    def _find_run(self, run_id: str) -> _FakeRunEntry | None:
+    def find_run(self, run_id: str) -> _FakeRunEntry | None:
         return next((r for r in self.runs if r.run_id == run_id), None)
 
     async def stop(self, run_id: str) -> bool:
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None:
             return False
         self.stopped.append(run_id)
         return True
 
     def cancel_agent(self, run_id: str, agent_id: str) -> bool:
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None:
             return False
         self.cancelled.append((run_id, agent_id))
@@ -357,7 +352,8 @@ class _FakeProc:
 @pytest.fixture
 def _no_real_signals(monkeypatch):
     """Replace _signal_proc_group with a recorder so termination tests never
-    send real OS signals (which would risk hitting the runner's own pgid)."""
+    send real OS signals (which would risk hitting the runner's own pgid).
+    """
     calls: list[tuple[int, int]] = []
 
     def _fake(proc, sig):
@@ -368,9 +364,7 @@ def _no_real_signals(monkeypatch):
         else:
             proc.terminate()
 
-    monkeypatch.setattr(
-        "vibe.core.tools.background._signal_proc_group", _fake
-    )
+    monkeypatch.setattr("vibe.core.tools.background._signal_proc_group", _fake)
     return calls
 
 
@@ -494,7 +488,9 @@ async def test_read_log_tail_returns_empty_for_missing_file(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _registry_with_workflow_log(tmp_path) -> tuple[BackgroundRegistry, _FakeWorkflowRunner]:
+def _registry_with_workflow_log(
+    tmp_path,
+) -> tuple[BackgroundRegistry, _FakeWorkflowRunner]:
     """Wire a registry to a fake workflow runner with one run (wf-1) carrying a
     single live agent (la-0) whose transcript lives at a real on-disk path.
     """
@@ -503,9 +499,12 @@ def _registry_with_workflow_log(tmp_path) -> tuple[BackgroundRegistry, _FakeWork
     reg, wf, _team, _loop = _registry_with_all()
     log = tmp_path / "messages.jsonl"
     log.write_text(
-        json.dumps({"role": "user", "content": "find the auth flow"}) + "\n"
-        + json.dumps({"role": "assistant", "content": "I will grep for auth"}) + "\n"
-        + json.dumps({"role": "assistant", "content": "Found it in auth.py:42"}) + "\n"
+        json.dumps({"role": "user", "content": "find the auth flow"})
+        + "\n"
+        + json.dumps({"role": "assistant", "content": "I will grep for auth"})
+        + "\n"
+        + json.dumps({"role": "assistant", "content": "Found it in auth.py:42"})
+        + "\n"
     )
     run = _FakeRunEntry(
         run_id="wf-1",
@@ -565,8 +564,8 @@ def test_parse_agent_task_id_round_trip():
     """The id parser splits hierarchical agent ids and rejects non-agent ids."""
     parse = BackgroundRegistry._parse_agent_task_id
     assert parse("wf-1/live-la-3") == ("wf-1", "la-3")
-    assert parse("proc-1") == (None, None)          # not hierarchical
-    assert parse("wf-1/phases") == (None, None)     # suffix is not a 'live-' child
+    assert parse("proc-1") == (None, None)  # not hierarchical
+    assert parse("wf-1/phases") == (None, None)  # suffix is not a 'live-' child
     assert parse("team:alice") == (None, None)
 
 

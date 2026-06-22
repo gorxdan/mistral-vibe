@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
+from vibe.core.llm.backend.adapter_port import APIAdapter
 from vibe.core.llm.backend.anthropic import AnthropicAdapter
-from vibe.core.llm.backend.base import APIAdapter
 from vibe.core.llm.backend.generic import OpenAIAdapter
 from vibe.core.llm.backend.mistral import MistralMapper
 from vibe.core.llm.backend.openai_responses import OpenAIResponsesAdapter

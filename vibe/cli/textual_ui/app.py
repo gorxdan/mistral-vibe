@@ -3312,7 +3312,7 @@ class VibeApp(App):  # noqa: PLR0904
         # Pause/resume toggle for workflow runs only (registry.pause returns
         # False for any other category). Both branches must await — pause() is
         # async and unpause happens via the same toggle when is_paused is True.
-        entry = self._workflow_runner._find_run(message.task_id)
+        entry = self._workflow_runner.find_run(message.task_id)
         if entry is None:
             return
         if entry.is_paused:

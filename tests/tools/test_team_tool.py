@@ -88,9 +88,7 @@ async def test_teammate_send_and_read_message(tmp_path: Path) -> None:
 
     # Bob reads.
     os.environ["VIBE_TEAMMATE_NAME"] = "bob"
-    result = await collect_result(
-        _make_tool().run(TeamArgs(action="read_messages"))
-    )
+    result = await collect_result(_make_tool().run(TeamArgs(action="read_messages")))
     assert len(result.messages) == 1
     assert result.messages[0]["content"] == "hi bob"
     assert result.messages[0]["from_name"] == "alice"

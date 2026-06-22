@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from vibe.core.hooks._handler import HookHandler, HookRetryState, _HookAction
 from vibe.core.hooks.config import HookConfig
 from vibe.core.hooks.models import (
@@ -12,8 +10,6 @@ from vibe.core.hooks.models import (
     HookStructuredResponse,
     HookUserMessage,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class UserPromptSubmitHandler(HookHandler):

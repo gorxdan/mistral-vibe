@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 import httpx
 
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
+from vibe.core.llm.backend.adapter_port import APIAdapter, PreparedRequest
 from vibe.core.llm.backend.anthropic import AnthropicAdapter
-from vibe.core.llm.backend.base import APIAdapter, PreparedRequest
 from vibe.core.llm.backend.openai_responses import OpenAIResponsesAdapter
 from vibe.core.llm.backend.reasoning_adapter import ReasoningAdapter
 from vibe.core.llm.exceptions import BackendErrorBuilder

@@ -13,9 +13,12 @@ from typing import Any
 
 import pytest
 
-from vibe.cli.textual_ui.widgets.tasks_app import TasksApp, _build_row_text, _fmt_seconds
+from vibe.cli.textual_ui.widgets.tasks_app import (
+    TasksApp,
+    _build_row_text,
+    _fmt_seconds,
+)
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory, TaskEntry
-
 
 # ---------------------------------------------------------------------------
 # Fakes (kept local so this test module is self-contained)
@@ -47,7 +50,7 @@ class _FakeWorkflowRunner:
         self.paused: list[str] = []
         self.unpaused: list[str] = []
 
-    def _find_run(self, run_id: str) -> _FakeRunEntry | None:
+    def find_run(self, run_id: str) -> _FakeRunEntry | None:
         return next((r for r in self.runs if r.run_id == run_id), None)
 
     def pause(self, run_id: str) -> bool:
@@ -115,9 +118,7 @@ async def test_list_view_renders_registry_entries():
     from textual.containers import Container
 
     runner = _FakeWorkflowRunner()
-    runner.runs.append(
-        _FakeRunEntry(run_id="wf-1", status=_WorkflowStatus("running"))
-    )
+    runner.runs.append(_FakeRunEntry(run_id="wf-1", status=_WorkflowStatus("running")))
     reg = _registry(runner)
 
     class _Harness(App):
@@ -143,9 +144,7 @@ async def test_category_filter_hides_other_categories():
     from textual.containers import Container
 
     runner = _FakeWorkflowRunner()
-    runner.runs.append(
-        _FakeRunEntry(run_id="wf-1", status=_WorkflowStatus("running"))
-    )
+    runner.runs.append(_FakeRunEntry(run_id="wf-1", status=_WorkflowStatus("running")))
     reg = _registry(runner)
 
     class _Harness(App):
@@ -180,9 +179,7 @@ async def test_stop_action_emits_task_stop_requested():
     from textual.widgets import OptionList
 
     runner = _FakeWorkflowRunner()
-    runner.runs.append(
-        _FakeRunEntry(run_id="wf-1", status=_WorkflowStatus("running"))
-    )
+    runner.runs.append(_FakeRunEntry(run_id="wf-1", status=_WorkflowStatus("running")))
     reg = _registry(runner)
     captured: list[str] = []
 
@@ -216,7 +213,6 @@ async def test_stop_action_emits_task_stop_requested():
 async def test_drill_down_shows_workflow_detail():
     from textual.app import App, ComposeResult
     from textual.containers import Container
-    from textual.widgets import OptionList
 
     runner = _FakeWorkflowRunner()
     runner.runs.append(
@@ -255,11 +251,10 @@ async def test_pause_message_from_pane_calls_registry_pause():
     """The pane emits TaskPauseRequested; the app handler must AWAIT the
     registry pause() coroutine (regression: a missing await once silently
     dropped the resume path). Here we assert the registry is actually invoked
-    by routing the message the way VibeApp does."""
+    by routing the message the way VibeApp does.
+    """
     runner = _FakeWorkflowRunner()
-    runner.runs.append(
-        _FakeRunEntry(run_id="wf-1", status=_WorkflowStatus("running"))
-    )
+    runner.runs.append(_FakeRunEntry(run_id="wf-1", status=_WorkflowStatus("running")))
     reg = _registry(runner)
     pause_calls: list[str] = []
     orig_pause = reg.pause

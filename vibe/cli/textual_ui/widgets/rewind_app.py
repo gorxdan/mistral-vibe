@@ -131,7 +131,8 @@ class RewindApp(Container):
             self._handle_selection(0)
 
     def action_select_2(self) -> None:
-        if self._option_count() >= 2:  # noqa: PLR2004
+        _MIN_FOR_SECOND_OPTION = 2
+        if self._option_count() >= _MIN_FOR_SECOND_OPTION:
             self.selected_option = 1
             self._handle_selection(1)
 

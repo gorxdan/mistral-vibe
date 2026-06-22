@@ -21,24 +21,24 @@ See docs/design/tasks.md for the full design.
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import signal
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
+import json
+import os
 from pathlib import Path
+import signal
+import time
 from typing import TYPE_CHECKING, Any
 
 from vibe.core.logger import logger
 
 if TYPE_CHECKING:
-    import asyncio.subprocess  # noqa: F401
+    import asyncio.subprocess
 
+    from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
     from vibe.core.loop import LoopManager
     from vibe.core.teams.manager import TeamManager
-    from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
 
 
 # Process termination backoff — mirrors TeamManager._terminate_proc semantics
@@ -239,24 +239,16 @@ class BackgroundRegistry:
 
     # --- adapter wiring ---------------------------------------------------
 
-    def attach_workflow_runner(
-        self, ref: Callable[[], WorkflowRunner | None]
-    ) -> None:
+    def attach_workflow_runner(self, ref: Callable[[], WorkflowRunner | None]) -> None:
         self._workflow_runner_ref = ref
 
-    def attach_team_manager(
-        self, ref: Callable[[], TeamManager | None]
-    ) -> None:
+    def attach_team_manager(self, ref: Callable[[], TeamManager | None]) -> None:
         self._team_manager_ref = ref
 
-    def attach_loop_manager(
-        self, ref: Callable[[], LoopManager | None]
-    ) -> None:
+    def attach_loop_manager(self, ref: Callable[[], LoopManager | None]) -> None:
         self._loop_manager_ref = ref
 
-    def attach_tui_bash(
-        self, ref: Callable[[], asyncio.Task | None]
-    ) -> None:
+    def attach_tui_bash(self, ref: Callable[[], asyncio.Task | None]) -> None:
         """Surface the TUI's foreground `!cmd` slot (v2 hook; unused in v1)."""
         self._tui_bash_ref = ref
 
@@ -323,7 +315,7 @@ class BackgroundRegistry:
             rc = await rec.proc.wait()
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("bg proc %s wait failed: %s", rec.task_id, exc)
             rec.status = "failed"
             rec.returncode = -1
@@ -336,12 +328,13 @@ class BackgroundRegistry:
     @staticmethod
     def _close_log_handle(rec: _BgProc) -> None:
         """Close the fd-level redirection handle, idempotently. Called from the
-        finalizer, _stop_process, and shutdown — safe to call multiple times."""
+        finalizer, _stop_process, and shutdown — safe to call multiple times.
+        """
         if rec.log_handle is None:
             return
         try:
             rec.log_handle.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         rec.log_handle = None
 
@@ -422,9 +415,7 @@ class BackgroundRegistry:
         return ""
 
     @staticmethod
-    def _parse_agent_task_id(
-        task_id: str,
-    ) -> tuple[str | None, str | None]:
+    def _parse_agent_task_id(task_id: str) -> tuple[str | None, str | None]:
         """Split ``wf-1/live-la-3`` into ``('wf-1', 'la-3')``.
 
         Returns ``(None, None)`` when the id is not a hierarchical agent id (no
@@ -437,12 +428,13 @@ class BackgroundRegistry:
         prefix = "live-"
         if not agent_suffix.startswith(prefix):
             return None, None
-        return run_id, agent_suffix[len(prefix):]
+        return run_id, agent_suffix[len(prefix) :]
 
     @staticmethod
     def _trim_log_in_place(path: Path) -> None:
         """Rewrite a log file to keep only its tail, preserving the inode so the
-        writing shell's append fd stays valid. Best-effort."""
+        writing shell's append fd stays valid. Best-effort.
+        """
         try:
             keep = path.read_bytes()[-_LOG_DISK_KEEP_BYTES:]
             with path.open("r+b") as fh:
@@ -454,9 +446,7 @@ class BackgroundRegistry:
 
     # --- aggregation ------------------------------------------------------
 
-    def list_tasks(
-        self, *, category: TaskCategory | None = None
-    ) -> list[TaskEntry]:
+    def list_tasks(self, *, category: TaskCategory | None = None) -> list[TaskEntry]:
         """Build the unified task list across all attached sources.
 
         Order: processes (running first), then workflows, in-flight agents,
@@ -465,7 +455,7 @@ class BackgroundRegistry:
         entries: list[TaskEntry] = []
         now = time.monotonic()
 
-        if category in (None, TaskCategory.PROCESS):
+        if category in {None, TaskCategory.PROCESS}:
             # Running first, then by id, so live servers sort to the top.
             for rec in sorted(
                 self._procs.values(),
@@ -487,13 +477,13 @@ class BackgroundRegistry:
                     )
                 )
 
-        if category in (None, TaskCategory.WORKFLOW, TaskCategory.AGENT):
+        if category in {None, TaskCategory.WORKFLOW, TaskCategory.AGENT}:
             entries.extend(self._workflow_entries(category, now))
 
-        if category in (None, TaskCategory.TEAM):
+        if category in {None, TaskCategory.TEAM}:
             entries.extend(self._team_entries(now))
 
-        if category in (None, TaskCategory.LOOP):
+        if category in {None, TaskCategory.LOOP}:
             entries.extend(self._loop_entries(now))
 
         return entries
@@ -506,7 +496,7 @@ class BackgroundRegistry:
             return []
         entries: list[TaskEntry] = []
         for entry in runner.runs:
-            include = filter_cat in (None, TaskCategory.WORKFLOW)
+            include = filter_cat in {None, TaskCategory.WORKFLOW}
             live_agents = list(getattr(entry, "live_agents", None) or [])
             phases = list(getattr(entry, "phases", None) or [])
             label = ", ".join(phases) or "(no phases)"
@@ -528,7 +518,7 @@ class BackgroundRegistry:
                         can_save=True,
                     )
                 )
-            if filter_cat in (None, TaskCategory.AGENT):
+            if filter_cat in {None, TaskCategory.AGENT}:
                 for la in live_agents:
                     agent_id = getattr(la, "agent_id", None) or str(id(la))
                     entries.append(
@@ -556,7 +546,7 @@ class BackgroundRegistry:
         entries: list[TaskEntry] = []
         try:
             members = manager.get_members()
-        except Exception as  exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("team get_members failed: %s", exc)
             return []
         for m in members:
@@ -585,7 +575,7 @@ class BackgroundRegistry:
         wall_now = time.time()
         try:
             loops = list(manager.loops)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("loop list failed: %s", exc)
             return []
         for loop in loops:
@@ -631,7 +621,9 @@ class BackgroundRegistry:
             run_id, _, agent_suffix = task_id.partition("/")
             # agent_suffix is "live-<agent_id>"
             agent_id = (
-                agent_suffix.removeprefix("live-") if agent_suffix.startswith("live-") else agent_suffix
+                agent_suffix.removeprefix("live-")
+                if agent_suffix.startswith("live-")
+                else agent_suffix
             )
             return self._cancel_workflow_agent(run_id, agent_id)
         if task_id.startswith("wf-"):
@@ -648,7 +640,7 @@ class BackgroundRegistry:
         runner = self._workflow_runner_ref()
         if runner is None or not task_id.startswith("wf-"):
             return False
-        entry = runner._find_run(task_id)  # type: ignore[attr-defined]
+        entry = runner.find_run(task_id)
         if entry is None or getattr(entry, "result", None) is not None:
             return False
         if getattr(entry, "is_paused", False):
@@ -673,7 +665,7 @@ class BackgroundRegistry:
             return False
         try:
             return await runner.stop(run_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("workflow stop %s failed: %s", run_id, exc)
             return False
 
@@ -683,7 +675,7 @@ class BackgroundRegistry:
             return False
         try:
             return bool(runner.cancel_agent(run_id, agent_id))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("cancel agent %s/%s failed: %s", run_id, agent_id, exc)
             return False
 
@@ -693,7 +685,7 @@ class BackgroundRegistry:
             return False
         try:
             return await manager.stop_teammate(name)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("team stop %s failed: %s", name, exc)
             return False
 
@@ -703,7 +695,7 @@ class BackgroundRegistry:
             return False
         try:
             count = await manager.cancel(loop_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("loop cancel %s failed: %s", loop_id, exc)
             return False
         return count > 0
@@ -725,7 +717,7 @@ class BackgroundRegistry:
                 rec.finalizer.cancel()
             try:
                 await _terminate_proc(rec.proc)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("shutdown: failed to reap %s: %s", rec.task_id, exc)
             else:
                 rec.status = "stopped"

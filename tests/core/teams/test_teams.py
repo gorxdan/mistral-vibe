@@ -333,17 +333,13 @@ async def test_team_lifecycle_hooks_fire_on_task_events(tmp_path: Path) -> None:
 
     marker = tmp_path / "created.flag"
     hook = HookConfig(
-        name="on-task-created",
-        type=HookType.TASK_CREATED,
-        command=f"touch {marker}",
+        name="on-task-created", type=HookType.TASK_CREATED, command=f"touch {marker}"
     )
     hooks_mgr = HooksManager([hook])
 
     def ctx() -> HookSessionContext:
         return HookSessionContext(
-            session_id="lead-session",
-            transcript_path="",
-            cwd=str(tmp_path),
+            session_id="lead-session", transcript_path="", cwd=str(tmp_path)
         )
 
     # Use a team dir under the test's tmp_path to avoid polluting real VIBE_HOME.
@@ -378,7 +374,8 @@ async def test_team_lifecycle_hooks_fire_on_task_events(tmp_path: Path) -> None:
 def test_mailbox_rejects_path_traversal_names(tmp_path: Path) -> None:
     """team-tool-001: recipient/sender names become inbox path components and
     arrive from model-controlled tool args, so traversal/absolute names must be
-    rejected (no write/read outside the mailbox dir)."""
+    rejected (no write/read outside the mailbox dir).
+    """
     mb = Mailbox(tmp_path)
     for bad in ["../evil", "../../etc", "/tmp/abs", "..", "a/b", "with space"]:
         with pytest.raises(ValueError):
@@ -397,7 +394,8 @@ def test_mailbox_rejects_path_traversal_names(tmp_path: Path) -> None:
 
 def test_complete_task_enforces_ownership_for_actor(tmp_path: Path) -> None:
     """team-tool-003: a teammate (actor given) may only complete a task it
-    claimed and that is in progress; the lead (actor=None) is unrestricted."""
+    claimed and that is in progress; the lead (actor=None) is unrestricted.
+    """
     store = TaskStore(tmp_path)
     store.add_task("Task A")
     store.claim_task("task-1", "alice")
@@ -427,7 +425,8 @@ def test_complete_task_lead_unrestricted(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_complete_team_task_fires_task_completed_hook(tmp_path: Path) -> None:
     """B-001: the lead-side /team task done path (complete_team_task) must fire
-    the TASK_COMPLETED lifecycle hook. The wrapper previously had no callers."""
+    the TASK_COMPLETED lifecycle hook. The wrapper previously had no callers.
+    """
     from vibe.core.hooks.manager import HooksManager
     from vibe.core.hooks.models import HookConfig, HookSessionContext, HookType
 
@@ -479,7 +478,8 @@ async def test_complete_team_task_fires_task_completed_hook(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_team_command_task_verbs_route_to_manager() -> None:
     """B-001 wiring: /team task add|done route to add_team_task/complete_team_task
-    with correct parsing (done splits '<id> <multi word result>')."""
+    with correct parsing (done splits '<id> <multi word result>').
+    """
     from dataclasses import dataclass as _dc
 
     from vibe.cli.textual_ui.app import VibeApp

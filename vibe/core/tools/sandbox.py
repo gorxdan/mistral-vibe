@@ -15,42 +15,37 @@ Backends, by platform:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import logging
 import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
 
+from vibe.core.logger import logger
 from vibe.core.utils import is_windows
-
-logger = logging.getLogger(__name__)
 
 # Env vars allowed through when scrubbing (everything else — API keys, tokens,
 # cloud creds — is dropped). LC_* is allowed by prefix below.
-_ENV_ALLOWLIST = frozenset(
-    {
-        "PATH",
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "LANG",
-        "LC_ALL",
-        "TERM",
-        "SHELL",
-        "TMPDIR",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "CI",
-        "NONINTERACTIVE",
-        "NO_TTY",
-        "DEBIAN_FRONTEND",
-        "GIT_PAGER",
-        "PAGER",
-        "LESS",
-    }
-)
-
+_ENV_ALLOWLIST = frozenset({
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "SHELL",
+    "TMPDIR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "CI",
+    "NONINTERACTIVE",
+    "NO_TTY",
+    "DEBIAN_FRONTEND",
+    "GIT_PAGER",
+    "PAGER",
+    "LESS",
+})
 
 @dataclass
 class SandboxSpec:
@@ -58,7 +53,6 @@ class SandboxSpec:
     allow_network: bool = True
     env: dict[str, str] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
-
 
 def detect_backend(override: str = "auto") -> str:
     """Resolve the sandbox backend name, or 'none' when unavailable."""
@@ -75,7 +69,6 @@ def detect_backend(override: str = "auto") -> str:
         return "unshare"
     return "none"
 
-
 # BUBBLEWRAP_INSTALL_NUDGE is surfaced to the user (UI toast / startup issue)
 # when the sandbox is enabled with containment but only the `unshare` backend
 # is available. The goal is to convert a silent limitation into a one-time
@@ -91,7 +84,6 @@ BUBBLEWRAP_INSTALL_NUDGE = (
     "  macOS:         brew install bubblewrap\n"
     "(or disable the sandbox / set backend='unshare' to silence this)"
 )
-
 
 def unshare_confinement_nudge(
     *,
@@ -116,14 +108,10 @@ def unshare_confinement_nudge(
         return None
     return BUBBLEWRAP_INSTALL_NUDGE
 
-
 def scrub_env(base: dict[str, str], passthrough: list[str]) -> dict[str, str]:
     """Keep only an allowlist of env vars (drops secrets), plus passthrough."""
     allowed = _ENV_ALLOWLIST | set(passthrough)
-    return {
-        k: v for k, v in base.items() if k in allowed or k.startswith("LC_")
-    }
-
+    return {k: v for k, v in base.items() if k in allowed or k.startswith("LC_")}
 
 def _canonical_roots(roots: list[Path]) -> list[str]:
     seen: set[str] = set()
@@ -133,7 +121,6 @@ def _canonical_roots(roots: list[Path]) -> list[str]:
         except (OSError, RuntimeError):
             continue
     return sorted(seen)
-
 
 def build_sandbox_command(
     spec: SandboxSpec, backend: str
@@ -168,7 +155,6 @@ def build_sandbox_command(
         return argv, "sandbox-exec", profile
     return None, "none", None
 
-
 def _bwrap_argv(spec: SandboxSpec) -> list[str]:
     # bwrap applies operations left to right inside the new namespace, so the
     # read-only root bind MUST precede the pseudo-filesystem overlays. Placing
@@ -200,7 +186,6 @@ def _bwrap_argv(spec: SandboxSpec) -> list[str]:
     argv.append("--")
     return argv
 
-
 def _unshare_argv(spec: SandboxSpec) -> list[str]:
     # Weaker fallback: namespace isolation without bind-mount confinement of /.
     argv = ["unshare", "--user", "--map-root-user", "--mount"]
@@ -209,7 +194,6 @@ def _unshare_argv(spec: SandboxSpec) -> list[str]:
     argv += spec.extra_args
     argv.append("--")
     return argv
-
 
 def build_seatbelt_profile(spec: SandboxSpec) -> str:
     lines = [
@@ -226,7 +210,6 @@ def build_seatbelt_profile(spec: SandboxSpec) -> str:
         lines.append(f'(allow file-write* (subpath "{root}"))')
     lines.append("(allow network*)" if spec.allow_network else "(deny network*)")
     return "\n".join(lines) + "\n"
-
 
 def _seatbelt_argv(spec: SandboxSpec) -> tuple[list[str], Path]:
     profile = build_seatbelt_profile(spec)

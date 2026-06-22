@@ -10,8 +10,8 @@ import google.auth.credentials
 from google.auth.transport.requests import Request
 
 from vibe.core.config import ProviderConfig
+from vibe.core.llm.backend.adapter_port import PreparedRequest
 from vibe.core.llm.backend.anthropic import AnthropicAdapter
-from vibe.core.llm.backend.base import PreparedRequest
 from vibe.core.types import AvailableTool, LLMMessage, StrToolChoice
 
 

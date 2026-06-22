@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import logging
 import os
 from pathlib import Path
 import re
@@ -25,12 +24,9 @@ from vibe.core.memory.models import _SLUG, MemoryEntry, MemoryMetadata
 from vibe.core.paths import VIBE_HOME
 from vibe.core.skills.parser import SkillParseError, parse_skill_markdown
 
-logger = logging.getLogger(__name__)
-
 # Compiled slug pattern (same source as MemoryMetadata.id) for the delete path,
 # which bypasses the pydantic model and interpolates the id into a path.
 _ID_RE = re.compile(_SLUG)
-
 
 class MemoryStore:
     def __init__(self, user_dir: Path, project_dirs: list[Path] | None = None) -> None:
@@ -195,7 +191,6 @@ class MemoryStore:
                 os.unlink(tmp)
             raise
 
-
 def _project_identity(workdir: Path) -> Path:
     """Stable per-project identity for *workdir*.
 
@@ -218,7 +213,6 @@ def _project_identity(workdir: Path) -> Path:
     common = Path(out.stdout.strip())
     common = common.resolve() if common.is_absolute() else (workdir / common).resolve()
     return common if common.exists() else workdir.resolve()
-
 
 def project_memory_dir(*, create: bool = False) -> Path | None:
     """Current project's memory namespace under ``~/.vibe``, or ``None``.

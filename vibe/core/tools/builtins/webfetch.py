@@ -42,7 +42,13 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
     Also explicitly blocks the well-known cloud metadata endpoint.
     """
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+    ):
         return True
     if str(ip) == "169.254.169.254":
         return True
@@ -147,7 +153,9 @@ class WebFetch(
         raw = url.lstrip("/") if url.startswith("//") else url
         return raw if raw.startswith(("http://", "https://")) else "https://" + raw
 
-    async def _validate_url(self, url: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    async def _validate_url(
+        self, url: str
+    ) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
         """Validate a URL against SSRF and return a pinned IP to connect to.
 
         Rejects URLs that resolve to private/loopback/link-local IPs (cloud
@@ -176,12 +184,17 @@ class WebFetch(
         try:
             loop = asyncio.get_running_loop()
             infos = await loop.run_in_executor(
-                None, socket.getaddrinfo, host, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+                None,
+                socket.getaddrinfo,
+                host,
+                None,
+                socket.AF_UNSPEC,
+                socket.SOCK_STREAM,
             )
         except (socket.gaierror, OSError) as e:
             # Fail closed: if we cannot resolve and validate, refuse rather
             # than let httpx re-resolve (possibly to a private IP) unchecked.
-            raise ToolError(f"SSRF validation failed: could not resolve {host}: {e}")
+            raise ToolError(f"SSRF validation failed: could not resolve {host}: {e}") from e
 
         pinned: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
         for info in infos:
@@ -295,7 +308,7 @@ class WebFetch(
         except httpx.TimeoutException:
             raise ToolError(f"Request timed out after {timeout} seconds")
         except httpx.RequestError as e:
-            raise ToolError(f"Failed to fetch URL: {e}")
+            raise ToolError(f"Failed to fetch URL: {e}") from e
 
         if response.is_error:
             raise ToolError(

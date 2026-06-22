@@ -53,9 +53,7 @@ async def test_run_until_idle_caps_recurring_at_deadline() -> None:
     fired, fire = _collector()
     driver = ScheduleDriver(mgr, can_fire=lambda: True, fire=fire)
     loop = asyncio.get_running_loop()
-    await asyncio.wait_for(
-        driver.run_until_idle(deadline=loop.time() + 0.3), timeout=3
-    )
+    await asyncio.wait_for(driver.run_until_idle(deadline=loop.time() + 0.3), timeout=3)
     assert len(fired) >= 1  # fired at least once
     assert len(mgr.loops) == 1  # recurring still armed, not drained
 
@@ -67,9 +65,7 @@ async def test_can_fire_gate_defers() -> None:
     fired, fire = _collector()
     driver = ScheduleDriver(mgr, can_fire=lambda: False, fire=fire)
     loop = asyncio.get_running_loop()
-    await asyncio.wait_for(
-        driver.run_until_idle(deadline=loop.time() + 0.3), timeout=3
-    )
+    await asyncio.wait_for(driver.run_until_idle(deadline=loop.time() + 0.3), timeout=3)
     assert fired == []  # gate closed → never fired
     assert len(mgr.loops) == 1  # still pending
 

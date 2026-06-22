@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-import logging
 import math
 import os
 from typing import TYPE_CHECKING, Any
@@ -27,13 +26,12 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from vibe.core.config import ModelConfig, ProviderConfig
+from vibe.core.logger import logger
 from vibe.core.types import Backend
 from vibe.core.utils.http import build_ssl_context
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_DISCOVERY_TIMEOUT = 2.0
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
@@ -45,7 +43,6 @@ DEFAULT_OLLAMA_NUM_CTX = 4096
 # Fraction of the effective context window used as the token budget, so context
 # shaping/compaction fires before the server's real limit is hit.
 CONTEXT_BUDGET_SAFETY = 0.85
-
 
 @dataclass(frozen=True)
 class DiscoveredModel:
@@ -60,7 +57,6 @@ class DiscoveredModel:
     provider: ProviderConfig
     ephemeral: bool
 
-
 def _ollama_base_url() -> str:
     """Resolve the ollama base URL, honoring the standard OLLAMA_HOST env var."""
     raw = os.getenv("OLLAMA_HOST", "").strip()
@@ -69,7 +65,6 @@ def _ollama_base_url() -> str:
     if "://" not in raw:
         raw = f"http://{raw}"
     return raw.rstrip("/")
-
 
 def candidate_local_providers() -> list[ProviderConfig]:
     """Well-known local runtimes to auto-detect when config doesn't define them.
@@ -90,7 +85,6 @@ def candidate_local_providers() -> list[ProviderConfig]:
         )
     ]
 
-
 @dataclass(frozen=True)
 class RawModel:
     """A discovered model id plus the context window the server advertises.
@@ -103,7 +97,6 @@ class RawModel:
 
     id: str
     context_length: int | None = None
-
 
 # Field names different OpenAI-compatible runtimes use to advertise a model's
 # context window on /v1/models (vLLM: max_model_len; llama.cpp: meta.n_ctx*;
@@ -119,14 +112,12 @@ _CTX_ITEM_KEYS = (
 )
 _CTX_META_KEYS = ("n_ctx", "n_ctx_train", "context_length", "max_model_len")
 
-
 def _ctx_value(d: dict[str, Any], keys: tuple[str, ...]) -> int | None:
     for k in keys:
         v = d.get(k)
         if isinstance(v, int) and not isinstance(v, bool) and v > 0:
             return v
     return None
-
 
 def _ctx_from_models_item(item: dict[str, Any]) -> int | None:
     """Best-effort context-window length from one /v1/models entry, or None."""
@@ -138,12 +129,10 @@ def _ctx_from_models_item(item: dict[str, Any]) -> int | None:
         return _ctx_value(meta, _CTX_META_KEYS)
     return None
 
-
 def _auth_headers(provider: ProviderConfig) -> dict[str, str]:
     if provider.api_key_env_var and (key := os.getenv(provider.api_key_env_var)):
         return {"Authorization": f"Bearer {key}"}
     return {}
-
 
 async def _get_json(
     client: httpx.AsyncClient, url: str, headers: dict[str, str], provider_name: str
@@ -156,7 +145,6 @@ async def _get_json(
     except (httpx.HTTPError, ValueError) as exc:
         logger.debug("Discovery request to %s (%s) failed: %s", url, provider_name, exc)
         return None
-
 
 async def _fetch_v1_models(
     provider: ProviderConfig, client: httpx.AsyncClient
@@ -177,11 +165,9 @@ async def _fetch_v1_models(
         if isinstance(item, dict) and isinstance(item.get("id"), str)
     ]
 
-
 def _is_ollama_provider(provider: ProviderConfig) -> bool:
     """Whether to enrich context windows from ollama's native /api/tags."""
     return provider.name == "ollama" or ":11434" in provider.api_base
-
 
 async def _fetch_ollama_context_lengths(
     provider: ProviderConfig, client: httpx.AsyncClient
@@ -217,7 +203,6 @@ async def _fetch_ollama_context_lengths(
             out[name] = ctx
     return out
 
-
 async def fetch_models(
     provider: ProviderConfig,
     *,
@@ -247,7 +232,6 @@ async def fetch_models(
         if owns_client:
             await client.aclose()
 
-
 async def fetch_model_ids(
     provider: ProviderConfig,
     *,
@@ -270,7 +254,6 @@ async def fetch_model_ids(
         if owns_client:
             await client.aclose()
 
-
 def _ollama_num_ctx_cap() -> int:
     """ollama's served context window (``OLLAMA_CONTEXT_LENGTH``), default 4096.
 
@@ -288,7 +271,6 @@ def _ollama_num_ctx_cap() -> int:
             return v
     return DEFAULT_OLLAMA_NUM_CTX
 
-
 def _budget_from_context(context_length: int, *, num_ctx_cap: int | None) -> int:
     """Token budget (``auto_compact_threshold``) from a model's context window.
 
@@ -299,7 +281,6 @@ def _budget_from_context(context_length: int, *, num_ctx_cap: int | None) -> int
         min(context_length, num_ctx_cap) if num_ctx_cap is not None else context_length
     )
     return max(1, math.floor(CONTEXT_BUDGET_SAFETY * effective))
-
 
 def _synth_model(
     provider_name: str,
@@ -320,7 +301,6 @@ def _synth_model(
         kwargs["auto_compact_threshold"] = auto_compact_threshold
     return ModelConfig(**kwargs)
 
-
 def _providers_to_probe(config: VibeConfig) -> list[tuple[ProviderConfig, bool]]:
     """(provider, ephemeral) pairs to probe: explicit opt-ins + auto-detected.
 
@@ -338,7 +318,6 @@ def _providers_to_probe(config: VibeConfig) -> list[tuple[ProviderConfig, bool]]
         and c.api_base.rstrip("/") not in configured_bases
     ]
     return explicit + auto
-
 
 async def discover_extra_models(
     config: VibeConfig, *, timeout: float = DEFAULT_DISCOVERY_TIMEOUT
@@ -389,7 +368,6 @@ async def discover_extra_models(
             )
 
     return discovered
-
 
 def build_persisted_updates(config: VibeConfig, dm: DiscoveredModel) -> dict[str, Any]:
     """Build a ``save_updates`` payload that persists a picked discovered model.

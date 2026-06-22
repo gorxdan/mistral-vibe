@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
+from vibe.core.tools.background import TaskCategory, TaskEntry
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -23,11 +24,9 @@ from vibe.core.tools.base import (
     ToolError,
     ToolPermission,
 )
-from vibe.core.tools.background import TaskCategory, TaskEntry
 from vibe.core.tools.permissions import PermissionContext
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from vibe.core.types import ToolCallEvent, ToolResultEvent, ToolStreamEvent
-
 
 # When the model asks for a single task by id (action='list' + task_id) without
 # specifying a tail, show this many recent log lines — the point of a scoped
@@ -76,9 +75,7 @@ class BackgroundToolConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ALWAYS
 
 
-def _tail_for(
-    registry: Any, entry: TaskEntry, tail_lines: int | None
-) -> str | None:
+def _tail_for(registry: Any, entry: TaskEntry, tail_lines: int | None) -> str | None:
     """Resolve a log tail for an entry by category. Returns None when tails are
     suppressed (tail_lines is None) or the category has nothing to tail.
     """
@@ -165,9 +162,7 @@ class Background(
         self, args: BackgroundArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | BackgroundResult, None]:
         if ctx is None or getattr(ctx, "background_registry", None) is None:
-            raise ToolError(
-                "background tool requires a background registry in context"
-            )
+            raise ToolError("background tool requires a background registry in context")
         registry = ctx.background_registry
 
         action = (args.action or "").strip().lower()
@@ -185,8 +180,7 @@ class Background(
                 entries = [
                     e
                     for e in all_entries
-                    if e.task_id == target
-                    or e.task_id.startswith(f"{target}/")
+                    if e.task_id == target or e.task_id.startswith(f"{target}/")
                 ]
                 if not entries:
                     known_ids = ", ".join(e.task_id for e in all_entries) or "none"
@@ -215,8 +209,7 @@ class Background(
             else:
                 tail_lines = None
             lines = [
-                _format_entry(e, _tail_for(registry, e, tail_lines))
-                for e in entries
+                _format_entry(e, _tail_for(registry, e, tail_lines)) for e in entries
             ]
             yield BackgroundResult(
                 response=f"{len(entries)} background task"
@@ -239,6 +232,4 @@ class Background(
             )
             return
 
-        raise ToolError(
-            f"Unknown background action: {action!r}. Use 'list' or 'stop'."
-        )
+        raise ToolError(f"Unknown background action: {action!r}. Use 'list' or 'stop'.")

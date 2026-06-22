@@ -15,9 +15,12 @@ class SkillParseError(Exception):
 FM_BOUNDARY = re.compile(r"^-{3,}\s*$", re.MULTILINE)
 
 
+FRONTMATTER_MIN_PARTS = 3
+
+
 def parse_skill_markdown(content: str) -> tuple[dict[str, Any], str]:
     splits = FM_BOUNDARY.split(content, 2)
-    if len(splits) < 3 or splits[0].strip():  # noqa: PLR2004
+    if len(splits) < FRONTMATTER_MIN_PARTS or splits[0].strip():
         raise SkillParseError(
             "Missing or invalid YAML frontmatter (metadata section must start and end with ---)"
         )

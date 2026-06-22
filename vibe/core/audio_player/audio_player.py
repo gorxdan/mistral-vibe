@@ -42,6 +42,7 @@ def __getattr__(name: str) -> Any:
         return globals()["sd"]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+
 DEFAULT_BLOCKSIZE = 4096
 DTYPE = "int16"
 DEFAULT_SAMPLE_WIDTH = 2  # 16-bit = 2 bytes
@@ -118,7 +119,7 @@ class AudioPlayer:
         if not sd:
             raise RuntimeError("sounddevice is not available")
         if status:
-            logger.warning(f"Audio playback callback status: {status}")
+            logger.warning("Audio playback callback status: %s", status)
 
         bytes_needed = frames * self._frame_size
         chunk = self._audio_data[self._position : self._position + bytes_needed]

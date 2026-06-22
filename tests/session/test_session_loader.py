@@ -465,7 +465,8 @@ class TestSessionLoaderFindSessionById:
         self, session_config: SessionLoggingConfig, create_test_session, caplog
     ) -> None:
         """F2: a partial id that matches several DISTINCT sessions resolves to
-        the most recent, but must surface a warning instead of doing it silently."""
+        the most recent, but must surface a warning instead of doing it silently.
+        """
         import logging
 
         session_dir = Path(session_config.save_dir)
@@ -539,7 +540,9 @@ class TestSessionLoaderFindSessionById:
         directory suffixed ``1a22050c`` (8 chars).
         """
         session_dir = Path(session_config.save_dir)
-        session_folder = create_test_session(session_dir, "1a22050c-1234-5678-abcd-ef0123456789")
+        session_folder = create_test_session(
+            session_dir, "1a22050c-1234-5678-abcd-ef0123456789"
+        )
 
         # 7-char prefix of the 8-char short ID should still match.
         result = SessionLoader.find_session_by_id("1a22050", session_config)

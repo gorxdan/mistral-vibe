@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from vibe.core.hooks._handler import (
     _MAX_RETRIES,
     HookHandler,
@@ -16,8 +14,7 @@ from vibe.core.hooks.models import (
     HookStructuredResponse,
     HookUserMessage,
 )
-
-logger = logging.getLogger(__name__)
+from vibe.core.logger import logger
 
 
 class PostAgentTurnHandler(HookHandler):

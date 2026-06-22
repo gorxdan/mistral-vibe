@@ -14,7 +14,6 @@ from vibe.core.workflows.models import (
     BudgetSnapshot,
     PhaseReport,
     WorkflowResult,
-    WorkflowRun,
     WorkflowRunSnapshot,
     WorkflowStatus,
 )
@@ -190,12 +189,13 @@ class WorkflowRunner:
     def _build_stopped_result(entry: WorkflowRunEntry) -> WorkflowResult:
         """Minimal STOPPED result for runs cancelled before run() could build
         one (e.g. cancelled during setup). Carries whatever phases the runtime
-        already recorded plus a clear 'stopped by user' summary."""
+        already recorded plus a clear 'stopped by user' summary.
+        """
         runtime_run = entry.runtime.build_run(script_path=None, args=entry.args)
         runtime_run.status = WorkflowStatus.STOPPED
         runtime_run.finished_at = time.monotonic()
         try:
-            runtime_run.budget = entry.runtime._budget.snapshot()  # type: ignore[attr-defined]
+            runtime_run.budget = entry.runtime.budget_snapshot()
         except Exception:
             runtime_run.budget = BudgetSnapshot(total=None, reserved=0, spent=0)
         return WorkflowResult(
@@ -244,7 +244,7 @@ class WorkflowRunner:
                     logger.warning("Failed to persist workflow snapshot", exc_info=True)
 
     def get_snapshot(self, run_id: str) -> WorkflowRunSnapshot | None:
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None:
             return None
         return entry.runtime.snapshot(
@@ -298,7 +298,7 @@ class WorkflowRunner:
         return sink
 
     async def stop(self, run_id: str) -> bool:
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None or entry.task is None:
             return False
         if entry.task.done():
@@ -315,7 +315,7 @@ class WorkflowRunner:
 
         Returns False if the run is missing or already finalized.
         """
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None or entry.result is not None:
             return False
         entry.runtime.pause()
@@ -323,7 +323,7 @@ class WorkflowRunner:
 
     def unpause(self, run_id: str) -> bool:
         """Resume a paused run. Returns False if the run is missing/finished."""
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None or entry.result is not None:
             return False
         entry.runtime.unpause()
@@ -336,7 +336,7 @@ class WorkflowRunner:
         The run continues with the remaining agents; the cancelled agent is
         recorded as failed.
         """
-        entry = self._find_run(run_id)
+        entry = self.find_run(run_id)
         if entry is None or entry.result is not None:
             return False
         return entry.runtime.cancel_agent(agent_id)
@@ -350,7 +350,7 @@ class WorkflowRunner:
                 except asyncio.CancelledError:
                     pass
 
-    def _find_run(self, run_id: str) -> WorkflowRunEntry | None:
+    def find_run(self, run_id: str) -> WorkflowRunEntry | None:
         return next((r for r in self._runs if r.run_id == run_id), None)
 
     def _prune_finished_runs(self) -> None:
@@ -361,7 +361,9 @@ class WorkflowRunner:
         `_runs` preserves launch order, so the oldest finished runs are removed
         first while their ordering relative to active runs is left intact.
         """
-        finished = [r for r in self._runs if r.result is not None or r.error is not None]
+        finished = [
+            r for r in self._runs if r.result is not None or r.error is not None
+        ]
         excess = len(finished) - _MAX_FINISHED_RUNS
         if excess <= 0:
             return
@@ -414,9 +416,7 @@ class WorkflowRunner:
                     )
                 runtime = self._resume_runtime_factory()
                 if runtime is None:
-                    return ErrorMessage(
-                        "Cannot resume: no runtime factory configured."
-                    )
+                    return ErrorMessage("Cannot resume: no runtime factory configured.")
                 new_id = self.resume(target_id, snapshot, runtime=runtime)
                 return UserCommandMessage(
                     f"Resumed workflow `{target_id}` as `{new_id}` "

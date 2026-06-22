@@ -3,13 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import json
-import logging
 from typing import TYPE_CHECKING, Any, ClassVar, TypedDict, cast
 
 from pydantic import TypeAdapter
 
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
-from vibe.core.llm.backend.base import APIAdapter, PreparedRequest
+from vibe.core.llm.backend.adapter_port import APIAdapter, PreparedRequest
+from vibe.core.logger import logger
 from vibe.core.types import (
     AvailableTool,
     FunctionCall,
@@ -24,15 +24,11 @@ from vibe.core.types import (
 if TYPE_CHECKING:
     from vibe.core.config import ProviderConfig
 
-logger = logging.getLogger(__name__)
-
 _EMPTY_USAGE = LLMUsage(prompt_tokens=0, completion_tokens=0)
-
 
 class _ResponsesUsageData(TypedDict, total=False):
     input_tokens: int
     output_tokens: int
-
 
 class _ResponsesFunctionCallItem(TypedDict, total=False):
     type: str
@@ -41,16 +37,13 @@ class _ResponsesFunctionCallItem(TypedDict, total=False):
     name: str
     arguments: str
 
-
 class _ResponsesContentBlock(TypedDict, total=False):
     type: str
     text: str
 
-
 class _ResponsesSummaryBlock(TypedDict, total=False):
     type: str
     text: str
-
 
 class _ResponsesMessageItem(TypedDict, total=False):
     type: str
@@ -59,22 +52,18 @@ class _ResponsesMessageItem(TypedDict, total=False):
     phase: str
     content: list[_ResponsesContentBlock]
 
-
 class _ResponsesReasoningItem(TypedDict, total=False):
     type: str
     encrypted_content: str
     summary: list[_ResponsesSummaryBlock]
 
-
 class _ResponsesObject(TypedDict, total=False):
     usage: _ResponsesUsageData | None
     output: list[dict[str, Any]]
 
-
 class _ResponsesErrorData(TypedDict, total=False):
     type: str
     message: str
-
 
 class _ResponsesStreamEvent(TypedDict, total=False):
     type: str
@@ -87,14 +76,12 @@ class _ResponsesStreamEvent(TypedDict, total=False):
     response: _ResponsesObject
     error: _ResponsesErrorData
 
-
 _RESPONSES_OBJECT_ADAPTER = TypeAdapter(_ResponsesObject)
 _RESPONSES_STREAM_EVENT_ADAPTER = TypeAdapter(_ResponsesStreamEvent)
 _RESPONSES_FUNCTION_CALL_ITEM_ADAPTER = TypeAdapter(_ResponsesFunctionCallItem)
 _RESPONSES_MESSAGE_ITEM_ADAPTER = TypeAdapter(_ResponsesMessageItem)
 _RESPONSES_REASONING_ITEM_ADAPTER = TypeAdapter(_ResponsesReasoningItem)
 _RESPONSES_ERROR_DATA_ADAPTER = TypeAdapter(_ResponsesErrorData)
-
 
 @dataclass(slots=True)
 class _ResponsesToolCallState:
@@ -103,7 +90,6 @@ class _ResponsesToolCallState:
     arguments: str = ""
     name_emitted: bool = False
     arguments_emitted: bool = False
-
 
 class _OpenAIResponsesStreamParser:
     def __init__(self) -> None:
@@ -405,7 +391,6 @@ class _OpenAIResponsesStreamParser:
         "response.incomplete": _on_response_terminal,
         "error": _on_error,
     }
-
 
 class OpenAIResponsesAdapter(APIAdapter):
     endpoint: ClassVar[str] = "/responses"

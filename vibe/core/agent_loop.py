@@ -10,7 +10,6 @@ from functools import wraps
 import hashlib
 from http import HTTPStatus
 import inspect
-import logging
 import os
 from pathlib import Path
 import re
@@ -49,6 +48,7 @@ from vibe.core.llm.format import (
     ResolvedToolCall,
 )
 from vibe.core.llm.types import BackendLike
+from vibe.core.logger import logger
 from vibe.core.lsp._integration import drain_diagnostics_into
 from vibe.core.middleware import (
     CHAT_AGENT_EXIT,
@@ -166,12 +166,10 @@ except ImportError:
 
 if TYPE_CHECKING:
     from vibe.core.loop import Scheduler
+    from vibe.core.memory.selector import MemorySelector
     from vibe.core.memory.store import MemoryStore
     from vibe.core.teleport.teleport import TeleportService
     from vibe.core.teleport.types import TeleportPushResponseEvent, TeleportYieldEvent
-
-
-logger = logging.getLogger(__name__)
 
 # Central cap on a single tool result's size before it enters the conversation.
 # Tools may self-limit, but read/MCP/connector tools can return arbitrarily large
@@ -204,11 +202,9 @@ JUDGE_ARGS_TRUNCATED_SENTINEL = (
     "the visible prefix.]"
 )
 
-
 class ToolExecutionResponse(StrEnum):
     SKIP = auto()
     EXECUTE = auto()
-
 
 class ToolDecision(BaseModel):
     verdict: ToolExecutionResponse
@@ -216,18 +212,14 @@ class ToolDecision(BaseModel):
     feedback: str | None = None
     judge_approved: bool = False
 
-
 class AgentLoopError(Exception):
     """Base exception for AgentLoop errors."""
-
 
 class AgentLoopStateError(AgentLoopError):
     """Raised when agent loop is in an invalid state."""
 
-
 class AgentLoopLLMResponseError(AgentLoopError):
     """Raised when LLM response is malformed or missing expected data."""
-
 
 class CompactionFailedError(AgentLoopError):
     """Raised when a compaction turn did not produce a usable summary."""
@@ -236,14 +228,11 @@ class CompactionFailedError(AgentLoopError):
         self.reason = reason  # "tool_call" | "empty_summary"
         super().__init__(f"Compaction did not produce a summary (reason={reason}).")
 
-
 class ImagesNotSupportedError(AgentLoopError):
     """Raised when the active model does not support image attachments."""
 
-
 class TeleportError(AgentLoopError):
     """Raised when teleport to Vibe Code fails."""
-
 
 def _refusal_error(provider: str, model: str, chunk: LLMChunk) -> RefusalError:
     stop = chunk.stop
@@ -254,10 +243,8 @@ def _refusal_error(provider: str, model: str, chunk: LLMChunk) -> RefusalError:
         explanation=stop.explanation if stop else None,
     )
 
-
 def _should_raise_rate_limit_error(e: Exception) -> bool:
     return isinstance(e, BackendError) and e.status == HTTPStatus.TOO_MANY_REQUESTS
-
 
 def _is_context_too_long_error(e: Exception) -> bool:
     if isinstance(e, BackendError):
@@ -266,14 +253,12 @@ def _is_context_too_long_error(e: Exception) -> bool:
         return e.__cause__.is_context_too_long
     return False
 
-
 def _is_response_too_long_error(e: Exception) -> bool:
     if isinstance(e, BackendError):
         return e.is_response_too_long
     if isinstance(e, RuntimeError) and isinstance(e.__cause__, BackendError):
         return e.__cause__.is_response_too_long
     return False
-
 
 def _is_non_retryable_error(e: BaseException) -> bool:
     # Detect Temporal-style ``non_retryable`` flag without importing temporalio.
@@ -289,7 +274,6 @@ def _is_non_retryable_error(e: BaseException) -> bool:
         seen.add(id(current))
         current = current.__cause__
     return False
-
 
 def requires_init(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator that awaits deferred initialization before executing the method."""
@@ -316,7 +300,6 @@ def requires_init(fn: Callable[..., Any]) -> Callable[..., Any]:
         return await fn(self, *args, **kwargs)
 
     return wrapper
-
 
 class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def __init__(  # noqa: PLR0913, PLR0915
@@ -1186,7 +1169,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             )
         return self._memory_store
 
-    def _resolve_memory_selector(self):  # noqa: ANN202
+    def _resolve_memory_selector(self) -> MemorySelector | None:
         from vibe.core.memory.selector import MemorySelector
 
         mem = self.config.memory

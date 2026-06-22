@@ -10,16 +10,18 @@ NEVER raise, so a bad plugin can't break startup.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 import tomllib
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
+from vibe.core.logger import logger
 from vibe.core.plugins.models import PluginLoadResult, PluginManifest
 from vibe.core.utils.matching import name_matches
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from vibe.core.config import VibeConfig
 
 _COMPONENTS = (
     ("agents", "agent_paths"),
@@ -28,7 +30,6 @@ _COMPONENTS = (
     ("workflows", "workflow_paths"),
     ("prompts", "prompt_paths"),
 )
-
 
 def _candidate_manifests(
     plugin_paths: list[Path], plugin_dirs: list[Path]
@@ -50,7 +51,6 @@ def _candidate_manifests(
     # de-dupe preserving order
     seen: set[Path] = set()
     return [m for m in out if not (m in seen or seen.add(m))]
-
 
 def load_plugins_from_fs(
     plugin_paths: list[Path],
@@ -105,8 +105,9 @@ def load_plugins_from_fs(
 
     return result
 
-
-def _collect_hooks(manifest, root, name, result) -> None:  # noqa: ANN001
+def _collect_hooks(
+    manifest: PluginManifest, root: Path, name: str, result: PluginLoadResult
+) -> None:
     """Parse a manifest's hooks (a path to a hooks.toml, or inline [[hooks]])
     into HookConfig entries on the result. Defensive: errors → issues.
     """
@@ -131,15 +132,13 @@ def _collect_hooks(manifest, root, name, result) -> None:  # noqa: ANN001
         except (ValidationError, ValueError) as e:
             result.issues.append(f"{name}: invalid inline hook ({e})")
 
-
 def _within(path: Path, root: Path) -> bool:
     try:
         return path == root or path.is_relative_to(root.resolve())
     except (OSError, ValueError):
         return False
 
-
-def apply_plugin_result(config, result: PluginLoadResult) -> None:  # noqa: ANN001
+def apply_plugin_result(config: VibeConfig, result: PluginLoadResult) -> None:
     """Fold a PluginLoadResult into a VibeConfig (additive). Paths are appended;
     mcp_servers are union-merged by name (existing config wins).
     """
@@ -150,7 +149,7 @@ def apply_plugin_result(config, result: PluginLoadResult) -> None:  # noqa: ANN0
     config.prompt_paths = [*config.prompt_paths, *result.prompt_paths]
 
     existing = {s.name for s in config.mcp_servers}
-    from vibe.core.config import MCPServer as _MCPServerAdapter  # type: ignore
+    from vibe.core.config import MCPServer as _MCPServerAdapter
 
     for raw in result.mcp_servers:
         nm = raw.get("name")

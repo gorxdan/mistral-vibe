@@ -17,6 +17,7 @@ from vibe.core.paths import VIBE_HOME
 from vibe.core.teams.mailbox import Mailbox
 from vibe.core.teams.models import Task, TeamConfig, TeamMember
 from vibe.core.teams.task_store import TaskStore
+from vibe.core.utils.io import read_safe
 
 if TYPE_CHECKING:
     from vibe.core.hooks.manager import HooksManager
@@ -84,7 +85,7 @@ class TeamManager:
     def _load_config(self) -> TeamConfig:
         lock = FileLock(str(self._config_lock), timeout=5)
         with lock:
-            return TeamConfig.model_validate_json(self._config_file.read_text())
+            return TeamConfig.model_validate_json(read_safe(self._config_file).text)
 
     def _save_config(self, config: TeamConfig) -> None:
         lock = FileLock(str(self._config_lock), timeout=5)
@@ -156,7 +157,9 @@ class TeamManager:
         )
         return task
 
-    async def complete_team_task(self, task_id: str, result: str | None = None) -> Task | None:
+    async def complete_team_task(
+        self, task_id: str, result: str | None = None
+    ) -> Task | None:
         """Mark a task complete and fire the TASK_COMPLETED lifecycle hook."""
         task = self.task_store.complete_task(task_id, result=result)
         if task is not None:
@@ -254,9 +257,7 @@ class TeamManager:
             # The teammate is now idle (completed, failed, or stopped). Fire
             # the TEAMMATE_IDLE lifecycle hook so observers can react.
             await self._dispatch_hook(
-                "teammate_idle",
-                teammate_name=name,
-                teammate_session_id=None,
+                "teammate_idle", teammate_name=name, teammate_session_id=None
             )
 
     @staticmethod

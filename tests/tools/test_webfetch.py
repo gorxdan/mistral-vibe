@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import socket
+
 import httpx
 import pytest
 import respx
-import socket
 
 from tests.mock.utils import collect_result
 from vibe.core.tools.base import BaseToolState, ToolError
@@ -304,7 +305,9 @@ async def test_blocks_hostname_resolving_to_private_ip(webfetch, monkeypatch):
         ],
     )
     with pytest.raises(ToolError, match="SSRF blocked"):
-        await collect_result(webfetch.run(WebFetchArgs(url="http://internal.example.com")))
+        await collect_result(
+            webfetch.run(WebFetchArgs(url="http://internal.example.com"))
+        )
 
 
 @pytest.mark.asyncio
@@ -313,6 +316,7 @@ async def test_resolver_failure_fails_closed(webfetch, monkeypatch):
     not bypass validation. The old code returned early and let httpx
     re-resolve (possibly to a private IP) unchecked.
     """
+
     def _raise(*args, **kwargs):
         raise socket.gaierror("DNS failed")
 
