@@ -510,6 +510,9 @@ async def test_team_command_task_verbs_route_to_manager() -> None:
         async def _mount_and_scroll(self, _w) -> None:
             pass
 
+        async def _team_task(self, parts, ErrorMessage, UserCommandMessage) -> None:
+            await VibeApp._team_task(self, parts, ErrorMessage, UserCommandMessage)
+
     stub = _Stub()
     await VibeApp._team_command(stub, "task add buy more milk")  # type: ignore[arg-type]
     await VibeApp._team_command(stub, "task done task-1 all good")  # type: ignore[arg-type]
