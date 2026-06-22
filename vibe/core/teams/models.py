@@ -12,6 +12,30 @@ class TaskStatus(StrEnum):
     BLOCKED = auto()
 
 
+class MessageKind(StrEnum):
+    """Structured message kinds for typed teammate ↔ lead communication.
+
+    ``TEXT`` is the default and covers all legacy free-form prose traffic.
+    The structured kinds support typed request/response cycles between a
+    teammate subprocess and the lead:
+
+    - ``PERMISSION_REQUEST``: a teammate asks the lead to approve a destructive
+      action it would otherwise auto-approve in isolation (e.g. a destructive
+      bash command). ``payload`` carries the tool name and a description.
+    - ``PERMISSION_RESPONSE``: the lead's reply to a ``PERMISSION_REQUEST``.
+      ``payload`` carries the original request id, the decision (allow/deny),
+      and an optional reason.
+    - ``PLAN_APPROVAL`` / ``SHUTDOWN``: reserved for future use (defined so the
+      enum is stable); not yet emitted by any teammate code.
+    """
+
+    TEXT = auto()
+    PERMISSION_REQUEST = auto()
+    PERMISSION_RESPONSE = auto()
+    PLAN_APPROVAL = auto()
+    SHUTDOWN = auto()
+
+
 class Task(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -54,3 +78,5 @@ class Message(BaseModel):
     content: str
     timestamp: float
     read: bool = False
+    kind: MessageKind = MessageKind.TEXT
+    payload: dict = Field(default_factory=dict)
