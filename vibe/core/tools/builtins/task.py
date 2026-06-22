@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 import fnmatch
@@ -45,6 +46,19 @@ class TaskArgs(BaseModel):
         default="explore",
         description="Name of the agent profile to use (must be a subagent)",
     )
+    async_run: bool = Field(
+        default=False,
+        description=(
+            "If true, run the subagent in the background and return immediately "
+            "with a task_id instead of blocking until completion. Only valid for "
+            "profiles that isolate (write-capable: worker/editor/auto-approve or "
+            "any profile with bash/write_file/edit); read-only in-process "
+            "subagents share the parent's event loop, so use launch_workflow for "
+            "in-process parallel fan-out instead. Completion surfaces at the top "
+            "of the next parent turn; the running task is visible via the "
+            "`background` tool and cancellable via `background stop <task_id>`."
+        ),
+    )
 
 
 class TaskResult(BaseModel):
@@ -73,6 +87,14 @@ class TaskResult(BaseModel):
         description=(
             "Branch of a kept isolated worktree (only set alongside "
             "worktree_path). Recover with `git merge <branch>`."
+        ),
+    )
+    task_id: str | None = Field(
+        default=None,
+        description=(
+            "Background task id (only set when async_run=true). Use "
+            "`background` to inspect status and `background stop <task_id>` to "
+            "cancel; completion surfaces as a BackgroundTaskCompletedEvent."
         ),
     )
 
@@ -146,6 +168,81 @@ class Task(
                 return PermissionContext(permission=ToolPermission.ALWAYS)
 
         return None
+
+    async def _run_async_isolated(
+        self, args: TaskArgs, ctx: InvokeContext, should_isolate: bool
+    ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
+        # Non-blocking variant of _run_isolated: spawn the isolated subagent as
+        # an asyncio.Task, register it with the background registry, and return
+        # immediately with the task_id. The registry's finalizer captures the
+        # IsolatedResult; the parent agent loop drains queued completions at the
+        # top of each turn and emits BackgroundTaskCompletedEvent for each.
+        if not should_isolate:
+            # async_run requires isolation: read-only in-process subagents share
+            # the parent's event loop, so async delegation would not unblock it.
+            # For in-process parallel fan-out, launch_workflow with parallel()
+            # is the right primitive.
+            raise ToolError(
+                "async_run=True requires an isolated (write-capable) "
+                "subagent; read-only in-process subagents share the parent's "
+                "event loop, so 'async' would not actually unblock the "
+                "parent. For in-process parallel fan-out, use "
+                "launch_workflow with parallel() instead."
+            )
+        registry = ctx.background_registry
+        if registry is None:
+            # No registry wired (e.g. tests, programmatic runner without TUI).
+            # Fall back to the blocking isolated path rather than failing hard.
+            async for result in self._run_isolated(args, ctx):
+                yield result
+            return
+
+        task_text = args.task
+        if ctx.scratchpad_dir:
+            task_text = (
+                f"Scratchpad directory: {ctx.scratchpad_dir}\n"
+                "You can read and write files here without permission prompts.\n\n"
+                f"{args.task}"
+            )
+
+        denied = await self._judge_isolated_spawn(task_text, args.agent, ctx)
+        if denied is not None:
+            yield TaskResult(
+                response=f"[Isolated subagent denied by safety judge: {denied}]",
+                completed=False,
+                isolated=True,
+            )
+            return
+
+        bg_task = asyncio.create_task(
+            run_isolated_agent(
+                task_text,
+                args.agent,
+                label=args.agent,
+                max_turns=DEFAULT_ISOLATED_MAX_TURNS,
+                deliver=True,
+            ),
+            name=f"async-task-{args.agent}",
+        )
+        task_id = registry.register_async_agent(
+            args.agent, bg_task, label=args.agent
+        )
+        yield ToolStreamEvent(
+            tool_name=self.get_name(),
+            message=f"Launched {args.agent} subagent in background: {task_id}",
+            tool_call_id=ctx.tool_call_id,
+        )
+        yield TaskResult(
+            response=(
+                f"Background subagent {task_id} launched. Inspect with "
+                f"`background`; cancel with `background stop {task_id}`. "
+                f"Completion surfaces as a BackgroundTaskCompletedEvent at the "
+                f"top of the next parent turn."
+            ),
+            completed=False,
+            isolated=True,
+            task_id=task_id,
+        )
 
     async def _run_isolated(
         self, args: TaskArgs, ctx: InvokeContext
@@ -271,11 +368,20 @@ class Task(
         should_isolate = isolation_mode == "always" or (
             isolation_mode == "auto" and profile_requires_isolation(agent_profile)
         )
+        if args.async_run:
+            async for result in self._run_async_isolated(args, ctx, should_isolate):
+                yield result
+            return
         if should_isolate:
             async for result in self._run_isolated(args, ctx):
                 yield result
             return
+        async for result in self._run_in_process(args, ctx):
+            yield result
 
+    async def _run_in_process(
+        self, args: TaskArgs, ctx: InvokeContext
+    ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
         session_logging = SessionLoggingConfig(
             save_dir=str(ctx.session_dir / "agents") if ctx.session_dir else "",
             session_prefix=args.agent,
@@ -296,7 +402,7 @@ class Task(
         if ctx.session_id:
             subagent_loop.parent_session_id = ctx.session_id
 
-        if ctx and ctx.approval_callback:
+        if ctx.approval_callback:
             subagent_loop.set_approval_callback(ctx.approval_callback)
 
         task_text = args.task

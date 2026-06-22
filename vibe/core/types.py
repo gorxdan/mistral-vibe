@@ -516,6 +516,24 @@ class SessionTitleUpdatedEvent(BaseEvent):
     title: str
 
 
+class BackgroundTaskCompletedEvent(BaseEvent):
+    """Surfaces completion of an async/background subagent to the parent loop.
+
+    Emitted at the top of the next parent turn after the async subagent
+    finishes (the registry queues completions; the agent loop drains them).
+    A matching user-role ``LLMMessage`` is appended alongside so the model
+    sees the result as context for the upcoming turn.
+    """
+
+    task_id: str
+    agent: str
+    response: str
+    completed: bool
+    worktree_path: str | None = None
+    branch: str | None = None
+    error: str | None = None
+
+
 class OutputFormat(StrEnum):
     TEXT = auto()
     JSON = auto()

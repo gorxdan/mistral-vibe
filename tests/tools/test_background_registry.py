@@ -1,19 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
+import time
 from typing import Any
 
 import pytest
 
-from vibe.core.tools.background import (
-    BackgroundRegistry,
-    TaskCategory,
-    _team_status,
-)
-
+from vibe.core.tools.background import BackgroundRegistry, TaskCategory, _team_status
 
 # ---------------------------------------------------------------------------
 # Fakes — stand in for WorkflowRunner / TeamManager / LoopManager so the
@@ -357,7 +352,8 @@ class _FakeProc:
 @pytest.fixture
 def _no_real_signals(monkeypatch):
     """Replace _signal_proc_group with a recorder so termination tests never
-    send real OS signals (which would risk hitting the runner's own pgid)."""
+    send real OS signals (which would risk hitting the runner's own pgid).
+    """
     calls: list[tuple[int, int]] = []
 
     def _fake(proc, sig):
@@ -368,9 +364,7 @@ def _no_real_signals(monkeypatch):
         else:
             proc.terminate()
 
-    monkeypatch.setattr(
-        "vibe.core.tools.background._signal_proc_group", _fake
-    )
+    monkeypatch.setattr("vibe.core.tools.background._signal_proc_group", _fake)
     return calls
 
 
@@ -494,7 +488,9 @@ async def test_read_log_tail_returns_empty_for_missing_file(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _registry_with_workflow_log(tmp_path) -> tuple[BackgroundRegistry, _FakeWorkflowRunner]:
+def _registry_with_workflow_log(
+    tmp_path,
+) -> tuple[BackgroundRegistry, _FakeWorkflowRunner]:
     """Wire a registry to a fake workflow runner with one run (wf-1) carrying a
     single live agent (la-0) whose transcript lives at a real on-disk path.
     """
@@ -503,9 +499,12 @@ def _registry_with_workflow_log(tmp_path) -> tuple[BackgroundRegistry, _FakeWork
     reg, wf, _team, _loop = _registry_with_all()
     log = tmp_path / "messages.jsonl"
     log.write_text(
-        json.dumps({"role": "user", "content": "find the auth flow"}) + "\n"
-        + json.dumps({"role": "assistant", "content": "I will grep for auth"}) + "\n"
-        + json.dumps({"role": "assistant", "content": "Found it in auth.py:42"}) + "\n"
+        json.dumps({"role": "user", "content": "find the auth flow"})
+        + "\n"
+        + json.dumps({"role": "assistant", "content": "I will grep for auth"})
+        + "\n"
+        + json.dumps({"role": "assistant", "content": "Found it in auth.py:42"})
+        + "\n"
     )
     run = _FakeRunEntry(
         run_id="wf-1",
@@ -565,8 +564,8 @@ def test_parse_agent_task_id_round_trip():
     """The id parser splits hierarchical agent ids and rejects non-agent ids."""
     parse = BackgroundRegistry._parse_agent_task_id
     assert parse("wf-1/live-la-3") == ("wf-1", "la-3")
-    assert parse("proc-1") == (None, None)          # not hierarchical
-    assert parse("wf-1/phases") == (None, None)     # suffix is not a 'live-' child
+    assert parse("proc-1") == (None, None)  # not hierarchical
+    assert parse("wf-1/phases") == (None, None)  # suffix is not a 'live-' child
     assert parse("team:alice") == (None, None)
 
 
@@ -621,3 +620,141 @@ async def test_shutdown_terminates_running_processes(_no_real_signals):
 )
 def test_team_status_normalization(raw: str, expected: str) -> None:
     assert _team_status(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# async subagent ownership
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _FakeIsolatedResult:
+    """Mimics the IsolatedResult shape returned by run_isolated_agent."""
+
+    output: str = "done"
+    returncode: int = 0
+    worktree_path: str | None = None
+    branch: str | None = None
+
+
+@pytest.mark.asyncio
+async def test_register_async_agent_lists_running_with_prefix():
+    reg = BackgroundRegistry()
+
+    async def long_running() -> _FakeIsolatedResult:
+        await asyncio.sleep(10)
+        return _FakeIsolatedResult()
+
+    task = asyncio.create_task(long_running())
+    try:
+        task_id = reg.register_async_agent("worker", task, label="worker-1")
+        assert task_id.startswith("asub-")
+        entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
+        assert len(entries) == 1
+        assert entries[0].task_id == task_id
+        assert entries[0].status == "running"
+        assert entries[0].detail["agent"] == "worker"
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_async_agent_completion_queued_and_drained():
+    reg = BackgroundRegistry()
+
+    async def quick() -> _FakeIsolatedResult:
+        await asyncio.sleep(0)
+        return _FakeIsolatedResult(output="result text")
+
+    task = asyncio.create_task(quick())
+    task_id = reg.register_async_agent("worker", task)
+    # Wait for the registry's finalizer to observe completion.
+    await asyncio.sleep(0.05)
+
+    entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
+    assert entries[0].status == "completed"
+    assert entries[0].detail["completed"] is True
+
+    drained = reg.pop_async_completions()
+    assert len(drained) == 1
+    assert drained[0].task_id == task_id
+    assert drained[0].response == "result text"
+    # Second drain is empty — pop clears the queue.
+    assert reg.pop_async_completions() == []
+
+
+@pytest.mark.asyncio
+async def test_async_agent_failure_queued_with_error():
+    reg = BackgroundRegistry()
+
+    async def boom() -> _FakeIsolatedResult:
+        msg = "subprocess exploded"
+        raise RuntimeError(msg)
+
+    task = asyncio.create_task(boom())
+    reg.register_async_agent("worker", task)
+    await asyncio.sleep(0.05)
+
+    entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
+    assert entries[0].status == "failed"
+    assert entries[0].detail["completed"] is False
+
+    drained = reg.pop_async_completions()
+    assert len(drained) == 1
+    assert drained[0].completed is False
+    assert "subprocess exploded" in (drained[0].error or "")
+
+
+@pytest.mark.asyncio
+async def test_stop_async_agent_marks_stopped_and_skips_completion_queue():
+    reg = BackgroundRegistry()
+
+    async def long_running() -> _FakeIsolatedResult:
+        await asyncio.sleep(30)
+        return _FakeIsolatedResult()
+
+    task = asyncio.create_task(long_running())
+    task_id = reg.register_async_agent("worker", task)
+
+    stopped = await reg.stop(task_id)
+    assert stopped is True
+    entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
+    assert entries[0].status == "stopped"
+    # Explicit stop does NOT queue a completion — the parent asked for it.
+    assert reg.pop_async_completions() == []
+
+
+@pytest.mark.asyncio
+async def test_stop_unknown_or_finished_async_returns_false():
+    reg = BackgroundRegistry()
+    # Unknown id
+    assert await reg.stop("asub-99") is False
+
+    async def quick() -> _FakeIsolatedResult:
+        return _FakeIsolatedResult()
+
+    task = asyncio.create_task(quick())
+    task_id = reg.register_async_agent("worker", task)
+    await asyncio.sleep(0.05)
+    # Already finished
+    assert await reg.stop(task_id) is False
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_running_async_agents():
+    reg = BackgroundRegistry()
+
+    async def long_running() -> _FakeIsolatedResult:
+        await asyncio.sleep(30)
+        return _FakeIsolatedResult()
+
+    task = asyncio.create_task(long_running())
+    reg.register_async_agent("worker", task)
+
+    await reg.shutdown()
+    entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
+    assert all(e.status == "stopped" for e in entries)
