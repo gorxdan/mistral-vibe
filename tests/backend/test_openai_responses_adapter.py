@@ -412,7 +412,9 @@ class TestPrepareRequest:
     ):
         # This is the shape produced by workflows.schema.build_response_format,
         # i.e. the Chat Completions API layout with name/schema nested under
-        # json_schema. The Responses API requires them flat under text.format.
+        # json_schema. The Responses API requires them flat under text.format
+        # AND strict-mode compliant (additionalProperties: false, all props
+        # required).
         response_format = {
             "type": "json_schema",
             "json_schema": {
@@ -426,12 +428,79 @@ class TestPrepareRequest:
             [LLMMessage(role=Role.user, content="Hi")],
             response_format=response_format,
         )
-        assert payload["text"]["format"] == {
-            "type": "json_schema",
-            "name": "workflow_output",
-            "schema": {"type": "object", "properties": {"x": {"type": "string"}}},
+        fmt = payload["text"]["format"]
+        assert fmt["type"] == "json_schema"
+        assert fmt["name"] == "workflow_output"
+        assert "json_schema" not in fmt
+        # Strict-mode normalization
+        assert fmt["schema"]["additionalProperties"] is False
+        assert fmt["schema"]["required"] == ["x"]
+
+    def test_schema_normalized_with_nested_objects(self, adapter, provider):
+        # The schema that killed workflows on openai-chatgpt: a typical workflow
+        # output schema with nested objects inside array items. Every object
+        # level must get additionalProperties: false and all properties required.
+        schema = {
+            "type": "object",
+            "properties": {
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "file": {"type": "string"},
+                            "severity": {
+                                "type": "string",
+                                "enum": ["low", "med", "high"],
+                            },
+                        },
+                        "required": ["title", "file"],
+                    },
+                }
+            },
+            "required": ["findings"],
         }
-        assert "json_schema" not in payload["text"]["format"]
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"schema": schema, "name": "workflow_output"},
+        }
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.user, content="Hi")],
+            response_format=response_format,
+        )
+        wire_schema = payload["text"]["format"]["schema"]
+        # Root object
+        assert wire_schema["additionalProperties"] is False
+        assert set(wire_schema["required"]) == {"findings"}
+        # Nested object inside array items
+        item_schema = wire_schema["properties"]["findings"]["items"]
+        assert item_schema["additionalProperties"] is False
+        assert set(item_schema["required"]) == {"title", "file", "severity"}
+        # Enum is preserved through normalization
+        assert item_schema["properties"]["severity"]["enum"] == ["low", "med", "high"]
+
+    def test_schema_normalization_does_not_mutate_original(self, adapter, provider):
+        original_schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+        original_copy = json.loads(json.dumps(original_schema))
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"schema": original_schema, "name": "workflow_output"},
+        }
+        _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.user, content="Hi")],
+            response_format=response_format,
+        )
+        # The original schema dict must be unmodified — our own lenient
+        # validation uses it as-is, so mutation would change validation
+        # behavior for non-OpenAI backends.
+        assert original_schema == original_copy
+        assert "additionalProperties" not in original_schema
+        assert "required" not in original_schema
 
     def test_flat_response_format_passed_through_unchanged(self, adapter, provider):
         flat = {
