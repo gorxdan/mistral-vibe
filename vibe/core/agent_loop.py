@@ -2442,52 +2442,58 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return
         self._fill_missing_tool_responses()
 
+    @staticmethod
+    def _collect_responded_ids(messages: list[LLMMessage], start: int) -> set[str]:
+        """Scan forward from `start` collecting tool_call_ids until a non-tool message."""
+        responded: set[str] = set()
+        j = start
+        while j < len(messages) and messages[j].role == "tool":
+            if messages[j].tool_call_id is not None:
+                responded.add(messages[j].tool_call_id)
+            j += 1
+        return responded
+
     def _fill_missing_tool_responses(self) -> None:
         i = 1
-        while i < len(self.messages):  # noqa: PLR1702
+        while i < len(self.messages):
             msg = self.messages[i]
 
-            if msg.role == "assistant" and msg.tool_calls:
-                expected_responses = len(msg.tool_calls)
+            if not (msg.role == "assistant" and msg.tool_calls):
+                i += 1
+                continue
 
-                if expected_responses > 0:
-                    responded_ids: set[str] = set()
-                    j = i + 1
-                    while j < len(self.messages) and self.messages[j].role == "tool":
-                        tool_call_id = self.messages[j].tool_call_id
-                        if tool_call_id is not None:
-                            responded_ids.add(tool_call_id)
-                        j += 1
+            expected = len(msg.tool_calls)
+            if expected == 0:
+                i += 1
+                continue
 
-                    if len(responded_ids) < expected_responses:
-                        insertion_point = j
+            responded = self._collect_responded_ids(self.messages, i + 1)
+            next_i = i + 1 + len([m for m in self.messages[i + 1 :] if m.role == "tool"])
 
-                        for tool_call_data in msg.tool_calls:
-                            if (tool_call_data.id or "") in responded_ids:
-                                continue
+            if len(responded) >= expected:
+                i = next_i
+                continue
 
-                            empty_response = LLMMessage(
-                                role=Role.tool,
-                                tool_call_id=tool_call_data.id or "",
-                                name=(
-                                    (tool_call_data.function.name or "")
-                                    if tool_call_data.function
-                                    else ""
-                                ),
-                                content=str(
-                                    get_user_cancellation_message(
-                                        CancellationReason.TOOL_NO_RESPONSE
-                                    )
-                                ),
-                            )
-
-                            self.messages.insert(insertion_point, empty_response)
-                            insertion_point += 1
-
-                    i = i + 1 + expected_responses
+            insertion_point = next_i
+            for tc in msg.tool_calls:
+                if (tc.id or "") in responded:
                     continue
+                self.messages.insert(
+                    insertion_point,
+                    LLMMessage(
+                        role=Role.tool,
+                        tool_call_id=tc.id or "",
+                        name=(tc.function.name or "") if tc.function else "",
+                        content=str(
+                            get_user_cancellation_message(
+                                CancellationReason.TOOL_NO_RESPONSE
+                            )
+                        ),
+                    ),
+                )
+                insertion_point += 1
 
-            i += 1
+            i = next_i
 
     async def _reset_session(
         self, keep_parent: bool = True, *, lifecycle_reason: str | None = None
