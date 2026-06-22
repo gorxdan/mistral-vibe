@@ -323,6 +323,37 @@ class GenericBackend:
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> LLMChunk:
+        # The ChatGPT-subscription backend (codex) rejects non-streaming
+        # requests with "Stream must be set to true", so route through the
+        # streaming path and aggregate the chunks into a single LLMChunk.
+        if getattr(self._provider, "api_style", "openai") == "openai-chatgpt":
+            aggregated: LLMChunk | None = None
+            async for chunk in self.complete_streaming(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                tools=tools,
+                max_tokens=max_tokens,
+                tool_choice=tool_choice,
+                extra_headers=extra_headers,
+                metadata=metadata,
+                response_format=response_format,
+                extra_body=extra_body,
+            ):
+                aggregated = chunk if aggregated is None else aggregated + chunk
+            if aggregated is None:
+                raise BackendErrorBuilder.build_request_error(
+                    provider=self._provider.name,
+                    endpoint=self._provider.api_base,
+                    error=httpx.RequestError("empty stream from ChatGPT backend"),
+                    model=model.name,
+                    messages=messages,
+                    temperature=temperature,
+                    has_tools=bool(tools),
+                    tool_choice=tool_choice,
+                )
+            return aggregated
+
         api_key, auth_headers = await self._resolve_auth()
 
         api_style = getattr(self._provider, "api_style", "openai")

@@ -116,19 +116,20 @@ def test_tool_choice_defaults_to_auto() -> None:
 @respx.mock
 async def test_backend_injects_oauth_bearer_and_account_header() -> None:
     _store_tokens("acct_xyz")
+    # ChatGPT backend requires streaming; complete() now routes through the
+    # streaming path, so the mock returns an SSE response.
+    sse_body = "\n\n".join([
+        'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","content":[]}}',
+        'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}',
+        'data: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":"hello"}',
+        'data: {"type":"response.completed","response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":3,"output_tokens":1}}}',
+        "data: [DONE]",
+    ]) + "\n\n"
     route = respx.post(RESPONSES_URL).mock(
         return_value=httpx.Response(
             200,
-            json={
-                "output": [
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": "hello"}],
-                    }
-                ],
-                "usage": {"input_tokens": 3, "output_tokens": 1},
-            },
+            content=sse_body.encode("utf-8"),
+            headers={"content-type": "text/event-stream"},
         )
     )
 
