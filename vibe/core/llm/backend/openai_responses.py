@@ -30,9 +30,11 @@ if TYPE_CHECKING:
 
 _EMPTY_USAGE = LLMUsage(prompt_tokens=0, completion_tokens=0)
 
+
 class _ResponsesUsageData(TypedDict, total=False):
     input_tokens: int
     output_tokens: int
+
 
 class _ResponsesFunctionCallItem(TypedDict, total=False):
     type: str
@@ -41,13 +43,16 @@ class _ResponsesFunctionCallItem(TypedDict, total=False):
     name: str
     arguments: str
 
+
 class _ResponsesContentBlock(TypedDict, total=False):
     type: str
     text: str
 
+
 class _ResponsesSummaryBlock(TypedDict, total=False):
     type: str
     text: str
+
 
 class _ResponsesMessageItem(TypedDict, total=False):
     type: str
@@ -56,18 +61,22 @@ class _ResponsesMessageItem(TypedDict, total=False):
     phase: str
     content: list[_ResponsesContentBlock]
 
+
 class _ResponsesReasoningItem(TypedDict, total=False):
     type: str
     encrypted_content: str
     summary: list[_ResponsesSummaryBlock]
 
+
 class _ResponsesObject(TypedDict, total=False):
     usage: _ResponsesUsageData | None
     output: list[dict[str, Any]]
 
+
 class _ResponsesErrorData(TypedDict, total=False):
     type: str
     message: str
+
 
 class _ResponsesStreamEvent(TypedDict, total=False):
     type: str
@@ -80,12 +89,14 @@ class _ResponsesStreamEvent(TypedDict, total=False):
     response: _ResponsesObject
     error: _ResponsesErrorData
 
+
 _RESPONSES_OBJECT_ADAPTER = TypeAdapter(_ResponsesObject)
 _RESPONSES_STREAM_EVENT_ADAPTER = TypeAdapter(_ResponsesStreamEvent)
 _RESPONSES_FUNCTION_CALL_ITEM_ADAPTER = TypeAdapter(_ResponsesFunctionCallItem)
 _RESPONSES_MESSAGE_ITEM_ADAPTER = TypeAdapter(_ResponsesMessageItem)
 _RESPONSES_REASONING_ITEM_ADAPTER = TypeAdapter(_ResponsesReasoningItem)
 _RESPONSES_ERROR_DATA_ADAPTER = TypeAdapter(_ResponsesErrorData)
+
 
 @dataclass(slots=True)
 class _ResponsesToolCallState:
@@ -94,6 +105,7 @@ class _ResponsesToolCallState:
     arguments: str = ""
     name_emitted: bool = False
     arguments_emitted: bool = False
+
 
 class _OpenAIResponsesStreamParser:
     def __init__(self) -> None:
@@ -396,6 +408,7 @@ class _OpenAIResponsesStreamParser:
         "error": _on_error,
     }
 
+
 class OpenAIResponsesAdapter(APIAdapter):
     endpoint: ClassVar[str] = "/responses"
 
@@ -414,6 +427,20 @@ class OpenAIResponsesAdapter(APIAdapter):
         if thinking == "max":
             return "xhigh"
         return thinking
+
+    @staticmethod
+    def _to_responses_text_format(response_format: dict[str, Any]) -> dict[str, Any]:
+        # The shared response_format carries the Chat Completions shape
+        # ({type, json_schema: {name, schema}}). The Responses API requires the
+        # fields flat under text.format: {type, name, schema}. Un-nest so the
+        # server does not reject with "Missing required parameter: text.format.name".
+        if nested := response_format.get("json_schema"):
+            return {
+                "type": response_format.get("type", "json_schema"),
+                "name": nested.get("name", "workflow_output"),
+                "schema": nested.get("schema", {}),
+            }
+        return response_format
 
     def _convert_messages(self, messages: Sequence[LLMMessage]) -> list[dict[str, Any]]:
         input_items: list[dict[str, Any]] = []
@@ -518,7 +545,9 @@ class OpenAIResponsesAdapter(APIAdapter):
             payload["max_output_tokens"] = max_tokens
 
         if response_format is not None:
-            payload["text"] = {"format": response_format}
+            payload["text"] = {
+                "format": self._to_responses_text_format(response_format)
+            }
 
         if enable_streaming:
             payload["stream"] = True
