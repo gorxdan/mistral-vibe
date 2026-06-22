@@ -53,15 +53,24 @@ def test_clean_worktree_is_removed(repo: Path, base_dir: Path) -> None:
     assert wt.branch not in [h.name for h in Repo(str(repo)).heads]
 
 
-def test_changed_worktree_is_kept(repo: Path, base_dir: Path) -> None:
+def test_changed_worktree_branch_is_kept_dir_reclaimed(
+    repo: Path, base_dir: Path
+) -> None:
     wt = create_ephemeral_worktree(repo, "dirty", base_dir=base_dir)
     (wt.path / "new.txt").write_text("agent output")
-    assert remove_ephemeral_worktree(wt) is False  # kept for manual merge
-    assert wt.path.exists()
-    # branch retained
-    assert wt.branch in [h.name for h in Repo(str(repo)).heads]
-    # cleanup
+    # Branch is kept for manual merge (returns False), but the on-disk directory
+    # is reclaimed (no unbounded accumulation) and the uncommitted work is
+    # committed onto the branch first.
+    assert remove_ephemeral_worktree(wt) is False
+    assert not wt.path.exists()
+    parent = Repo(str(repo))
+    assert wt.branch in [h.name for h in parent.heads]
+    # The agent's uncommitted file was committed onto the branch before reclaim
+    # (cat-file -e exits 0 / empty stdout iff the blob exists on the branch).
+    assert parent.git.cat_file("-e", f"{wt.branch}:new.txt") == ""
+    # Re-removing with keep_if_changed=False deletes the orphaned branch.
     assert remove_ephemeral_worktree(wt, keep_if_changed=False) is True
+    assert wt.branch not in [h.name for h in Repo(str(repo)).heads]
 
 
 def test_committed_worktree_branch_is_recoverable(repo: Path, base_dir: Path) -> None:
@@ -70,7 +79,8 @@ def test_committed_worktree_branch_is_recoverable(repo: Path, base_dir: Path) ->
     (wt.path / "feature.txt").write_text("done")
     wt_repo.index.add(["feature.txt"])
     wt_repo.index.commit("isolated agent work")
-    # Advanced past base -> kept even though tree is clean.
+    # Advanced past base -> branch kept (returns False), dir reclaimed.
     assert remove_ephemeral_worktree(wt) is False
+    assert not wt.path.exists()
     assert wt.branch in [h.name for h in Repo(str(repo)).heads]
     remove_ephemeral_worktree(wt, keep_if_changed=False)

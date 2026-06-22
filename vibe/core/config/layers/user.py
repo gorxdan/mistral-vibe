@@ -4,7 +4,8 @@ from pathlib import Path
 import tomllib
 
 from vibe.core.config.fingerprint import capture_stable_file
-from vibe.core.config.layer import ConfigLayer, RawConfig
+from vibe.core.config.layer import ConfigLayer
+from vibe.core.config.models import RawConfig
 from vibe.core.config.patch import ConfigPatch
 from vibe.core.config.types import (
     EMPTY_CONFIG_SNAPSHOT,

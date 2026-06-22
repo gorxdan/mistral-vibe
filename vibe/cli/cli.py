@@ -350,6 +350,9 @@ def run_cli(args: argparse.Namespace) -> None:
                 worktree_handle = worktree_manager.enter("cli", config.worktree)
                 if worktree_handle is not None and not config.displayed_workdir:
                     config.displayed_workdir = str(worktree_handle.original_repo_root)
+                # Surface any unmerged branches from prior sessions (the
+                # _prune_and_report orphan log is file-only and invisible).
+                worktree_manager.print_startup_report(config.worktree)
             try:
                 try:
                     agent_loop = AgentLoop(

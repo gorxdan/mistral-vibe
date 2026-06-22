@@ -5,7 +5,8 @@ from typing import Annotated, Any
 from pydantic import ValidationError
 import pytest
 
-from vibe.core.config.layer import ConfigLayer, RawConfig
+from vibe.core.config.layer import ConfigLayer
+from vibe.core.config.models import RawConfig
 from vibe.core.config.orchestrator import ConfigOrchestrator
 from vibe.core.config.patch import ConfigPatch
 from vibe.core.config.schema import ConfigSchema, WithReplaceMerge

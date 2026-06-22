@@ -9,10 +9,10 @@ import pytest
 from vibe.core.config.layer import (
     ConfigLayer,
     LayerImplementationError,
-    RawConfig,
     TrustNotResolvedError,
     UntrustedLayerError,
 )
+from vibe.core.config.models import RawConfig
 from vibe.core.config.patch import ConfigPatch
 from vibe.core.config.types import ConcurrencyConflictError, LayerConfigSnapshot
 

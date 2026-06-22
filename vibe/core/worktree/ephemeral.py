@@ -91,37 +91,76 @@ def deliver_ephemeral_worktree(wt: EphemeralWorktree) -> bool:
 def remove_ephemeral_worktree(
     wt: EphemeralWorktree, *, keep_if_changed: bool = True
 ) -> bool:
-    """Remove the worktree and delete its throwaway branch.
+    """Remove the worktree directory and (unless kept for recovery) its branch.
 
     If ``keep_if_changed`` and the worktree has uncommitted changes or its branch
-    advanced past the base commit, keep it (no ``--force``) so an isolated agent's
-    work is recoverable via ``git merge``. Returns True if removed.
+    advanced past the base commit, the agent's work is preserved on the *branch*
+    (committing any uncommitted changes first) and only the on-disk directory is
+    reclaimed — recover via ``git merge <branch>``. Keeping the branch ref rather
+    than the whole checked-out directory avoids the unbounded accumulation of
+    kept worktree dirs under the worktrees base dir.
+
+    Returns True when the worktree was fully reclaimed (directory removed AND
+    branch deleted — nothing left to recover); False when the branch was kept for
+    recovery (its directory is still reclaimed in that case).
     """
     try:
         repo = Repo(str(wt.repo_root))
+        wt_repo: Repo | None = None
         try:
             wt_repo = Repo(str(wt.path))
-            changed = (
-                wt_repo.is_dirty(untracked_files=True)
-                or wt_repo.head.commit.hexsha != wt.base_sha
-            )
+            uncommitted = wt_repo.is_dirty(untracked_files=True)
+            changed = uncommitted or wt_repo.head.commit.hexsha != wt.base_sha
         except (GitCommandError, OSError):
+            uncommitted = False
             changed = False  # worktree already gone / unreadable
 
         if keep_if_changed and changed:
-            logger.info(
-                "Keeping isolated worktree %s (branch %s) — has changes to merge",
-                wt.path,
-                wt.branch,
-            )
-            return False
+            # Persist work onto the BRANCH, then reclaim the on-disk directory.
+            # Commit any uncommitted changes first; force-remove the dir only
+            # once the work is safely committed (force-remove discards an
+            # uncommitted tree, so a failed commit must keep the directory).
+            if uncommitted and wt_repo is not None:
+                try:
+                    wt_repo.git.add("-A")
+                    wt_repo.index.commit("workflow agent work (kept for recovery)")
+                except (GitCommandError, OSError) as e:
+                    logger.warning(
+                        "Could not commit isolated worktree %s for recovery (%s); "
+                        "keeping the directory so work is not lost.",
+                        wt.path,
+                        e,
+                    )
+                    return False
+            try:
+                repo.git.worktree("remove", "--force", str(wt.path))
+                logger.info(
+                    "Reclaimed isolated worktree dir %s; work preserved on branch "
+                    "%s (recover: git merge %s)",
+                    wt.path,
+                    wt.branch,
+                    wt.branch,
+                )
+            except GitCommandError as e:
+                logger.warning(
+                    "Could not remove isolated worktree dir %s (%s); branch %s "
+                    "still holds the work.",
+                    wt.path,
+                    e,
+                    wt.branch,
+                )
+            return False  # branch kept for recovery
 
-        # `git worktree remove` refuses a dirty worktree without --force; when
-        # the caller explicitly opts out of keeping changes, force it.
-        if keep_if_changed:
-            repo.git.worktree("remove", str(wt.path))
+        # Nothing to recover (clean tree, caller opted out, or the directory was
+        # already reclaimed on an earlier call): remove the directory if present
+        # and delete the throwaway branch.
+        if wt.path.exists():
+            if keep_if_changed:
+                repo.git.worktree("remove", str(wt.path))
+            else:
+                repo.git.worktree("remove", "--force", str(wt.path))
         else:
-            repo.git.worktree("remove", "--force", str(wt.path))
+            repo.git.worktree("prune")
         try:
             repo.git.branch("-D", wt.branch)
         except GitCommandError:

@@ -5,20 +5,15 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
+from vibe.core.config.models import RawConfig
 from vibe.core.config.patch import ConfigPatch
 from vibe.core.config.types import (
     ConcurrencyConflictError,
     ConflictStrategy,
     LayerConfigSnapshot,
 )
-
-
-class RawConfig(BaseModel):
-    """Permissive default schema that preserves all fields as extras."""
-
-    model_config = ConfigDict(extra="allow")
 
 
 class ConfigLayerError(Exception):

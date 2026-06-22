@@ -162,8 +162,9 @@ class ProjectContextProvider:
             context += (
                 f"\n\n## Worktree isolation active\n"
                 f"Writes land on branch `{wt.branch}` (isolated worktree at "
-                f"`{wt.worktree_path}`). Changes are isolated until merged. "
-                f"Original repo root: `{wt.original_repo_root}`."
+                f"`{wt.worktree_path}`); changes are isolated until merged. "
+                f"Commit finished work with a clear message so it merges back "
+                f"cleanly. Original repo root: `{wt.original_repo_root}`."
             )
         return context
 
@@ -536,13 +537,19 @@ def get_universal_system_prompt(
         sections.append(
             f"## Worktree isolation\n\n"
             f"You are running in an isolated git worktree. Your writes land on "
-            f"branch `{wt.branch}`, not the user's live checkout. Commit "
-            f"logically and report the branch name. Task subagents share this "
-            f"worktree — there is no per-subagent filesystem isolation.\n\n"
-            f"On a clean exit your branch is fast-forward merged back into the "
-            f"original HEAD automatically; if the original tree is dirty or HEAD "
-            f"moved (e.g. another agent committed), the merge is held and the "
-            f"branch stays for a manual `git merge`.\n\n"
+            f"branch `{wt.branch}`, not the user's live checkout. Task subagents "
+            f"share this worktree — there is no per-subagent filesystem "
+            f'isolation.\n\n'
+            f"**Commit your finished work** if you have a shell: a real "
+            f'`git commit -m "<summary>"` as your last step is how it is '
+            f"delivered and reviewed, and report the branch name. Uncommitted "
+            f"work still merges back via an anonymous `WIP` auto-save, but a "
+            f"real commit message is far clearer for the user.\n\n"
+            f"On exit your branch is fast-forward merged back into the original "
+            f"HEAD automatically — including when the original tree was dirty at "
+            f"start, as long as that dirty state is unchanged. The merge is held "
+            f"(branch kept for a manual `git merge`) only if HEAD moved or a "
+            f"concurrent edit changed the original tree.\n\n"
             f"Original repo root: `{wt.original_repo_root}`"
         )
 

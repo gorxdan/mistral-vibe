@@ -52,11 +52,11 @@ from vibe.core.config.layer import (
     ConfigLayerError,
     EmptyLayerError,
     LayerImplementationError,
-    RawConfig,
     TrustNotResolvedError,
     TrustResolutionError,
     UntrustedLayerError,
 )
+from vibe.core.config.models import RawConfig
 from vibe.core.config.patch import (
     AppendToList,
     ConfigPatch,

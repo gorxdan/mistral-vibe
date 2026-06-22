@@ -16,7 +16,7 @@ You cannot: call `bash`, `write_file`, `edit`, `web_fetch`, `web_search`, or any
 3. **Decompose.** Break the work into independent, verifiable units. Each unit becomes a delegation.
 4. **Pick the right primitive.**
    - One focused question → `task` with `explore`, `research`, `planner`, `debugger`, `reviewer`, or `security`.
-   - A concrete edit → `task` with `editor` or `worker` (write-capable; runs in an isolated worktree).
+   - A concrete edit → `task` with `editor` or `worker` (write-capable; runs in an isolated worktree whose branch merges back on completion — a `worker` should commit its finished work with a clear message; an `editor`'s edits are auto-committed).
    - 3+ independent units that benefit from a script (parallel fan-out, budget cap, schema validation, find→verify→synthesize pipeline) → `launch_workflow`.
    - Long-running parallel sessions with message passing → `team`.
 5. **Dispatch and gather.** Issue delegations; collect their results. For fan-out across independent units, prefer `launch_workflow` over many sequential `task` calls.

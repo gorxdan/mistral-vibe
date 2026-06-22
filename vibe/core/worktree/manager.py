@@ -63,6 +63,20 @@ class WorktreeHandle:
     create_head_sha: str
     symlinks: list[Path] = field(default_factory=list)
     config: WorktreeConfig = field(default_factory=WorktreeConfig)
+    # Fingerprint of the original tree's dirty diff at enter() (sha256 of the
+    # carry patch), or None if the tree was clean. Used at exit to confirm the
+    # live dirty state still matches what was carried before auto-merging over
+    # it (see WorktreeManager._try_auto_ff).
+    entry_dirty_fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
+class StrandedBranch:
+    """A vibe worktree branch holding unmerged work with no live worktree."""
+
+    branch: str
+    ahead: int
+    age: str
 
 
 def worktree_enabled(
@@ -181,9 +195,14 @@ class WorktreeManager:
         logger.info("Created worktree at %s on branch %s", worktree_path, branch)
 
         # 8. Carry dirty state (excluding carry_ignored paths, which are
-        #    symlinked in step 9 instead).
+        #    symlinked in step 9 instead).  Fingerprint the carried diff so exit
+        #    can confirm the live tree still matches before auto-merging over it.
         symlinks: list[Path] = []
+        entry_dirty_fingerprint: str | None = None
         if config.carry_dirty:
+            entry_dirty_fingerprint = self._dirty_fingerprint(
+                repo, config.carry_ignored
+            )
             self._carry_dirty(repo, worktree_path, config.carry_ignored)
 
         # 9. Symlink deps.
@@ -206,6 +225,7 @@ class WorktreeManager:
             create_head_sha=create_head_sha,
             symlinks=symlinks,
             config=config,
+            entry_dirty_fingerprint=entry_dirty_fingerprint,
         )
         self._active = handle
         self._register_cleanup_backstops()
@@ -295,28 +315,39 @@ class WorktreeManager:
     # dirty carry
     # ------------------------------------------------------------------
 
-    def _carry_dirty(
-        self, repo: Repo, worktree_path: Path, carry_ignored: list[str]
-    ) -> None:
-        """Copy tracked + untracked working-tree changes into the worktree.
+    def _carry_exclude_pathspecs(
+        self, repo: Repo, carry_ignored: list[str]
+    ) -> list[str]:
+        """``:(exclude)`` pathspecs for UNTRACKED carry_ignored paths.
+
+        Those are symlinked into the worktree instead of carried, so they are
+        excluded from the carried diff. Tracked carry_ignored paths (e.g. a
+        committed ``.env`` with uncommitted edits) are NOT excluded — their dirty
+        diff must be carried, or the worktree silently reverts to the committed
+        version. The exact same exclusion set is reused by the exit stash bracket
+        so the carried diff and the stash agree on which paths are in play.
+        """
+        specs: list[str] = []
+        for name in carry_ignored:
+            if repo.git.ls_files(name).strip():
+                continue  # tracked -> carry its dirty diff, don't exclude
+            specs.append(f":(exclude){name}")
+        return specs
+
+    def _compute_dirty_patch(self, repo: Repo, carry_ignored: list[str]) -> bytes:
+        """Return the original tree's dirty diff vs HEAD (tracked + untracked),
+        excluding untracked carry_ignored paths. Empty bytes if clean.
 
         Uses a COPY of the real index under ``GIT_INDEX_FILE`` so the user's
         ``.git/index`` is never touched.  Adapts the pattern from
         ``teleport/git.py:158-159`` (``add -N .`` + ``diff HEAD --binary``).
 
-        Paths in *carry_ignored* are excluded from the diff so they can be
-        symlinked instead (symlinks are cheaper than copying dep trees).
-
-        Uses subprocess directly (not GitPython) for the diff/apply to handle
-        binary patch data correctly — GitPython's string return corrupts
-        binary patches.
+        Uses subprocess directly (not GitPython) so binary patch data survives
+        — GitPython's string return corrupts binary patches.
         """
         import subprocess
 
-        # Get the path to the real index file.
         index_path = Path(repo.git.rev_parse("--git-path", "index"))
-
-        # Create a temp copy of the index.
         with tempfile.NamedTemporaryFile(
             suffix=".idx", delete=False, dir=str(index_path.parent)
         ) as tmp:
@@ -324,7 +355,6 @@ class WorktreeManager:
         shutil.copy2(index_path, tmp_idx)
 
         try:
-            # add -N . and diff HEAD under the temp index, capturing raw bytes.
             env = dict(os.environ, GIT_INDEX_FILE=str(tmp_idx))
             wtd = repo.working_tree_dir
             if wtd is None:
@@ -340,19 +370,7 @@ class WorktreeManager:
                 check=True,
                 capture_output=True,
             )
-
-            # Build diff pathspec: everything EXCEPT untracked carry_ignored
-            # paths (those are symlinked instead). Tracked carry_ignored paths
-            # (e.g. a committed .env with uncommitted edits) must be carried as
-            # a normal diff -- excluding them silently drops the user's changes
-            # and leaves the worktree on the stale committed version.
-            diff_pathspecs = []
-            for name in carry_ignored:
-                if repo.git.ls_files(name).strip():
-                    # Tracked in HEAD -- carry its dirty diff, don't exclude.
-                    continue
-                diff_pathspecs.append(f":(exclude){name}")
-
+            diff_pathspecs = self._carry_exclude_pathspecs(repo, carry_ignored)
             result = subprocess.run(
                 ["git", "diff", "HEAD", "--binary", "--", *diff_pathspecs],
                 cwd=str(repo_root),
@@ -360,26 +378,54 @@ class WorktreeManager:
                 check=True,
                 capture_output=True,
             )
-            patch_bytes = result.stdout
-
-            if patch_bytes.strip():
-                # Write the patch to a temp file and apply in the worktree.
-                with tempfile.NamedTemporaryFile(
-                    suffix=".patch", delete=False, dir=str(worktree_path)
-                ) as pf:
-                    pf.write(patch_bytes)
-                    patch_file = Path(pf.name)
-                try:
-                    subprocess.run(
-                        ["git", "apply", str(patch_file)],
-                        cwd=str(worktree_path),
-                        check=True,
-                        capture_output=True,
-                    )
-                finally:
-                    patch_file.unlink(missing_ok=True)
+            return result.stdout
         finally:
             tmp_idx.unlink(missing_ok=True)
+
+    def _carry_dirty(
+        self, repo: Repo, worktree_path: Path, carry_ignored: list[str]
+    ) -> None:
+        """Copy tracked + untracked working-tree changes into the worktree."""
+        import subprocess
+
+        patch_bytes = self._compute_dirty_patch(repo, carry_ignored)
+        if not patch_bytes.strip():
+            return
+        with tempfile.NamedTemporaryFile(
+            suffix=".patch", delete=False, dir=str(worktree_path)
+        ) as pf:
+            pf.write(patch_bytes)
+            patch_file = Path(pf.name)
+        try:
+            subprocess.run(
+                ["git", "apply", str(patch_file)],
+                cwd=str(worktree_path),
+                check=True,
+                capture_output=True,
+            )
+        finally:
+            patch_file.unlink(missing_ok=True)
+
+    def _dirty_fingerprint(self, repo: Repo, carry_ignored: list[str]) -> str | None:
+        """sha256 of the carried dirty diff, or None when the tree is clean.
+
+        Captured at enter and recomputed at exit: if they match, the live dirty
+        state is exactly what was carried into the worktree (and thus already
+        reproduced in the branch's WIP commit), so it is safe to stash-and-drop
+        it during the fast-forward. A mismatch means a concurrent writer touched
+        the original tree — the stash would capture work the branch does not
+        contain, so the merge is held instead.
+        """
+        import hashlib
+
+        try:
+            patch = self._compute_dirty_patch(repo, carry_ignored)
+        except (GitCommandError, OSError, RuntimeError) as exc:
+            logger.debug("Dirty fingerprint failed: %s", exc)
+            return None
+        if not patch.strip():
+            return None
+        return hashlib.sha256(patch).hexdigest()
 
     # ------------------------------------------------------------------
     # symlink deps
@@ -408,34 +454,149 @@ class WorktreeManager:
     # ------------------------------------------------------------------
 
     def _prune_and_report(self, config: WorktreeConfig) -> None:
-        """Prune stale worktrees and report orphan branches."""
+        """Prune stale worktree admin entries and GC merged-and-old branches.
+
+        Surfacing unmerged orphans to the user is handled separately by
+        :meth:`print_startup_report` (the orphan log here was file-only and
+        invisible at the default WARNING level).
+        """
         try:
             repo = self._get_repo(Path.cwd())
             repo.git.worktree("prune")
         except Exception as exc:
             logger.debug("git worktree prune failed: %s", exc)
             return
+        self._gc_abandoned_worktrees(repo, config)
 
-        # Report orphan branches (do not auto-delete — never lose work).
+    def _gc_abandoned_worktrees(self, repo: Repo, config: WorktreeConfig) -> None:
+        """Delete ``branch_prefix`` branches that are already merged into HEAD,
+        have no live worktree, and are older than ``config.gc_age_days``.
+
+        Conservative by construction: a merged branch's commits are reachable
+        from HEAD, so deleting the ref loses nothing. Branches with unmerged work
+        are never touched (that is the user's recoverable residue), and branches
+        with a live worktree (an active session) are skipped entirely. Leaked
+        worktree *directories* are left for the user-driven ``vibe worktree``
+        command rather than auto-removed, so an in-use checkout is never yanked.
+        """
+        if config.gc_age_days <= 0:
+            return
         try:
-            branches_output = repo.git.branch("--list", f"{config.branch_prefix}*")
-            for line in branches_output.splitlines():
-                branch_name = line.strip().lstrip("* ").strip()
-                if not branch_name:
-                    continue
-                # Check if this branch has a live worktree.
-                wt_list = repo.git.worktree("list", "--porcelain")
-                if branch_name not in wt_list:
-                    logger.info(
-                        "Orphan worktree branch detected: %s (kept for recovery).",
-                        branch_name,
-                    )
+            wt_list = repo.git.worktree("list", "--porcelain")
+            names = repo.git.branch(
+                "--list", f"{config.branch_prefix}*", "--format=%(refname:short)"
+            )
+        except GitCommandError as exc:
+            logger.debug("GC: branch/worktree listing failed: %s", exc)
+            return
+        cutoff = time.time() - config.gc_age_days * 86400
+        for raw in names.splitlines():
+            name = raw.strip()
+            if not name or name in wt_list:
+                continue  # live worktree -> active session, never touch
+            if not self._is_ancestor(repo, name, "HEAD"):
+                continue  # unmerged work -> keep for recovery, never discard
+            try:
+                ts = int(repo.git.log("-1", "--format=%ct", name).strip() or 0)
+            except GitCommandError:
+                continue
+            if ts > cutoff:
+                continue  # merged but recent -> leave it a while
+            try:
+                repo.git.branch("-D", name)
+                logger.info(
+                    "GC: deleted merged worktree branch %s (>%d days old)",
+                    name,
+                    config.gc_age_days,
+                )
+            except GitCommandError as exc:
+                logger.debug("GC: could not delete branch %s: %s", name, exc)
+
+    # ------------------------------------------------------------------
+    # recovery reporting
+    # ------------------------------------------------------------------
+
+    def list_stranded_branches(self, config: WorktreeConfig) -> list[StrandedBranch]:
+        """Enumerate ``branch_prefix`` branches that hold unmerged work and have
+        no live worktree — i.e. work from a prior session that never merged back.
+
+        Excludes branches with a live worktree (the active session), branches
+        already merged into HEAD, and empty branches (tip == HEAD).
+        """
+        repo = self._get_repo(Path.cwd())
+        try:
+            wt_list = repo.git.worktree("list", "--porcelain")
+        except GitCommandError:
+            wt_list = ""
+        try:
+            names = repo.git.branch(
+                "--list", f"{config.branch_prefix}*", "--format=%(refname:short)"
+            )
+        except GitCommandError:
+            return []
+
+        stranded: list[StrandedBranch] = []
+        for raw in names.splitlines():
+            name = raw.strip()
+            if not name or name in wt_list:
+                continue  # empty line or a live worktree's branch (active)
+            if self._is_ancestor(repo, name, "HEAD"):
+                continue  # already merged into HEAD — GC reclaims it
+            try:
+                ahead = int(repo.git.rev_list("--count", f"HEAD..{name}").strip() or 0)
+            except GitCommandError:
+                continue
+            if ahead == 0:
+                continue  # nothing ahead of HEAD to recover
+            try:
+                age = repo.git.log("-1", "--format=%cr", name).strip()
+            except GitCommandError:
+                age = "unknown age"
+            stranded.append(StrandedBranch(branch=name, ahead=ahead, age=age))
+        return stranded
+
+    def print_startup_report(self, config: WorktreeConfig) -> None:
+        """Print a user-facing notice for any unmerged worktree branches.
+
+        This is the visibility backstop: ``_prune_and_report`` only logs orphans
+        to the (file-only, WARNING-default) logger, so stranded work was never
+        surfaced. Prints to stderr; no-op when there is nothing to report or the
+        cwd is not a git repo.
+        """
+        if not config.report_on_startup:
+            return
+        try:
+            stranded = self.list_stranded_branches(config)
         except Exception as exc:
-            logger.debug("Orphan branch sweep failed: %s", exc)
+            logger.debug("Startup worktree report failed: %s", exc)
+            return
+        if not stranded:
+            return
+        lines = [
+            "",
+            f"vibe: {len(stranded)} worktree branch(es) hold unmerged work "
+            "from prior sessions:",
+        ]
+        for b in stranded:
+            lines.append(f"  {b.branch}  ({b.ahead} commit(s), {b.age})")
+            lines.append(
+                f"    merge:  git merge {b.branch}"
+                f"   (or: vibe worktree merge {b.branch})"
+            )
+        lines.append("  review/clean up:  vibe worktree list")
+        print("\n".join(lines), file=sys.stderr)
 
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
+
+    def _is_ancestor(self, repo: Repo, rev: str, ancestor_of: str) -> bool:
+        """Return True if *rev* is an ancestor of *ancestor_of* (i.e. merged)."""
+        try:
+            repo.git.merge_base("--is-ancestor", rev, ancestor_of)
+            return True
+        except GitCommandError:
+            return False
 
     def _get_repo(self, path: Path) -> Repo:
         """Get a GitPython Repo for *path*, searching parent dirs."""
@@ -523,6 +684,14 @@ class WorktreeManager:
         """Attempt a fast-forward merge into the original repo.
 
         Returns ``True`` if merged, ``False`` if manual handoff is needed.
+
+        When the original tree is clean this is a plain ``--ff-only``. When it is
+        dirty *and* the dirt is exactly what was carried at enter (fingerprint
+        match), the dirt is already reproduced in the branch's WIP commit, so it
+        is stashed away, the branch is fast-forwarded (which re-materialises the
+        dirt plus the agent's work in the working tree), and the now-redundant
+        stash is dropped. If the dirt changed (a concurrent writer), the merge is
+        held — dropping that stash would lose work the branch never captured.
         """
         try:
             root_repo = self._get_repo(handle.original_repo_root)
@@ -534,20 +703,126 @@ class WorktreeManager:
                     handle.create_head_sha[:8],
                 )
                 return False
-            if root_repo.is_dirty(untracked_files=False):
+            # Fingerprint the live tree's carried-relevant dirt (tracked +
+            # untracked-not-ignored). None == no such dirt -> a plain ff is safe
+            # (an untracked carry_ignored file like .env never blocks it, since
+            # the branch does not touch it).
+            now_fp = self._dirty_fingerprint(root_repo, handle.config.carry_ignored)
+            if now_fp is None:
+                root_repo.git.merge("--ff-only", handle.branch)
                 logger.info(
-                    "Auto-ff skipped: original tree is dirty. Manual merge needed."
+                    "Auto-ff merged branch %s into %s",
+                    handle.branch,
+                    handle.original_repo_root,
+                )
+                return True
+
+            # Live tree carries relevant dirt: only safe to stash-merge-drop if
+            # it is exactly what we carried at enter (so the branch's WIP commit
+            # already reproduces it). Otherwise a concurrent writer added work the
+            # branch does not contain — hold the merge for manual handling.
+            if now_fp != handle.entry_dirty_fingerprint:
+                logger.info(
+                    "Auto-ff skipped: original tree dirty and changed since enter "
+                    "(concurrent edit?). Manual merge needed."
                 )
                 return False
-            root_repo.git.merge("--ff-only", handle.branch)
+            return self._stash_ff_drop(root_repo, handle)
+        except (GitCommandError, Exception) as exc:
+            logger.info("Auto-ff failed, manual merge needed: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # stash-bracketed fast-forward over a dirty tree
+    # ------------------------------------------------------------------
+
+    def _stash_ref_for_message(self, repo: Repo, message: str) -> str | None:
+        """Resolve the ``stash@{N}`` whose message equals *message*.
+
+        ``git stash drop``/``pop`` reject raw commit SHAs, and concurrent stashes
+        shift ``stash@{0}``, so the entry is located by its unique message.
+        """
+        try:
+            out = repo.git.stash("list", "--format=%gd %s")
+        except GitCommandError:
+            return None
+        for line in out.splitlines():
+            ref, _, msg = line.strip().partition(" ")
+            if msg == message:
+                return ref
+        return None
+
+    def _restore_stash(self, repo: Repo, message: str) -> None:
+        """Pop the stash back onto the tree (used when the merge could not land,
+        so the user's live changes are never abandoned in the stash list)."""
+        ref = self._stash_ref_for_message(repo, message)
+        if ref is None:
+            return
+        try:
+            repo.git.stash("pop", ref)
+        except GitCommandError as exc:
+            logger.warning(
+                "Could not restore live changes from %s (%s); they remain stashed "
+                "(`git stash list`).",
+                ref,
+                exc,
+            )
+
+    def _stash_ff_drop(self, root_repo: Repo, handle: WorktreeHandle) -> bool:
+        """Stash the live dirt, fast-forward the branch, drop the redundant stash.
+
+        Precondition (checked by the caller): HEAD is unchanged and the live dirt
+        matches the carried fingerprint, so the branch tip already reproduces it.
+        """
+        # Exclude the same untracked carry_ignored paths the carried diff did, so
+        # symlinked deps / an untracked .env are never swept into (and dropped
+        # with) the stash.
+        excludes = self._carry_exclude_pathspecs(root_repo, handle.config.carry_ignored)
+        message = f"vibe-mergeback {handle.branch} {os.getpid()} {time.time_ns()}"
+        pushed = False
+        try:
+            out = root_repo.git.stash(
+                "push", "--include-untracked", "-m", message, "--", ".", *excludes
+            )
+            if "No local changes to save" in out:
+                # Raced clean between the dirty check and here.
+                root_repo.git.merge("--ff-only", handle.branch)
+                return True
+            pushed = True
+            try:
+                root_repo.git.merge("--ff-only", handle.branch)
+            except GitCommandError as exc:
+                # ff refused after stashing: the dirt is only in the stash now and
+                # HEAD did not advance, so popping restores it cleanly.
+                logger.info(
+                    "Auto-ff refused after stash (%s); restoring live changes, "
+                    "keeping branch %s.",
+                    exc,
+                    handle.branch,
+                )
+                self._restore_stash(root_repo, message)
+                return False
+            # Merge landed; the WIP commit reproduces the dirt -> drop the stash.
+            ref = self._stash_ref_for_message(root_repo, message)
+            if ref is not None:
+                try:
+                    root_repo.git.stash("drop", ref)
+                except GitCommandError as exc:
+                    logger.info(
+                        "Redundant mergeback stash %s kept (%s); safe to drop.",
+                        ref,
+                        exc,
+                    )
             logger.info(
-                "Auto-ff merged branch %s into %s",
+                "Auto-ff merged branch %s into %s (over dirty tree)",
                 handle.branch,
                 handle.original_repo_root,
             )
             return True
-        except (GitCommandError, Exception) as exc:
-            logger.info("Auto-ff failed, manual merge needed: %s", exc)
+        except GitCommandError as exc:
+            if pushed:
+                self._restore_stash(root_repo, message)
+            logger.info("Stash-bracketed auto-ff failed: %s. Manual merge needed.", exc)
             return False
 
     def _cleanup_partial(self) -> None:

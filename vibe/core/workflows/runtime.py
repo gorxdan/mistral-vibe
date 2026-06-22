@@ -456,8 +456,10 @@ def _parse_stats(stderr_text: str) -> dict[str, int] | None:
 class IsolatedResult:
     """Outcome of an isolated-agent run.
 
-    ``worktree_path``/``branch`` are set only when the worktree was kept for
-    recovery (delivery skipped or ff refused); None on clean delivery. ``wt``
+    ``branch`` is set only when work was kept for recovery (delivery skipped or
+    ff refused) — recover with ``git merge <branch>``; None on clean delivery.
+    ``worktree_path`` is retained for back-compat but normally None: the kept
+    worktree's directory is reclaimed and only its branch survives. ``wt``
     is the live ``EphemeralWorktree`` only when the caller passed
     ``keep_worktree=True`` (the workflow executor does this so it can verify
     against the live tree before reaping).
@@ -623,11 +625,13 @@ async def _spawn_isolated(
 def _maybe_reap_isolated_worktree(
     wt: Any, delivered: bool, result: IsolatedResult
 ) -> None:
-    """Remove the worktree unless it holds undelivered recoverable work.
+    """Reclaim the worktree directory; keep the branch if work is undelivered.
 
-    On clean delivery the work is in the parent, so force-remove. Otherwise ask
-    the helper to keep a changed worktree; if it kept one (returned False), stamp
-    the recovery handle onto *result* so the caller can ``git merge <branch>``.
+    On clean delivery the work is in the parent, so remove dir + branch.
+    Otherwise the helper commits any work onto the branch and reclaims the
+    directory; if it kept the branch for recovery (returned False), stamp the
+    branch onto *result* so the caller can ``git merge <branch>``. The directory
+    is gone either way, so ``worktree_path`` is left unset.
     """
     from vibe.core.worktree.ephemeral import remove_ephemeral_worktree
 
@@ -636,7 +640,6 @@ def _maybe_reap_isolated_worktree(
         return
     removed = remove_ephemeral_worktree(wt, keep_if_changed=True)
     if not removed:
-        result.worktree_path = str(wt.path)
         result.branch = wt.branch
 
 

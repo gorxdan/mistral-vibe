@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from vibe.core.config.builder import ConfigBuilder
-from vibe.core.config.layer import ConfigLayer, RawConfig
+from vibe.core.config.layer import ConfigLayer
+from vibe.core.config.models import RawConfig
 from vibe.core.config.patch import ConfigPatch
 from vibe.core.config.schema import ConfigSchema
 from vibe.core.config.types import ConflictStrategy

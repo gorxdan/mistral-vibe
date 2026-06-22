@@ -397,6 +397,13 @@ class WorktreeConfig(BaseSettings):
     carry_ignored: list[str] = Field(
         default_factory=lambda: ["node_modules", ".venv", "venv", ".env"]
     )
+    # Print a stderr notice at interactive startup listing prior-session branches
+    # that hold unmerged work (vibe worktree branches with no live worktree).
+    report_on_startup: bool = True
+    # Garbage-collect abandoned worktrees/branches older than this many days,
+    # but only when the branch is already merged into HEAD or empty (never when
+    # it holds unmerged work). 0 disables age-based GC.
+    gc_age_days: int = 7
 
     @field_validator("base_dir", mode="before")
     @classmethod
