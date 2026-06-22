@@ -4213,40 +4213,34 @@ class VibeApp(App):  # noqa: PLR0904
             if self._chat_widget.is_at_bottom:
                 self.call_after_refresh(self._chat_widget.anchor)
 
-    def _focus_current_bottom_app(self) -> None:  # noqa: PLR0912
+    _BOTTOM_APP_WIDGET: ClassVar[dict[BottomApp, type[Widget]]] = {
+        BottomApp.Input: ChatInputContainer,
+        BottomApp.Config: ConfigApp,
+        BottomApp.ModelPicker: ModelPickerApp,
+        BottomApp.ThemePicker: ThemePickerApp,
+        BottomApp.ThinkingPicker: ThinkingPickerApp,
+        BottomApp.EffortPicker: EffortPickerApp,
+        BottomApp.ProxySetup: ProxySetupApp,
+        BottomApp.Approval: ApprovalApp,
+        BottomApp.Question: QuestionApp,
+        BottomApp.SessionPicker: SessionPickerApp,
+        BottomApp.MCP: MCPApp,
+        BottomApp.ConnectorAuth: ConnectorAuthApp,
+        BottomApp.Rewind: RewindApp,
+        BottomApp.Voice: VoiceApp,
+        BottomApp.Tasks: TasksApp,
+    }
+
+    def _focus_current_bottom_app(self) -> None:
         try:
-            match self._current_bottom_app:
-                case BottomApp.Input:
-                    self.query_one(ChatInputContainer).focus_input()
-                case BottomApp.Config:
-                    self.query_one(ConfigApp).focus()
-                case BottomApp.ModelPicker:
-                    self.query_one(ModelPickerApp).focus()
-                case BottomApp.ThemePicker:
-                    self.query_one(ThemePickerApp).focus()
-                case BottomApp.ThinkingPicker:
-                    self.query_one(ThinkingPickerApp).focus()
-                case BottomApp.EffortPicker:
-                    self.query_one(EffortPickerApp).focus()
-                case BottomApp.ProxySetup:
-                    self.query_one(ProxySetupApp).focus()
-                case BottomApp.Approval:
-                    self.query_one(ApprovalApp).focus()
-                case BottomApp.Question:
-                    self.query_one(QuestionApp).focus()
-                case BottomApp.SessionPicker:
-                    self.query_one(SessionPickerApp).focus()
-                case BottomApp.MCP:
-                    self.query_one(MCPApp).focus()
-                case BottomApp.ConnectorAuth:
-                    self.query_one(ConnectorAuthApp).focus()
-                case BottomApp.Rewind:
-                    self.query_one(RewindApp).focus()
-                case BottomApp.Voice:
-                    self.query_one(VoiceApp).focus()
-                case BottomApp.Tasks:
-                    self.query_one(TasksApp).focus()
-                case app:
+            app = self._current_bottom_app
+            if app == BottomApp.Input:
+                self.query_one(ChatInputContainer).focus_input()
+            else:
+                widget_cls = self._BOTTOM_APP_WIDGET.get(app)
+                if widget_cls is not None:
+                    self.query_one(widget_cls).focus()
+                else:
                     assert_never(app)
         except Exception:
             pass
