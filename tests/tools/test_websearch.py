@@ -537,6 +537,46 @@ async def test_run_searxng_all_engines_unresponsive_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_caps_concurrent_executions(monkeypatch):
+    # Read-only tools run concurrently within a turn (commit 1628bfa). An agent
+    # firing several web_search calls at once bursts SearXNG from one IP and
+    # trips upstream rate-limits/CAPTCHAs. The tool must cap in-flight runs.
+    import asyncio as _asyncio
+
+    from vibe.core.tools.builtins import websearch as ws_module
+
+    cap = ws_module._MAX_CONCURRENT_SEARCHES
+    # Launch more concurrent searches than the cap to force a pile-up.
+    n = cap + 4
+
+    current = 0
+    peak = 0
+    guard = _asyncio.Lock()
+
+    async def tracked_request(self, args, url):
+        nonlocal current, peak
+        async with guard:
+            current += 1
+            peak = max(peak, current)
+        await _asyncio.sleep(0.1)  # hold long enough to overlap
+        async with guard:
+            current -= 1
+        return WebSearchResult(query=args.query, answer="ok", sources=[])
+
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+    monkeypatch.setattr(WebSearch, "_searxng_request", tracked_request)
+
+    results = await _asyncio.gather(
+        *(collect_result(ws.run(WebSearchArgs(query=f"q{i}"))) for i in range(n))
+    )
+
+    assert len(results) == n
+    assert peak == cap, f"expected peak == cap ({cap}), got {peak}"
+
+
+@pytest.mark.asyncio
 async def test_run_searxng_http_error(monkeypatch):
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     config = WebSearchConfig(searxng_url="http://localhost:8080")
