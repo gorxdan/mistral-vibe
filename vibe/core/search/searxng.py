@@ -91,11 +91,27 @@ def detect_engine() -> str | None:
     return None
 
 
+def _has_mutable_tag(image: str) -> bool:
+    """Return True for images pinned to :latest or carrying no tag (which
+    resolves to :latest). Digest-pinned and explicitly version-tagged images
+    are considered stable.
+    """
+    # A digest pin (name@sha256:...) is immutable regardless of tag.
+    if "@" in image:
+        return False
+    # The path component(s) precede the repo; only the last segment carries tag.
+    repo = image.rsplit("/", 1)[-1]
+    if ":" not in repo:
+        return True  # no tag -> resolves to :latest
+    tag = repo.rsplit(":", 1)[1]
+    return tag == "latest"
+
+
 async def health_check(url: str, *, timeout: float = _QUICK_HTTP_TIMEOUT) -> bool:
     target = f"{url.rstrip('/')}/search"
     try:
         async with httpx.AsyncClient(
-            follow_redirects=True, verify=build_ssl_context(), timeout=timeout
+            follow_redirects=False, verify=build_ssl_context(), timeout=timeout
         ) as client:
             response = await client.get(target, params={"q": "ping", "format": "json"})
             return response.status_code == _HTTP_OK
@@ -147,6 +163,13 @@ async def _start_container(
                 return None, False
             case "absent":
                 verb = "run"
+                if _has_mutable_tag(settings.image):
+                    logger.warning(
+                        "Starting SearXNG from a mutable image tag (%s); pin a "
+                        "digest or version tag via tools.web_search.searxng_image "
+                        "to avoid supply-chain drift.",
+                        settings.image,
+                    )
                 rc, _, err = await _run_cmd(
                     [
                         engine,
