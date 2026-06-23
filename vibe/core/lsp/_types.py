@@ -23,7 +23,16 @@ class LSPTimeoutError(LSPError):
 
 
 class LSPProtocolError(LSPError):
-    """The server returned a JSON-RPC error response."""
+    """The server returned a JSON-RPC error response.
+
+    ``code`` is the JSON-RPC error code (e.g. -32601 MethodNotFound) when
+    available, so callers can distinguish unsupported methods from transient
+    errors.
+    """
+
+    def __init__(self, message: str, code: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class ServerState(StrEnum):

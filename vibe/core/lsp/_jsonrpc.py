@@ -194,7 +194,10 @@ class JsonRpcConnection:
                 future.set_exception(_RequestCancelled(msg))
             else:
                 future.set_exception(
-                    LSPProtocolError(f"{msg} (code {code}): {err.get('data')}")
+                    LSPProtocolError(
+                        f"{msg} (code {code}): {err.get('data')}",
+                        code=int(code) if code is not None else None,
+                    )
                 )
         else:
             future.set_result(message.get("result"))

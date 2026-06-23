@@ -32,12 +32,14 @@ class LSPManager:
         self._diagnostics = DiagnosticRegistry()
         self._initialized = False
         self._root_uri: str | None = None
+        self._root_path: Path | None = None
 
     def set_source(self, source: LSPServerSource) -> None:
         self._source = source
 
     def set_root(self, root_path: str | Path) -> None:
         self._root_uri = uri_from_path(root_path)
+        self._root_path = Path(root_path).resolve()
 
     @property
     def diagnostics(self) -> DiagnosticRegistry:
@@ -80,7 +82,27 @@ class LSPManager:
             config.root_uri = self._root_uri
         return LanguageServer(config)
 
-    def _on_publish(self, params: dict[str, Any], server_name: str) -> None:
+    def _resolve_manifest_root(
+        self, file_path: Path, markers: tuple[str, ...], default_root: Path
+    ) -> Path:
+        """Find the nearest ancestor dir containing any of ``markers``.
+
+        Falls back to ``default_root`` when no marker is found or ``markers``
+        is empty. Search is bounded by the session root so it never escapes
+        the project — a marker above the session root (rare) is ignored.
+        """
+        if not markers:
+            return default_root
+        root_resolved = default_root.resolve()
+        search_from = file_path.parent if file_path.is_file() else file_path
+        for candidate in [search_from, *search_from.parents]:
+            if any((candidate / marker).exists() for marker in markers):
+                return candidate
+            if candidate.resolve() == root_resolved:
+                break
+        return default_root
+
+    async def _on_publish(self, params: dict[str, Any], server_name: str) -> None:
         self._diagnostics.publish(params, server_name)
 
     def get_server_for_file(self, path: str | Path) -> LanguageServer | None:
@@ -117,6 +139,12 @@ class LSPManager:
         server = self.get_server_for_file(path)
         if server is None:
             return
+        markers = server.config.manifest_markers
+        if markers and self._root_path is not None and server.config.root_uri is None:
+            resolved = self._resolve_manifest_root(Path(path), markers, self._root_path)
+            server.config.root_uri = uri_from_path(resolved)
+            if server.config.cwd is None:
+                server.config.cwd = str(resolved)
         await server.ensure_started()
         if not server.is_open(str(path)):
             await server.did_open(str(path), text, language_id)

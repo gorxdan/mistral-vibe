@@ -58,7 +58,10 @@ _RUST_ANALYZER = ServerPreset(
     key="rust",
     display_name="Rust (rust-analyzer)",
     server=LSPServer(
-        name="rust-analyzer", command="rust-analyzer", languages={".rs": "rust"}
+        name="rust-analyzer",
+        command="rust-analyzer",
+        languages={".rs": "rust"},
+        manifest_markers=("Cargo.toml",),
     ),
     install_hint="rustup component add rust-analyzer",
     detection_command=("rust-analyzer", "--version"),
@@ -68,7 +71,10 @@ _GOPLS = ServerPreset(
     key="go",
     display_name="Go (gopls)",
     server=LSPServer(
-        name="gopls", command="gopls", languages={".go": "go", ".gomod": "gomod"}
+        name="gopls",
+        command="gopls",
+        languages={".go": "go", ".gomod": "gomod"},
+        manifest_markers=("go.mod",),
     ),
     install_hint="go install golang.org/x/tools/gopls@latest",
     detection_command=("gopls", "version"),
@@ -88,6 +94,7 @@ _CLANGD = ServerPreset(
             ".cc": "cpp",
             ".cxx": "cpp",
         },
+        manifest_markers=("compile_commands.json", "CMakeLists.txt"),
     ),
     install_hint="apt install clangd  (or: brew install llvm)",
     detection_command=("clangd", "--version"),
@@ -142,9 +149,7 @@ def _probe(preset: ServerPreset) -> PresetProbe:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return PresetProbe(
-            preset=preset, status="broken", stderr=str(exc)
-        )
+        return PresetProbe(preset=preset, status="broken", stderr=str(exc))
     if result.returncode == 0:
         return PresetProbe(preset=preset, status="available")
     return PresetProbe(
