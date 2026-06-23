@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from textwrap import dedent
 from unittest.mock import AsyncMock
 
 import httpx
@@ -398,3 +400,266 @@ async def test_health_check_does_not_follow_redirect():
         assert await searxng.health_check("http://x") is False
         # Exactly one request — to the SearXNG endpoint, never to the redirect target.
         assert len(mock.calls) == 1
+
+
+# --- disable_engines_in_settings (pure, comment-preserving YAML surgery) ---
+
+
+def _engine_block(text: str, name: str) -> str:
+    """Return the text from `- name: <name>` up to (not incl.) the next stanza."""
+    marker = f"- name: {name}"
+    after = text.split(marker, 1)[1]
+    parts = after.split("\n  - name: ", 1)
+    return marker + parts[0]
+
+
+def test_disable_engines_adds_flag_to_named_engine():
+    text = dedent("""\
+        search:
+          formats:
+            - html
+        engines:
+          - name: google
+            engine: google
+            shortcut: go
+
+          - name: wikipedia
+            engine: wikipedia
+            shortcut: wp
+        """)
+    new_text, changed = searxng.disable_engines_in_settings(text, ["google"])
+
+    assert changed == ["google"]
+    assert "disabled: true" in _engine_block(new_text, "google")
+    assert "disabled" not in _engine_block(new_text, "wikipedia")
+
+
+def test_disable_engines_idempotent_when_already_disabled():
+    text = dedent("""\
+        engines:
+          - name: google
+            engine: google
+            disabled: true
+        """)
+    new_text, changed = searxng.disable_engines_in_settings(text, ["google"])
+
+    assert changed == []
+    assert new_text == text
+
+
+def test_disable_engines_preserves_comments():
+    text = dedent("""\
+        # top comment
+        engines:
+          # this is google
+          - name: google
+            engine: google  # inline
+        """)
+    new_text, changed = searxng.disable_engines_in_settings(text, ["google"])
+
+    assert changed == ["google"]
+    assert "# top comment" in new_text
+    assert "# this is google" in new_text
+    assert "# inline" in new_text
+
+
+def test_disable_engines_exact_name_not_substring():
+    text = dedent("""\
+        engines:
+          - name: google
+            engine: google
+          - name: google images
+            engine: google
+        """)
+    new_text, changed = searxng.disable_engines_in_settings(text, ["google"])
+
+    assert changed == ["google"]
+    assert "disabled" not in _engine_block(new_text, "google images")
+
+
+def test_disable_engines_unknown_name_is_noop():
+    text = "engines:\n  - name: google\n    engine: google\n"
+    new_text, changed = searxng.disable_engines_in_settings(text, ["nonexistent"])
+
+    assert changed == []
+    assert new_text == text
+
+
+def test_disable_engines_multiple_targets():
+    text = dedent("""\
+        engines:
+          - name: google
+            engine: google
+          - name: brave
+            engine: brave
+          - name: wikipedia
+            engine: wikipedia
+        """)
+    new_text, changed = searxng.disable_engines_in_settings(text, ["google", "brave"])
+
+    assert set(changed) == {"google", "brave"}
+    assert "disabled" not in _engine_block(new_text, "wikipedia")
+
+
+def test_disable_engines_missing_engines_key_is_noop():
+    text = "search:\n  formats:\n    - html\n"
+    new_text, changed = searxng.disable_engines_in_settings(text, ["google"])
+
+    assert changed == []
+    assert new_text == text
+
+
+# --- _apply_disabled_engines (docker cp orchestration) ---
+
+
+@pytest.mark.asyncio
+async def test_apply_disabled_engines_skips_when_empty(monkeypatch):
+    settings = SearxngSettings(container_name="vibe-searxng", disabled_engines=())
+
+    called: list = []
+
+    async def fake_run_cmd(argv, *, timeout):
+        called.append(argv)
+        return (0, "", "")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    await searxng._apply_disabled_engines(settings)
+
+    assert called == []
+
+
+@pytest.mark.asyncio
+async def test_apply_disabled_engines_copies_patches_restarts_on_change(monkeypatch):
+    settings = SearxngSettings(
+        container_name="vibe-searxng", disabled_engines=("google",)
+    )
+    monkeypatch.setattr(searxng, "detect_engine", lambda: "docker")
+    payload = "engines:\n  - name: google\n    engine: google\n    shortcut: go\n"
+
+    calls: list = []
+
+    async def fake_run_cmd(argv, *, timeout):
+        calls.append(list(argv))
+        # cp OUT: source is the container (contains ':')
+        if argv[1] == "cp" and ":" in argv[2]:
+            Path(argv[3]).write_text(payload, encoding="utf-8")
+        return (0, "", "")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    await searxng._apply_disabled_engines(settings)
+
+    verbs = [a[1] for a in calls]
+    assert verbs.count("cp") == 2  # out then in
+    assert "restart" in verbs
+
+
+@pytest.mark.asyncio
+async def test_apply_disabled_engines_no_restart_when_unchanged(monkeypatch):
+    settings = SearxngSettings(
+        container_name="vibe-searxng", disabled_engines=("google",)
+    )
+    monkeypatch.setattr(searxng, "detect_engine", lambda: "docker")
+    # google already disabled -> patch is a no-op -> must not restart.
+    payload = "engines:\n  - name: google\n    engine: google\n    disabled: true\n"
+
+    calls: list = []
+
+    async def fake_run_cmd(argv, *, timeout):
+        calls.append(list(argv))
+        if argv[1] == "cp" and ":" in argv[2]:
+            Path(argv[3]).write_text(payload, encoding="utf-8")
+        return (0, "", "")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    await searxng._apply_disabled_engines(settings)
+
+    assert not any(a[1] == "restart" for a in calls)
+
+
+@pytest.mark.asyncio
+async def test_apply_disabled_engines_warns_when_cp_out_fails(monkeypatch, caplog):
+    settings = SearxngSettings(
+        container_name="vibe-searxng", disabled_engines=("google",)
+    )
+    monkeypatch.setattr(searxng, "detect_engine", lambda: "docker")
+
+    async def fake_run_cmd(argv, *, timeout):
+        return (1, "", "no such container")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    with caplog.at_level(logging.WARNING, logger="vibe"):
+        await searxng._apply_disabled_engines(settings)
+
+    assert any("Could not fetch" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_apply_disabled_engines_warns_when_no_engine(monkeypatch, caplog):
+    settings = SearxngSettings(
+        container_name="vibe-searxng", disabled_engines=("google",)
+    )
+    monkeypatch.setattr(searxng, "detect_engine", lambda: None)
+    with caplog.at_level(logging.WARNING, logger="vibe"):
+        await searxng._apply_disabled_engines(settings)
+
+    assert any("no docker/podman" in r.message for r in caplog.records)
+
+
+# --- ensure_running reconciliation ---
+
+
+@pytest.mark.asyncio
+async def test_ensure_running_reconciles_engines_when_already_up(monkeypatch):
+    monkeypatch.setattr(searxng, "health_check", AsyncMock(return_value=True))
+    applied: list = []
+
+    async def fake_apply(settings):
+        applied.append(settings.disabled_engines)
+
+    monkeypatch.setattr(searxng, "_apply_disabled_engines", fake_apply)
+    settings = SearxngSettings(
+        url="http://localhost:8888", disabled_engines=("google",)
+    )
+    outcome = await searxng.ensure_running(settings, engine="docker")
+
+    assert outcome.already_running is True
+    assert applied == [("google",)]
+
+
+@pytest.mark.asyncio
+async def test_ensure_running_applies_engines_after_create(monkeypatch):
+    monkeypatch.setattr(searxng, "health_check", AsyncMock(side_effect=[False, True]))
+    applied: list = []
+
+    async def fake_apply(settings):
+        applied.append(settings.disabled_engines)
+
+    monkeypatch.setattr(searxng, "_apply_disabled_engines", fake_apply)
+
+    async def fake_run_cmd(argv, *, timeout):
+        if argv[1] == "inspect":
+            return (1, "", "")  # absent
+        return (0, "", "")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    settings = SearxngSettings(url="http://localhost:8888", disabled_engines=("brave",))
+    outcome = await searxng.ensure_running(settings, engine="docker")
+
+    assert outcome.ok is True
+    assert applied == [("brave",)]
+
+
+@pytest.mark.asyncio
+async def test_ensure_running_default_settings_does_not_reconcile_engines(monkeypatch):
+    # Default (empty) disabled_engines must not trigger _apply_disabled_engines
+    # at all -- zero overhead for users who don't configure the knob.
+    monkeypatch.setattr(searxng, "health_check", AsyncMock(return_value=True))
+    applied: list = []
+
+    async def fake_apply(settings):
+        applied.append(settings)
+
+    monkeypatch.setattr(searxng, "_apply_disabled_engines", fake_apply)
+    await searxng.ensure_running(_SETTINGS, engine="docker")
+
+    assert applied == []

@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 import shutil
+import tempfile
 
 import httpx
+import yaml
 
 from vibe.core.logger import logger
 from vibe.core.utils.async_subprocess import kill_async_subprocess
 from vibe.core.utils.http import build_ssl_context
+from vibe.core.utils.io import read_safe
 
 DEFAULT_IMAGE = "searxng/searxng:latest"
 DEFAULT_CONTAINER_NAME = "vibe-searxng"
@@ -52,6 +56,7 @@ class SearxngSettings:
     autostart: bool = True
     stop_on_exit: bool = True
     health_timeout: int = 30
+    disabled_engines: tuple[str, ...] = ()
 
     @property
     def effective_url(self) -> str:
@@ -128,6 +133,11 @@ async def ensure_running(
 ) -> StartOutcome:
     url = settings.effective_url
     if await health_check(url):
+        # Reconcile engine config so a change to disabled_engines takes effect
+        # without recreating the container. Gated here for zero overhead in the
+        # common (unconfigured) case.
+        if settings.disabled_engines:
+            await _apply_disabled_engines(settings)
         return StartOutcome(ok=True, already_running=True, detail="already running")
 
     engine = engine or detect_engine()
@@ -149,6 +159,8 @@ async def ensure_running(
         _started_by_us.add(settings.container_name)
 
     ok = await _wait_for_health(url, settings.health_timeout)
+    if ok and settings.disabled_engines:
+        await _apply_disabled_engines(settings)
     return StartOutcome(
         ok=ok,
         started=we_started and ok,
@@ -255,6 +267,123 @@ async def _ensure_json_format(engine: str, name: str) -> None:
         await _run_cmd([engine, "restart", name], timeout=_START_CMD_TIMEOUT)
     except (FileNotFoundError, TimeoutError) as exc:
         logger.warning("Could not enable SearXNG json format in %s: %s", name, exc)
+
+
+_YAML_TRUTHY = frozenset("true yes on y".split())
+
+
+def disable_engines_in_settings(text: str, engines: list[str]) -> tuple[str, list[str]]:
+    # Comment-preserving, surgical edit: SearXNG's settings.yml is large and
+    # operator-authored; a full yaml.safe_dump round-trip would nuke comments and
+    # reformat every line. Instead, compose the YAML to get line-accurate node
+    # marks, then insert a single `disabled: true` line into each target engine
+    # stanza that lacks one. Idempotent: engines already truthy-disabled are left
+    # alone and not reported as changed.
+    if not engines:
+        return text, []
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError:
+        return text, []
+    if not isinstance(root, yaml.MappingNode):
+        return text, []
+
+    engines_node: yaml.Node | None = None
+    for key_node, value_node in root.value:
+        if isinstance(key_node, yaml.ScalarNode) and key_node.value == "engines":
+            engines_node = value_node
+            break
+    if not isinstance(engines_node, yaml.SequenceNode):
+        return text, []
+
+    targets = set(engines)
+    insert_at: list[int] = []  # 0-indexed line of each target's `- name:` line
+    changed: list[str] = []
+    for item in engines_node.value:
+        if not isinstance(item, yaml.MappingNode):
+            continue
+        name: str | None = None
+        already_disabled = False
+        for k, v in item.value:
+            if not isinstance(k, yaml.ScalarNode) or not isinstance(v, yaml.ScalarNode):
+                continue
+            if k.value == "name":
+                name = v.value
+            elif k.value == "disabled" and str(v.value).lower() in _YAML_TRUTHY:
+                already_disabled = True
+        if name in targets and name is not None and not already_disabled:
+            insert_at.append(item.start_mark.line)
+            changed.append(name)
+
+    if not insert_at:
+        return text, []
+
+    lines = text.splitlines(keepends=True)
+    for line_no in sorted(insert_at, reverse=True):
+        dash_line = lines[line_no]
+        leading = len(dash_line) - len(dash_line.lstrip(" "))
+        indent = " " * (leading + 2)
+        lines.insert(line_no + 1, f"{indent}disabled: true\n")
+    return "".join(lines), changed
+
+
+# Fragile upstream engines (rate-limit/CAPTCHA-prone) are the common reason a
+# self-hosted SearXNG returns empty results. When `disabled_engines` is set, the
+# managed container's settings.yml is patched to mark them disabled, then the
+# container is restarted so the change takes effect. Idempotent: a container
+# already in the desired state is left untouched (no restart). Best-effort: any
+# failure logs a warning and returns so search still works with current engines.
+async def _apply_disabled_engines(settings: SearxngSettings) -> None:
+    if not settings.disabled_engines:
+        return
+    engine = detect_engine()
+    if engine is None:
+        logger.warning("Cannot apply SearXNG disabled engines: no docker/podman found.")
+        return
+    name = settings.container_name
+    # mkdtemp (not TemporaryDirectory): the test scratchpad fixture patches
+    # tempfile.mkdtemp on the module singleton with a 1-arg signature.
+    tmpdir = tempfile.mkdtemp(prefix="vibe-searxng-")
+    try:
+        local = Path(tmpdir) / "settings.yml"
+        rc, _, err = await _run_cmd(
+            [engine, "cp", f"{name}:/etc/searxng/settings.yml", str(local)],
+            timeout=_QUICK_CMD_TIMEOUT,
+        )
+        if rc != 0:
+            logger.warning(
+                "Could not fetch SearXNG settings from %s: %s", name, err.strip()
+            )
+            return
+        text = read_safe(local).text
+        new_text, changed = disable_engines_in_settings(
+            text, list(settings.disabled_engines)
+        )
+        if not changed:
+            return
+        local.write_text(new_text, encoding="utf-8")
+        rc, _, err = await _run_cmd(
+            [engine, "cp", str(local), f"{name}:/etc/searxng/settings.yml"],
+            timeout=_QUICK_CMD_TIMEOUT,
+        )
+        if rc != 0:
+            logger.warning(
+                "Could not write SearXNG settings to %s: %s", name, err.strip()
+            )
+            return
+        rc, _, err = await _run_cmd(
+            [engine, "restart", name], timeout=_START_CMD_TIMEOUT
+        )
+        if rc != 0:
+            logger.warning(
+                "Could not restart SearXNG %s after disabling engines: %s",
+                name,
+                err.strip(),
+            )
+            return
+        logger.info("Disabled SearXNG engines in %s: %s", name, ", ".join(changed))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 async def stop(engine: str, name: str, *, timeout: float = _QUICK_CMD_TIMEOUT) -> None:

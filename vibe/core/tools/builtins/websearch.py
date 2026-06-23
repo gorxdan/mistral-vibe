@@ -166,6 +166,15 @@ class WebSearchConfig(BaseToolConfig):
         default=True,
         description="Stop the SearXNG container on exit, but only if vibe started it.",
     )
+    searxng_disabled_engines: list[str] = Field(
+        default_factory=list,
+        description=(
+            "SearXNG engine names to disable in the managed container, e.g. "
+            "['google', 'startpage', 'duckduckgo', 'brave']. These commercial "
+            "engines are the most likely to rate-limit or CAPTCHA a self-hosted "
+            "instance; disabling them shifts load to more tolerant engines."
+        ),
+    )
 
 
 def _settings_from_config(config: WebSearchConfig) -> SearxngSettings:
@@ -178,6 +187,7 @@ def _settings_from_config(config: WebSearchConfig) -> SearxngSettings:
         autostart=config.searxng_autostart,
         stop_on_exit=config.searxng_stop_on_exit,
         health_timeout=config.searxng_timeout,
+        disabled_engines=tuple(config.searxng_disabled_engines),
     )
 
 

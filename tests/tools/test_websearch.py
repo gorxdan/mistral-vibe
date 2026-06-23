@@ -658,6 +658,18 @@ def test_resolve_searxng_settings_explicit_url_beats_env(monkeypatch):
     assert settings.url == "http://x"
 
 
+def test_resolve_searxng_settings_carries_disabled_engines():
+    settings = resolve_searxng_settings({
+        "web_search": {"searxng_disabled_engines": ["google", "brave"]}
+    })
+    assert settings.disabled_engines == ("google", "brave")
+
+
+def test_resolve_searxng_settings_disabled_engines_default_empty():
+    settings = resolve_searxng_settings({})
+    assert settings.disabled_engines == ()
+
+
 def _ctx_with_callback(answer_label: str) -> InvokeContext:
     async def callback(args):
         return AskUserQuestionResult(
