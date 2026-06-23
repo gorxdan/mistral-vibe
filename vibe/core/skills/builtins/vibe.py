@@ -302,9 +302,9 @@ HTTP MCP servers can use either static auth or OAuth:
 
 Mistral connectors are auto-discovered when the active provider is Mistral
 and the API key env var is set. Use `/connectors` or `/mcp` to open the
-connectors pane; while the overview is open, type to filter by server,
-connector, or tool text. Toggle the master switch or hide individual
-connectors / tools:
+connectors pane; in the overview, press `F` to start finding, then type to
+filter by server, connector, or tool text. Toggle the master switch or hide
+individual connectors / tools:
 
 ```toml
 enable_connectors = true          # Master switch (default: true)

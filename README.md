@@ -326,7 +326,7 @@ Vibe provides several built-in slash commands. Use slash commands by typing them
 > /help
 ```
 
-Use `/connectors` or `/mcp` to open the MCP servers and workspace connectors pane. In the overview, keep typing to filter the list by server, connector, or tool text.
+Use `/connectors` or `/mcp` to open the MCP servers and workspace connectors pane. In the overview, press `F` to start finding, then type to filter the list by server, connector, or tool text; press `Esc` to leave the finder.
 
 ### Custom Slash Commands via Skills
 

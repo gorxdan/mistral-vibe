@@ -171,6 +171,16 @@ class TestMCPAppInit:
         app.action_back()
         assert render_calls == []
 
+    def test_action_find_starts_finder_in_overview(self) -> None:
+        mgr = _make_tool_manager({})
+        app = MCPApp(mcp_servers=[], tool_manager=mgr)
+        app._refresh_view = MagicMock()
+
+        app.action_find()
+
+        assert app._finder_active is True
+        app._refresh_view.assert_called_once_with(None)
+
     @pytest.mark.asyncio
     async def test_action_refresh_dispatches_worker(self) -> None:
         servers = [MCPStdio(name="srv", transport="stdio", command="cmd")]
@@ -235,7 +245,7 @@ class TestMCPAppInit:
 
         assert render_calls == []
 
-    def test_printable_keys_filter_overview(self) -> None:
+    def test_printable_keys_filter_only_when_finder_active(self) -> None:
         registry = FakeConnectorRegistry(
             connectors={
                 "github": [RemoteTool(name="search_repos", description="Search repos")],
@@ -248,12 +258,19 @@ class TestMCPAppInit:
 
         app.on_key(Key("g", "g"))
 
+        assert app._filter_text == ""
+        assert app._filtered_connector_names(app._index) == ["github", "linear"]
+
+        app._finder_active = True
+        app.on_key(Key("g", "g"))
+
         assert app._filter_text == "g"
         assert app._filtered_connector_names(app._index) == ["github"]
 
-    def test_backspace_removes_filter_character_in_overview(self) -> None:
+    def test_backspace_removes_filter_character_in_finder(self) -> None:
         mgr = _make_tool_manager({})
         app = MCPApp(mcp_servers=[], tool_manager=mgr)
+        app._finder_active = True
         app._filter_text = "git"
         app._refresh_view = MagicMock()
 
@@ -262,9 +279,10 @@ class TestMCPAppInit:
         assert app._filter_text == "gi"
         app._refresh_view.assert_called_once_with(None)
 
-    def test_delete_clears_filter_in_overview(self) -> None:
+    def test_delete_clears_filter_in_finder(self) -> None:
         mgr = _make_tool_manager({})
         app = MCPApp(mcp_servers=[], tool_manager=mgr)
+        app._finder_active = True
         app._filter_text = "git"
         app._refresh_view = MagicMock()
 
@@ -273,16 +291,29 @@ class TestMCPAppInit:
         assert app._filter_text == ""
         app._refresh_view.assert_called_once_with(None)
 
-    @pytest.mark.parametrize("key", ["D", "E", "R"])
-    def test_shortcuts_do_not_filter_overview(self, key: str) -> None:
+    @pytest.mark.parametrize("key", ["d", "e", "r"])
+    def test_shortcuts_remain_enabled_outside_finder(self, key: str) -> None:
         mgr = _make_tool_manager({})
         app = MCPApp(mcp_servers=[], tool_manager=mgr)
+
+        action = {"d": "disable", "e": "enable", "r": "refresh"}[key]
+
+        assert app.check_action(action, ())
+
+    @pytest.mark.parametrize("key", ["d", "e", "r"])
+    def test_shortcuts_filter_when_finder_active(self, key: str) -> None:
+        mgr = _make_tool_manager({})
+        app = MCPApp(mcp_servers=[], tool_manager=mgr)
+        app._finder_active = True
         app._refresh_view = MagicMock()
 
         app.on_key(Key(key, key))
 
-        assert app._filter_text == ""
-        app._refresh_view.assert_not_called()
+        action = {"d": "disable", "e": "enable", "r": "refresh"}[key]
+
+        assert app._filter_text == key
+        app._refresh_view.assert_called_once_with(None)
+        assert app.check_action(action, ()) is False
 
     def test_filter_ignored_in_detail_view(self) -> None:
         mgr = _make_tool_manager({})
@@ -296,6 +327,21 @@ class TestMCPAppInit:
         assert app._filter_text == ""
         app._refresh_view.assert_not_called()
 
+    def test_escape_exits_finder(self) -> None:
+        mgr = _make_tool_manager({})
+        app = MCPApp(mcp_servers=[], tool_manager=mgr)
+        app._finder_active = True
+        app._filter_text = "git"
+        app._refresh_view = MagicMock()
+        app.post_message = MagicMock()
+
+        app.action_close()
+
+        assert app._finder_active is False
+        assert app._filter_text == ""
+        app._refresh_view.assert_called_once_with(None)
+        app.post_message.assert_not_called()
+
     def test_filter_matches_tool_names_and_descriptions(self) -> None:
         registry = FakeConnectorRegistry(
             connectors={
@@ -305,6 +351,7 @@ class TestMCPAppInit:
         )
         mgr = _make_tool_manager(registry.get_tools())
         app = MCPApp(mcp_servers=[], tool_manager=mgr, connector_registry=registry)
+        app._finder_active = True
         app._filter_text = "tickets"
 
         assert app._filtered_connector_names(app._index) == ["linear"]

@@ -63,10 +63,16 @@ def collect_mcp_tool_index(
 
 
 _LIST_VIEW_HELP_TOOLS = (
-    "↑↓ Navigate  Enter Show tools  D Disable  E Enable  R Refresh  Esc Close"
+    "↑↓ Navigate  Enter Show tools  F Find  D Disable  E Enable  R Refresh  Esc Close"
 )
 _LIST_VIEW_HELP_AUTH = (
-    "↑↓ Navigate  Enter Connect  D Disable  E Enable  R Refresh  Esc Close"
+    "↑↓ Navigate  Enter Connect  F Find  D Disable  E Enable  R Refresh  Esc Close"
+)
+_FINDER_HELP_TOOLS = (
+    "Type to filter  ↑↓ Navigate  Enter Show tools  Backspace Delete  Esc Back"
+)
+_FINDER_HELP_AUTH = (
+    "Type to filter  ↑↓ Navigate  Enter Connect  Backspace Delete  Esc Back"
 )
 _DETAIL_VIEW_HELP = (
     "↑↓ Navigate  D Disable  E Enable  Backspace Back  R Refresh  Esc Close"
@@ -79,9 +85,10 @@ class MCPApp(Container):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", "Close", show=False),
         Binding("backspace", "back", "Back", show=False),
-        Binding("D", "disable", "Disable", show=False),
-        Binding("E", "enable", "Enable", show=False),
-        Binding("R", "refresh", "Refresh", show=False),
+        Binding("f", "find", "Find", show=False),
+        Binding("d", "disable", "Disable", show=False),
+        Binding("e", "enable", "Enable", show=False),
+        Binding("r", "refresh", "Refresh", show=False),
     ]
 
     class MCPClosed(Message):
@@ -146,12 +153,13 @@ class MCPApp(Container):
         self._refresh_callback = refresh_callback
         self._status_message: str | None = None
         self._refreshing = False
+        self._finder_active = False
         self._filter_text = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="mcp-content"):
             yield NoMarkupStatic("", id="mcp-title", classes="settings-title")
-            yield NoMarkupStatic("")
+            yield NoMarkupStatic("", id="mcp-filter", classes="settings-help")
             yield OptionList(id="mcp-options")
             yield NoMarkupStatic("", id="mcp-help", classes="settings-help")
 
@@ -174,9 +182,11 @@ class MCPApp(Container):
         self.query_one(OptionList).focus()
 
     def on_key(self, event: Key) -> None:
-        if self._refreshing or self._viewing_server is not None:
-            return
-        if event.key in {"D", "E", "R"}:
+        if (
+            self._refreshing
+            or self._viewing_server is not None
+            or not self._finder_active
+        ):
             return
         if event.key in {"delete", "ctrl+u", "ctrl+w"}:
             if self._filter_text:
@@ -201,6 +211,15 @@ class MCPApp(Container):
                 option_id.removeprefix("connector:"), kind=MCPSourceKind.CONNECTOR
             )
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        match action:
+            case "find":
+                return self._viewing_server is None and not self._finder_active
+            case "disable" | "enable" | "refresh":
+                return not self._finder_active
+            case _:
+                return super().check_action(action, parameters)
+
     def on_option_list_option_highlighted(
         self, event: OptionList.OptionHighlighted
     ) -> None:
@@ -216,18 +235,29 @@ class MCPApp(Container):
         if self._viewing_server is None:
             self._set_list_help_text(self._list_help_for_option(event.option))
 
+    def action_find(self) -> None:
+        if self._refreshing or self._viewing_server is not None:
+            return
+        self._finder_active = True
+        self._refresh_view(None)
+
     def action_back(self) -> None:
         if self._refreshing:
             return
         if self._viewing_server is not None:
             self._refresh_view(None)
             return
-        if self._filter_text:
+        if self._finder_active and self._filter_text:
             self._filter_text = self._filter_text[:-1]
             self._refresh_view(None)
 
     def action_close(self) -> None:
         if self._refreshing:
+            return
+        if self._finder_active:
+            self._finder_active = False
+            self._filter_text = ""
+            self._refresh_view(None)
             return
         self.post_message(self.MCPClosed())
 
@@ -245,7 +275,7 @@ class MCPApp(Container):
             all_tools = tools_source.get(self._viewing_server, [])
             help = _DETAIL_VIEW_HELP if all_tools else _DETAIL_VIEW_HELP_NO_TOOLS
         else:
-            help = _LIST_VIEW_HELP_TOOLS
+            help = _FINDER_HELP_TOOLS if self._finder_active else _LIST_VIEW_HELP_TOOLS
         if self._viewing_server is None:
             self._set_list_help_text(help)
         else:
@@ -270,6 +300,10 @@ class MCPApp(Container):
 
     def _list_help_for_option(self, option: Option) -> str:
         """Return the appropriate list-view help text for the given option."""
+        default_help = (
+            _FINDER_HELP_TOOLS if self._finder_active else _LIST_VIEW_HELP_TOOLS
+        )
+        auth_help = _FINDER_HELP_AUTH if self._finder_active else _LIST_VIEW_HELP_AUTH
         option_id = option.id or ""
         if option_id.startswith("connector:") and self._connector_registry:
             name = option_id.removeprefix("connector:")
@@ -278,8 +312,8 @@ class MCPApp(Container):
                 and self._connector_registry.get_auth_action(name)
                 == ConnectorAuthAction.OAUTH
             ):
-                return _LIST_VIEW_HELP_AUTH
-        return _LIST_VIEW_HELP_TOOLS
+                return auth_help
+        return default_help
 
     def _set_help_text(self, text: str) -> None:
         if self._status_message:
@@ -287,9 +321,16 @@ class MCPApp(Container):
         self.query_one("#mcp-help", NoMarkupStatic).update(text)
 
     def _set_list_help_text(self, text: str) -> None:
-        if self._filter_text:
-            text = f"Filter: {self._filter_text}  {text}"
         self._set_help_text(text)
+
+    def _set_filter_text(self) -> None:
+        if not self._finder_active:
+            self.query_one("#mcp-filter", NoMarkupStatic).update("")
+            return
+        cursor = "▌"
+        self.query_one("#mcp-filter", NoMarkupStatic).update(
+            f"Find: {self._filter_text}{cursor}"
+        )
 
     def _connector_configs(self) -> list[ConnectorConfig]:
         return self._get_vibe_config().connectors if self._get_vibe_config else []
@@ -474,12 +515,14 @@ class MCPApp(Container):
     def _show_list_view(self, option_list: OptionList, index: MCPToolIndex) -> None:
         self._viewing_server = None
         self._viewing_kind = None
+        self._set_filter_text()
         server_names = self._filtered_server_names(index)
         connector_names = self._filtered_connector_names(index)
         has_connectors = bool(connector_names)
         title = "MCP Servers & Connectors" if self._connector_names else "MCP Servers"
         self.query_one("#mcp-title", NoMarkupStatic).update(title)
-        self._set_list_help_text(_LIST_VIEW_HELP_TOOLS)
+        help_text = self._current_list_help_text(_LIST_VIEW_HELP_TOOLS)
+        self._set_list_help_text(help_text)
 
         has_servers = bool(server_names)
 
@@ -494,7 +537,7 @@ class MCPApp(Container):
         if not has_servers and not has_connectors:
             message = (
                 f"No MCP servers or connectors match '{self._filter_text}'"
-                if self._filter_text
+                if self._finder_active and self._filter_text
                 else "No MCP servers or connectors configured"
             )
             option_list.add_option(Option(message, disabled=True))
@@ -506,8 +549,15 @@ class MCPApp(Container):
             )
             option_list.highlighted = first_enabled
 
+    def _current_list_help_text(self, default_help: str) -> str:
+        if not self._finder_active:
+            return default_help
+        if default_help == _LIST_VIEW_HELP_AUTH:
+            return _FINDER_HELP_AUTH
+        return _FINDER_HELP_TOOLS
+
     def _filtered_server_names(self, index: MCPToolIndex) -> list[str]:
-        query = self._filter_text.casefold()
+        query = self._filter_text.casefold() if self._finder_active else ""
         if not query:
             return [srv.name for srv in self._mcp_servers]
         return [
@@ -524,7 +574,7 @@ class MCPApp(Container):
         ]
 
     def _filtered_connector_names(self, index: MCPToolIndex) -> list[str]:
-        query = self._filter_text.casefold()
+        query = self._filter_text.casefold() if self._finder_active else ""
         if not query:
             return list(self._sorted_connector_names)
         return [
@@ -628,6 +678,9 @@ class MCPApp(Container):
     ) -> None:
         self._viewing_server = server_name
         self._viewing_kind = kind
+        self._finder_active = False
+        self._filter_text = ""
+        self.query_one("#mcp-filter", NoMarkupStatic).update("")
         is_connector = kind == MCPSourceKind.CONNECTOR
         title_prefix = "Connector" if is_connector else "MCP Server"
         self.query_one("#mcp-title", NoMarkupStatic).update(
