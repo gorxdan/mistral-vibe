@@ -21,6 +21,13 @@ _QUICK_HTTP_TIMEOUT = 3.0
 _QUICK_CMD_TIMEOUT = 10.0
 _START_CMD_TIMEOUT = 90.0
 _HEALTH_POLL_INTERVAL = 1.0
+# After bringing up a container, ensure it can answer JSON queries (the upstream
+# image ships `formats: [html]` only, which 403s our health probe).
+_PATCH_READINESS_TRIES = 4
+_PATCH_READINESS_DELAY = 1.0
+# `docker exec` returns >= 125 for docker-level failures (container not running
+# yet); real command exit codes (e.g. grep's 0/1) fall below this threshold.
+_DOCKER_ERROR_RC = 125
 
 # Container names this process started, so exit cleanup only stops what we own.
 _started_by_us: set[str] = set()
@@ -178,7 +185,49 @@ async def _start_container(
             ),
             False,
         )
+    await _ensure_json_format(engine, name)
     return None, True
+
+
+_JSON_FORMAT_PRESENT = r"grep -q '^    - json' /etc/searxng/settings.yml"
+_ADD_JSON_FORMAT = (
+    r"sed -i 's/^    - html$/    - html\n    - json/' /etc/searxng/settings.yml"
+)
+
+
+async def _exec_in_container(
+    engine: str, name: str, script: str, *, readiness: bool = False
+) -> int | None:
+    for _ in range(_PATCH_READINESS_TRIES if readiness else 1):
+        try:
+            rc, _, _ = await _run_cmd(
+                [engine, "exec", name, "sh", "-c", script], timeout=_QUICK_CMD_TIMEOUT
+            )
+        except (FileNotFoundError, TimeoutError):
+            return None
+        # rc >= _DOCKER_ERROR_RC is a docker-level error (container still
+        # starting); real command results (grep's 0/1) fall below it.
+        if not readiness or rc < _DOCKER_ERROR_RC:
+            return rc
+        await asyncio.sleep(_PATCH_READINESS_DELAY)
+    return None
+
+
+# The upstream image ships `formats: [html]` only, which 403s every JSON
+# request -- including our own health probe. Enable json on a container we just
+# brought up so it can answer. Idempotent; settings reload on the restart.
+async def _ensure_json_format(engine: str, name: str) -> None:
+    rc = await _exec_in_container(engine, name, _JSON_FORMAT_PRESENT, readiness=True)
+    if rc is None:
+        logger.warning("SearXNG %s not ready; skipped json-format patch", name)
+        return
+    if rc == 0:
+        return
+    try:
+        await _exec_in_container(engine, name, _ADD_JSON_FORMAT)
+        await _run_cmd([engine, "restart", name], timeout=_START_CMD_TIMEOUT)
+    except (FileNotFoundError, TimeoutError) as exc:
+        logger.warning("Could not enable SearXNG json format in %s: %s", name, exc)
 
 
 async def stop(engine: str, name: str, *, timeout: float = _QUICK_CMD_TIMEOUT) -> None:

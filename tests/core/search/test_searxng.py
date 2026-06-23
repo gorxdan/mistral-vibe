@@ -223,3 +223,70 @@ async def test_stop_all_started_disabled_leaves_container(monkeypatch):
     await searxng.stop_all_started(engine="docker", enabled=False)
     assert called == []
     assert searxng._started_by_us == set()
+
+
+@pytest.mark.asyncio
+async def test_ensure_json_format_noop_when_already_present(monkeypatch):
+    calls: list[list[str]] = []
+
+    async def fake_run_cmd(argv, *, timeout):
+        calls.append(argv)
+        return (0, "", "")  # grep finds json
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    await searxng._ensure_json_format("docker", "vibe-searxng")
+    assert any(a[1] == "exec" for a in calls)
+    assert not any(a[1] == "restart" for a in calls)
+
+
+@pytest.mark.asyncio
+async def test_ensure_json_format_patches_and_restarts_when_missing(monkeypatch):
+    calls: list[list[str]] = []
+
+    async def fake_run_cmd(argv, *, timeout):
+        calls.append(argv)
+        if argv[1] == "exec" and "grep" in argv[-1]:
+            return (1, "", "")  # json absent
+        return (0, "", "")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    await searxng._ensure_json_format("docker", "vibe-searxng")
+    scripts = [a[-1] for a in calls if a[1] == "exec"]
+    verbs = [a[1] for a in calls]
+    assert any("sed" in s for s in scripts)
+    assert "restart" in verbs
+    # restart follows the patch, never the other way around
+    assert verbs.index("restart") > verbs.index("exec")
+
+
+@pytest.mark.asyncio
+async def test_ensure_json_format_skipped_when_container_not_ready(monkeypatch):
+    async def fake_run_cmd(argv, *, timeout):
+        if argv[1] == "exec":
+            return (125, "", "container not running")  # docker-level error
+        raise AssertionError("unexpected command while not ready")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    monkeypatch.setattr(searxng.asyncio, "sleep", AsyncMock())
+    await searxng._ensure_json_format("docker", "vibe-searxng")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_ensure_running_patches_json_on_create(monkeypatch):
+    monkeypatch.setattr(searxng, "health_check", AsyncMock(side_effect=[False, True]))
+    calls: list[list[str]] = []
+
+    async def fake_run_cmd(argv, *, timeout):
+        calls.append(argv)
+        if argv[1] == "inspect":
+            return (1, "", "")  # absent
+        if argv[1] == "exec" and "grep" in argv[-1]:
+            return (1, "", "")  # json missing from fresh image
+        return (0, "", "")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    outcome = await searxng.ensure_running(_SETTINGS, engine="docker")
+    assert outcome.ok is True
+    assert outcome.started is True
+    assert "vibe-searxng" in searxng._started_by_us
+    assert any(a[1] == "restart" for a in calls)
