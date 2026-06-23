@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock
 
 import httpx
@@ -290,3 +291,81 @@ async def test_ensure_running_patches_json_on_create(monkeypatch):
     assert outcome.started is True
     assert "vibe-searxng" in searxng._started_by_us
     assert any(a[1] == "restart" for a in calls)
+
+
+@pytest.mark.parametrize(
+    "image, mutable",
+    [
+        ("searxng/searxng:latest", True),
+        ("searxng/searxng", True),  # no tag -> resolves to :latest
+        ("registry.example.com/searxng/searxng:latest", True),
+        ("registry.example.com/searxng/searxng", True),
+        ("searxng/searxng:2024.1", False),
+        ("searxng/searxng@sha256:abc123", False),  # digest-pinned
+        ("registry.example.com/searxng/searxng:2024.1@sha256:abc123", False),
+    ],
+)
+def test_has_mutable_tag(image, mutable):
+    assert searxng._has_mutable_tag(image) is mutable
+
+
+@pytest.mark.asyncio
+async def test_ensure_running_warns_on_mutable_tag(monkeypatch, caplog):
+    mutable_settings = SearxngSettings(
+        url="http://localhost:8888",
+        container_name="vibe-searxng",
+        health_timeout=1,
+        image="searxng/searxng:latest",
+    )
+    monkeypatch.setattr(searxng, "health_check", AsyncMock(side_effect=[False, True]))
+
+    async def fake_run_cmd(argv, *, timeout):
+        if argv[1] == "inspect":
+            return (1, "", "")  # absent
+        return (0, "", "")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+
+    with caplog.at_level(logging.WARNING, logger="vibe"):
+        await searxng.ensure_running(mutable_settings, engine="docker")
+
+    assert any("mutable image tag" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_ensure_running_no_warning_on_pinned_tag(monkeypatch, caplog):
+    pinned_settings = SearxngSettings(
+        url="http://localhost:8888",
+        container_name="vibe-searxng",
+        health_timeout=1,
+        image="searxng/searxng@sha256:abc123",
+    )
+    monkeypatch.setattr(searxng, "health_check", AsyncMock(side_effect=[False, True]))
+
+    async def fake_run_cmd(argv, *, timeout):
+        if argv[1] == "inspect":
+            return (1, "", "")  # absent
+        return (0, "", "")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+
+    with caplog.at_level(logging.WARNING, logger="vibe"):
+        await searxng.ensure_running(pinned_settings, engine="docker")
+
+    assert not any("mutable image tag" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_health_check_does_not_follow_redirect():
+    # SearXNG must not follow redirects: a compromised/redirecting instance
+    # could otherwise redirect to an internal address.
+    with respx.mock() as mock:
+        mock.get("http://x/search").mock(
+            return_value=httpx.Response(
+                302, headers={"Location": "http://127.0.0.1/secret"}
+            )
+        )
+        # A 302 is not 200, so health_check returns False; the redirect is NOT followed.
+        assert await searxng.health_check("http://x") is False
+        # Exactly one request — to the SearXNG endpoint, never to the redirect target.
+        assert len(mock.calls) == 1

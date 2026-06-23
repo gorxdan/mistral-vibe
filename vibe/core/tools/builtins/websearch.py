@@ -387,7 +387,7 @@ class WebSearch(
     ) -> WebSearchResult:
         ssl_context = build_ssl_context()
         async with httpx.AsyncClient(
-            follow_redirects=True,
+            follow_redirects=False,
             verify=ssl_context,
             timeout=self.config.searxng_timeout,
         ) as client:
