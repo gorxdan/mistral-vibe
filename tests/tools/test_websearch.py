@@ -503,6 +503,40 @@ async def test_run_searxng_empty_results(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_searxng_all_engines_unresponsive_raises(monkeypatch):
+    # SearXNG returns HTTP 200 with results:[] when every upstream engine is
+    # rate-limited/CAPTCHA-walled. This is operationally distinct from "no
+    # matches" and must surface as an actionable error, not a flat "No results
+    # found.".
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "query": "mistral ai",
+                    "results": [],
+                    "unresponsive_engines": [
+                        ["duckduckgo", "CAPTCHA"],
+                        ["google", "access denied"],
+                        ["brave", "too many requests"],
+                    ],
+                },
+            )
+        )
+        with pytest.raises(ToolError, match="rate-limited") as exc_info:
+            await collect_result(ws.run(WebSearchArgs(query="mistral ai")))
+
+    msg = str(exc_info.value)
+    assert "duckduckgo" in msg
+    assert "CAPTCHA" in msg
+    assert "google" in msg
+
+
+@pytest.mark.asyncio
 async def test_run_searxng_http_error(monkeypatch):
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     config = WebSearchConfig(searxng_url="http://localhost:8080")

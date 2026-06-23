@@ -77,6 +77,22 @@ def _sanitize_snippet(text: str) -> str:
     return "".join(cleaned).strip()
 
 
+def _format_unresponsive_engines(unresponsive: list[Any]) -> str:
+    """Render SearXNG's ``unresponsive_engines`` pairs (``[name, reason]``) as
+    a readable comma-separated list, tolerating single-element or string entries
+    across SearXNG versions.
+    """
+    parts: list[str] = []
+    for entry in unresponsive:
+        if isinstance(entry, (list, tuple)):
+            name = entry[0] if entry else "?"
+            reason = entry[1] if len(entry) > 1 else ""
+        else:
+            name, reason = str(entry), ""
+        parts.append(f"{name} ({reason})" if reason else str(name))
+    return ", ".join(parts)
+
+
 class WebSearchSource(BaseModel):
     title: str
     url: str
@@ -414,6 +430,21 @@ class WebSearch(
 
             results = data.get("results", [])
             if not results:
+                # An empty results list paired with unresponsive_engines means
+                # the upstream search engines are rate-limited/CAPTCHA-walled --
+                # operationally distinct from "no matches", and the flat
+                # "No results found." hides the real cause. Surface it so the
+                # operator can act (retry, reconfigure engines, fix networking).
+                unresponsive = data.get("unresponsive_engines", [])
+                if unresponsive:
+                    raise ToolError(
+                        "SearXNG returned no results and reports "
+                        f"{len(unresponsive)} unresponsive search engine(s): "
+                        f"{_format_unresponsive_engines(unresponsive)}. The "
+                        "engines are likely rate-limited or blocked -- try "
+                        "again later, or review the SearXNG engine and "
+                        "outgoing-network configuration."
+                    )
                 return WebSearchResult(
                     query=args.query, answer="No results found.", sources=[]
                 )
