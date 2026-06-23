@@ -1,134 +1,66 @@
 # AGENTS.md
 
-Conventions for AI agents and humans contributing to **Mistral Vibe** — a Python 3.12+ CLI coding assistant managed with `uv`.
+Conventions for **Mistral Vibe** — Python 3.12+ CLI coding assistant managed with `uv`.
 
-## Quick rules
+Layout: `vibe/core` (engine: agent loop, tools, LLM backends, config, workflows, teams) | `vibe/cli` (Textual TUI) | `vibe/acp` (Agent Client Protocol) | `vibe/setup` (first-run wizards) | `tests/` (autouse fixtures in `conftest.py`, doubles in `tests/stubs/` named `Fake*`)
 
-- **Retrieval over recall.** Read files, grep for real usage, check signatures with tools — never rely on remembered API shapes.
-- **Read before edit.** The edit tool enforces this at runtime — it will refuse to modify a file you haven't read this session.
-- **Always `uv run`.** Never bare `python` or `pip`. Run git through `uv run` too (pre-commit needs the venv).
-- **Strict types.** No `# type: ignore`, no `# noqa`, no relative imports. Fix at the source with refined signatures, `isinstance` guards, or `typing.cast`.
-- **Modern Python.** Built-in generics + `|` unions. `match`/`case`, early returns, `pathlib.Path`, f-strings. Never `Optional`/`Union`/`Dict`/`List` from `typing`.
-- **Pydantic.** Parse via `model_validate`/validators. `ConfigDict(extra=...)` always set. No ad-hoc `from_sdk`.
-- **Tests.** `pytest` + `pytest-asyncio` + `respx`. No docstrings on tests. Autouse fixtures in `conftest.py`.
-- **Lint/format.** `ruff check --fix . && ruff format .` after every change. `pyright` gates CI.
-- **File I/O.** Use `read_safe` / `read_safe_async` over raw `Path.read_text()`.
-- **Logging.** `logger.error("msg %s", val)` not f-strings. Chain exceptions with `raise ... from e`.
+## Rules
 
----
-
-Layout: `vibe/core` is the engine (agent loop, tools, LLM backends, config, workflows, teams); `vibe/cli` is the Textual TUI; `vibe/acp` bridges to the Agent Client Protocol; `vibe/setup` runs first-run wizards. Tests live in `tests/` with autouse fixtures in `conftest.py` and test doubles in `tests/stubs/`.
+Retrieval over recall | Read before edit (runtime-enforced) | Always `uv run` (never bare `python`/`pip`; git through `uv run` for pre-commit) | Strict pyright (no `# type: ignore`, no `# noqa`, no relative imports; fix at source) | Modern Python (built-in generics + `|` unions, `match`/`case`, early returns, `pathlib.Path`/`anyio.Path`, f-strings, never `Optional`/`Union`/`Dict`/`List`) | Pydantic (`model_validate`/validators, `ConfigDict(extra=...)` always set, no `from_sdk`) | Tests (`pytest`+`pytest-asyncio`+`respx`, no docstrings, autouse fixtures) | Lint (`ruff check --fix . && ruff format .` after changes, `pyright` gates CI) | File I/O (`read_safe`/`read_safe_async` over raw `Path.read_text()`) | Logging (`logger.error("msg %s", val)` not f-strings, `raise ... from e`)
 
 ## Commands
 
-Always go through `uv` — never invoke bare `python` or `pip`.
+`uv run vibe` | `uv run vibe-acp` — entry points
+`uv run pytest` — full suite (parallel via xdist)
+`uv run pyright` — strict type check
+`uv run ruff check --fix . && uv run ruff format .` — after every change
+`uv run pre-commit run --all-files` — full lint pass
 
-- `uv run vibe` / `uv run vibe-acp` — the two entry points.
-- `uv run pytest` — full suite (parallel via `pytest-xdist`).
-- `uv run pyright` — strict type check.
-- `uv run ruff check --fix .` and `uv run ruff format .` — run both after every code change and report the files modified.
-- `uv run pre-commit run --all-files` — full lint pass. Install once with `uv tool install pre-commit && uv run pre-commit install`.
-- Useful uv basics: `uv sync --all-extras`, `uv add <pkg>`, `uv remove <pkg>`.
+## Conventions
 
-## Project layout & module conventions
+`__init__.py` exposes `__all__` | private modules prefixed `_` | models in `models.py` | config in `_settings.py`/`_config.py` | abstract interfaces use `_port.py` suffix | tests mirror source layout
+Enums: `StrEnum`/`IntEnum` with `auto()` UPPERCASE; mix-in type before `Enum`; methods/`@property` over lookup tables
+Walrus `:=` only when it shortens | never-nester (early returns) | no comments/docstrings except hard-to-spot corners | never call private methods outside class in prod (tests OK)
 
-- `__init__.py` exposes the public API via an explicit `__all__`.
-- Private modules are prefixed with `_` (e.g. `_settings.py`, `_config.py`).
-- Pydantic models live in `models.py`; configuration in `_settings.py` / `_config.py`.
-- Abstract interfaces use the `_port.py` suffix (hexagonal-style ports).
-- Tests mirror the source layout; test doubles in `tests/stubs/` are named `Fake*`.
+## Pydantic detail
 
-## Python style
-
-- Prefer `match` / `case` over long `if` / `elif` chains.
-- Use the walrus operator `:=` only when it shortens code and improves clarity.
-- Be a never-nester: early returns and guard clauses over nested blocks.
-- Modern type hints only: built-in generics (`list`, `dict`) and `|` unions. Never import `Optional`, `Union`, `Dict`, `List` from `typing`.
-- Use `pathlib.Path` (and `anyio.Path` in async paths) instead of `os.path`.
-- Use f-strings, comprehensions, and context managers; follow PEP 8.
-- Enums: `StrEnum` / `IntEnum` with `auto()` and UPPERCASE members. For type-mixing, the mix-in type comes before `Enum` in the bases. Add methods or `@property` rather than parallel lookup tables.
-- Write declarative, minimalist code: express intent, drop boilerplate.
-- Never call a private method from outside of its class in production code. Accessing private methods in tests is acceptable.
-- Avoid comments and docstrings, except for when there's a hard to spot corner case
-
-## Typing & imports
-
-- Pyright is strict and gates CI; fix types at the source.
-- No relative imports — `ban-relative-imports = "all"`. Always `from vibe.core.x import …`.
-- No inline `# type: ignore` or `# noqa`. Fix with refined signatures (TypeVar, Protocol), `isinstance` guards, `typing.cast` when control flow guarantees the type, or a small typed wrapper at the boundary.
-
-## Pydantic
-
-- Parse external data via `model_validate`, `field_validator`, or `model_validator(mode="before")` — never ad-hoc `getattr` / `hasattr` walks or custom `from_sdk` constructors.
-- Set `ConfigDict(extra=…)` explicitly. Use `validation_alias` (or field aliases) for kebab-case TOML keys.
-- Discriminated unions (e.g. MCP `transport`): use sibling final classes plus a shared base/mixin, and compose with `Annotated[Union[...], Field(discriminator=...)]`. Never narrow the discriminator field in a subclass — it violates LSP and pyright will reject it.
-- Document `Raises:` only for exceptions the function actually raises (or that propagate from public API calls). Don't list speculative built-ins.
+Discriminated unions: sibling final classes + shared base, `Annotated[Union[...], Field(discriminator=...)]`. Never narrow discriminator in subclass (LSP violation, pyright rejects). `validation_alias` for kebab-case TOML keys. `Raises:` only for actually-raised exceptions.
 
 ## Async
 
-- `asyncio` is the orchestration runtime in the agent loop and tool execution. Use `asyncio.create_task` + queues for concurrent work, not blanket `gather`.
-- Use `anyio.Path` for file I/O on async paths.
-- Streaming surfaces return `AsyncGenerator[Event, None]`, not coroutines.
-- HTTP via `httpx.AsyncClient`; mock with `respx` in tests.
+`asyncio.create_task` + queues over blanket `gather` | `anyio.Path` for async file I/O | `AsyncGenerator[Event, None]` for streams | `httpx.AsyncClient` (mock with `respx`)
 
 ## Tools
 
-- Subclass `BaseTool` from `vibe/core/tools/base.py` with a Pydantic args model and a `BaseToolConfig` generic parameter.
-- Implement `async def run(args, ctx: InvokeContext)` and yield events progressively.
-- Raise `ToolError` for user-facing failures; raise `ToolPermissionError` for authorization failures.
-- Declare permission with `ToolPermission` (`ALWAYS` / `ASK` / `NEVER`); honor it consistently.
-- Prefer the dedicated search tools over the shell: `glob` to find files by name, `grep` to search file contents — not Bash `find` / `grep` / `sed`. Reserve Bash for genuine system and git operations. (Also enforced in the `bash` tool prompt.)
-- For semantic code questions use the `lsp` tool, not `grep`: `go_to_definition` / `find_references` / `hover` (type info) / `incoming_calls` / `outgoing_calls` / `document_symbol`. Rule: questions about a *symbol* (where is it defined, who calls it, what's its type) → `lsp`; questions about *text* (a string, a log line, a config value) → `grep`. `grep` misses re-exports, alias imports, and overloads; `lsp` resolves them. If `lsp` reports no server for the extension, fall back to `grep`.
+Subclass `BaseTool` (`tools/base.py`) with Pydantic args model + `BaseToolConfig` generic. Implement `async def run(args, ctx: InvokeContext)`, yield events progressively. `ToolError` for failures, `ToolPermissionError` for authz. Declare `ToolPermission` (ALWAYS/ASK/NEVER).
+Search: `glob` (find files) | `grep` (search contents) | `lsp` (symbol questions: `go_to_definition`/`find_references`/`hover`/`incoming_calls`/`outgoing_calls`/`document_symbol` — resolves imports/re-exports/overloads grep misses) | Bash for system+git only
 
 ## Logging & errors
 
-- Use `from vibe.core.logger import logger` — stdlib `logging` with `StructuredLogFormatter`, not `structlog`.
-- Configure via env: `LOG_LEVEL` (default `WARNING`), `LOG_MAX_BYTES`. Logs land in `~/.vibe/logs/vibe.log`.
-- Pass variables as `%s` positional args, not f-string interpolation: prefer `logger.error("Failed to fetch url=%s", url)` over `logger.error(f"Failed to fetch {url}")`. This defers formatting to the logging framework (only formats if the message is emitted) and keeps messages grep-friendly.
-- Define module-local exception hierarchies. Always chain with `raise NewError(...) from e`. Rich exceptions expose a `_fmt()` helper for human-readable output.
-
-## File I/O
-
-- Prefer `vibe.core.utils.io.read_safe` / `read_safe_async` / `decode_safe` over raw `Path.read_text()`, `Path.read_bytes().decode()`, or `open()`.
-- They return `ReadSafeResult(text, encoding)` and try UTF-8, then BOM detection, then locale, then `charset_normalizer` lazily.
-- Pass `raise_on_error=True` only when callers must distinguish corrupt files from valid ones; the default replaces undecodable bytes with U+FFFD.
+`from vibe.core.logger import logger` (stdlib `logging` + `StructuredLogFormatter`). Env: `LOG_LEVEL` (default `WARNING`), `LOG_MAX_BYTES`. Logs in `~/.vibe/logs/vibe.log`. `%s` positional args (deferred formatting, grep-friendly). Module-local exception hierarchies with `_fmt()` helper.
 
 ## TCSS
 
-- When a rule sets `color: $text-muted;`, pair it with a nested `&:ansi { text-style: dim; }` so the muted intent survives under ANSI themes.
-- Never use `ansi_*` colors (e.g. `ansi_red`, `ansi_bright_blue`). Use Textual theme variables like `$primary`, `$foreground`, `$surface`, `$error`, etc. — see https://textual.textualize.io/guide/design/. ANSI themes are derived from these variables automatically.
+`$text-muted` → pair with `&:ansi { text-style: dim; }` | never `ansi_*` colors — use `$primary`/`$foreground`/`$surface`/`$error` (ANSI derived automatically)
+
+## File I/O detail
+
+`read_safe`/`read_safe_async`/`decode_safe` return `ReadSafeResult(text, encoding)`: UTF-8 → BOM → locale → `charset_normalizer` lazily. `raise_on_error=True` only when distinguishing corrupt files. Default replaces undecodable with U+FFFD.
 
 ## Tests
 
-- Stack: `pytest` + `pytest-asyncio` + `pytest-textual-snapshot` + `respx`.
-- Mark async tests with `@pytest.mark.asyncio`. Mock outbound HTTP with `respx`.
-- Rely on the autouse fixtures in `tests/conftest.py` (`config_dir`, `tmp_working_directory`) for filesystem and home-dir isolation.
-- No docstrings on test functions, methods, or classes — descriptive names like `test_create_user_returns_403_when_unauthorized` carry the intent. Pytest displays docstrings instead of node IDs when present, which hurts.
-- Tests are exempt from the `ANN` and `PLR` ruff rules (see `per-file-ignores`).
+`@pytest.mark.asyncio` | mock HTTP with `respx` | autouse fixtures `config_dir`, `tmp_working_directory` | exempt from `ANN`/`PLR` ruff rules (`per-file-ignores`)
 
 ## Git
 
-- Never use `git commit --amend`, `git push --force`, or `git push --force-with-lease`.
-- Always create new commits and push with a plain `git push`.
-- If a push is rejected due to upstream changes, rebase onto the updated remote branch — never merge and never force-push.
-- Run git commands through `uv run` (e.g. `uv run git commit`, `uv run git push`) so pre-commit hooks resolve the project's venv — bare `git commit` fails pre-commit with `reportMissingImports` because pyright can't find third-party packages.
-
-## Editor tip
-
-In Cursor / Pyright, the "Add import" quick fix is missing — use the workspace snippets `acpschema`, `acphelpers`, `vibetypes`, `vibeconfig` to insert the import line, then rename the symbol.
+No `--amend`, no `--force`, no `--force-with-lease`. New commits + plain `git push`. Rejected push → rebase (never merge, never force-push).
 
 ## Workflows & Teams
 
-- `vibe/core/workflows/` contains the workflow runtime: models, budget, schema validator, AST security, runtime (spawn_agent/parallel/pipeline), and manager (discovery).
-- `vibe/core/teams/` contains agent teams: TaskStore (file-backed), Mailbox (file-backed), TeamManager (subprocess spawning), and models.
-- `vibe/core/workflows/bundled/` contains shipped workflow scripts. These have YAML frontmatter and are excluded from ruff/pyright (they're not standard Python).
-- Workflow scripts run in a restricted namespace with safelisted builtins. The AST validator (`security.py`) blocks unsafe imports, dangerous calls, dunder access, and `str.format` (escape vector). Do not weaken the validator without adding equivalent protection. NOTE: this is **defense-in-depth, not a hard boundary** — the script still `exec`s in-process, so a novel AST-escape would reach process state. The real boundary for untrusted source is the `launch_workflow` `ToolPermission.ASK` approval gate (and `disable_workflows`); a true sandbox would require out-of-process execution (large, not built). Treat ad-hoc/model-authored scripts as untrusted.
-- The `launch_workflow` tool (`vibe/core/tools/builtins/launch_workflow.py`) is conditionally available via `is_available(config)` — hidden when `disable_workflows = true`.
-- Team teammates are spawned as `vibe -p` subprocesses, not in-memory. Shared state uses `filelock` (already a transitive dependency). Do not add in-process locking alternatives.
-- Hook events `TeammateIdle`, `TaskCreated`, `TaskCompleted` are defined in `vibe/core/hooks/models.py`. `TeammateIdle` fires when a teammate goes idle; `TaskCreated`/`TaskCompleted` fire only for **lead-initiated** task ops (`/team task add|done` → `TeamManager.add_team_task`/`complete_team_task`). Teammates write the shared task store from a separate process, so their claims/completions do not fire lead-side hooks (would need a poller/IPC bridge).
+`vibe/core/workflows/`: runtime (models, budget, schema validator, AST security, runtime with spawn_agent/parallel/pipeline, manager/discovery). `vibe/core/teams/`: TaskStore + Mailbox (file-backed), TeamManager (subprocess spawning). `bundled/` scripts have YAML frontmatter (excluded from ruff/pyright).
+Workflow scripts: restricted namespace, safelisted builtins, AST validator blocks unsafe imports/dunders/`str.format`. **Defense-in-depth not hard boundary** — still `exec`s in-process; real boundary is `launch_workflow` ASK gate + `disable_workflows`. Treat model-authored scripts as untrusted.
+`launch_workflow` hidden when `disable_workflows = true` (`is_available(config)`). Teammates spawned as `vibe -p` subprocesses; shared state via `filelock` (no in-process locks). Hooks: `TeammateIdle` (teammate idle), `TaskCreated`/`TaskCompleted` (lead-initiated `/team task add|done` only — teammate writes don't fire lead-side hooks).
 
 ## Autoimprovement
 
-- Suggest to add new rules to AGENTS.md based on user input or PR comments, when a change request could be generalized as a rule.
-- Suggest updates to the README.md file according to feature changes or additions
-- Keep the builtin Vibe Skill (`vibe/core/skills/builtins/vibe.py`) up-to-date. It documents the CLI's features, such as args, flags, config options and persistence, commands, built-in agents, file discovery logic.
+Suggest new AGENTS.md rules from user input/PR comments when generalizable | suggest README.md updates for features | keep builtin Vibe Skill (`vibe/core/skills/builtins/vibe.py`) current (args, flags, config, commands, agents, file discovery).
