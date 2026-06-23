@@ -109,9 +109,12 @@ def test_planner_security_editor_registered() -> None:
     from vibe.core.prompts import load_system_prompt
 
     expected = {
-        "planner": (["read", "grep"], "Clarify the goal"),
-        "security": (["read", "grep", "bash"], "threat-model"),
-        "editor": (["read", "grep", "write_file", "edit"], "Read before editing"),
+        "planner": (["read", "grep", "lsp"], "Clarify the goal"),
+        "security": (["read", "grep", "lsp", "bash"], "threat-model"),
+        "editor": (
+            ["read", "grep", "lsp", "write_file", "edit"],
+            "Read before editing",
+        ),
     }
     for name, (tools, marker) in expected.items():
         prof = BUILTIN_AGENTS[BuiltinAgentName(name)]
@@ -278,3 +281,32 @@ def test_current_date_placeholder_substituted_in_prompt() -> None:
     expected = f"Today's date is {today.isoformat()} ({today.strftime('%A')})."
     assert expected in prompt
     assert "$current_date" not in prompt
+
+
+def test_lsp_priority_section_absent_unless_lsp_installed() -> None:
+    common = {
+        "system_prompt_id": "tests",
+        "include_project_context": False,
+        "include_prompt_detail": True,
+        "include_model_info": False,
+        "include_commit_signature": False,
+        "include_humanizer_guidance": False,
+    }
+    heading = "## LSP is installed — use it first for symbol questions"
+
+    off = build_test_vibe_config(**common)
+    prompt_off = get_universal_system_prompt(
+        ToolManager(lambda: off),
+        off,
+        SkillManager(lambda: off),
+        AgentManager(lambda: off),
+    )
+    assert heading not in prompt_off
+
+    on = build_test_vibe_config(installed_components=["lsp"], **common)
+    prompt_on = get_universal_system_prompt(
+        ToolManager(lambda: on), on, SkillManager(lambda: on), AgentManager(lambda: on)
+    )
+    assert heading in prompt_on
+    assert "the FIRST tool you reach for is `lsp`, not `grep`" in prompt_on
+    assert "don't guess its signature or call sites" in prompt_on

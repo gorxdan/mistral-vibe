@@ -413,13 +413,42 @@ def _get_headless_section() -> str:
     )
 
 
+def _get_lsp_priority_section(config: VibeConfig) -> str:
+    """Availability-conditional LSP-first guidance.
+
+    Emitted only when the user has opted into LSP (``/lspstall``), so it never
+    advertises a tool that isn't running. Reframes the search hierarchy as a
+    default inversion — ``lsp`` first for symbols, ``grep`` for text — and gates
+    edits on a prior ``lsp`` lookup. A static "prefer LSP" rule is noise when
+    LSP isn't installed; this carries the emphasis only when it can be acted on.
+    """
+    if "lsp" not in getattr(config, "installed_components", []):
+        return ""
+    return (
+        "## LSP is installed — use it first for symbol questions\n\n"
+        "You have a language server running. For any question about a "
+        "*symbol* (definition, type, callers, callees, implementations), the "
+        "FIRST tool you reach for is `lsp`, not `grep`. grep is for text; lsp "
+        "is for code semantics. If you are about to grep for a "
+        "function/method/class name, stop and use `lsp find_references` (or "
+        "`hover`/`go_to_definition`) instead — it resolves imports, "
+        "re-exports, and overloads that grep misses.\n\n"
+        "Before editing a symbol you have not resolved this session, run "
+        "`lsp hover` (or `find_references`) on it first — don't guess its "
+        "signature or call sites."
+    )
+
+
 def _build_prompt_detail_sections(
     tool_manager: ToolManager,
     skill_manager: SkillManager,
     agent_manager: AgentManager,
     scratchpad_dir: Path | None,
+    config: VibeConfig,
 ) -> list[str]:
     sections = [_get_os_system_prompt()]
+    if lsp_section := _get_lsp_priority_section(config):
+        sections.append(lsp_section)
     tool_prompts = []
     for tool_class in tool_manager.available_tools.values():
         if prompt := tool_class.get_tool_prompt():
@@ -518,7 +547,7 @@ def get_universal_system_prompt(
     if config.include_prompt_detail:
         sections.extend(
             _build_prompt_detail_sections(
-                tool_manager, skill_manager, agent_manager, scratchpad_dir
+                tool_manager, skill_manager, agent_manager, scratchpad_dir, config
             )
         )
 

@@ -33,7 +33,7 @@ Discriminated unions: sibling final classes + shared base, `Annotated[Union[...]
 ## Tools
 
 Subclass `BaseTool` (`tools/base.py`) with Pydantic args model + `BaseToolConfig` generic. Implement `async def run(args, ctx: InvokeContext)`, yield events progressively. `ToolError` for failures, `ToolPermissionError` for authz. Declare `ToolPermission` (ALWAYS/ASK/NEVER).
-Search: `glob` (find files) | `grep` (search contents) | `lsp` (symbol questions: `go_to_definition`/`find_references`/`hover`/`incoming_calls`/`outgoing_calls`/`document_symbol` — resolves imports/re-exports/overloads grep misses) | Bash for system+git only
+Search: `lsp` for symbol questions (`go_to_definition`/`find_references`/`hover`/`incoming_calls`/`outgoing_calls`/`document_symbol` — resolves imports/re-exports/overloads grep misses; the semantic tool, prefer it for symbols when available) | `grep` for literal text (error messages, log lines, config values, regex) | `glob` to find files by name | Bash for system+git only
 
 ## Logging & errors
 
