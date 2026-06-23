@@ -48,7 +48,8 @@ PRESETS: list[ProviderPreset] = [
         key="zai",
         label="GLM (ZAI / Zhipu)",
         description=(
-            "GLM-5.2 via the ZAI Coding Plan endpoint. Requires a ZAI_API_KEY."
+            "GLM-5.2 via the ZAI Coding Plan endpoint. Sign in with your Z.ai "
+            "account in the browser, or paste a ZAI_API_KEY."
         ),
         requires_api_key=True,
         help_url=ZAI_HELP_URL,

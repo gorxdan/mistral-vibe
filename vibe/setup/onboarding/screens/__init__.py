@@ -9,6 +9,7 @@ from vibe.setup.onboarding.screens.provider_selection import ProviderSelectionSc
 from vibe.setup.onboarding.screens.theme_selection import ThemeSelectionScreen
 from vibe.setup.onboarding.screens.web_search import WebSearchScreen
 from vibe.setup.onboarding.screens.welcome import WelcomeScreen
+from vibe.setup.onboarding.screens.zai_sign_in import ZaiSignInScreen
 
 __all__ = [
     "ApiKeyScreen",
@@ -20,4 +21,5 @@ __all__ = [
     "ThemeSelectionScreen",
     "WebSearchScreen",
     "WelcomeScreen",
+    "ZaiSignInScreen",
 ]

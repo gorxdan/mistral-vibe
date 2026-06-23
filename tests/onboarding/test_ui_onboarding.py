@@ -43,6 +43,7 @@ from vibe.setup.auth import (
     BrowserSignInStatusChanged,
 )
 from vibe.setup.auth.api_key_persistence import persist_api_key
+from vibe.setup.auth.zai_sign_in import ZaiSignInError
 import vibe.setup.onboarding as onboarding_module
 from vibe.setup.onboarding import OnboardingApp
 from vibe.setup.onboarding.context import OnboardingContext
@@ -60,6 +61,7 @@ from vibe.setup.onboarding.screens.openai_chatgpt_sign_in import (
 from vibe.setup.onboarding.screens.provider_selection import ProviderSelectionScreen
 from vibe.setup.onboarding.screens.theme_selection import THEMES, ThemeSelectionScreen
 from vibe.setup.onboarding.screens.web_search import WebSearchScreen
+from vibe.setup.onboarding.screens.zai_sign_in import ZaiSignInScreen
 
 CONSOLE_URL = "https://console.mistral.ai"
 BROWSER_AUTH_API_URL = "https://console.mistral.ai/api"
@@ -1359,6 +1361,9 @@ async def test_provider_selection_glm_preset_persists_config_and_key(
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
         await pilot.press("down", "enter")
+        # GLM offers a sign-in/API-key chooser; pick "Use an API key".
+        await _wait_for(lambda: isinstance(pilot.app.screen, AuthMethodScreen), pilot)
+        await pilot.press("down", "enter")
         await _wait_for(lambda: isinstance(pilot.app.screen, ApiKeyScreen), pilot)
 
         assert (
@@ -1587,3 +1592,86 @@ async def test_provider_selection_chatgpt_sign_in_shows_error() -> None:
             ).render()
         )
         assert "sign-in blew up" in status
+
+
+class _StubZaiSignIn:
+    """Stand-in for ZaiSignInService that skips the real browser/network."""
+
+    def __init__(
+        self, *, api_key: str = "zai-id.zai-secret", error: Exception | None = None
+    ) -> None:
+        self._api_key = api_key
+        self._error = error
+
+    async def authenticate(
+        self, *, on_url: Callable[[str], None] | None = None
+    ) -> str:
+        if on_url is not None:
+            on_url("https://chat.z.ai/api/oauth/authorize?state=test")
+        if self._error is not None:
+            raise self._error
+        return self._api_key
+
+
+# zai is the 2nd preset (index 1): down x1 from the top.
+_ZAI_PRESET_INDEX = 1
+
+
+@pytest.mark.asyncio
+async def test_provider_selection_zai_login_persists_config_and_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    app = OnboardingApp(
+        zai_sign_in_service_factory=lambda: _StubZaiSignIn(api_key="zai-id.zai-secret"),
+        browser_sign_in_success_delay=0,
+    )
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press(*(["down"] * _ZAI_PRESET_INDEX), "enter")
+        # Default chooser option is "Continue with Z.ai"; select it.
+        await _wait_for(lambda: isinstance(pilot.app.screen, AuthMethodScreen), pilot)
+        await pilot.press("enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, ZaiSignInScreen), pilot)
+        await _wait_for(lambda: app.return_value is not None, pilot, timeout=2.0)
+
+    assert app.return_value == "completed"
+    env_contents = _saved_env_contents()
+    assert "ZAI_API_KEY" in env_contents
+    assert "zai-id.zai-secret" in env_contents
+
+    config = _config_toml_dict()
+    assert config["active_model"] == "glm"
+    assert "zai" in [p["name"] for p in config["providers"]]
+
+
+@pytest.mark.asyncio
+async def test_provider_selection_zai_login_shows_error() -> None:
+    app = OnboardingApp(
+        zai_sign_in_service_factory=lambda: _StubZaiSignIn(
+            error=ZaiSignInError("sign-in blew up")
+        ),
+        browser_sign_in_success_delay=0,
+    )
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press(*(["down"] * _ZAI_PRESET_INDEX), "enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, AuthMethodScreen), pilot)
+        await pilot.press("enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, ZaiSignInScreen), pilot)
+        await _wait_for(
+            lambda: (
+                str(
+                    pilot.app.screen.query_one(
+                        "#zai-sign-in-status", NoMarkupStatic
+                    ).render()
+                ).endswith("sign-in blew up")
+            ),
+            pilot,
+        )
+
+        assert app.return_value is None

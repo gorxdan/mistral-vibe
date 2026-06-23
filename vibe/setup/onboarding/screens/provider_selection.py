@@ -126,6 +126,9 @@ class ProviderSelectionScreen(OnboardingScreen):
             case "openai-chatgpt":
                 cast("OnboardingApp", self.app).install_openai_chatgpt_screen(preset)
                 self.app.switch_screen("openai_chatgpt_sign_in")
+            case "zai":
+                cast("OnboardingApp", self.app).install_zai_screens(preset)
+                self.app.switch_screen("zai_auth_method")
             case "mistral":
                 cast("OnboardingApp", self.app).install_mistral_screens()
                 target = (

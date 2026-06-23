@@ -15,6 +15,18 @@ from vibe.setup.onboarding.base import OnboardingScreen
 OPTION_BROWSER = 0
 OPTION_MANUAL = 1
 
+# (title, badge, description) for the two options, defaulting to Mistral's copy.
+AuthMethodOptions = tuple[tuple[str, str | None, str], tuple[str, str | None, str]]
+
+DEFAULT_OPTIONS: AuthMethodOptions = (
+    (
+        "Launch browser",
+        "Recommended",
+        "Sign in to Mistral AI Studio and finish setup automatically.",
+    ),
+    ("Use an API key", None, "Already have a key? Paste it manually instead."),
+)
+
 
 class AuthMethodScreen(OnboardingScreen):
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -25,9 +37,19 @@ class AuthMethodScreen(OnboardingScreen):
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, provider: ProviderConfig) -> None:
+    def __init__(
+        self,
+        provider: ProviderConfig,
+        *,
+        options: AuthMethodOptions = DEFAULT_OPTIONS,
+        browser_target: str = "browser_sign_in",
+        manual_target: str = "api_key",
+    ) -> None:
         super().__init__()
         self.provider = provider
+        self._options = options
+        self._browser_target = browser_target
+        self._manual_target = manual_target
         self._selected_index = OPTION_BROWSER
         self._option_markers: list[NoMarkupStatic] = []
         self._option_widgets: list[NoMarkupStatic] = []
@@ -80,10 +102,10 @@ class AuthMethodScreen(OnboardingScreen):
         self.action_manual()
 
     def action_manual(self) -> None:
-        self.app.switch_screen("api_key")
+        self.app.switch_screen(self._manual_target)
 
     def action_browser(self) -> None:
-        self.app.switch_screen("browser_sign_in")
+        self.app.switch_screen(self._browser_target)
 
     def action_move_up(self) -> None:
         self._selected_index = (self._selected_index - 1) % len(self._option_widgets)
@@ -94,17 +116,8 @@ class AuthMethodScreen(OnboardingScreen):
         self._update_display()
 
     def _update_display(self) -> None:
-        options = [
-            (
-                "Launch browser",
-                "Recommended",
-                "Sign in to Mistral AI Studio and finish setup automatically.",
-            ),
-            ("Use an API key", None, "Already have a key? Paste it manually instead."),
-        ]
-
         for index, (marker, widget, (title, badge, description)) in enumerate(
-            zip(self._option_markers, self._option_widgets, options, strict=True)
+            zip(self._option_markers, self._option_widgets, self._options, strict=True)
         ):
             is_selected = index == self._selected_index
             content = Text()

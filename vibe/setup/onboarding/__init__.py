@@ -15,6 +15,7 @@ from vibe.core.telemetry.types import EntrypointMetadata
 from vibe.core.types import Backend
 from vibe.setup.auth import BrowserSignInService, HttpBrowserSignInGateway
 from vibe.setup.auth.openai_sign_in import OpenAISignInService
+from vibe.setup.auth.zai_sign_in import ZaiSignInService
 from vibe.setup.onboarding.context import OnboardingContext
 from vibe.setup.onboarding.provider_presets import ProviderPreset
 from vibe.setup.onboarding.screens import (
@@ -27,7 +28,9 @@ from vibe.setup.onboarding.screens import (
     ThemeSelectionScreen,
     WebSearchScreen,
     WelcomeScreen,
+    ZaiSignInScreen,
 )
+from vibe.setup.onboarding.screens.auth_method import AuthMethodOptions
 from vibe.setup.onboarding.screens.browser_sign_in import (
     SIGN_IN_URL_HELP_DELAY_SECONDS,
     SUCCESS_EXIT_DELAY_SECONDS,
@@ -50,6 +53,7 @@ class OnboardingApp(App[str | None]):
         browser_sign_in_url_help_delay: float = SIGN_IN_URL_HELP_DELAY_SECONDS,
         copy_sign_in_url: CopySignInUrl | None = None,
         openai_sign_in_service_factory: Callable[[], OpenAISignInService] | None = None,
+        zai_sign_in_service_factory: Callable[[], ZaiSignInService] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -70,6 +74,9 @@ class OnboardingApp(App[str | None]):
         )
         self._openai_sign_in_service_factory = openai_sign_in_service_factory or (
             lambda: OpenAISignInService()
+        )
+        self._zai_sign_in_service_factory = zai_sign_in_service_factory or (
+            lambda: ZaiSignInService()
         )
         self._installed_dynamic_screens: set[str] = set()
 
@@ -129,6 +136,47 @@ class OnboardingApp(App[str | None]):
                 self._openai_sign_in_service_factory,
                 copy_sign_in_url=self._copy_sign_in_url,
                 success_exit_delay=self._browser_sign_in_success_delay,
+            ),
+        )
+
+    def install_zai_screens(self, preset: ProviderPreset) -> None:
+        if preset.provider is None or preset.model is None:
+            msg = "zai preset must define a provider and model."
+            raise AssertionError(msg)
+        self._provider = preset.provider
+        self.install_api_key_screen(
+            preset.provider, help_url=preset.help_url, pending_model=preset.model
+        )
+        self._install_screen_once(
+            "zai_sign_in",
+            ZaiSignInScreen(
+                preset.provider,
+                preset.model,
+                self._zai_sign_in_service_factory,
+                copy_sign_in_url=self._copy_sign_in_url,
+                entrypoint_metadata=self._entrypoint_metadata,
+                success_exit_delay=self._browser_sign_in_success_delay,
+            ),
+        )
+        options: AuthMethodOptions = (
+            (
+                "Continue with Z.ai",
+                "Recommended",
+                "Sign in to your Z.ai account and finish setup automatically.",
+            ),
+            (
+                "Use an API key",
+                None,
+                "Already have a ZAI_API_KEY? Paste it manually instead.",
+            ),
+        )
+        self._install_screen_once(
+            "zai_auth_method",
+            AuthMethodScreen(
+                preset.provider,
+                options=options,
+                browser_target="zai_sign_in",
+                manual_target="api_key",
             ),
         )
 
