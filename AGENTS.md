@@ -2,6 +2,21 @@
 
 Conventions for AI agents and humans contributing to **Mistral Vibe** — a Python 3.12+ CLI coding assistant managed with `uv`.
 
+## Quick rules
+
+- **Retrieval over recall.** Read files, grep for real usage, check signatures with tools — never rely on remembered API shapes.
+- **Read before edit.** The edit tool enforces this at runtime — it will refuse to modify a file you haven't read this session.
+- **Always `uv run`.** Never bare `python` or `pip`. Run git through `uv run` too (pre-commit needs the venv).
+- **Strict types.** No `# type: ignore`, no `# noqa`, no relative imports. Fix at the source with refined signatures, `isinstance` guards, or `typing.cast`.
+- **Modern Python.** Built-in generics + `|` unions. `match`/`case`, early returns, `pathlib.Path`, f-strings. Never `Optional`/`Union`/`Dict`/`List` from `typing`.
+- **Pydantic.** Parse via `model_validate`/validators. `ConfigDict(extra=...)` always set. No ad-hoc `from_sdk`.
+- **Tests.** `pytest` + `pytest-asyncio` + `respx`. No docstrings on tests. Autouse fixtures in `conftest.py`.
+- **Lint/format.** `ruff check --fix . && ruff format .` after every change. `pyright` gates CI.
+- **File I/O.** Use `read_safe` / `read_safe_async` over raw `Path.read_text()`.
+- **Logging.** `logger.error("msg %s", val)` not f-strings. Chain exceptions with `raise ... from e`.
+
+---
+
 Layout: `vibe/core` is the engine (agent loop, tools, LLM backends, config, workflows, teams); `vibe/cli` is the Textual TUI; `vibe/acp` bridges to the Agent Client Protocol; `vibe/setup` runs first-run wizards. Tests live in `tests/` with autouse fixtures in `conftest.py` and test doubles in `tests/stubs/`.
 
 ## Commands

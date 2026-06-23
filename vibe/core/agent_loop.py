@@ -10,6 +10,8 @@ from functools import wraps
 import hashlib
 from http import HTTPStatus
 import inspect
+import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -31,6 +33,7 @@ from vibe.core.compaction import (
     render_compaction_context,
 )
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
+from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.experiments import ExperimentManager
 from vibe.core.experiments.client import RemoteEvalClient
 from vibe.core.experiments.session import (
@@ -379,6 +382,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self.scratchpad_dir = (
             init_scratchpad(self.session_id) if not is_subagent else None
         )
+        self._files_read: dict[str, str] = {}
+        self._files_read_reconstructed: bool = False
+        self._agents_md_fingerprint: str | None = None
 
         system_prompt = get_universal_system_prompt(
             self.tool_manager,
@@ -1340,6 +1346,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         auto_title: str | None = None,
         images: list[ImageAttachment] | None = None,
     ) -> AsyncGenerator[BaseEvent]:
+        if not self._files_read_reconstructed:
+            self._reconstruct_files_read()
+        await self._check_agents_md_changed()
+
         user_message = LLMMessage(
             role=Role.user,
             content=user_msg,
@@ -1561,7 +1571,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return None
 
     async def _drain_async_agent_completions(
-    self,
+        self,
     ) -> AsyncGenerator[BackgroundTaskCompletedEvent]:
         """Yield one event per completed async subagent queued by the background
         registry, and append a matching user-role message so the model sees
@@ -1954,6 +1964,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 workflow_stop_callback=self.workflow_stop_callback,
                 team_dir_callback=self.team_dir_callback,
                 background_registry=self.background_registry,
+                files_read=self._files_read,
             ),
             **tool_call.args_dict,
         ):
@@ -2538,6 +2549,56 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
             i = next_i
 
+    def _reconstruct_files_read(self) -> None:
+        if self._files_read_reconstructed:
+            return
+        self._files_read_reconstructed = True
+        for msg in self.messages:
+            if msg.role != Role.assistant or not msg.tool_calls:
+                continue
+            for tc in msg.tool_calls:
+                if tc.function.name not in {"read", "write_file"}:
+                    continue
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                raw_path = args.get("file_path") or args.get("path")
+                if not raw_path:
+                    continue
+                path = Path(raw_path).expanduser()
+                if not path.is_absolute():
+                    path = Path.cwd() / path
+                path = path.resolve()
+                if not path.exists():
+                    continue
+                try:
+                    self._files_read[str(path)] = file_fingerprint(path)
+                except OSError:
+                    continue
+
+    async def _check_agents_md_changed(self) -> None:
+        from vibe.core.config.harness_files._harness_manager import (
+            get_harness_files_manager,
+        )
+
+        try:
+            mgr = get_harness_files_manager()
+        except RuntimeError:
+            return
+        parts: list[str] = []
+        for path in mgr.agents_md_file_paths():
+            try:
+                parts.append(file_fingerprint(path))
+            except OSError:
+                pass
+        current = "|".join(parts)
+        if self._agents_md_fingerprint is None:
+            self._agents_md_fingerprint = current
+        elif current != self._agents_md_fingerprint:
+            self._agents_md_fingerprint = current
+            await self.refresh_system_prompt()
+
     async def _reset_session(
         self, keep_parent: bool = True, *, lifecycle_reason: str | None = None
     ) -> None:
@@ -2556,6 +2617,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self.session_logger.reset_session(
             self.session_id, parent_session_id=parent_session_id
         )
+        self._files_read.clear()
+        self._files_read_reconstructed = False
+        self._agents_md_fingerprint = None
         await self.initialize_experiments()
         self.emit_new_session_telemetry()
 

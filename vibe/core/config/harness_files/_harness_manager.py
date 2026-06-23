@@ -256,6 +256,36 @@ class HarnessFilesManager:
                 by_dir.setdefault(d.resolve(), (d, content))
         return list(by_dir.values())
 
+    def agents_md_file_paths(self) -> list[Path]:
+        """Return file paths of AGENTS.md docs without reading content.
+
+        Lightweight change-detection helper — stats files only.
+        """
+        paths: list[Path] = []
+        if "user" in self.sources:
+            user_path = VIBE_HOME.path / AGENTS_MD_FILENAME
+            if user_path.exists():
+                paths.append(user_path)
+        seen: set[Path] = set()
+        for root in self.project_roots:
+            stop = trusted_folders_manager.find_trust_root(root) or root
+            if not root.is_relative_to(stop):
+                continue
+            current = root
+            while True:
+                path = current / AGENTS_MD_FILENAME
+                resolved = path.resolve()
+                if path.exists() and resolved not in seen:
+                    seen.add(resolved)
+                    paths.append(path)
+                if current == stop:
+                    break
+                parent = current.parent
+                if parent == current:
+                    break
+                current = parent
+        return paths
+
 
 _manager: HarnessFilesManager | None = None
 

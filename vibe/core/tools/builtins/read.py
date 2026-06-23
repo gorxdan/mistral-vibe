@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, ClassVar, final
 from humanize import naturalsize
 from pydantic import BaseModel, Field
 
+from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.scratchpad import is_scratchpad_path
 from vibe.core.tools.base import (
@@ -153,6 +154,12 @@ class Read(
         start_line = args.offset or 1
 
         selected, total_lines, was_truncated = await self._read_file(args, file_path)
+
+        if ctx and ctx.files_read is not None:
+            try:
+                ctx.files_read[str(file_path)] = file_fingerprint(file_path)
+            except OSError:
+                pass
 
         if selected:
             content = _add_line_numbers(selected, start=start_line)
