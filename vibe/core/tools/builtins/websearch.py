@@ -28,6 +28,7 @@ from vibe.core.search import (
     ensure_running,
     session_skipped,
     skip_session,
+    wait_for_autostart,
 )
 from vibe.core.tools.base import (
     BaseTool,
@@ -142,6 +143,14 @@ class WebSearchConfig(BaseToolConfig):
     searxng_timeout: int = Field(
         default=30, description="HTTP timeout in seconds for SearXNG requests."
     )
+    searxng_health_timeout: int = Field(
+        default=60,
+        description=(
+            "Total seconds to wait for a managed SearXNG container to become "
+            "healthy at start. Separate from searxng_timeout (the per-request "
+            "limit): a cold-starting container needs a larger total budget."
+        ),
+    )
     searxng_manage: bool = Field(
         default=True,
         description="Let vibe start/stop a local SearXNG container (docker/podman).",
@@ -186,7 +195,7 @@ def _settings_from_config(config: WebSearchConfig) -> SearxngSettings:
         port=config.searxng_port,
         autostart=config.searxng_autostart,
         stop_on_exit=config.searxng_stop_on_exit,
-        health_timeout=config.searxng_timeout,
+        health_timeout=config.searxng_health_timeout,
         disabled_engines=tuple(config.searxng_disabled_engines),
     )
 
@@ -340,6 +349,10 @@ class WebSearch(
         # for this search. Raises ToolError only when SearXNG is unreachable and
         # no recovery is possible (e.g. non-interactive).
         assert settings.url is not None
+        # Wait for session-start autostart to finish bringing up / reconciling
+        # the managed container before issuing the request, so we don't race a
+        # container mid-(re)start and report a spurious "SearXNG is down".
+        await wait_for_autostart()
         try:
             return await self._searxng_request(args, settings.url)
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:

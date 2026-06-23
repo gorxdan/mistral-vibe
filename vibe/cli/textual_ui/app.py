@@ -178,7 +178,13 @@ from vibe.core.logger import logger
 from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
 from vibe.core.paths import CACHE_FILE, HISTORY_FILE
 from vibe.core.rewind import RewindError
-from vibe.core.search import SearxngSettings, ensure_running, stop_all_started
+from vibe.core.search import (
+    SearxngSettings,
+    begin_autostart,
+    ensure_running,
+    signal_autostart_done,
+    stop_all_started,
+)
 from vibe.core.session.image_snapshot import ImageSnapshotError, snapshot_image
 from vibe.core.session.resume_sessions import (
     RemoteResumeResult,
@@ -4057,17 +4063,25 @@ class VibeApp(App):  # noqa: PLR0904
             # pay nothing; failures are logged, never fatal to the session.
             if not (settings.url and settings.manage and settings.autostart):
                 return
-            outcome = await ensure_running(settings)
-            if outcome.started:
-                self.notify(
-                    f"Started local SearXNG ({settings.effective_url})", markup=False
-                )
-            elif outcome.attempted and not outcome.ok:
-                self.notify(
-                    f"SearXNG unavailable: {outcome.detail}",
-                    severity="warning",
-                    markup=False,
-                )
+            # Gate early searches: a request issued while we (re)start the
+            # container for health or engine reconciliation would otherwise race
+            # it and surface a spurious "SearXNG is down" prompt.
+            begin_autostart()
+            try:
+                outcome = await ensure_running(settings)
+                if outcome.started:
+                    self.notify(
+                        f"Started local SearXNG ({settings.effective_url})",
+                        markup=False,
+                    )
+                elif outcome.attempted and not outcome.ok:
+                    self.notify(
+                        f"SearXNG unavailable: {outcome.detail}",
+                        severity="warning",
+                        markup=False,
+                    )
+            finally:
+                signal_autostart_done()
         except Exception as exc:
             logger.warning("SearXNG autostart failed", exc_info=exc)
 

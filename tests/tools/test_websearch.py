@@ -577,6 +577,37 @@ async def test_run_caps_concurrent_executions(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_searxng_search_waits_for_autostart_gate(monkeypatch):
+    # A search fired while session-start autostart is (re)starting the container
+    # must park on the gate rather than race the container and surface a spurious
+    # "SearXNG is down".
+    import asyncio as _asyncio
+
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+    searxng.begin_autostart()
+    order: list[str] = []
+
+    async def fake_request(self, args, url):
+        order.append("request")
+        return WebSearchResult(query=args.query, answer="ok", sources=[])
+
+    monkeypatch.setattr(WebSearch, "_searxng_request", fake_request)
+
+    async def run_search() -> None:
+        await collect_result(ws.run(WebSearchArgs(query="q")))
+        order.append("done")
+
+    task = _asyncio.create_task(run_search())
+    await _asyncio.sleep(0.05)
+    assert "request" not in order  # parked on the autostart gate
+    searxng.signal_autostart_done()
+    await _asyncio.wait_for(task, timeout=1.0)
+    assert order == ["request", "done"]
+
+
+@pytest.mark.asyncio
 async def test_run_searxng_http_error(monkeypatch):
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     config = WebSearchConfig(searxng_url="http://localhost:8080")
@@ -668,6 +699,20 @@ def test_resolve_searxng_settings_carries_disabled_engines():
 def test_resolve_searxng_settings_disabled_engines_default_empty():
     settings = resolve_searxng_settings({})
     assert settings.disabled_engines == ()
+
+
+def test_resolve_searxng_settings_health_timeout_decoupled_from_request():
+    # health_timeout (total container-start budget) is separate from
+    # searxng_timeout (per-request limit); the two must map independently.
+    settings = resolve_searxng_settings({
+        "web_search": {"searxng_timeout": 5, "searxng_health_timeout": 90}
+    })
+    assert settings.health_timeout == 90
+
+
+def test_resolve_searxng_settings_health_timeout_default():
+    settings = resolve_searxng_settings({})
+    assert settings.health_timeout == 60
 
 
 def _ctx_with_callback(answer_label: str) -> InvokeContext:

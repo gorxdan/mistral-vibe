@@ -40,6 +40,11 @@ _DOCKER_ERROR_RC = 125
 # Container names this process started, so exit cleanup only stops what we own.
 _started_by_us: set[str] = set()
 _session_skip = False
+# Cleared while session-start autostart is bringing up / reconciling the managed
+# SearXNG container, so an early search waits rather than racing a container that
+# is mid-(re)start and surfacing a confusing "SearXNG is down" prompt. Lazily
+# created and set by default, so paths that never go through autostart never block.
+_autostart_gate: asyncio.Event | None = None
 
 
 def default_url(port: int = DEFAULT_PORT) -> str:
@@ -55,7 +60,7 @@ class SearxngSettings:
     port: int = DEFAULT_PORT
     autostart: bool = True
     stop_on_exit: bool = True
-    health_timeout: int = 30
+    health_timeout: int = 60
     disabled_engines: tuple[str, ...] = ()
 
     @property
@@ -88,9 +93,35 @@ def skip_session() -> None:
 
 
 def reset_state() -> None:
-    global _session_skip
+    global _session_skip, _autostart_gate
     _started_by_us.clear()
     _session_skip = False
+    _autostart_gate = None
+
+
+def _gate() -> asyncio.Event:
+    global _autostart_gate
+    if _autostart_gate is None:
+        _autostart_gate = asyncio.Event()
+        _autostart_gate.set()
+    return _autostart_gate
+
+
+def begin_autostart() -> None:
+    """Mark session-start autostart in progress: searches wait until
+    :func:`signal_autostart_done` releases the gate.
+    """
+    _gate().clear()
+
+
+def signal_autostart_done() -> None:
+    """Release the autostart gate once startup/reconciliation has settled."""
+    _gate().set()
+
+
+async def wait_for_autostart() -> None:
+    """Block until session-start autostart has finished (a no-op once done)."""
+    await _gate().wait()
 
 
 def detect_engine() -> str | None:
@@ -264,6 +295,19 @@ async def _ensure_json_format(engine: str, name: str) -> None:
         return
     try:
         await _exec_in_container(engine, name, _ADD_JSON_FORMAT)
+        # Confirm the sed actually matched before restarting: a settings.yml with
+        # non-standard indentation leaves json absent, so a restart would neither
+        # help nor change anything -- better to warn than spin a needless restart
+        # and then fail health probing on an instance that still 403s JSON.
+        verify = await _exec_in_container(engine, name, _JSON_FORMAT_PRESENT)
+        if verify != 0:
+            logger.warning(
+                "SearXNG json-format patch did not take in %s; settings.yml may "
+                "use non-standard indentation. Add 'json' under search.formats "
+                "manually and restart the container.",
+                name,
+            )
+            return
         await _run_cmd([engine, "restart", name], timeout=_START_CMD_TIMEOUT)
     except (FileNotFoundError, TimeoutError) as exc:
         logger.warning("Could not enable SearXNG json format in %s: %s", name, exc)
@@ -419,12 +463,16 @@ async def _container_state(engine: str, name: str) -> str:
 
 
 async def _wait_for_health(url: str, total_timeout: float) -> bool:
-    elapsed = 0.0
-    while elapsed < total_timeout:
+    # Bound the *total* wall-clock wait, including the time each health_check
+    # call spends (up to _QUICK_HTTP_TIMEOUT). Counting only the sleep interval
+    # lets a slow-answering container overrun the stated timeout by roughly the
+    # check-time / sleep-time ratio.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + total_timeout
+    while loop.time() < deadline:
         if await health_check(url):
             return True
         await asyncio.sleep(_HEALTH_POLL_INTERVAL)
-        elapsed += _HEALTH_POLL_INTERVAL
     return await health_check(url)
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from textwrap import dedent
@@ -274,11 +275,15 @@ async def test_ensure_json_format_noop_when_already_present(monkeypatch):
 @pytest.mark.asyncio
 async def test_ensure_json_format_patches_and_restarts_when_missing(monkeypatch):
     calls: list[list[str]] = []
+    grep_calls = 0
 
     async def fake_run_cmd(argv, *, timeout):
         calls.append(argv)
+        nonlocal grep_calls
         if argv[1] == "exec" and "grep" in argv[-1]:
-            return (1, "", "")  # json absent
+            grep_calls += 1
+            # first grep (readiness): json absent; second grep (verify): present
+            return (1 if grep_calls == 1 else 0, "", "")
         return (0, "", "")
 
     monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
@@ -307,13 +312,17 @@ async def test_ensure_json_format_skipped_when_container_not_ready(monkeypatch):
 async def test_ensure_running_patches_json_on_create(monkeypatch):
     monkeypatch.setattr(searxng, "health_check", AsyncMock(side_effect=[False, True]))
     calls: list[list[str]] = []
+    grep_calls = 0
 
     async def fake_run_cmd(argv, *, timeout):
         calls.append(argv)
+        nonlocal grep_calls
         if argv[1] == "inspect":
             return (1, "", "")  # absent
         if argv[1] == "exec" and "grep" in argv[-1]:
-            return (1, "", "")  # json missing from fresh image
+            grep_calls += 1
+            # readiness grep: json missing from fresh image; verify grep: present
+            return (1 if grep_calls == 1 else 0, "", "")
         return (0, "", "")
 
     monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
@@ -322,6 +331,29 @@ async def test_ensure_running_patches_json_on_create(monkeypatch):
     assert outcome.started is True
     assert "vibe-searxng" in searxng._started_by_us
     assert any(a[1] == "restart" for a in calls)
+
+
+@pytest.mark.asyncio
+async def test_ensure_json_format_no_restart_when_patch_does_not_take(
+    monkeypatch, caplog
+):
+    # The sed matches nothing (e.g. non-standard indentation) so the verify grep
+    # still misses json: a restart would not help, so none must happen and a
+    # diagnosable warning is logged instead.
+    calls: list[list[str]] = []
+
+    async def fake_run_cmd(argv, *, timeout):
+        calls.append(argv)
+        if argv[1] == "exec" and "grep" in argv[-1]:
+            return (1, "", "")  # json absent before and after the sed
+        return (0, "", "")  # sed exits 0 (no match is still success)
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    with caplog.at_level(logging.WARNING, logger="vibe"):
+        await searxng._ensure_json_format("docker", "vibe-searxng")
+
+    assert not any(a[1] == "restart" for a in calls)
+    assert any("did not take" in r.message for r in caplog.records)
 
 
 @pytest.mark.parametrize(
@@ -400,6 +432,65 @@ async def test_health_check_does_not_follow_redirect():
         assert await searxng.health_check("http://x") is False
         # Exactly one request — to the SearXNG endpoint, never to the redirect target.
         assert len(mock.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_wait_for_health_bounds_total_time_with_slow_checks(monkeypatch):
+    # Each health_check call itself takes time; the total wait must be bounded by
+    # total_timeout, not by total_timeout scaled by (check_time / sleep_time).
+    # The old accumulator counted only the sleep interval, so ~20 iterations ran
+    # for a 0.2s budget with 0.01s sleeps; the deadline-bound version makes only
+    # a handful.
+    call_count = 0
+
+    async def slow_health(url: str, *, timeout: float = 3.0) -> bool:
+        nonlocal call_count
+        call_count += 1
+        await asyncio.sleep(0.05)  # the check itself spends time
+        return False
+
+    monkeypatch.setattr(searxng, "health_check", slow_health)
+    monkeypatch.setattr(searxng, "_HEALTH_POLL_INTERVAL", 0.01)
+
+    ok = await searxng._wait_for_health("http://x", total_timeout=0.2)
+    assert ok is False
+    # Deadline-bound: far fewer calls than the buggy ~20; allow generous headroom.
+    assert call_count < 10
+
+
+# --- autostart readiness gate ---
+
+
+@pytest.mark.asyncio
+async def test_autostart_gate_ready_by_default_does_not_block():
+    searxng.reset_state()
+    # No begin_autostart() called -> gate stays set -> returns immediately.
+    await asyncio.wait_for(searxng.wait_for_autostart(), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_autostart_gate_blocks_until_signaled():
+    searxng.reset_state()
+    searxng.begin_autostart()
+    released = asyncio.Event()
+
+    async def releaser() -> None:
+        await asyncio.sleep(0.05)
+        searxng.signal_autostart_done()
+        released.set()
+
+    asyncio.create_task(releaser())
+    await asyncio.wait_for(searxng.wait_for_autostart(), timeout=1.0)
+    assert released.is_set()
+
+
+@pytest.mark.asyncio
+async def test_autostart_gate_resets_with_state():
+    searxng.begin_autostart()
+    searxng.reset_state()
+    # After reset the gate is recreated set, so a stale cleared state from a
+    # prior test does not leak and block the next caller.
+    await asyncio.wait_for(searxng.wait_for_autostart(), timeout=1.0)
 
 
 # --- disable_engines_in_settings (pure, comment-preserving YAML surgery) ---
