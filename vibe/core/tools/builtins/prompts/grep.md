@@ -6,5 +6,4 @@ Use `grep` to recursively search for a regular expression pattern in file conten
 - Narrow the search with `glob` (e.g. `*.py`), `type` (ripgrep type like `py`/`rust`), or `case_insensitive`.
 - In content mode, add surrounding lines with `context`, `context_before`, or `context_after`.
 - `multiline` lets a pattern span lines; `head_limit` caps the output. `type` and `multiline` require ripgrep (they error on the GNU grep fallback — prefer `glob` for portability).
-- To find files by *name* rather than contents, use `glob`.
-- For *symbol-level* questions (where a function is defined, who calls it, type info), use `lsp` — `grep` misses re-exports and alias imports that `lsp` resolves.
+- For files by name use `glob`; for symbols (definitions, references, types) use `lsp` (the short form lives on each tool's own description; this file is the parameter-level detail).

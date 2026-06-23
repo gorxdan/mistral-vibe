@@ -176,7 +176,8 @@ class Glob(
     read_only: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Find files by glob pattern (e.g. '**/*.py'), most recently modified first. "
-        "Respects .gitignore and .vibeignore. Use this instead of bash find/ls."
+        "Respects .gitignore and .vibeignore. Use this instead of bash find/ls. "
+        "Finds files by name/path; use `grep` for contents, `lsp` for symbols."
     )
 
     def resolve_permission(self, args: GlobArgs) -> PermissionContext | None:

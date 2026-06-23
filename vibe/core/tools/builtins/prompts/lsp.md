@@ -18,11 +18,7 @@ appears.
 | Search for a literal string or regex pattern | `grep` |
 | Find files by name | `glob` |
 
-**Rule of thumb:** if your question is about a *symbol* (definition, type,
-callers, callees), use `lsp`. If it's about *text* (a string, a log line, a
-config value), use `grep`. LSP resolves imports, overloads, and generated code
-that textual search gets wrong — a `grep` for a common method name will miss
-re-exports and alias imports; `lsp find_references` will not.
+**Rule of thumb:** `lsp` for symbols, `grep` for text. The short form lives on each tool's own description; this table is the detailed map. The payoff is semantic resolution — imports, overloads, generated code — that a plain `grep` for a method name misses.
 
 ## Operations
 

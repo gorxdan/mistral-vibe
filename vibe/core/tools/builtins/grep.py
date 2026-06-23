@@ -212,9 +212,11 @@ class Grep(
     read_only: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Recursively search file contents for a regex pattern (ripgrep-backed, "
-        ".gitignore-aware). Use for text-level questions — error messages, log "
-        "lines, string literals, config values. For symbol-level questions "
-        "(definitions, references, type info) prefer the `lsp` tool."
+        ".gitignore-aware). ALWAYS use this to search contents — never shell "
+        "out to `grep`/`rg` via bash. Use for text: error messages, log lines, "
+        "string literals, config values, regex. Find files by name with `glob`; "
+        "resolve symbols (definitions, references, types) with `lsp` when "
+        "available — grep misses re-exports and imports that lsp resolves."
     )
 
     def resolve_permission(self, args: GrepArgs) -> PermissionContext | None:
