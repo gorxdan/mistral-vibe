@@ -37,10 +37,21 @@ _HTTP_FORBIDDEN = 403
 _MAX_REDIRECTS = 5
 
 
+# Cloud metadata endpoints that resolve to public-unicast or link-local IPs and
+# so evade the RFC1918/link-local predicates above. IPv6 forms included for
+# parity; the IPv4-mapped variants are already caught by is_private/is_link_local.
+_METADATA_IPS = frozenset({
+    ipaddress.ip_address("169.254.169.254"),  # AWS / OpenStack / Azure / GCE
+    ipaddress.ip_address("fd00:ec2::254"),  # AWS IMDS IPv6
+    ipaddress.ip_address("100.100.100.200"),  # Alibaba Cloud
+})
+
+
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True for private, loopback, link-local, reserved, or multicast IPs.
 
-    Also explicitly blocks the well-known cloud metadata endpoint.
+    Also explicitly blocks the well-known cloud metadata endpoints that evade
+    those predicates (public-unicast metadata IPs).
     """
     if (
         ip.is_private
@@ -50,9 +61,7 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         or ip.is_multicast
     ):
         return True
-    if str(ip) == "169.254.169.254":
-        return True
-    return False
+    return ip in _METADATA_IPS
 
 
 class _PinningTransport(httpx.AsyncBaseTransport):
@@ -194,7 +203,9 @@ class WebFetch(
         except (socket.gaierror, OSError) as e:
             # Fail closed: if we cannot resolve and validate, refuse rather
             # than let httpx re-resolve (possibly to a private IP) unchecked.
-            raise ToolError(f"SSRF validation failed: could not resolve {host}: {e}") from e
+            raise ToolError(
+                f"SSRF validation failed: could not resolve {host}: {e}"
+            ) from e
 
         pinned: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
         for info in infos:
@@ -357,37 +368,47 @@ class WebFetch(
                 if not location:
                     break
                 next_url = urljoin(str(response.url), location)
-                next_pinned = await self._validate_url(next_url)
-                next_host = urlparse(next_url).hostname or ""
-                if next_pinned is not None:
-                    next_transport = _PinningTransport(next_host, next_pinned)
-                    # Rebuild the client for the new pinned target. A fresh
-                    # client per hop is simplest and correct; redirects are
-                    # capped at _MAX_REDIRECTS.
-                    next_client_kwargs: dict[str, Any] = {
-                        "follow_redirects": False,
-                        "timeout": httpx.Timeout(timeout),
-                        "transport": next_transport,
-                    }
-                else:
-                    next_client_kwargs = {
-                        "follow_redirects": False,
-                        "timeout": httpx.Timeout(timeout),
-                        "verify": build_ssl_context(),
-                    }
-                async with httpx.AsyncClient(**next_client_kwargs) as next_client:
+                next_kwargs = await self._pinned_client_kwargs(next_url, timeout)
+                async with httpx.AsyncClient(**next_kwargs) as next_client:
                     response = await next_client.get(next_url, headers=headers)
                 redirect_count += 1
 
-            # In case we are hitting bot detection retry once honestly
+            # In case we are hitting bot detection, retry once with an honest
+            # user agent. Rebuild the client for the final URL so the retry is
+            # pinned to the correct IP — the redirect chain may have moved to a
+            # different host than the initial request.
             if (
                 response.status_code == _HTTP_FORBIDDEN
                 and response.headers.get("cf-mitigated") == "challenge"
             ):
                 headers["User-Agent"] = _HONEST_USER_AGENT
-                response = await client.get(str(response.url), headers=headers)
+                final_url = str(response.url)
+                retry_kwargs = await self._pinned_client_kwargs(final_url, timeout)
+                async with httpx.AsyncClient(**retry_kwargs) as retry_client:
+                    response = await retry_client.get(final_url, headers=headers)
 
             return response
+
+    async def _pinned_client_kwargs(self, url: str, timeout: int) -> dict[str, Any]:
+        """SSRF-validate a URL and build httpx client kwargs pinned to the
+        validated IP, closing the DNS-rebinding TOCTOU.
+
+        Raises ToolError for private/reserved IPs or resolution failure
+        (fails closed).
+        """
+        pinned = await self._validate_url(url)
+        host = urlparse(url).hostname or ""
+        if pinned is not None:
+            return {
+                "follow_redirects": False,
+                "timeout": httpx.Timeout(timeout),
+                "transport": _PinningTransport(host, pinned),
+            }
+        return {
+            "follow_redirects": False,
+            "timeout": httpx.Timeout(timeout),
+            "verify": build_ssl_context(),
+        }
 
     @classmethod
     def get_call_display(cls, event: ToolCallEvent) -> ToolCallDisplay:

@@ -297,6 +297,18 @@ async def test_blocks_ipv6_link_local(webfetch):
 
 
 @pytest.mark.asyncio
+async def test_blocks_alibaba_cloud_metadata_ip(webfetch):
+    with pytest.raises(ToolError, match="SSRF blocked"):
+        await collect_result(webfetch.run(WebFetchArgs(url="http://100.100.100.200")))
+
+
+@pytest.mark.asyncio
+async def test_blocks_aws_ipv6_metadata(webfetch):
+    with pytest.raises(ToolError, match="SSRF blocked"):
+        await collect_result(webfetch.run(WebFetchArgs(url="http://[fd00:ec2::254]")))
+
+
+@pytest.mark.asyncio
 async def test_blocks_hostname_resolving_to_private_ip(webfetch, monkeypatch):
     monkeypatch.setattr(
         "vibe.core.tools.builtins.webfetch.socket.getaddrinfo",
