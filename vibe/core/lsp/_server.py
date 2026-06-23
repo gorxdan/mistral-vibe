@@ -33,6 +33,7 @@ class ServerConfig:
     cwd: str | None = None
     root_uri: str | None = None
     initialization_options: dict[str, Any] | None = None
+    manifest_markers: tuple[str, ...] = ()
     startup_timeout: float = DEFAULT_STARTUP_TIMEOUT
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT
     max_restarts: int = DEFAULT_MAX_RESTARTS

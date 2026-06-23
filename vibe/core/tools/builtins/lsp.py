@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from pydantic import BaseModel, Field
 
 from vibe.core.lsp import LSPNotConnectedError, get_lsp_manager
-from vibe.core.lsp._types import LSPError, path_from_uri, uri_from_path
+from vibe.core.lsp._types import (
+    LSPError,
+    LSPProtocolError,
+    path_from_uri,
+    uri_from_path,
+)
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -28,6 +33,9 @@ if TYPE_CHECKING:
     from vibe.core.types import ToolResultEvent
 
 _MAX_FILE_BYTES = 10 * 1024 * 1024
+_METHOD_NOT_FOUND = -32601
+_CALL_HIERARCHY_RETRIES = 4
+_CALL_HIERARCHY_BACKOFF = (0.2, 0.4, 0.8)
 
 
 class LspOperation(StrEnum):
@@ -182,9 +190,21 @@ class Lsp(
                 if position_required
                 else None
             )
+            if position is not None:
+                self._validate_position(
+                    Path(file_path), args.line or 1, args.character or 1, text.text
+                )
             result = await self._dispatch(manager, args, file_path, position)
         except LSPNotConnectedError as exc:
             raise ToolError(str(exc)) from exc
+        except LSPProtocolError as exc:
+            if exc.code == _METHOD_NOT_FOUND:
+                raise ToolError(
+                    f"{server.config.name} does not support {args.operation.value}. "
+                    "Try find_references as a fallback — it returns the same "
+                    "caller/callee info via a different method."
+                ) from exc
+            raise ToolError(f"LSP request failed: {exc}") from exc
         except LSPError as exc:
             raise ToolError(f"LSP request failed: {exc}") from exc
 
@@ -220,7 +240,9 @@ class Lsp(
             raw, _ = await manager.send_request(
                 file_path, "workspace/symbol", {"query": query}
             )
-            return self._format_symbols(f"Workspace symbols matching '{query}'", raw)
+            return self._format_symbols(
+                f"Workspace symbols matching '{query}'", raw, query=query
+            )
         if args.operation in {
             LspOperation.PREPARE_CALL_HIERARCHY,
             LspOperation.INCOMING_CALLS,
@@ -310,18 +332,28 @@ class Lsp(
             else "callHierarchy/outgoingCalls"
         )
         out: list[dict[str, Any]] = []
-        for item in items[:5]:
-            raw, _ = await manager.send_request(file_path, method, {"item": item})
-            for call in raw or []:
-                # LSP: CallHierarchyIncomingCall carries `from` (the caller);
-                # CallHierarchyOutgoingCall carries `to` (the callee).
-                target = (
-                    call.get("from")
-                    if args.operation is LspOperation.INCOMING_CALLS
-                    else call.get("to")
-                )
-                if target:
-                    out.append(target)
+        for attempt in range(_CALL_HIERARCHY_RETRIES):
+            out = []
+            for item in items[:5]:
+                raw, _ = await manager.send_request(file_path, method, {"item": item})
+                for call in raw or []:
+                    # LSP: CallHierarchyIncomingCall carries `from` (the caller);
+                    # CallHierarchyOutgoingCall carries `to` (the callee).
+                    target = (
+                        call.get("from")
+                        if args.operation is LspOperation.INCOMING_CALLS
+                        else call.get("to")
+                    )
+                    if target:
+                        out.append(target)
+            if out:
+                break
+            # prepareCallHierarchy returned items (the callable exists) but the
+            # follow-up is empty: the server's package graph isn't loaded yet.
+            # Wait briefly and retry — gopls/pyright need indexing before they
+            # can resolve caller/callee edges.
+            if attempt < _CALL_HIERARCHY_RETRIES - 1:
+                await asyncio.sleep(_CALL_HIERARCHY_BACKOFF[attempt])
         out = await self._filter_gitignored(out)
         return self._format_locations(label, out)
 
@@ -433,12 +465,17 @@ class Lsp(
         text = self._extract_markup(contents)
         return LspResult(operation="hover", summary=f"Hover:\n{text}")
 
-    def _format_symbols(self, label: str, raw: Any) -> LspResult:
+    def _format_symbols(
+        self, label: str, raw: Any, query: str | None = None
+    ) -> LspResult:
         if not raw:
             return LspResult(operation="symbols", summary=f"{label}: none found.")
+        items = list(raw)
+        if query:
+            items = sorted(items, key=lambda s: self._symbol_rank(s, query))
         names: list[str] = []
-        lines: list[str] = [f"{label} ({len(raw)}):"]
-        for sym in raw[:100]:
+        lines: list[str] = [f"{label} ({len(items)}):"]
+        for sym in items[:100]:
             if "name" in sym:
                 name = str(sym.get("name", ""))
                 names.append(name)
@@ -664,6 +701,53 @@ class Lsp(
                 f"{_MAX_FILE_BYTES / 1024 / 1024:.0f} MiB to avoid stalling the server."
             )
         return str(path)
+
+    @staticmethod
+    def _validate_position(path: Path, line: int, character: int, text: str) -> None:
+        """Reject out-of-bounds line/character before sending the request.
+
+        Servers reject bad positions with opaque messages ("column is beyond
+        end of file"); validate here so the agent gets an actionable error
+        naming the actual file bounds.
+        """
+        lines = text.splitlines()
+        line_count = len(lines)
+        if line < 1 or line > line_count:
+            raise ToolError(
+                f"line {line} is out of range: {path.name} has "
+                f"{line_count} line{'s' if line_count != 1 else ''}."
+            )
+        target = lines[line - 1]
+        line_len = len(target)
+        if character < 1 or character > line_len + 1:
+            raise ToolError(
+                f"column {character} is out of range: line {line} of "
+                f"{path.name} has {line_len} character"
+                f"{'s' if line_len != 1 else ''}."
+            )
+
+    @staticmethod
+    def _symbol_rank(sym: Any, query: str) -> tuple[int, str]:
+        """Sort key for workspace_symbol relevance. Lower sorts first.
+
+        Tier: 0 exact name, 1 prefix, 2 substring, 3 no match. Test symbols
+        (name starts with test_ or Test) get +10 so real definitions surface
+        ahead of test noise even when both are substring matches.
+        """
+        name = str(sym.get("name", "")) if isinstance(sym, dict) else ""
+        lower = name.lower()
+        ql = query.lower()
+        if lower == ql:
+            tier = 0
+        elif lower.startswith(ql):
+            tier = 1
+        elif ql in lower:
+            tier = 2
+        else:
+            tier = 3
+        if lower.startswith("test_") or lower.startswith("test "):
+            tier += 10
+        return tier, lower
 
     @classmethod
     def format_call_display(cls, args: LspArgs) -> ToolCallDisplay:

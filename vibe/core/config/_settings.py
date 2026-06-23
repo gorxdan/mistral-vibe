@@ -710,6 +710,14 @@ class LSPServer(BaseModel):
             "project directory when omitted."
         ),
     )
+    manifest_markers: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Filenames (e.g. Cargo.toml, go.mod) used to discover the workspace "
+            "root for a project by walking up from the opened file. Empty for "
+            "servers that accept the session root as-is."
+        ),
+    )
     startup_timeout_sec: float = Field(default=20.0, gt=0)
     request_timeout_sec: float = Field(default=10.0, gt=0)
 
@@ -751,6 +759,7 @@ class LSPServer(BaseModel):
             cwd=self.cwd,
             root_uri=self.root_uri,
             initialization_options=self.initialization_options,
+            manifest_markers=tuple(self.manifest_markers),
             startup_timeout=self.startup_timeout_sec,
             request_timeout=self.request_timeout_sec,
         )

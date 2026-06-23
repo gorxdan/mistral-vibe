@@ -77,6 +77,23 @@ async def test_jsonrpc_error_response_raises_protocol_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_jsonrpc_method_not_found_error_carries_code() -> None:
+    reader = asyncio.StreamReader()
+    conn = JsonRpcConnection(reader, _NullWriter())
+    conn.start()
+    asyncio.create_task(
+        _delayed_feed(
+            reader,
+            b'{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}',
+        )
+    )
+    with pytest.raises(LSPProtocolError) as exc_info:
+        await conn.request("f", timeout=2.0)
+    assert exc_info.value.code == -32601
+    await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_jsonrpc_notification_dispatch() -> None:
     received: list[dict] = []
 
@@ -95,6 +112,16 @@ async def test_jsonrpc_notification_dispatch() -> None:
     await asyncio.sleep(0.2)
     assert received == [{"v": 42}]
     await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_on_publish_is_async_and_does_not_raise() -> None:
+    manager = LSPManager()
+    coro = manager._on_publish(
+        {"uri": "file:///tmp/test.py", "diagnostics": []}, "pyright"
+    )
+    assert hasattr(coro, "__await__")
+    await coro
 
 
 def test_diagnostic_registry_dedup_across_turns() -> None:
@@ -142,6 +169,115 @@ def test_diagnostic_registry_groups_by_file() -> None:
     batches = registry.consume()
     assert len(batches) == 1
     assert len(batches[0]["files"]) == 2
+
+
+def test_method_not_found_surfaces_actionable_tool_error(monkeypatch, tmp_path) -> None:
+    import asyncio
+
+    from vibe.core.tools.base import ToolError
+    from vibe.core.tools.builtins.lsp import (
+        Lsp,
+        LspArgs,
+        LspConfig,
+        LspOperation,
+        LspState,
+    )
+
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+
+    class _FakeServer:
+        def __init__(self) -> None:
+            self.config = ServerConfig(
+                name="pyright", command=["x"], languages={".py": "python"}
+            )
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.server = _FakeServer()
+
+        def get_server_for_file(self, path):
+            return self.server
+
+        async def open_document(self, path, text, language_id):
+            pass
+
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.lsp.get_lsp_manager", lambda: _FakeManager()
+    )
+    monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
+
+    async def fake_dispatch(self, manager, args, file_path, position):
+        raise LSPProtocolError("method not found", code=-32601)
+
+    monkeypatch.setattr(Lsp, "_dispatch", fake_dispatch)
+
+    tmp = tmp_path / "test.py"
+    tmp.write_text("x = 1\n")
+    args = LspArgs(
+        operation=LspOperation.GO_TO_IMPLEMENTATION,
+        file_path=str(tmp),
+        line=1,
+        character=1,
+    )
+
+    def _run() -> None:
+        async def _inner() -> None:
+            async for _ in tool.run(args):
+                pass
+
+        asyncio.run(_inner())
+
+    try:
+        _run()
+    except ToolError as exc:
+        assert "does not support" in str(exc)
+        assert "find_references" in str(exc)
+        assert "pyright" in str(exc)
+    else:
+        raise AssertionError("expected ToolError")
+
+
+def test_resolve_manifest_root_finds_nearest_marker_dir(tmp_path) -> None:
+    from pathlib import Path
+
+    cargo_dir = tmp_path / "backend"
+    src_dir = cargo_dir / "src"
+    src_dir.mkdir(parents=True)
+    (cargo_dir / "Cargo.toml").write_text("[package]\nname='x'\n")
+    lib_file = src_dir / "lib.rs"
+    lib_file.write_text("")
+    manager = LSPManager()
+    manager.set_root(tmp_path)
+    found = manager._resolve_manifest_root(Path(lib_file), ("Cargo.toml",), tmp_path)
+    assert found == cargo_dir
+
+
+def test_resolve_manifest_root_falls_back_to_default_when_no_marker(tmp_path) -> None:
+    from pathlib import Path
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(parents=True)
+    lib_file = src_dir / "lib.rs"
+    lib_file.write_text("")
+    manager = LSPManager()
+    manager.set_root(tmp_path)
+    found = manager._resolve_manifest_root(Path(lib_file), ("Cargo.toml",), tmp_path)
+    assert found == tmp_path
+
+
+def test_resolve_manifest_root_returns_default_when_no_markers(tmp_path) -> None:
+    from pathlib import Path
+
+    manager = LSPManager()
+    manager.set_root(tmp_path)
+    found = manager._resolve_manifest_root(Path(tmp_path / "x.rs"), (), tmp_path)
+    assert found == tmp_path
+
+
+def test_rust_preset_carries_cargo_manifest_marker() -> None:
+    from vibe.core.lsp._defaults import _RUST_ANALYZER
+
+    assert "Cargo.toml" in _RUST_ANALYZER.server.manifest_markers
 
 
 def test_manager_routes_by_extension() -> None:
@@ -460,6 +596,67 @@ async def test_resolve_path_rejects_oversized_file(tmp_path) -> None:
         tool._resolve_path(str(big))
 
 
+def test_validate_position_rejects_line_beyond_file_end(tmp_path) -> None:
+    from vibe.core.tools.base import ToolError
+    from vibe.core.tools.builtins.lsp import Lsp, LspConfig, LspState
+
+    f = tmp_path / "small.py"
+    f.write_text("x = 1\ny = 2\n")
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+    with pytest.raises(ToolError, match="line 99.*2 lines"):
+        tool._validate_position(f, 99, 1, "x = 1\ny = 2\n")
+
+
+def test_validate_position_rejects_column_beyond_line_length(tmp_path) -> None:
+    from vibe.core.tools.base import ToolError
+    from vibe.core.tools.builtins.lsp import Lsp, LspConfig, LspState
+
+    f = tmp_path / "small.py"
+    f.write_text("x = 1\n")
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+    with pytest.raises(ToolError, match="column 50.*has 5 character"):
+        tool._validate_position(f, 1, 50, "x = 1\n")
+
+
+def test_validate_position_passes_for_valid_coords(tmp_path) -> None:
+    from vibe.core.tools.builtins.lsp import Lsp, LspConfig, LspState
+
+    f = tmp_path / "small.py"
+    f.write_text("x = 1\ny = 2\n")
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+    tool._validate_position(f, 2, 3, "x = 1\ny = 2\n")
+
+
+def test_workspace_symbol_ranks_exact_match_above_substring() -> None:
+    from vibe.core.tools.builtins.lsp import Lsp, LspConfig, LspState
+
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+    raw = [
+        {"name": "test_base_tool_works", "location": {"uri": "file:///x.py"}},
+        {"name": "BaseTool", "location": {"uri": "file:///y.py"}},
+        {"name": "base_tool_helper", "location": {"uri": "file:///z.py"}},
+    ]
+    result = tool._format_symbols("Workspace symbols", raw, query="BaseTool")
+    names = result.symbol_names
+    assert names[0] == "BaseTool"
+    assert "test_base_tool_works" in names[-2:]
+
+
+def test_workspace_symbol_deprioritizes_test_symbols() -> None:
+    from vibe.core.tools.builtins.lsp import Lsp, LspConfig, LspState
+
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+    raw = [
+        {"name": "test_base_tool", "location": {"uri": "file:///t.py"}},
+        {"name": "BaseTool", "location": {"uri": "file:///y.py"}},
+        {"name": "BaseToolConfig", "location": {"uri": "file:///z.py"}},
+    ]
+    result = tool._format_symbols("Workspace symbols", raw, query="BaseTool")
+    names = result.symbol_names
+    assert names[-1] == "test_base_tool"
+    assert names[0] == "BaseTool"
+
+
 class _FakeCallHierarchyManager:
     """Replays canned responses keyed by (method, position) and records the
     sequence of requests so tests assert retry behavior.
@@ -470,10 +667,13 @@ class _FakeCallHierarchyManager:
         prepare_responses: dict[tuple[int, int], list[dict]],
         document_symbols: list[dict],
         call_edges: dict[str, list[dict]] | None = None,
+        cold_rounds: int = 0,
     ) -> None:
         self._prepare = prepare_responses
         self._symbols = document_symbols
         self._edges = call_edges or {}
+        self._cold_rounds = cold_rounds
+        self._call_attempts = 0
         self.requests: list[tuple[str, dict]] = []
 
     async def send_request(self, file_path: str, method: str, params: dict):
@@ -487,6 +687,9 @@ class _FakeCallHierarchyManager:
             return self._symbols, None
         if method in {"callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"}:
             item = (params.get("item") or {}).get("name", "")
+            self._call_attempts += 1
+            if self._call_attempts <= self._cold_rounds:
+                return [], None
             return self._edges.get(item, []), None
         return None, None
 
@@ -632,6 +835,45 @@ async def test_call_hierarchy_actionable_message_when_genuinely_empty() -> None:
     )
     assert "no callable at line 100" in result.summary
     assert "find_references" in result.summary
+
+
+@pytest.mark.asyncio
+async def test_call_hierarchy_retries_followup_on_cold_index(monkeypatch) -> None:
+    # prepareCallHierarchy succeeds (syntax-only) but incomingCalls returns
+    # empty on the first attempt because the package graph isn't loaded yet.
+    # The tool retries with a short backoff and gets data on the second try.
+    from vibe.core.tools.builtins.lsp import LspArgs, LspOperation
+
+    delays: list[float] = []
+
+    async def _fake_sleep(d: float) -> None:
+        delays.append(d)
+
+    monkeypatch.setattr("vibe.core.tools.builtins.lsp.asyncio.sleep", _fake_sleep)
+    tool = _make_lsp_tool()
+    symbols = [_fn_symbol("foo", (10, 4), (12, 0))]
+    manager = _FakeCallHierarchyManager(
+        prepare_responses={(10, 4): [{"name": "foo"}]},
+        document_symbols=symbols,
+        call_edges={"foo": [{"from": {"name": "caller", "uri": "file:///x.rs"}}]},
+        cold_rounds=1,
+    )
+    args = LspArgs(
+        operation=LspOperation.INCOMING_CALLS, file_path="/x.rs", line=11, character=5
+    )
+    result = await tool._call_hierarchy(
+        manager,
+        args,
+        "/x.rs",
+        {"textDocument": {"uri": "file:///x.rs"}},
+        {"line": 10, "character": 4},
+    )
+    assert result.locations
+    assert any("caller" in (loc.get("name") or "") for loc in result.locations)
+    incoming_calls = [
+        m for m, _ in manager.requests if m == "callHierarchy/incomingCalls"
+    ]
+    assert len(incoming_calls) >= 2
 
 
 def test_range_contains_bounds() -> None:
