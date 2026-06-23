@@ -28,28 +28,26 @@ logger = logging.getLogger(__name__)
 
 # Env vars allowed through when scrubbing (everything else — API keys, tokens,
 # cloud creds — is dropped). LC_* is allowed by prefix below.
-_ENV_ALLOWLIST = frozenset(
-    {
-        "PATH",
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "LANG",
-        "LC_ALL",
-        "TERM",
-        "SHELL",
-        "TMPDIR",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "CI",
-        "NONINTERACTIVE",
-        "NO_TTY",
-        "DEBIAN_FRONTEND",
-        "GIT_PAGER",
-        "PAGER",
-        "LESS",
-    }
-)
+_ENV_ALLOWLIST = frozenset({
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "SHELL",
+    "TMPDIR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "CI",
+    "NONINTERACTIVE",
+    "NO_TTY",
+    "DEBIAN_FRONTEND",
+    "GIT_PAGER",
+    "PAGER",
+    "LESS",
+})
 
 
 @dataclass
@@ -120,9 +118,7 @@ def unshare_confinement_nudge(
 def scrub_env(base: dict[str, str], passthrough: list[str]) -> dict[str, str]:
     """Keep only an allowlist of env vars (drops secrets), plus passthrough."""
     allowed = _ENV_ALLOWLIST | set(passthrough)
-    return {
-        k: v for k, v in base.items() if k in allowed or k.startswith("LC_")
-    }
+    return {k: v for k, v in base.items() if k in allowed or k.startswith("LC_")}
 
 
 def _canonical_roots(roots: list[Path]) -> list[str]:

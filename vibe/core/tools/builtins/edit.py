@@ -6,6 +6,7 @@ from typing import ClassVar, final
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.lsp._integration import notify_file_changed
 from vibe.core.rewind.manager import FileSnapshot
 from vibe.core.scratchpad import is_scratchpad_path
@@ -126,6 +127,23 @@ class Edit(
     ) -> AsyncGenerator[ToolStreamEvent | EditResult, None]:
         file_path = self._validate_args(args)
 
+        if ctx and ctx.files_read is not None:
+            key = str(file_path)
+            if key not in ctx.files_read:
+                raise ToolError(
+                    f"This file has not been read in this session: {file_path}\n"
+                    f"Read it first with the read tool, then retry the edit."
+                )
+            try:
+                current_fp = file_fingerprint(file_path)
+            except OSError:
+                current_fp = ""
+            if ctx.files_read[key] != current_fp:
+                raise ToolError(
+                    f"This file has changed since it was last read: {file_path}\n"
+                    f"Re-read it before editing to get the current content."
+                )
+
         try:
             async with file_write_lock(file_path):
                 result = await self._read_file(file_path)
@@ -181,6 +199,13 @@ class Edit(
             new_string=args.new_string,
         )
         result._ui_start_line = start_line
+
+        if ctx and ctx.files_read is not None:
+            try:
+                ctx.files_read[str(file_path)] = file_fingerprint(file_path)
+            except OSError:
+                pass
+
         yield result
 
     @final

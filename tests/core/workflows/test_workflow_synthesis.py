@@ -18,14 +18,7 @@ from vibe.core.workflows.runtime import (
 
 def test_flatten_one_level_with_string_and_dict_atoms() -> None:
     # strings, bytes, dicts are atoms (not iterated); scalars pass through.
-    assert _flatten([[1, 2], [3], ["ab"], {"k": 1}, 4]) == [
-        1,
-        2,
-        3,
-        "ab",
-        {"k": 1},
-        4,
-    ]
+    assert _flatten([[1, 2], [3], ["ab"], {"k": 1}, 4]) == [1, 2, 3, "ab", {"k": 1}, 4]
 
 
 def test_flatten_keeps_none_and_scalars() -> None:

@@ -78,9 +78,9 @@ class InvokeContext:
     # plus optional phase filter / raw flag. Used by the workflow_results tool
     # to recover work from completed/stopped/partially-failed runs on demand,
     # instead of relying solely on the one-shot completion delivery.
-    workflow_results_callback: (
-        Callable[..., dict[str, Any]] | None
-    ) = field(default=None)
+    workflow_results_callback: Callable[..., dict[str, Any]] | None = field(
+        default=None
+    )
     # Stops one run (run_id) or all runs (all_runs=True). Async because
     # WorkflowRunner.stop awaits the cancelled task. Returns a dict with
     # stopped / stopped_run_ids / message. Wired to the WorkflowRunner.
@@ -102,6 +102,12 @@ class InvokeContext:
     # pane and the `background` tool. None in headless/ACP runs without the TUI
     # wiring; the bash tool refuses background=True when this is None.
     background_registry: Any | None = field(default=None)
+    # Session-scoped map of resolved file paths to their stat fingerprint at
+    # read/write time. Shared mutable reference — the agent loop creates one
+    # dict and passes it into every InvokeContext so the edit tool can enforce
+    # read-before-edit with staleness detection across calls. None when no loop
+    # is running.
+    files_read: dict[str, str] | None = field(default=None)
 
 
 class ToolError(Exception):

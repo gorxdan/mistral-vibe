@@ -91,7 +91,8 @@ def _build_row_text(entry: TaskEntry) -> Text:
 @dataclass
 class _WorkflowScriptRef:
     """Carries a workflow run's script source so SaveRequested/script view work
-    without TasksApp importing the WorkflowRunEntry type."""
+    without TasksApp importing the WorkflowRunEntry type.
+    """
 
     run_id: str
     script_source: str
@@ -246,9 +247,7 @@ class TasksApp(Container):
                 )
             )
             return
-        options = [
-            Option(_build_row_text(e), id=e.task_id) for e in entries
-        ]
+        options = [Option(_build_row_text(e), id=e.task_id) for e in entries]
         option_list = OptionList(*options, id="tasks-list")
         await body.mount(option_list)
         option_list.focus()
@@ -261,9 +260,9 @@ class TasksApp(Container):
         entries = self._entries()
         highlighted = option_list.highlighted
         option_list.clear_options()
-        option_list.add_options(
-            [Option(_build_row_text(e), id=e.task_id) for e in entries]
-        )
+        option_list.add_options([
+            Option(_build_row_text(e), id=e.task_id) for e in entries
+        ])
         if highlighted is not None and highlighted < len(entries):
             option_list.highlighted = highlighted
 
@@ -310,11 +309,11 @@ class TasksApp(Container):
         text.append(f"  {entry.status}", style=color)
         d = entry.detail
         if entry.category == TaskCategory.PROCESS:
+            text.append(f"\nCommand: {entry.label}", style="white")
             text.append(
-                f"\nCommand: {entry.label}", style="white"
+                f"\nPID: {d.get('pid')}  Return code: {d.get('returncode')}",
+                style="dim",
             )
-            text.append(f"\nPID: {d.get('pid')}  Return code: {d.get('returncode')}",
-                        style="dim")
             text.append(f"\nCWD: {d.get('cwd')}", style="dim")
             log_tail = self._registry.read_log_tail(entry.task_id, lines=80)
             text.append("\n\n--- Log (last 80 lines) ---", style="bold")
@@ -400,14 +399,15 @@ class TasksApp(Container):
 
     def _workflow_script_ref(self) -> _WorkflowScriptRef | None:
         """Look up the selected workflow run's script source for save/script."""
-        if self._selected_task_id is None or not self._selected_task_id.startswith("wf-"):
+        if self._selected_task_id is None or not self._selected_task_id.startswith(
+            "wf-"
+        ):
             return None
         entry = self._workflow_runner._find_run(self._selected_task_id)  # type: ignore[attr-defined]
         if entry is None:
             return None
         return _WorkflowScriptRef(
-            run_id=entry.run_id,
-            script_source=getattr(entry, "script_source", "") or "",
+            run_id=entry.run_id, script_source=getattr(entry, "script_source", "") or ""
         )
 
     def _update_help(self) -> None:
@@ -455,9 +455,7 @@ class TasksApp(Container):
         ref = self._workflow_script_ref()
         if ref is None:
             return
-        self.post_message(
-            self.SaveRequested(ref.run_id, ref.script_source, name=None)
-        )
+        self.post_message(self.SaveRequested(ref.run_id, ref.script_source, name=None))
 
     def action_script(self) -> None:
         if self._view != "detail" or self._selected_task_id is None:

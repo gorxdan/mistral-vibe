@@ -33,6 +33,12 @@ def _create_file_fingerprint(file: IO) -> str:
     return f"{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}:{stat.st_size}"
 
 
+def file_fingerprint(path: Path) -> str:
+    """Return an opaque token representing the current state of a file by path."""
+    stat = path.stat()
+    return f"{stat.st_dev}:{stat.st_ino}:{stat.st_mtime_ns}:{stat.st_size}"
+
+
 def create_dict_fingerprint(source: dict[str, Any]) -> str:
     """Return an opaque token representing the current state of a dict."""
     payload = json.dumps(

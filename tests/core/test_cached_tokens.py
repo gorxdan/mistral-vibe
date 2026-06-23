@@ -22,7 +22,10 @@ def _parse(usage: dict) -> int:
 
 
 def test_cached_tokens_from_prompt_tokens_details() -> None:
-    assert _parse({"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 80}}) == 80
+    assert (
+        _parse({"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 80}})
+        == 80
+    )
 
 
 def test_cached_tokens_top_level_fallback() -> None:

@@ -273,10 +273,11 @@ def _get_available_skills_section(skill_manager: SkillManager) -> str:
     lines = [
         "# Available Skills",
         "",
-        "You have access to these skills. Each entry shows only a short trigger"
-        " line; call the `skill` tool with the skill's `name` to load its full"
-        " instructions, workflows, and bundled resources (the `description`"
-        " frontmatter is intentionally not loaded here to save context).",
+        "Each skill packages domain-specific instructions and workflows. When a"
+        " task matches a trigger below, load the skill with the `skill` tool"
+        " — it contains guidance that may differ from your training data or"
+        " be version-specific. Load proactively for matching tasks rather than"
+        " relying on recalled patterns.",
         "",
         "<available_skills>",
     ]

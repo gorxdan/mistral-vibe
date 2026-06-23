@@ -1276,7 +1276,8 @@ async def test_persist_workflow_snapshots_merges_by_run_id(
 ) -> None:
     """WF-RESUME-03: persisting must upsert by run_id, not full-replace, so a
     resumed session (which starts with an empty in-memory run list) does not
-    wipe snapshots persisted by a prior session."""
+    wipe snapshots persisted by a prior session.
+    """
     logger = SessionLogger(session_config, "merge-test-1")
     assert logger.session_dir is not None
     assert logger.session_metadata is not None

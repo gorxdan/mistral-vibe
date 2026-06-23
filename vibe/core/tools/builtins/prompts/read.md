@@ -1,5 +1,7 @@
 Use `read` to read the content of a file with line numbers. It handles encoding safely.
 
+**Reading a file registers it in the session** — the edit tool will refuse to modify any file you haven't read first. Always read before editing.
+
 - By default, it reads up to 2000 lines from the beginning of the file
 - Output larger than 50KB returns an error; use `offset` and `limit` for larger files
 - Results include line numbers in `     1→content` format (1-indexed)

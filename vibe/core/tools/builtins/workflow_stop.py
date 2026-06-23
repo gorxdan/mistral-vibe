@@ -29,27 +29,19 @@ class WorkflowStopArgs(BaseModel):
             "true. Exactly one of `run_id` and `all` must be provided."
         ),
     )
-    all: bool = Field(
-        default=False,
-        description="Stop every active workflow run.",
-    )
+    all: bool = Field(default=False, description="Stop every active workflow run.")
 
     @model_validator(mode="after")
     def _require_target(self) -> WorkflowStopArgs:
         if not self.all and not self.run_id:
-            raise ValueError(
-                "workflow_stop requires either a run_id or all=true."
-            )
+            raise ValueError("workflow_stop requires either a run_id or all=true.")
         return self
 
 
 class WorkflowStopResult(BaseModel):
-    stopped: bool = Field(
-        description="True if at least one run was stopped."
-    )
+    stopped: bool = Field(description="True if at least one run was stopped.")
     stopped_run_ids: list[str] = Field(
-        default_factory=list,
-        description="The run ids that were stopped.",
+        default_factory=list, description="The run ids that were stopped."
     )
     message: str = Field(description="Human-readable summary of the outcome.")
 
@@ -59,9 +51,7 @@ class WorkflowStopConfig(BaseToolConfig):
 
 
 class WorkflowStop(
-    BaseTool[
-        WorkflowStopArgs, WorkflowStopResult, WorkflowStopConfig, BaseToolState
-    ],
+    BaseTool[WorkflowStopArgs, WorkflowStopResult, WorkflowStopConfig, BaseToolState],
     ToolUIData[WorkflowStopArgs, WorkflowStopResult],
 ):
     description: ClassVar[str] = (
@@ -108,9 +98,9 @@ class WorkflowStop(
     ) -> AsyncGenerator[ToolStreamEvent | WorkflowStopResult, None]:
         if ctx is None:
             raise ToolError("Workflow stop tool requires context")
-        callback: (
-            Callable[[str | None, bool], Awaitable[dict[str, Any]]] | None
-        ) = ctx.workflow_stop_callback
+        callback: Callable[[str | None, bool], Awaitable[dict[str, Any]]] | None = (
+            ctx.workflow_stop_callback
+        )
         if callback is None:
             raise ToolError(
                 "Workflow stop is not available in this context "

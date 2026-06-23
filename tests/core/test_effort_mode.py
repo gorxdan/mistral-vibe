@@ -74,9 +74,7 @@ def test_le_chaton_turn_restore_returns_to_prior_mode_and_thinking(
 
 
 @pytest.mark.asyncio
-async def test_le_chaton_boost_is_live_during_the_turn(
-    vibe_config: VibeConfig,
-) -> None:
+async def test_le_chaton_boost_is_live_during_the_turn(vibe_config: VibeConfig) -> None:
     """A-1: the boost must apply to the turn the keyword triggers.
 
     _handle_user_message spawns the turn as a background task and returns; the

@@ -8,7 +8,7 @@ Design constraints (security):
 
 * The judge sits **after** hard denials. It can never run a command the
   denylist / guardrails marked ``NEVER``; it only fills the human-prompt gap.
-* It **fails closed**: any error, timeout, refusal, or unparseable response is
+* It **fails closed**: any error, timeout, refusal, or unparsable response is
   treated as "not safe", so the user is prompted as usual.
 * The tool call being judged is authored by the (untrusted) main model, so the
   judge prompt treats it strictly as data and is instructed to ignore any
@@ -93,9 +93,7 @@ Name the risky surface in your reason."""
 # prompt that reasons about the script's planned agent surface instead of
 # treating the Python source as an opaque command string. Falls back to the
 # bash/ops-oriented prompt for every other tool.
-_TOOL_PROMPTS: dict[str, str] = {
-    "launch_workflow": _WORKFLOW_SYSTEM_PROMPT,
-}
+_TOOL_PROMPTS: dict[str, str] = {"launch_workflow": _WORKFLOW_SYSTEM_PROMPT}
 
 
 def _system_prompt_for(tool_name: str) -> str:
@@ -136,10 +134,7 @@ class SafetyJudge:
         self._timeout = timeout if timeout is not None else provider_timeout(provider)
 
     async def judge(
-        self,
-        tool_name: str,
-        args_repr: str,
-        flagged_reasons: list[str],
+        self, tool_name: str, args_repr: str, flagged_reasons: list[str]
     ) -> JudgeVerdict:
         """Return the judge's verdict, failing closed on any problem."""
         try:
@@ -178,7 +173,9 @@ class SafetyJudge:
             else self._model.temperature
         )
         backend_cls = BACKEND_FACTORY[self._provider.backend]
-        async with backend_cls(provider=self._provider, timeout=self._timeout) as backend:
+        async with backend_cls(
+            provider=self._provider, timeout=self._timeout
+        ) as backend:
             result = await backend.complete(
                 model=self._model,
                 messages=messages,

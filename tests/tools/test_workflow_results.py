@@ -80,8 +80,7 @@ async def test_forwards_phase_and_raw_kwargs_to_callback() -> None:
 
     await collect_result(
         _make_tool().run(
-            WorkflowResultsArgs(run_id="wf-2", phase="verify", raw=True),
-            ctx=_ctx(cb),
+            WorkflowResultsArgs(run_id="wf-2", phase="verify", raw=True), ctx=_ctx(cb)
         )
     )
     assert seen == {"run_id": "wf-2", "phase": "verify", "raw": True}
@@ -92,8 +91,7 @@ async def test_errors_without_callback() -> None:
     with pytest.raises(ToolError, match="not available"):
         await collect_result(
             _make_tool().run(
-                WorkflowResultsArgs(run_id="wf-1"),
-                ctx=InvokeContext(tool_call_id="t"),
+                WorkflowResultsArgs(run_id="wf-1"), ctx=InvokeContext(tool_call_id="t")
             )
         )
 

@@ -589,7 +589,7 @@ How it fits the existing controls:
 
 - It only fills the **approval prompt** gap. Calls your denylist/guardrails mark as denied (`NEVER`) are still hard-blocked — the judge never sees them.
 - `--auto-approve` is unchanged: it still bypasses everything (including the judge).
-- It **fails closed**. No usable judge model, an API error, a timeout, a refusal, or an unparseable answer all fall back to the normal human prompt.
+- It **fails closed**. No usable judge model, an API error, a timeout, a refusal, or an unparsable answer all fall back to the normal human prompt.
 - Every judge auto-approval is logged.
 
 > **Security note.** An LLM judge is a probabilistic gate, not a guarantee. The tool call it evaluates is authored by the (untrusted) main model, so a compromised or jailbroken main model could in principle craft a call designed to fool the judge. Keep your denylist authoritative, prefer a judge model from a different provider than your active model, and treat this as convenience, not a sandbox.

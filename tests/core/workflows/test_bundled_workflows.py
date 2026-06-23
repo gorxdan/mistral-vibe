@@ -47,9 +47,7 @@ def _factory(response_text: str) -> Any:
         ) -> AsyncGenerator[AssistantEvent, None]:
             yield AssistantEvent(content=response_text, message_id="a1")
 
-    def factory(
-        prompt: str, *, agent: str, parent_context: Any | None = None
-    ) -> Any:
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
         return _Loop()
 
     return factory
@@ -184,9 +182,7 @@ async def test_security_fix_verify_requires_findings() -> None:
     info = mgr.get_workflow("security-fix-verify")
     assert info is not None
     rt = WorkflowRuntime(
-        agent_loop_factory=_factory("{}"),
-        max_agents=100,
-        budget_total=1_000_000,
+        agent_loop_factory=_factory("{}"), max_agents=100, budget_total=1_000_000
     )
     result = await rt.run(
         info.source, args={"base": "main", "branch": "x", "findings": []}
@@ -269,9 +265,7 @@ async def test_verify_contract_requires_task_and_contract() -> None:
     info = mgr.get_workflow("verify-contract")
     assert info is not None
     rt = WorkflowRuntime(
-        agent_loop_factory=_factory("{}"),
-        max_agents=100,
-        budget_total=1_000_000,
+        agent_loop_factory=_factory("{}"), max_agents=100, budget_total=1_000_000
     )
     result = await rt.run(info.source, args={"task": "do something"})
     assert result.return_value["gate"] == "error"

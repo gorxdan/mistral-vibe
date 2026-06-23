@@ -28,14 +28,14 @@ def test_valid_plugin_expands_paths_and_mcp(tmp_path) -> None:
     _make_plugin(
         tmp_path,
         "myplugin",
-        '''
+        """
 name = "myplugin"
 version = "1.0"
 [[mcp_servers]]
 name = "srv"
 transport = "stdio"
 command = "echo"
-''',
+""",
         dirs=["agents", "tools", "skills"],
     )
     res = load_plugins_from_fs([], [tmp_path])
@@ -57,9 +57,7 @@ def test_malformed_manifest_is_an_issue_not_a_crash(tmp_path) -> None:
 
 
 def test_path_escape_is_rejected(tmp_path) -> None:
-    _make_plugin(
-        tmp_path, "evil", 'name = "evil"\nagents = "../../etc"\n', dirs=[]
-    )
+    _make_plugin(tmp_path, "evil", 'name = "evil"\nagents = "../../etc"\n', dirs=[])
     res = load_plugins_from_fs([], [tmp_path])
     assert any("escapes the plugin root" in i for i in res.issues)
     assert res.agent_paths == []
@@ -69,12 +67,7 @@ def test_prompts_component_collected_into_prompt_paths(tmp_path) -> None:
     # The plugin manifest advertises a `prompts` component; it must land in
     # PluginLoadResult.prompt_paths and be folded onto config by
     # apply_plugin_result (previously declared but dropped on the floor).
-    _make_plugin(
-        tmp_path,
-        "withprompts",
-        'name = "withprompts"\n',
-        dirs=["prompts"],
-    )
+    _make_plugin(tmp_path, "withprompts", 'name = "withprompts"\n', dirs=["prompts"])
     res = load_plugins_from_fs([], [tmp_path])
     assert res.plugins == ["withprompts"]
     assert any(p.name == "prompts" for p in res.prompt_paths)
@@ -120,13 +113,13 @@ def test_apply_folds_paths_and_mcp_into_config(tmp_path) -> None:
     _make_plugin(
         tmp_path,
         "p",
-        '''
+        """
 name = "p"
 [[mcp_servers]]
 name = "psrv"
 transport = "stdio"
 command = "echo"
-''',
+""",
         dirs=["agents", "tools"],
     )
     config = build_test_vibe_config()

@@ -45,10 +45,7 @@ def test_load_prompt_falls_back_to_builtin_when_extra_dirs_have_no_match(
     d.mkdir()
 
     out = load_prompt(
-        "anything",
-        setting_name="x",
-        builtins={"anything": builtin},
-        extra_dirs=[d],
+        "anything", setting_name="x", builtins={"anything": builtin}, extra_dirs=[d]
     )
     assert out == "BUILTIN"
 
@@ -62,11 +59,6 @@ def test_load_prompt_missing_raises_with_available_ids(tmp_path: Path) -> None:
     (d / "beta.md").write_text("b")
 
     with pytest.raises(MissingPromptFileError) as ei:
-        load_prompt(
-            "nope",
-            setting_name="x",
-            builtins={},
-            extra_dirs=[d],
-        )
+        load_prompt("nope", setting_name="x", builtins={}, extra_dirs=[d])
     msg = str(ei.value)
     assert "alpha" in msg and "beta" in msg

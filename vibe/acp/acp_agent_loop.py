@@ -521,9 +521,7 @@ class VibeAcpAgentLoop(AcpAgent):
             ),
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(
-                name="chaton",
-                title="Chaton",
-                version=__version__,
+                name="chaton", title="Chaton", version=__version__
             ),
             auth_methods=auth_methods,
         )
@@ -1170,9 +1168,7 @@ class VibeAcpAgentLoop(AcpAgent):
         _merge_non_interactive_disabled_tools(new_config)
         await session.agent_loop.reload_with_initial_messages(base_config=new_config)
         setup_lsp_for_config(
-            new_config,
-            lambda: session.agent_loop.base_config,
-            Path.cwd(),
+            new_config, lambda: session.agent_loop.base_config, Path.cwd()
         )
 
     async def _apply_model_change(self, session: AcpSessionLoop, model_id: str) -> bool:
@@ -1974,9 +1970,7 @@ class VibeAcpAgentLoop(AcpAgent):
         _merge_non_interactive_disabled_tools(new_config)
         await session.agent_loop.reload_with_initial_messages(base_config=new_config)
         setup_lsp_for_config(
-            new_config,
-            lambda: session.agent_loop.base_config,
-            Path.cwd(),
+            new_config, lambda: session.agent_loop.base_config, Path.cwd()
         )
 
     async def _handle_reload(

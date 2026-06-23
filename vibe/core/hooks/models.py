@@ -152,9 +152,7 @@ class PreCompactInvocation(HookSessionContext):
 
 
 class UserPromptSubmitInvocation(HookSessionContext):
-    hook_event_name: Literal[HookType.USER_PROMPT_SUBMIT] = (
-        HookType.USER_PROMPT_SUBMIT
-    )
+    hook_event_name: Literal[HookType.USER_PROMPT_SUBMIT] = HookType.USER_PROMPT_SUBMIT
     prompt: str
     message_id: str | None = None
     has_images: bool = False
@@ -303,10 +301,7 @@ def build_invocation(  # noqa: PLR0913
             if prompt is None:
                 raise ValueError("prompt is required for user_prompt_submit hooks")
             return UserPromptSubmitInvocation(
-                **base,
-                prompt=prompt,
-                message_id=message_id,
-                has_images=has_images,
+                **base, prompt=prompt, message_id=message_id, has_images=has_images
             )
         case HookType.STOP:
             return StopInvocation(**base, stop_hook_active=stop_hook_active)
@@ -316,9 +311,7 @@ def build_invocation(  # noqa: PLR0913
             return SessionEndInvocation(**base, reason=reason or "exit")
         case HookType.NOTIFICATION:
             if notification_type is None:
-                raise ValueError(
-                    "notification_type is required for notification hooks"
-                )
+                raise ValueError("notification_type is required for notification hooks")
             return NotificationInvocation(
                 **base,
                 notification_type=notification_type,

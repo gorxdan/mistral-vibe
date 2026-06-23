@@ -10,7 +10,7 @@ from vibe.core.config.harness_files import (
     init_harness_files_manager,
     reset_harness_files_manager,
 )
-from vibe.core.tools.base import ToolError
+from vibe.core.tools.base import InvokeContext, ToolError
 from vibe.core.tools.builtins.read import (
     DEFAULT_LINE_LIMIT,
     MAX_BYTES,
@@ -352,3 +352,20 @@ def test_agents_md_returns_none_when_not_initialized(tmp_path: Path) -> None:
     )
     assert tool.get_result_extra(result) is None
     reset_harness_files_manager()
+
+
+@pytest.mark.asyncio
+async def test_read_records_file_in_files_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "f.txt").write_text("content\n", encoding="utf-8")
+    tool = _make_read()
+    files_read: dict[str, str] = {}
+    ctx = InvokeContext(tool_call_id="test", files_read=files_read)
+
+    await collect_result(tool.run(ReadArgs(file_path=str(tmp_path / "f.txt")), ctx=ctx))
+
+    key = str((tmp_path / "f.txt").resolve())
+    assert key in files_read
+    assert files_read[key] != ""

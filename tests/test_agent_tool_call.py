@@ -1107,11 +1107,13 @@ async def test_stage_injected_message_folds_into_running_turn() -> None:
 
     tool_result_idx = next(i for i, m in enumerate(messages) if m.role == Role.tool)
     staged_idx = next(
-        i for i, m in enumerate(messages)
+        i
+        for i, m in enumerate(messages)
         if m.role == Role.user and m.injected and "be terse" in (m.content or "")
     )
     final_assistant_idx = next(
-        i for i, m in enumerate(messages)
+        i
+        for i, m in enumerate(messages)
         if m.role == Role.assistant and "staged note" in (m.content or "")
     )
 
@@ -1122,4 +1124,3 @@ async def test_stage_injected_message_folds_into_running_turn() -> None:
     assert messages[staged_idx].images is None
     # Nothing left staged once the turn ended.
     assert agent_loop._pending_injected_messages == []
-

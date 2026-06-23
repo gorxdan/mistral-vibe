@@ -42,7 +42,9 @@ class _RecordingApproval:
         self.response = response
         self.called = False
 
-    async def __call__(self, *args: Any, **kwargs: Any) -> tuple[ApprovalResponse, None]:
+    async def __call__(
+        self, *args: Any, **kwargs: Any
+    ) -> tuple[ApprovalResponse, None]:
         self.called = True
         return self.response, None
 
@@ -76,9 +78,7 @@ def test_parser_fail_closed(raw: str | None, expected_safe: bool) -> None:
 
 
 def test_resolve_judge_none_when_disabled() -> None:
-    config = build_test_vibe_config(
-        safety_judge=SafetyJudgeConfig(enabled=False)
-    )
+    config = build_test_vibe_config(safety_judge=SafetyJudgeConfig(enabled=False))
     loop = build_test_agent_loop(config=config)
     assert loop.config.safety_judge.enabled is False
     assert loop._resolve_safety_judge() is None
@@ -154,7 +154,9 @@ class _NoteCapturingApproval:
         self.judge_note: str | None = None
         self.called = False
 
-    async def __call__(self, *args: Any, **kwargs: Any) -> tuple[ApprovalResponse, None]:
+    async def __call__(
+        self, *args: Any, **kwargs: Any
+    ) -> tuple[ApprovalResponse, None]:
         self.called = True
         # The 5th positional argument is judge_note (see ApprovalCallback).
         if len(args) >= 5:
@@ -176,9 +178,7 @@ async def test_judge_deferral_reason_is_threaded_to_approval_callback() -> None:
     approval = _NoteCapturingApproval(ApprovalResponse.NO)
     loop.approval_callback = approval
 
-    await loop._should_execute_tool(
-        _bash(), BashArgs(command="rm -rf build"), "call-3"
-    )
+    await loop._should_execute_tool(_bash(), BashArgs(command="rm -rf build"), "call-3")
 
     assert approval.called
     assert approval.judge_note == "could delete files", (
@@ -241,11 +241,12 @@ async def test_safety_judge_fails_closed_on_backend_error(monkeypatch) -> None:
             raise RuntimeError("backend exploded")
 
     fake_provider = type(
-        "P", (), {"backend": "generic", "extra_headers": {}, "api_base": "", "name": "p"}
+        "P",
+        (),
+        {"backend": "generic", "extra_headers": {}, "api_base": "", "name": "p"},
     )()
     monkeypatch.setattr(
-        "vibe.core.tools.safety_judge.BACKEND_FACTORY",
-        {"generic": _BoomBackend},
+        "vibe.core.tools.safety_judge.BACKEND_FACTORY", {"generic": _BoomBackend}
     )
 
     judge = SafetyJudge(
@@ -341,9 +342,7 @@ async def test_fail_closed_verdict_is_not_cached() -> None:
 @pytest.mark.asyncio
 async def test_cache_disabled_when_size_zero() -> None:
     config = build_test_vibe_config(
-        safety_judge=SafetyJudgeConfig(
-            enabled=True, model="any", verdict_cache_size=0
-        )
+        safety_judge=SafetyJudgeConfig(enabled=True, model="any", verdict_cache_size=0)
     )
     loop = build_test_agent_loop(config=config)
     fake = _FakeJudge(safe=True, reason="benign")
@@ -360,9 +359,7 @@ async def test_cache_disabled_when_size_zero() -> None:
 @pytest.mark.asyncio
 async def test_cache_evicts_oldest_at_capacity() -> None:
     config = build_test_vibe_config(
-        safety_judge=SafetyJudgeConfig(
-            enabled=True, model="any", verdict_cache_size=1
-        )
+        safety_judge=SafetyJudgeConfig(enabled=True, model="any", verdict_cache_size=1)
     )
     loop = build_test_agent_loop(config=config)
     fake = _FakeJudge(safe=True, reason="benign")
@@ -426,7 +423,9 @@ async def test_cache_cleared_when_judge_model_changes() -> None:
     assert len(fake.calls) == 1
     # Swap the judge model mid-session.
     loop.config.safety_judge = SafetyJudgeConfig(enabled=True, model="beta")
-    await loop._should_execute_tool(_bash(), args, "c2")  # must not reuse alpha's verdict
+    await loop._should_execute_tool(
+        _bash(), args, "c2"
+    )  # must not reuse alpha's verdict
 
     assert len(fake.calls) == 2, (
         "cached verdict must be dropped when the judge model changes"
@@ -458,7 +457,8 @@ async def test_truncated_args_with_risk_flag_force_defer_skipping_judge() -> Non
     """A truncated payload whose destructive tail is invisible to the judge must
     never be auto-approved. _judge_tool_safety force-defers to the user instead
     of consulting the judge on a blind prefix (regression for the truncation
-    bypass found in red-team round 2)."""
+    bypass found in red-team round 2).
+    """
     loop = build_test_agent_loop()
     # A permissive judge that would approve anything — it must never be asked.
     fake = _FakeJudge(safe=True, reason="visible prefix looks benign")
@@ -483,7 +483,8 @@ async def test_truncated_args_with_risk_flag_force_defer_skipping_judge() -> Non
 async def test_truncated_args_without_risk_flag_still_consults_judge() -> None:
     """Truncation alone (no uncovered permission) does not force-defer: the
     sentinel in the repr lets the judge decide. Guards against over-blocking
-    large but unflagged payloads and preserves the cache-keying contract."""
+    large but unflagged payloads and preserves the cache-keying contract.
+    """
     loop = build_test_agent_loop()
     fake = _FakeJudge(safe=True, reason="benign")
     loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]

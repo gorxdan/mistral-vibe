@@ -1,4 +1,4 @@
-Use `write_file` to create a new file.
+Use `write_file` to create a new file. Creating a file registers it in the session, so you can edit it afterward without re-reading.
 
 **Arguments:**
 - `path`: The file path (relative or absolute)

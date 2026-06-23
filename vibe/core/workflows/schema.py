@@ -138,7 +138,8 @@ def _strip_object_unknown(value: Any, schema: dict) -> Any:
 
 def strip_unknown_properties(value: Any, schema: dict) -> Any:
     """Public entry point for the lenient pre-validation strip. Returns a new
-    value with unknown properties removed; the input is not mutated."""
+    value with unknown properties removed; the input is not mutated.
+    """
     return _strip_object_unknown(value, schema)
 
 

@@ -8,7 +8,7 @@ Use `edit` to make exact string replacements in files.
 
 **IMPORTANT:**
 
-- **ALWAYS** call `read` on the target before `edit`. The on-disk content may have changed since you last saw it (user edits, prior tool calls, external processes). Operating on stale content will either fail the exact-match check or silently apply the edit to the wrong place.
+- **ALWAYS** call `read` on the target before `edit`. This is enforced at runtime — the edit tool will refuse to modify a file you have not read in this session. Reading also ensures the on-disk content may have changed since you last saw it (user edits, prior tool calls, external processes). Operating on stale content will either fail the exact-match check or silently apply the edit to the wrong place.
 - The `old_string` must match the file content exactly, including whitespace and indentation
 - When editing text from `read` output, match only the content AFTER the line number prefix (the `     1→` part is not in the file). Never include any part of the line number prefix in old_string or new_string.
 - If `old_string` appears multiple times, the edit will fail unless `replace_all` is `true`. Either provide more surrounding context to uniquely identify the target, or set `replace_all` to `true`.

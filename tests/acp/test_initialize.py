@@ -24,9 +24,7 @@ from vibe.core.types import Backend
 from vibe.setup.onboarding.context import OnboardingContext
 
 BROWSER_AUTH_NAME = "Sign in through Mistral AI Studio"
-BROWSER_AUTH_DESCRIPTION = (
-    "Sign into Chaton through your Mistral AI Studio account."
-)
+BROWSER_AUTH_DESCRIPTION = "Sign into Chaton through your Mistral AI Studio account."
 
 
 def build_mistral_provider() -> ProviderConfig:

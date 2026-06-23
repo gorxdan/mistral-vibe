@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from vibe.core.worktree.manager import (
     WorktreeConfig,
     WorktreeHandle,

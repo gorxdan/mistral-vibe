@@ -20,7 +20,10 @@ from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.cli.textual_ui.widgets.vscode_compat import VscodeCompatInput
 
 _LOCATIONS = ("project", "user")
-_LOC_LABELS = {"project": "Project (.vibe/workflows/)", "user": "Personal (~/.vibe/workflows/)"}
+_LOC_LABELS = {
+    "project": "Project (.vibe/workflows/)",
+    "user": "Personal (~/.vibe/workflows/)",
+}
 
 
 def _default_name(run_id: str) -> str:
@@ -65,7 +68,9 @@ class WorkflowSaveApp(Container):
         self.run_id = run_id
         self.script_source = script_source
         self._name_default = default_name or _default_name(run_id)
-        self._location = default_location if default_location in _LOCATIONS else "project"
+        self._location = (
+            default_location if default_location in _LOCATIONS else "project"
+        )
 
     def _loc_label(self) -> str:
         # Show both options, marking the active one; mirrors Claude Code's
@@ -84,9 +89,7 @@ class WorkflowSaveApp(Container):
                 f"Save workflow {self.run_id} as a command", classes="save-title"
             )
             yield NoMarkupStatic("Name:", classes="save-field-label")
-            yield VscodeCompatInput(
-                value=self._name_default, id="workflow-save-name"
-            )
+            yield VscodeCompatInput(value=self._name_default, id="workflow-save-name")
             yield NoMarkupStatic(
                 self._loc_label(), id="workflow-save-location", classes="save-location"
             )

@@ -43,8 +43,7 @@ async def test_workflow_results_callback_forwarded_into_tool_context() -> None:
         call_id="c1",
     )
     decision = ToolDecision(
-        verdict=ToolExecutionResponse.EXECUTE,
-        approval_type=ToolPermission.ALWAYS,
+        verdict=ToolExecutionResponse.EXECUTE, approval_type=ToolPermission.ALWAYS
     )
 
     async with tool_span(
@@ -78,8 +77,7 @@ async def test_workflow_results_without_callback_raises_specific_error() -> None
         call_id="c1",
     )
     decision = ToolDecision(
-        verdict=ToolExecutionResponse.EXECUTE,
-        approval_type=ToolPermission.ALWAYS,
+        verdict=ToolExecutionResponse.EXECUTE, approval_type=ToolPermission.ALWAYS
     )
 
     async with tool_span(

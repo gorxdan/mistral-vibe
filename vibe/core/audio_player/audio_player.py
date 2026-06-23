@@ -42,6 +42,7 @@ def __getattr__(name: str) -> Any:
         return globals()["sd"]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+
 DEFAULT_BLOCKSIZE = 4096
 DTYPE = "int16"
 DEFAULT_SAMPLE_WIDTH = 2  # 16-bit = 2 bytes

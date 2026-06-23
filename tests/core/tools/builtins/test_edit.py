@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from tests.mock.utils import collect_result
-from vibe.core.tools.base import BaseToolState, ToolError
+from vibe.core.config.fingerprint import file_fingerprint
+from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
 from vibe.core.tools.builtins.edit import Edit, EditArgs, EditConfig, EditResult
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay
 from vibe.core.types import ToolResultEvent
@@ -271,3 +272,61 @@ async def test_ui_start_line_set_for_pure_deletion(
     )
 
     assert result.ui_start_line == 3
+
+
+@pytest.mark.asyncio
+async def test_edit_refuses_file_not_read_this_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path, "f.txt", "hello world\n")
+    edit = _make_edit()
+    ctx = InvokeContext(tool_call_id="test", files_read={})
+
+    with pytest.raises(ToolError, match="has not been read in this session"):
+        await collect_result(
+            edit.run(
+                EditArgs(file_path="f.txt", old_string="hello", new_string="bye"),
+                ctx=ctx,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_edit_refuses_file_changed_since_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    f = _write(tmp_path, "f.txt", "hello world\n")
+    edit = _make_edit()
+    key = str(f.resolve())
+    ctx = InvokeContext(tool_call_id="test", files_read={key: "stale:fingerprint:0:0"})
+
+    with pytest.raises(ToolError, match="has changed since it was last read"):
+        await collect_result(
+            edit.run(
+                EditArgs(file_path="f.txt", old_string="hello", new_string="bye"),
+                ctx=ctx,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_edit_allows_file_read_this_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    f = _write(tmp_path, "f.txt", "hello world\n")
+    edit = _make_edit()
+    key = str(f.resolve())
+    ctx = InvokeContext(tool_call_id="test", files_read={key: file_fingerprint(f)})
+
+    result = await collect_result(
+        edit.run(
+            EditArgs(file_path="f.txt", old_string="hello", new_string="goodbye"),
+            ctx=ctx,
+        )
+    )
+
+    assert (tmp_path / "f.txt").read_text() == "goodbye world\n"
+    assert result.message == "The file has been updated successfully."

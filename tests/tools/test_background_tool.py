@@ -16,17 +16,13 @@ from vibe.core.tools.builtins.background import (
 )
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _bash(config: BashToolConfig | None = None) -> Bash:
-    return Bash(
-        config_getter=lambda: config or BashToolConfig(),
-        state=BaseToolState(),
-    )
+    return Bash(config_getter=lambda: config or BashToolConfig(), state=BaseToolState())
 
 
 def _ctx(
@@ -45,22 +41,22 @@ def _ctx(
 
 def _background_tool() -> Background:
     return Background(
-        config_getter=lambda: BackgroundToolConfig(),
-        state=BaseToolState(),
+        config_getter=lambda: BackgroundToolConfig(), state=BaseToolState()
     )
 
 
 @pytest.fixture
 async def reaping_registry():
     """Yield a BackgroundRegistry that reaps every still-running process on
-    teardown, so a failing assertion can't orphan a backgrounded server."""
+    teardown, so a failing assertion can't orphan a backgrounded server.
+    """
     reg = BackgroundRegistry()
     yield reg
     for rec in list(reg._procs.values()):
         if rec.status == "running":
             try:
                 await reg.stop(rec.task_id)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
 
@@ -140,9 +136,10 @@ async def test_background_without_session_or_scratchpad_raises():
 @pytest.mark.asyncio
 async def test_background_false_is_byte_identical_to_foreground(tmp_path):
     """Regression: background must default to False and the foreground path
-    still awaits communicate() and returns the real stdout/returncode."""
+    still awaits communicate() and returns the real stdout/returncode.
+    """
     bash = _bash()
-    ctx = _ctx(None, session_dir=tmp_path)
+    _ctx(None, session_dir=tmp_path)
 
     result = await collect_result(bash.run(BashArgs(command="echo fg")))
 
@@ -161,7 +158,6 @@ async def test_background_stop_reaps_process(tmp_path):
     result = await collect_result(
         bash.run(BashArgs(command="sleep 30", background=True), ctx=ctx)
     )
-    pid = result.pid
 
     stopped = await registry.stop(result.background_task_id)
     assert stopped is True
@@ -251,8 +247,8 @@ async def test_scoped_list_returns_only_the_named_task(tmp_path):
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
 
-    await _spawn_marker_process(bash, ctx, "marker-one")   # proc-1
-    await _spawn_marker_process(bash, ctx, "marker-two")   # proc-2
+    await _spawn_marker_process(bash, ctx, "marker-one")  # proc-1
+    await _spawn_marker_process(bash, ctx, "marker-two")  # proc-2
     tool = _background_tool()
 
     result = await collect_result(
@@ -494,9 +490,7 @@ async def test_family_scoping_has_no_numeric_footgun(tmp_path):
     # proc-10 must NOT appear — only proc-1 (and no proc-1/ children exist).
     assert "proc-10" not in result.response
     # Every rendered entry line that names a proc should be proc-1 only.
-    proc_lines = [
-        line for line in result.response.splitlines() if "proc-" in line
-    ]
+    proc_lines = [line for line in result.response.splitlines() if "proc-" in line]
     assert proc_lines, "expected at least one proc entry"
     for line in proc_lines:
         assert line.lstrip().startswith("- proc-1 "), (
@@ -524,9 +518,12 @@ async def test_scoped_workflow_list_tails_child_agent_transcript(tmp_path):
 
     log = tmp_path / "agent-transcript.jsonl"
     log.write_text(
-        json.dumps({"role": "user", "content": "audit the auth module"}) + "\n"
-        + json.dumps({"role": "assistant", "content": "grepping for login routes"}) + "\n"
-        + json.dumps({"role": "assistant", "content": "login is handled in auth.py"}) + "\n"
+        json.dumps({"role": "user", "content": "audit the auth module"})
+        + "\n"
+        + json.dumps({"role": "assistant", "content": "grepping for login routes"})
+        + "\n"
+        + json.dumps({"role": "assistant", "content": "login is handled in auth.py"})
+        + "\n"
     )
     registry = BackgroundRegistry()
     wf = _FakeWorkflowRunner()
@@ -558,7 +555,8 @@ async def test_scoped_workflow_list_tails_child_agent_transcript(tmp_path):
 @pytest.mark.asyncio
 async def test_scoped_agent_list_tails_single_agent(tmp_path):
     """Asking for the agent id directly (wf-1/live-explore) tails just that
-    agent — same machinery, scoped to the one child row."""
+    agent — same machinery, scoped to the one child row.
+    """
     import json
 
     log = tmp_path / "single-agent.jsonl"
@@ -603,9 +601,7 @@ async def test_background_tool_stop(tmp_path):
 
     tool = _background_tool()
     result = await collect_result(
-        tool.run(
-            BackgroundArgs(action="stop", task_id="proc-1"), ctx=_ctx(registry)
-        )
+        tool.run(BackgroundArgs(action="stop", task_id="proc-1"), ctx=_ctx(registry))
     )
 
     assert result.stopped is True
@@ -618,9 +614,7 @@ async def test_background_tool_stop_unknown_returns_not_stopped():
     ctx = _ctx(BackgroundRegistry())
 
     result = await collect_result(
-        tool.run(
-            BackgroundArgs(action="stop", task_id="proc-999"), ctx=ctx
-        )
+        tool.run(BackgroundArgs(action="stop", task_id="proc-999"), ctx=ctx)
     )
 
     assert result.stopped is False
@@ -641,9 +635,7 @@ async def test_background_tool_unknown_action_raises():
     ctx = _ctx(BackgroundRegistry())
 
     with pytest.raises(ToolError, match="Unknown background action"):
-        await collect_result(
-            tool.run(BackgroundArgs(action="frobnicate"), ctx=ctx)
-        )
+        await collect_result(tool.run(BackgroundArgs(action="frobnicate"), ctx=ctx))
 
 
 @pytest.mark.asyncio
@@ -673,7 +665,8 @@ def test_background_tool_is_always_allowed():
 @pytest.mark.asyncio
 async def test_read_log_tail_trims_oversized_log_in_place(tmp_path, monkeypatch):
     """A chatty server's log must not grow unbounded: when it exceeds the disk
-    cap, read_log_tail rewrites it in place to a bounded tail."""
+    cap, read_log_tail rewrites it in place to a bounded tail.
+    """
     import vibe.core.tools.background as bgmod
 
     # Shrink the caps so the test runs fast on a small file.
@@ -725,8 +718,7 @@ async def test_end_to_end_background_server_serves_then_stops(tmp_path):
     result = await collect_result(
         bash.run(
             BashArgs(
-                command="python -u -m http.server 0 --bind 127.0.0.1",
-                background=True,
+                command="python -u -m http.server 0 --bind 127.0.0.1", background=True
             ),
             ctx=ctx,
         )
@@ -767,19 +759,17 @@ async def test_stop_reaps_grandchild_process_tree(tmp_path):
     The command writes a grandchild's PID to a file, then waits. After stop,
     that PID must no longer be alive.
     """
-    import os
-
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
     pid_file = tmp_path / "child.pid"
     # sh -c 'sleep 300 & echo $! > pidfile; wait' — the sleep is a grandchild
     # of the backgrounded shell. `wait` keeps the shell alive until killed.
-    cmd = (
-        f"sh -c 'sleep 300 & echo $$ > {pid_file} ; wait' "
-    )
+    cmd = f"sh -c 'sleep 300 & echo $$ > {pid_file} ; wait' "
 
-    result = await collect_result(bash.run(BashArgs(command=cmd, background=True), ctx=ctx))
+    result = await collect_result(
+        bash.run(BashArgs(command=cmd, background=True), ctx=ctx)
+    )
 
     # Wait for the grandchild PID to be written.
     grandchild_pid = None
@@ -799,7 +789,9 @@ async def test_stop_reaps_grandchild_process_tree(tmp_path):
 
     # The grandchild PID must be dead (reaped by killpg).
     alive = _pid_alive(grandchild_pid)
-    assert not alive, f"grandchild pid {grandchild_pid} survived stop — killpg did not fan out"
+    assert not alive, (
+        f"grandchild pid {grandchild_pid} survived stop — killpg did not fan out"
+    )
 
 
 def _pid_alive(pid: int) -> bool:
@@ -827,7 +819,8 @@ def _pid_alive(pid: int) -> bool:
 @pytest.mark.asyncio
 async def test_shutdown_reaps_real_running_process(tmp_path):
     """registry.shutdown() (the app-exit orphan preventer) must terminate and
-    reap a genuinely running process, not just a fake."""
+    reap a genuinely running process, not just a fake.
+    """
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)

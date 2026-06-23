@@ -142,9 +142,7 @@ class WorkflowResults(
     def get_status_text(cls) -> str:
         return "Retrieving workflow results"
 
-    def resolve_permission(
-        self, args: WorkflowResultsArgs
-    ) -> PermissionContext | None:
+    def resolve_permission(self, args: WorkflowResultsArgs) -> PermissionContext | None:
         # Read-only retrieval of run data the host already owns. Low blast
         # radius — no reason to gate behind ASK.
         return PermissionContext(permission=ToolPermission.ALWAYS)

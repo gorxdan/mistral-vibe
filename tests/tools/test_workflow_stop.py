@@ -82,8 +82,7 @@ async def test_errors_without_callback() -> None:
     with pytest.raises(ToolError, match="not available"):
         await collect_result(
             _make_tool().run(
-                WorkflowStopArgs(run_id="wf-1"),
-                ctx=InvokeContext(tool_call_id="t"),
+                WorkflowStopArgs(run_id="wf-1"), ctx=InvokeContext(tool_call_id="t")
             )
         )
 

@@ -78,10 +78,7 @@ class WorkflowManager:
         self._discovered = self._discover_workflows()
 
     def save_workflow_source(
-        self,
-        name: str,
-        source: str,
-        location: str = "auto",
+        self, name: str, source: str, location: str = "auto"
     ) -> Path:
         """Persist a workflow script and return its path.
 
@@ -183,9 +180,7 @@ class WorkflowManager:
             return None
 
     @staticmethod
-    def _parse_workflow_file(
-        content: str, path: Path
-    ) -> tuple[WorkflowMetadata, str]:
+    def _parse_workflow_file(content: str, path: Path) -> tuple[WorkflowMetadata, str]:
         match = _FRONTMATTER_RE.match(content)
         if match is None:
             return WorkflowMetadata(name=path.stem), content

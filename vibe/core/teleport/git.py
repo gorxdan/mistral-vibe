@@ -26,6 +26,7 @@ def _load_git() -> None:
             GitCommandError=GitCommandError,
         )
 
+
 from vibe.core.teleport.errors import (
     ServiceTeleportError,
     ServiceTeleportNotSupportedError,
