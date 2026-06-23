@@ -15,6 +15,10 @@ DEFAULT_CONTAINER_NAME = "vibe-searxng"
 DEFAULT_PORT = 8888
 # SearXNG always listens on 8080 inside the container; we map a host port to it.
 _INTERNAL_PORT = 8080
+# Bind the host-side port to loopback only: vibe talks to SearXNG over
+# localhost, and a 0.0.0.0 bind (docker's default for `-p port:port`) would
+# expose the unauthenticated instance to the LAN.
+_BIND_ADDRESS = "127.0.0.1"
 
 _HTTP_OK = 200
 _QUICK_HTTP_TIMEOUT = 3.0
@@ -56,7 +60,7 @@ class SearxngSettings:
     def start_command(self, engine: str | None = None) -> str:
         return (
             f"{engine or 'docker'} run -d --name {self.container_name} "
-            f"-p {self.port}:{_INTERNAL_PORT} {self.image}"
+            f"-p {_BIND_ADDRESS}:{self.port}:{_INTERNAL_PORT} {self.image}"
         )
 
 
@@ -178,7 +182,7 @@ async def _start_container(
                         "--name",
                         name,
                         "-p",
-                        f"{settings.port}:{_INTERNAL_PORT}",
+                        f"{_BIND_ADDRESS}:{settings.port}:{_INTERNAL_PORT}",
                         settings.image,
                     ],
                     timeout=_START_CMD_TIMEOUT,

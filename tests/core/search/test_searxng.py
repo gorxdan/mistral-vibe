@@ -37,7 +37,36 @@ def test_effective_url_uses_port_when_url_unset():
 def test_start_command_mentions_engine_and_ports():
     cmd = _SETTINGS.start_command("podman")
     assert cmd.startswith("podman run -d --name vibe-searxng")
-    assert "-p 8888:8080" in cmd
+    assert "-p 127.0.0.1:8888:8080" in cmd
+
+
+def test_start_command_binds_loopback_not_all_interfaces():
+    # The managed SearXNG container must only be reachable from localhost: a
+    # 0.0.0.0 bind exposes it to the LAN. Vibe only ever talks to localhost.
+    cmd = _SETTINGS.start_command("docker")
+    assert "127.0.0.1:8888:8080" in cmd
+    assert "0.0.0.0:8888" not in cmd
+    # Bare port form (which docker binds to 0.0.0.0) must not appear either.
+    assert " -p 8888:8080" not in cmd
+
+
+@pytest.mark.asyncio
+async def test_create_container_argv_binds_loopback(monkeypatch):
+    monkeypatch.setattr(searxng, "health_check", AsyncMock(side_effect=[False, True]))
+    run_argv: list[list[str]] = []
+
+    async def fake_run_cmd(argv, *, timeout):
+        run_argv.append(argv)
+        if argv[1] == "inspect":
+            return (1, "", "")  # absent -> triggers `run`
+        return (0, "", "")
+
+    monkeypatch.setattr(searxng, "_run_cmd", fake_run_cmd)
+    await searxng.ensure_running(_SETTINGS, engine="docker")
+    create = next(a for a in run_argv if a[1] == "run")
+    assert "-p" in create
+    port_flag = create[create.index("-p") + 1]
+    assert port_flag == "127.0.0.1:8888:8080"
 
 
 def test_detect_engine_prefers_docker(monkeypatch):
