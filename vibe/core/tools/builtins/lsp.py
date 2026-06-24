@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
 
+from vibe.core.logger import logger
 from vibe.core.lsp import LSPNotConnectedError, get_lsp_manager
 from vibe.core.lsp._types import (
     LSPError,
@@ -225,6 +226,7 @@ class Lsp(
     ) -> AsyncGenerator[ToolStreamEvent | LspResult, None]:
         try:
             text = await read_safe_async(Path(file_path))
+            server_t0 = time.perf_counter()
             await manager.open_document(
                 file_path,
                 text.text,
@@ -252,6 +254,11 @@ class Lsp(
                 )
                 hit = self._result_cache_get(cache_key)
                 if hit is not None and time.monotonic() - hit[0] < _RESULT_CACHE_TTL:
+                    logger.debug(
+                        "lsp %s cache hit %.1fms",
+                        args.operation.value,
+                        (time.perf_counter() - server_t0) * 1000.0,
+                    )
                     yield hit[1]
                     return
             if ctx is not None and args.operation.value in _CALL_HIERARCHY_OPS:
@@ -266,6 +273,11 @@ class Lsp(
                     ),
                 )
             result = await self._dispatch(manager, args, file_path, position)
+            logger.debug(
+                "lsp %s %.1fms",
+                args.operation.value,
+                (time.perf_counter() - server_t0) * 1000.0,
+            )
             if cache_key is not None:
                 self._result_cache_put(cache_key, result)
         except LSPNotConnectedError as exc:
@@ -960,7 +972,8 @@ class Lsp(
         if not isinstance(event.result, LspResult):
             return ToolResultDisplay(success=False, message=event.error or "No result")
         first_line = event.result.summary.split("\n", 1)[0]
-        return ToolResultDisplay(success=True, message=first_line)
+        suffix = f"{event.duration * 1000:.0f}ms" if event.duration else ""
+        return ToolResultDisplay(success=True, message=first_line, suffix=suffix)
 
     @classmethod
     def get_status_text(cls) -> str:
