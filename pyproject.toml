@@ -260,7 +260,7 @@ branch = true
 source = ["vibe"]
 
 [tool.coverage.report]
-fail_under = 78
+fail_under = 85
 show_missing = true
 skip_covered = true
 
