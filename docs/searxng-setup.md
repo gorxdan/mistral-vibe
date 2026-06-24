@@ -22,10 +22,14 @@ searxng_container_name = "vibe-searxng"
 searxng_port = 8888
 searxng_autostart = true                 # start at session start if down
 searxng_stop_on_exit = true              # stop on exit, only if Chaton started it
-searxng_timeout = 30                      # request + health-check timeout (seconds)
+searxng_timeout = 30                      # per-request timeout (seconds)
+searxng_health_timeout = 60              # total seconds to wait for a cold-starting container
+searxng_disabled_engines = ["google"]    # fragile engines to disable in the managed container
 ```
 
 `web_search` routes to SearXNG whenever `searxng_url` is set (or the `SEARXNG_URL` environment variable is present). With no SearXNG URL, it falls back to Mistral web search.
+
+`searxng_timeout` caps a single search request; `searxng_health_timeout` is the separate, larger budget Chaton waits for a managed container to become healthy on a cold start. `searxng_disabled_engines` marks named engines as `disabled: true` in the managed container's `settings.yml` (then restarts it once). Commercial engines like `google`, `startpage`, `duckduckgo`, and `brave` are the most likely to rate-limit or CAPTCHA a self-hosted instance; disabling them shifts load to more tolerant engines.
 
 ## How lifecycle management works
 
@@ -46,7 +50,9 @@ Set `searxng_manage = false` to use a SearXNG instance you run yourself (includi
 To run SearXNG manually:
 
 ```bash
-docker run -d --name vibe-searxng -p 8888:8080 searxng/searxng:latest
+docker run -d --name vibe-searxng -p 127.0.0.1:8888:8080 searxng/searxng:latest
 ```
+
+Bind to `127.0.0.1` (not the bare `-p 8888:8080`, which Docker exposes on `0.0.0.0` and so to your whole LAN). Chaton only ever talks to the instance over localhost.
 
 SearXNG must allow the JSON response format, which Chaton uses to read results. Recent SearXNG images enable it by default; if you see empty results, ensure `json` is listed under `search.formats` in your SearXNG `settings.yml`.

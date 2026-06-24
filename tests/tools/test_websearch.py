@@ -622,6 +622,84 @@ async def test_run_searxng_http_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_searxng_5xx_routes_to_down_message_non_interactive(monkeypatch):
+    # A 503 means the instance is overloaded -- operationally "down" -- so it
+    # must surface as the actionable down message (offering fallback), not the
+    # generic "SearXNG request failed" ToolError that bypasses recovery.
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(return_value=httpx.Response(503))
+        with pytest.raises(ToolError) as exc_info:
+            await collect_result(ws.run(WebSearchArgs(query="test")))
+
+    msg = str(exc_info.value)
+    assert "is not responding" in msg
+    assert "HTTP 503" in msg
+
+
+@pytest.mark.asyncio
+async def test_run_searxng_4xx_raises_tool_error_not_recovery(monkeypatch):
+    # A 4xx is a client/config error, not "down": it must stay a deterministic
+    # ToolError rather than trigger a recovery prompt.
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(return_value=httpx.Response(404))
+        with pytest.raises(ToolError) as exc_info:
+            await collect_result(ws.run(WebSearchArgs(query="test")))
+
+    msg = str(exc_info.value)
+    assert "SearXNG request failed" in msg
+    assert "is not responding" not in msg
+
+
+@pytest.mark.asyncio
+async def test_run_searxng_read_timeout_routes_to_down_message(monkeypatch):
+    # A server-side ReadTimeout (instance reachable but stalled) must be treated
+    # as "down" so the caller can fall back, not hard-fail as a request error.
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            side_effect=httpx.ReadTimeout("read timed out")
+        )
+        with pytest.raises(ToolError, match="is not responding"):
+            await collect_result(ws.run(WebSearchArgs(query="test")))
+
+
+@pytest.mark.asyncio
+async def test_run_searxng_5xx_interactive_falls_back_to_mistral(monkeypatch):
+    # With an interactive ctx, a 503 must offer the recovery flow; choosing
+    # "Use Mistral this time" runs the search via Mistral.
+    monkeypatch.delenv("SEARXNG_URL", raising=False)
+    monkeypatch.setenv("MISTRAL_API_KEY", "k")
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.websearch.detect_engine", lambda: "docker"
+    )
+    response = _make_response(content=[TextChunk(text="Mistral answer")])
+
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(return_value=httpx.Response(503))
+        with patch.object(Mistral, "beta", create=True) as mock_beta:
+            mock_beta.conversations.start_async = AsyncMock(return_value=response)
+            with patch.object(Mistral, "__aenter__", return_value=None):
+                with patch.object(Mistral, "__aexit__", return_value=None):
+                    ctx = _ctx_with_callback("Use Mistral this time")
+                    result = await collect_result(ws.run(WebSearchArgs(query="q"), ctx))
+
+    assert result.answer == "Mistral answer"
+
+
+@pytest.mark.asyncio
 async def test_run_searxng_invalid_json(monkeypatch):
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     config = WebSearchConfig(searxng_url="http://localhost:8080")
@@ -1041,6 +1119,33 @@ async def test_searxng_result_strips_control_chars(monkeypatch):
     assert "\x01" not in result.answer
     assert "before" in result.answer
     assert "after" in result.answer
+
+
+@pytest.mark.asyncio
+async def test_searxng_result_strips_bidi_override_chars(monkeypatch):
+    # Bidirectional formatting (U+202A-U+202E, U+2066-U+2069) can reorder visible
+    # text to hide a payload from a human reader ("Trojan Source"). It must be
+    # stripped like zero-width chars.
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    injected_content = "safe\u202esafe\u202d \u2066payload\u2069"
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"title": "T", "url": "http://u", "content": injected_content}
+                    ]
+                },
+            )
+        )
+        result = await collect_result(ws.run(WebSearchArgs(query="q")))
+
+    for ch in "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069":
+        assert ch not in result.answer
 
 
 @pytest.mark.asyncio
