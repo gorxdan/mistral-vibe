@@ -2102,22 +2102,40 @@ class VibeApp(App):  # noqa: PLR0904
 
     def _resolve_turn_error_message(self, e: Exception) -> str:
         if isinstance(e, RateLimitError):
-            return self._rate_limit_message()
+            return self._rate_limit_message(e)
         if isinstance(e, ContextTooLongError):
             return self._context_too_long_message()
         if isinstance(e, RefusalError):
             return self._refusal_message(e)
         return str(e)
 
-    def _rate_limit_message(self) -> str:
-        upgrade_to_pro = self._plan_info and (
-            self._plan_info.plan_type
-            in {WhoAmIPlanType.API, WhoAmIPlanType.UNAUTHORIZED}
-            or self._plan_info.is_free_mistral_code_plan()
+    def _rate_limit_message(self, e: RateLimitError) -> str:
+        # Name the model/provider that actually 429'd. Without this the message
+        # is ambiguous across a multi-provider config, and the Mistral "upgrade
+        # to Pro" pitch reads as a Mistral account problem even when an entirely
+        # different provider (e.g. openai-chatgpt, zai) was the one throttled.
+        target = f"{e.model} ({e.provider})"
+        # The Pro upsell is Mistral-account-specific, so only surface it when
+        # Mistral itself is the throttled provider.
+        upgrade_to_pro = (
+            e.provider == "mistral"
+            and self._plan_info
+            and (
+                self._plan_info.plan_type
+                in {WhoAmIPlanType.API, WhoAmIPlanType.UNAUTHORIZED}
+                or self._plan_info.is_free_mistral_code_plan()
+            )
         )
         if upgrade_to_pro:
-            return "Rate limits exceeded. Please wait a moment before trying again, or upgrade to Pro for higher rate limits and uninterrupted access."
-        return "Rate limits exceeded. Please wait a moment before trying again."
+            return (
+                f"Rate limits exceeded for {target}. Please wait a moment before "
+                "trying again, or upgrade to Pro for higher rate limits and "
+                "uninterrupted access."
+            )
+        return (
+            f"Rate limits exceeded for {target}. "
+            "Please wait a moment before trying again."
+        )
 
     def _context_too_long_message(self) -> str:
         return (

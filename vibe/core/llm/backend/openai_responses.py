@@ -756,6 +756,13 @@ class ChatGPTResponsesAdapter(OpenAIResponsesAdapter):
         body["input"] = self._convert_messages(conversation)
         body["instructions"] = instructions or self._DEFAULT_INSTRUCTIONS
 
+        # The codex backend rejects max_output_tokens outright ("Unsupported
+        # parameter: max_output_tokens", HTTP 400), unlike the platform
+        # Responses API. The parent adds it whenever max_tokens is set, which
+        # silently broke every codex call that passed a limit (safety judge,
+        # memory selector, max-output escalation). Drop it for this backend.
+        body.pop("max_output_tokens", None)
+
         effort = body.get("reasoning", {}).get("effort")
         if effort and effort != "none":
             body["include"] = ["reasoning.encrypted_content"]

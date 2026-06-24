@@ -19,7 +19,10 @@ from vibe.core.auth import openai_oauth as oauth
 from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.generic import GenericBackend
-from vibe.core.llm.backend.openai_responses import ChatGPTResponsesAdapter
+from vibe.core.llm.backend.openai_responses import (
+    ChatGPTResponsesAdapter,
+    OpenAIResponsesAdapter,
+)
 from vibe.core.types import AvailableFunction, AvailableTool, LLMMessage, Role
 
 CHATGPT_BASE = "https://chatgpt.test/backend-api/codex"
@@ -112,19 +115,55 @@ def test_tool_choice_defaults_to_auto() -> None:
     assert payload["tool_choice"] == "auto"
 
 
+def _params(*, max_tokens: int | None) -> RequestParams:
+    return RequestParams(
+        model_name="gpt-5.1-codex",
+        messages=[LLMMessage(role=Role.user, content="hi")],
+        temperature=0.2,
+        tools=None,
+        max_tokens=max_tokens,
+        tool_choice=None,
+        enable_streaming=False,
+        provider=_provider(),
+        api_key="access-1",
+        thinking="high",
+    )
+
+
+def test_max_output_tokens_stripped_for_codex() -> None:
+    # The codex backend rejects max_output_tokens ("Unsupported parameter:
+    # max_output_tokens", HTTP 400). The adapter must drop it even when the
+    # caller passes a limit, otherwise every codex call carrying a max_tokens
+    # (safety judge, memory selector, max-output escalation) fails closed.
+    adapter = ChatGPTResponsesAdapter()
+    payload = json.loads(adapter.prepare_request(_params(max_tokens=4096)).body)
+    assert "max_output_tokens" not in payload
+
+
+def test_platform_responses_keeps_max_output_tokens() -> None:
+    # Contract guard: only the codex variant strips the param. The platform
+    # Responses API accepts max_output_tokens and must keep honoring it.
+    adapter = OpenAIResponsesAdapter()
+    payload = json.loads(adapter.prepare_request(_params(max_tokens=4096)).body)
+    assert payload["max_output_tokens"] == 4096
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_backend_injects_oauth_bearer_and_account_header() -> None:
     _store_tokens("acct_xyz")
     # ChatGPT backend requires streaming; complete() now routes through the
     # streaming path, so the mock returns an SSE response.
-    sse_body = "\n\n".join([
-        'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","content":[]}}',
-        'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}',
-        'data: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":"hello"}',
-        'data: {"type":"response.completed","response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":3,"output_tokens":1}}}',
-        "data: [DONE]",
-    ]) + "\n\n"
+    sse_body = (
+        "\n\n".join([
+            'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","content":[]}}',
+            'data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"hello"}',
+            'data: {"type":"response.output_text.done","output_index":0,"content_index":0,"text":"hello"}',
+            'data: {"type":"response.completed","response":{"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":3,"output_tokens":1}}}',
+            "data: [DONE]",
+        ])
+        + "\n\n"
+    )
     route = respx.post(RESPONSES_URL).mock(
         return_value=httpx.Response(
             200,
