@@ -25,6 +25,10 @@ Knobs (env vars):
     VIBE_MEM_REPLY_CHARS assistant reply size in chars (default 800)
     VIBE_MEM_TOP       number of top allocation sites to print (default 30)
     VIBE_MEM_IMAGE_KB  if >0, attach a fake image of this size each turn
+    VIBE_MEM_CPU       if truthy, also cProfile the measured turn loop (Textual
+                       render/dispatch path), dump stats to /tmp/mem-render.pstats
+                       and print tottime/cumulative tables; default off so the
+                       default path is unchanged
 """
 
 from __future__ import annotations
@@ -53,6 +57,7 @@ _SNAP_EVERY = int(os.environ.get("VIBE_MEM_SNAP_EVERY", "25"))
 _REPLY_CHARS = int(os.environ.get("VIBE_MEM_REPLY_CHARS", "800"))
 _TOP = int(os.environ.get("VIBE_MEM_TOP", "30"))
 _IMAGE_KB = int(os.environ.get("VIBE_MEM_IMAGE_KB", "0"))
+_CPU = os.environ.get("VIBE_MEM_CPU", "0") not in ("", "0", "false", "False")
 _PRUNE_LOW = os.environ.get("VIBE_MEM_PRUNE_LOW")
 _PRUNE_HIGH = os.environ.get("VIBE_MEM_PRUNE_HIGH")
 _TOOL_CALLS = os.environ.get("VIBE_MEM_TOOL_CALLS")
@@ -137,6 +142,68 @@ class _ToolCallFakeBackend(_InfiniteFakeBackend):
         yield self._next(kwargs["messages"])
 
 
+class _FanOutFakeBackend(_InfiniteFakeBackend):
+    """N tool calls in ONE assistant message per turn, then a final reply.
+
+    Models the parallel tool fan-out the agent loop dispatches via
+    ``_run_tools_concurrently``: each turn emits ``n`` tool calls in a single
+    assistant message, and once the tool results come back returns the final
+    text reply. The batch mixes read-only and writer tools so BOTH code paths
+    in ``_run_tools_concurrently`` are exercised: ``bash`` has no ``read_only``
+    override (base default ``False``) so each bash echo is a *writer* run in the
+    sequential writer chain, while ``grep`` is ``read_only`` so it runs in the
+    concurrent reader pool. The first call of every batch is a ``grep`` to
+    guarantee at least one reader; the rest are bash echoes.
+
+    Requires bypass_tool_permissions so execution does not block on approval.
+    """
+
+    def __init__(self, reply: str, echo_chars: int, fan_out: int) -> None:
+        super().__init__(reply)
+        self._echo = "y" * echo_chars
+        self._fan_out = max(1, fan_out)
+
+    def _one_call(self, idx: int) -> ToolCall:
+        # idx 0 -> read-only grep (concurrent reader pool); rest -> bash echo
+        # writers (sequential writer chain). Unique id per call in the batch.
+        if idx == 0:
+            return ToolCall(
+                id=f"tc-{idx}",
+                function=FunctionCall(
+                    name="grep", arguments=json.dumps({"pattern": "def ", "path": "."})
+                ),
+            )
+        return ToolCall(
+            id=f"tc-{idx}",
+            function=FunctionCall(
+                name="bash", arguments=json.dumps({"command": f"echo {self._echo}"})
+            ),
+        )
+
+    def _fan_out_chunk(self) -> LLMChunk:
+        return mock_llm_chunk(
+            content="", tool_calls=[self._one_call(i) for i in range(self._fan_out)]
+        )
+
+    def _next(self, messages) -> LLMChunk:
+        last_role = messages[-1].role if messages else None
+        return self._chunk() if last_role == Role.tool else self._fan_out_chunk()
+
+    async def complete(self, **kwargs) -> LLMChunk:  # type: ignore[override]
+        self._requests_messages.append(list(kwargs["messages"]))
+        self._requests_extra_headers.append(kwargs.get("extra_headers"))
+        self._requests_metadata.append(kwargs.get("metadata"))
+        return self._next(kwargs["messages"])
+
+    async def complete_streaming(  # type: ignore[override]
+        self, **kwargs
+    ) -> AsyncGenerator[LLMChunk]:
+        self._requests_messages.append(list(kwargs["messages"]))
+        self._requests_extra_headers.append(kwargs.get("extra_headers"))
+        self._requests_metadata.append(kwargs.get("metadata"))
+        yield self._next(kwargs["messages"])
+
+
 def _fmt(snapshot_diff) -> str:
     lines = []
     for stat in snapshot_diff[:_TOP]:
@@ -202,6 +269,19 @@ async def test_memory_long_session() -> None:
         )
         print("-" * 80)
 
+        # When VIBE_MEM_CPU is set, CPU-profile the measured turn loop with
+        # pyinstrument so the Textual render/diff/message-pump cost is captured
+        # as the transcript (widget count) grows. Imported locally so the
+        # default path never depends on pyinstrument.
+        _pr = None
+        if _CPU:
+            # cProfile, not pyinstrument: the sampler stops Textual ever going
+            # idle, deadlocking pilot.pause(). Runs under tracemalloc (opt-in).
+            import cProfile
+
+            _pr = cProfile.Profile()
+            _pr.enable()
+
         for i in range(_TURNS):
             await app._handle_user_message(f"{image_arg}turn {i}")
             # Let scheduled call_after_refresh callbacks run — notably
@@ -219,6 +299,24 @@ async def test_memory_long_session() -> None:
                     f" {n:5d} | {cur / _MB:9.2f} | {peak / _MB:8.2f} | "
                     f"{widgets:7d} | {vheight:7d} | {hist:7d} | {per_turn:8.1f} KB"
                 )
+
+        if _pr is not None:
+            import io
+            import pstats
+
+            _pr.disable()
+            _pr.dump_stats("/tmp/mem-render.pstats")
+            print(
+                "\n[mem] CPU stats written to /tmp/mem-render.pstats "
+                "(open with snakeviz/pstats)"
+            )
+            print("[mem] render/dispatch profile over the measured turns:")
+            for _sort in ("tottime", "cumulative"):
+                _buf = io.StringIO()
+                pstats.Stats(_pr, stream=_buf).strip_dirs().sort_stats(
+                    _sort
+                ).print_stats(_TOP)
+                print(f"\n[mem] top {_TOP} by {_sort}:\n{_buf.getvalue()}")
 
         gc.collect()
         end = tracemalloc.take_snapshot()

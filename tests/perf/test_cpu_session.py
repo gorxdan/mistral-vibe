@@ -23,6 +23,11 @@ Knobs (env vars):
     VIBE_CPU_WARMUP      warmup turns before profiling (default 3)
     VIBE_CPU_REPLY_CHARS assistant reply size in chars (default 800)
     VIBE_CPU_TOOL_CALLS  if set, drive one bash-echo tool round-trip per turn
+    VIBE_CPU_FANOUT      int (default 0=off); if >0, drive N parallel tool calls
+                         per turn (one grep reader + N-1 bash-echo writers) to
+                         profile the agent-loop fan-out dispatch path
+                         (_run_tools_concurrently). Takes precedence over
+                         VIBE_CPU_TOOL_CALLS.
     VIBE_CPU_TOOL        "pyinstrument" (default) or "cprofile"
     VIBE_CPU_TOP         rows to print (default 30)
     VIBE_CPU_PRUNE_LOW/HIGH  override transcript prune marks
@@ -40,13 +45,18 @@ from tests.conftest import (
     build_test_vibe_app,
     build_test_vibe_config,
 )
-from tests.perf.test_memory_session import _InfiniteFakeBackend, _ToolCallFakeBackend
+from tests.perf.test_memory_session import (
+    _FanOutFakeBackend,
+    _InfiniteFakeBackend,
+    _ToolCallFakeBackend,
+)
 
 _RUN = os.environ.get("VIBE_CPU_PROFILE")
 _TURNS = int(os.environ.get("VIBE_CPU_TURNS", "60"))
 _WARMUP = int(os.environ.get("VIBE_CPU_WARMUP", "3"))
 _REPLY_CHARS = int(os.environ.get("VIBE_CPU_REPLY_CHARS", "800"))
 _TOOL_CALLS = os.environ.get("VIBE_CPU_TOOL_CALLS")
+_FANOUT = int(os.environ.get("VIBE_CPU_FANOUT", "0"))
 _TOOL = os.environ.get("VIBE_CPU_TOOL", "pyinstrument").lower()
 _TOP = int(os.environ.get("VIBE_CPU_TOP", "30"))
 _PRUNE_LOW = os.environ.get("VIBE_CPU_PRUNE_LOW")
@@ -86,7 +96,12 @@ async def test_cpu_session() -> None:
         _app_mod.PRUNE_HIGH_MARK = int(_PRUNE_HIGH)
 
     reply = "x " * (_REPLY_CHARS // 2)
-    if _TOOL_CALLS:
+    if _FANOUT > 0:
+        cfg = build_test_vibe_config(bypass_tool_permissions=True)
+        loop = build_test_agent_loop(
+            config=cfg, backend=_FanOutFakeBackend(reply, _REPLY_CHARS, _FANOUT)
+        )
+    elif _TOOL_CALLS:
         cfg = build_test_vibe_config(bypass_tool_permissions=True)
         loop = build_test_agent_loop(
             config=cfg, backend=_ToolCallFakeBackend(reply, _REPLY_CHARS)
@@ -97,7 +112,7 @@ async def test_cpu_session() -> None:
 
     print(
         f"\n[cpu] tool={_TOOL} turns={_TURNS} reply={_REPLY_CHARS} "
-        f"tool_calls={bool(_TOOL_CALLS)} "
+        f"tool_calls={bool(_TOOL_CALLS)} fanout={_FANOUT} "
         f"prune={_app_mod.PRUNE_LOW_MARK}/{_app_mod.PRUNE_HIGH_MARK}"
     )
 
