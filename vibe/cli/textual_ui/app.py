@@ -2111,15 +2111,8 @@ class VibeApp(App):  # noqa: PLR0904
         return str(e)
 
     def _rate_limit_message(self, e: RateLimitError) -> str:
-        # Name the model/provider that actually 429'd. Without this the message
-        # is ambiguous across a multi-provider config, and the Mistral "upgrade
-        # to Pro" pitch reads as a Mistral account problem even when an entirely
-        # different provider (e.g. openai-chatgpt, zai) was the one throttled.
         target = f"{e.model} ({e.provider})"
-        # The Pro upsell is Mistral-account-specific, so only surface it when
-        # Mistral itself is the throttled provider. Match on backend, not the
-        # literal name "mistral" — a Mistral-backed provider can be configured
-        # under any name, and the rest of the codebase keys on Backend.MISTRAL.
+        # Upsell only on a Mistral 429; match by backend, not the name "mistral".
         mistral_provider_names = {
             p.name for p in self.config.providers if p.backend == Backend.MISTRAL
         }

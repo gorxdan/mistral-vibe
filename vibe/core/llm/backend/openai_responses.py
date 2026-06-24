@@ -756,11 +756,8 @@ class ChatGPTResponsesAdapter(OpenAIResponsesAdapter):
         body["input"] = self._convert_messages(conversation)
         body["instructions"] = instructions or self._DEFAULT_INSTRUCTIONS
 
-        # The codex backend rejects max_output_tokens outright ("Unsupported
-        # parameter: max_output_tokens", HTTP 400), unlike the platform
-        # Responses API. The parent adds it whenever max_tokens is set, which
-        # made every codex call carrying a limit (safety judge, memory
-        # selector) fail closed on the 400. Drop it for this backend.
+        # Codex rejects max_output_tokens (HTTP 400 "Unsupported parameter");
+        # the platform Responses API accepts it. Strip it only here.
         body.pop("max_output_tokens", None)
 
         effort = body.get("reasoning", {}).get("effort")
