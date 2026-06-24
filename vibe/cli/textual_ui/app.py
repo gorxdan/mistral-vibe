@@ -237,6 +237,7 @@ from vibe.core.types import (
     MAX_IMAGES_PER_MESSAGE,
     AgentStats,
     ApprovalResponse,
+    Backend,
     BaseEvent,
     ContextTooLongError,
     ImageAttachment,
@@ -2116,9 +2117,14 @@ class VibeApp(App):  # noqa: PLR0904
         # different provider (e.g. openai-chatgpt, zai) was the one throttled.
         target = f"{e.model} ({e.provider})"
         # The Pro upsell is Mistral-account-specific, so only surface it when
-        # Mistral itself is the throttled provider.
+        # Mistral itself is the throttled provider. Match on backend, not the
+        # literal name "mistral" — a Mistral-backed provider can be configured
+        # under any name, and the rest of the codebase keys on Backend.MISTRAL.
+        mistral_provider_names = {
+            p.name for p in self.config.providers if p.backend == Backend.MISTRAL
+        }
         upgrade_to_pro = (
-            e.provider == "mistral"
+            e.provider in mistral_provider_names
             and self._plan_info
             and (
                 self._plan_info.plan_type
