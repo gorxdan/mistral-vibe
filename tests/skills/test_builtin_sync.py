@@ -36,6 +36,17 @@ class TestBuiltinSkills:
             in BUILTIN_SKILLS["vibe"].prompt
         )
 
+    def test_vibe_skill_summary_lists_config_triggers(self) -> None:
+        # The summary is the one line the model sees at decision time, so it
+        # must carry the high-value trigger words a config/MCP/setup question
+        # actually contains. Without it the index line advertised only the
+        # "Chaton" codename and shared zero vocabulary with such queries.
+        summary = BUILTIN_SKILLS["vibe"].summary
+        assert summary is not None
+        lowered = summary.lower()
+        for trigger in ("mcp", "config", "providers"):
+            assert trigger in lowered
+
     def test_discovers_builtin_skills(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("vibe.core.skills.manager.BUILTIN_SKILLS", BUILTIN_SKILLS)
         config = build_test_vibe_config(

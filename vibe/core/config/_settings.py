@@ -969,6 +969,7 @@ class VibeConfig(BaseSettings):
     include_model_info: bool = True
     include_project_context: bool = True
     include_prompt_detail: bool = True
+    include_config_reference: bool = True
     enable_update_checks: bool = False
     enable_notifications: bool = True
     enable_system_trust_store: bool = False

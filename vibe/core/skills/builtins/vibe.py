@@ -143,6 +143,7 @@ caveman_thinking = true            # Compress reasoning/thinking blocks (terse; 
 include_model_info = true         # Include model name in system prompt
 include_project_context = true    # Include project context (git info, cwd) in system prompt
 include_prompt_detail = true      # Include OS info, tool prompts, skills, and agents in system prompt
+include_config_reference = true   # Always-on condensed config/MCP/providers reference (this CLI's self-knowledge)
 
 # Voice features
 voice_mode_enabled = false
@@ -1273,6 +1274,11 @@ LOAD when the user:
 - is unsure whether a command, flag, env var, or file is in scope — this skill is the source of truth.
 
 SCOPE: config under `~/.vibe/` and project-local `.vibe/`; `VIBE_*` and `LOG_*` env vars; models and providers; agents and subagents; skills; tools and their permission model; every slash command and CLI flag; hooks; MCP servers; connectors; trusted folders; `@`-file mentions; logs; themes; voice; workflows and workflow scripts; effort modes (normal, le-chaton); agent teams; structured output.""",
+    summary=(
+        "Vibe/Chaton self-reference: config, MCP servers, connectors, LSP, "
+        "providers/models, slash commands, flags, hooks, workflows, ~/.vibe "
+        "— load for any question about this CLI itself."
+    ),
     user_invocable=False,
     prompt=_PROMPT_TEMPLATE.replace("__VIBE_VERSION__", __version__),
 )

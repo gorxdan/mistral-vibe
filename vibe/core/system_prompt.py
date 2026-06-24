@@ -451,6 +451,44 @@ def _get_lsp_priority_section(config: VibeConfig) -> str:
     )
 
 
+def _get_config_reference_section() -> str:
+    return """## Configuring Vibe (quick reference)
+
+You run inside Vibe (codename Chaton). This quick reference covers the facts you
+need for most "how do I configure X" questions; for the complete detail (every
+key, flag, slash command, hook, workflow, env var, and file location) load the
+`vibe` skill — it is the source of truth.
+
+Where things live (TOML config):
+- `~/.vibe/config.toml` — user config. Set `VIBE_HOME` to move all of `~/.vibe`.
+- `.vibe/config.toml` — project config; overrides user config in a trusted folder.
+- `~/.vibe/.env` — API keys and secrets (dotenv).
+
+MCP servers supply extra tools. Add one with a `[[mcp_servers]]` block or the
+token-free `/mcp add` form. Tools are named `{name}_{tool}`. Manage without
+spending tokens: `/mcp` (status + browser), `/mcp <name>` (list its tools),
+`/mcp login|logout <name>` (OAuth), `/mcp refresh`.
+
+```toml
+[[mcp_servers]]                      # transport: stdio | http | streamable-http
+name = "github"
+transport = "stdio"
+command = "npx"                      # stdio only
+args = ["-y", "@modelcontextprotocol/server-github"]
+# remote:
+# transport = "streamable-http"
+# url = "https://mcp.example.com"
+# auth = { type = "static", api_key_env = "MCP_API_KEY" }   # or type = "oauth", scopes = []
+```
+
+Providers and models: declare `[[providers]]` (each with `api_key_env_var`, e.g.
+`MISTRAL_API_KEY`) and `[[models]]` in config; `active_model = "<alias>"` selects
+the model in use.
+
+Slash commands (run `/help` for the full list): `/config`, `/model`, `/mcp`,
+`/compact`, `/status`."""
+
+
 def _build_prompt_detail_sections(
     tool_manager: ToolManager,
     skill_manager: SkillManager,
@@ -555,6 +593,9 @@ def get_universal_system_prompt(
 
     if config.include_model_info:
         sections.append(f"Your model name is: `{config.active_model}`")
+
+    if config.include_config_reference:
+        sections.append(_get_config_reference_section())
 
     if config.include_prompt_detail:
         sections.extend(

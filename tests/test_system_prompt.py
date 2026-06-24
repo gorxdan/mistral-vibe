@@ -312,3 +312,46 @@ def test_lsp_priority_section_absent_unless_lsp_installed() -> None:
     assert "hard requirement, not a preference" in prompt_on
     assert "MUST resolve symbols through `lsp`" in prompt_on
     assert "Do not guess its signature or call sites" in prompt_on
+
+
+def _config_reference_common() -> dict[str, object]:
+    return {
+        "system_prompt_id": "tests",
+        "include_project_context": False,
+        "include_prompt_detail": False,
+        "include_model_info": False,
+        "include_commit_signature": False,
+        "include_humanizer_guidance": False,
+    }
+
+
+def test_config_reference_section_present_by_default() -> None:
+    config = build_test_vibe_config(**_config_reference_common())
+    prompt = get_universal_system_prompt(
+        ToolManager(lambda: config),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+    )
+
+    assert "## Configuring Vibe (quick reference)" in prompt
+    # The handful of high-value facts an agent needs without loading a skill.
+    assert "[[mcp_servers]]" in prompt
+    assert "config.toml" in prompt
+    assert "active_model" in prompt
+    # Points back to the authoritative skill rather than duplicating all of it.
+    assert "load the" in prompt and "skill" in prompt
+
+
+def test_config_reference_section_absent_when_disabled() -> None:
+    config = build_test_vibe_config(
+        include_config_reference=False, **_config_reference_common()
+    )
+    prompt = get_universal_system_prompt(
+        ToolManager(lambda: config),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+    )
+
+    assert "## Configuring Vibe (quick reference)" not in prompt
