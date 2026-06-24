@@ -17,11 +17,9 @@ from vibe.core.utils.io import read_safe
 DEFAULT_IMAGE = "searxng/searxng:latest"
 DEFAULT_CONTAINER_NAME = "vibe-searxng"
 DEFAULT_PORT = 8888
-# SearXNG always listens on 8080 inside the container; we map a host port to it.
+# SearXNG listens on 8080 inside the container; we map a host port to it.
 _INTERNAL_PORT = 8080
-# Bind the host-side port to loopback only: vibe talks to SearXNG over
-# localhost, and a 0.0.0.0 bind (docker's default for `-p port:port`) would
-# expose the unauthenticated instance to the LAN.
+# Loopback only: a 0.0.0.0 bind (docker's `-p port:port` default) exposes the unauthenticated instance to the LAN.
 _BIND_ADDRESS = "127.0.0.1"
 
 _HTTP_OK = 200
@@ -29,21 +27,16 @@ _QUICK_HTTP_TIMEOUT = 3.0
 _QUICK_CMD_TIMEOUT = 10.0
 _START_CMD_TIMEOUT = 90.0
 _HEALTH_POLL_INTERVAL = 1.0
-# After bringing up a container, ensure it can answer JSON queries (the upstream
-# image ships `formats: [html]` only, which 403s our health probe).
+# Upstream image ships formats: [html] only, 403ing JSON probes; patch readiness retries while it starts.
 _PATCH_READINESS_TRIES = 4
 _PATCH_READINESS_DELAY = 1.0
-# `docker exec` returns >= 125 for docker-level failures (container not running
-# yet); real command exit codes (e.g. grep's 0/1) fall below this threshold.
+# docker exec returns >= 125 for docker-level failures; real exit codes (grep 0/1) fall below.
 _DOCKER_ERROR_RC = 125
 
-# Container names this process started, so exit cleanup only stops what we own.
 _started_by_us: set[str] = set()
 _session_skip = False
-# Cleared while session-start autostart is bringing up / reconciling the managed
-# SearXNG container, so an early search waits rather than racing a container that
-# is mid-(re)start and surfacing a confusing "SearXNG is down" prompt. Lazily
-# created and set by default, so paths that never go through autostart never block.
+# Lazily created and set by default: cleared only while autostart (re)starts the container,
+# so an early search waits rather than racing it. Paths that skip autostart never block.
 _autostart_gate: asyncio.Event | None = None
 
 
@@ -108,19 +101,14 @@ def _gate() -> asyncio.Event:
 
 
 def begin_autostart() -> None:
-    """Mark session-start autostart in progress: searches wait until
-    :func:`signal_autostart_done` releases the gate.
-    """
     _gate().clear()
 
 
 def signal_autostart_done() -> None:
-    """Release the autostart gate once startup/reconciliation has settled."""
     _gate().set()
 
 
 async def wait_for_autostart() -> None:
-    """Block until session-start autostart has finished (a no-op once done)."""
     await _gate().wait()
 
 
@@ -132,15 +120,9 @@ def detect_engine() -> str | None:
 
 
 def _has_mutable_tag(image: str) -> bool:
-    """Return True for images pinned to :latest or carrying no tag (which
-    resolves to :latest). Digest-pinned and explicitly version-tagged images
-    are considered stable.
-    """
-    # A digest pin (name@sha256:...) is immutable regardless of tag.
-    if "@" in image:
+    if "@" in image:  # digest pin (name@sha256:...) is immutable regardless of tag.
         return False
-    # The path component(s) precede the repo; only the last segment carries tag.
-    repo = image.rsplit("/", 1)[-1]
+    repo = image.rsplit("/", 1)[-1]  # only the last path segment carries the tag.
     if ":" not in repo:
         return True  # no tag -> resolves to :latest
     tag = repo.rsplit(":", 1)[1]
@@ -164,9 +146,6 @@ async def ensure_running(
 ) -> StartOutcome:
     url = settings.effective_url
     if await health_check(url):
-        # Reconcile engine config so a change to disabled_engines takes effect
-        # without recreating the container. Gated here for zero overhead in the
-        # common (unconfigured) case.
         if settings.disabled_engines:
             await _apply_disabled_engines(settings)
         return StartOutcome(ok=True, already_running=True, detail="already running")
@@ -183,9 +162,7 @@ async def ensure_running(
     if error is not None:
         return error
 
-    # Track ownership the moment we launch a container, regardless of health: a
-    # container we created/restarted must be cleaned up on exit even if it never
-    # became healthy, otherwise we leak it.
+    # Track ownership at launch, even if it never becomes healthy, so exit cleanup stops it.
     if we_started:
         _started_by_us.add(settings.container_name)
 
@@ -275,17 +252,14 @@ async def _exec_in_container(
             )
         except (FileNotFoundError, TimeoutError):
             return None
-        # rc >= _DOCKER_ERROR_RC is a docker-level error (container still
-        # starting); real command results (grep's 0/1) fall below it.
+        # rc >= _DOCKER_ERROR_RC is a docker-level error (container still starting); real results (grep 0/1) fall below.
         if not readiness or rc < _DOCKER_ERROR_RC:
             return rc
         await asyncio.sleep(_PATCH_READINESS_DELAY)
     return None
 
 
-# The upstream image ships `formats: [html]` only, which 403s every JSON
-# request -- including our own health probe. Enable json on a container we just
-# brought up so it can answer. Idempotent; settings reload on the restart.
+# Upstream image ships formats: [html] only, 403ing every JSON request (incl. our health probe). Idempotent.
 async def _ensure_json_format(engine: str, name: str) -> None:
     rc = await _exec_in_container(engine, name, _JSON_FORMAT_PRESENT, readiness=True)
     if rc is None:
@@ -295,10 +269,7 @@ async def _ensure_json_format(engine: str, name: str) -> None:
         return
     try:
         await _exec_in_container(engine, name, _ADD_JSON_FORMAT)
-        # Confirm the sed actually matched before restarting: a settings.yml with
-        # non-standard indentation leaves json absent, so a restart would neither
-        # help nor change anything -- better to warn than spin a needless restart
-        # and then fail health probing on an instance that still 403s JSON.
+        # Verify before restarting: non-standard indentation leaves json absent, so a restart wouldn't help.
         verify = await _exec_in_container(engine, name, _JSON_FORMAT_PRESENT)
         if verify != 0:
             logger.warning(
@@ -317,12 +288,8 @@ _YAML_TRUTHY = frozenset("true yes on y".split())
 
 
 def disable_engines_in_settings(text: str, engines: list[str]) -> tuple[str, list[str]]:
-    # Comment-preserving, surgical edit: SearXNG's settings.yml is large and
-    # operator-authored; a full yaml.safe_dump round-trip would nuke comments and
-    # reformat every line. Instead, compose the YAML to get line-accurate node
-    # marks, then insert a single `disabled: true` line into each target engine
-    # stanza that lacks one. Idempotent: engines already truthy-disabled are left
-    # alone and not reported as changed.
+    # Surgical, comment-preserving edit: yaml.safe_dump would nuke comments and reformat.
+    # Compose for line-accurate marks, then insert one `disabled: true` per target stanza. Idempotent.
     if not engines:
         return text, []
     try:
@@ -341,7 +308,7 @@ def disable_engines_in_settings(text: str, engines: list[str]) -> tuple[str, lis
         return text, []
 
     targets = set(engines)
-    insert_at: list[int] = []  # 0-indexed line of each target's `- name:` line
+    insert_at: list[int] = []
     changed: list[str] = []
     for item in engines_node.value:
         if not isinstance(item, yaml.MappingNode):
@@ -371,12 +338,7 @@ def disable_engines_in_settings(text: str, engines: list[str]) -> tuple[str, lis
     return "".join(lines), changed
 
 
-# Fragile upstream engines (rate-limit/CAPTCHA-prone) are the common reason a
-# self-hosted SearXNG returns empty results. When `disabled_engines` is set, the
-# managed container's settings.yml is patched to mark them disabled, then the
-# container is restarted so the change takes effect. Idempotent: a container
-# already in the desired state is left untouched (no restart). Best-effort: any
-# failure logs a warning and returns so search still works with current engines.
+# Best-effort: patches settings.yml to disable fragile engines, then restarts. Idempotent; failures warn and return.
 async def _apply_disabled_engines(settings: SearxngSettings) -> None:
     if not settings.disabled_engines:
         return
@@ -385,8 +347,7 @@ async def _apply_disabled_engines(settings: SearxngSettings) -> None:
         logger.warning("Cannot apply SearXNG disabled engines: no docker/podman found.")
         return
     name = settings.container_name
-    # mkdtemp (not TemporaryDirectory): the test scratchpad fixture patches
-    # tempfile.mkdtemp on the module singleton with a 1-arg signature.
+    # mkdtemp, not TemporaryDirectory: the test scratchpad fixture patches tempfile.mkdtemp with a 1-arg signature.
     tmpdir = tempfile.mkdtemp(prefix="vibe-searxng-")
     try:
         local = Path(tmpdir) / "settings.yml"
@@ -463,10 +424,7 @@ async def _container_state(engine: str, name: str) -> str:
 
 
 async def _wait_for_health(url: str, total_timeout: float) -> bool:
-    # Bound the *total* wall-clock wait, including the time each health_check
-    # call spends (up to _QUICK_HTTP_TIMEOUT). Counting only the sleep interval
-    # lets a slow-answering container overrun the stated timeout by roughly the
-    # check-time / sleep-time ratio.
+    # Deadline-bound the total wait (including check time); a sleep-accumulator would overrun the stated timeout.
     loop = asyncio.get_running_loop()
     deadline = loop.time() + total_timeout
     while loop.time() < deadline:

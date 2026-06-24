@@ -57,19 +57,11 @@ _DOWN_CHOICE_MISTRAL_ONCE = "Use Mistral this time"
 _DOWN_CHOICE_MISTRAL_STOP = "Use Mistral, stop asking"
 
 _MAX_SEARXNG_RESULTS = 10
-# Status codes >= this are server errors: treated as "SearXNG is down/overloaded"
-# so the caller can recover or fall back to Mistral, rather than hard-failing.
 _SERVER_ERROR_STATUS = 500
-# Cap concurrent web_search executions across the process. Read-only tools run
-# in parallel within a turn (and workflow fan-out multiplies this), so an agent
-# can otherwise burst SearXNG from one IP and trip upstream rate-limits/
-# CAPTCHAs. Held for the whole run (incl. while the consumer drains events).
 _MAX_CONCURRENT_SEARCHES = 2
 _search_semaphore: asyncio.Semaphore | None = None
-# Invisible/formatting characters stripped from web search snippets: zero-width
-# joiners/marks plus bidirectional formatting (the "Trojan Source" spoofing
-# vectors U+202A-U+202E, U+2066-U+2069), which can reorder visible text to hide
-# a payload from a human reader.
+# Includes bidi-override codepoints (U+202A-E, U+2066-9): "Trojan Source" chars
+# that reorder visible text. Name predates their addition.
 _ZERO_WIDTH_CHARS = frozenset(
     "\u200b\u200c\u200d\u200e\u200f\u2060\u2061\ufeff"
     "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
@@ -83,9 +75,7 @@ _SEARXNG_PROVENANCE_PREAMBLE = (
 
 @contextlib.asynccontextmanager
 async def _acquire_search_slot() -> AsyncGenerator[None, None]:
-    # Lazily create the semaphore on first use so it binds to the running loop
-    # (constructing asyncio.Semaphore without a loop is deprecated). Shared
-    # across all WebSearch instances via the module global.
+    # Created lazily so it binds to the running loop (Semaphore without one is deprecated).
     global _search_semaphore
     if _search_semaphore is None:
         _search_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_SEARCHES)
@@ -94,10 +84,6 @@ async def _acquire_search_slot() -> AsyncGenerator[None, None]:
 
 
 def _sanitize_snippet(text: str) -> str:
-    """Remove zero-width/bidirectional formatting characters and Cc-category
-    control chars from a web search snippet to prevent hidden prompt injection,
-    bidi-spoofing, and markdown breakage.
-    """
     cleaned: list[str] = []
     for ch in text:
         if ch in _ZERO_WIDTH_CHARS:
@@ -110,10 +96,6 @@ def _sanitize_snippet(text: str) -> str:
 
 
 def _format_unresponsive_engines(unresponsive: list[Any]) -> str:
-    """Render SearXNG's ``unresponsive_engines`` pairs (``[name, reason]``) as
-    a readable comma-separated list, tolerating single-element or string entries
-    across SearXNG versions.
-    """
     parts: list[str] = []
     for entry in unresponsive:
         if isinstance(entry, (list, tuple)):
@@ -262,7 +244,6 @@ class WebSearch(
                 if result is not None:
                     yield result
                     return
-                # result is None: the user opted to use Mistral for this search.
 
             api_key_env_var = self._api_key_env_var(config)
             api_key = os.getenv(api_key_env_var)
@@ -356,13 +337,7 @@ class WebSearch(
     async def _run_searxng(
         self, args: WebSearchArgs, settings: SearxngSettings, ctx: InvokeContext | None
     ) -> WebSearchResult | None:
-        # Returns the result, or None when the user opts to fall back to Mistral
-        # for this search. Raises ToolError only when SearXNG is unreachable and
-        # no recovery is possible (e.g. non-interactive).
         assert settings.url is not None
-        # Wait for session-start autostart to finish bringing up / reconciling
-        # the managed container before issuing the request, so we don't race a
-        # container mid-(re)start and report a spurious "SearXNG is down".
         await wait_for_autostart()
         down_detail = ""
         try:
@@ -370,14 +345,8 @@ class WebSearch(
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             down_detail = str(exc)
         except httpx.TimeoutException as exc:
-            # Server-side timeout (Read/Write/Pool): the instance is reachable
-            # but stalled -- treat as "down" so the caller can recover or fall
-            # back to Mistral. ConnectTimeout is caught above.
             down_detail = str(exc)
         except httpx.HTTPStatusError as exc:
-            # Only 5xx is re-raised by _searxng_request (4xx stays a ToolError
-            # there). An overloaded instance answering 502/503 is exactly when
-            # falling back to Mistral matters most.
             down_detail = f"HTTP {exc.response.status_code}"
 
         if ctx is None or ctx.user_input_callback is None:
@@ -399,15 +368,11 @@ class WebSearch(
             try:
                 return await self._searxng_request(args, settings.url)
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                # The container came up healthy but the search still couldn't
-                # connect (race / instant flap). Surface an actionable error
-                # rather than leaking the raw transport exception.
                 raise ToolError(self._searxng_down_message(settings, str(exc))) from exc
 
         if choice == _DOWN_CHOICE_MISTRAL_STOP:
             skip_session()
 
-        # "Use Mistral this time", "stop asking", or cancelled: fall back.
         return None
 
     async def _prompt_searxng_down(
@@ -434,9 +399,6 @@ class WebSearch(
             )
         )
 
-        # Only blame a missing engine when vibe is actually meant to manage the
-        # container; with searxng_manage=false the missing Start option is the
-        # user's own choice, not a missing docker/podman.
         footer: str | None = None
         if engine is None and settings.manage:
             footer = "No docker/podman found — install one to let vibe start SearXNG."
@@ -482,25 +444,16 @@ class WebSearch(
                 )
                 response.raise_for_status()
             except (httpx.ConnectError, httpx.ConnectTimeout):
-                # Surfaced to the caller as "SearXNG is down" for recovery.
                 raise
             except httpx.TimeoutException:
-                # Server-side timeouts (Read/Write/Pool): the instance is
-                # reachable but stalled -- re-raise so the caller treats it as
-                # "SearXNG is down" and can recover or fall back to Mistral.
                 raise
             except httpx.HTTPStatusError as exc:
+                # 5xx re-raises (overloaded -> fall back to Mistral); 4xx is a client/config error.
                 if exc.response.status_code >= _SERVER_ERROR_STATUS:
-                    # 5xx: the instance answers but is overloaded/erroring.
-                    # Re-raise so the caller can fall back to Mistral rather
-                    # than hard-failing -- exactly when fallback matters most.
                     raise
-                # 4xx: client/config error (bad params, 404, auth). Surface as a
-                # deterministic ToolError, not a recovery prompt.
                 raise ToolError(f"SearXNG request failed: {exc}") from exc
             except httpx.InvalidURL as exc:
-                # InvalidURL is not an HTTPError; classify it explicitly so a
-                # malformed searxng_url still surfaces as a ToolError.
+                # InvalidURL is not an HTTPError subclass; handle before the HTTPError catch.
                 raise ToolError(f"Invalid SearXNG URL: {exc}") from exc
             except httpx.HTTPError as exc:
                 raise ToolError(f"SearXNG request failed: {exc}") from exc
@@ -512,11 +465,7 @@ class WebSearch(
 
             results = data.get("results", [])
             if not results:
-                # An empty results list paired with unresponsive_engines means
-                # the upstream search engines are rate-limited/CAPTCHA-walled --
-                # operationally distinct from "no matches", and the flat
-                # "No results found." hides the real cause. Surface it so the
-                # operator can act (retry, reconfigure engines, fix networking).
+                # Empty + unresponsive_engines means upstream rate-limiting, not "no matches".
                 unresponsive = data.get("unresponsive_engines", [])
                 if unresponsive:
                     raise ToolError(
