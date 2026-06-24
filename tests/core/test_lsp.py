@@ -682,12 +682,17 @@ def test_workspace_symbol_deprioritizes_test_symbols() -> None:
 
 
 class _FakeWorkspaceServer:
-    def __init__(self, response: list[dict]) -> None:
-        self._response = response
+    def __init__(
+        self, response: list[dict] | None = None, error: Exception | None = None
+    ) -> None:
+        self._response = response or []
+        self._error = error
         self.requests: list[tuple[str, dict]] = []
 
     async def send_request(self, method: str, params: dict) -> list[dict]:
         self.requests.append((method, params))
+        if self._error is not None:
+            raise self._error
         return self._response
 
 
@@ -750,6 +755,98 @@ async def test_non_workspace_op_without_file_path_raises(monkeypatch) -> None:
 
     args = LspArgs(operation=LspOperation.FIND_REFERENCES, line=1, character=1)
     with pytest.raises(ToolError, match="requires file_path"):
+        async for _ in tool.run(args):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_workspace_symbol_without_file_path_queries_all_servers(
+    monkeypatch,
+) -> None:
+    # Regression: omitting file_path used to query only the first configured
+    # server, so symbols from other languages were missed. workspace_symbol is
+    # workspace-wide, so it fans out to every server and merges results.
+    from vibe.core.tools.builtins.lsp import (
+        Lsp,
+        LspArgs,
+        LspConfig,
+        LspOperation,
+        LspResult,
+        LspState,
+    )
+
+    py = _FakeWorkspaceServer([
+        {"name": "PyClass", "location": {"uri": "file:///a.py"}}
+    ])
+    go = _FakeWorkspaceServer([
+        {"name": "GoStruct", "location": {"uri": "file:///b.go"}}
+    ])
+    manager = _FakeWorkspaceManager({"pyright": py, "gopls": go})
+    monkeypatch.setattr("vibe.core.tools.builtins.lsp.get_lsp_manager", lambda: manager)
+    monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+
+    args = LspArgs(operation=LspOperation.WORKSPACE_SYMBOL, query="Thing")
+    collected = [r async for r in tool.run(args)]
+    assert len(collected) == 1
+    result = collected[0]
+    assert isinstance(result, LspResult)
+    assert "PyClass" in result.summary
+    assert "GoStruct" in result.summary
+    # Both servers were queried, not just the first.
+    assert py.requests and go.requests
+
+
+@pytest.mark.asyncio
+async def test_workspace_symbol_merges_ignoring_unsupported_server(monkeypatch) -> None:
+    # A server that rejects workspace/symbol (no workspace index) must not fail
+    # the whole query; symbols from the servers that do support it still surface.
+    from vibe.core.lsp._types import LSPProtocolError
+    from vibe.core.tools.builtins.lsp import (
+        Lsp,
+        LspArgs,
+        LspConfig,
+        LspOperation,
+        LspResult,
+        LspState,
+    )
+
+    py = _FakeWorkspaceServer([
+        {"name": "PyClass", "location": {"uri": "file:///a.py"}}
+    ])
+    dead = _FakeWorkspaceServer(error=LSPProtocolError("method not found", code=-32601))
+    manager = _FakeWorkspaceManager({"pyright": py, "stub": dead})
+    monkeypatch.setattr("vibe.core.tools.builtins.lsp.get_lsp_manager", lambda: manager)
+    monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+
+    args = LspArgs(operation=LspOperation.WORKSPACE_SYMBOL, query="PyClass")
+    collected = [r async for r in tool.run(args)]
+    result = collected[0]
+    assert isinstance(result, LspResult)
+    assert "PyClass" in result.summary
+
+
+@pytest.mark.asyncio
+async def test_workspace_symbol_raises_when_no_server_supports_it(monkeypatch) -> None:
+    from vibe.core.lsp._types import LSPProtocolError
+    from vibe.core.tools.base import ToolError
+    from vibe.core.tools.builtins.lsp import (
+        Lsp,
+        LspArgs,
+        LspConfig,
+        LspOperation,
+        LspState,
+    )
+
+    dead = _FakeWorkspaceServer(error=LSPProtocolError("method not found", code=-32601))
+    manager = _FakeWorkspaceManager({"stub": dead})
+    monkeypatch.setattr("vibe.core.tools.builtins.lsp.get_lsp_manager", lambda: manager)
+    monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+
+    args = LspArgs(operation=LspOperation.WORKSPACE_SYMBOL, query="Thing")
+    with pytest.raises(ToolError, match="No configured server supports"):
         async for _ in tool.run(args):
             pass
 

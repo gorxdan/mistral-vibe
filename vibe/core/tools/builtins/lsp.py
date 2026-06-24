@@ -68,7 +68,8 @@ class LspArgs(BaseModel):
             "prepare_call_hierarchy, incoming_calls, outgoing_calls) require "
             "line and character. document_symbol needs only file_path. "
             "workspace_symbol needs only query and may omit file_path "
-            "(it is workspace-wide; the first configured server is queried)."
+            "(it is workspace-wide; all configured servers are queried and "
+            "their results merged)."
         )
     )
     file_path: str | None = Field(
@@ -171,7 +172,7 @@ class Lsp(
                 )
             raise ToolError("LSP is not enabled. Run /lspstall to enable it.")
         # workspace_symbol is the only operation that may omit file_path: it is
-        # workspace-wide and routes to a server without a specific document.
+        # workspace-wide and queries servers without a specific document.
         raw_path = args.file_path
         if raw_path is None:
             if args.operation is LspOperation.WORKSPACE_SYMBOL:
@@ -332,28 +333,63 @@ class Lsp(
                 "No LSP servers are configured. Run /lspstall to install one, "
                 "or pass file_path to route to a server by file extension."
             )
-        # workspace/symbol is workspace-wide; without a file_path to route by
-        # extension, query the first configured server (declaration order). Pass
-        # a file_path to target a specific language server in a multi-language
-        # workspace.
-        server = next(iter(servers.values()))
-        try:
-            raw = await server.send_request("workspace/symbol", {"query": query})
-        except LSPNotConnectedError as exc:
-            raise ToolError(str(exc)) from exc
-        except LSPProtocolError as exc:
-            if exc.code == _METHOD_NOT_FOUND:
+        # workspace/symbol is workspace-wide and a workspace may span several
+        # languages (pyright + gopls + ...). With no file_path to route by
+        # extension, fan out to every configured server and merge, so symbols
+        # from all languages surface. A per-server failure (server down, or
+        # workspace/symbol unsupported) degrades gracefully: that server
+        # contributes nothing rather than failing the whole query.
+        batches = await asyncio.gather(
+            *(
+                s.send_request("workspace/symbol", {"query": query})
+                for s in servers.values()
+            ),
+            return_exceptions=True,
+        )
+        merged, supported = self._merge_symbol_batches(batches)
+        if not merged:
+            if not supported:
                 raise ToolError(
-                    "No server supports workspace_symbol in this session. "
+                    "No configured server supports workspace_symbol. "
                     "Pass file_path to target a server, or use document_symbol "
                     "on a specific file."
-                ) from exc
-            raise ToolError(f"LSP request failed: {exc}") from exc
-        except LSPError as exc:
-            raise ToolError(f"LSP request failed: {exc}") from exc
+                )
+            return LspResult(
+                operation="symbols",
+                summary=f"Workspace symbols matching '{query}': none found.",
+            )
         return self._format_symbols(
-            f"Workspace symbols matching '{query}'", raw or [], query=query
+            f"Workspace symbols matching '{query}'", merged, query=query
         )
+
+    @staticmethod
+    def _merge_symbol_batches(batches: Any) -> tuple[list[dict[str, Any]], bool]:
+        """Flatten gathered workspace/symbol responses into one deduped list.
+
+        Returns ``(symbols, supported)`` where ``supported`` is False only when
+        every server errored (none returned a result at all). Symbols sharing a
+        name and uri are deduped (two servers configured for the same language
+        can return the same definition); a symbol with no uri is always kept.
+        """
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        supported = False
+        for batch in batches:
+            if isinstance(batch, BaseException):
+                # -32601 method-not-found (no workspace index), crashes, and
+                # timeouts are all treated as "this server contributes nothing".
+                continue
+            supported = True
+            for sym in batch or []:
+                if not isinstance(sym, dict):
+                    continue
+                uri = str((sym.get("location") or {}).get("uri", ""))
+                key = (str(sym.get("name", "")), uri)
+                if uri and key in seen:
+                    continue
+                seen.add(key)
+                merged.append(sym)
+        return merged, supported
 
     def _simple_dispatch_table(
         self,
