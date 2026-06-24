@@ -414,28 +414,40 @@ def _get_headless_section() -> str:
 
 
 def _get_lsp_priority_section(config: VibeConfig) -> str:
-    """Availability-conditional LSP-first guidance.
+    """Availability-conditional LSP-mandatory guidance.
 
     Emitted only when the user has opted into LSP (``/lspstall``), so it never
-    advertises a tool that isn't running. Reframes the search hierarchy as a
-    default inversion — ``lsp`` first for symbols, ``grep`` for text — and gates
-    edits on a prior ``lsp`` lookup. A static "prefer LSP" rule is noise when
+    advertises a tool that isn't running. Marks LSP as a hard requirement for
+    symbol-level work: every code analysis, review, and exploration task MUST
+    resolve symbols through ``lsp`` rather than text search, and edits are
+    gated on a prior ``lsp`` lookup. A static "prefer LSP" rule is noise when
     LSP isn't installed; this carries the emphasis only when it can be acted on.
     """
     if "lsp" not in getattr(config, "installed_components", []):
         return ""
     return (
-        "## LSP is installed — use it first for symbol questions\n\n"
-        "You have a language server running. For any question about a "
-        "*symbol* (definition, type, callers, callees, implementations), the "
-        "FIRST tool you reach for is `lsp`, not `grep`. grep is for text; lsp "
-        "is for code semantics. If you are about to grep for a "
-        "function/method/class name, stop and use `lsp find_references` (or "
-        "`hover`/`go_to_definition`) instead — it resolves imports, "
-        "re-exports, and overloads that grep misses.\n\n"
-        "Before editing a symbol you have not resolved this session, run "
-        "`lsp hover` (or `find_references`) on it first — don't guess its "
-        "signature or call sites."
+        "## LSP is available — you MUST use it for symbol-level work\n\n"
+        "A language server is running for this project's languages. This is a "
+        "hard requirement, not a preference. On every code analysis, review, "
+        "and exploration task you MUST resolve symbols through `lsp` before "
+        "reasoning about them. `grep` and `read` only see raw text and will "
+        "give you wrong call sites and stale signatures, because they miss "
+        "imports, re-exports, aliases, overloads, and generated code.\n\n"
+        "- Symbol question (definition, type, callers, callees, "
+        "implementations)? `lsp` is mandatory — "
+        "`go_to_definition`/`find_references`/`hover`/`incoming_calls`/"
+        "`outgoing_calls`/`go_to_implementation`. Never grep for a "
+        "function/method/class name that LSP can resolve.\n"
+        "- Reviewing or analyzing code? Trace the real call graph and types "
+        "with `lsp` instead of grepping identifiers and guessing how they "
+        "connect.\n"
+        "- Before editing a symbol you have not resolved this session, run "
+        "`lsp hover` (and `find_references`) on it first. Do not guess its "
+        "signature or call sites — wrong edits come from guessed shapes.\n\n"
+        "`grep` stays for literal text (error messages, log lines, string "
+        "literals, config values, regex); `glob` stays for finding files by "
+        "name. If `lsp` reports no server for an extension, that language "
+        "isn't supported there — fall back to `grep` only then."
     )
 
 

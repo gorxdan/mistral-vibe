@@ -292,7 +292,7 @@ def test_lsp_priority_section_absent_unless_lsp_installed() -> None:
         "include_commit_signature": False,
         "include_humanizer_guidance": False,
     }
-    heading = "## LSP is installed — use it first for symbol questions"
+    heading = "## LSP is available — you MUST use it for symbol-level work"
 
     off = build_test_vibe_config(**common)
     prompt_off = get_universal_system_prompt(
@@ -308,5 +308,7 @@ def test_lsp_priority_section_absent_unless_lsp_installed() -> None:
         ToolManager(lambda: on), on, SkillManager(lambda: on), AgentManager(lambda: on)
     )
     assert heading in prompt_on
-    assert "the FIRST tool you reach for is `lsp`, not `grep`" in prompt_on
-    assert "don't guess its signature or call sites" in prompt_on
+    # Strongly worded: a hard requirement, mandatory on analysis/review/exploration.
+    assert "hard requirement, not a preference" in prompt_on
+    assert "MUST resolve symbols through `lsp`" in prompt_on
+    assert "Do not guess its signature or call sites" in prompt_on
