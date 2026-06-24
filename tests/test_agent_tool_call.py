@@ -684,6 +684,74 @@ async def test_fill_missing_tool_responses_inserts_placeholders() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fill_missing_tool_responses_multi_turn_keeps_ordering() -> None:
+    """Regression: a missing tool response from an earlier turn must be placed
+    immediately after that turn's tool block — not past a later turn that
+    carries its own tool results.
+
+    Pre-fix, next_i counted EVERY later tool message, so the tc2 placeholder
+    landed after the intervening user message, separating the assistant tool
+    call from one of its results and corrupting provider history.
+    """
+    agent_loop = build_test_agent_loop(
+        config=make_config(),
+        agent_name=BuiltinAgentName.AUTO_APPROVE,
+        backend=FakeBackend(mock_llm_chunk(content="ok")),
+    )
+
+    earlier_assistant = LLMMessage(
+        role=Role.assistant,
+        content="Calling tools...",
+        tool_calls=[make_todo_tool_call("tc1", index=0), make_todo_tool_call("tc2", index=1)],
+    )
+    later_assistant = LLMMessage(
+        role=Role.assistant,
+        content="Later turn.",
+        tool_calls=[make_todo_tool_call("tc3", index=0)],
+    )
+    agent_loop.messages.reset([
+        agent_loop.messages[0],          # [0] user/system seed
+        earlier_assistant,                # [1] assistant(tc1, tc2)
+        LLMMessage(                       # [2] tool resp for tc1 only (tc2 missing)
+            role=Role.tool, tool_call_id="tc1", name="todo", content="Retrieved 0 todos"
+        ),
+        LLMMessage(role=Role.user, content="Next turn"),  # [3] user
+        later_assistant,                  # [4] assistant(tc3)
+        LLMMessage(                       # [5] tool resp for tc3
+            role=Role.tool, tool_call_id="tc3", name="todo", content="Retrieved 0 todos"
+        ),
+    ])
+
+    await act_and_collect_events(agent_loop, "Proceed")
+
+    messages = list(agent_loop.messages)
+
+    # tc2 placeholder exists and is placed inside the earlier turn's tool block,
+    # immediately after tc1's response (index 3), before the user message.
+    tc2_positions = [idx for idx, m in enumerate(messages) if m.tool_call_id == "tc2"]
+    assert tc2_positions, "tc2 placeholder was not inserted"
+    tc2_idx = tc2_positions[0]
+
+    # The message before tc2 is the tc1 tool response (its sibling), not user/assistant.
+    assert messages[tc2_idx - 1].role == Role.tool
+    assert messages[tc2_idx - 1].tool_call_id == "tc1"
+
+    # The user message that ends the earlier turn sits AFTER tc2, not before it.
+    user_positions = [
+        idx for idx, m in enumerate(messages) if m.role == Role.user and idx > 0
+    ]
+    later_user_idx = user_positions[-1]
+    assert tc2_idx < later_user_idx, "tc2 placeholder leaked past the intervening user message"
+
+    # The later turn's tc3 response still directly follows its own assistant.
+    tc3_positions = [idx for idx, m in enumerate(messages) if m.tool_call_id == "tc3"]
+    later_assistant_idx = next(
+        idx for idx, m in enumerate(messages) if m is later_assistant
+    )
+    assert tc3_positions[0] == later_assistant_idx + 1
+
+
+@pytest.mark.asyncio
 async def test_parallel_tool_calls_produce_correct_events(
     telemetry_events: list[dict],
 ) -> None:

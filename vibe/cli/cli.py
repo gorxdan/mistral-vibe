@@ -338,7 +338,11 @@ def run_cli(args: argparse.Namespace) -> None:
 
         stdin_prompt = get_prompt_from_stdin()
         if is_interactive:
-            from vibe.core.worktree.manager import worktree_enabled, worktree_manager
+            from vibe.core.worktree.manager import (
+                WorktreeError,
+                worktree_enabled,
+                worktree_manager,
+            )
 
             worktree_handle = None
             # --no-worktree forces isolation off for this invocation (overrides
@@ -347,7 +351,11 @@ def run_cli(args: argparse.Namespace) -> None:
             if not args.no_worktree and worktree_enabled(
                 config, programmatic=False, cli_flag=args.worktree
             ):
-                worktree_handle = worktree_manager.enter("cli", config.worktree)
+                try:
+                    worktree_handle = worktree_manager.enter("cli", config.worktree)
+                except WorktreeError as e:
+                    rprint(f"[red]Error:[/] {e}")
+                    sys.exit(1)
                 if worktree_handle is not None and not config.displayed_workdir:
                     config.displayed_workdir = str(worktree_handle.original_repo_root)
                 # Surface any unmerged branches from prior sessions (the

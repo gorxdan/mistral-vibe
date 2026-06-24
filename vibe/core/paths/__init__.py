@@ -5,6 +5,7 @@ from vibe.core.paths._local_config_files import (
     LocalConfigDirs,
     dedup_paths,
     find_local_config_dirs,
+    resolved_within,
 )
 from vibe.core.paths._vibe_home import (
     CACHE_FILE,
@@ -38,4 +39,5 @@ __all__ = [
     "LocalConfigDirs",
     "dedup_paths",
     "find_local_config_dirs",
+    "resolved_within",
 ]

@@ -18,6 +18,7 @@ from vibe.core.paths import (
     LocalConfigDirs,
     dedup_paths,
     find_local_config_dirs,
+    resolved_within,
 )
 from vibe.core.trusted_folders import trusted_folders_manager
 from vibe.core.utils.io import read_safe
@@ -47,9 +48,8 @@ class HarnessFilesManager:
 
     @property
     def config_file(self) -> Path | None:
-        workdir = self.trusted_workdir
-        if workdir is not None:
-            candidate = workdir / ".vibe" / "config.toml"
+        for root in self.project_roots:
+            candidate = root / ".vibe" / "config.toml"
             if candidate.is_file():
                 return candidate
         if "user" in self.sources:
@@ -58,21 +58,22 @@ class HarnessFilesManager:
 
     @property
     def project_roots(self) -> list[Path]:
-        """Open project directories: trusted cwd (if any) plus ``--add-dir``
-        paths.
+        """Open project directories resolved to their trust roots, plus ``--add-dir`` paths.
 
-        ``--add-dir`` entries are resolved and deduplicated; nested paths are
-        preserved because project config discovery is root-level only.
-        Add-dirs equal to the cwd are dropped (redundant). When an add-dir
-        contains the cwd, both survive (the add-dir contributes its own
-        root-level discovery; cwd preserves walk-up semantics for AGENTS.md).
+        The trusted cwd is resolved to its closest explicitly-trusted ancestor
+        (the trust root) so that repo-root config/hooks/skills/workflows are
+        discovered even when vibe is launched from a subdirectory. When launched
+        at the trust root itself this is a no-op. ``--add-dir`` entries are
+        resolved and deduplicated; nested paths are preserved because project
+        config discovery is root-level only. Add-dirs equal to the trust root
+        are dropped (redundant).
         """
         add_dirs = dedup_paths(self._additional_dirs)
         workdir = self.trusted_workdir
         if workdir is None:
             return add_dirs
-        w = workdir.resolve()
-        return [w, *(p for p in add_dirs if p != w)]
+        root = (trusted_folders_manager.find_trust_root(workdir) or workdir).resolve()
+        return [root, *(p for p in add_dirs if p != root)]
 
     @property
     def hook_files(self) -> list[Path]:
@@ -199,17 +200,24 @@ class HarnessFilesManager:
             return []
 
         docs: list[tuple[Path, str]] = []
+        stop_resolved = stop.resolve()
         current = start
         while True:
             if current == stop and not stop_inclusive:
                 break
             path = current / AGENTS_MD_FILENAME
-            try:
-                stripped = read_safe(path).text.strip()
-                if stripped:
-                    docs.append((current, stripped))
-            except (FileNotFoundError, OSError):
+            # Confinement: a symlinked AGENTS.md whose target escapes the trust
+            # root must not be followed — it could pull external content into
+            # the system prompt. Legitimate in-tree symlinks still resolve within.
+            if not resolved_within(path, stop_resolved):
                 pass
+            else:
+                try:
+                    stripped = read_safe(path).text.strip()
+                    if stripped:
+                        docs.append((current, stripped))
+                except (FileNotFoundError, OSError):
+                    pass
             if current == stop:
                 break
             parent = current.parent
@@ -248,18 +256,29 @@ class HarnessFilesManager:
         Returns ``(directory, content)`` pairs ordered outermost-first; later
         entries take priority. The same resolved directory is only emitted
         once across all roots.
+
+        The walk starts at the actual cwd (not the trust-root-resolved
+        project_roots) so AGENTS.md files between cwd and the repo root are
+        collected on the way up.
         """
         by_dir: dict[Path, tuple[Path, str]] = {}
-        for root in self.project_roots:
-            stop = trusted_folders_manager.find_trust_root(root) or root
-            for d, content in self._collect_agents_md(root, stop, stop_inclusive=True):
+        walk_starts: list[Path] = []
+        workdir = self.trusted_workdir
+        if workdir is not None:
+            walk_starts.append(workdir)
+        walk_starts.extend(dedup_paths(self._additional_dirs))
+        for start in walk_starts:
+            stop = trusted_folders_manager.find_trust_root(start) or start
+            for d, content in self._collect_agents_md(start, stop, stop_inclusive=True):
                 by_dir.setdefault(d.resolve(), (d, content))
         return list(by_dir.values())
 
     def agents_md_file_paths(self) -> list[Path]:
         """Return file paths of AGENTS.md docs without reading content.
 
-        Lightweight change-detection helper — stats files only.
+        Lightweight change-detection helper — stats files only. Walks from the
+        actual cwd and add-dirs up to their trust roots (not from the
+        trust-root-resolved project_roots).
         """
         paths: list[Path] = []
         if "user" in self.sources:
@@ -267,15 +286,25 @@ class HarnessFilesManager:
             if user_path.exists():
                 paths.append(user_path)
         seen: set[Path] = set()
-        for root in self.project_roots:
-            stop = trusted_folders_manager.find_trust_root(root) or root
-            if not root.is_relative_to(stop):
+        walk_starts: list[Path] = []
+        workdir = self.trusted_workdir
+        if workdir is not None:
+            walk_starts.append(workdir)
+        walk_starts.extend(dedup_paths(self._additional_dirs))
+        for start in walk_starts:
+            stop = trusted_folders_manager.find_trust_root(start) or start
+            stop_resolved = stop.resolve()
+            if not start.is_relative_to(stop):
                 continue
-            current = root
+            current = start
             while True:
                 path = current / AGENTS_MD_FILENAME
                 resolved = path.resolve()
-                if path.exists() and resolved not in seen:
+                if (
+                    path.exists()
+                    and resolved not in seen
+                    and resolved_within(resolved, stop_resolved)
+                ):
                     seen.add(resolved)
                     paths.append(path)
                 if current == stop:
@@ -324,3 +353,27 @@ def reset_harness_files_manager() -> None:
     """Reset the singleton. Only intended for use in tests."""
     global _manager
     _manager = None
+
+
+def add_session_dirs(dirs: list[Path]) -> None:
+    """Merge extra working directories into the initialized singleton.
+
+    Mirrors the CLI's ``--add-dir`` flow for ACP's ``additional_directories``
+    parameter, which arrives per-session after the singleton is created at
+    startup. The merged dirs feed project-root discovery (skills/tools/hooks/
+    workflows/config) and file-tool in-bounds checks — without this, ACP
+    silently provides less capability than the CLI for the same dirs.
+    """
+    global _manager
+    if _manager is None:
+        raise RuntimeError(
+            "HarnessFilesManager not initialized — call init_harness_files_manager() first"
+        )
+    if not dirs:
+        return
+    merged = dedup_paths([*_manager._additional_dirs, *dirs])
+    if len(merged) == len(_manager._additional_dirs):
+        return
+    _manager = HarnessFilesManager(
+        sources=_manager.sources, _additional_dirs=tuple(merged)
+    )

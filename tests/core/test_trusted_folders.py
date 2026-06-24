@@ -41,12 +41,42 @@ class TestTrustedFoldersManager:
 
     def test_handles_corrupted_file(self, tmp_path: Path) -> None:
         trusted_file = TRUSTED_FOLDERS_FILE.path
-        trusted_file.write_text("invalid toml content {[", encoding="utf-8")
+        corrupt_content = "invalid toml content {["
+        trusted_file.write_text(corrupt_content, encoding="utf-8")
 
         manager = TrustedFoldersManager()
 
+        # Fail closed: no decision loaded, so each path re-prompts.
         assert manager.is_trusted(tmp_path) is None
-        assert trusted_file.is_file()
+
+        # The corrupt content is preserved as a backup rather than destroyed —
+        # no silent erasure of prior trust/distrust decisions.
+        backups = list(trusted_file.parent.glob("*.corrupt-*"))
+        assert backups, "corrupt trust DB was not preserved as a backup"
+        assert any(b.read_text(encoding="utf-8") == corrupt_content for b in backups)
+
+    def test_persistence_failure_is_surfaced_not_swallowed(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed write must be logged, not silently dropped.
+
+        Regression for the old `except OSError: pass` that hid a dropped trust
+        decision — the in-memory state kept returning True while nothing was on
+        disk, so the decision vanished on restart with no trace.
+        """
+        import logging
+
+        manager = TrustedFoldersManager()
+        # Force the temp-file write to fail by making the path's parent
+        # non-writable is fragile across platforms; instead patch os.replace.
+        with patch("vibe.core.trusted_folders.os.replace", side_effect=OSError("denied")):
+            with caplog.at_level(logging.ERROR, logger="vibe"):
+                manager.add_trusted(tmp_path)
+
+        # In-memory state still reflects the decision for this session...
+        assert manager.is_trusted(tmp_path) is True
+        # ...but the persistence failure was surfaced, not swallowed.
+        assert any("Failed to persist trust DB" in r.message for r in caplog.records)
 
     def test_normalizes_paths_to_absolute(
         self, tmp_working_directory, monkeypatch: pytest.MonkeyPatch

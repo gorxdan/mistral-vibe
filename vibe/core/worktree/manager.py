@@ -31,12 +31,23 @@ if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
 
 __all__ = [
+    "WorktreeError",
     "WorktreeHandle",
     "WorktreeManager",
     "original_working_directory",
     "worktree_enabled",
     "worktree_manager",
 ]
+
+
+class WorktreeError(RuntimeError):
+    """Raised when worktree isolation was required but could not be established.
+
+    Signals the caller (CLI/programmatic) that an explicit ``mode="on"`` /
+    ``--worktree`` requirement could not be honored, so it can surface the
+    failure rather than silently running in the user's live checkout.
+    """
+
 
 # Names of files/dirs that indicate a git operation is in progress.
 _MID_OPERATION_MARKERS = [
@@ -130,8 +141,16 @@ class WorktreeManager:
         """Create a worktree, carry dirty state, and chdir into it.
 
         Returns ``None`` (run in-place) if the repo is mid-operation or has
-        dirty submodules.  Raises :class:`RuntimeError` if a worktree is
-        already active (nested-enter guard).
+        dirty submodules — deliberate data-safety refusals that must never lose
+        the user's in-progress work.
+
+        Raises :class:`WorktreeError` if worktree creation itself failed while
+        isolation was explicitly required (``mode="on"`` or ``--worktree``).
+        For ``mode="auto-by-entrypoint"`` the failure is soft: logged and
+        returns ``None`` so the run continues in-place.
+
+        Raises :class:`RuntimeError` if a worktree is already active
+        (nested-enter guard).
         """
         if self._active is not None:
             raise RuntimeError(
@@ -142,12 +161,21 @@ class WorktreeManager:
         try:
             return self._do_enter(label, config)
         except Exception:
-            # Fail soft to in-place (never lose user work), but record the full
-            # traceback so programming errors (AttributeError/TypeError/etc.)
-            # are diagnosable instead of silently degrading isolation.
-            logger.exception("Worktree creation failed, running in-place")
-            # Best-effort cleanup of partial state.
+            # Best-effort cleanup of partial state, then record the full
+            # traceback so programming errors are diagnosable.
             self._cleanup_partial()
+            logger.exception("Worktree creation failed")
+            # mode="on" expresses an isolation requirement — fail closed so an
+            # editing agent does not silently bypass isolation and run on the
+            # user's live checkout. auto-by-entrypoint keeps fail-soft (best
+            # effort): the requirement is opportunistic, not a guarantee.
+            if config.mode == "on":
+                raise WorktreeError(
+                    "Worktree isolation was requested (mode='on') but could not be "
+                    "established. Running in-place would bypass the isolation "
+                    "guarantee; refusing to start. See the logged traceback above."
+                ) from None
+            logger.warning("Running in-place (worktree isolation is best-effort)")
             return None
 
     def _do_enter(self, label: str, config: WorktreeConfig) -> WorktreeHandle | None:

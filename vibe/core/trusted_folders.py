@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import os
 from pathlib import Path
+import time
 import tomllib
 
 import tomli_w
@@ -214,19 +216,69 @@ class TrustedFoldersManager:
                 data = tomllib.load(f)
             self._trusted = list(data.get("trusted", []))
             self._untrusted = list(data.get("untrusted", []))
-        except (OSError, tomllib.TOMLDecodeError):
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            # Fail closed without destroying data: start from an empty DB in
+            # memory (so the user is re-prompted for each path) but preserve the
+            # corrupt/unreadable file as a backup rather than overwriting it.
+            # Overwriting would silently erase prior trust/distrust decisions.
+            logger.warning(
+                "Trust DB at %s is unreadable (%s); starting from empty. "
+                "The original file was preserved as a backup.",
+                self._file_path,
+                exc,
+            )
             self._trusted = []
             self._untrusted = []
-            self._save()
+            self._preserve_corrupt_backup()
+
+    def _preserve_corrupt_backup(self) -> None:
+        """Rename a corrupt trust DB aside instead of clobbering it.
+
+        Best-effort: a failure to move the file is logged but not raised (the
+        in-memory state is already empty and safe). A timestamped suffix avoids
+        overwriting an earlier backup.
+        """
+        backup = self._file_path.with_suffix(
+            self._file_path.suffix + f".corrupt-{time.time_ns()}"
+        )
+        try:
+            self._file_path.replace(backup)
+        except OSError as exc:
+            logger.warning(
+                "Could not preserve corrupt trust DB at %s as %s: %s",
+                self._file_path,
+                backup,
+                exc,
+            )
 
     def _save(self) -> None:
+        """Persist atomically: write a temp file then os.replace into place.
+
+        Atomic replace avoids the truncate-then-write corruption loop the old
+        code created (an interrupted write produced exactly the malformed state
+        that _load then discarded). Persistence failures are logged — never
+        silently swallowed — so a dropped decision is diagnosable. mkdir errors
+        propagate (parent unwritable is a real environment problem, not a
+        best-effort case).
+        """
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
         data = {"trusted": self._trusted, "untrusted": self._untrusted}
+        tmp = self._file_path.with_suffix(self._file_path.suffix + ".tmp")
         try:
-            with self._file_path.open("wb") as f:
+            with tmp.open("wb") as f:
                 tomli_w.dump(data, f)
-        except OSError:
-            pass
+            os.replace(tmp, self._file_path)
+        except OSError as exc:
+            logger.error(
+                "Failed to persist trust DB at %s: %s. Decisions are held only "
+                "in memory and will be lost on restart.",
+                self._file_path,
+                exc,
+            )
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
     def _closest_decision(self, path: Path) -> tuple[bool, Path] | None:
         """``(trusted, ancestor)`` for the closest decision, ``None`` if undecided."""

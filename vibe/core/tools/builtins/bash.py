@@ -48,13 +48,16 @@ from vibe.core.utils.io import decode_safe
 def _get_parser() -> Parser:
     return Parser(Language(tsbash.language()))
 
+
 _sandbox_unavailable_warned = False
+
 
 def _build_sandbox_env(config: SandboxConfig) -> dict[str, str]:
     base = _get_base_env()
     if not config.scrub_env:
         return base
     return scrub_env(base, config.env_passthrough)
+
 
 def _extract_commands(command: str) -> list[str]:
     parser = _get_parser()
@@ -81,10 +84,12 @@ def _extract_commands(command: str) -> list[str]:
     find_commands(tree.root_node)
     return commands
 
+
 def _get_shell_executable() -> str | None:
     if is_windows():
         return None
     return os.environ.get("SHELL")
+
 
 def _get_base_env() -> dict[str, str]:
     base_env = {**os.environ, "CI": "true", "NONINTERACTIVE": "1", "NO_TTY": "1"}
@@ -101,6 +106,7 @@ def _get_base_env() -> dict[str, str]:
         base_env["LC_ALL"] = "en_US.UTF-8"
 
     return base_env
+
 
 _READ_ONLY_COMMANDS_WINDOWS = ["dir", "findstr", "more", "type", "ver", "where"]
 _READ_ONLY_COMMANDS_POSIX = [
@@ -143,14 +149,17 @@ _READ_ONLY_COMMANDS_POSIX = [
     "which",
 ]
 
+
 def default_read_only_commands() -> list[str]:
     return list(
         _READ_ONLY_COMMANDS_WINDOWS if is_windows() else _READ_ONLY_COMMANDS_POSIX
     )
 
+
 def _get_default_allowlist() -> list[str]:
     common = ["cd", "echo", "git diff", "git log", "git status", "tree", "whoami"]
     return common + default_read_only_commands()
+
 
 def _get_default_denylist() -> list[str]:
     common = ["gdb", "pdb", "passwd"]
@@ -172,6 +181,7 @@ def _get_default_denylist() -> list[str]:
             "tmux",
         ]
 
+
 def _get_default_denylist_standalone() -> list[str]:
     common = ["python", "python3", "ipython"]
 
@@ -179,6 +189,7 @@ def _get_default_denylist_standalone() -> list[str]:
         return common + ["cmd", "powershell", "pwsh", "notepad"]
     else:
         return common + ["bash", "sh", "nohup", "vi", "vim", "emacs", "nano", "su"]
+
 
 _PATH_COMMANDS = {
     "cat",
@@ -198,6 +209,7 @@ _PATH_COMMANDS = {
 }
 
 _FIND_EXECUTION_PREDICATES = {"-exec", "-execdir", "-ok", "-okdir"}
+
 
 def _collect_outside_dirs(command_parts: list[str]) -> set[str]:
     """Collect parent directories referenced outside the workdir.
@@ -244,8 +256,10 @@ def _collect_outside_dirs(command_parts: list[str]) -> set[str]:
             dirs.add(parent)
     return dirs
 
+
 def _matches_pattern(command: str, pattern: str) -> bool:
     return command == pattern or command.startswith(pattern + " ")
+
 
 # A `sleep` of this many seconds or more is treated as a blocking wait — the
 # agent should schedule a future turn instead of tying up the session.
@@ -256,10 +270,12 @@ _SLEEP_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 # bash parser drops bare numeric args (`sleep 300` -> `sleep`).
 _SLEEP_RE = re.compile(r"(?:^|[\s;&|()`])sleep\s+(\d[\d.]*[smhd]?)")
 
+
 def _sleep_token_seconds(token: str) -> float:
     if token and token[-1] in _SLEEP_UNIT_SECONDS:
         return float(token[:-1]) * _SLEEP_UNIT_SECONDS[token[-1]]
     return float(token)  # bare number = seconds; raises ValueError if non-numeric
+
 
 def _blocking_sleep_reason(command: str) -> str | None:
     """Reason to deny a long blocking `sleep` in *command*, or None to allow it.
@@ -285,6 +301,7 @@ def _blocking_sleep_reason(command: str) -> str | None:
         "without blocking."
     )
 
+
 # C0 control chars (minus \t=\x09 and \n=\x0a, which are legitimate whitespace)
 # plus DEL. \r is the CR differential: bash treats it as a token boundary in
 # some configs while tree-sitter swallows it, so the validator and the shell
@@ -297,6 +314,7 @@ _FORBIDDEN_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0d\x0e-\x1f\x7f]")
 # leading command word is allowlisted. Longer/compound forms first so the
 # reported operator is the most specific.
 _SIDE_EFFECTING_OPERATORS = (">>", "||", "&&", ">", "|", ";", "$(", "`")
+
 
 def _forbidden_control_char_reason(command: str) -> str | None:
     match = _FORBIDDEN_CONTROL_RE.search(command)
@@ -311,6 +329,7 @@ def _forbidden_control_char_reason(command: str) -> str | None:
         "command string and can make the security validator disagree with the "
         "shell on tokenization. Rewrite the command without it."
     )
+
 
 def _auto_approval_blocker(command: str) -> str | None:
     """Return a reason the command must not resolve to ALWAYS, even when its
@@ -335,6 +354,7 @@ def _auto_approval_blocker(command: str) -> str | None:
             "validator's view may not match what the shell executes."
         )
     return None
+
 
 class BashToolConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ASK
@@ -365,6 +385,7 @@ class BashToolConfig(BaseToolConfig):
         description="OS-level sandbox for spawned commands (opt-in; default off).",
     )
 
+
 class BashArgs(BaseModel):
     command: str
     timeout: int | None = Field(
@@ -381,6 +402,7 @@ class BashArgs(BaseModel):
         ),
     )
 
+
 class BashResult(BaseModel):
     command: str
     stdout: str
@@ -391,6 +413,7 @@ class BashResult(BaseModel):
     # at yield time and is finalized asynchronously by the registry.
     background_task_id: str | None = None
     pid: int | None = None
+
 
 class Bash(
     BaseTool[BashArgs, BashResult, BashToolConfig, BaseToolState],
@@ -698,7 +721,7 @@ class Bash(
         grandchildren (npm/vite child servers). The same sandbox resolution as
         the foreground path applies.
         """
-        if ctx is None or getattr(ctx, "background_registry", None) is None:
+        if ctx is None:
             raise ToolError(
                 "background execution is not available in this context "
                 "(no background registry)"
@@ -710,7 +733,14 @@ class Bash(
             raise ToolError(
                 "background execution requires a scratchpad or session directory"
             )
+        # Bind then narrow: the registry may be None in headless/ACP runs; an
+        # explicit check lets pyright narrow away the Optional before use.
         registry = ctx.background_registry
+        if registry is None:
+            raise ToolError(
+                "background execution is not available in this context "
+                "(no background registry)"
+            )
         bg_dir = Path(log_root) / "bg"
         bg_dir.mkdir(parents=True, exist_ok=True)
 
@@ -768,13 +798,13 @@ class Bash(
                 log_handle=log_handle,
             )
         except Exception:
-            # Cap exceeded or other registry error: terminate the proc we just
-            # spawned and close the handle so nothing leaks.
+            # Cap exceeded or other registry error. The proc was never recorded
+            # (register_process's cap check runs before insertion), so the
+            # registry cannot reach it — force-kill the process group (the child
+            # runs in its own session via start_new_session) and close the handle.
+            # Without this the orphan survives even app exit.
             log_handle.close()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=1.0)
-            except (TimeoutError, Exception):
-                pass
+            await kill_async_subprocess(proc)
             raise
 
         yield BashResult(

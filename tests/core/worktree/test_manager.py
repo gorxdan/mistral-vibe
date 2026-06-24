@@ -11,6 +11,7 @@ import pytest
 
 from vibe.core.config import WorktreeConfig
 from vibe.core.worktree.manager import (
+    WorktreeError,
     WorktreeHandle,
     WorktreeManager,
     original_working_directory,
@@ -233,6 +234,41 @@ class TestGracefulRefusal:
         config = WorktreeConfig(mode="on")
         handle = manager.enter("test", config)
         assert handle is None
+
+
+class TestCreationFailureIsolation:
+    """mode='on' fails closed on a creation error; auto-by-entrypoint is soft."""
+
+    def test_on_mode_raises_on_creation_failure(
+        self, manager: WorktreeManager, temp_repo: Path, monkeypatch
+    ):
+        os.chdir(str(temp_repo))
+
+        def _boom(self, label, config):  # noqa: ANN001
+            raise RuntimeError("disk on fire")
+
+        monkeypatch.setattr(WorktreeManager, "_do_enter", _boom)
+        config = WorktreeConfig(mode="on")
+
+        with pytest.raises(WorktreeError, match="isolation was requested"):
+            manager.enter("test", config)
+
+        assert manager.active is None
+
+    def test_auto_mode_falls_back_in_place_on_creation_failure(
+        self, manager: WorktreeManager, temp_repo: Path, monkeypatch
+    ):
+        os.chdir(str(temp_repo))
+
+        def _boom(self, label, config):  # noqa: ANN001
+            raise RuntimeError("disk on fire")
+
+        monkeypatch.setattr(WorktreeManager, "_do_enter", _boom)
+        config = WorktreeConfig(mode="auto-by-entrypoint")
+
+        # Soft failure: returns None (run in-place) rather than raising.
+        assert manager.enter("test", config) is None
+        assert manager.active is None
 
 
 # ---------------------------------------------------------------------------

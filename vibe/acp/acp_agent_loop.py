@@ -127,6 +127,7 @@ from vibe.core.config import (
     VibeConfig,
     load_dotenv_values,
 )
+from vibe.core.config.harness_files import add_session_dirs
 from vibe.core.data_retention import DATA_RETENTION_MESSAGE
 from vibe.core.feedback import record_feedback_asked, should_show_feedback
 from vibe.core.hooks.config import load_hooks_from_fs
@@ -159,6 +160,7 @@ from vibe.core.trusted_folders import (
     apply_workspace_trust_decision,
     available_workspace_trust_decisions,
     maybe_build_workspace_trust_prompt,
+    trusted_folders_manager,
 )
 from vibe.core.types import (
     AgentProfileChangedEvent,
@@ -820,6 +822,24 @@ class VibeAcpAgentLoop(AcpAgent):
         except ValueError as exc:
             raise InvalidRequestError(str(exc)) from exc
 
+    def _register_additional_directories(
+        self, additional_directories: list[str] | None
+    ) -> None:
+        """Trust and register ACP ``additional_directories`` for harness discovery.
+
+        Mirrors the CLI ``--add-dir`` flow so ACP provides the same access to
+        skills/tools/hooks/workflows/config in those roots. Each dir is trusted
+        for the session and merged into the harness manager's project roots.
+        """
+        if not additional_directories:
+            return
+        resolved: list[Path] = []
+        for d in additional_directories:
+            path = Path(d).expanduser().resolve()
+            trusted_folders_manager.trust_for_session(path)
+            resolved.append(path)
+        add_session_dirs(resolved)
+
     @override
     async def new_session(
         self,
@@ -831,6 +851,7 @@ class VibeAcpAgentLoop(AcpAgent):
         load_dotenv_values()
         os.chdir(cwd)
         await self._resolve_workspace_trust(Path.cwd())
+        self._register_additional_directories(additional_directories)
 
         config = self._load_config()
         plugin_result = load_and_apply_plugins(config)
@@ -1100,6 +1121,7 @@ class VibeAcpAgentLoop(AcpAgent):
         load_dotenv_values()
         os.chdir(cwd)
         await self._resolve_workspace_trust(Path.cwd())
+        self._register_additional_directories(additional_directories)
 
         config = self._load_config()
         plugin_result = load_and_apply_plugins(config)
@@ -1250,6 +1272,7 @@ class VibeAcpAgentLoop(AcpAgent):
         cwd: str | None = None,
         **kwargs: Any,
     ) -> ListSessionsResponse:
+        self._register_additional_directories(additional_directories)
         try:
             config = VibeConfig.load()
             session_logging_config = config.session_logging
@@ -1599,6 +1622,7 @@ class VibeAcpAgentLoop(AcpAgent):
     ) -> ForkSessionResponse:
         load_dotenv_values()
         os.chdir(cwd)
+        self._register_additional_directories(additional_directories)
 
         source_session = self._get_session(session_id)
         try:

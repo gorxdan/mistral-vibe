@@ -478,8 +478,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         ) = None
         self.workflow_results_callback: Callable[..., dict[str, Any]] | None = None
         self.workflow_stop_callback: (
-            Callable[[str | None, bool], dict[str, Any] | Awaitable[dict[str, Any]]]
-            | None
+            Callable[[str | None, bool], Awaitable[dict[str, Any]]] | None
         ) = None
         self.team_dir_callback: Callable[[], str | None] | None = None
         # Unified background-task registry — owns bash-backgrounded processes
@@ -2700,15 +2699,26 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._fill_missing_tool_responses()
 
     @staticmethod
-    def _collect_responded_ids(messages: list[LLMMessage], start: int) -> set[str]:
-        """Scan forward from `start` collecting tool_call_ids until a non-tool message."""
+    def _collect_responded_ids(
+        messages: Sequence[LLMMessage], start: int
+    ) -> tuple[set[str], int]:
+        """Scan the contiguous tool-response block from ``start``.
+
+        Returns the answered tool_call_ids and the index of the first non-tool
+        message after the block (the insertion point for any missing
+        responses). Only the contiguous block is scanned — not every later
+        tool message — so a placeholder always lands inside the current turn,
+        immediately after its originating assistant message, even when a later
+        turn carries its own tool results.
+        """
         responded: set[str] = set()
         j = start
         while j < len(messages) and messages[j].role == "tool":
-            if messages[j].tool_call_id is not None:
-                responded.add(messages[j].tool_call_id)
+            msg = messages[j]
+            if msg.tool_call_id is not None:
+                responded.add(msg.tool_call_id)
             j += 1
-        return responded
+        return responded, j
 
     def _fill_missing_tool_responses(self) -> None:
         i = 1
@@ -2724,10 +2734,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 i += 1
                 continue
 
-            responded = self._collect_responded_ids(self.messages, i + 1)
-            next_i = (
-                i + 1 + len([m for m in self.messages[i + 1 :] if m.role == "tool"])
-            )
+            responded, end = self._collect_responded_ids(self.messages, i + 1)
+            next_i = end
 
             if len(responded) >= expected:
                 i = next_i

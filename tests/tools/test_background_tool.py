@@ -867,3 +867,59 @@ async def test_register_process_enforces_running_cap(monkeypatch, tmp_path):
         await reg.register_process(
             _P(), command="c", cwd=tmp_path, log_path=tmp_path / "3"
         )
+
+
+@pytest.mark.asyncio
+async def test_background_cap_rejects_and_terminates_orphan(monkeypatch, tmp_path):
+    """End-to-end: when registration rejects (cap reached) the just-spawned
+    process must be force-killed, not left running and unreachable.
+
+    Regression for a leak where the failure handler only closed the log and
+    passively awaited (sending no signal), orphaning the child to init.
+    """
+    import asyncio.subprocess
+
+    import vibe.core.tools.background as bgmod
+    import vibe.core.tools.builtins.bash as bashmod
+
+    monkeypatch.setattr(bgmod, "_MAX_RUNNING_PROCS", 1)
+    registry = bgmod.BackgroundRegistry()
+    ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
+    bash = _bash()
+
+    # Fill the cap with one running process.
+    first = await collect_result(
+        bash.run(BashArgs(command="sleep 30", background=True), ctx=ctx)
+    )
+    assert first.background_task_id == "proc-1"
+
+    # Capture whether the failure handler force-kills the spawned orphan. The
+    # fix calls kill_async_subprocess(proc) with no kwargs, so the spy matches.
+    real_kill = bashmod.kill_async_subprocess
+    killed: list[asyncio.subprocess.Process] = []
+
+    async def _spy_kill(proc: asyncio.subprocess.Process) -> None:
+        killed.append(proc)
+        await real_kill(proc)
+
+    monkeypatch.setattr(bashmod, "kill_async_subprocess", _spy_kill)
+
+    # Second background run hits the cap -> registration raises RuntimeError.
+    with pytest.raises(RuntimeError, match="cap reached"):
+        await collect_result(
+            bash.run(BashArgs(command="sleep 30", background=True), ctx=ctx)
+        )
+
+    # The orphaned process was force-killed (returncode set), not left running.
+    assert killed, "orphaned process was not terminated on registration failure"
+    assert killed[0].returncode is not None
+
+    # And it never entered the registry: only the first process is tracked.
+    running = [
+        t
+        for t in registry.list_tasks(category=TaskCategory.PROCESS)
+        if t.status == "running"
+    ]
+    assert [t.task_id for t in running] == ["proc-1"]
+
+    assert await registry.stop("proc-1") is True
