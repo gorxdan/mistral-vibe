@@ -148,6 +148,8 @@ class LSPManager:
         await server.ensure_started()
         if not server.is_open(str(path)):
             await server.did_open(str(path), text, language_id)
+        else:
+            await server.sync_if_changed(str(path), text)
 
     async def notify_change(self, path: str | Path, text: str) -> None:
         server = self.get_server_for_file(path)

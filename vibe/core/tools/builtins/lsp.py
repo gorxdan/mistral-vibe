@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from enum import StrEnum, auto
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -36,6 +37,15 @@ _MAX_FILE_BYTES = 10 * 1024 * 1024
 _METHOD_NOT_FOUND = -32601
 _CALL_HIERARCHY_RETRIES = 4
 _CALL_HIERARCHY_BACKOFF = (0.2, 0.4, 0.8)
+# Memoize repeat queries within a short window. Keyed on the queried file's
+# mtime so any edit invalidates instantly; the TTL bounds cross-file staleness
+# (a references/call-hierarchy result can shift when *another* file changes).
+_RESULT_CACHE_TTL = 3.0
+_CALL_HIERARCHY_OPS = frozenset({
+    "prepare_call_hierarchy",
+    "incoming_calls",
+    "outgoing_calls",
+})
 
 
 class LspOperation(StrEnum):
@@ -194,7 +204,35 @@ class Lsp(
                 self._validate_position(
                     Path(file_path), args.line or 1, args.character or 1, text.text
                 )
+            # Memoize repeat queries on an unchanged file. workspace_symbol is
+            # global (no single-file mtime to invalidate on), so never cache it.
+            cache_key: tuple[Any, ...] | None = None
+            if args.operation is not LspOperation.WORKSPACE_SYMBOL:
+                cache_key = (
+                    file_path,
+                    Path(file_path).stat().st_mtime_ns,
+                    str(args.operation),
+                    args.line,
+                    args.character,
+                )
+                hit = self._result_cache_get(cache_key)
+                if hit is not None and time.monotonic() - hit[0] < _RESULT_CACHE_TTL:
+                    yield hit[1]
+                    return
+            if ctx is not None and args.operation.value in _CALL_HIERARCHY_OPS:
+                # Call-hierarchy can block ~1s+ while a cold server indexes;
+                # surface activity so the pause is not read as a hang.
+                yield ToolStreamEvent(
+                    tool_name="lsp",
+                    tool_call_id=ctx.tool_call_id,
+                    message=(
+                        "Resolving call graph — the language server may still "
+                        "be indexing on first use"
+                    ),
+                )
             result = await self._dispatch(manager, args, file_path, position)
+            if cache_key is not None:
+                self._result_cache_put(cache_key, result)
         except LSPNotConnectedError as exc:
             raise ToolError(str(exc)) from exc
         except LSPProtocolError as exc:
@@ -332,6 +370,7 @@ class Lsp(
             else "callHierarchy/outgoingCalls"
         )
         out: list[dict[str, Any]] = []
+        retries_used = 0
         for attempt in range(_CALL_HIERARCHY_RETRIES):
             out = []
             for item in items[:5]:
@@ -353,9 +392,19 @@ class Lsp(
             # Wait briefly and retry — gopls/pyright need indexing before they
             # can resolve caller/callee edges.
             if attempt < _CALL_HIERARCHY_RETRIES - 1:
+                retries_used += 1
                 await asyncio.sleep(_CALL_HIERARCHY_BACKOFF[attempt])
         out = await self._filter_gitignored(out)
-        return self._format_locations(label, out)
+        result = self._format_locations(label, out)
+        if retries_used:
+            # The server was still indexing (call edges resolved only after
+            # backoff). Flag it so the caller does not mistake a thin or empty
+            # result for "no callers/callees" — re-running once warm fills it in.
+            result.summary += (
+                f" [server was indexing, retried {retries_used}x — result may "
+                "be incomplete; re-run if it looks thin]"
+            )
+        return result
 
     async def _prepare_call_hierarchy_at(
         self,
@@ -537,6 +586,22 @@ class Lsp(
             out.extend(Lsp._as_location_list(item))
         return out
 
+    def _result_cache_get(self, key: tuple[Any, ...]) -> tuple[float, LspResult] | None:
+        cache = getattr(self, "_result_cache_store", None)
+        if cache is None:
+            return None
+        return cache.get(key)
+
+    def _result_cache_put(self, key: tuple[Any, ...], result: LspResult) -> None:
+        cache = getattr(self, "_result_cache_store", None)
+        if cache is None:
+            cache = {}
+            try:
+                self._result_cache_store = cache
+            except AttributeError:
+                return
+        cache[key] = (time.monotonic(), result)
+
     _GIT_CHECK_BATCH = 50
     _GIT_CHECK_TIMEOUT = 5.0
     _REVPARSE_TIMEOUT = 3.0
@@ -548,21 +613,25 @@ class Lsp(
             return locations
         cwd = Path.cwd()
         repo_root = await self._repo_toplevel(cwd)
-        seen_ignored: dict[str, bool] = {}
+        # Per-path ignore verdicts persist across calls: gitignore rules are
+        # static for the session, so a definition resolving into site-packages
+        # or a vendored dir is paid for once, not on every query.
+        ignore_cache: dict[str, bool] = getattr(self, "_ignore_cache_store", {})
         kept: list[dict[str, Any]] = []
         for i in range(0, len(locations), self._GIT_CHECK_BATCH):
             batch = locations[i : i + self._GIT_CHECK_BATCH]
-            paths = [path_from_uri(loc.get("uri", "")) for loc in batch]
-            verdicts = await self._check_ignore(cwd, repo_root, paths)
-            for loc, verdict in zip(batch, verdicts, strict=False):
-                key = path_from_uri(loc.get("uri", ""))
-                if key in seen_ignored:
-                    ignored = seen_ignored[key]
-                else:
-                    ignored = verdict
-                    seen_ignored[key] = verdict
-                if not ignored:
+            batch_paths = [path_from_uri(loc.get("uri", "")) for loc in batch]
+            uncached = [p for p in batch_paths if p not in ignore_cache]
+            if uncached:
+                verdicts = await self._check_ignore(cwd, repo_root, uncached)
+                ignore_cache.update(zip(uncached, verdicts, strict=False))
+            for loc, path in zip(batch, batch_paths, strict=False):
+                if not ignore_cache.get(path, False):
                     kept.append(loc)
+        try:
+            self._ignore_cache_store = ignore_cache
+        except AttributeError:
+            pass
         return kept
 
     async def _repo_toplevel(self, cwd: Path) -> Path | None:

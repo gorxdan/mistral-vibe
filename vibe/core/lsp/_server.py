@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import hashlib
 import os
 from typing import Any
 
@@ -60,6 +61,7 @@ class LanguageServer:
         self._conn: JsonRpcConnection | None = None
         self._capabilities: dict[str, Any] = {}
         self._open_docs: dict[str, int] = {}
+        self._open_hashes: dict[str, str] = {}
         self._start_lock = asyncio.Lock()
         self._last_error: str | None = None
         self._crash_watcher: asyncio.Task[None] | None = None
@@ -302,6 +304,7 @@ class LanguageServer:
         assert self._conn is not None
         uri = uri_from_path(path)
         self._open_docs[uri] = 1
+        self._open_hashes[uri] = self._content_hash(text)
         await self._conn.notify(
             "textDocument/didOpen",
             {
@@ -314,11 +317,27 @@ class LanguageServer:
             },
         )
 
+    async def sync_if_changed(self, path: str, text: str) -> None:
+        """Re-sync an already-open document when its content has drifted from
+        what the server last saw. The LSP tool reads files fresh on every call;
+        without this, queries after an edit serve stale results because
+        ``didOpen`` is only sent once. Sending ``didChange`` only on a real
+        diff keeps repeated identical queries a no-op.
+        """
+        uri = uri_from_path(path)
+        if self._open_hashes.get(uri) != self._content_hash(text):
+            await self.did_change(path, text)
+
+    @staticmethod
+    def _content_hash(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
     async def did_change(self, path: str, text: str) -> None:
         assert self._conn is not None
         uri = uri_from_path(path)
         version = self._open_docs.get(uri, 0) + 1
         self._open_docs[uri] = version
+        self._open_hashes[uri] = self._content_hash(text)
         await self._conn.notify(
             "textDocument/didChange",
             {
@@ -338,6 +357,7 @@ class LanguageServer:
         assert self._conn is not None
         uri = uri_from_path(path)
         self._open_docs.pop(uri, None)
+        self._open_hashes.pop(uri, None)
         await self._conn.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
 
     def is_open(self, path: str) -> bool:
@@ -363,6 +383,7 @@ class LanguageServer:
             self._conn = None
         await self._force_kill()
         self._open_docs.clear()
+        self._open_hashes.clear()
 
     async def _force_kill(self) -> None:
         proc = self._proc
