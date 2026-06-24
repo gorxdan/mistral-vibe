@@ -12,9 +12,6 @@ from urllib.parse import urljoin
 
 from dotenv import dotenv_values
 from mistralai.client.models import SpeechOutputFormat
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-    DEFAULT_TRACES_EXPORT_PATH,
-)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -1220,6 +1217,13 @@ class VibeConfig(BaseSettings):
         # (via OTEL_EXPORTER_OTLP_* env vars), so headers are left empty.
         # Otherwise endpoint and API key are derived from the active provider if it's Mistral,
         # or the first Mistral provider.
+        # Imported lazily: the OTLP exporter pulls a heavy opentelemetry chain
+        # that only matters when OTEL tracing is actually configured, and
+        # _settings is imported on every startup.
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            DEFAULT_TRACES_EXPORT_PATH,
+        )
+
         traces_export_path = DEFAULT_TRACES_EXPORT_PATH.lstrip("/")
         if self.otel_endpoint:
             return OtelSpanExporterConfig(

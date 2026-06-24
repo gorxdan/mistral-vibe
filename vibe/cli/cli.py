@@ -12,7 +12,6 @@ import tomli_w
 
 from vibe import __version__
 from vibe.cli.terminal_detect import detect_terminal
-from vibe.cli.textual_ui.app import StartupOptions, run_textual_ui
 from vibe.cli.update_notifier import (
     FileSystemUpdateCacheRepository,
     UpdateCacheRepository,
@@ -338,6 +337,9 @@ def run_cli(args: argparse.Namespace) -> None:
 
         stdin_prompt = get_prompt_from_stdin()
         if is_interactive:
+            # Deferred so non-interactive paths (--help, --version, -p
+            # programmatic mode) never pay the ~600ms Textual import.
+            from vibe.cli.textual_ui.app import StartupOptions, run_textual_ui
             from vibe.core.worktree.manager import (
                 WorktreeError,
                 worktree_enabled,
