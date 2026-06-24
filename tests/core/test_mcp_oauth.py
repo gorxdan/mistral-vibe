@@ -23,6 +23,7 @@ from vibe.core.auth.mcp_oauth import (
     MCPOAuthHeadlessError,
     MCPOAuthLoginFailed,
     MCPOAuthPortInUse,
+    _ConfidentialClientOAuthProvider,
     build_non_interactive_provider,
     build_oauth_provider,
     clear_stored_credentials,
@@ -481,6 +482,146 @@ class TestPerformOAuthLogin:
         assert fp == Fingerprint.compute(srv)
 
 
+class TestConfidentialClientInterop:
+    """Regression coverage for servers (e.g. Supabase hosted MCP) whose DCR
+    returns a client_secret without a usable token_endpoint_auth_method.
+    """
+
+    def test_secret_without_method_coerced_to_post(self) -> None:
+        info = OAuthClientInformationFull(
+            client_id="c",
+            client_secret="s",
+            redirect_uris=["http://127.0.0.1:1/callback"],  # type: ignore[list-item]
+        )
+        assert info.token_endpoint_auth_method is None
+        _ConfidentialClientOAuthProvider._coerce_confidential(info)
+        assert info.token_endpoint_auth_method == "client_secret_post"
+
+    def test_public_client_left_unchanged(self) -> None:
+        info = OAuthClientInformationFull(
+            client_id="c",
+            redirect_uris=["http://127.0.0.1:1/callback"],  # type: ignore[list-item]
+            token_endpoint_auth_method="none",
+        )
+        _ConfidentialClientOAuthProvider._coerce_confidential(info)
+        assert info.token_endpoint_auth_method == "none"
+
+    def test_explicit_method_respected(self) -> None:
+        info = OAuthClientInformationFull(
+            client_id="c",
+            client_secret="s",
+            redirect_uris=["http://127.0.0.1:1/callback"],  # type: ignore[list-item]
+            token_endpoint_auth_method="client_secret_basic",
+        )
+        _ConfidentialClientOAuthProvider._coerce_confidential(info)
+        assert info.token_endpoint_auth_method == "client_secret_basic"
+
+    def test_2xx_normalized_to_200(self) -> None:
+        response = httpx.Response(201, json={"access_token": "x"})
+        _ConfidentialClientOAuthProvider._accept_2xx(response)
+        assert response.status_code == 200
+
+    def test_non_2xx_left_untouched(self) -> None:
+        response = httpx.Response(422, json={"message": "Required parameter"})
+        _ConfidentialClientOAuthProvider._accept_2xx(response)
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_confidential_dcr_sends_secret_and_accepts_201(
+        self, memory_keyring: _MemoryKeyring
+    ) -> None:
+        port = _free_port()
+        server_url = "https://mcp.supabase.example/mcp"
+        as_url = "https://as.supabase.example"
+        resource_meta = (
+            "https://mcp.supabase.example/.well-known/oauth-protected-resource"
+        )
+        srv = _oauth_server(
+            name="supabase", url=server_url, scopes=[], redirect_port=port
+        )
+        captured: dict[str, str] = {}
+
+        async def on_url(url: str) -> None:
+            qs = urllib.parse.urlparse(url).query
+            state = urllib.parse.parse_qs(qs)["state"][0]
+
+            async def fire() -> None:
+                await _send_callback(port, f"code=THE_CODE&state={state}")
+
+            asyncio.get_event_loop().create_task(fire())
+
+        def _token_side_effect(request: httpx.Request) -> httpx.Response:
+            for key, vals in urllib.parse.parse_qs(request.content.decode()).items():
+                captured[key] = vals[0]
+            return httpx.Response(
+                201,
+                json={
+                    "access_token": "ACCESS_TOKEN",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "refresh_token": "REFRESH_TOKEN",
+                },
+            )
+
+        async with respx.mock(assert_all_called=False) as router:
+            router.get(server_url).mock(side_effect=_mcp_responses(resource_meta))
+            router.get(resource_meta).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"resource": server_url, "authorization_servers": [as_url]},
+                )
+            )
+            router.get(
+                "https://as.supabase.example/.well-known/oauth-authorization-server"
+            ).mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "issuer": as_url,
+                        "authorization_endpoint": f"{as_url}/authorize",
+                        "token_endpoint": f"{as_url}/token",
+                        "registration_endpoint": f"{as_url}/register",
+                        "response_types_supported": ["code"],
+                        "code_challenge_methods_supported": ["S256"],
+                        "grant_types_supported": [
+                            "authorization_code",
+                            "refresh_token",
+                        ],
+                    },
+                )
+            )
+            router.post(f"{as_url}/register").mock(
+                return_value=httpx.Response(
+                    201,
+                    json={
+                        "client_id": "dcr-confidential-id",
+                        "client_secret": "DCR_SECRET_VALUE",
+                        "redirect_uris": [f"http://127.0.0.1:{port}/callback"],
+                        "grant_types": ["authorization_code", "refresh_token"],
+                        "response_types": ["code"],
+                        # token_endpoint_auth_method intentionally omitted: the
+                        # Supabase DCR behavior that triggers 422 client_secret.
+                    },
+                )
+            )
+            router.post(f"{as_url}/token").mock(side_effect=_token_side_effect)
+            router.route(host="127.0.0.1").pass_through()
+
+            await perform_oauth_login(srv, on_url=on_url)
+
+        # Coerced confidential client authenticated the token exchange with its secret.
+        assert captured.get("client_secret") == "DCR_SECRET_VALUE"
+        assert captured.get("client_id") == "dcr-confidential-id"
+        assert "code_verifier" in captured
+
+        # 201 token response accepted and persisted.
+        storage = KeyringTokenStorage(alias="supabase")
+        tokens = await storage.get_tokens()
+        assert tokens is not None
+        assert tokens.access_token == "ACCESS_TOKEN"
+        assert tokens.refresh_token == "REFRESH_TOKEN"
+
+
 class TestIsLoggedIn:
     @pytest.mark.asyncio
     async def test_logged_in_when_tokens_and_fingerprint_match(
@@ -565,7 +706,9 @@ class TestNonInteractiveHandlers:
         assert provider.context.client_metadata.client_name == "Chaton"
 
 
-def _mcp_responses() -> Callable[[httpx.Request], httpx.Response]:
+def _mcp_responses(
+    resource_meta_url: str = "https://mcp.example.com/.well-known/oauth-protected-resource",
+) -> Callable[[httpx.Request], httpx.Response]:
     state = {"calls": 0}
 
     def _factory(_request: httpx.Request) -> httpx.Response:
@@ -575,8 +718,7 @@ def _mcp_responses() -> Callable[[httpx.Request], httpx.Response]:
                 401,
                 headers={
                     "WWW-Authenticate": (
-                        "Bearer resource_metadata="
-                        '"https://mcp.example.com/.well-known/oauth-protected-resource"'
+                        f'Bearer resource_metadata="{resource_meta_url}"'
                     )
                 },
             )

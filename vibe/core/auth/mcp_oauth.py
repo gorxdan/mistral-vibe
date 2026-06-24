@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 import errno
-from typing import Final
+from typing import Any, Final
 import urllib.parse
 
 import anyio.to_thread
@@ -30,6 +30,9 @@ _CLIENT_NAME: Final = "Chaton"
 _LOGIN_TIMEOUT_SECONDS: Final = 300.0
 _MIN_REQUEST_LINE_PARTS: Final = 2
 _HEADER_TERMINATORS: Final = frozenset({b"\r\n", b"\n", b""})
+_PUBLIC_AUTH_METHODS: Final = frozenset({None, "none"})
+_TOKEN_OK_STATUS: Final = 200
+_TOKEN_OK_UBOUND: Final = 300
 
 
 class MCPOAuthError(Exception):
@@ -376,6 +379,59 @@ class _suppress_close_errors:
         )
 
 
+class _ConfidentialClientOAuthProvider(OAuthClientProvider):
+    """Provider tolerant of authorization servers that register confidential clients.
+
+    Some servers (notably Supabase's hosted MCP) return a ``client_secret`` in the
+    DCR response while omitting ``token_endpoint_auth_method``. The SDK then treats
+    the client as public (auth method ``None``) and omits the secret at token
+    exchange, which the server rejects with ``422 Required parameter: client_secret``.
+    This subclass coerces such clients to ``client_secret_post`` (RFC 7591 §2)
+    before every token exchange and refresh, and accepts any 2xx token response
+    (Supabase answers ``201 Created``) rather than only exactly ``200``.
+    """
+
+    @staticmethod
+    def _coerce_confidential(client_info: OAuthClientInformationFull) -> None:
+        if client_info.client_secret and (
+            client_info.token_endpoint_auth_method in _PUBLIC_AUTH_METHODS
+        ):
+            client_info.token_endpoint_auth_method = "client_secret_post"
+
+    @staticmethod
+    def _accept_2xx(response: httpx.Response) -> None:
+        # The SDK only treats exactly 200 as success; normalize any 2xx so a 201
+        # token response is not misread as a failure. Non-2xx is left untouched.
+        if _TOKEN_OK_STATUS <= response.status_code < _TOKEN_OK_UBOUND:
+            response.status_code = _TOKEN_OK_STATUS
+
+    async def _exchange_token_authorization_code(
+        self,
+        auth_code: str,
+        code_verifier: str,
+        *,
+        token_data: dict[str, Any] | None = None,
+    ) -> httpx.Request:
+        if ci := self.context.client_info:
+            self._coerce_confidential(ci)
+        return await super()._exchange_token_authorization_code(
+            auth_code, code_verifier, token_data=token_data
+        )
+
+    async def _refresh_token(self) -> httpx.Request:
+        if ci := self.context.client_info:
+            self._coerce_confidential(ci)
+        return await super()._refresh_token()
+
+    async def _handle_token_response(self, response: httpx.Response) -> None:
+        self._accept_2xx(response)
+        await super()._handle_token_response(response)
+
+    async def _handle_refresh_response(self, response: httpx.Response) -> bool:
+        self._accept_2xx(response)
+        return await super()._handle_refresh_response(response)
+
+
 def build_oauth_provider(
     server: MCPHttp | MCPStreamableHttp,
     *,
@@ -401,7 +457,7 @@ def build_oauth_provider(
     client_metadata_url = (
         str(auth.client_metadata_url) if auth.client_metadata_url else None
     )
-    return OAuthClientProvider(
+    return _ConfidentialClientOAuthProvider(
         server_url=server.url,
         client_metadata=metadata,
         storage=KeyringTokenStorage(alias=server.name),
