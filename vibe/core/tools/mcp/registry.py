@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, cast
 
 import httpx
 
-from vibe.core.auth import build_non_interactive_provider, is_logged_in
 from vibe.core.logger import logger
 from vibe.core.tools.base import BaseTool
 from vibe.core.tools.mcp.tools import (
@@ -107,6 +106,9 @@ class MCPRegistry:
         # cached) so the next refresh after `/mcp login` re-discovers the tools.
         auth: httpx.Auth | None = None
         if srv.auth.type == "oauth":
+            # Lazy: vibe.core.auth pulls the mcp SDK (~145ms) off startup.
+            from vibe.core.auth import build_non_interactive_provider, is_logged_in
+
             if not await is_logged_in(srv):
                 logger.warning(
                     "MCP server %r requires OAuth login; run `/mcp login %s`",

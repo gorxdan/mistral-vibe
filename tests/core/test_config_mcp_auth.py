@@ -197,7 +197,7 @@ async def test_registry_oauth_not_logged_in_warns_and_is_retryable(
     })
     registry = MCPRegistry()
 
-    with patch("vibe.core.tools.mcp.registry.is_logged_in", return_value=False):
+    with patch("vibe.core.auth.is_logged_in", return_value=False):
         with caplog.at_level(logging.WARNING, logger="vibe"):
             first = await registry.get_tools_async([srv])
 
@@ -208,7 +208,7 @@ async def test_registry_oauth_not_logged_in_warns_and_is_retryable(
     # None (retryable) is not cached, so a second call re-warns — once the user
     # runs `/mcp login` and refreshes, discovery retries and may succeed.
     caplog.clear()
-    with patch("vibe.core.tools.mcp.registry.is_logged_in", return_value=False):
+    with patch("vibe.core.auth.is_logged_in", return_value=False):
         with caplog.at_level(logging.WARNING, logger="vibe"):
             second = await registry.get_tools_async([srv])
 

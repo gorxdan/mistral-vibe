@@ -668,7 +668,7 @@ class TestMCPRegistry:
         registry = MCPRegistry()
         srv = self._make_oauth_server("demo")
 
-        with patch("vibe.core.tools.mcp.registry.is_logged_in", return_value=False):
+        with patch("vibe.core.auth.is_logged_in", return_value=False):
             tools = await registry._discover_http(srv)
 
         assert tools is None
@@ -686,7 +686,7 @@ class TestMCPRegistry:
             return [remote]
 
         with (
-            patch("vibe.core.tools.mcp.registry.is_logged_in", return_value=True),
+            patch("vibe.core.auth.is_logged_in", return_value=True),
             patch("vibe.core.tools.mcp.registry.list_tools_http", side_effect=_capture),
         ):
             tools = await registry._discover_http(srv)

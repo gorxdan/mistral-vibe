@@ -15,7 +15,6 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from textual.worker import Worker
 
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
-from vibe.core.auth import is_logged_in
 from vibe.core.config import ConnectorConfig, MCPHttp, MCPStreamableHttp, VibeConfig
 from vibe.core.tools.connectors import ConnectorAuthAction, ConnectorRegistry
 from vibe.core.tools.mcp.tools import MCPTool
@@ -660,6 +659,9 @@ def _is_oauth_server(srv: MCPServer) -> bool:
 def _check_oauth_logged_in(srv: MCPServer) -> bool:
     if not isinstance(srv, (MCPHttp, MCPStreamableHttp)):
         return False
+    # Lazy: vibe.core.auth pulls the mcp SDK (~145ms) off TUI startup.
+    from vibe.core.auth import is_logged_in
+
     try:
         return run_sync(is_logged_in(srv))
     except Exception:
