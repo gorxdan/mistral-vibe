@@ -454,6 +454,30 @@ def test_max_restarts_defaults_to_three() -> None:
     assert config.max_restarts == 3
 
 
+@pytest.mark.asyncio
+async def test_sync_if_changed_resends_on_edit_not_on_identity() -> None:
+    # Regression: a document opened via didOpen must be re-synced with
+    # didChange when its on-disk content has changed, so post-edit queries see
+    # fresh text. Identical content is a no-op (no spurious version bump).
+    from asyncio import StreamReader, StreamWriter
+    from typing import cast as tcast
+
+    server = LanguageServer(
+        ServerConfig(name="t", command=["t"], languages={".py": "python"})
+    )
+    conn = JsonRpcConnection(StreamReader(), tcast(StreamWriter, _NullWriter()))
+    server._conn = conn
+    original = "def foo():\n    return 1\n"
+    await server.did_open("/x/foo.py", original, "python")
+    assert server.is_open("/x/foo.py")
+    # Identical content: no didChange, only the initial didOpen.
+    await server.sync_if_changed("/x/foo.py", original)
+    assert [n for n in server._open_docs.values()] == [1]
+    # Edited content: sync_if_changed fires didChange, bumping the version.
+    await server.sync_if_changed("/x/foo.py", "def foo():\n    return 2\n")
+    assert server._open_docs[next(iter(server._open_docs))] == 2
+
+
 def test_current_lsp_generation_bumps_on_init() -> None:
     from vibe.core.lsp._manager import (
         clear_lsp_manager,
