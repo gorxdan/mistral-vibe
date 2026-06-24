@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,8 +20,21 @@ if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
 
 
+_retirement_tasks: set[asyncio.Task[None]] = set()
+
+
+def _retire_manager(manager: LSPManager, loop: asyncio.AbstractEventLoop) -> None:
+    task = loop.create_task(manager.shutdown())
+    _retirement_tasks.add(task)
+    task.add_done_callback(_retirement_tasks.discard)
+
+
 def setup_lsp_for_config(
-    config: VibeConfig, config_getter: Callable[[], VibeConfig], root_path: str | Path
+    config: VibeConfig,
+    config_getter: Callable[[], VibeConfig],
+    root_path: str | Path,
+    *,
+    warmup: bool = False,
 ) -> LSPManager | None:
     """Initialize (or replace) the process LSP manager from ``config``.
 
@@ -34,11 +48,9 @@ def setup_lsp_for_config(
     prior = get_lsp_manager()
     if prior is not None:
         try:
-            import asyncio
-
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                loop.create_task(prior.shutdown())
+                _retire_manager(prior, loop)
             else:
                 loop.run_until_complete(prior.shutdown())
         except Exception:
@@ -54,6 +66,8 @@ def setup_lsp_for_config(
     manager.set_root(root_path)
     manager.initialize()
     init_lsp_manager(manager)
+    if warmup:
+        manager.start_warmup()
     logger.info(
         "lsp manager initialized: %d server(s) configured", len(manager.servers)
     )
@@ -66,11 +80,9 @@ def teardown_lsp() -> None:
     if manager is None:
         return
     try:
-        import asyncio
-
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            loop.create_task(manager.shutdown())
+            _retire_manager(manager, loop)
         else:
             loop.run_until_complete(manager.shutdown())
     except Exception:
@@ -82,10 +94,12 @@ def teardown_lsp() -> None:
 async def teardown_lsp_async() -> None:
     """Async-safe variant for shutdown sequences that can await."""
     manager = get_lsp_manager()
-    if manager is None:
-        return
+    pending = list(_retirement_tasks)
     try:
-        await manager.shutdown()
+        if manager is not None:
+            await manager.shutdown()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
     except Exception:
         logger.debug("lsp teardown failed", exc_info=True)
     finally:

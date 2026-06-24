@@ -458,8 +458,11 @@ class VibeApp(App):  # noqa: PLR0904
         super().__init__(**kwargs)
         self.agent_loop = agent_loop
         self._init_core_state(
-            update_notifier, update_cache_repository, current_version,
-            plan_offer_gateway, vscode_extension_promo,
+            update_notifier,
+            update_cache_repository,
+            current_version,
+            plan_offer_gateway,
+            vscode_extension_promo,
         )
         self._init_managers(voice_manager, narrator_manager, terminal_notifier)
         self._init_ui_state()
@@ -746,6 +749,12 @@ class VibeApp(App):  # noqa: PLR0904
         return self._cached_loading_area
 
     async def on_mount(self) -> None:
+        setup_lsp_for_config(
+            self.agent_loop.base_config,
+            lambda: self.agent_loop.base_config,
+            Path.cwd(),
+            warmup=True,
+        )
         self._apply_theme(self.config.theme)
         self._terminal_notifier.restore()
         self._feedback_bar = self.query_one(FeedbackBar)
@@ -1427,9 +1436,7 @@ class VibeApp(App):  # noqa: PLR0904
         await self._switch_to_input_app()
         await self._mcp_login(alias=message.server_name)
 
-    async def on_mcpaddapp_mcpaddclosed(
-        self, message: MCPAddApp.MCPAddClosed
-    ) -> None:
+    async def on_mcpaddapp_mcpaddclosed(self, message: MCPAddApp.MCPAddClosed) -> None:
         await self._switch_to_input_app()
         if message.error:
             await self._mount_and_scroll(
@@ -2421,9 +2428,7 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
         if not alias:
-            await self._mount_and_scroll(
-                ErrorMessage("Usage: /mcp login <name>")
-            )
+            await self._mount_and_scroll(ErrorMessage("Usage: /mcp login <name>"))
             return
         srv = self._find_oauth_http_server(alias)
         if srv is None:
@@ -2465,9 +2470,7 @@ class VibeApp(App):  # noqa: PLR0904
         from vibe.core.auth import clear_stored_credentials
 
         if not alias:
-            await self._mount_and_scroll(
-                ErrorMessage("Usage: /mcp logout <name>")
-            )
+            await self._mount_and_scroll(ErrorMessage("Usage: /mcp logout <name>"))
             return
         await clear_stored_credentials(alias)
         await self.agent_loop.tool_manager.refresh_remote_tools_async()
@@ -3372,9 +3375,7 @@ class VibeApp(App):  # noqa: PLR0904
         if self._team_manager is None:
             self._team_manager = self._build_team_manager()
         await self._team_manager.spawn_teammate(name, prompt)
-        await self._mount_and_scroll(
-            UserCommandMessage(f"Spawned teammate `{name}`.")
-        )
+        await self._mount_and_scroll(UserCommandMessage(f"Spawned teammate `{name}`."))
 
     async def _team_stop(
         self, parts: list[str], ErrorMessage: type, UserCommandMessage: type
@@ -3383,16 +3384,12 @@ class VibeApp(App):  # noqa: PLR0904
             await self._mount_and_scroll(UserCommandMessage("No team active."))
             return
         if len(parts) < 2:
-            await self._mount_and_scroll(
-                ErrorMessage("Usage: /team stop <name|all>")
-            )
+            await self._mount_and_scroll(ErrorMessage("Usage: /team stop <name|all>"))
             return
         target = parts[1]
         if target == "all":
             await self._team_manager.stop_all()
-            await self._mount_and_scroll(
-                UserCommandMessage("Stopped all teammates.")
-            )
+            await self._mount_and_scroll(UserCommandMessage("Stopped all teammates."))
         else:
             stopped = await self._team_manager.stop_teammate(target)
             if stopped:
@@ -3425,9 +3422,7 @@ class VibeApp(App):  # noqa: PLR0904
                 return
             task = await self._team_manager.add_team_task(rest.strip())
             await self._mount_and_scroll(
-                UserCommandMessage(
-                    f"Created task `{task.id}`: {task.description}"
-                )
+                UserCommandMessage(f"Created task `{task.id}`: {task.description}")
             )
         elif sub == "done":
             id_and_result = rest.split(None, 1) if rest else []
@@ -3440,9 +3435,7 @@ class VibeApp(App):  # noqa: PLR0904
             task_result = id_and_result[1] if len(id_and_result) > 1 else None
             task = await self._team_manager.complete_team_task(task_id, task_result)
             if task is None:
-                await self._mount_and_scroll(
-                    ErrorMessage(f"No such task `{task_id}`.")
-                )
+                await self._mount_and_scroll(ErrorMessage(f"No such task `{task_id}`."))
             else:
                 await self._mount_and_scroll(
                     UserCommandMessage(f"Completed task `{task.id}`.")

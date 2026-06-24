@@ -35,6 +35,7 @@ class LSPManager:
         self._initialized = False
         self._root_uri: str | None = None
         self._root_path: Path | None = None
+        self._warmup_task: asyncio.Task[None] | None = None
 
     def set_source(self, source: LSPServerSource) -> None:
         self._source = source
@@ -124,6 +125,24 @@ class LSPManager:
             ]
         }
 
+    def start_warmup(self) -> None:
+        if self._warmup_task is not None and not self._warmup_task.done():
+            return
+        self._warmup_task = asyncio.create_task(self._warmup(), name="lsp-warmup")
+
+    async def _warmup(self) -> None:
+        async def start_server(name: str, server: LanguageServer) -> None:
+            try:
+                await server.ensure_started()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("lsp warmup failed for %s", name, exc_info=True)
+
+        await asyncio.gather(
+            *(start_server(name, server) for name, server in self._servers.items())
+        )
+
     async def send_request(
         self, path: str | Path, method: str, params: dict[str, Any] | None = None
     ) -> tuple[Any, LanguageServer]:
@@ -178,6 +197,11 @@ class LSPManager:
         self.initialize()
 
     async def shutdown(self) -> None:
+        warmup_task = self._warmup_task
+        self._warmup_task = None
+        if warmup_task is not None and not warmup_task.done():
+            warmup_task.cancel()
+            await asyncio.gather(warmup_task, return_exceptions=True)
         stops = [server.stop() for server in self._servers.values()]
         if stops:
             await asyncio.gather(*stops, return_exceptions=True)

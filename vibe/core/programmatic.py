@@ -150,10 +150,10 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
     # persist and fire on a later interactive/ACP resume of the session.
     scheduler = LoopManager(agent_loop.session_logger)
     agent_loop.set_scheduler(scheduler)
-    setup_lsp_for_config(config, lambda: config, Path.cwd())
     logger.info("USER: %s", prompt)
 
     async def _async_run() -> str | None:
+        setup_lsp_for_config(config, lambda: config, Path.cwd(), warmup=True)
         try:
             if previous_messages:
                 non_system_messages = [

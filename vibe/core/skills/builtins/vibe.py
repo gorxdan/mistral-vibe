@@ -376,8 +376,9 @@ with an explicit `auth` block is an error.
 ### LSP (Language Server Protocol)
 
 Opt-in code intelligence. Install with `/lspstall` (remove with `/unlspstall`);
-servers stay dormant until listed in `installed_components`. Declare one
-`[[lsp_servers]]` entry per language; the binary must be on `PATH`. Surfaces
+configured servers warm up in the background when a CLI session starts in its
+working directory. Declare one `[[lsp_servers]]` entry per language; the binary
+must be on `PATH`. Surfaces
 the `lsp` tool (definitions, references, hover, symbols, call hierarchy) and
 auto-injects server diagnostics into the next turn after `edit`/`write_file`.
 

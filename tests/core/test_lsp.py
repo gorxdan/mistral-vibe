@@ -521,6 +521,162 @@ async def test_setup_skips_install_when_superseded(monkeypatch, tmp_path) -> Non
     assert result is winner
 
 
+@pytest.mark.asyncio
+async def test_setup_schedules_warmup_in_running_loop(monkeypatch, tmp_path) -> None:
+    from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
+
+    warmed: list[LSPManager] = []
+    monkeypatch.setattr(LSPManager, "start_warmup", lambda self: warmed.append(self))
+
+    manager = setup_lsp_for_config(
+        _config_with_lsp(), _config_with_lsp, tmp_path, warmup=True
+    )
+
+    assert manager is not None
+    assert warmed == [manager]
+    await teardown_lsp_async()
+
+
+@pytest.mark.asyncio
+async def test_manager_warmup_starts_servers_without_blocking() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _FakeServer:
+        async def ensure_started(self) -> None:
+            started.set()
+            await release.wait()
+
+        async def stop(self) -> None:
+            pass
+
+    manager = LSPManager()
+    manager._servers = {"python": cast(Any, _FakeServer())}
+    manager.start_warmup()
+
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert manager._warmup_task is not None
+    assert not manager._warmup_task.done()
+
+    release.set()
+    await manager._warmup_task
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_manager_warmup_is_idempotent() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    starts = 0
+
+    class _FakeServer:
+        async def ensure_started(self) -> None:
+            nonlocal starts
+            starts += 1
+            started.set()
+            await release.wait()
+
+        async def stop(self) -> None:
+            pass
+
+    manager = LSPManager()
+    manager._servers = {"python": cast(Any, _FakeServer())}
+    manager.start_warmup()
+    first_task = manager._warmup_task
+    manager.start_warmup()
+
+    assert manager._warmup_task is first_task
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert starts == 1
+
+    release.set()
+    assert manager._warmup_task is not None
+    await manager._warmup_task
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_manager_shutdown_cancels_warmup() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class _FakeServer:
+        async def ensure_started(self) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        async def stop(self) -> None:
+            pass
+
+    manager = LSPManager()
+    manager._servers = {"python": cast(Any, _FakeServer())}
+    manager.start_warmup()
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    await manager.shutdown()
+
+    assert cancelled.is_set()
+    assert manager._warmup_task is None
+
+
+@pytest.mark.asyncio
+async def test_teardown_awaits_retired_managers(monkeypatch, tmp_path) -> None:
+    from vibe.core.lsp import _lifecycle as lifecycle
+    from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
+
+    async def slow_shutdown(self: LSPManager) -> None:
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(LSPManager, "shutdown", slow_shutdown)
+
+    setup_lsp_for_config(_config_with_lsp(), _config_with_lsp, tmp_path, warmup=False)
+    setup_lsp_for_config(_config_with_lsp(), _config_with_lsp, tmp_path, warmup=False)
+
+    assert len(lifecycle._retirement_tasks) >= 1
+    await teardown_lsp_async()
+    assert len(lifecycle._retirement_tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_warmup_one_server_failure_does_not_block_others() -> None:
+    started_other = asyncio.Event()
+    release = asyncio.Event()
+
+    class _FailingServer:
+        async def ensure_started(self) -> None:
+            raise RuntimeError("boom")
+
+        async def stop(self) -> None:
+            pass
+
+    class _SlowServer:
+        async def ensure_started(self) -> None:
+            started_other.set()
+            await release.wait()
+
+        async def stop(self) -> None:
+            pass
+
+    manager = LSPManager()
+    manager._servers = {
+        "rust": cast(Any, _FailingServer()),
+        "python": cast(Any, _SlowServer()),
+    }
+    manager.start_warmup()
+
+    await asyncio.wait_for(started_other.wait(), timeout=1)
+    assert manager._warmup_task is not None
+    assert not manager._warmup_task.done()
+
+    release.set()
+    await manager._warmup_task
+    await manager.shutdown()
+
+
 def test_jsonrpc_trace_flag_is_off_by_default(monkeypatch) -> None:
     monkeypatch.delenv("VIBE_LSP_TRACE", raising=False)
     import importlib
