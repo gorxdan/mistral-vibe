@@ -680,13 +680,13 @@ StatusMessage {
 }
 
 .status-indicator-text {
-    width: auto;
+    width: 1fr;
     height: auto;
     color: $foreground;
 }
 
 .status-indicator-suffix {
-    width: 1fr;
+    width: auto;
     height: auto;
     margin-left: 1;
     color: $text-muted;
@@ -883,16 +883,19 @@ StatusMessage {
 }
 
 .todo-pending {
+    width: 100%;
     height: auto;
     color: $foreground;
 }
 
 .todo-in_progress {
+    width: 100%;
     height: auto;
     color: $warning;
 }
 
 .todo-completed {
+    width: 100%;
     height: auto;
     color: $success;
 }
