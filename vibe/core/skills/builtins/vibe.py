@@ -303,47 +303,74 @@ default_agent = "plan"
 
 ### MCP Servers
 
-MCP (Model Context Protocol) servers provide tools. Configure via `[[mcp_servers]]`
-in config or use the token-free `/mcp add` form. All management is token-free:
-`/mcp` (browser + status), `/mcp login|logout <name>`, `/mcp refresh`.
+MCP (Model Context Protocol) servers supply tools to the agent. Add one via a
+`[[mcp_servers]]` block in config or the token-free `/mcp add` form. Tools are
+named `{name}_{raw-tool}` (e.g. `github_create-issue`). Management is token-free:
+`/mcp` (server + connector browser with live status), `/mcp <name>` (list one
+server's tools), `/mcp login|logout <name>` (OAuth), `/mcp refresh` (re-discover
+tools after a config change).
 
-Transports: `stdio` (local subprocess), `http` (legacy SSE), `streamable-http`
-(current standard). Auth: `static` (header or env-var token) or `oauth` (OAuth 2.1
-PKCE via Dynamic Client Registration, pre-registered client_id, or a client
-metadata document URL).
+`transport` is the discriminator that selects the model. Fields by transport:
+
+| transport | required | extras |
+|---|---|---|
+| `stdio` | `command` (str or list), `args` | `env`, `cwd` |
+| `http` | `url` | `auth` (legacy SSE) |
+| `streamable-http` | `url` | `auth` (current standard — prefer for new servers) |
+
+Auth (http / streamable-http only), written inline as `auth = { ... }`:
+
+| `type` | fields |
+|---|---|
+| `static` | `api_key_env` (env var holding the token), `api_key_header` (default `Authorization`), `api_key_format` (default `Bearer {token}`), `headers` (extra header map) |
+| `oauth` | `scopes` (list; `[]` = accept the server default), `client_id` (pre-registered, PKCE) OR `client_metadata_url` (RFC 9728 doc — the two are mutually exclusive; omit both for Dynamic Client Registration), `redirect_port` (default 47823) |
+
+Shared per-server fields (all transports): `name` (tool prefix; normalized to
+`[a-zA-Z0-9_-]`), `prompt` (usage hint appended to tool descriptions),
+`disabled` (hide every tool; discovery still runs), `disabled_tools` (hide named
+tools, without the prefix), `startup_timeout_sec` (default 10), `tool_timeout_sec`
+(default 60), `sampling_enabled` (default true; lets the server request LLM
+completions via createMessage).
 
 ```toml
+# Local subprocess (stdio).
 [[mcp_servers]]
-name = "my-server"
+name = "github"
 transport = "stdio"
 command = "npx"
-args = ["-y", "@my/mcp-server"]
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { MCP_LOG_LEVEL = "debug" }      # see the env note below
+disabled_tools = ["delete_repo"]       # hide named tools without removing the server
 
+# Remote server, static token in a custom header.
 [[mcp_servers]]
-name = "remote-server"
-transport = "http"
-url = "https://mcp.example.com"
-api_key_env = "MCP_API_KEY"
+name = "internal"
+transport = "streamable-http"
+url = "https://mcp.internal.example.com"
+auth = { type = "static", api_key_env = "MCP_API_KEY", api_key_header = "X-API-Key", api_key_format = "{token}" }
 
-# OAuth 2.1 (streamable-http). Example: a hosted MCP server requiring OAuth.
-# DCR is used when neither client_id nor client_metadata_url is set.
-# Pass scopes = [] to accept the authorization server's default scopes.
+# OAuth 2.1 (streamable-http). DCR when client_id is omitted.
 [[mcp_servers]]
 name = "supabase"
 transport = "streamable-http"
 url = "https://mcp.supabase.com/mcp"
-[mcp_servers.auth]
-type = "oauth"
-scopes = []
+auth = { type = "oauth", scopes = [] }
 ```
 
-For OAuth servers, run `/mcp login <name>` to authorize in a browser (tokens are
-stored in the OS keyring). `/mcp logout <name>` clears stored credentials. The
-`/mcp` browser shows `logged in` or `needs login` status for OAuth servers; press
-`L` to initiate login from the browser.
+`env` (stdio) is merged over a minimal inherited set — only `PATH`, `HOME`,
+`USER`, `SHELL`, `LOGNAME`, `TERM` on Linux. Arbitrary variables (including keys
+in `~/.vibe/.env`) are NOT inherited, and values are literal with no `${...}`
+expansion, so pass anything the server needs in `env` explicitly.
 
-For headless or CI environments, use `auth.type = "static"` with `api_key_env`
-(a personal access token) instead of OAuth.
+OAuth: run `/mcp login <name>` to authorize in a browser (tokens are stored in
+the OS keyring); `/mcp logout <name>` clears them. The `/mcp` browser shows
+`logged in` or `needs login` and binds `L` to start login. For headless or CI,
+prefer `auth.type = "static"` with `api_key_env` (a personal access token).
+
+Backwards compatibility: the static-auth keys (`api_key_env`, `api_key_header`,
+`api_key_format`, `headers`) may still be written at the server top level — they
+are promoted into an `[auth] (type = "static")` block at load time. Mixing them
+with an explicit `auth` block is an error.
 
 ### LSP (Language Server Protocol)
 
