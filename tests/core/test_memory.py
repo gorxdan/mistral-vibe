@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-import pytest
 from pydantic import ValidationError
+import pytest
 
-from tests.conftest import build_test_agent_loop
+from tests.conftest import build_test_agent_loop, build_test_vibe_config
+from vibe.core.config import MemoryConfig
 from vibe.core.memory.extractor import MemoryExtractor
 from vibe.core.memory.models import (
     MemoryEntry,
@@ -618,6 +619,33 @@ def test_maybe_schedule_extraction_respects_disabled_config() -> None:
     # Default config has auto_extract=False, so nothing should be scheduled.
     loop._maybe_schedule_memory_extraction()
     assert loop._mem_extract_task is None
+
+
+def _loop_with_auto_extract(effort_mode: str):
+    from vibe.core.types import LLMMessage, Role
+
+    config = build_test_vibe_config(
+        effort_mode=effort_mode,
+        memory=MemoryConfig(auto_extract=True, auto_extract_min_messages=1),
+    )
+    loop = build_test_agent_loop(config=config)
+    loop.messages.append(LLMMessage(role=Role.user, content="hi"))
+    loop.messages.append(LLMMessage(role=Role.assistant, content="done"))
+    return loop
+
+
+def test_auto_extract_suppressed_under_le_chaton() -> None:
+    loop = _loop_with_auto_extract("le-chaton")
+    loop._maybe_schedule_memory_extraction()
+    assert loop._mem_extract_task is None
+
+
+@pytest.mark.asyncio
+async def test_auto_extract_scheduled_under_normal_effort() -> None:
+    loop = _loop_with_auto_extract("normal")
+    loop._maybe_schedule_memory_extraction()
+    assert loop._mem_extract_task is not None
+    loop._mem_extract_task.cancel()
 
 
 # --- type-driven scope in _extract_memories --- #

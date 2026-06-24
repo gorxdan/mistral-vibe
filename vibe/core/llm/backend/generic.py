@@ -21,6 +21,7 @@ from vibe.core.llm.backend.openai_responses import (
 )
 from vibe.core.llm.backend.reasoning_adapter import ReasoningAdapter
 from vibe.core.llm.exceptions import BackendErrorBuilder
+from vibe.core.llm.provider_limiter import provider_slot
 from vibe.core.types import (
     AvailableTool,
     LLMChunk,
@@ -492,45 +493,48 @@ class GenericBackend:
     async def _make_request(
         self, url: str, data: bytes, headers: dict[str, str]
     ) -> HTTPResponse:
-        client = self._get_client()
-        response = await client.post(url, content=data, headers=headers)
-        response.raise_for_status()
+        async with provider_slot(self._provider):
+            client = self._get_client()
+            response = await client.post(url, content=data, headers=headers)
+            response.raise_for_status()
 
-        response_headers = dict(response.headers.items())
-        response_body = response.json()
-        return self.HTTPResponse(response_body, response_headers)
+            response_headers = dict(response.headers.items())
+            response_body = response.json()
+            return self.HTTPResponse(response_body, response_headers)
 
     @async_generator_retry(tries=3)
     async def _make_streaming_request(
         self, url: str, data: bytes, headers: dict[str, str]
     ) -> AsyncGenerator[dict[str, Any]]:
-        client = self._get_client()
-        async with client.stream(
-            method="POST", url=url, content=data, headers=headers
-        ) as response:
-            if not response.is_success:
-                await response.aread()
-            response.raise_for_status()
-            async for line in iter_sse_lines(response):
-                if line.strip() == "":
-                    continue
+        # Slot spans the whole stream — a live response stays in-flight until drained.
+        async with provider_slot(self._provider):
+            client = self._get_client()
+            async with client.stream(
+                method="POST", url=url, content=data, headers=headers
+            ) as response:
+                if not response.is_success:
+                    await response.aread()
+                response.raise_for_status()
+                async for line in iter_sse_lines(response):
+                    if line.strip() == "":
+                        continue
 
-                # SSE comment/keepalive lines start with ':'
-                if line.startswith(":"):
-                    continue
-                delim_index = line.find(":")
-                if delim_index == -1:
-                    continue
-                key = line[:delim_index]
-                value = line[delim_index + 1 :]
-                if value.startswith(" "):
-                    value = value[1:]
-                if key != "data":
-                    # This might be the case with openrouter, so we just ignore it
-                    continue
-                if value == "[DONE]":
-                    return
-                yield json.loads(value.strip())
+                    # SSE comment/keepalive lines start with ':'
+                    if line.startswith(":"):
+                        continue
+                    delim_index = line.find(":")
+                    if delim_index == -1:
+                        continue
+                    key = line[:delim_index]
+                    value = line[delim_index + 1 :]
+                    if value.startswith(" "):
+                        value = value[1:]
+                    if key != "data":
+                        # This might be the case with openrouter, so we just ignore it
+                        continue
+                    if value == "[DONE]":
+                        return
+                    yield json.loads(value.strip())
 
     async def close(self) -> None:
         if self._owns_client and self._client:

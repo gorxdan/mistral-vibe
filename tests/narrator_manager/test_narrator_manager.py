@@ -16,10 +16,13 @@ from vibe.core.tts.tts_client_port import TTSResult
 def _make_manager(
     *,
     narrator_enabled: bool = True,
+    effort_mode: str = "normal",
     telemetry_client: MagicMock | None = None,
     tts_client: FakeTTSClient | None = None,
 ) -> tuple[NarratorManager, FakeAudioPlayer]:
-    config = build_test_vibe_config(narrator_enabled=narrator_enabled)
+    config = build_test_vibe_config(
+        narrator_enabled=narrator_enabled, effort_mode=effort_mode
+    )
     audio_player = FakeAudioPlayer()
     manager = NarratorManager(
         config_getter=lambda: config,
@@ -59,6 +62,18 @@ class TestTelemetryTracking:
         manager, _ = _make_manager(
             narrator_enabled=False, telemetry_client=mock_telemetry
         )
+        manager.on_turn_end()
+
+        calls = _find_telemetry_calls(mock_telemetry, "vibe.read_aloud.requested")
+        assert len(calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_requested_event_under_le_chaton(self) -> None:
+        mock_telemetry = MagicMock()
+        manager, _ = _make_manager(
+            effort_mode="le-chaton", telemetry_client=mock_telemetry
+        )
+        manager._turn_summary.start_turn("test")
         manager.on_turn_end()
 
         calls = _find_telemetry_calls(mock_telemetry, "vibe.read_aloud.requested")

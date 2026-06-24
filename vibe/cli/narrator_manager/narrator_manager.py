@@ -104,6 +104,7 @@ class NarratorManager:
         if (
             cancel_summary is not None
             and self._config_getter().narrator_enabled
+            and not self._config_getter().is_le_chaton()
             and self._tts_client is not None
         ):
             self._cancel_summary = cancel_summary
