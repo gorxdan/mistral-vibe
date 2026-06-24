@@ -295,17 +295,20 @@ class Lsp(
         simple = self._simple_dispatch_table().get(args.operation)
         if simple is not None:
             method, label, formatter, extra = simple
-            params = {**text_doc, **(extra or {})}
             if position is not None:
-                params["position"] = position
-            raw, _ = await manager.send_request(file_path, method, params)
+                raw = await self._request_at_identifier(
+                    manager, file_path, text_doc, position, method, extra
+                )
+            else:
+                params = {**text_doc, **(extra or {})}
+                raw, _ = await manager.send_request(file_path, method, params)
             if formatter is self._format_locations:
                 filtered = await self._filter_gitignored(self._as_location_list(raw))
                 return formatter(label, filtered)
             return formatter(label, raw)
         if args.operation is LspOperation.HOVER:
-            raw, _ = await manager.send_request(
-                file_path, "textDocument/hover", {**text_doc, "position": position}
+            raw = await self._request_at_identifier(
+                manager, file_path, text_doc, position or {}, "textDocument/hover", None
             )
             return self._format_hover(raw)
         if args.operation is LspOperation.WORKSPACE_SYMBOL:
@@ -433,11 +436,10 @@ class Lsp(
             manager, file_path, text_doc, position
         )
         if not items:
-            # prepareCallHierarchy is stricter than hover/references: it needs
-            # the cursor exactly on the callable's identifier (its
-            # selectionRange). An agent passing a column on the `fn`/`def`
-            # keyword or leading whitespace gets an empty result. Resolve the
-            # deepest document symbol spanning the position and retry at its
+            # prepareCallHierarchy needs the cursor on the callable's identifier
+            # (its selectionRange), not the `fn`/`def` keyword or whitespace.
+            # All position ops share this constraint; resolve the deepest
+            # document symbol spanning the position and retry at its
             # selectionRange.start so the request lands on the identifier.
             resolved = await self._resolve_callable_position(
                 manager, file_path, text_doc, position
@@ -554,6 +556,36 @@ class Lsp(
         if line is None or character is None:
             return None
         return {"line": int(line), "character": int(character)}
+
+    async def _request_at_identifier(
+        self,
+        manager: Any,
+        file_path: str,
+        text_doc: dict[str, Any],
+        position: dict[str, int],
+        method: str,
+        extra: dict[str, Any] | None,
+    ) -> Any:
+        # Position ops (definition/references/hover/implementation) resolve only
+        # when the cursor sits on the symbol's identifier; one on the
+        # `def`/`class` keyword or leading whitespace returns empty. If the first
+        # attempt yields nothing, resolve the deepest document symbol spanning
+        # the position and retry at its selectionRange.start -- the same recovery
+        # call hierarchy uses. A non-empty first result short-circuits, so this
+        # never alters a query that already resolved.
+        params: dict[str, Any] = {**text_doc, **(extra or {}), "position": position}
+        raw, _ = await manager.send_request(file_path, method, params)
+        if raw:
+            return raw
+        resolved = await self._resolve_callable_position(
+            manager, file_path, text_doc, position
+        )
+        if resolved is None or resolved == position:
+            return raw
+        retry, _ = await manager.send_request(
+            file_path, method, {**text_doc, **(extra or {}), "position": resolved}
+        )
+        return retry
 
     @classmethod
     def _deepest_symbol_at(

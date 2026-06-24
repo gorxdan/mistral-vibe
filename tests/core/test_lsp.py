@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1068,6 +1068,115 @@ async def test_call_hierarchy_retries_followup_on_cold_index(monkeypatch) -> Non
         m for m, _ in manager.requests if m == "callHierarchy/incomingCalls"
     ]
     assert len(incoming_calls) >= 2
+
+
+class _FakePositionalManager:
+    # Replays canned responses keyed by (method, line, character) for the
+    # position-based ops, plus a static documentSymbol list. An empty result
+    # at the keyword position should trigger a documentSymbol lookup and a
+    # retry at the identifier — the off-identifier self-heal.
+
+    def __init__(
+        self, responses: dict[tuple[str, int, int], Any], document_symbols: list[dict]
+    ) -> None:
+        self._responses = responses
+        self._symbols = document_symbols
+        self.requests: list[tuple[str, dict]] = []
+
+    async def send_request(self, file_path: str, method: str, params: dict):
+        self.requests.append((method, params))
+        if method == "textDocument/documentSymbol":
+            return self._symbols, None
+        pos = params.get("position") or {}
+        key = (method, pos.get("line", -1), pos.get("character", -1))
+        return self._responses.get(key), None
+
+
+@pytest.mark.asyncio
+async def test_hover_self_heals_off_identifier_position() -> None:
+    # Cursor at col 1 (the `class` keyword) returns no hover; the tool resolves
+    # via documentSymbol to the identifier at col 7 and retries successfully.
+    from vibe.core.tools.builtins.lsp import LspArgs, LspOperation
+
+    tool = _make_lsp_tool()
+    symbols = [_fn_symbol("LaunchWorkflow", (99, 6), (110, 0))]
+    manager = _FakePositionalManager(
+        responses={
+            ("textDocument/hover", 99, 6): {"contents": "(class) LaunchWorkflow"}
+        },
+        document_symbols=symbols,
+    )
+    args = LspArgs(
+        operation=LspOperation.HOVER, file_path="/x.py", line=100, character=1
+    )
+    result = await tool._dispatch(manager, args, "/x.py", {"line": 99, "character": 0})
+    assert "LaunchWorkflow" in result.summary
+    hover_positions = [
+        p["position"] for m, p in manager.requests if m == "textDocument/hover"
+    ]
+    assert hover_positions == [
+        {"line": 99, "character": 0},
+        {"line": 99, "character": 6},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_find_references_self_heals_off_identifier_position() -> None:
+    from vibe.core.tools.builtins.lsp import LspArgs, LspOperation
+
+    tool = _make_lsp_tool()
+    symbols = [_fn_symbol("LaunchWorkflow", (99, 6), (110, 0))]
+    manager = _FakePositionalManager(
+        responses={
+            ("textDocument/references", 99, 6): [
+                {
+                    "uri": "file:///x.py",
+                    "range": {"start": {"line": 50, "character": 4}},
+                }
+            ]
+        },
+        document_symbols=symbols,
+    )
+    args = LspArgs(
+        operation=LspOperation.FIND_REFERENCES, file_path="/x.py", line=100, character=1
+    )
+    result = await tool._dispatch(manager, args, "/x.py", {"line": 99, "character": 0})
+    assert result.locations
+    ref_positions = [
+        p["position"] for m, p in manager.requests if m == "textDocument/references"
+    ]
+    assert ref_positions == [{"line": 99, "character": 0}, {"line": 99, "character": 6}]
+
+
+@pytest.mark.asyncio
+async def test_go_to_definition_self_heals_off_identifier_position() -> None:
+    from vibe.core.tools.builtins.lsp import LspArgs, LspOperation
+
+    tool = _make_lsp_tool()
+    symbols = [_fn_symbol("LaunchWorkflow", (99, 6), (110, 0))]
+    manager = _FakePositionalManager(
+        responses={
+            ("textDocument/definition", 99, 6): [
+                {
+                    "uri": "file:///defs.py",
+                    "range": {"start": {"line": 10, "character": 0}},
+                }
+            ]
+        },
+        document_symbols=symbols,
+    )
+    args = LspArgs(
+        operation=LspOperation.GO_TO_DEFINITION,
+        file_path="/x.py",
+        line=100,
+        character=1,
+    )
+    result = await tool._dispatch(manager, args, "/x.py", {"line": 99, "character": 0})
+    assert result.locations
+    def_positions = [
+        p["position"] for m, p in manager.requests if m == "textDocument/definition"
+    ]
+    assert def_positions == [{"line": 99, "character": 0}, {"line": 99, "character": 6}]
 
 
 def test_range_contains_bounds() -> None:
