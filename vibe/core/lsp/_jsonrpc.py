@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 import json
+import logging
 import os
+import time
 from typing import Any
 
 from vibe.core.logger import logger
@@ -66,6 +68,7 @@ class JsonRpcConnection:
         future: asyncio.Future[Any] = loop.create_future()
         self._pending[req_id] = future
         await self._write(payload)
+        rtt_start = time.perf_counter()
         try:
             if timeout is None:
                 return await future
@@ -75,6 +78,10 @@ class JsonRpcConnection:
             raise LSPTimeoutError(f"{method} timed out after {timeout}s") from exc
         except _RequestCancelled as exc:
             raise LSPProtocolError(str(exc)) from exc
+        finally:
+            if logger.isEnabledFor(logging.DEBUG):
+                elapsed_ms = (time.perf_counter() - rtt_start) * 1000.0
+                logger.debug("lsp rpc %s rtt=%.1fms", method, elapsed_ms)
 
     async def notify(self, method: str, params: Any | None = None) -> None:
         payload = {"jsonrpc": "2.0", "method": method}

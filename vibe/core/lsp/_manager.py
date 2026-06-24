@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
+import time
 from typing import Any, Protocol
 
 from vibe.core.logger import logger
@@ -130,7 +132,13 @@ class LSPManager:
             raise LSPNotConnectedError(
                 f"no LSP server registered for {Path(path).suffix or 'unknown'}"
             )
-        result = await server.send_request(method, params)
+        total_start = time.perf_counter()
+        try:
+            result = await server.send_request(method, params)
+        finally:
+            if logger.isEnabledFor(logging.DEBUG):
+                total_ms = (time.perf_counter() - total_start) * 1000.0
+                logger.debug("lsp request %s total=%.1fms", method, total_ms)
         return result, server
 
     async def open_document(
