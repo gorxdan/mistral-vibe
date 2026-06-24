@@ -20,13 +20,14 @@ import tempfile
 from pydantic import ValidationError
 import yaml
 
-from vibe.core.memory.models import _SLUG, MemoryEntry, MemoryMetadata
+from vibe.core.memory.models import _SLUG, MemoryEntry, MemoryMetadata, freshness_note
 from vibe.core.paths import VIBE_HOME
 from vibe.core.skills.parser import SkillParseError, parse_skill_markdown
 
 # Compiled slug pattern (same source as MemoryMetadata.id) for the delete path,
 # which bypasses the pydantic model and interpolates the id into a path.
 _ID_RE = re.compile(_SLUG)
+
 
 class MemoryStore:
     def __init__(self, user_dir: Path, project_dirs: list[Path] | None = None) -> None:
@@ -104,6 +105,9 @@ class MemoryStore:
         )
         return [e.index_line() for e in entries[:limit]]
 
+    def index_markdown(self, limit: int = 200) -> str:
+        return "\n".join(self.index(limit))
+
     def ids(self) -> list[str]:
         return list(self._entries().keys())
 
@@ -120,7 +124,9 @@ class MemoryStore:
             entry = self.get(mid)
             if entry is None:
                 continue
-            block = f"### {entry.metadata.title}\n{entry.body}"
+            note = freshness_note(entry.metadata.updated)
+            body_text = f"{note}\n{entry.body}" if note else entry.body
+            block = f"### {entry.metadata.title}\n{body_text}"
             if used + len(block) > max_chars:
                 continue
             blocks.append(block)
@@ -135,7 +141,7 @@ class MemoryStore:
         )
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / f"{entry.id}.md"
-        fm = entry.metadata.model_dump()
+        fm = entry.metadata.model_dump(mode="json")
         doc = f"---\n{yaml.safe_dump(fm, sort_keys=False)}---\n{entry.body}\n"
         self._atomic_write(path, doc)
         self._cache = None  # invalidate
@@ -191,6 +197,7 @@ class MemoryStore:
                 os.unlink(tmp)
             raise
 
+
 def _project_identity(workdir: Path) -> Path:
     """Stable per-project identity for *workdir*.
 
@@ -213,6 +220,7 @@ def _project_identity(workdir: Path) -> Path:
     common = Path(out.stdout.strip())
     common = common.resolve() if common.is_absolute() else (workdir / common).resolve()
     return common if common.exists() else workdir.resolve()
+
 
 def project_memory_dir(*, create: bool = False) -> Path | None:
     """Current project's memory namespace under ``~/.vibe``, or ``None``.

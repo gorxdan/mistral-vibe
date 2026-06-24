@@ -328,6 +328,16 @@ class MemoryConfig(BaseSettings):
     max_entries_scanned: int = 200
     timeout: float = 20.0
     extra_body: dict[str, Any] = Field(default_factory=dict)
+    # Auto-extraction: a post-turn pass that proposes durable memories from the
+    # transcript. Off by default — the manage_memory tool is the primary write
+    # path. Shares the selector model/extra_body when its own model is unset.
+    auto_extract: bool = False
+    auto_extract_model: str | None = (
+        None  # alias; falls back to model/compaction/active
+    )
+    auto_extract_max_writes: int = 3  # per-session cap on extracted memories
+    auto_extract_min_messages: int = 4  # skip extraction on trivial turns
+    auto_extract_timeout: float = 30.0
 
 
 class SandboxConfig(BaseModel):

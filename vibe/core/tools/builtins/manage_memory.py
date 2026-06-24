@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 import datetime as _dt
-import re
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
 from vibe.core.config import VibeConfig
-from vibe.core.memory.models import MemoryEntry, MemoryMetadata
+from vibe.core.memory.models import MemoryEntry, MemoryMetadata, MemoryType, slugify
 from vibe.core.memory.store import MemoryStore, project_memory_dir
 from vibe.core.paths import VIBE_HOME
 from vibe.core.tools.base import (
@@ -20,11 +19,6 @@ from vibe.core.tools.base import (
     ToolPermission,
 )
 from vibe.core.types import ToolStreamEvent
-
-
-def _slugify(text: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return slug or "memory"
 
 
 def _memory_store() -> MemoryStore:
@@ -39,6 +33,7 @@ class ManageMemoryArgs(BaseModel):
     description: str | None = None
     tags: list[str] = Field(default_factory=list)
     body: str | None = None
+    type: MemoryType | None = None
     # add: defaults to "user". update: None preserves the existing tier.
     scope: Literal["user", "project"] | None = None
 
@@ -64,7 +59,11 @@ class ManageMemory(
         "global (shared across all projects); pass scope='project' to write to the "
         "current project's private namespace (~/.vibe/memory/projects/<hash>, never "
         "committed, isolated per trusted project path). Project memories shadow "
-        "same-id global ones for that project only."
+        "same-id global ones for that project only. Prefer a 'type' (user, feedback, "
+        "project, reference): user = who the user is; feedback = how they want you to "
+        "work (with the why); project = ongoing work/decisions not in code/git; "
+        "reference = pointers to external systems. Do not save code patterns, "
+        "architecture, git history, or fix recipes — those are derivable."
     )
 
     @classmethod
@@ -108,7 +107,7 @@ class ManageMemory(
                     "scope=project requires a trusted project directory; "
                     "run from a trusted folder or use scope=user."
                 )
-            mem_id = args.id or _slugify(args.title)
+            mem_id = args.id or slugify(args.title)
             if store.get(mem_id) is not None:
                 raise ToolError(
                     f"Memory '{mem_id}' already exists; use action=update instead."
@@ -119,6 +118,7 @@ class ManageMemory(
                     title=args.title,
                     description=args.description or "",
                     tags=args.tags,
+                    type=args.type,
                     scope=scope,
                     created=today,
                     updated=today,
@@ -154,6 +154,7 @@ class ManageMemory(
                     "title": args.title,
                     "description": args.description,
                     "tags": args.tags or None,
+                    "type": args.type,
                 }.items()
                 if v is not None
             }

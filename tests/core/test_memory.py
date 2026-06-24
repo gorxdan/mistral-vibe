@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from tests.conftest import build_test_agent_loop
-from vibe.core.memory.models import MemoryEntry, MemoryMetadata
+from vibe.core.memory.extractor import MemoryExtractor
+from vibe.core.memory.models import (
+    MemoryEntry,
+    MemoryMetadata,
+    MemoryType,
+    freshness_note,
+    slugify,
+)
 from vibe.core.memory.selector import MemorySelector
 from vibe.core.memory.store import MemoryStore
 
@@ -349,3 +357,338 @@ def test_project_memory_dir_shared_across_worktrees(monkeypatch, tmp_path) -> No
 
     assert ns_main is not None and ns_wt is not None
     assert ns_main == ns_wt, "worktrees of one repo must share a memory namespace"
+
+
+# --------------------------------------------------------------------------- #
+# Tier 1: always-on memory index (fault-tolerant recall base)                   #
+# --------------------------------------------------------------------------- #
+
+
+def test_index_markdown_joins_lines(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("a", desc="first"))
+    store.upsert(_entry("b", desc="second"))
+    md = store.index_markdown()
+    assert "[a]" in md and "[b]" in md
+    assert md.count("\n") == 1
+
+
+def test_compose_memory_section_shows_index_even_without_bodies() -> None:
+    loop = build_test_agent_loop()
+    section = loop._compose_memory_section("- [a] A: desc", "")
+    assert "## Memory index" in section
+    assert "[a]" in section
+    assert "## Relevant details" not in section
+
+
+def test_compose_memory_section_appends_bodies_when_present() -> None:
+    loop = build_test_agent_loop()
+    section = loop._compose_memory_section("- [a] A", "### A\ndetail body")
+    assert "## Memory index" in section
+    assert "## Relevant details" in section
+    assert "detail body" in section
+
+
+@pytest.mark.asyncio
+async def test_apply_selection_shows_index_even_when_selector_returns_empty(
+    monkeypatch, tmp_path
+) -> None:
+    # The defining property of Tier 1: a selector failure/empty result must
+    # still leave the always-on index in context so the model knows memories
+    # exist. This is the failure that motivated the redesign.
+    loop = build_test_agent_loop()
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("relevant", desc="directly relevant", body="the answer"))
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+
+    async def _empty_select(*a: Any, **k: Any) -> list[str]:
+        return []
+
+    monkeypatch.setattr(
+        loop, "_resolve_memory_selector", lambda: _StubSelector(_empty_select)
+    )
+
+    await loop._apply_memory_selection("anything")
+
+    prompt = loop.messages[0].content or ""
+    assert "<memories>" in prompt
+    assert "## Memory index" in prompt
+    assert "[relevant]" in prompt
+    assert "the answer" not in prompt  # bodies absent when selector returned []
+
+
+@pytest.mark.asyncio
+async def test_apply_selection_includes_bodies_when_selector_hits(
+    monkeypatch, tmp_path
+) -> None:
+    loop = build_test_agent_loop()
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("hit", desc="d", body="deep detail"))
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+
+    async def _hit(*a: Any, **k: Any) -> list[str]:
+        return ["hit"]
+
+    monkeypatch.setattr(loop, "_resolve_memory_selector", lambda: _StubSelector(_hit))
+
+    await loop._apply_memory_selection("query")
+
+    prompt = loop.messages[0].content or ""
+    assert "## Memory index" in prompt
+    assert "## Relevant details" in prompt
+    assert "deep detail" in prompt
+
+
+class _StubSelector:
+    def __init__(self, coro_fn: Any) -> None:
+        self._fn = coro_fn
+
+    async def select(self, *a: Any, **k: Any) -> list[str]:
+        return await self._fn(*a, **k)
+
+
+def test_set_memory_section_search_guidance_in_preamble() -> None:
+    loop = build_test_agent_loop()
+    loop._set_memory_section("body text")
+    prompt = loop.messages[0].content or ""
+    assert "grep/read" in prompt.lower() or "~/.vibe/memory" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# Tier 2a: typed memory taxonomy                                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_memory_type_enum_values() -> None:
+    assert MemoryType.USER.value == "user"
+    assert {t.value for t in MemoryType} == {"user", "feedback", "project", "reference"}
+
+
+def test_type_field_roundtrips_through_frontmatter(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="fb", title="FB", description="d", type=MemoryType.FEEDBACK
+            ),
+            body="b",
+        )
+    )
+    got = store.get("fb")
+    assert got is not None
+    assert got.metadata.type == MemoryType.FEEDBACK
+
+
+def test_index_line_includes_type_tag() -> None:
+    e = MemoryEntry(
+        metadata=MemoryMetadata(id="x", title="X", type=MemoryType.PROJECT), body=""
+    )
+    assert "[project]" in e.index_line()
+
+
+def test_unknown_type_degrades_to_none_not_rejected(tmp_path) -> None:
+    (tmp_path / "weird.md").write_text(
+        "---\nid: weird\ntitle: W\ntype: bogus-future-type\n---\nbody"
+    )
+    store = MemoryStore(user_dir=tmp_path)
+    got = store.get("weird")
+    assert got is not None
+    assert got.metadata.type is None  # graceful degradation, not a load failure
+
+
+def test_slugify_shared_from_models() -> None:
+    assert slugify("My Memory Title!") == "my-memory-title"
+    assert slugify("!!!") == "memory"
+
+
+# --------------------------------------------------------------------------- #
+# Tier 2b: post-turn auto-extraction                                           #
+# --------------------------------------------------------------------------- #
+
+
+def _extractor() -> MemoryExtractor:
+    from vibe.core.config import ModelConfig, ProviderConfig
+
+    return MemoryExtractor(
+        model=ModelConfig(name="m", provider="p", alias="m"),
+        provider=ProviderConfig(name="p", api_base="x", backend="generic"),
+    )
+
+
+def test_extractor_parse_valid_json() -> None:
+    ex = _extractor()
+    payload = json.dumps({
+        "memories": [
+            {"title": "Prefers terse", "type": "feedback", "body": "why"},
+            {"title": "Uses bun", "type": "user"},
+        ]
+    })
+    out = ex._parse(payload)
+    assert len(out) == 2
+    assert out[0].title == "Prefers terse"
+
+
+def test_extractor_parse_clamps_to_two() -> None:
+    ex = _extractor()
+    payload = json.dumps({
+        "memories": [{"title": str(i), "type": "user"} for i in range(5)]
+    })
+    assert len(ex._parse(payload)) == 2
+
+
+def test_extractor_parse_garbage_returns_empty() -> None:
+    ex = _extractor()
+    assert ex._parse("no json here") == []
+    assert ex._parse('{"memories": "notalist"}') == []
+    assert ex._parse(None) == []
+
+
+@pytest.mark.asyncio
+async def test_extractor_fails_to_empty_on_backend_error(monkeypatch) -> None:
+    class _Boom:
+        async def __aenter__(self) -> _Boom:
+            return self
+
+        async def __aexit__(self, *e: Any) -> None:
+            return None
+
+        async def complete(self, **k: Any) -> Any:
+            raise RuntimeError("down")
+
+    monkeypatch.setattr(
+        "vibe.core.memory.extractor.BACKEND_FACTORY", {"generic": _Boom}
+    )
+    out = await _extractor().extract("some transcript", "")
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_extractor_empty_transcript_skips_call() -> None:
+    assert await _extractor().extract("   ", "") == []
+
+
+def test_extractor_unknown_type_degrades() -> None:
+    ex = _extractor()
+    payload = json.dumps({"memories": [{"title": "x", "type": "nonexistent"}]})
+    out = ex._parse(payload)
+    assert len(out) == 1
+    assert out[0].type is None
+
+
+# --- extraction wiring in the agent loop --- #
+
+
+def _assistant_with_tool_call(name: str) -> Any:
+    from vibe.core.types import FunctionCall, LLMMessage, Role, ToolCall
+
+    return LLMMessage(
+        role=Role.assistant,
+        content="ok",
+        tool_calls=[ToolCall(function=FunctionCall(name=name))],
+    )
+
+
+def test_mem_wrote_memory_since_detects_manage_memory() -> None:
+    loop = build_test_agent_loop()
+    from vibe.core.types import LLMMessage, Role
+
+    base = len(loop.messages)
+    loop.messages.append(LLMMessage(role=Role.user, content="hi"))
+    loop.messages.append(_assistant_with_tool_call("manage_memory"))
+    loop.messages.append(LLMMessage(role=Role.user, content="bye"))
+    assert loop._mem_wrote_memory_since(base, len(loop.messages)) is True
+
+
+def test_mem_wrote_memory_since_false_for_other_tools() -> None:
+    loop = build_test_agent_loop()
+    from vibe.core.types import LLMMessage, Role
+
+    base = len(loop.messages)
+    loop.messages.append(LLMMessage(role=Role.user, content="hi"))
+    loop.messages.append(_assistant_with_tool_call("read"))
+    assert loop._mem_wrote_memory_since(base, len(loop.messages)) is False
+
+
+def test_maybe_schedule_extraction_respects_disabled_config() -> None:
+    loop = build_test_agent_loop()
+    # Default config has auto_extract=False, so nothing should be scheduled.
+    loop._maybe_schedule_memory_extraction()
+    assert loop._mem_extract_task is None
+
+
+# --------------------------------------------------------------------------- #
+# Tier 3: already-surfaced variety + freshness annotation                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_freshness_note_empty_for_recent() -> None:
+    import datetime as _dt
+
+    today = _dt.date(2026, 6, 24)
+    assert freshness_note("2026-06-20", today) == ""  # 4 days, under threshold
+    assert freshness_note("", today) == ""
+    assert freshness_note("not-a-date", today) == ""
+
+
+def test_freshness_note_warns_for_stale() -> None:
+    import datetime as _dt
+
+    stale = (_dt.date(2026, 6, 24) - _dt.timedelta(days=30)).isoformat()
+    note = freshness_note(stale, _dt.date(2026, 6, 24))
+    assert "30 days ago" in note
+    assert "verify" in note.lower()
+
+
+def test_bodies_includes_freshness_for_stale_memory(tmp_path) -> None:
+    import datetime as _dt
+
+    store = MemoryStore(user_dir=tmp_path)
+    stale = (_dt.date(2026, 6, 24) - _dt.timedelta(days=30)).isoformat()
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="old", title="Old", description="d", updated=stale
+            ),
+            body="stale detail",
+        )
+    )
+    out = store.bodies(["old"], max_chars=1000)
+    assert "stale detail" in out
+    assert "verify" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_selector_accepts_already_surfaced_kwarg() -> None:
+    # The already_surfaced param threads through to the prompt without error;
+    # it nudges variety but never hard-excludes (a clearly-relevant surfaced
+    # memory can still be picked).
+    sel = _selector()
+    ids = await sel.select(["- [a] A"], "msg", {"a"}, already_surfaced={"a"})
+    # Backend is not mocked here; we only assert the call shape is accepted.
+    # _parse clamps to valid ids regardless of surfaced hint.
+    assert isinstance(ids, list)
+
+
+@pytest.mark.asyncio
+async def test_apply_selection_tracks_surfaced_across_turns(
+    monkeypatch, tmp_path
+) -> None:
+    loop = build_test_agent_loop()
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("m1", body="one"))
+    store.upsert(_entry("m2", body="two"))
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+
+    picked: list[list[str]] = []
+
+    async def _pick(*a: Any, **k: Any) -> list[str]:
+        ids = ["m1"]
+        picked.append(k.get("already_surfaced", set()))
+        return ids
+
+    monkeypatch.setattr(loop, "_resolve_memory_selector", lambda: _StubSelector(_pick))
+    await loop._apply_memory_selection("q1")
+    await loop._apply_memory_selection("q2")
+    # Second turn's selector receives the first turn's surfaced set.
+    assert picked[1] == {"m1"}
+    assert loop._mem_surfaced == {"m1"}
