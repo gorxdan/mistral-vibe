@@ -337,8 +337,7 @@ def run_cli(args: argparse.Namespace) -> None:
 
         stdin_prompt = get_prompt_from_stdin()
         if is_interactive:
-            # Deferred so non-interactive paths (--help, --version, -p
-            # programmatic mode) never pay the ~600ms Textual import.
+            # Lazy: keeps the heavy Textual import off non-interactive startup.
             from vibe.cli.textual_ui.app import StartupOptions, run_textual_ui
             from vibe.core.worktree.manager import (
                 WorktreeError,

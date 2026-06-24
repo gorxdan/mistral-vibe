@@ -462,6 +462,9 @@ class ProviderConfig(BaseModel):
     region: str = ""
     extra_headers: dict[str, str] = Field(default_factory=dict)
     cache: ProviderCacheConfig = Field(default_factory=ProviderCacheConfig)
+    # None concurrency falls back to provider_limiter.DEFAULT_MAX_CONCURRENT_REQUESTS.
+    max_concurrent_requests: int | None = None
+    requests_per_minute: float | None = None
 
     def _is_legacy_mistral_provider_without_backend(self) -> bool:
         return (
@@ -1217,9 +1220,7 @@ class VibeConfig(BaseSettings):
         # (via OTEL_EXPORTER_OTLP_* env vars), so headers are left empty.
         # Otherwise endpoint and API key are derived from the active provider if it's Mistral,
         # or the first Mistral provider.
-        # Imported lazily: the OTLP exporter pulls a heavy opentelemetry chain
-        # that only matters when OTEL tracing is actually configured, and
-        # _settings is imported on every startup.
+        # Lazy: OTLP exporter pulls a heavy chain; _settings loads every startup.
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
             DEFAULT_TRACES_EXPORT_PATH,
         )
@@ -1558,6 +1559,9 @@ class VibeConfig(BaseSettings):
                 for m in self.models
             ]
         type(self).save_updates({"models": models})
+
+    def is_le_chaton(self) -> bool:
+        return self.effort_mode == "le-chaton"
 
     def set_effort_mode(self, mode: str) -> None:
         self.effort_mode = mode
