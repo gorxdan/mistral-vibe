@@ -14,7 +14,7 @@ import pytest
 
 from tests.conftest import build_test_vibe_config
 from tests.stubs.fake_mcp_registry import FakeMCPRegistry
-from vibe.core.config import MCPHttp, MCPStdio, MCPStreamableHttp, VibeConfig
+from vibe.core.config import MCPHttp, MCPOAuth, MCPStdio, MCPStreamableHttp, VibeConfig
 from vibe.core.tools.mcp import (
     MCPRegistry,
     MCPToolResult,
@@ -652,6 +652,51 @@ class TestMCPRegistry:
             tools = await registry._discover_http(srv)
 
         assert tools is None
+
+    def _make_oauth_server(
+        self, name: str, url: str = "https://mcp.example.com/mcp"
+    ) -> MCPStreamableHttp:
+        return MCPStreamableHttp(
+            name=name,
+            transport="streamable-http",
+            url=url,
+            auth=MCPOAuth(type="oauth", scopes=["read"]),
+        )
+
+    @pytest.mark.asyncio
+    async def test_discover_oauth_not_logged_in_returns_none(self):
+        registry = MCPRegistry()
+        srv = self._make_oauth_server("demo")
+
+        with patch("vibe.core.tools.mcp.registry.is_logged_in", return_value=False):
+            tools = await registry._discover_http(srv)
+
+        assert tools is None
+
+    @pytest.mark.asyncio
+    async def test_discover_oauth_logged_in_threads_auth_provider(self):
+        registry = MCPRegistry()
+        srv = self._make_oauth_server("demo")
+        remote = RemoteTool(name="hello")
+
+        captured: dict[str, Any] = {}
+
+        async def _capture(*args: Any, **kwargs: Any) -> list[RemoteTool]:
+            captured.update(kwargs)
+            return [remote]
+
+        with (
+            patch("vibe.core.tools.mcp.registry.is_logged_in", return_value=True),
+            patch("vibe.core.tools.mcp.registry.list_tools_http", side_effect=_capture),
+        ):
+            tools = await registry._discover_http(srv)
+
+        assert tools is not None
+        assert "demo_hello" in tools
+        # The OAuth provider is attached as `auth=` for both discovery and proxy.
+        assert captured.get("auth") is not None
+        assert tools["demo_hello"]._auth is not None  # type: ignore[attr-defined]
+        assert captured["auth"] is tools["demo_hello"]._auth  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
     async def test_discover_stdio_success(self):

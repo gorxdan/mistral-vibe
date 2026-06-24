@@ -144,7 +144,8 @@ class CommandRegistry:
                 aliases=frozenset(["/mcp", "/connectors"]),
                 description=(
                     "Display available MCP servers and connectors. "
-                    "Pass a name to list its tools"
+                    "Pass a name to list its tools. "
+                    "Subcommands: /mcp login|logout <name>, /mcp refresh, /mcp add"
                 ),
                 handler="_show_mcp",
             ),

@@ -21,8 +21,13 @@ from vibe.core.auth.mcp_oauth import (
     LoopbackCallbackHandler,
     MCPOAuthError,
     MCPOAuthHeadlessError,
+    MCPOAuthLoginFailed,
     MCPOAuthPortInUse,
+    build_non_interactive_provider,
     build_oauth_provider,
+    clear_stored_credentials,
+    is_logged_in,
+    make_non_interactive_handlers,
     perform_oauth_login,
 )
 from vibe.core.config import MCPOAuth, MCPStreamableHttp
@@ -474,6 +479,90 @@ class TestPerformOAuthLogin:
         fp = await Fingerprint.load("demo")
         assert fp is not None
         assert fp == Fingerprint.compute(srv)
+
+
+class TestIsLoggedIn:
+    @pytest.mark.asyncio
+    async def test_logged_in_when_tokens_and_fingerprint_match(
+        self, memory_keyring: _MemoryKeyring
+    ) -> None:
+        srv = _oauth_server(name="demo", scopes=["read"])
+        storage = KeyringTokenStorage(alias="demo")
+        await storage.set_tokens(
+            OAuthToken(access_token="at", token_type="Bearer", expires_in=3600)
+        )
+        await Fingerprint.compute(srv).save("demo")
+        assert await is_logged_in(srv) is True
+
+    @pytest.mark.asyncio
+    async def test_not_logged_in_when_no_tokens(
+        self, memory_keyring: _MemoryKeyring
+    ) -> None:
+        srv = _oauth_server(name="demo")
+        await Fingerprint.compute(srv).save("demo")
+        assert await is_logged_in(srv) is False
+
+    @pytest.mark.asyncio
+    async def test_not_logged_in_on_fingerprint_drift(
+        self, memory_keyring: _MemoryKeyring
+    ) -> None:
+        srv_a = _oauth_server(name="demo", scopes=["read"])
+        await Fingerprint.compute(srv_a).save("demo")
+        storage = KeyringTokenStorage(alias="demo")
+        await storage.set_tokens(
+            OAuthToken(access_token="at", token_type="Bearer", expires_in=3600)
+        )
+        srv_b = _oauth_server(name="demo", scopes=["read", "write"])
+        assert await is_logged_in(srv_b) is False
+
+    @pytest.mark.asyncio
+    async def test_not_logged_in_when_headless(self, headless_keyring: None) -> None:
+        srv = _oauth_server(name="demo")
+        assert await is_logged_in(srv) is False
+
+
+class TestClearStoredCredentials:
+    @pytest.mark.asyncio
+    async def test_deletes_all_entries(self, memory_keyring: _MemoryKeyring) -> None:
+        storage = KeyringTokenStorage(alias="demo")
+        await storage.set_tokens(
+            OAuthToken(access_token="at", token_type="Bearer", expires_in=3600)
+        )
+        await Fingerprint.compute(_oauth_server(name="demo")).save("demo")
+        assert await storage.get_tokens() is not None
+
+        await clear_stored_credentials("demo")
+
+        assert await storage.get_tokens() is None
+        assert await Fingerprint.load("demo") is None
+
+    @pytest.mark.asyncio
+    async def test_tolerates_missing_entries(
+        self, memory_keyring: _MemoryKeyring
+    ) -> None:
+        await clear_stored_credentials("never-existed")
+
+
+class TestNonInteractiveHandlers:
+    @pytest.mark.asyncio
+    async def test_redirect_handler_raises(self) -> None:
+        redirect, _callback = make_non_interactive_handlers("demo")
+        with pytest.raises(MCPOAuthLoginFailed, match="interactive login required"):
+            await redirect("https://as.example.com/authorize")
+
+    @pytest.mark.asyncio
+    async def test_callback_handler_raises(self) -> None:
+        _redirect, callback = make_non_interactive_handlers("demo")
+        with pytest.raises(MCPOAuthLoginFailed, match="/mcp login demo"):
+            await callback()
+
+    @pytest.mark.asyncio
+    async def test_build_non_interactive_provider(
+        self, memory_keyring: _MemoryKeyring
+    ) -> None:
+        srv = _oauth_server(name="demo")
+        provider = build_non_interactive_provider(srv)
+        assert provider.context.client_metadata.client_name == "Chaton"
 
 
 def _mcp_responses() -> Callable[[httpx.Request], httpx.Response]:

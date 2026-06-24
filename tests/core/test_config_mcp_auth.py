@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import patch
 
 from pydantic import ValidationError
 import pytest
@@ -183,7 +184,7 @@ def test_oauth_scopes_empty_list_allowed() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("cls", "transport"), HTTP_TRANSPORTS)
-async def test_registry_skips_oauth_servers_with_gated_warning(
+async def test_registry_oauth_not_logged_in_warns_and_is_retryable(
     cls: type[MCPHttp | MCPStreamableHttp],
     transport: str,
     caplog: pytest.LogCaptureFixture,
@@ -196,18 +197,20 @@ async def test_registry_skips_oauth_servers_with_gated_warning(
     })
     registry = MCPRegistry()
 
-    with caplog.at_level(logging.WARNING, logger="vibe"):
-        first = await registry.get_tools_async([srv])
+    with patch("vibe.core.tools.mcp.registry.is_logged_in", return_value=False):
+        with caplog.at_level(logging.WARNING, logger="vibe"):
+            first = await registry.get_tools_async([srv])
 
     assert first == {}
-    assert (
-        "OAuth support for MCP servers is not yet enabled; coming in a future release"
-        in caplog.text
-    )
+    assert "requires OAuth login" in caplog.text
+    assert "/mcp login" in caplog.text
 
+    # None (retryable) is not cached, so a second call re-warns — once the user
+    # runs `/mcp login` and refreshes, discovery retries and may succeed.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="vibe"):
-        second = await registry.get_tools_async([srv])
+    with patch("vibe.core.tools.mcp.registry.is_logged_in", return_value=False):
+        with caplog.at_level(logging.WARNING, logger="vibe"):
+            second = await registry.get_tools_async([srv])
 
     assert second == {}
-    assert "OAuth support" not in caplog.text
+    assert "requires OAuth login" in caplog.text

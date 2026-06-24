@@ -15,10 +15,12 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from textual.worker import Worker
 
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
-from vibe.core.config import ConnectorConfig, VibeConfig
+from vibe.core.auth import is_logged_in
+from vibe.core.config import ConnectorConfig, MCPHttp, MCPStreamableHttp, VibeConfig
 from vibe.core.tools.connectors import ConnectorAuthAction, ConnectorRegistry
 from vibe.core.tools.mcp.tools import MCPTool
 from vibe.core.tools.mcp_settings import updated_tool_list
+from vibe.core.utils import run_sync
 
 if TYPE_CHECKING:
     from vibe.core.config import MCPServer
@@ -63,7 +65,7 @@ def collect_mcp_tool_index(
 
 
 _LIST_VIEW_HELP_TOOLS = (
-    "↑↓ Navigate  Enter Show tools  D Disable  E Enable  R Refresh  Esc Close"
+    "↑↓ Navigate  Enter Show tools  D Disable  E Enable  L Login  R Refresh  Esc Close"
 )
 _LIST_VIEW_HELP_AUTH = (
     "↑↓ Navigate  Enter Connect  D Disable  E Enable  R Refresh  Esc Close"
@@ -82,6 +84,7 @@ class MCPApp(Container):
         Binding("d", "disable", "Disable", show=False),
         Binding("e", "enable", "Enable", show=False),
         Binding("r", "refresh", "Refresh", show=False),
+        Binding("l", "login", "Login", show=False),
     ]
 
     class MCPClosed(Message):
@@ -116,6 +119,13 @@ class MCPApp(Container):
             self.connector_name = connector_name
             self.connector_registry = connector_registry
             self.tool_manager = tool_manager
+
+    class MCPOAuthLoginRequested(Message):
+        """Posted when the user triggers an OAuth login for an MCP server."""
+
+        def __init__(self, server_name: str) -> None:
+            super().__init__()
+            self.server_name = server_name
 
     def __init__(
         self,
@@ -283,6 +293,22 @@ class MCPApp(Container):
 
     def action_enable(self) -> None:
         self._set_highlighted_disabled(disabled=False)
+
+    def action_login(self) -> None:
+        if self._viewing_server is not None:
+            return
+        target = self._get_highlighted_target()
+        if target is None:
+            return
+        name, kind = target
+        if kind != MCPSourceKind.SERVER:
+            return
+        srv = next((s for s in self._mcp_servers if s.name == name), None)
+        if srv is None or not isinstance(srv, (MCPHttp, MCPStreamableHttp)):
+            return
+        if srv.auth.type != "oauth":
+            return
+        self.post_message(self.MCPOAuthLoginRequested(server_name=name))
 
     def _set_highlighted_disabled(self, *, disabled: bool) -> None:
         """Set the disabled state for the highlighted server/connector or tool."""
@@ -486,6 +512,12 @@ class MCPApp(Container):
             label.append(f"  {_tool_count_text(enabled, total)}", style="dim")
             if srv.disabled:
                 _append_status(label, "○", "dim", "disabled")
+            elif _is_oauth_server(srv):
+                logged_in = _check_oauth_logged_in(srv)
+                if logged_in:
+                    _append_status(label, "●", "green", "logged in")
+                else:
+                    _append_status(label, "○", "dim", "needs login")
             option_list.add_option(Option(label, id=f"server:{srv.name}"))
 
     def _list_connectors(self, option_list: OptionList, index: MCPToolIndex) -> None:
@@ -619,6 +651,19 @@ def _append_status(label: Text, symbol: str, symbol_style: str, text: str) -> No
     label.append("  ")
     label.append(symbol, style=symbol_style)
     label.append(f" {text}", style="dim")
+
+
+def _is_oauth_server(srv: MCPServer) -> bool:
+    return isinstance(srv, (MCPHttp, MCPStreamableHttp)) and srv.auth.type == "oauth"
+
+
+def _check_oauth_logged_in(srv: MCPServer) -> bool:
+    if not isinstance(srv, (MCPHttp, MCPStreamableHttp)):
+        return False
+    try:
+        return run_sync(is_logged_in(srv))
+    except Exception:
+        return False
 
 
 def _tool_count_text(enabled: int, total: int | None = None) -> str:

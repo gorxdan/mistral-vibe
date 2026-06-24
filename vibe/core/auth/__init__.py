@@ -9,7 +9,11 @@ from vibe.core.auth.mcp_oauth import (
     MCPOAuthInvalidGrant,
     MCPOAuthLoginFailed,
     MCPOAuthPortInUse,
+    build_non_interactive_provider,
     build_oauth_provider,
+    clear_stored_credentials,
+    is_logged_in,
+    make_non_interactive_handlers,
     perform_oauth_login,
 )
 
@@ -22,6 +26,10 @@ __all__ = [
     "MCPOAuthInvalidGrant",
     "MCPOAuthLoginFailed",
     "MCPOAuthPortInUse",
+    "build_non_interactive_provider",
     "build_oauth_provider",
+    "clear_stored_credentials",
+    "is_logged_in",
+    "make_non_interactive_handlers",
     "perform_oauth_login",
 ]

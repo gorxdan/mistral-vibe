@@ -1040,6 +1040,23 @@ StatusMessage {
     padding: 0 0 0 1;
 }
 
+#mcpadd-content {
+    width: 100%;
+    height: auto;
+}
+
+.mcpadd-label {
+    height: auto;
+}
+
+.mcpadd-input {
+    width: 100%;
+    height: auto;
+    border: none;
+    border-left: wide $foreground-muted;
+    padding: 0 0 0 1;
+}
+
 #approval-app {
     width: 100%;
     /* height set by ApprovalApp._recompute_height; max-height below caps it */

@@ -4,6 +4,9 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING, cast
 
+import httpx
+
+from vibe.core.auth import build_non_interactive_provider, is_logged_in
 from vibe.core.logger import logger
 from vibe.core.tools.base import BaseTool
 from vibe.core.tools.mcp.tools import (
@@ -99,16 +102,27 @@ class MCPRegistry:
             logger.warning("MCP server '%s' missing url for http transport", srv.name)
             return {}
 
+        # OAuth-configured servers need an OAuth provider attached as `auth=`.
+        # When the user has not logged in yet, return None (retryable, not
+        # cached) so the next refresh after `/mcp login` re-discovers the tools.
+        auth: httpx.Auth | None = None
         if srv.auth.type == "oauth":
-            logger.warning(
-                "OAuth support for MCP servers is not yet enabled; coming in a future release"
-            )
-            return {}
+            if not await is_logged_in(srv):
+                logger.warning(
+                    "MCP server %r requires OAuth login; run `/mcp login %s`",
+                    srv.name,
+                    srv.name,
+                )
+                return None
+            auth = build_non_interactive_provider(srv)
 
         headers = srv.http_headers()
         try:
             remotes = await list_tools_http(
-                url, headers=headers, startup_timeout_sec=srv.startup_timeout_sec
+                url,
+                headers=headers,
+                auth=auth,
+                startup_timeout_sec=srv.startup_timeout_sec,
             )
         except Exception as exc:
             logger.warning("MCP HTTP discovery failed for %s: %s", url, exc)
@@ -123,6 +137,7 @@ class MCPRegistry:
                     alias=srv.name,
                     server_hint=srv.prompt,
                     headers=headers,
+                    auth=auth,
                     startup_timeout_sec=srv.startup_timeout_sec,
                     tool_timeout_sec=srv.tool_timeout_sec,
                     sampling_enabled=srv.sampling_enabled,

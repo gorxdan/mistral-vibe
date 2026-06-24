@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import signal
 import time
-from typing import Any, ClassVar, assert_never, cast
+from typing import Any, ClassVar, cast
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
@@ -87,6 +87,7 @@ from vibe.cli.textual_ui.widgets.loading import (
     LoadingWidget,
     paused_timer,
 )
+from vibe.cli.textual_ui.widgets.mcp_add_app import MCPAddApp
 from vibe.cli.textual_ui.widgets.mcp_app import MCPApp, MCPSourceKind
 from vibe.cli.textual_ui.widgets.messages import (
     VSCODE_EXTENSION_PROMO_WHATS_NEW_SUFFIX,
@@ -170,7 +171,13 @@ from vibe.core.autocompletion.path_prompt_adapter import (
     extract_image_resources,
     render_path_prompt_from_payload,
 )
-from vibe.core.config import DEFAULT_THEME, ModelConfig, VibeConfig
+from vibe.core.config import (
+    DEFAULT_THEME,
+    MCPHttp,
+    MCPStreamableHttp,
+    ModelConfig,
+    VibeConfig,
+)
 from vibe.core.data_retention import DATA_RETENTION_MESSAGE
 from vibe.core.hooks.models import HookStartEvent
 from vibe.core.log_reader import LogReader
@@ -1413,6 +1420,31 @@ class VibeApp(App):  # noqa: PLR0904
             )
         )
 
+    async def on_mcpapp_mcp_oauth_login_requested(
+        self, message: MCPApp.MCPOAuthLoginRequested
+    ) -> None:
+        await self._switch_to_input_app()
+        await self._mcp_login(alias=message.server_name)
+
+    async def on_mcpaddapp_mcpaddclosed(
+        self, message: MCPAddApp.MCPAddClosed
+    ) -> None:
+        await self._switch_to_input_app()
+        if message.error:
+            await self._mount_and_scroll(
+                ErrorMessage(f"Failed to add MCP server: {message.error}")
+            )
+            return
+        if message.added:
+            await self.agent_loop.refresh_system_prompt()
+            self._refresh_banner()
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    f"Added MCP server {message.name!r}. Run /mcp to browse, "
+                    f"or /mcp login {message.name} for OAuth."
+                )
+            )
+
     async def on_connector_auth_app_connector_auth_closed(
         self, message: ConnectorAuthApp.ConnectorAuthClosed
     ) -> None:
@@ -2288,7 +2320,26 @@ class VibeApp(App):  # noqa: PLR0904
         self._refresh_banner()
         return "Refreshed."
 
+    async def _dispatch_mcp_subcommand(self, cmd_args: str) -> bool:
+        subcommand, _, remainder = cmd_args.strip().partition(" ")
+        match subcommand:
+            case "login":
+                await self._mcp_login(alias=remainder.strip())
+            case "logout":
+                await self._mcp_logout(alias=remainder.strip())
+            case "refresh":
+                await self._mcp_refresh()
+            case "add":
+                await self._mcp_add()
+            case _:
+                return False
+        return True
+
     async def _show_mcp(self, cmd_args: str = "", **kwargs: Any) -> None:
+        if await self._dispatch_mcp_subcommand(cmd_args):
+            return
+
+        # Bare /mcp or /mcp <name> → open the browser.
         mcp_servers = self.config.mcp_servers
         connector_registry = (
             self.agent_loop.connector_registry if self._connectors_enabled else None
@@ -2333,6 +2384,88 @@ class VibeApp(App):  # noqa: PLR0904
                 refresh_callback=self._refresh_mcp_browser,
             )
         )
+
+    def _find_oauth_http_server(self, alias: str) -> MCPHttp | MCPStreamableHttp | None:
+        for srv in self.config.mcp_servers:
+            if (
+                isinstance(srv, (MCPHttp, MCPStreamableHttp))
+                and srv.name == alias
+                and srv.auth.type == "oauth"
+            ):
+                return srv
+        return None
+
+    async def _mcp_login(self, *, alias: str) -> None:
+        from vibe.core.auth import (
+            MCPOAuthError,
+            MCPOAuthHeadlessError,
+            MCPOAuthPortInUse,
+            perform_oauth_login,
+        )
+
+        if not alias:
+            await self._mount_and_scroll(
+                ErrorMessage("Usage: /mcp login <name>")
+            )
+            return
+        srv = self._find_oauth_http_server(alias)
+        if srv is None:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    f"No OAuth-configured HTTP MCP server named {alias!r}. "
+                    "OAuth login applies to http/streamable-http servers with "
+                    'auth.type = "oauth".'
+                )
+            )
+            return
+
+        await self._mount_and_scroll(UserCommandMessage(f"Logging in to {alias}..."))
+        import webbrowser
+
+        async def _open_browser(url: str) -> None:
+            webbrowser.open(url)
+
+        try:
+            await perform_oauth_login(srv, on_url=_open_browser)
+        except MCPOAuthPortInUse as exc:
+            await self._mount_and_scroll(ErrorMessage(str(exc)))
+            return
+        except MCPOAuthHeadlessError as exc:
+            await self._mount_and_scroll(ErrorMessage(str(exc)))
+            return
+        except MCPOAuthError as exc:
+            await self._mount_and_scroll(ErrorMessage(str(exc)))
+            return
+
+        await self.agent_loop.tool_manager.refresh_remote_tools_async()
+        await self.agent_loop.refresh_system_prompt()
+        self._refresh_banner()
+        await self._mount_and_scroll(
+            UserCommandMessage(f"Logged in to {alias}. Tools refreshed.")
+        )
+
+    async def _mcp_logout(self, *, alias: str) -> None:
+        from vibe.core.auth import clear_stored_credentials
+
+        if not alias:
+            await self._mount_and_scroll(
+                ErrorMessage("Usage: /mcp logout <name>")
+            )
+            return
+        await clear_stored_credentials(alias)
+        await self.agent_loop.tool_manager.refresh_remote_tools_async()
+        await self.agent_loop.refresh_system_prompt()
+        self._refresh_banner()
+        await self._mount_and_scroll(
+            UserCommandMessage(f"Cleared OAuth credentials for {alias}.")
+        )
+
+    async def _mcp_refresh(self) -> None:
+        result = await self._refresh_mcp_browser()
+        await self._mount_and_scroll(UserCommandMessage(result))
+
+    async def _mcp_add(self) -> None:
+        await self._switch_from_input(MCPAddApp())
 
     async def _show_status(self, **kwargs: Any) -> None:
         stats = self.agent_loop.stats

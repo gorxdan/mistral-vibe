@@ -10,6 +10,7 @@ import anyio.to_thread
 import httpx
 import keyring
 import keyring.backends.fail
+import keyring.errors
 from mcp.client.auth import (
     OAuthClientProvider,
     OAuthFlowError,
@@ -20,6 +21,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAu
 from pydantic import AnyUrl, BaseModel, ConfigDict
 
 from vibe.core.config import MCPHttp, MCPOAuth, MCPStreamableHttp
+from vibe.core.logger import logger
 from vibe.core.utils.http import build_ssl_context
 
 _SERVICE: Final = "vibe"
@@ -99,6 +101,13 @@ async def _kr_get(username: str) -> str | None:
 
 async def _kr_set(username: str, value: str) -> None:
     await anyio.to_thread.run_sync(keyring.set_password, _SERVICE, username, value)
+
+
+async def _kr_delete(username: str) -> None:
+    try:
+        await anyio.to_thread.run_sync(keyring.delete_password, _SERVICE, username)
+    except keyring.errors.PasswordDeleteError:
+        pass
 
 
 class Fingerprint(BaseModel):
@@ -425,3 +434,71 @@ async def perform_oauth_login(
     except OAuthFlowError:
         raise
     await Fingerprint.compute(server).save(server.name)
+
+
+async def is_logged_in(server: MCPHttp | MCPStreamableHttp) -> bool:
+    """Return True when stored OAuth credentials match the current server config.
+
+    Headless environments (no OS keyring backend) report False and log the
+    static/PAT guidance instead of raising.
+    """
+    try:
+        storage = KeyringTokenStorage(alias=server.name)
+    except MCPOAuthHeadlessError as exc:
+        logger.info("%s", exc)
+        return False
+    if await storage.get_tokens() is None:
+        return False
+    saved = await Fingerprint.load(server.name)
+    return saved == Fingerprint.compute(server)
+
+
+def make_non_interactive_handlers(
+    alias: str,
+) -> tuple[
+    Callable[[str], Awaitable[None]], Callable[[], Awaitable[tuple[str, str | None]]]
+]:
+    """Handlers for OAuth providers used outside an interactive login.
+
+    Discovery and per-call tool execution never open a browser: if the token
+    cannot be refreshed silently, the handlers raise so the caller surfaces a
+    clear "run /mcp login <alias>" error instead of hanging or spawning UI.
+    """
+
+    async def _redirect(url: str) -> None:
+        raise MCPOAuthLoginFailed(
+            server_alias=alias,
+            reason=(
+                f"interactive login required to authorize {url}; "
+                f"run `/mcp login {alias}`"
+            ),
+        )
+
+    async def _callback() -> tuple[str, str | None]:
+        raise MCPOAuthLoginFailed(
+            server_alias=alias,
+            reason=f"interactive login required; run `/mcp login {alias}`",
+        )
+
+    return _redirect, _callback
+
+
+def build_non_interactive_provider(
+    server: MCPHttp | MCPStreamableHttp,
+) -> OAuthClientProvider:
+    """Build an OAuth provider whose handlers fail loudly outside a login flow.
+
+    Used by the registry (discovery) and the proxy tool (per-call): the
+    provider refreshes silently when tokens are valid, and raises a clear error
+    when re-authorization is needed.
+    """
+    redirect, callback = make_non_interactive_handlers(server.name)
+    return build_oauth_provider(
+        server, redirect_handler=redirect, callback_handler=callback
+    )
+
+
+async def clear_stored_credentials(alias: str) -> None:
+    """Delete the stored OAuth tokens, client info, and fingerprint for *alias*."""
+    for kind in ("tokens", "client_info", "fingerprint"):
+        await _kr_delete(_kr_username(alias, kind))

@@ -303,6 +303,15 @@ default_agent = "plan"
 
 ### MCP Servers
 
+MCP (Model Context Protocol) servers provide tools. Configure via `[[mcp_servers]]`
+in config or use the token-free `/mcp add` form. All management is token-free:
+`/mcp` (browser + status), `/mcp login|logout <name>`, `/mcp refresh`.
+
+Transports: `stdio` (local subprocess), `http` (legacy SSE), `streamable-http`
+(current standard). Auth: `static` (header or env-var token) or `oauth` (OAuth 2.1
+PKCE via Dynamic Client Registration, pre-registered client_id, or a client
+metadata document URL).
+
 ```toml
 [[mcp_servers]]
 name = "my-server"
@@ -315,7 +324,26 @@ name = "remote-server"
 transport = "http"
 url = "https://mcp.example.com"
 api_key_env = "MCP_API_KEY"
+
+# OAuth 2.1 (streamable-http). Example: a hosted MCP server requiring OAuth.
+# DCR is used when neither client_id nor client_metadata_url is set.
+# Pass scopes = [] to accept the authorization server's default scopes.
+[[mcp_servers]]
+name = "supabase"
+transport = "streamable-http"
+url = "https://mcp.supabase.com/mcp"
+[mcp_servers.auth]
+type = "oauth"
+scopes = []
 ```
+
+For OAuth servers, run `/mcp login <name>` to authorize in a browser (tokens are
+stored in the OS keyring). `/mcp logout <name>` clears stored credentials. The
+`/mcp` browser shows `logged in` or `needs login` status for OAuth servers; press
+`L` to initiate login from the browser.
+
+For headless or CI environments, use `auth.type = "static"` with `api_key_env`
+(a personal access token) instead of OAuth.
 
 ### LSP (Language Server Protocol)
 
@@ -451,6 +479,53 @@ pattern starts with `re:` (`"re:(read_file|grep)"`). `match` is forbidden on
 
 Subagent invocations inherit the parent's hook config. Their hook events are
 logged to the subagent's session log and don't propagate to the parent's UI.
+
+#### MCP context injection (user_prompt_submit)
+
+A `user_prompt_submit` hook can inject MCP-management context when the user's
+prompt mentions MCP — so the agent answers MCP questions with focused, lower-
+token guidance instead of loading the full skill. The hook runs before any LLM
+turn (token-free for the model), sees `{"prompt": "..."}` on stdin, and returns
+`hook_specific_output.additional_context` to append context for that turn.
+
+`~/.vibe/hooks.toml`:
+
+```toml
+[[hooks]]
+name = "mcp-context"
+type = "user_prompt_submit"
+command = "python ~/.vibe/hooks/mcp_context.py"
+timeout = 5.0
+```
+
+`~/.vibe/hooks/mcp_context.py`:
+
+```python
+import json, sys
+
+KEYWORDS = ("mcp server", "mcp ", "model context protocol", "connector", "oauth")
+SNIPPET = (
+    "MCP servers: manage with token-free slash commands — "
+    "`/mcp` (browser + status), `/mcp login|logout <name>`, "
+    "`/mcp refresh`, `/mcp add`. OAuth servers show `needs login` or "
+    "`logged in` status. Configure via `[[mcp_servers]]` in config.toml."
+)
+
+def main() -> None:
+    data = json.load(sys.stdin)
+    prompt = (data.get("prompt") or "").lower()
+    if any(kw in prompt for kw in KEYWORDS):
+        json.dump(
+            {"decision": "allow",
+             "hook_specific_output": {"additional_context": SNIPPET}},
+            sys.stdout,
+        )
+    else:
+        json.dump({"decision": "allow"}, sys.stdout)
+
+if __name__ == "__main__":
+    main()
+```
 
 #### Wire protocol
 
