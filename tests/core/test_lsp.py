@@ -681,6 +681,79 @@ def test_workspace_symbol_deprioritizes_test_symbols() -> None:
     assert names[0] == "BaseTool"
 
 
+class _FakeWorkspaceServer:
+    def __init__(self, response: list[dict]) -> None:
+        self._response = response
+        self.requests: list[tuple[str, dict]] = []
+
+    async def send_request(self, method: str, params: dict) -> list[dict]:
+        self.requests.append((method, params))
+        return self._response
+
+
+class _FakeWorkspaceManager:
+    def __init__(self, servers: dict[str, _FakeWorkspaceServer]) -> None:
+        self._servers = servers
+
+    @property
+    def servers(self) -> dict[str, _FakeWorkspaceServer]:
+        return self._servers
+
+
+@pytest.mark.asyncio
+async def test_workspace_symbol_runs_without_file_path(monkeypatch) -> None:
+    # Regression: file_path was required for every operation, contradicting the
+    # docs. workspace_symbol is workspace-wide and must work with only a query.
+    from vibe.core.tools.builtins.lsp import (
+        Lsp,
+        LspArgs,
+        LspConfig,
+        LspOperation,
+        LspResult,
+        LspState,
+    )
+
+    server = _FakeWorkspaceServer([
+        {"name": "BaseTool", "location": {"uri": "file:///x.py"}}
+    ])
+    manager = _FakeWorkspaceManager({"pyright": server})
+    monkeypatch.setattr("vibe.core.tools.builtins.lsp.get_lsp_manager", lambda: manager)
+    monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+
+    args = LspArgs(operation=LspOperation.WORKSPACE_SYMBOL, query="BaseTool")
+    assert args.file_path is None
+
+    collected = [r async for r in tool.run(args)]
+    assert len(collected) == 1
+    result = collected[0]
+    assert isinstance(result, LspResult)
+    assert "BaseTool" in result.summary
+    assert server.requests == [("workspace/symbol", {"query": "BaseTool"})]
+
+
+@pytest.mark.asyncio
+async def test_non_workspace_op_without_file_path_raises(monkeypatch) -> None:
+    from vibe.core.tools.base import ToolError
+    from vibe.core.tools.builtins.lsp import (
+        Lsp,
+        LspArgs,
+        LspConfig,
+        LspOperation,
+        LspState,
+    )
+
+    manager = _FakeWorkspaceManager({"pyright": _FakeWorkspaceServer([])})
+    monkeypatch.setattr("vibe.core.tools.builtins.lsp.get_lsp_manager", lambda: manager)
+    monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+
+    args = LspArgs(operation=LspOperation.FIND_REFERENCES, line=1, character=1)
+    with pytest.raises(ToolError, match="requires file_path"):
+        async for _ in tool.run(args):
+            pass
+
+
 class _FakeCallHierarchyManager:
     """Replays canned responses keyed by (method, position) and records the
     sequence of requests so tests assert retry behavior.

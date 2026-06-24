@@ -67,10 +67,17 @@ class LspArgs(BaseModel):
             "(go_to_definition, find_references, hover, go_to_implementation, "
             "prepare_call_hierarchy, incoming_calls, outgoing_calls) require "
             "line and character. document_symbol needs only file_path. "
-            "workspace_symbol needs only query."
+            "workspace_symbol needs only query and may omit file_path "
+            "(it is workspace-wide; the first configured server is queried)."
         )
     )
-    file_path: str = Field(description="Absolute path to the source file.")
+    file_path: str | None = Field(
+        default=None,
+        description=(
+            "Absolute path to the source file. Required for every operation "
+            "except workspace_symbol."
+        ),
+    )
     line: int | None = Field(
         default=None,
         ge=1,
@@ -163,7 +170,20 @@ class Lsp(
                     "typescript-language-server/etc. on PATH and run /lspstall."
                 )
             raise ToolError("LSP is not enabled. Run /lspstall to enable it.")
-        file_path = self._resolve_path(args.file_path)
+        # workspace_symbol is the only operation that may omit file_path: it is
+        # workspace-wide and routes to a server without a specific document.
+        raw_path = args.file_path
+        if raw_path is None:
+            if args.operation is LspOperation.WORKSPACE_SYMBOL:
+                if not args.query:
+                    raise ToolError("workspace_symbol requires a non-empty query.")
+                yield await self._workspace_symbol(manager, args.query or "")
+                return
+            raise ToolError(
+                f"{args.operation.value} requires file_path. Only "
+                "workspace_symbol may omit it (workspace/symbol is workspace-wide)."
+            )
+        file_path = self._resolve_path(raw_path)
         server = manager.get_server_for_file(file_path)
         if server is None:
             raise ToolError(
@@ -188,6 +208,20 @@ class Lsp(
         if args.operation is LspOperation.WORKSPACE_SYMBOL and not args.query:
             raise ToolError("workspace_symbol requires a non-empty query.")
 
+        async for event in self._execute(
+            manager, args, file_path, position_required, server, ctx
+        ):
+            yield event
+
+    async def _execute(
+        self,
+        manager: Any,
+        args: LspArgs,
+        file_path: str,
+        position_required: bool,
+        server: Any,
+        ctx: InvokeContext | None,
+    ) -> AsyncGenerator[ToolStreamEvent | LspResult, None]:
         try:
             text = await read_safe_async(Path(file_path))
             await manager.open_document(
@@ -290,6 +324,36 @@ class Lsp(
                 manager, args, file_path, text_doc, position or {}
             )
         raise ToolError(f"Unsupported operation: {args.operation}")
+
+    async def _workspace_symbol(self, manager: Any, query: str) -> LspResult:
+        servers = manager.servers
+        if not servers:
+            raise ToolError(
+                "No LSP servers are configured. Run /lspstall to install one, "
+                "or pass file_path to route to a server by file extension."
+            )
+        # workspace/symbol is workspace-wide; without a file_path to route by
+        # extension, query the first configured server (declaration order). Pass
+        # a file_path to target a specific language server in a multi-language
+        # workspace.
+        server = next(iter(servers.values()))
+        try:
+            raw = await server.send_request("workspace/symbol", {"query": query})
+        except LSPNotConnectedError as exc:
+            raise ToolError(str(exc)) from exc
+        except LSPProtocolError as exc:
+            if exc.code == _METHOD_NOT_FOUND:
+                raise ToolError(
+                    "No server supports workspace_symbol in this session. "
+                    "Pass file_path to target a server, or use document_symbol "
+                    "on a specific file."
+                ) from exc
+            raise ToolError(f"LSP request failed: {exc}") from exc
+        except LSPError as exc:
+            raise ToolError(f"LSP request failed: {exc}") from exc
+        return self._format_symbols(
+            f"Workspace symbols matching '{query}'", raw or [], query=query
+        )
 
     def _simple_dispatch_table(
         self,
@@ -820,7 +884,8 @@ class Lsp(
 
     @classmethod
     def format_call_display(cls, args: LspArgs) -> ToolCallDisplay:
-        return ToolCallDisplay(summary=f"LSP {args.operation.value} {args.file_path}")
+        target = args.file_path or "(workspace)"
+        return ToolCallDisplay(summary=f"LSP {args.operation.value} {target}")
 
     @classmethod
     def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
