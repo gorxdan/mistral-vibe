@@ -11,7 +11,6 @@ import hashlib
 from http import HTTPStatus
 import inspect
 import json
-import logging
 import os
 from pathlib import Path
 import re
@@ -1385,7 +1384,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _extract_memories(self, start: int, end: int) -> None:
         import datetime as _dt
 
-        from vibe.core.memory.models import MemoryEntry, MemoryMetadata, slugify
+        from vibe.core.memory.models import (
+            MemoryEntry,
+            MemoryMetadata,
+            MemoryType,
+            slugify,
+        )
+        from vibe.core.memory.store import project_memory_dir
 
         try:
             store = self._get_memory_store()
@@ -1409,18 +1414,33 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 mid = slugify(pm.title)
                 existing_entry = store.get(mid)
                 created = existing_entry.metadata.created if existing_entry else today
+                # Scope follows type: project/reference facts are project-local
+                # (PR state, deadlines, external-system pointers that only apply
+                # here), user/feedback are global. Falls back to user scope when
+                # no trusted project namespace is active, so extraction never
+                # drops a memory just because project context is absent.
+                project_scope = pm.type in {MemoryType.PROJECT, MemoryType.REFERENCE}
+                if project_scope and project_memory_dir() is None:
+                    project_scope = False
+                scope: Literal["user", "project"] = (
+                    "project" if project_scope else "user"
+                )
                 meta = MemoryMetadata(
                     id=mid,
                     title=pm.title,
                     description=pm.description,
                     tags=pm.tags,
                     type=pm.type,
-                    scope="user",
+                    scope=scope,
                     created=created,
                     updated=today,
                     source="auto",
                 )
-                store.upsert(MemoryEntry(metadata=meta, body=pm.body))
+                if project_scope:
+                    project_memory_dir(create=True)
+                store.upsert(
+                    MemoryEntry(metadata=meta, body=pm.body), project=project_scope
+                )
                 self._mem_extract_writes += 1
                 budget -= 1
         except Exception as e:

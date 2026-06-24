@@ -616,6 +616,156 @@ def test_maybe_schedule_extraction_respects_disabled_config() -> None:
     assert loop._mem_extract_task is None
 
 
+# --- type-driven scope in _extract_memories --- #
+
+
+class _StubExtractor:
+    """Returns a fixed list of proposals so tests assert scoping, not the LLM."""
+
+    def __init__(self, proposals: list[Any]) -> None:
+        self._proposals = proposals
+
+    async def extract(self, transcript: str, existing_index: str) -> list[Any]:
+        return self._proposals
+
+
+@pytest.mark.asyncio
+async def test_extract_routes_project_type_to_project_namespace(
+    monkeypatch, tmp_path
+) -> None:
+    # A project-typed extraction must land in the project namespace, not global,
+    # so PR-state/deadline facts don't pollute other projects.
+    from vibe.core.memory.extractor import ExtractedMemory
+
+    loop = build_test_agent_loop()
+    user_dir = tmp_path / "user"
+    proj_dir = tmp_path / "proj"
+    user_dir.mkdir()
+    proj_dir.mkdir()
+    store = MemoryStore(user_dir=user_dir, project_dirs=[proj_dir])
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    monkeypatch.setattr(
+        loop,
+        "_resolve_memory_extractor",
+        lambda: _StubExtractor([
+            ExtractedMemory(
+                title="PR 392 deletion cron bug", type=MemoryType.PROJECT, body="detail"
+            )
+        ]),
+    )
+    # project_memory_dir() must resolve to a real path for the project branch.
+    # _extract_memories does a local import from vibe.core.memory.store, so the
+    # patch must target that module's attribute (not the agent_loop namespace).
+    monkeypatch.setattr(
+        "vibe.core.memory.store.project_memory_dir", lambda create=False: proj_dir
+    )
+
+    await loop._extract_memories(0, len(loop.messages))
+
+    assert (proj_dir / "pr-392-deletion-cron-bug.md").exists()
+    assert not (user_dir / "pr-392-deletion-cron-bug.md").exists()
+    got = store.get("pr-392-deletion-cron-bug")
+    assert got is not None
+    assert got.metadata.scope == "project"
+
+
+@pytest.mark.asyncio
+async def test_extract_routes_user_type_to_global_namespace(
+    monkeypatch, tmp_path
+) -> None:
+    from vibe.core.memory.extractor import ExtractedMemory
+
+    loop = build_test_agent_loop()
+    user_dir = tmp_path / "user"
+    proj_dir = tmp_path / "proj"
+    user_dir.mkdir()
+    proj_dir.mkdir()
+    store = MemoryStore(user_dir=user_dir, project_dirs=[proj_dir])
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    monkeypatch.setattr(
+        loop,
+        "_resolve_memory_extractor",
+        lambda: _StubExtractor([
+            ExtractedMemory(
+                title="Prefers terse responses", type=MemoryType.FEEDBACK, body="why"
+            )
+        ]),
+    )
+
+    await loop._extract_memories(0, len(loop.messages))
+
+    assert (user_dir / "prefers-terse-responses.md").exists()
+    assert not (proj_dir / "prefers-terse-responses.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_extract_project_type_falls_back_to_user_without_project(
+    monkeypatch, tmp_path
+) -> None:
+    # A project-typed memory must not be dropped when no trusted project
+    # namespace is active — it degrades to user scope rather than vanishing.
+    from vibe.core.memory.extractor import ExtractedMemory
+
+    loop = build_test_agent_loop()
+    user_dir = tmp_path / "user"
+    user_dir.mkdir()
+    store = MemoryStore(user_dir=user_dir, project_dirs=[])
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    monkeypatch.setattr(
+        loop,
+        "_resolve_memory_extractor",
+        lambda: _StubExtractor([
+            ExtractedMemory(
+                title="Some project fact", type=MemoryType.PROJECT, body="b"
+            )
+        ]),
+    )
+    monkeypatch.setattr(
+        "vibe.core.memory.store.project_memory_dir", lambda create=False: None
+    )
+
+    await loop._extract_memories(0, len(loop.messages))
+
+    got = store.get("some-project-fact")
+    assert got is not None
+    assert got.metadata.scope == "user"
+
+
+@pytest.mark.asyncio
+async def test_extract_reference_type_routes_to_project_namespace(
+    monkeypatch, tmp_path
+) -> None:
+    from vibe.core.memory.extractor import ExtractedMemory
+
+    loop = build_test_agent_loop()
+    user_dir = tmp_path / "user"
+    proj_dir = tmp_path / "proj"
+    user_dir.mkdir()
+    proj_dir.mkdir()
+    store = MemoryStore(user_dir=user_dir, project_dirs=[proj_dir])
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    monkeypatch.setattr(
+        loop,
+        "_resolve_memory_extractor",
+        lambda: _StubExtractor([
+            ExtractedMemory(
+                title="Linear INGEST project for bugs",
+                type=MemoryType.REFERENCE,
+                body="b",
+            )
+        ]),
+    )
+    monkeypatch.setattr(
+        "vibe.core.memory.store.project_memory_dir", lambda create=False: proj_dir
+    )
+
+    await loop._extract_memories(0, len(loop.messages))
+
+    got = store.get("linear-ingest-project-for-bugs")
+    assert got is not None
+    assert got.metadata.scope == "project"
+
+
 # --------------------------------------------------------------------------- #
 # Tier 3: already-surfaced variety + freshness annotation                      #
 # --------------------------------------------------------------------------- #
