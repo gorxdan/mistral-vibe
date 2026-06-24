@@ -681,12 +681,15 @@ max_entries_scanned = 200        # Cap on index lines sent to the selector
 timeout = 20.0                   # Per-selection LLM timeout
 ```
 
-**Scopes.** Memories are global by default (shared across every project). Pass
-`scope = "project"` to the `manage_memory` tool to write to the current trusted
-project's private namespace (`~/.vibe/memory/projects/<hash>/`). Project memories
-live under `~/.vibe` (never in the repo), so they cannot be committed; they shadow
-same-id global memories for that project only. `scope = "project"` requires a
-trusted project directory.
+**Scopes.** The `manage_memory` tool defaults new memories to the current
+trusted project's private namespace (`~/.vibe/memory/projects/<hash>/`) when one
+is active, so project-specific facts stay scoped to that project and don't leak
+into others. Pass `scope = "user"` to write a global memory shared across every
+project — reserve this for cross-project identity, preferences, and feedback.
+Project memories live under `~/.vibe` (never in the repo), so they cannot be
+committed; they shadow same-id global memories for that project only. Project
+scope requires a trusted project directory; without one, new memories fall back
+to global.
 
 **Multi-session / multi-agent.** The project namespace is keyed by the repo's
 git common dir, not the working-directory path, so every session and every git

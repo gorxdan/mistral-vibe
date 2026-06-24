@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 import pytest
+from pydantic import ValidationError
 
 from tests.conftest import build_test_agent_loop
 from vibe.core.memory.extractor import MemoryExtractor
@@ -16,6 +18,7 @@ from vibe.core.memory.models import (
 )
 from vibe.core.memory.selector import MemorySelector
 from vibe.core.memory.store import MemoryStore
+from vibe.core.types import Backend
 
 
 def _entry(mid: str, body: str = "b", desc: str = "d") -> MemoryEntry:
@@ -32,7 +35,7 @@ def _entry(mid: str, body: str = "b", desc: str = "d") -> MemoryEntry:
 def test_upsert_list_get_delete_roundtrip(tmp_path) -> None:
     store = MemoryStore(user_dir=tmp_path)
     store.upsert(_entry("git-norms", body="commit often", desc="git rules"))
-    assert store.get("git-norms").body == "commit often"
+    assert (got := store.get("git-norms")) is not None and got.body == "commit often"
     assert any("git-norms" in line for line in store.index())
     assert store.ids() == ["git-norms"]
     assert store.delete("git-norms") is True
@@ -89,13 +92,13 @@ def test_mtime_cache_invalidation(tmp_path) -> None:
 
 
 def test_slug_pattern_enforced() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         MemoryMetadata(id="Not A Slug", title="t")
     MemoryMetadata(id="ok-slug-1", title="t")  # valid
 
 
 def test_description_max_length() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         MemoryMetadata(id="x", title="t", description="z" * 301)
 
 
@@ -109,7 +112,7 @@ def _selector() -> MemorySelector:
 
     return MemorySelector(
         model=ModelConfig(name="m", provider="p", alias="m"),
-        provider=ProviderConfig(name="p", api_base="x", backend="generic"),
+        provider=ProviderConfig(name="p", api_base="x", backend=Backend.GENERIC),
         max_selected=2,
     )
 
@@ -211,7 +214,7 @@ def test_project_entry_shadows_user_by_id(tmp_path) -> None:
     store.upsert(_proj_entry("shared", body="PROJECT"), project=True)
 
     # Merged view: the project body wins, but both files persist on disk.
-    assert store.get("shared").body == "PROJECT"
+    assert (merged := store.get("shared")) is not None and merged.body == "PROJECT"
     assert (user / "shared.md").exists()
     assert (proj / "shared.md").exists()
 
@@ -243,7 +246,7 @@ def test_remove_from_tier_unlinks_one_tier_only(tmp_path) -> None:
     assert not (proj / "m.md").exists()
     assert (user / "m.md").exists()
     # The read now reflects the user file, not a stale shadow.
-    assert store.get("m").body == "U"
+    assert (read := store.get("m")) is not None and read.body == "U"
 
 
 def test_remove_from_tier_rejects_traversal_id(tmp_path) -> None:
@@ -299,6 +302,7 @@ def test_project_memory_dir_hashes_trusted_root(monkeypatch, tmp_path) -> None:
 
     # create=True mkdirs and stamps a debuggable .origin with the resolved path.
     created = store_mod.project_memory_dir(create=True)
+    assert created is not None
     assert created == expected
     assert created.is_dir()
     assert (created / ".origin").read_text().strip() == str(root.resolve())
@@ -511,7 +515,7 @@ def _extractor() -> MemoryExtractor:
 
     return MemoryExtractor(
         model=ModelConfig(name="m", provider="p", alias="m"),
-        provider=ProviderConfig(name="p", api_base="x", backend="generic"),
+        provider=ProviderConfig(name="p", api_base="x", backend=Backend.GENERIC),
     )
 
 
@@ -842,3 +846,47 @@ async def test_apply_selection_tracks_surfaced_across_turns(
     # Second turn's selector receives the first turn's surfaced set.
     assert picked[1] == {"m1"}
     assert loop._mem_surfaced == {"m1"}
+
+
+# --------------------------------------------------------------------------- #
+# manage_memory default scope routing (prevents cross-project leakage)          #
+# --------------------------------------------------------------------------- #
+
+
+def _default_scope(
+    requested: Literal["user", "project"] | None = None,
+    mem_type: MemoryType | None = None,
+    project: str | None = "/proj",
+) -> Literal["user", "project"]:
+    from vibe.core.tools.builtins.manage_memory import _default_add_scope
+
+    return _default_add_scope(requested, mem_type, Path(project) if project else None)
+
+
+def test_explicit_scope_overrides_type_and_project() -> None:
+    assert _default_scope(requested="user", mem_type=MemoryType.PROJECT) == "user"
+    assert _default_scope(requested="project", mem_type=MemoryType.USER) == "project"
+
+
+def test_untyped_save_defaults_to_project_when_one_is_active() -> None:
+    # The exact failure mode of the cross-project leak: an untyped fact saved
+    # while a project namespace is active must land in that project, not global.
+    assert _default_scope(mem_type=None, project="/proj") == "project"
+
+
+def test_untyped_save_falls_back_to_user_without_project() -> None:
+    assert _default_scope(mem_type=None, project=None) == "user"
+
+
+def test_user_and_feedback_types_stay_global_even_in_project() -> None:
+    assert _default_scope(mem_type=MemoryType.USER, project="/proj") == "user"
+    assert _default_scope(mem_type=MemoryType.FEEDBACK, project="/proj") == "user"
+
+
+def test_project_and_reference_types_route_to_project_namespace() -> None:
+    assert _default_scope(mem_type=MemoryType.PROJECT, project="/proj") == "project"
+    assert _default_scope(mem_type=MemoryType.REFERENCE, project="/proj") == "project"
+
+
+def test_project_type_falls_back_to_user_without_project() -> None:
+    assert _default_scope(mem_type=MemoryType.PROJECT, project=None) == "user"

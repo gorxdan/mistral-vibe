@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 import datetime as _dt
+from pathlib import Path
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
@@ -26,6 +27,29 @@ def _memory_store() -> MemoryStore:
     return MemoryStore(user_dir=VIBE_HOME.path / "memory", project_dirs=project_dirs)
 
 
+def _default_add_scope(
+    requested: Literal["user", "project"] | None,
+    mem_type: MemoryType | None,
+    project_dir: Path | None,
+) -> Literal["user", "project"]:
+    """Resolve the scope for a new memory when the caller omits one.
+
+    Mirrors the auto-extractor's type routing (see ``_extract_memories`` in
+    agent_loop): project/reference-typed memories are project-scoped, user/
+    feedback are global. An explicit scope always wins. An untyped save
+    defaults to the active project namespace — a fact captured while working in
+    a project is usually about that project, and a global default leaks it into
+    every other project's context.
+    """
+    if requested is not None:
+        return requested
+    if mem_type in {MemoryType.USER, MemoryType.FEEDBACK}:
+        return "user"
+    if project_dir is not None:
+        return "project"
+    return "user"
+
+
 class ManageMemoryArgs(BaseModel):
     action: Literal["add", "update", "list", "delete"]
     id: str | None = None
@@ -34,7 +58,8 @@ class ManageMemoryArgs(BaseModel):
     tags: list[str] = Field(default_factory=list)
     body: str | None = None
     type: MemoryType | None = None
-    # add: defaults to "user". update: None preserves the existing tier.
+    # add: defaults to the active project namespace, else user (see
+    # _default_add_scope). update: None preserves the existing tier.
     scope: Literal["user", "project"] | None = None
 
 
@@ -55,11 +80,13 @@ class ManageMemory(
     description: ClassVar[str] = (
         "Manage durable cross-session memories (markdown files under ~/.vibe/memory). "
         "Actions: add (new memory), update (patch existing), list, delete. Memories are "
-        "relevance-selected into context in later sessions. By default memories are "
-        "global (shared across all projects); pass scope='project' to write to the "
-        "current project's private namespace (~/.vibe/memory/projects/<hash>, never "
-        "committed, isolated per trusted project path). Project memories shadow "
-        "same-id global ones for that project only. Prefer a 'type' (user, feedback, "
+        "relevance-selected into context in later sessions. add defaults to the current "
+        "project's private namespace (~/.vibe/memory/projects/<hash>, never committed, "
+        "isolated per trusted project path) when one is active, so project-specific "
+        "facts don't leak into other projects; pass scope='user' to write a global "
+        "memory shared across all projects, reserved for cross-project identity, "
+        "preferences, and feedback. Project memories shadow same-id global ones for "
+        "that project only. Prefer a 'type' (user, feedback, "
         "project, reference): user = who the user is; feedback = how they want you to "
         "work (with the why); project = ongoing work/decisions not in code/git; "
         "reference = pointers to external systems. Do not save code patterns, "
@@ -101,7 +128,7 @@ class ManageMemory(
         if args.action == "add":
             if not args.title:
                 raise ToolError("add requires 'title'")
-            scope = args.scope or "user"
+            scope = _default_add_scope(args.scope, args.type, project_dir)
             if scope == "project" and project_dir is None:
                 raise ToolError(
                     "scope=project requires a trusted project directory; "
