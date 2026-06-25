@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock
 
-from acp.schema import TextContentBlock
+from acp.schema import ClientCapabilities, TextContentBlock
 import pytest
 
-from vibe.acp.acp_agent_loop import VibeAcpAgentLoop
+from vibe.acp.acp_agent_loop import WORKSPACE_TRUST_CAPABILITY, VibeAcpAgentLoop
 from vibe.acp.exceptions import InvalidRequestError
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.session.session_id import extract_suffix
 from vibe.core.types import FunctionCall, LLMMessage, Role, ToolCall
+
+
+def _enable_workspace_trust(acp_agent_loop: VibeAcpAgentLoop) -> None:
+    acp_agent_loop.client_capabilities = ClientCapabilities(
+        field_meta={WORKSPACE_TRUST_CAPABILITY: True}
+    )
 
 
 class TestACPForkSession:
@@ -190,3 +197,33 @@ class TestACPForkSession:
         )
 
         assert extract_suffix(response.session_id) == extract_suffix(source_session.id)
+
+    @pytest.mark.asyncio
+    async def test_fork_session_prompts_trust_for_untrusted_cwd(
+        self,
+        acp_agent_loop: VibeAcpAgentLoop,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Fork runs agent work in its cwd, so it must resolve workspace trust
+        # for that cwd — matching new_session/load_session. Regression for the
+        # gap where fork_session called os.chdir but skipped the trust prompt.
+        session_response = await acp_agent_loop.new_session(
+            cwd=str(Path.cwd()), mcp_servers=[]
+        )
+        source_session = acp_agent_loop.sessions[session_response.session_id]
+
+        fork_cwd = tmp_path / "fork_target"
+        fork_cwd.mkdir()
+        (fork_cwd / "AGENTS.md").write_text("Fork cwd instructions", encoding="utf-8")
+        _enable_workspace_trust(acp_agent_loop)
+        request_trust = AsyncMock(return_value={"decision": "decline"})
+        monkeypatch.setattr(acp_agent_loop.client, "ext_method", request_trust)
+
+        await acp_agent_loop.fork_session(
+            cwd=str(fork_cwd), session_id=source_session.id, mcp_servers=[]
+        )
+
+        # The trust prompt fired for the fork's cwd (decline is honored, cwd
+        # stays untrusted, but the prompt was requested).
+        request_trust.assert_awaited()

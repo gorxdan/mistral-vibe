@@ -1640,6 +1640,7 @@ class VibeAcpAgentLoop(AcpAgent):
     ) -> ForkSessionResponse:
         load_dotenv_values()
         os.chdir(cwd)
+        await self._resolve_workspace_trust(Path.cwd())
         await self._register_additional_directories(additional_directories)
 
         source_session = self._get_session(session_id)
