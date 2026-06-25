@@ -38,6 +38,12 @@ _MAX_FILE_BYTES = 10 * 1024 * 1024
 _METHOD_NOT_FOUND = -32601
 _CALL_HIERARCHY_RETRIES = 4
 _CALL_HIERARCHY_BACKOFF = (0.2, 0.4, 0.8)
+# LSP SymbolKind.Class (5). pyright returns a CallHierarchyItem for a class but
+# never resolves incoming/outgoing edges (it does not model instantiation as a
+# call edge), so an empty follow-up on a class is a correct final result, not a
+# cold-index artifact. Skipping the retry loop avoids a ~1.4s stall and a
+# misleading "server was indexing" caveat on class symbols.
+_SYMBOL_KIND_CLASS = 5
 # Memoize repeat queries within a short window. Keyed on the queried file's
 # mtime so any edit invalidates instantly; the TTL bounds cross-file staleness
 # (a references/call-hierarchy result can shift when *another* file changes).
@@ -286,8 +292,7 @@ class Lsp(
             if exc.code == _METHOD_NOT_FOUND:
                 raise ToolError(
                     f"{server.config.name} does not support {args.operation.value}. "
-                    "Try find_references as a fallback — it returns the same "
-                    "caller/callee info via a different method."
+                    + self._method_not_found_hint(args.operation)
                 ) from exc
             raise ToolError(f"LSP request failed: {exc}") from exc
         except LSPError as exc:
@@ -340,6 +345,22 @@ class Lsp(
                 manager, args, file_path, text_doc, position or {}
             )
         raise ToolError(f"Unsupported operation: {args.operation}")
+
+    @staticmethod
+    def _method_not_found_hint(operation: LspOperation) -> str:
+        # textDocument/implementation resolves concrete overrides of an abstract
+        # base or interface — "caller/callee" describes call-graph ops, not this
+        # one, so the generic fallback would mislead. find_references shows
+        # usages and workspace_symbol locates subclasses by name.
+        if operation is LspOperation.GO_TO_IMPLEMENTATION:
+            return (
+                "Try find_references to list usages, or workspace_symbol to "
+                "locate subclasses by name."
+            )
+        return (
+            "Try find_references as a fallback — it returns the same "
+            "caller/callee info via a different method."
+        )
 
     async def _workspace_symbol(self, manager: Any, query: str) -> LspResult:
         servers = manager.servers
@@ -483,9 +504,18 @@ class Lsp(
             if args.operation is LspOperation.INCOMING_CALLS
             else "callHierarchy/outgoingCalls"
         )
+        # A class-kind item resolves to no edges by design (pyright does not
+        # model instantiation as a call edge); the empty follow-up is final, so
+        # skip the cold-index retry loop instead of stalling ~1.4s and tagging
+        # a false "server was indexing" caveat.
+        class_symbol = any(
+            isinstance(it, dict) and it.get("kind") == _SYMBOL_KIND_CLASS
+            for it in items[:5]
+        )
+        max_attempts = 1 if class_symbol else _CALL_HIERARCHY_RETRIES
         out: list[dict[str, Any]] = []
         retries_used = 0
-        for attempt in range(_CALL_HIERARCHY_RETRIES):
+        for attempt in range(max_attempts):
             out = []
             for item in items[:5]:
                 raw, _ = await manager.send_request(file_path, method, {"item": item})
@@ -505,7 +535,7 @@ class Lsp(
             # follow-up is empty: the server's package graph isn't loaded yet.
             # Wait briefly and retry — gopls/pyright need indexing before they
             # can resolve caller/callee edges.
-            if attempt < _CALL_HIERARCHY_RETRIES - 1:
+            if attempt < max_attempts - 1:
                 retries_used += 1
                 await asyncio.sleep(_CALL_HIERARCHY_BACKOFF[attempt])
         out = await self._filter_gitignored(out)

@@ -237,6 +237,79 @@ def test_method_not_found_surfaces_actionable_tool_error(monkeypatch, tmp_path) 
         raise AssertionError("expected ToolError")
 
 
+def test_method_not_found_implementation_does_not_promise_caller_callee(
+    monkeypatch, tmp_path
+) -> None:
+    # go_to_implementation finds concrete overrides of an interface, not
+    # "caller/callee info". The method-not-found fallback must not promise
+    # call-graph data it cannot deliver; find_references (usages) is the real
+    # fallback and workspace_symbol locates subclasses by name.
+    import asyncio
+
+    from vibe.core.tools.base import ToolError
+    from vibe.core.tools.builtins.lsp import (
+        Lsp,
+        LspArgs,
+        LspConfig,
+        LspOperation,
+        LspState,
+    )
+
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+
+    class _FakeServer:
+        def __init__(self) -> None:
+            self.config = ServerConfig(
+                name="pyright", command=["x"], languages={".py": "python"}
+            )
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.server = _FakeServer()
+
+        def get_server_for_file(self, path):
+            return self.server
+
+        async def open_document(self, path, text, language_id):
+            pass
+
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.lsp.get_lsp_manager", lambda: _FakeManager()
+    )
+    monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
+
+    async def fake_dispatch(self, manager, args, file_path, position):
+        raise LSPProtocolError("method not found", code=-32601)
+
+    monkeypatch.setattr(Lsp, "_dispatch", fake_dispatch)
+
+    tmp = tmp_path / "test.py"
+    tmp.write_text("x = 1\n")
+    args = LspArgs(
+        operation=LspOperation.GO_TO_IMPLEMENTATION,
+        file_path=str(tmp),
+        line=1,
+        character=1,
+    )
+
+    def _run() -> None:
+        async def _inner() -> None:
+            async for _ in tool.run(args):
+                pass
+
+        asyncio.run(_inner())
+
+    try:
+        _run()
+    except ToolError as exc:
+        msg = str(exc)
+        assert "go_to_implementation" in msg
+        assert "caller/callee" not in msg
+        assert "find_references" in msg
+    else:
+        raise AssertionError("expected ToolError")
+
+
 def test_resolve_manifest_root_finds_nearest_marker_dir(tmp_path) -> None:
     from pathlib import Path
 
@@ -1224,6 +1297,39 @@ async def test_call_hierarchy_retries_followup_on_cold_index(monkeypatch) -> Non
         m for m, _ in manager.requests if m == "callHierarchy/incomingCalls"
     ]
     assert len(incoming_calls) >= 2
+
+
+@pytest.mark.asyncio
+async def test_call_hierarchy_no_indexing_note_for_class_symbol(monkeypatch) -> None:
+    # pyright returns a CallHierarchyItem for a class, but no incoming/outgoing
+    # edges (it does not model instantiation as call edges). The empty result is
+    # correct and final — no backoff retry, no misleading "server was indexing"
+    # caveat. SymbolKind Class == 5.
+    from vibe.core.tools.builtins.lsp import LspArgs, LspOperation
+
+    tool = _make_lsp_tool()
+    manager = _FakeCallHierarchyManager(
+        prepare_responses={(10, 4): [{"name": "Widget", "kind": 5}]},
+        document_symbols=[],
+        call_edges={},
+    )
+    args = LspArgs(
+        operation=LspOperation.INCOMING_CALLS, file_path="/x.py", line=11, character=5
+    )
+    result = await tool._call_hierarchy(
+        manager,
+        args,
+        "/x.py",
+        {"textDocument": {"uri": "file:///x.py"}},
+        {"line": 10, "character": 4},
+    )
+    incoming_calls = [
+        m for m, _ in manager.requests if m == "callHierarchy/incomingCalls"
+    ]
+    assert len(incoming_calls) == 1
+    assert "indexing" not in result.summary
+    assert "retried" not in result.summary
+    assert result.locations == []
 
 
 class _FakePositionalManager:
