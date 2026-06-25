@@ -258,6 +258,12 @@ ignore_decorators = ["@*"]
 [tool.coverage.run]
 branch = true
 source = ["vibe"]
+# The Textual TUI (vibe/cli/textual_ui) and CLI/ACP entrypoints are driven by
+# snapshot tests (tests/snapshots) which run in a separate CI job with
+# continue-on-error. Excluding them from the unit-test coverage gate avoids
+# penalising the engine/tools surface for code that snapshot tests — not unit
+# tests — exercise.
+omit = ["vibe/cli/textual_ui/*", "vibe/cli/entrypoint.py", "vibe/acp/entrypoint.py"]
 
 [tool.coverage.report]
 fail_under = 85
