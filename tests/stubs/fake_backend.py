@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Iterable
-from typing import cast
+from collections.abc import AsyncGenerator, Iterable, Sequence
+import types
+from typing import Any, cast
 
 from tests.mock.utils import mock_llm_chunk
-from vibe.core.types import LLMChunk, LLMMessage, Role
+from vibe.core.config import ModelConfig
+from vibe.core.types import AvailableTool, LLMChunk, LLMMessage, Role, StrToolChoice
 
 
 class FakeBackend:
@@ -67,24 +69,30 @@ class FakeBackend:
     def requests_metadata(self) -> list[dict[str, str] | None]:
         return self._requests_metadata
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> FakeBackend:
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: types.TracebackType | None,
+    ) -> None:
         return None
 
     async def complete(
         self,
         *,
-        model,
-        messages,
-        temperature,
-        tools,
-        tool_choice,
-        extra_headers,
-        max_tokens,
-        metadata=None,
-        response_format=None,
+        model: ModelConfig,
+        messages: Sequence[LLMMessage],
+        temperature: float,
+        tools: list[AvailableTool] | None,
+        max_tokens: int | None,
+        tool_choice: StrToolChoice | AvailableTool | None,
+        extra_headers: dict[str, str] | None,
+        metadata: dict[str, str] | None = None,
+        response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> LLMChunk:
         if self._exception_to_raise:
             raise self._exception_to_raise
@@ -105,16 +113,17 @@ class FakeBackend:
     async def complete_streaming(
         self,
         *,
-        model,
-        messages,
-        temperature,
-        tools,
-        tool_choice,
-        extra_headers,
-        max_tokens,
-        metadata=None,
-        response_format=None,
-    ) -> AsyncGenerator[LLMChunk]:
+        model: ModelConfig,
+        messages: Sequence[LLMMessage],
+        temperature: float,
+        tools: list[AvailableTool] | None,
+        max_tokens: int | None,
+        tool_choice: StrToolChoice | AvailableTool | None,
+        extra_headers: dict[str, str] | None,
+        metadata: dict[str, str] | None = None,
+        response_format: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[LLMChunk, None]:
         if self._exception_to_raise:
             raise self._exception_to_raise
 
