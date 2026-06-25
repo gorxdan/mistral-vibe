@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+import logging
 
 import httpx
 import pytest
 
 from vibe.core.utils.retry import (
+    _http_response_detail,
     _is_retryable_http_error,
     async_generator_retry,
     async_retry,
@@ -58,6 +60,88 @@ class TestIsRetryableHttpError:
 
     def test_generic_exception_returns_false(self) -> None:
         assert _is_retryable_http_error(RuntimeError("boom")) is False
+
+
+class TestHttpResponseDetail:
+    def _status_error(
+        self,
+        status_code: int = 429,
+        *,
+        text: str = "",
+        headers: dict[str, str] | None = None,
+    ) -> httpx.HTTPStatusError:
+        response = httpx.Response(
+            status_code=status_code,
+            text=text,
+            headers=headers or {},
+            request=httpx.Request("POST", "https://example.com"),
+        )
+        return httpx.HTTPStatusError(
+            message=f"Error {status_code}", request=response.request, response=response
+        )
+
+    def test_includes_status_retry_after_and_body(self) -> None:
+        exc = self._status_error(
+            429, text='{"error":"Rate limit exceeded"}', headers={"retry-after": "12"}
+        )
+        detail = _http_response_detail(exc)
+        assert "status=429" in detail
+        assert "retry_after=12" in detail
+        assert "Rate limit exceeded" in detail
+
+    def test_quota_body_is_distinguishable_from_transient(self) -> None:
+        # A provider that surfaces credit exhaustion as 429 (see ZAI code 1113):
+        # the body makes it provable as quota, not a transient rate limit.
+        exc = self._status_error(
+            429, text='{"error":{"code":1113,"message":"Insufficient balance"}}'
+        )
+        detail = _http_response_detail(exc)
+        assert "Insufficient balance" in detail
+        # No Retry-After => not a server-advertised transient window.
+        assert "retry_after=" not in detail
+
+    def test_truncates_long_body(self) -> None:
+        exc = self._status_error(429, text="x" * 1000)
+        detail = _http_response_detail(exc)
+        assert detail.endswith("…")
+        assert len(detail) < 1000
+
+    def test_non_http_returns_na(self) -> None:
+        assert (
+            _http_response_detail(httpx.ConnectError("x", request=_make_request()))
+            == "n/a"
+        )
+
+
+class TestRetryLogsResponseBody:
+    @pytest.mark.asyncio
+    async def test_async_retry_logs_response_body_on_429(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        attempts = 0
+
+        @async_retry(tries=3, delay_seconds=0.0, backoff_factor=1.0)
+        async def call() -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 2:
+                response = httpx.Response(
+                    429,
+                    text='{"error":"quota depleted"}',
+                    request=httpx.Request("POST", "https://example.com"),
+                )
+                raise httpx.HTTPStatusError(
+                    message="429", request=response.request, response=response
+                )
+            return "ok"
+
+        with caplog.at_level(logging.WARNING, logger="vibe"):
+            result = await call()
+
+        assert result == "ok"
+        joined = " ".join(r.getMessage() for r in caplog.records)
+        assert "status=429" in joined
+        assert "quota depleted" in joined
 
 
 class TestAsyncRetry:

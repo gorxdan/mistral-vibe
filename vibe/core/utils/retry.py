@@ -29,6 +29,10 @@ def _is_retryable_http_error(e: Exception) -> bool:
 # Cap on how long we'll honor a server's Retry-After (avoid pathological waits).
 _MAX_RETRY_AFTER_S = 60.0
 
+# Body bytes retained in the retry-log diagnostic so a 429's cause is provable
+# from logs alone (transient rate limit vs. quota/credit exhaustion).
+_RESPONSE_BODY_EXCERPT = 400
+
 
 def _retry_after_seconds(e: Exception) -> float | None:
     """Parse a Retry-After header (delta-seconds or HTTP-date), if present."""
@@ -65,6 +69,32 @@ def _retry_delay(
     return base
 
 
+def _http_response_detail(exc: Exception) -> str:
+    """status + Retry-After + body excerpt for an HTTP error, for retry logs.
+
+    Lets the log prove whether a 429 is a transient rate limit (Retry-After
+    header, or a bare body) versus quota/credit exhaustion (a 402/403 body some
+    providers mis-surface as 429). Backends buffer the body before
+    raise_for_status(), so response.text is readable here.
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return "n/a"
+    response = exc.response
+    retry_after = response.headers.get("retry-after")
+    try:
+        body = (response.text or "").strip().replace("\n", " ")
+    except Exception:
+        body = ""
+    if len(body) > _RESPONSE_BODY_EXCERPT:
+        body = body[:_RESPONSE_BODY_EXCERPT] + "…"
+    parts = [f"status={response.status_code}"]
+    if retry_after:
+        parts.append(f"retry_after={retry_after}")
+    if body:
+        parts.append(f"body={body}")
+    return " ".join(parts)
+
+
 def async_retry[T, **P](
     tries: int = 3,
     delay_seconds: float = 0.5,
@@ -96,12 +126,14 @@ def async_retry[T, **P](
                             attempt, delay_seconds, backoff_factor, e
                         )
                         logger.warning(
-                            "Retrying %s after error attempt=%d/%d delay=%.2fs error=%r",
+                            "Retrying %s after error attempt=%d/%d delay=%.2fs "
+                            "error=%r response=%s",
                             func.__qualname__,
                             attempt + 1,
                             tries,
                             current_delay,
                             e,
+                            _http_response_detail(e),
                         )
                         await asyncio.sleep(current_delay)
                         continue
@@ -154,12 +186,14 @@ def async_generator_retry[T, **P](
                             attempt, delay_seconds, backoff_factor, e
                         )
                         logger.warning(
-                            "Retrying %s after error attempt=%d/%d delay=%.2fs error=%r",
+                            "Retrying %s after error attempt=%d/%d delay=%.2fs "
+                            "error=%r response=%s",
                             func.__qualname__,
                             attempt + 1,
                             tries,
                             current_delay,
                             e,
+                            _http_response_detail(e),
                         )
                         await asyncio.sleep(current_delay)
                         continue
