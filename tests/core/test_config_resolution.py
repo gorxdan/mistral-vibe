@@ -203,7 +203,15 @@ class TestResolveConfigFile:
             'plugin_paths = ["/etc/evil", "./inside"]\n', encoding="utf-8"
         )
         monkeypatch.chdir(cwd)
-        monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: False)
+        extra_resolved = extra.resolve()
+
+        def _trust_only_extra(p: Path) -> bool:
+            try:
+                return p.resolve().is_relative_to(extra_resolved)
+            except (OSError, ValueError):
+                return False
+
+        monkeypatch.setattr(trusted_folders_manager, "is_trusted", _trust_only_extra)
 
         reset_harness_files_manager()
         try:

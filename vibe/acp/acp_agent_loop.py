@@ -789,13 +789,15 @@ class VibeAcpAgentLoop(AcpAgent):
             ),
         )
 
-    async def _resolve_workspace_trust(self, cwd: Path) -> None:
+    async def _resolve_workspace_trust(
+        self, cwd: Path
+    ) -> WorkspaceTrustDecision | None:
         if not self._client_supports_workspace_trust():
-            return
+            return None
 
         prompt = maybe_build_workspace_trust_prompt(cwd)
         if prompt is None:
-            return
+            return None
 
         request = self._build_workspace_trust_request(prompt)
 
@@ -805,7 +807,7 @@ class VibeAcpAgentLoop(AcpAgent):
             )
         except RequestError as exc:
             if exc.code == NotImplementedMethodError.code:
-                return
+                return None
             raise
 
         try:
@@ -822,6 +824,7 @@ class VibeAcpAgentLoop(AcpAgent):
             apply_workspace_trust_decision(prompt, response.decision)
         except ValueError as exc:
             raise InvalidRequestError(str(exc)) from exc
+        return response.decision
 
     async def _register_additional_directories(
         self, additional_directories: list[str] | None
@@ -830,12 +833,14 @@ class VibeAcpAgentLoop(AcpAgent):
 
         Mirrors the CLI ``--add-dir`` flow so ACP provides the same access to
         skills/tools/hooks/workflows/config in those roots. Each dir is trusted
-        for the session and merged into the harness manager's project roots.
+        for the session and set on the harness manager's project roots. A dir the
+        client DECLINES is neither trusted nor registered. The session's dir set
+        REPLACES any prior session's (cross-session isolation via
+        ``add_session_dirs``), so this is always called even when the list is
+        empty.
         """
-        if not additional_directories:
-            return
         resolved: list[Path] = []
-        for d in additional_directories:
+        for d in additional_directories or []:
             path = Path(d).expanduser().resolve()
             if not path.is_dir():
                 raise InvalidRequestError(
@@ -846,7 +851,9 @@ class VibeAcpAgentLoop(AcpAgent):
                 raise InvalidRequestError(
                     f"additional_directories path is not allowed: {path} ({reason})"
                 )
-            await self._resolve_workspace_trust(path)
+            decision = await self._resolve_workspace_trust(path)
+            if decision == WorkspaceTrustDecision.DECLINE:
+                continue
             trusted_folders_manager.trust_for_session(path)
             resolved.append(path)
         add_session_dirs(resolved)

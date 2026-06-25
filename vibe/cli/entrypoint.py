@@ -14,6 +14,7 @@ from vibe.core.trusted_folders import (
     maybe_build_workspace_trust_prompt,
     trusted_folders_manager,
 )
+from vibe.core.utils.paths import is_dangerous_directory
 from vibe.setup.trusted_folders.trust_folder_dialog import (
     TrustDialogQuitException,
     ask_trust_folder,
@@ -248,6 +249,12 @@ def main() -> None:
             rprint(
                 f"[red]Error: --add-dir path does not exist "
                 f"or is not a directory: {d}[/]"
+            )
+            sys.exit(1)
+        is_dangerous, reason = is_dangerous_directory(resolved)
+        if is_dangerous:
+            rprint(
+                f"[red]Error: --add-dir path is not allowed: {resolved} ({reason})[/]"
             )
             sys.exit(1)
         additional_dirs.append(resolved)

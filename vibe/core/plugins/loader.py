@@ -31,6 +31,7 @@ _COMPONENTS = (
     ("prompts", "prompt_paths"),
 )
 
+
 def _candidate_manifests(
     plugin_paths: list[Path], plugin_dirs: list[Path]
 ) -> list[Path]:
@@ -44,13 +45,31 @@ def _candidate_manifests(
     for d in plugin_dirs:
         if not d.is_dir():
             continue
+        d_resolved = d.resolve()
         for child in sorted(d.iterdir()):
+            # Confinement: a symlinked child plugin whose target escapes the
+            # discovered plugins dir must not be loaded — it could pull an
+            # arbitrary on-disk plugin (agents/skills/tools/hooks/mcp) into the
+            # harness. Mirrors the per-path confinement applied to sibling
+            # discovery (tools/skills/agents/workflows).
+            try:
+                child_resolved = child.resolve()
+            except (OSError, ValueError):
+                continue
+            if not _within(child_resolved, d_resolved):
+                logger.warning(
+                    "plugin child %s escapes plugins dir %s; skipping",
+                    child,
+                    d_resolved,
+                )
+                continue
             manifest = child / "plugin.toml"
             if manifest.is_file():
                 out.append(manifest)
     # de-dupe preserving order
     seen: set[Path] = set()
     return [m for m in out if not (m in seen or seen.add(m))]
+
 
 def load_plugins_from_fs(
     plugin_paths: list[Path],
@@ -105,6 +124,7 @@ def load_plugins_from_fs(
 
     return result
 
+
 def _collect_hooks(
     manifest: PluginManifest, root: Path, name: str, result: PluginLoadResult
 ) -> None:
@@ -132,11 +152,13 @@ def _collect_hooks(
         except (ValidationError, ValueError) as e:
             result.issues.append(f"{name}: invalid inline hook ({e})")
 
+
 def _within(path: Path, root: Path) -> bool:
     try:
         return path == root or path.is_relative_to(root.resolve())
     except (OSError, ValueError):
         return False
+
 
 def apply_plugin_result(config: VibeConfig, result: PluginLoadResult) -> None:
     """Fold a PluginLoadResult into a VibeConfig (additive). Paths are appended;

@@ -171,7 +171,7 @@ class TestACPNewSession:
             )
 
     @pytest.mark.asyncio
-    async def test_new_session_registers_additional_directory_after_decline(
+    async def test_new_session_declined_additional_directory_is_not_registered(
         self,
         acp_agent_loop: VibeAcpAgentLoop,
         tmp_working_directory: Path,
@@ -193,8 +193,10 @@ class TestACPNewSession:
 
         assert session_response.session_id is not None
         request_trust.assert_awaited_once()
-        assert trusted_folders_manager.is_trusted(extra) is True
-        assert "Extra instructions" in _system_prompt(
+        # DECLINE is honored: the dir is neither trusted nor registered, so its
+        # AGENTS.md must not reach the system prompt.
+        assert trusted_folders_manager.is_trusted(extra) is not True
+        assert "Extra instructions" not in _system_prompt(
             acp_agent_loop, session_response.session_id
         )
 

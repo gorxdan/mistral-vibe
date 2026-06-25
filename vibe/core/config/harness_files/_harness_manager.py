@@ -51,6 +51,21 @@ class HarnessFilesManager:
         return self._additional_dirs
 
     @property
+    def trusted_additional_dirs(self) -> list[Path]:
+        """Add-dirs that pass the trust gate (DB-trusted or session-trusted).
+
+        Entry points session-trust accepted add-dirs before they reach the
+        manager; this re-validates them so a declined or untrusted dir cannot
+        feed discovery even if it lands in ``_additional_dirs``. Symmetric with
+        the cwd gate in ``trusted_workdir``.
+        """
+        return [
+            d
+            for d in dedup_paths(self._additional_dirs)
+            if trusted_folders_manager.is_trusted(d) is True
+        ]
+
+    @property
     def trusted_workdir(self) -> Path | None:
         """Return cwd if project source is enabled and trusted, else None."""
         if "project" not in self.sources:
@@ -93,9 +108,10 @@ class HarnessFilesManager:
         at the trust root itself this is a no-op. ``--add-dir`` entries are
         resolved and deduplicated; nested paths are preserved because project
         config discovery is root-level only. Add-dirs equal to the trust root
-        are dropped (redundant).
+        are dropped (redundant). Add-dirs are trust-gated via
+        ``trusted_additional_dirs``.
         """
-        add_dirs = dedup_paths(self._additional_dirs)
+        add_dirs = self.trusted_additional_dirs
         workdir = self.trusted_workdir
         if workdir is None:
             return add_dirs
@@ -243,12 +259,20 @@ class HarnessFilesManager:
             if current == stop_resolved and not stop_inclusive:
                 break
             path = current / AGENTS_MD_FILENAME
-            # Confinement: a symlinked AGENTS.md whose target escapes the trust
-            # root must not be followed — it could pull external content into
-            # the system prompt. Legitimate in-tree symlinks still resolve within.
-            if resolved_within(path, stop_resolved):
+            # Resolve-once-read-resolved: validate the symlink target stays within
+            # the trust root, then read that exact resolved target (not the link).
+            # A symlink swapped between a separate check and read can no longer
+            # pull external content into the system prompt; an unresolvable link
+            # fails closed.
+            try:
+                resolved = path.resolve()
+            except (ValueError, OSError):
+                resolved = None
+            if resolved is not None and (
+                resolved == stop_resolved or resolved.is_relative_to(stop_resolved)
+            ):
                 try:
-                    stripped = read_safe(path).text.strip()
+                    stripped = read_safe(resolved).text.strip()
                     if stripped:
                         docs.append((current, stripped))
                 except (FileNotFoundError, OSError):
@@ -278,7 +302,7 @@ class HarnessFilesManager:
         workdir = self.trusted_workdir
         if workdir is not None:
             boundaries.append(workdir)
-        boundaries.extend(dedup_paths(self._additional_dirs))
+        boundaries.extend(self.trusted_additional_dirs)
         containing = [
             root.resolve() for root in boundaries if resolved.is_relative_to(root)
         ]
@@ -309,7 +333,7 @@ class HarnessFilesManager:
         workdir = self.trusted_workdir
         if workdir is not None:
             walk_starts.append(workdir)
-        walk_starts.extend(dedup_paths(self._additional_dirs))
+        walk_starts.extend(self.trusted_additional_dirs)
         for start in walk_starts:
             stop = trusted_folders_manager.find_trust_root(start) or start
             for d, content in self._collect_agents_md(start, stop, stop_inclusive=True):
@@ -339,7 +363,7 @@ class HarnessFilesManager:
         workdir = self.trusted_workdir
         if workdir is not None:
             walk_starts.append(workdir)
-        walk_starts.extend(dedup_paths(self._additional_dirs))
+        walk_starts.extend(self.trusted_additional_dirs)
         for start in walk_starts:
             stop = trusted_folders_manager.find_trust_root(start) or start
             try:
@@ -355,14 +379,21 @@ class HarnessFilesManager:
                 try:
                     resolved = path.resolve()
                 except (ValueError, OSError):
-                    resolved = path
+                    resolved = None
+                # Resolve-once-read-resolved (see _collect_agents_md): validate
+                # and read the resolved target, not the link, so a swap between
+                # check and read cannot change which file is watched.
+                contained = resolved is not None and (
+                    resolved == stop_resolved or resolved.is_relative_to(stop_resolved)
+                )
                 if (
-                    resolved not in seen
-                    and resolved_within(path, stop_resolved)
-                    and self._agents_md_has_content(path)
+                    resolved is not None
+                    and contained
+                    and resolved not in seen
+                    and self._agents_md_has_content(resolved)
                 ):
                     seen.add(resolved)
-                    paths.append(path)
+                    paths.append(resolved)
                 if current == stop_resolved:
                     break
                 parent = current.parent
@@ -382,9 +413,11 @@ def init_harness_files_manager(
 ) -> None:
     """Initialize the global HarnessFilesManager singleton.
 
-    *additional_dirs* are extra working directories supplied via ``--add-dir``.
-    They are implicitly trusted (the user opted in via the CLI flag, same
-    semantics as ``--trust``) and do not require a trust-folder check.
+    *additional_dirs* are extra working directories supplied via ``--add-dir`` /
+    ACP ``additional_directories``. Entry points session-trust the accepted
+    subset before passing them here; discovery re-validates each dir against
+    the trust DB (see ``trusted_additional_dirs``), so a declined or untrusted
+    dir never feeds project-root discovery.
     """
     global _manager
     candidate = HarnessFilesManager(
@@ -414,13 +447,17 @@ def reset_harness_files_manager() -> None:
 
 
 def add_session_dirs(dirs: list[Path]) -> None:
-    """Merge extra working directories into the initialized singleton.
+    """Set the session's extra working directories on the singleton (replace).
 
     Mirrors the CLI's ``--add-dir`` flow for ACP's ``additional_directories``
     parameter, which arrives per-session after the singleton is created at
-    startup. The merged dirs feed project-root discovery (skills/tools/hooks/
-    workflows/config) and file-tool in-bounds checks — without this, ACP
-    silently provides less capability than the CLI for the same dirs.
+    startup. The dirs feed project-root discovery (skills/tools/hooks/workflows/
+    config) and file-tool in-bounds checks — without this, ACP silently provides
+    less capability than the CLI for the same dirs.
+
+    The list is REPLACED, not merged, so a long-lived ACP server's session N
+    does not inherit session N-1's dirs (cross-session isolation). Each session
+    declares its complete set; the startup singleton carries no add-dirs in ACP.
     """
     global _manager
     if _manager is None:
@@ -429,9 +466,9 @@ def add_session_dirs(dirs: list[Path]) -> None:
         )
     if not dirs:
         return
-    merged = dedup_paths([*_manager.additional_dirs, *dirs])
-    if len(merged) == len(_manager.additional_dirs):
+    resolved = tuple(dedup_paths(dirs))
+    if resolved == _manager.additional_dirs:
         return
     _manager = HarnessFilesManager(
-        sources=_manager.sources, cwd=_manager.cwd, _additional_dirs=tuple(merged)
+        sources=_manager.sources, cwd=_manager.cwd, _additional_dirs=resolved
     )

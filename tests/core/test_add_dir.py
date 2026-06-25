@@ -86,7 +86,7 @@ class TestAddSessionDirs:
         with pytest.raises(RuntimeError, match="not initialized"):
             add_session_dirs([tmp_path])
 
-    def test_merges_and_dedupes_dirs(self, tmp_path: Path) -> None:
+    def test_replaces_with_deduped_dirs(self, tmp_path: Path) -> None:
         d1 = tmp_path / "extra1"
         d1.mkdir()
         d2 = tmp_path / "extra2"
@@ -100,6 +100,24 @@ class TestAddSessionDirs:
             d1.resolve(),
             d2.resolve(),
         )
+
+    def test_replaces_previous_session_dirs_not_merges(self, tmp_path: Path) -> None:
+        # Cross-session isolation: a second add_session_dirs must REPLACE the
+        # prior set, not accumulate. Otherwise a long-lived ACP server leaks
+        # session N-1's dirs into session N.
+        d1 = tmp_path / "extra1"
+        d1.mkdir()
+        d2 = tmp_path / "extra2"
+        d2.mkdir()
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user", "project")
+        add_session_dirs([d1])
+        assert d1.resolve() in get_harness_files_manager().additional_dirs
+        add_session_dirs([d2])
+
+        assert get_harness_files_manager().additional_dirs == (d2.resolve(),)
+        assert d1.resolve() not in get_harness_files_manager().additional_dirs
 
     def test_preserves_cwd_on_rebuild(self, tmp_path: Path) -> None:
         cwd = tmp_path / "cwd"
@@ -120,6 +138,7 @@ class TestAdditionalDirsDiscovery:
         tools_dir = extra / ".vibe" / "tools"
         tools_dir.mkdir(parents=True)
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         assert tools_dir in mgr.project_tools_dirs
 
@@ -128,6 +147,7 @@ class TestAdditionalDirsDiscovery:
         skills_dir = extra / ".vibe" / "skills"
         skills_dir.mkdir(parents=True)
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         assert skills_dir in mgr.project_skills_dirs
 
@@ -136,6 +156,7 @@ class TestAdditionalDirsDiscovery:
         agents_dir = extra / ".vibe" / "agents"
         agents_dir.mkdir(parents=True)
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         assert agents_dir in mgr.project_agents_dirs
 
@@ -144,6 +165,7 @@ class TestAdditionalDirsDiscovery:
         skills_dir = extra / ".agents" / "skills"
         skills_dir.mkdir(parents=True)
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         assert skills_dir in mgr.project_skills_dirs
 
@@ -152,6 +174,7 @@ class TestAdditionalDirsDiscovery:
         prompts_dir = extra / ".vibe" / "prompts"
         prompts_dir.mkdir(parents=True)
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         assert prompts_dir in mgr.project_prompts_dirs
 
@@ -159,6 +182,7 @@ class TestAdditionalDirsDiscovery:
         extra = tmp_path / "bare_project"
         extra.mkdir()
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         assert mgr.project_tools_dirs == []
         assert mgr.project_skills_dirs == []
@@ -174,6 +198,7 @@ class TestAdditionalDirsAgentsMd:
         agents_md = extra / AGENTS_MD_FILENAME
         agents_md.write_text("Extra project instructions", encoding="utf-8")
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         docs = mgr.load_project_docs()
         assert any(d == extra and "Extra project" in content for d, content in docs)
@@ -182,6 +207,7 @@ class TestAdditionalDirsAgentsMd:
         extra = tmp_path / "no_agents_md"
         extra.mkdir()
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         docs = mgr.load_project_docs()
         assert not any(d == extra for d, _ in docs)
@@ -191,6 +217,7 @@ class TestAdditionalDirsAgentsMd:
         extra.mkdir()
         (extra / AGENTS_MD_FILENAME).write_text("   \n", encoding="utf-8")
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         docs = mgr.load_project_docs()
         assert not any(d == extra for d, _ in docs)
@@ -204,6 +231,7 @@ class TestAdditionalDirsAgentsMd:
         agents_md = sub / AGENTS_MD_FILENAME
         agents_md.write_text("Sub instructions", encoding="utf-8")
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         file_in_sub = sub / "main.py"
         docs = mgr.find_subdirectory_agents_md(file_in_sub)
@@ -220,6 +248,7 @@ class TestAdditionalDirsAgentsMd:
         agents_md = sub / AGENTS_MD_FILENAME
         agents_md.write_text("Sub instructions", encoding="utf-8")
 
+        trusted_folders_manager.trust_for_session(link)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(link,))
         docs = mgr.find_subdirectory_agents_md(sub / "main.py")
         assert any("Sub instructions" in content for _, content in docs)
@@ -230,6 +259,7 @@ class TestAdditionalDirsAgentsMd:
         outside = tmp_path / "outside"
         outside.mkdir()
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         docs = mgr.find_subdirectory_agents_md(outside / "file.py")
         assert docs == []
@@ -242,6 +272,7 @@ class TestFilePermissionsAdditionalDirs:
         file_in_extra = extra / "some_file.py"
 
         reset_harness_files_manager()
+        trusted_folders_manager.trust_for_session(extra)
         init_harness_files_manager("user", "project", additional_dirs=[extra])
 
         assert is_path_within_workdir(str(file_in_extra))
@@ -254,6 +285,7 @@ class TestFilePermissionsAdditionalDirs:
         file_in_extra = extra / "some_file.py"
 
         reset_harness_files_manager()
+        trusted_folders_manager.trust_for_session(link)
         init_harness_files_manager("user", "project", additional_dirs=[link])
 
         assert is_path_within_workdir(str(file_in_extra))
@@ -284,26 +316,26 @@ class TestFilePermissionsAdditionalDirs:
         assert is_path_within_workdir(str(tmp_working_directory / "file.py"))
 
 
-class TestAdditionalDirsAreImplicitlyTrusted:
-    def test_load_project_docs_does_not_require_trust_for_additional_dir(
+class TestAdditionalDirsRequireTrust:
+    def test_load_project_docs_excludes_untrusted_additional_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Untrusted cwd: primary workdir contributes nothing.
+        # An untrusted add-dir must not inject AGENTS.md into the system prompt.
         monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: False)
 
         extra = tmp_path / "extra_project"
         extra.mkdir()
         (extra / AGENTS_MD_FILENAME).write_text(
-            "Trusted via --add-dir", encoding="utf-8"
+            "Should not be loaded", encoding="utf-8"
         )
 
         mgr = HarnessFilesManager(
             sources=("user", "project"), _additional_dirs=(extra,)
         )
         docs = mgr.load_project_docs()
-        assert any("Trusted via --add-dir" in content for _, content in docs)
+        assert not any("Should not be loaded" in content for _, content in docs)
 
-    def test_project_tools_dirs_skip_trust_check_for_additional_dir(
+    def test_project_tools_dirs_exclude_untrusted_additional_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: False)
@@ -315,7 +347,7 @@ class TestAdditionalDirsAreImplicitlyTrusted:
         mgr = HarnessFilesManager(
             sources=("user", "project"), _additional_dirs=(extra,)
         )
-        assert tools_dir in mgr.project_tools_dirs
+        assert tools_dir not in mgr.project_tools_dirs
 
 
 class TestLoadProjectDocsDedupe:
@@ -348,6 +380,7 @@ class TestHookFilesAdditionalDirs:
     ) -> None:
         extra = tmp_path / "extra"
         (extra / ".vibe").mkdir(parents=True)
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         assert extra / ".vibe" / "hooks.toml" in mgr.hook_files
 
@@ -358,6 +391,7 @@ class TestHookFilesAdditionalDirs:
         outside.mkdir()
         (extra / ".vibe" / "hooks.toml").symlink_to(outside / "hooks.toml")
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
 
         assert extra / ".vibe" / "hooks.toml" not in mgr.hook_files
@@ -386,6 +420,7 @@ class TestProjectPromptsDirsAdditionalDirs:
         outside.mkdir()
         (extra / ".vibe" / "prompts").symlink_to(outside, target_is_directory=True)
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
 
         assert extra / ".vibe" / "prompts" not in mgr.project_prompts_dirs
@@ -413,9 +448,26 @@ class TestPluginDirsAdditionalDirs:
         outside.mkdir()
         (extra / ".vibe" / "plugins").symlink_to(outside, target_is_directory=True)
 
+        trusted_folders_manager.trust_for_session(extra)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
 
         assert extra / ".vibe" / "plugins" not in mgr.plugin_dirs
+
+    def test_symlinked_child_plugin_dir_is_confined(self, tmp_path: Path) -> None:
+        # A symlinked CHILD of a plugins dir pointing outside must not load a
+        # plugin from the escaped location (mirrors per-path confinement).
+        from vibe.core.plugins.loader import load_plugins_from_fs
+
+        plugins_dir = tmp_path / "project" / ".vibe" / "plugins"
+        plugins_dir.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "plugin.toml").write_text('name = "evil"\n', encoding="utf-8")
+        (plugins_dir / "evil").symlink_to(outside, target_is_directory=True)
+
+        result = load_plugins_from_fs([], [plugins_dir])
+
+        assert "evil" not in result.plugins
 
 
 class TestProjectRootsNestedDedup:
@@ -424,6 +476,8 @@ class TestProjectRootsNestedDedup:
         inner = outer / "inner"
         inner.mkdir(parents=True)
 
+        trusted_folders_manager.trust_for_session(outer)
+        trusted_folders_manager.trust_for_session(inner)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(outer, inner))
         assert mgr.project_roots == [outer, inner]
 
