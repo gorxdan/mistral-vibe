@@ -73,3 +73,50 @@ def test_apply_openai_preset_persists_provider_and_model(
     provider_names = {p["name"] for p in config["providers"]}
     assert "openai" in provider_names
     assert config["active_model"] == preset.model.alias
+
+
+def test_sakana_preset_present_and_keyed() -> None:
+    preset = next((p for p in PRESETS if p.key == "sakana"), None)
+    assert preset is not None
+    assert preset.requires_api_key is True
+    assert preset.provider is not None
+    assert preset.model is not None
+
+
+def test_sakana_preset_provider_config() -> None:
+    preset = next(p for p in PRESETS if p.key == "sakana")
+    provider = preset.provider
+    assert provider is not None
+    assert provider.name == "sakana"
+    assert provider.api_base == "https://api.sakana.ai/v1"
+    assert provider.api_key_env_var == "SAKANA_API_KEY"
+    # Fugu documents the Responses API with reasoning.effort.
+    assert provider.api_style == "openai-responses"
+
+
+def test_sakana_preset_model_config() -> None:
+    preset = next(p for p in PRESETS if p.key == "sakana")
+    model = preset.model
+    assert model is not None
+    assert model.name == "fugu"
+    assert model.provider == "sakana"
+    assert model.supports_images is True
+    # Fugu accepts high / xhigh reasoning effort; "high" maps straight through.
+    assert model.thinking == "high"
+
+
+def test_apply_sakana_preset_persists_provider_and_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SAKANA_API_KEY", "sk-sakana-test")
+    preset = next(p for p in PRESETS if p.key == "sakana")
+    assert preset.provider is not None and preset.model is not None
+
+    apply_provider_config(preset.provider, preset.model)
+
+    from vibe.core.config import VibeConfig
+
+    config = VibeConfig.get_persisted_config()
+    provider_names = {p["name"] for p in config["providers"]}
+    assert "sakana" in provider_names
+    assert config["active_model"] == preset.model.alias

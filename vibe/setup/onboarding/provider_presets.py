@@ -17,6 +17,8 @@ MINIMAX_API_BASE = "https://api.minimax.io/v1"
 MINIMAX_HELP_URL = "https://platform.minimax.io/user-center/payment/token-plan"
 OPENAI_API_BASE = "https://api.openai.com/v1"
 OPENAI_HELP_URL = "https://platform.openai.com/api-keys"
+SAKANA_API_BASE = "https://api.sakana.ai/v1"
+SAKANA_HELP_URL = "https://sakana.ai"
 
 CUSTOM_PROVIDER_NAME = "custom"
 
@@ -179,6 +181,37 @@ PRESETS: list[ProviderPreset] = [
             thinking="high",
             supports_images=True,
             auto_compact_threshold=400000,
+        ),
+    ),
+    ProviderPreset(
+        key="sakana",
+        label="Sakana Fugu",
+        description=(
+            "Sakana Fugu (fugu / fugu-ultra) via the Sakana API. A multi-agent "
+            "model used like a standard LLM through the OpenAI-compatible "
+            "Responses API. Requires a SAKANA_API_KEY."
+        ),
+        requires_api_key=True,
+        help_url=SAKANA_HELP_URL,
+        provider=ProviderConfig(
+            name="sakana",
+            api_base=SAKANA_API_BASE,
+            api_key_env_var="SAKANA_API_KEY",
+            # Fugu documents the Responses API with reasoning.effort (high /
+            # xhigh), matching the openai-responses adapter's effort mapping.
+            api_style="openai-responses",
+        ),
+        model=ModelConfig(
+            name="fugu",
+            provider="sakana",
+            alias="fugu",
+            thinking="high",
+            # Pricing left at 0.0; override per model in config for cost tracking.
+            input_price=0.0,
+            output_price=0.0,
+            supports_images=True,
+            # 1M-token context window; compact well before the ceiling.
+            auto_compact_threshold=880000,
         ),
     ),
     ProviderPreset(

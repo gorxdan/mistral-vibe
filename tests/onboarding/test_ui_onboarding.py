@@ -1446,9 +1446,9 @@ async def test_provider_selection_ollama_without_server_stays_on_screen(
     async with app.run_test() as pilot:
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
-        # Presets: mistral, zai, kimi, minimax, openai, openai-chatgpt, ollama,
-        # custom -> ollama is row 6.
-        await pilot.press(*(["down"] * 6), "enter")
+        # Presets: mistral, zai, kimi, minimax, openai, openai-chatgpt, sakana,
+        # ollama, custom -> ollama is row 7.
+        await pilot.press(*(["down"] * 7), "enter")
 
         await _wait_for(
             lambda: (
@@ -1481,9 +1481,9 @@ async def test_provider_selection_custom_routes_to_api_key_and_persists(
     async with app.run_test() as pilot:
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
-        # Presets: mistral, zai, kimi, minimax, openai, openai-chatgpt, ollama,
-        # custom -> custom is row 7.
-        await pilot.press(*(["down"] * 7), "enter")
+        # Presets: mistral, zai, kimi, minimax, openai, openai-chatgpt, sakana,
+        # ollama, custom -> custom is row 8.
+        await pilot.press(*(["down"] * 8), "enter")
         await _wait_for(
             lambda: isinstance(pilot.app.screen, CustomProviderScreen), pilot
         )
@@ -1603,9 +1603,7 @@ class _StubZaiSignIn:
         self._api_key = api_key
         self._error = error
 
-    async def authenticate(
-        self, *, on_url: Callable[[str], None] | None = None
-    ) -> str:
+    async def authenticate(self, *, on_url: Callable[[str], None] | None = None) -> str:
         if on_url is not None:
             on_url("https://chat.z.ai/api/oauth/authorize?state=test")
         if self._error is not None:
@@ -1664,13 +1662,11 @@ async def test_provider_selection_zai_login_shows_error() -> None:
         await pilot.press("enter")
         await _wait_for(lambda: isinstance(pilot.app.screen, ZaiSignInScreen), pilot)
         await _wait_for(
-            lambda: (
-                str(
-                    pilot.app.screen.query_one(
-                        "#zai-sign-in-status", NoMarkupStatic
-                    ).render()
-                ).endswith("sign-in blew up")
-            ),
+            lambda: str(
+                pilot.app.screen.query_one(
+                    "#zai-sign-in-status", NoMarkupStatic
+                ).render()
+            ).endswith("sign-in blew up"),
             pilot,
         )
 
