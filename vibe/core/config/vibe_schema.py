@@ -268,6 +268,7 @@ class VibeConfigSchema(ConfigSchema):
     vibe_code_experimental_nuage_enabled: Annotated[bool, WithReplaceMerge()] = False
     enable_otel: Annotated[bool, WithReplaceMerge()] = False
     otel_endpoint: Annotated[str, WithReplaceMerge()] = ""
+    otel_local_export: Annotated[bool, WithReplaceMerge()] = False
     console_base_url: Annotated[str, WithReplaceMerge()] = DEFAULT_CONSOLE_BASE_URL
     enable_experimental_hooks: Annotated[bool, WithReplaceMerge()] = False
 

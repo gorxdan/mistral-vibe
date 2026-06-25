@@ -1,23 +1,63 @@
 from __future__ import annotations
 
 import atexit
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from opentelemetry import baggage, context, trace
+from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.semconv._incubating.attributes import gen_ai_attributes
 from opentelemetry.trace import StatusCode
 
 from vibe import __version__
 
 if TYPE_CHECKING:
+    from opentelemetry.sdk.trace import ReadableSpan
+
     from vibe.core.config import VibeConfig
 
 from vibe.core.logger import logger
+from vibe.core.paths import TRACE_LOG_DIR
+from vibe.core.utils import utc_now
 
 VIBE_TRACER_NAME = "chaton"
 VIBE_AGENT_NAME = "chaton"
+
+
+class _JsonlSpanExporter(SpanExporter):
+    """Appends each ended span as one JSON line to a local file.
+
+    Used with :class:`~opentelemetry.sdk.trace.export.SimpleSpanProcessor` so
+    spans are written immediately on end — durable across crashes, suitable for
+    local debugging without an external collector.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        try:
+            with self._path.open("a", encoding="utf-8") as f:
+                for span in spans:
+                    f.write(span.to_json() + "\n")
+        except Exception:
+            logger.warning("Failed to write span to %s", self._path, exc_info=True)
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        pass
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
+
+
+def _local_trace_path() -> Path:
+    ts = utc_now().strftime("%Y%m%d_%H%M%S")
+    TRACE_LOG_DIR.path.mkdir(parents=True, exist_ok=True)
+    return TRACE_LOG_DIR.path / f"trace_{ts}_{os.getpid()}.jsonl"
 
 
 def setup_tracing(config: VibeConfig) -> None:
@@ -25,21 +65,34 @@ def setup_tracing(config: VibeConfig) -> None:
         return
 
     exporter_cfg = config.otel_span_exporter_config
-    if exporter_cfg is None:
+    local_export = config.otel_local_export
+
+    if exporter_cfg is None and not local_export:
         return
 
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 
     resource = Resource.create({
         "service.name": VIBE_AGENT_NAME,
         "service.version": __version__,
     })
-    exporter = OTLPSpanExporter(**exporter_cfg.model_dump())
     provider = TracerProvider(resource=resource)
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+
+    if exporter_cfg is not None:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
+
+        exporter = OTLPSpanExporter(**exporter_cfg.model_dump())
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+
+    if local_export:
+        provider.add_span_processor(
+            SimpleSpanProcessor(_JsonlSpanExporter(_local_trace_path()))
+        )
+
     trace.set_tracer_provider(provider)
     atexit.register(provider.shutdown)
 

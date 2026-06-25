@@ -1002,6 +1002,7 @@ class VibeConfig(BaseSettings):
     # TODO(otel): remove exclude=True once the feature is publicly available
     enable_otel: bool = Field(default=False, exclude=True)
     otel_endpoint: str = Field(default="", exclude=True)
+    otel_local_export: bool = Field(default=False, exclude=True)
 
     console_base_url: str = Field(default=DEFAULT_CONSOLE_BASE_URL, exclude=True)
     vibe_base_url: str = Field(default=DEFAULT_VIBE_BASE_URL, exclude=True)

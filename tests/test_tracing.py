@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from opentelemetry import trace
@@ -61,7 +63,10 @@ class TestSetupTracing:
 
     def test_noop_when_exporter_config_is_none(self) -> None:
         config = MagicMock(
-            enable_telemetry=True, enable_otel=True, otel_span_exporter_config=None
+            enable_telemetry=True,
+            enable_otel=True,
+            otel_span_exporter_config=None,
+            otel_local_export=False,
         )
         with patch("vibe.core.tracing.trace.set_tracer_provider") as mock_set:
             setup_tracing(config)
@@ -75,6 +80,7 @@ class TestSetupTracing:
                 endpoint="https://customer.mistral.ai/telemetry/v1/traces",
                 headers={"Authorization": "Bearer sk-test"},
             ),
+            otel_local_export=False,
         )
 
         with (
@@ -99,6 +105,7 @@ class TestSetupTracing:
             otel_span_exporter_config=OtelSpanExporterConfig(
                 endpoint="https://my-collector:4318/v1/traces"
             ),
+            otel_local_export=False,
         )
 
         with (
@@ -114,6 +121,81 @@ class TestSetupTracing:
         )
         mock_set.assert_called_once()
         assert isinstance(mock_set.call_args[0][0], TracerProvider)
+
+    def test_local_export_without_remote_config(self, tmp_path) -> None:
+        config = MagicMock(
+            enable_telemetry=True,
+            enable_otel=True,
+            otel_span_exporter_config=None,
+            otel_local_export=True,
+        )
+
+        with (
+            patch(
+                "vibe.core.tracing._local_trace_path", return_value=tmp_path / "t.jsonl"
+            ),
+            patch(
+                "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
+            ) as mock_remote,
+            patch("vibe.core.tracing.trace.set_tracer_provider") as mock_set,
+        ):
+            setup_tracing(config)
+
+        mock_remote.assert_not_called()
+        mock_set.assert_called_once()
+        provider = mock_set.call_args[0][0]
+        assert isinstance(provider, TracerProvider)
+
+    def test_local_and_remote_export_both_configured(self, tmp_path) -> None:
+        config = MagicMock(
+            enable_telemetry=True,
+            enable_otel=True,
+            otel_span_exporter_config=OtelSpanExporterConfig(
+                endpoint="https://collector/v1/traces"
+            ),
+            otel_local_export=True,
+        )
+
+        with (
+            patch(
+                "vibe.core.tracing._local_trace_path", return_value=tmp_path / "t.jsonl"
+            ),
+            patch(
+                "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
+            ) as mock_remote,
+            patch("vibe.core.tracing.trace.set_tracer_provider") as mock_set,
+        ):
+            setup_tracing(config)
+
+        mock_remote.assert_called_once()
+        mock_set.assert_called_once()
+        provider = mock_set.call_args[0][0]
+        assert isinstance(provider, TracerProvider)
+
+
+class TestJsonlSpanExporter:
+    def test_writes_spans_as_jsonl(self, tmp_path) -> None:
+        from vibe.core.tracing import _JsonlSpanExporter
+
+        span = MagicMock()
+        span.to_json.return_value = '{"name": "invoke_agent chaton"}'
+        exporter = _JsonlSpanExporter(tmp_path / "traces.jsonl")
+
+        result = exporter.export([span, span])
+
+        assert result == SpanExportResult.SUCCESS
+        lines = (tmp_path / "traces.jsonl").read_text().splitlines()
+        assert len(lines) == 2
+        assert json.loads(lines[0])["name"] == "invoke_agent chaton"
+
+    def test_export_failure_returns_success(self, tmp_path) -> None:
+        from vibe.core.tracing import _JsonlSpanExporter
+
+        exporter = _JsonlSpanExporter(Path("/nonexistent_dir_xyz/traces.jsonl"))
+
+        result = exporter.export([MagicMock()])
+
+        assert result == SpanExportResult.SUCCESS
 
 
 class TestAgentSpan:
