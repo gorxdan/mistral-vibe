@@ -375,9 +375,12 @@ def test_manager_multi_language_routing() -> None:
     manager = LSPManager()
     manager._configs = [py, ts]
     manager._servers = {py.name: LanguageServer(py), ts.name: LanguageServer(ts)}
-    assert manager.get_server_for_file("app.py").config.name == "py"
-    assert manager.get_server_for_file("app.ts").config.name == "ts"
-    assert manager.get_server_for_file("app.tsx").config.name == "ts"
+    py_server = manager.get_server_for_file("app.py")
+    ts_server = manager.get_server_for_file("app.ts")
+    tsx_server = manager.get_server_for_file("app.tsx")
+    assert py_server is not None and py_server.config.name == "py"
+    assert ts_server is not None and ts_server.config.name == "ts"
+    assert tsx_server is not None and tsx_server.config.name == "ts"
 
 
 def test_server_config_matches_case_insensitive() -> None:
@@ -1144,7 +1147,7 @@ async def test_call_hierarchy_resolves_off_identifier_position_and_retries() -> 
     # The agent passed character=1 (on the `fn`/`def` keyword), not on the
     # identifier. prepareCallHierarchy at (10,0) returns []; the tool resolves
     # via documentSymbol to the identifier at (10,4) and retries successfully.
-    from vibe.core.tools.builtins.lsp import LspOperation
+    from vibe.core.tools.builtins.lsp import LspArgs, LspOperation
 
     tool = _make_lsp_tool()
     # identifier `foo` starts at line 10 (0-based), char 4.
@@ -1154,9 +1157,7 @@ async def test_call_hierarchy_resolves_off_identifier_position_and_retries() -> 
         document_symbols=symbols,
         call_edges={"foo": [{"from": {"name": "caller", "uri": "file:///x.rs"}}]},
     )
-    args = type(
-        "A", (), {"operation": LspOperation.INCOMING_CALLS, "file_path": "/x.rs"}
-    )()
+    args = LspArgs(operation=LspOperation.INCOMING_CALLS, file_path="/x.rs")
     result = await tool._call_hierarchy(
         manager,
         args,
@@ -1183,7 +1184,7 @@ async def test_call_hierarchy_resolves_off_identifier_position_and_retries() -> 
 async def test_call_hierarchy_no_retry_when_position_already_on_identifier() -> None:
     # Position lands exactly on the identifier: prepare succeeds first try, no
     # documentSymbol lookup, no retry.
-    from vibe.core.tools.builtins.lsp import LspOperation
+    from vibe.core.tools.builtins.lsp import LspArgs, LspOperation
 
     tool = _make_lsp_tool()
     symbols = [_fn_symbol("foo", (10, 4), (12, 0))]
@@ -1192,7 +1193,7 @@ async def test_call_hierarchy_no_retry_when_position_already_on_identifier() -> 
         document_symbols=symbols,
         call_edges={"foo": [{"from": {"name": "caller", "uri": "file:///x.rs"}}]},
     )
-    args = type("A", (), {"operation": LspOperation.INCOMING_CALLS})()
+    args = LspArgs(operation=LspOperation.INCOMING_CALLS, file_path="/x.rs")
     result = await tool._call_hierarchy(
         manager,
         args,
@@ -1212,7 +1213,7 @@ async def test_call_hierarchy_no_retry_when_position_already_on_identifier() -> 
 async def test_outgoing_calls_extract_to_field_not_from() -> None:
     # Locks the corrected direction: CallHierarchyOutgoingCall carries `to`
     # (the callee). A stray `from` must be ignored.
-    from vibe.core.tools.builtins.lsp import LspOperation
+    from vibe.core.tools.builtins.lsp import LspArgs, LspOperation
 
     tool = _make_lsp_tool()
     symbols = [_fn_symbol("foo", (2, 4), (4, 0))]
@@ -1226,7 +1227,7 @@ async def test_outgoing_calls_extract_to_field_not_from() -> None:
             ]
         },
     )
-    args = type("A", (), {"operation": LspOperation.OUTGOING_CALLS})()
+    args = LspArgs(operation=LspOperation.OUTGOING_CALLS, file_path="/x.rs")
     result = await tool._call_hierarchy(
         manager,
         args,
@@ -1244,11 +1245,11 @@ async def test_call_hierarchy_actionable_message_when_genuinely_empty() -> None:
     # No callable anywhere at the position and documentSymbol finds nothing
     # spanning it: surface an actionable fallback message pointing to
     # find_references instead of a bare "no call hierarchy at position".
-    from vibe.core.tools.builtins.lsp import LspOperation
+    from vibe.core.tools.builtins.lsp import LspArgs, LspOperation
 
     tool = _make_lsp_tool()
     manager = _FakeCallHierarchyManager(prepare_responses={}, document_symbols=[])
-    args = type("A", (), {"operation": LspOperation.INCOMING_CALLS})()
+    args = LspArgs(operation=LspOperation.INCOMING_CALLS, file_path="/x.rs")
     result = await tool._call_hierarchy(
         manager,
         args,

@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, Protocol
 
 from vibe.core.logger import logger
 from vibe.core.lsp._types import (
@@ -22,6 +22,24 @@ _LINE_TERM = b"\r\n"
 _TRACE = os.environ.get("VIBE_LSP_TRACE", "") in {"1", "true", "TRUE"}
 
 
+class StreamWriterLike(Protocol):
+    """Structural subset of :class:`asyncio.StreamWriter` the connection uses.
+
+    Defining the transport as a Protocol lets test doubles (``_NullWriter``)
+    satisfy the parameter without inheriting from ``asyncio.StreamWriter``,
+    whose constructor needs a real transport/loop. A real ``StreamWriter`` also
+    satisfies this structurally.
+    """
+
+    def write(self, data: bytes) -> None: ...
+
+    async def drain(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    async def wait_closed(self) -> None: ...
+
+
 class _RequestCancelled(Exception):
     pass
 
@@ -34,9 +52,7 @@ class JsonRpcConnection:
     of asyncio streams (stdout reader, stdin writer) supplied by the caller.
     """
 
-    def __init__(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    def __init__(self, reader: asyncio.StreamReader, writer: StreamWriterLike) -> None:
         self._reader = reader
         self._writer = writer
         self._next_id = 0
