@@ -103,6 +103,22 @@ def test_sakana_preset_model_config() -> None:
     assert model.supports_images is True
     # Fugu accepts high / xhigh reasoning effort; "high" maps straight through.
     assert model.thinking == "high"
+    # Fugu documents a 1M-token context window; the compaction budget sits
+    # below the ceiling so we shape context before the model rejects it.
+    assert model.auto_compact_threshold == 880000
+
+
+def test_sakana_preset_ships_fugu_ultra() -> None:
+    preset = next(p for p in PRESETS if p.key == "sakana")
+    ultra = next((m for m in preset.extra_models if m.alias == "fugu-ultra"), None)
+    assert ultra is not None
+    assert ultra.name == "fugu-ultra"
+    assert ultra.provider == "sakana"
+    assert ultra.supports_images is True
+    assert ultra.thinking == "high"
+    # Fugu Ultra shares Fugu's 1M-token context window, so it carries the same
+    # compaction budget rather than falling back to the global default.
+    assert ultra.auto_compact_threshold == 880000
 
 
 def test_apply_sakana_preset_persists_provider_and_model(
@@ -120,3 +136,8 @@ def test_apply_sakana_preset_persists_provider_and_model(
     provider_names = {p["name"] for p in config["providers"]}
     assert "sakana" in provider_names
     assert config["active_model"] == preset.model.alias
+    # Both Fugu models are persisted with their 1M-window compaction budget so a
+    # user can switch to fugu-ultra without it defaulting to the global threshold.
+    persisted = {m["alias"]: m for m in config["models"]}
+    assert persisted["fugu"]["auto_compact_threshold"] == 880000
+    assert persisted["fugu-ultra"]["auto_compact_threshold"] == 880000

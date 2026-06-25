@@ -33,6 +33,9 @@ class ProviderPreset:
     help_url: str | None = None
     provider: ProviderConfig | None = None
     model: ModelConfig | None = None
+    # Additional models persisted alongside the active one when this preset is
+    # applied (e.g. a provider that ships sibling models the user can switch to).
+    extra_models: tuple[ModelConfig, ...] = ()
 
 
 PRESETS: list[ProviderPreset] = [
@@ -213,6 +216,20 @@ PRESETS: list[ProviderPreset] = [
             # 1M-token context window; compact well before the ceiling.
             auto_compact_threshold=880000,
         ),
+        extra_models=(
+            ModelConfig(
+                name="fugu-ultra",
+                provider="sakana",
+                alias="fugu-ultra",
+                thinking="high",
+                # Pricing left at 0.0; override per model in config for cost tracking.
+                input_price=0.0,
+                output_price=0.0,
+                supports_images=True,
+                # Same 1M-token context window as fugu; compact before the ceiling.
+                auto_compact_threshold=880000,
+            ),
+        ),
     ),
     ProviderPreset(
         key="ollama",
@@ -252,13 +269,16 @@ def apply_provider_config(provider: ProviderConfig, model: ModelConfig) -> None:
     providers.append(provider_payload)
     config["providers"] = providers
 
-    model_payload = model.model_dump(mode="json")
+    preset = preset_for_provider_name(provider.name)
+    extra_models = preset.extra_models if preset else ()
+    new_models = [model, *extra_models]
+    new_aliases = {m.alias for m in new_models}
     models = [
         m
         for m in (config.get("models") or [])
-        if isinstance(m, dict) and m.get("alias") != model.alias
+        if isinstance(m, dict) and m.get("alias") not in new_aliases
     ]
-    models.append(model_payload)
+    models.extend(m.model_dump(mode="json") for m in new_models)
     config["models"] = models
     config["active_model"] = model.alias
 
