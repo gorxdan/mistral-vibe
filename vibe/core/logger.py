@@ -55,8 +55,10 @@ def apply_logging_config(target_logger: logging.Logger) -> None:
         if log_level_str not in valid_levels:
             log_level_str = "WARNING"
 
+    # backupCount must be > 0: with 0, RotatingFileHandler never truncates on
+    # rollover (rename-to-same-path is a no-op), so the file grows unbounded.
     handler = RotatingFileHandler(
-        LOG_FILE.path, maxBytes=max_bytes, backupCount=0, encoding="utf-8"
+        LOG_FILE.path, maxBytes=max_bytes, backupCount=3, encoding="utf-8"
     )
     handler.setFormatter(StructuredLogFormatter())
     log_level = getattr(logging, log_level_str, logging.WARNING)
