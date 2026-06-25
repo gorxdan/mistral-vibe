@@ -364,6 +364,38 @@ def _budget_from_context(context_length: int, *, num_ctx_cap: int | None) -> int
     return max(1, math.floor(CONTEXT_BUDGET_SAFETY * effective))
 
 
+# Substrings (matched case-insensitively against a model id) that mark a model
+# as NOT a chat-completions model — embeddings, audio transcription/synthesis,
+# image generation, moderation, the realtime API, and legacy completion models.
+# A provider's /v1/models (notably OpenAI's) lists all of these alongside chat
+# models; they would flood the chat-model picker, so discovery drops them.
+# Conservative on purpose: "audio"/"search" stay (gpt-4o-audio-preview and
+# gpt-4o-search-preview are chat-completions models).
+_NON_CHAT_MODEL_MARKERS = (
+    "embed",
+    "whisper",
+    "tts",
+    "dall-e",
+    "dalle",
+    "moderation",
+    "transcribe",
+    "image",
+    "realtime",
+    "babbage",
+    "davinci",
+)
+
+
+def _is_chat_model(model_id: str) -> bool:
+    """Whether a discovered model id looks like a chat-completions model.
+
+    Best-effort substring heuristic (see :data:`_NON_CHAT_MODEL_MARKERS`); used
+    to keep non-chat families out of the chat model picker.
+    """
+    lowered = model_id.lower()
+    return not any(marker in lowered for marker in _NON_CHAT_MODEL_MARKERS)
+
+
 def _synth_model(
     provider_name: str,
     model_id: str,
@@ -427,7 +459,12 @@ async def discover_extra_models(
 
     for (provider, ephemeral), raw_models in zip(probe, results, strict=True):
         num_ctx_cap = _ollama_num_ctx_cap() if _is_ollama_provider(provider) else None
-        for rm in raw_models:
+        chat_models = [rm for rm in raw_models if _is_chat_model(rm.id)]
+        if (dropped := len(raw_models) - len(chat_models)) > 0:
+            logger.debug(
+                "Discovery dropped %d non-chat model(s) from %s", dropped, provider.name
+            )
+        for rm in chat_models:
             if (provider.name, rm.id) in existing_keys:
                 continue
             alias = rm.id

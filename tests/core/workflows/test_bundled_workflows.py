@@ -194,7 +194,7 @@ async def test_security_fix_verify_requires_findings() -> None:
 def test_reviewer_agent_is_bash_capable_subagent() -> None:
     rev = BUILTIN_AGENTS["reviewer"]
     assert rev.agent_type == AgentType.SUBAGENT
-    assert rev.overrides["enabled_tools"] == ["read", "grep", "bash"]
+    assert rev.overrides["enabled_tools"] == ["read", "grep", "lsp", "bash"]
 
 
 async def test_review_runs_find_verify_synthesize() -> None:

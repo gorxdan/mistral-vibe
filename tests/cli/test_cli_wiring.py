@@ -26,6 +26,7 @@ def _make_args(**overrides: object) -> argparse.Namespace:
         "max_price": None,
         "max_tokens": None,
         "enabled_tools": None,
+        "model": None,
         "output": "text",
         "agent": "default",
         "setup": False,
@@ -322,7 +323,9 @@ def _patch_interactive_shell(
     monkeypatch.setattr(cli_mod, "setup_tracing", lambda *_a: None)
     monkeypatch.setattr(cli_mod, "load_session", lambda *_a: None)
     monkeypatch.setattr(cli_mod, "get_prompt_from_stdin", lambda: None)
-    monkeypatch.setattr(cli_mod, "run_textual_ui", lambda **kw: calls.update(kw))
+    monkeypatch.setattr(
+        "vibe.cli.textual_ui.app.run_textual_ui", lambda **kw: calls.update(kw)
+    )
     return calls
 
 
@@ -373,3 +376,47 @@ def test_run_cli_eof_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SystemExit) as info:
         cli_mod.run_cli(_make_args(prompt=None))
     assert info.value.code == 0
+
+
+# --------------------------------------------------------------------------- #
+# bootstrap_config_files                                                       #
+# --------------------------------------------------------------------------- #
+
+
+def test_bootstrap_writes_valid_toml_with_commented_openai_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tomllib
+
+    from vibe.core.config import ProviderConfig
+
+    cfg_file = tmp_path / "config.toml"
+    monkeypatch.setattr(
+        cli_mod,
+        "get_harness_files_manager",
+        lambda: SimpleNamespace(user_config_file=cfg_file),
+    )
+    monkeypatch.setattr(
+        cli_mod, "HISTORY_FILE", SimpleNamespace(path=tmp_path / "history")
+    )
+
+    cli_mod.bootstrap_config_files()
+
+    text = cfg_file.read_text("utf-8")
+    # The generated defaults + appended comment block must stay valid TOML.
+    parsed = tomllib.loads(text)
+    assert "providers" in parsed
+
+    # The OpenAI provider is present as one-uncomment-away TOML lines.
+    provider_lines = [
+        "[[providers]]",
+        'name = "openai"',
+        'api_base = "https://api.openai.com/v1"',
+        'api_key_env_var = "OPENAI_API_KEY"',
+    ]
+    for line in provider_lines:
+        assert f"# {line}" in text
+
+    # Uncommenting those exact lines yields a valid ProviderConfig.
+    reparsed = tomllib.loads("\n".join(provider_lines))
+    ProviderConfig(**reparsed["providers"][0])

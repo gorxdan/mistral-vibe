@@ -593,6 +593,13 @@ def get_universal_system_prompt(
 
     if config.include_model_info:
         sections.append(f"Your model name is: `{config.active_model}`")
+        if len(config.models) > 1:
+            routable = ", ".join(f"`{m.alias}` ({m.provider})" for m in config.models)
+            sections.append(
+                "Models available for subagents (pass one as the `model` argument "
+                f"to the task tool to route a delegated task to it): {routable}. "
+                "The subagent inherits your model when `model` is omitted."
+            )
 
     if config.include_config_reference:
         sections.append(_get_config_reference_section())

@@ -116,6 +116,14 @@ def parse_arguments() -> argparse.Namespace:
         help="Shortcut for --agent auto-approve. Approves all tool calls without "
         "prompting.",
     )
+    parser.add_argument(
+        "--model",
+        metavar="ALIAS",
+        default=None,
+        help="Model alias to use as the active model for this session (must match "
+        "a configured [[models]] alias). Overrides the 'active_model' config "
+        "setting. Also the flag the task tool threads into isolated subagents.",
+    )
     parser.add_argument("--setup", action="store_true", help="Setup API key and exit")
     parser.add_argument(
         "--workdir",

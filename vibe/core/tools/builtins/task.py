@@ -46,6 +46,18 @@ class TaskArgs(BaseModel):
         default="explore",
         description="Name of the agent profile to use (must be a subagent)",
     )
+    model: str | None = Field(
+        default=None,
+        description=(
+            "Model alias the subagent should run on, overriding the subagent's "
+            "default model for this spawn. Must be one of the configured model "
+            "aliases listed in your system context (Models available for "
+            "subagents). Use it to route a delegated task to a specific model "
+            "(e.g. run a review on a stronger or different-provider model than "
+            "the host). Omit to inherit the subagent profile's model. An "
+            "unconfigured alias fails with the list of valid aliases."
+        ),
+    )
     async_run: bool = Field(
         default=False,
         description=(
@@ -221,12 +233,11 @@ class Task(
                 label=args.agent,
                 max_turns=DEFAULT_ISOLATED_MAX_TURNS,
                 deliver=True,
+                model=args.model,
             ),
             name=f"async-task-{args.agent}",
         )
-        task_id = registry.register_async_agent(
-            args.agent, bg_task, label=args.agent
-        )
+        task_id = registry.register_async_agent(args.agent, bg_task, label=args.agent)
         yield ToolStreamEvent(
             tool_name=self.get_name(),
             message=f"Launched {args.agent} subagent in background: {task_id}",
@@ -283,6 +294,7 @@ class Task(
                     label=args.agent,
                     max_turns=DEFAULT_ISOLATED_MAX_TURNS,
                     deliver=True,
+                    model=args.model,
                 )
                 response_text = result.output
                 worktree_path = result.worktree_path
@@ -364,6 +376,14 @@ class Task(
                 f"This is a security constraint to prevent recursive spawning."
             )
 
+        if args.model is not None:
+            valid_aliases = {m.alias for m in agent_manager.config.models}
+            if args.model not in valid_aliases:
+                raise ToolError(
+                    f"Unknown model alias '{args.model}'. Configured aliases: "
+                    f"{', '.join(sorted(valid_aliases))}."
+                )
+
         isolation_mode = self.config.isolation
         should_isolate = isolation_mode == "always" or (
             isolation_mode == "auto" and profile_requires_isolation(agent_profile)
@@ -387,7 +407,10 @@ class Task(
             session_prefix=args.agent,
             enabled=ctx.session_dir is not None,
         )
-        base_config = VibeConfig.load(session_logging=session_logging)
+        load_overrides: dict[str, str] = {}
+        if args.model:
+            load_overrides["active_model"] = args.model
+        base_config = VibeConfig.load(session_logging=session_logging, **load_overrides)
         # Subagents inherit the parent worktree; never call worktree_manager.enter().
         subagent_loop = AgentLoop(
             config=base_config,

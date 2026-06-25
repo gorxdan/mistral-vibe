@@ -28,6 +28,7 @@ from vibe.core.config._settings import (
     ConnectorConfig,
     ContextShapingConfig,
     ExperimentsConfig,
+    LSPServer,
     MaxOutputEscalationConfig,
     MCPServer,
     MemoryConfig,
@@ -131,6 +132,12 @@ class VibeConfigSchema(ConfigSchema):
             description="Per-connector settings (disable, disabled_tools).",
         )
     )
+    lsp_servers: Annotated[list[LSPServer], WithUnionMerge(merge_key="name")] = (
+        Field(
+            default_factory=list,
+            description="Language Server Protocol server configurations.",
+        )
+    )
 
     # Agents
     agent_paths: Annotated[list[Path], WithConcatMerge()] = Field(
@@ -178,6 +185,12 @@ class VibeConfigSchema(ConfigSchema):
         default_factory=list,
         description=(
             "A list of opt-in builtin agent names that have been explicitly installed."
+        ),
+    )
+    installed_components: Annotated[list[str], WithConcatMerge()] = Field(
+        default_factory=list,
+        description=(
+            "Opt-in feature components explicitly installed via their setup command."
         ),
     )
     default_agent: Annotated[str, WithReplaceMerge()] = Field(
@@ -285,6 +298,7 @@ class VibeConfigSchema(ConfigSchema):
     include_model_info: Annotated[bool, WithReplaceMerge()] = True
     include_project_context: Annotated[bool, WithReplaceMerge()] = True
     include_prompt_detail: Annotated[bool, WithReplaceMerge()] = True
+    include_config_reference: Annotated[bool, WithReplaceMerge()] = True
     enable_update_checks: Annotated[bool, WithReplaceMerge()] = False
     enable_auto_update: Annotated[bool, WithReplaceMerge()] = True
     enable_notifications: Annotated[bool, WithReplaceMerge()] = True

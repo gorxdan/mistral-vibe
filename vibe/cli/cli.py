@@ -99,6 +99,24 @@ def load_config_or_exit(*, interactive: bool) -> VibeConfig:
         sys.exit(1)
 
 
+def _apply_cli_overrides(args: argparse.Namespace, config: VibeConfig) -> None:
+    # CLI flags that override loaded config in place, before the session starts.
+    if args.enabled_tools:
+        config.enabled_tools = args.enabled_tools
+    # --model overrides active_model for the whole session (also the flag the
+    # task tool threads into isolated subagents). Validate up front so an
+    # unconfigured alias fails clearly instead of deep in model resolution.
+    if args.model:
+        valid_aliases = {m.alias for m in config.models}
+        if args.model not in valid_aliases:
+            rprint(
+                f"[yellow]Unknown model alias '{args.model}'. Configured aliases: "
+                f"{', '.join(sorted(valid_aliases))}[/]"
+            )
+            sys.exit(1)
+        config.active_model = args.model
+
+
 def warn_if_workdir_trust_is_unset() -> None:
     try:
         cwd = Path.cwd()
@@ -119,6 +137,21 @@ def warn_if_workdir_trust_is_unset() -> None:
     )
 
 
+# Appended (as TOML comments) to a freshly bootstrapped config so common extra
+# providers are one uncomment away. tomli_w can't emit comments, so this is
+# written as raw text after the generated defaults; TOML ignores comment lines.
+_COMMENTED_EXTRA_PROVIDERS = """
+# --- Optional providers ----------------------------------------------------
+# Uncomment to route models to OpenAI. Set OPENAI_API_KEY in your environment
+# first. The provider's /v1/models is auto-discovered into the /model picker
+# (chat models only), and subagents can target it via task(model="<id>").
+# [[providers]]
+# name = "openai"
+# api_base = "https://api.openai.com/v1"
+# api_key_env_var = "OPENAI_API_KEY"
+"""
+
+
 def bootstrap_config_files() -> None:
     mgr = get_harness_files_manager()
     config_file = mgr.user_config_file
@@ -127,6 +160,7 @@ def bootstrap_config_files() -> None:
             config_file.parent.mkdir(parents=True, exist_ok=True)
             with config_file.open("wb") as f:
                 tomli_w.dump(VibeConfig.create_default(), f)
+                f.write(_COMMENTED_EXTRA_PROVIDERS.encode("utf-8"))
         except Exception as e:
             rprint(f"[yellow]Could not create default config file: {e}[/]")
 
@@ -330,8 +364,7 @@ def run_cli(args: argparse.Namespace) -> None:
         )
         setup_tracing(config)
 
-        if args.enabled_tools:
-            config.enabled_tools = args.enabled_tools
+        _apply_cli_overrides(args, config)
 
         loaded_session = load_session(args, config)
 

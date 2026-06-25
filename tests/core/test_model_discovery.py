@@ -13,6 +13,7 @@ from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.llm.model_discovery import (
     DiscoveredModel,
     RawModel,
+    _is_chat_model,
     build_persisted_updates,
     candidate_local_providers,
     discover_extra_models,
@@ -48,6 +49,68 @@ def _mistral_only_config() -> VibeConfig:
         ],
         models=[ModelConfig(name="m", provider="mistral", alias="m")],
     )
+
+
+# --- chat-model filter -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model_id,is_chat",
+    [
+        ("gpt-4o", True),
+        ("gpt-4o-mini", True),
+        ("o3", True),
+        ("gpt-4o-audio-preview", True),  # audio chat-completions model: kept
+        ("gpt-4o-search-preview", True),  # web-search chat model: kept
+        ("mistral-large-latest", True),
+        ("text-embedding-3-small", False),
+        ("whisper-1", False),
+        ("tts-1-hd", False),
+        ("dall-e-3", False),
+        ("gpt-image-1", False),
+        ("omni-moderation-latest", False),
+        ("gpt-4o-realtime-preview", False),
+        ("davinci-002", False),
+        ("babbage-002", False),
+        ("nomic-embed-text", False),
+    ],
+)
+def test_is_chat_model(model_id: str, is_chat: bool) -> None:
+    assert _is_chat_model(model_id) is is_chat
+
+
+@pytest.mark.asyncio
+async def test_discover_drops_non_chat_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A provider's /v1/models lists embeddings/audio/image models alongside chat
+    # models; discovery must surface only the chat-completions ones.
+    config = build_test_vibe_config(
+        providers=[
+            ProviderConfig(
+                name="openai",
+                api_base="https://api.openai.com/v1",
+                api_key_env_var="",
+                discover_models=True,
+            )
+        ],
+        models=[ModelConfig(name="seed", provider="openai", alias="seed")],
+    )
+
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        if provider.name != "openai":
+            return []
+        return [
+            RawModel("gpt-4o"),
+            RawModel("o3"),
+            RawModel("text-embedding-3-small"),
+            RawModel("whisper-1"),
+            RawModel("tts-1"),
+            RawModel("dall-e-3"),
+            RawModel("gpt-4o-realtime-preview"),
+        ]
+
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
+    out = await discover_extra_models(config)
+    assert {dm.model.alias for dm in out} == {"gpt-4o", "o3"}
 
 
 # --- fetch_model_ids -------------------------------------------------------

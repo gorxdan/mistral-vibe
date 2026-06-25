@@ -176,7 +176,7 @@ def test_successful_update_prints_restart_hint(
 
     out = capsys.readouterr().out
     assert "999.0.0" in out
-    assert "Run" in out and "vibe" in out
+    assert "Run" in out and "chaton" in out
 
 
 def test_failed_update_prints_error_message(

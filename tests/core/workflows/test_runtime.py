@@ -1403,6 +1403,47 @@ async def test_isolated_executor_threads_requested_profile_not_auto_approve(
     assert "auto-approve" not in argv
 
 
+async def test_isolated_executor_threads_model_flag_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The host's requested subagent model must reach the `vibe -p` child as a
+    # --model flag; absent a model it must not appear at all (child inherits its
+    # own active_model). This is what makes task(model=...) work for isolated
+    # (write-capable) subagents, not just in-process ones.
+    from pathlib import Path
+
+    import vibe.core.worktree.ephemeral as eph
+
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
+
+    captured: list[Any] = []
+
+    class _FakeProc:
+        pid = 4242
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"out", b"")
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        captured.append(args)
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+
+    await rt._default_isolated_executor("do it", "editor", "lbl", 40, model="gpt-5.5")
+    argv = captured[0]
+    model_idx = argv.index("--model")
+    assert argv[model_idx + 1] == "gpt-5.5"
+
+    captured.clear()
+    await rt._default_isolated_executor("do it", "editor", "lbl", 40)
+    assert "--model" not in captured[0]
+
+
 async def test_isolated_executor_passes_auto_approve_and_worktree_root_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

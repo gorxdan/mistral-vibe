@@ -13,12 +13,16 @@ from textual.widgets.option_list import Option
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 
 
-def _build_option_text(alias: str, is_current: bool) -> Text:
+def _build_option_text(label: str, alias: str, is_current: bool) -> Text:
     text = Text(no_wrap=True)
     marker = "› " if is_current else "  "
     style = "bold" if is_current else ""
     text.append(marker, style="green" if is_current else "")
-    text.append(alias, style=style)
+    # Primary label is the provider's API model name; the friendly alias (the
+    # value persisted as active_model) is shown dim alongside when it differs.
+    text.append(label, style=style)
+    if alias != label:
+        text.append(f"  · {alias}", style="dim")
     return text
 
 
@@ -40,15 +44,30 @@ class ModelPickerApp(Container):
         pass
 
     def __init__(
-        self, model_aliases: list[str], current_model: str, **kwargs: Any
+        self,
+        model_aliases: list[str],
+        current_model: str,
+        *,
+        display_names: dict[str, str] | None = None,
+        **kwargs: Any,
     ) -> None:
         super().__init__(id="modelpicker-app", **kwargs)
         self._model_aliases = model_aliases
         self._current_model = current_model
+        # alias -> API model name. Aliases without a mapping fall back to showing
+        # the alias itself (so the widget stays usable with bare alias lists).
+        self._display_names = display_names or {}
 
     def compose(self) -> ComposeResult:
         options = [
-            Option(_build_option_text(alias, alias == self._current_model), id=alias)
+            Option(
+                _build_option_text(
+                    self._display_names.get(alias, alias),
+                    alias,
+                    alias == self._current_model,
+                ),
+                id=alias,
+            )
             for alias in self._model_aliases
         ]
         with Vertical(id="modelpicker-content"):

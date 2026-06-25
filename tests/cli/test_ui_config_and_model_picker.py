@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from tests.conftest import build_test_vibe_app, build_test_vibe_config
 from vibe.cli.textual_ui.app import BottomApp
 from vibe.cli.textual_ui.widgets.config_app import ConfigApp
-from vibe.cli.textual_ui.widgets.model_picker import ModelPickerApp
+from vibe.cli.textual_ui.widgets.model_picker import ModelPickerApp, _build_option_text
 from vibe.cli.textual_ui.widgets.thinking_picker import ThinkingPickerApp
 from vibe.core.config._settings import THINKING_LEVELS, ModelConfig
 
@@ -112,17 +113,58 @@ async def test_model_opens_model_picker() -> None:
         assert len(app.query(ModelPickerApp)) == 1
 
 
+# Discovery probes live local runtimes (e.g. a dev-machine ollama), which would
+# inject extra models and make exact assertions flaky. Patch it off so these
+# tests see only the configured models.
+def _no_discovery() -> Any:
+    return patch(
+        "vibe.core.llm.model_discovery.discover_extra_models",
+        new=AsyncMock(return_value=[]),
+    )
+
+
 @pytest.mark.asyncio
 async def test_model_picker_shows_all_models() -> None:
-    app = build_test_vibe_app(config=_make_config_with_models())
-    async with app.run_test() as pilot:
-        await pilot.pause(0.1)
-        await app._show_model()
-        await pilot.pause(0.2)
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            await app._show_model()
+            await pilot.pause(0.2)
 
-        picker = app.query_one(ModelPickerApp)
-        assert picker._model_aliases == ["alpha", "beta", "gamma"]
-        assert picker._current_model == "alpha"
+            picker = app.query_one(ModelPickerApp)
+            assert picker._model_aliases == ["alpha", "beta", "gamma"]
+            assert picker._current_model == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_model_picker_maps_aliases_to_api_names() -> None:
+    # The picker labels each entry with the provider's API model name (config
+    # `name`) while still keying selection by the friendly alias.
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            await app._show_model()
+            await pilot.pause(0.2)
+
+            picker = app.query_one(ModelPickerApp)
+            assert picker._display_names == {
+                "alpha": "model-a",
+                "beta": "model-b",
+                "gamma": "model-c",
+            }
+
+
+def test_build_option_text_shows_api_name_with_alias() -> None:
+    # API name is the primary label; a differing alias is appended dim.
+    rendered = _build_option_text("model-a", "alpha", is_current=False).plain
+    assert "model-a" in rendered
+    assert "alpha" in rendered
+
+    # When alias == name (e.g. a live-discovered model), no redundant suffix.
+    same = _build_option_text("gpt-5.5", "gpt-5.5", is_current=False).plain
+    assert same.strip() == "gpt-5.5"
 
 
 @pytest.mark.asyncio

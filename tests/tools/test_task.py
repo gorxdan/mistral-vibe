@@ -85,6 +85,115 @@ class TestTaskToolValidation:
         assert agent.agent_type == AgentType.SUBAGENT
 
 
+class TestTaskToolModelRouting:
+    @pytest.fixture
+    def ctx(self) -> InvokeContext:
+        config = build_test_vibe_config(
+            include_project_context=False, include_prompt_detail=False
+        )
+        manager = AgentManager(lambda: config)
+        return InvokeContext(
+            tool_call_id="test-call-id",
+            agent_manager=manager,
+            terminal_emulator=TerminalEmulator.VSCODE,
+        )
+
+    def test_model_defaults_to_none(self) -> None:
+        assert TaskArgs(task="do something").model is None
+
+    @pytest.mark.asyncio
+    async def test_unknown_model_alias_rejected(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        args = TaskArgs(task="review", agent="explore", model="not-a-real-model")
+        with pytest.raises(ToolError) as exc_info:
+            await collect_result(task_tool.run(args, ctx))
+        msg = str(exc_info.value)
+        assert "Unknown model alias 'not-a-real-model'" in msg
+        # The error lists the configured aliases so the host can self-correct.
+        assert ctx.agent_manager.config.active_model in msg
+
+    @pytest.mark.asyncio
+    async def test_valid_model_threaded_into_in_process_loop(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        valid_alias = ctx.agent_manager.config.active_model
+
+        async def mock_act(task: str):
+            yield AssistantEvent(content="ok")
+
+        with (
+            patch("vibe.core.tools.builtins.task.AgentLoop") as mock_loop_class,
+            patch(
+                "vibe.core.tools.builtins.task.VibeConfig.load",
+                return_value=ctx.agent_manager.config,
+            ) as mock_load,
+        ):
+            mock_loop = MagicMock()
+            mock_loop.act = mock_act
+            mock_loop.messages = []
+            mock_loop.set_approval_callback = MagicMock()
+            mock_loop_class.return_value = mock_loop
+
+            args = TaskArgs(task="review", agent="explore", model=valid_alias)
+            await collect_result(task_tool.run(args, ctx))
+
+            assert mock_load.call_args.kwargs.get("active_model") == valid_alias
+
+    @pytest.mark.asyncio
+    async def test_omitted_model_does_not_override_in_process_loop(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        async def mock_act(task: str):
+            yield AssistantEvent(content="ok")
+
+        with (
+            patch("vibe.core.tools.builtins.task.AgentLoop") as mock_loop_class,
+            patch(
+                "vibe.core.tools.builtins.task.VibeConfig.load",
+                return_value=ctx.agent_manager.config,
+            ) as mock_load,
+        ):
+            mock_loop = MagicMock()
+            mock_loop.act = mock_act
+            mock_loop.messages = []
+            mock_loop.set_approval_callback = MagicMock()
+            mock_loop_class.return_value = mock_loop
+
+            args = TaskArgs(task="review", agent="explore")
+            await collect_result(task_tool.run(args, ctx))
+
+            assert "active_model" not in mock_load.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_valid_model_threaded_into_isolated_spawn(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        valid_alias = ctx.agent_manager.config.active_model
+
+        class _FakeIsolatedResult:
+            output = "done"
+            worktree_path = None
+            branch = None
+
+        async def fake_run(*a, **kw):
+            return _FakeIsolatedResult()
+
+        args = TaskArgs(task="review", agent="worker", model=valid_alias)
+        with (
+            patch(
+                "vibe.core.tools.builtins.task.profile_requires_isolation",
+                return_value=True,
+            ),
+            patch(
+                "vibe.core.tools.builtins.task.run_isolated_agent", side_effect=fake_run
+            ) as mock_run,
+        ):
+            await collect_result(task_tool.run(args, ctx))
+
+        assert mock_run.call_args.kwargs.get("model") == valid_alias
+
+
 class TestTaskToolResolvePermission:
     def test_explore_allowed_by_default(self, task_tool: Task) -> None:
         args = TaskArgs(task="do something", agent="explore")
@@ -391,10 +500,12 @@ class TestAsyncRun:
 
         args = TaskArgs(task="do work", agent="worker", async_run=True)
         with (
-            patch("vibe.core.tools.builtins.task.profile_requires_isolation", return_value=True),
             patch(
-                "vibe.core.tools.builtins.task.run_isolated_agent",
-                side_effect=fake_run,
+                "vibe.core.tools.builtins.task.profile_requires_isolation",
+                return_value=True,
+            ),
+            patch(
+                "vibe.core.tools.builtins.task.run_isolated_agent", side_effect=fake_run
             ) as mock_run,
         ):
             result = await collect_result(task_tool.run(args, ctx_with_registry))
@@ -426,10 +537,12 @@ class TestAsyncRun:
             return _FakeIsolatedResult()
 
         with (
-            patch("vibe.core.tools.builtins.task.profile_requires_isolation", return_value=True),
             patch(
-                "vibe.core.tools.builtins.task.run_isolated_agent",
-                side_effect=fake_run,
+                "vibe.core.tools.builtins.task.profile_requires_isolation",
+                return_value=True,
+            ),
+            patch(
+                "vibe.core.tools.builtins.task.run_isolated_agent", side_effect=fake_run
             ),
         ):
             result = await collect_result(task_tool.run(args, ctx))
@@ -452,13 +565,14 @@ class TestAsyncRun:
                 return JudgeVerdict(safe=False, reason="too destructive")
 
         ctx_with_judge = replace(
-            ctx,
-            background_registry=registry,
-            safety_judge_factory=lambda: _DenyJudge(),
+            ctx, background_registry=registry, safety_judge_factory=lambda: _DenyJudge()
         )
         args = TaskArgs(task="rm -rf everything", agent="worker", async_run=True)
         with (
-            patch("vibe.core.tools.builtins.task.profile_requires_isolation", return_value=True),
+            patch(
+                "vibe.core.tools.builtins.task.profile_requires_isolation",
+                return_value=True,
+            ),
             patch("vibe.core.tools.builtins.task.run_isolated_agent") as mock_run,
         ):
             result = await collect_result(task_tool.run(args, ctx_with_judge))

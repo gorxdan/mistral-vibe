@@ -482,6 +482,7 @@ async def run_isolated_agent(
     max_turns: int,
     deliver: bool = False,
     keep_worktree: bool = False,
+    model: str | None = None,
 ) -> IsolatedResult:
     """Run *agent* as a ``vibe -p`` subprocess in a fresh git worktree.
 
@@ -509,13 +510,15 @@ async def run_isolated_agent(
         # wrap the spawn and reap on any exit path the caller does not cover.
         try:
             return await _spawn_isolated(
-                wt, prompt, agent, max_turns, deliver=False, stamp_wt=wt
+                wt, prompt, agent, max_turns, deliver=False, stamp_wt=wt, model=model
             )
         except BaseException:
             _reap_on_failure(wt)
             raise
     try:
-        result = await _spawn_isolated(wt, prompt, agent, max_turns, deliver=deliver)
+        result = await _spawn_isolated(
+            wt, prompt, agent, max_turns, deliver=deliver, model=model
+        )
         try:
             _maybe_reap_isolated_worktree(wt, result.delivered, result)
         except (OSError, RuntimeError) as e:
@@ -546,6 +549,7 @@ async def _spawn_isolated(
     *,
     deliver: bool,
     stamp_wt: Any = None,
+    model: str | None = None,
 ) -> IsolatedResult:
     """Spawn the ``vibe -p`` subprocess in *wt*, return output + stats.
 
@@ -577,6 +581,8 @@ async def _spawn_isolated(
         "--max-turns",
         str(max_turns),
     ]
+    if model:
+        cmd += ["--model", model]
     env = os.environ.copy()
     env["VIBE_WORKFLOW_EMIT_STATS"] = "1"
     # Child wires an auto-yes approval callback (so write/edit/bash run instead
@@ -1505,7 +1511,9 @@ class WorkflowRuntime:
             contract_report,
             completed,
             error_msg,
-        ) = await self._execute_isolated(effective_prompt, agent, label, contract, live)
+        ) = await self._execute_isolated(
+            effective_prompt, agent, label, contract, live, model=model
+        )
         if completed and contract_report is not None and not contract_report.passed:
             completed = False
             error_msg = contract_report.summary()
@@ -1551,6 +1559,8 @@ class WorkflowRuntime:
         label: str | None,
         contract: ContractSpec | None,
         live: Any,
+        *,
+        model: str | None = None,
     ) -> tuple[str, dict[str, int] | None, ContractReport | None, bool, str | None]:
         # Run the isolated executor and fold exceptions into the (output, stats,
         # report, completed, error) tuple the caller consumes.
@@ -1571,6 +1581,7 @@ class WorkflowRuntime:
                 label,
                 DEFAULT_ISOLATED_MAX_TURNS,
                 contract=contract,
+                model=model,
             )
             return output, stats, contract_report, True, None
         except (AgentCapExceeded, BudgetExhausted):
@@ -1676,6 +1687,7 @@ class WorkflowRuntime:
         max_turns: int,
         *,
         contract: ContractSpec | None = None,
+        model: str | None = None,
     ) -> tuple[str, dict[str, int] | None, ContractReport | None]:
         # Delegate spawn+communicate+stats to the shared run_isolated_agent
         # (same path the task() tool uses), keeping ownership of the worktree
@@ -1693,6 +1705,7 @@ class WorkflowRuntime:
             max_turns=max_turns,
             deliver=False,
             keep_worktree=True,
+            model=model,
         )
         wt = result.wt
         contract_report: ContractReport | None = None

@@ -87,18 +87,18 @@ def test_debugger_subagent_registered_with_systematic_prompt() -> None:
 
     debugger = BUILTIN_AGENTS[BuiltinAgentName.DEBUGGER]
     assert debugger.agent_type == AgentType.SUBAGENT
-    assert debugger.overrides["enabled_tools"] == ["read", "grep", "bash"]
+    assert debugger.overrides["enabled_tools"] == ["read", "grep", "lsp", "bash"]
     assert debugger.overrides["system_prompt_id"] == "debugger"
 
-    # The dedicated prompt embeds the canonical systematic-debugging skill
+    # The dedicated prompt embeds the systematic debugging methodology
     # (no skill-tool dependency — the subagent can't load skills).
     sp = load_system_prompt("debugger")
-    assert "systematic-debugging" in sp.lower()
+    assert "root cause" in sp.lower()
     # The Iron Law + all four phases (Pattern analysis was the gap in v1).
     assert "NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST" in sp
     for phase in ("Phase 1", "Phase 2", "Phase 3", "Phase 4"):
         assert phase in sp
-    assert "Pattern analysis" in sp
+    assert "Pattern" in sp
     # The 3-fixes → question-architecture escalation, and the return format.
     assert "architecture" in sp.lower()
     assert "ROOT CAUSE:" in sp

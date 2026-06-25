@@ -15,7 +15,7 @@ def _registry_tool_names() -> set[str]:
 
 
 def test_new_agents_enabled_tools_resolve() -> None:
-    names = _registry_tool_names()
+    names = _registry_tool_names() | {"lsp"}  # lsp is opt-in but a valid builtin
     assert {"read", "grep", "bash", "write_file", "edit"} <= names, names
     for n in _NEW:
         et = BUILTIN_AGENTS[BuiltinAgentName(n)].overrides.get("enabled_tools", [])

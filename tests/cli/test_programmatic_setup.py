@@ -19,6 +19,7 @@ def _make_args(**overrides: object) -> argparse.Namespace:
         "max_price": None,
         "max_tokens": None,
         "enabled_tools": None,
+        "model": None,
         "output": "text",
         "agent": "default",
         "setup": False,
@@ -28,6 +29,10 @@ def _make_args(**overrides: object) -> argparse.Namespace:
         "teleport": False,
         "continue_session": False,
         "resume": None,
+        "keep_alive": None,
+        "worktree": False,
+        "no_worktree": False,
+        "auto_approve": False,
     }
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -206,7 +211,9 @@ def test_run_cli_passes_max_tokens_to_run_programmatic(
 
     monkeypatch.setattr(cli_mod, "bootstrap_config_files", lambda: None)
     monkeypatch.setattr(cli_mod, "load_config_or_exit", lambda interactive: config)
-    monkeypatch.setattr(cli_mod, "load_hooks_from_fs", lambda _config: None)
+    monkeypatch.setattr(
+        cli_mod, "load_hooks_from_fs", lambda _config, **_kw: None
+    )
     monkeypatch.setattr(cli_mod, "setup_tracing", lambda _config: None)
     monkeypatch.setattr(cli_mod, "load_session", lambda _args, _config: None)
     monkeypatch.setattr(cli_mod, "get_prompt_from_stdin", lambda: None)

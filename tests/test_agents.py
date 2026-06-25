@@ -159,6 +159,7 @@ class TestAgentProfile:
             BuiltinAgentName.ACCEPT_EDITS,
             BuiltinAgentName.AUTO_APPROVE,
             BuiltinAgentName.LEAN,
+            BuiltinAgentName.COORDINATOR,
         }
 
 
@@ -392,11 +393,12 @@ class TestAgentManagerCycling:
             config=base_config, agent_name=BuiltinAgentName.DEFAULT, backend=backend
         )
         order = agent.agent_manager.get_agent_order()
-        assert len(order) == 4
+        assert len(order) == 5
         assert BuiltinAgentName.DEFAULT in order
         assert BuiltinAgentName.AUTO_APPROVE in order
         assert BuiltinAgentName.PLAN in order
         assert BuiltinAgentName.ACCEPT_EDITS in order
+        assert BuiltinAgentName.COORDINATOR in order
 
     def test_next_agent_cycles_through_all(
         self, base_config: VibeConfig, backend: FakeBackend

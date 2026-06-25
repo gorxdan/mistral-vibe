@@ -4310,12 +4310,23 @@ class VibeApp(App):  # noqa: PLR0904
         model_aliases += [
             alias for alias in self._discovered_models if alias not in model_aliases
         ]
+        # Show the provider's real API model name as each entry's primary label
+        # (the friendly alias is what gets persisted as active_model). Discovered
+        # models already carry name == api id.
+        display_names = {m.alias: m.name for m in self.config.available_models}
+        display_names.update(
+            {alias: dm.model.name for alias, dm in self._discovered_models.items()}
+        )
         if target == "judge":
             current_model = str(self.config.safety_judge.model or "")
         else:
             current_model = str(self.config.active_model)
         await self._switch_from_input(
-            ModelPickerApp(model_aliases=model_aliases, current_model=current_model)
+            ModelPickerApp(
+                model_aliases=model_aliases,
+                current_model=current_model,
+                display_names=display_names,
+            )
         )
 
     async def _switch_to_thinking_picker_app(self) -> None:
