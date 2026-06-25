@@ -1267,21 +1267,31 @@ project root (the folder must be trusted first)."""
 
 SKILL = SkillInfo(
     name="vibe",
-    description="""Authoritative reference for Chaton — the CLI agent you (the model) are running inside.
-
-LOAD when the user:
-- asks anything about Vibe itself, even by indirect name ("this CLI", "this tool", "you");
-- wants to change, inspect, or reset their setup;
-- asks why the agent did or did not act;
-- asks how to make the CLI do X, where X lives, or what a flag/command/setting does;
-- asks any meta question about your own behavior;
-- is unsure whether a command, flag, env var, or file is in scope — this skill is the source of truth.
-
-SCOPE: config under `~/.vibe/` and project-local `.vibe/`; `VIBE_*` and `LOG_*` env vars; models and providers; agents and subagents; skills; tools and their permission model; every slash command and CLI flag; hooks; MCP servers; connectors; trusted folders; `@`-file mentions; logs; themes; voice; workflows and workflow scripts; effort modes (normal, le-chaton); agent teams; structured output.""",
+    description=(
+        "Authoritative reference for Chaton, the CLI agent you (the model) run "
+        "inside. Loading this is the default, not a last resort: cheaper to "
+        "load and be right than to answer from memory and be wrong.\n\n"
+        "LOAD THIS SKILL — do not answer from memory — when the user:\n"
+        '- asks anything about Vibe/Chaton, even indirectly ("this CLI", '
+        '"this tool", "you", "the agent", "the harness");\n'
+        "- asks why you did or did not act, how you decide, or any meta "
+        "question about your behavior, instructions, tools, skills, or "
+        "context;\n"
+        "- asks how to make the CLI do X, or where a "
+        "flag/command/env var/setting/file lives;\n"
+        "- wants to change, inspect, debug, or reset their setup.\n\n"
+        "If you are tempted to reconstruct how the CLI works from source or "
+        "recall, STOP and load this skill — it matches the installed version; "
+        "your memory does not.\n\n"
+        "SCOPE: config, env vars (VIBE_*/LOG_*), providers/models, agents, "
+        "skills, tools and permissions, commands and flags, hooks, "
+        "MCP/connectors, LSP, trusted folders, workflows, effort modes, "
+        "teams, structured output."
+    ),
     summary=(
-        "Vibe/Chaton self-reference: config, MCP servers, connectors, LSP, "
-        "providers/models, slash commands, flags, hooks, workflows, ~/.vibe "
-        "— load for any question about this CLI itself."
+        "MUST LOAD for any question about Vibe/Chaton itself, the agent's own "
+        "behavior, or how this CLI works. Covers config, MCP, providers, "
+        "commands, flags, hooks, workflows, ~/.vibe — the source of truth."
     ),
     user_invocable=False,
     prompt=_PROMPT_TEMPLATE.replace("__VIBE_VERSION__", __version__),
