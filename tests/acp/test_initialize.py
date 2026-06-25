@@ -18,6 +18,7 @@ from acp.schema import (
 import pytest
 
 from tests.conftest import build_test_vibe_config
+from vibe import __version__
 from vibe.acp.acp_agent_loop import VibeAcpAgentLoop
 from vibe.core.config import ProviderConfig
 from vibe.core.types import Backend
@@ -70,7 +71,7 @@ class TestACPInitialize:
             ),
         )
         assert response.agent_info == Implementation(
-            name="chaton", title="Chaton", version="0.1.0"
+            name="chaton", title="Chaton", version=__version__
         )
 
         assert response.auth_methods is not None
@@ -170,7 +171,7 @@ class TestACPInitialize:
             ),
         )
         assert response.agent_info == Implementation(
-            name="chaton", title="Chaton", version="0.1.0"
+            name="chaton", title="Chaton", version=__version__
         )
 
         assert response.auth_methods is not None

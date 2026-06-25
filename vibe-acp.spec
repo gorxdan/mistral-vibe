@@ -3,7 +3,7 @@
 # Build: uv run --group build pyinstaller vibe-acp.spec
 # Output: dist/vibe-acp-dir/vibe-acp  (+  dist/vibe-acp-dir/_internal/)
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 # Collect all dependencies (including hidden imports and binaries) from builtins modules
 core_builtins_deps = collect_all('vibe.core.tools.builtins')
@@ -32,7 +32,7 @@ a = Analysis(
         # This is necessary because tools are dynamically called in vibe, meaning there is no static reference to those files
         ('vibe/core/tools/builtins/*.py', 'vibe/core/tools/builtins'),
         ('vibe/acp/tools/builtins/*.py', 'vibe/acp/tools/builtins'),
-    ],
+    ] + copy_metadata("chaton"),  # dist-info so importlib.metadata.version() resolves
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},

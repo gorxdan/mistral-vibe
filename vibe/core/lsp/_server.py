@@ -6,6 +6,7 @@ import hashlib
 import os
 from typing import Any
 
+from vibe import __version__
 from vibe.core.logger import logger
 from vibe.core.lsp._jsonrpc import JsonRpcConnection
 from vibe.core.lsp._types import (
@@ -166,7 +167,7 @@ class LanguageServer:
         assert self._conn is not None
         params: dict[str, Any] = {
             "processId": os.getpid(),
-            "clientInfo": {"name": "chaton", "version": "0.1.0"},
+            "clientInfo": {"name": "chaton", "version": __version__},
             "locale": "en",
             "rootUri": self.config.root_uri,
             "capabilities": self._client_capabilities(),

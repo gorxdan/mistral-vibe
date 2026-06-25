@@ -4,20 +4,34 @@ This directory contains scripts that support project versioning and deployment w
 
 ## Versioning
 
-### Usage
+The version is derived from git tags via [hatch-vcs](https://github.com/ofek/hatch-vcs)
+(see `dynamic = ["version"]` and `[tool.hatch.version]` in `pyproject.toml`).
+Every commit past a tag produces a unique PEP 440 dev version; a tag is a release.
+`__version__` resolves from the installed distribution metadata (`importlib.metadata`).
+
+### Releasing
+
+`release.py` computes the next semver from the latest tag, patches the Zed
+`extension.toml`, scaffolds the changelog/whats-new, and creates the `vX.Y.Z` tag:
 
 ```bash
-# Bump major version (1.0.0 -> 2.0.0)
-uv run scripts/bump_version.py major
+# Bump minor version (0.1.0 -> 0.2.0, tag v0.2.0)
+uv run scripts/release.py minor
 
-# Bump minor version (1.0.0 -> 1.1.0)
-uv run scripts/bump_version.py minor
+# Bump patch version (0.1.0 -> 0.1.1, tag v0.1.1)
+uv run scripts/release.py patch
 
-# Bump patch/micro version (1.0.0 -> 1.0.1)
-uv run scripts/bump_version.py micro
-# or
-uv run scripts/bump_version.py patch
+# Bump major version (0.1.0 -> 1.0.0, tag v1.0.0)
+uv run scripts/release.py major
+
+# Preview without creating the tag or editing files
+uv run scripts/release.py --dry-run minor
+
+# First-time baseline tag to seed hatch-vcs
+uv run scripts/release.py --init-baseline 0.1.0
 ```
+
+After cutting a tag, run `uv sync` so `importlib.metadata` picks up the new version.
 
 ## Releasing
 

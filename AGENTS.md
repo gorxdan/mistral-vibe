@@ -55,6 +55,10 @@ Search: `lsp` for symbol questions (`go_to_definition`/`find_references`/`hover`
 
 No `--amend`, no `--force`, no `--force-with-lease`. New commits + plain `git push`. Rejected push → rebase (never merge, never force-push).
 
+## Versioning
+
+hatch-vcs derives the version from `vX.Y.Z` git tags (`dynamic = ["version"]` in `pyproject.toml`). Never hand-edit a version literal: no `version =` in pyproject, no `__version__ =` string in `vibe/__init__.py` (it reads `importlib.metadata.version("chaton")`). A tag = a release; commits past a tag auto-produce a PEP 440 dev version. Cut releases with `uv run scripts/release.py <major|minor|patch>` (creates the tag); dev runs reflect the last `uv sync`.
+
 ## Workflows & Teams
 
 `vibe/core/workflows/`: runtime (models, budget, schema validator, AST security, runtime with spawn_agent/parallel/pipeline, manager/discovery). `vibe/core/teams/`: TaskStore + Mailbox (file-backed), TeamManager (subprocess spawning). `bundled/` scripts have YAML frontmatter (excluded from ruff/pyright).
