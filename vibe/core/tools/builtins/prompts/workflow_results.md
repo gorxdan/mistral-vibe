@@ -18,8 +18,13 @@ path for a run's result; `launch_workflow` only returns a `run_id`.
 
 ## When NOT to Use
 
-- Live progress (agents in flight, phases, token totals, budget) →
-  `workflow_status`.
+- To find out *whether* a run finished — don't poll. Completion is
+  auto-delivered to your context as a user message; end your turn and resume
+  when it arrives. Call this only after a missed/truncated delivery, or when
+  you need the structured `return_value`.
+- Diagnosing a stuck or runaway run (one `workflow_status` check before
+  `workflow_stop`) → `workflow_status`. This is its only use — not routine
+  progress checks.
 - Stopping a run → `workflow_stop`.
 
 ## Arguments

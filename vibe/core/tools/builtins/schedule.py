@@ -53,8 +53,9 @@ class Schedule(BaseTool[ScheduleArgs, ScheduleResult, ScheduleConfig, BaseToolSt
         "timer that re-prompts you with `prompt` after `interval` (recurring, or "
         "once); `list` shows armed timers; `cancel` removes one (or 'all'). The "
         "harness fires the turn at the interval — you never sleep or block. Use "
-        "this for 'check again in 5m', periodic polling, or any wait — NOT "
-        "`sleep`. Min interval 30s."
+        "this for 'check again in 5m', to revisit a long-running workflow later "
+        "(instead of polling workflow_status), or any wait — NOT `sleep`. Min "
+        "interval 30s."
     )
 
     async def run(

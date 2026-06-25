@@ -50,11 +50,15 @@ class WorkflowStatus(
 ):
     read_only: ClassVar[bool] = True
     description: ClassVar[str] = (
-        "Query the LIVE status of background workflow runs: per-run agent count, "
+        "Diagnostic snapshot of background workflow runs: per-run agent count, "
         "phase breakdown, in-flight agents with their running token totals, and "
-        "budget. Use this to gauge what launched workflows are doing mid-flight "
-        "and how many tokens they have spent, instead of waiting for completion. "
-        "Pass a run_id for one run, or omit it for all runs."
+        "budget. This is NOT for routine progress checks — workflow completion "
+        "is auto-delivered to your context, so do not poll this waiting for a "
+        "run to finish. Call it ONCE when you suspect a run is stuck or "
+        "runaway (before deciding to workflow_stop it), or to inspect a run "
+        "the auto-delivery never reached. To revisit a long run later without "
+        "blocking, arm a `schedule` timer rather than polling. Pass a run_id "
+        "for one run, or omit it for all runs."
     )
 
     @classmethod

@@ -136,20 +136,39 @@ non-obvious traps (these are the ones that cost runs in practice):
 ## Getting the result back
 
 `launch_workflow` returns only `{run_id, launched, delivery}` — the run is
-background and fire-and-forget from this tool. The script's `return_value` and
-per-agent outputs are auto-delivered as a message on completion, but that
-delivery is best-effort (capped at ~16KB, dropped if the host turn already
-ended). **Re-read the result any time** with `workflow_results(run_id=...)`,
-which returns the structured `return_value` plus per-agent responses/errors/
-`schema_errors`. For finished runs the return value is also persisted across
-sessions.
+background and fire-and-forget from this tool. **Completion is auto-delivered**:
+when the run finishes, its `return_value` and per-agent outputs are pushed into
+your context as a user message — you do not need to poll. End your turn (or
+continue other work); the result arrives on its own.
+
+That auto-delivery is best-effort (capped at ~16KB, dropped if the host turn
+already ended). If it was missed or truncated, pull the result on demand with
+`workflow_results(run_id=...)`, which returns the structured `return_value`
+plus per-agent responses/errors/`schema_errors`. For finished runs the return
+value is also persisted across sessions.
+
+## Don't poll — use a timer
+
+**Never call `workflow_status` in a loop waiting for a run to finish.** That
+burns turns for nothing; the completion is delivered to you automatically. Two
+correct patterns:
+
+- **Default — end your turn.** Launch the workflow, report the `run_id`, and
+  stop. The result is injected when the run completes; resume from there.
+- **Long run you want to revisit — arm a `schedule` timer.** `schedule create
+  interval=2m prompt="check on workflow wf-1"` re-prompts you once (or
+  recurring) without you blocking. Do not call `workflow_status` repeatedly
+  across turns to watch it.
+
+`workflow_status` is a *diagnostic* tool — call it **once** when you suspect a
+run is stuck or runaway (before `workflow_stop`), not as routine progress
+checks.
 
 ## Limitations
 
 - Up to 16 concurrent agents, 1000 total per run (lower both with `max_concurrency=`)
-- The workflow runs in the background; the result appears when complete
-- Use `/workflows` to check progress or stop a run. From a model turn, query
-  live progress (per-run agents, phases, in-flight agent token totals, budget)
-  with the `workflow_status` tool instead of waiting for completion. Stop a
-  runaway or misbehaving run with the `workflow_stop` tool
+- The workflow runs in the background; the result is auto-delivered on
+  completion (see above) — do not poll for it.
+- `/workflows` (TUI) lets the human watch progress or stop a run. From a model
+  turn, stop a runaway or misbehaving run with the `workflow_stop` tool
   (`run_id` for one run, or `all` for every active run).
