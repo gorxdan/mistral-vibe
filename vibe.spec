@@ -3,7 +3,12 @@
 # Build: uv run --group build pyinstaller vibe.spec
 # Output: dist/vibe-dir/vibe  (+  dist/vibe-dir/_internal/)
 
-from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_data_files,
+    collect_submodules,
+    copy_metadata,
+)
 
 _core_builtins_datas, core_builtins_binaries, core_builtins_hidden_imports = (
     collect_all("vibe.core.tools.builtins")
@@ -25,6 +30,9 @@ datas += [("vibe/core/tools/builtins/*.py", "vibe/core/tools/builtins")]
 datas += collect_data_files(
     "vibe.core.skills.builtins", includes=["*.py"], include_py_files=True
 )
+# Ship the installed dist-info so importlib.metadata.version("chaton") resolves
+# in the frozen binary (hatch-vcs derives the version at build time).
+datas += copy_metadata("chaton")
 
 a = Analysis(
     ["vibe/cli/entrypoint.py"],

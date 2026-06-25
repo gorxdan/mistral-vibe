@@ -58,10 +58,20 @@ def get_version_from_pyproject() -> str:
 
     content = pyproject_path.read_text()
     version_match = re.search(r'^version = "([^"]+)"$', content, re.MULTILINE)
-    if not version_match:
-        raise ValueError("Version not found in pyproject.toml")
+    if version_match:
+        return version_match.group(1)
 
-    return version_match.group(1)
+    # Dynamic versioning (hatch-vcs): the static line is gone. Resolve from the
+    # installed distribution metadata, which hatch-vcs populates at build time.
+    from importlib.metadata import PackageNotFoundError, version as md_version
+
+    try:
+        return md_version("chaton")
+    except PackageNotFoundError as e:
+        raise ValueError(
+            "Version not found: pyproject.toml has no static `version` field "
+            "and the chaton distribution is not installed"
+        ) from e
 
 
 def get_latest_version() -> str:

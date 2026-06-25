@@ -1,6 +1,6 @@
 [project]
 name = "chaton"
-version = "0.1.0"
+dynamic = ["version"]
 description = "CLI coding agent (chaton fork of mistral-vibe)"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -137,6 +137,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.hatch.version]
+source = "vcs"
+tag-pattern = '^v(?P<version>\d+\.\d+\.\d+)$'
+fallback-version = "0.0.0"
 
 [tool.hatch.build.targets.wheel]
 include = ["vibe/"]
