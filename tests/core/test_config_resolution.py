@@ -155,6 +155,18 @@ class TestResolveConfigFile:
         mgr = HarnessFilesManager(sources=("user",))
         assert mgr.config_file == VIBE_HOME.path / "config.toml"
 
+    def test_config_file_excludes_symlink_escaping_root(self, tmp_path: Path) -> None:
+        extra = tmp_path / "extra"
+        outside = tmp_path / "outside"
+        (extra / ".vibe").mkdir(parents=True)
+        outside.mkdir()
+        (extra / ".vibe" / "config.toml").symlink_to(outside / "config.toml")
+
+        mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
+
+        assert mgr.config_file == VIBE_HOME.path / "config.toml"
+        assert mgr.project_config_files_with_roots == []
+
     def test_project_plugin_paths_confined_to_trust_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -175,6 +187,60 @@ class TestResolveConfigFile:
             paths = [str(p) for p in config.plugin_paths]
             assert any(p.endswith("inside") for p in paths), paths
             assert not any("etc" in p or "evil" in p for p in paths), paths
+        finally:
+            reset_harness_files_manager()
+
+    def test_add_dir_plugin_paths_confined_to_add_dir_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cwd = tmp_path / "cwd"
+        extra = tmp_path / "extra"
+        inside = extra / "inside"
+        cwd.mkdir()
+        inside.mkdir(parents=True)
+        (extra / ".vibe").mkdir()
+        (extra / ".vibe" / "config.toml").write_text(
+            'plugin_paths = ["/etc/evil", "./inside"]\n', encoding="utf-8"
+        )
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: False)
+
+        reset_harness_files_manager()
+        try:
+            init_harness_files_manager("user", "project", additional_dirs=[extra])
+            config = VibeConfig.load()
+            assert inside.resolve() in config.plugin_paths
+            assert not any(
+                "etc" in str(p) or "evil" in str(p) for p in config.plugin_paths
+            )
+        finally:
+            reset_harness_files_manager()
+
+    def test_merges_project_configs_across_roots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cwd = tmp_path / "cwd"
+        extra = tmp_path / "extra"
+        cwd.mkdir()
+        extra.mkdir()
+        (cwd / ".vibe").mkdir()
+        (extra / ".vibe").mkdir()
+        (cwd / ".vibe" / "config.toml").write_text(
+            'active_model = "from-cwd"\n', encoding="utf-8"
+        )
+        (extra / ".vibe" / "config.toml").write_text(
+            'active_model = "from-extra"\nvibe_code_project_name = "from-extra"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: True)
+
+        reset_harness_files_manager()
+        try:
+            init_harness_files_manager("user", "project", additional_dirs=[extra])
+            config = VibeConfig.load()
+            assert config.active_model == "from-cwd"
+            assert config.vibe_code_project_name == "from-extra"
         finally:
             reset_harness_files_manager()
 

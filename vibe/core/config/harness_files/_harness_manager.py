@@ -26,15 +26,29 @@ from vibe.core.utils.io import read_safe
 FileSource = Literal["user", "project"]
 
 
+def _normalize_sources(sources: tuple[FileSource, ...]) -> tuple[FileSource, ...]:
+    return tuple(source for source in ("user", "project") if source in sources)
+
+
 @dataclass(frozen=True)
 class HarnessFilesManager:
     sources: tuple[FileSource, ...] = ("user",)
     cwd: Path | None = field(default=None)
     _additional_dirs: tuple[Path, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sources", _normalize_sources(self.sources))
+        object.__setattr__(
+            self, "_additional_dirs", tuple(dedup_paths(self._additional_dirs))
+        )
+
     @property
     def _effective_cwd(self) -> Path:
-        return self.cwd or Path.cwd()
+        return (self.cwd or Path.cwd()).resolve()
+
+    @property
+    def additional_dirs(self) -> tuple[Path, ...]:
+        return self._additional_dirs
 
     @property
     def trusted_workdir(self) -> Path | None:
@@ -48,13 +62,26 @@ class HarnessFilesManager:
 
     @property
     def config_file(self) -> Path | None:
-        for root in self.project_roots:
-            candidate = root / ".vibe" / "config.toml"
-            if candidate.is_file():
-                return candidate
+        return self.config_file_with_root[0]
+
+    @property
+    def config_file_with_root(self) -> tuple[Path | None, Path | None]:
+        project_configs = self.project_config_files_with_roots
+        if project_configs:
+            return project_configs[0]
         if "user" in self.sources:
-            return VIBE_HOME.path / "config.toml"
-        return None
+            return VIBE_HOME.path / "config.toml", None
+        return None, None
+
+    @property
+    def project_config_files_with_roots(self) -> list[tuple[Path, Path]]:
+        configs: list[tuple[Path, Path]] = []
+        for root in self.project_roots:
+            root_resolved = root.resolve()
+            candidate = root_resolved / ".vibe" / "config.toml"
+            if candidate.is_file() and resolved_within(candidate, root_resolved):
+                configs.append((candidate, root_resolved))
+        return configs
 
     @property
     def project_roots(self) -> list[Path]:
@@ -77,9 +104,12 @@ class HarnessFilesManager:
 
     @property
     def hook_files(self) -> list[Path]:
-        files: list[Path] = [
-            root / ".vibe" / "hooks.toml" for root in self.project_roots
-        ]
+        files: list[Path] = []
+        for root in self.project_roots:
+            root_resolved = root.resolve()
+            candidate = root_resolved / ".vibe" / "hooks.toml"
+            if resolved_within(candidate, root_resolved):
+                files.append(candidate)
         if "user" in self.sources:
             files.append(VIBE_HOME.path / "hooks.toml")
         return files
@@ -90,11 +120,12 @@ class HarnessFilesManager:
         (trust-gated) project root + ``~/.vibe/plugins``. project_roots already
         excludes untrusted cwds, so plugin discovery inherits that gating.
         """
-        dirs: list[Path] = [
-            d
-            for root in self.project_roots
-            if (d := root / ".vibe" / "plugins").is_dir()
-        ]
+        dirs: list[Path] = []
+        for root in self.project_roots:
+            root_resolved = root.resolve()
+            candidate = root_resolved / ".vibe" / "plugins"
+            if candidate.is_dir() and resolved_within(candidate, root_resolved):
+                dirs.append(candidate)
         if "user" in self.sources:
             user_plugins = VIBE_HOME.path / "plugins"
             if user_plugins.is_dir():
@@ -164,11 +195,13 @@ class HarnessFilesManager:
 
     @property
     def project_prompts_dirs(self) -> list[Path]:
-        return [
-            candidate
-            for root in self.project_roots
-            if (candidate := root / ".vibe" / "prompts").is_dir()
-        ]
+        dirs: list[Path] = []
+        for root in self.project_roots:
+            root_resolved = root.resolve()
+            candidate = root_resolved / ".vibe" / "prompts"
+            if candidate.is_dir() and resolved_within(candidate, root_resolved):
+                dirs.append(candidate)
+        return dirs
 
     @property
     def user_prompts_dirs(self) -> list[Path]:
@@ -196,29 +229,31 @@ class HarnessFilesManager:
         When ``stop_inclusive`` is True the stop directory is included in the
         walk; when False the walk stops before reaching it.
         """
-        if not start.is_relative_to(stop):
+        try:
+            start_resolved = start.resolve()
+            stop_resolved = stop.resolve()
+        except (ValueError, OSError):
+            return []
+        if not start_resolved.is_relative_to(stop_resolved):
             return []
 
         docs: list[tuple[Path, str]] = []
-        stop_resolved = stop.resolve()
-        current = start
+        current = start_resolved
         while True:
-            if current == stop and not stop_inclusive:
+            if current == stop_resolved and not stop_inclusive:
                 break
             path = current / AGENTS_MD_FILENAME
             # Confinement: a symlinked AGENTS.md whose target escapes the trust
             # root must not be followed — it could pull external content into
             # the system prompt. Legitimate in-tree symlinks still resolve within.
-            if not resolved_within(path, stop_resolved):
-                pass
-            else:
+            if resolved_within(path, stop_resolved):
                 try:
                     stripped = read_safe(path).text.strip()
                     if stripped:
                         docs.append((current, stripped))
                 except (FileNotFoundError, OSError):
                     pass
-            if current == stop:
+            if current == stop_resolved:
                 break
             parent = current.parent
             if parent == current:  # fs-root safety
@@ -239,11 +274,19 @@ class HarnessFilesManager:
             resolved = file_path.resolve()
         except (ValueError, OSError):
             return []
-        for root in self.project_roots:
-            if resolved.is_relative_to(root):
-                start = resolved if resolved.is_dir() else resolved.parent
-                return self._collect_agents_md(start, root, stop_inclusive=False)
-        return []
+        boundaries: list[Path] = []
+        workdir = self.trusted_workdir
+        if workdir is not None:
+            boundaries.append(workdir)
+        boundaries.extend(dedup_paths(self._additional_dirs))
+        containing = [
+            root.resolve() for root in boundaries if resolved.is_relative_to(root)
+        ]
+        if not containing:
+            return []
+        stop = max(containing, key=lambda root: len(root.parts))
+        start = resolved if resolved.is_dir() else resolved.parent
+        return self._collect_agents_md(start, stop, stop_inclusive=False)
 
     def load_project_docs(self) -> list[tuple[Path, str]]:
         """Collect AGENTS.md files from each open project root up to its trust
@@ -273,17 +316,23 @@ class HarnessFilesManager:
                 by_dir.setdefault(d.resolve(), (d, content))
         return list(by_dir.values())
 
-    def agents_md_file_paths(self) -> list[Path]:
-        """Return file paths of AGENTS.md docs without reading content.
+    def _agents_md_has_content(self, path: Path) -> bool:
+        try:
+            return bool(read_safe(path).text.strip())
+        except (FileNotFoundError, OSError):
+            return False
 
-        Lightweight change-detection helper — stats files only. Walks from the
-        actual cwd and add-dirs up to their trust roots (not from the
-        trust-root-resolved project_roots).
+    def agents_md_file_paths(self) -> list[Path]:
+        """Return file paths of non-empty AGENTS.md docs.
+
+        Lightweight change-detection helper. Walks from the actual cwd and
+        add-dirs up to their trust roots (not from the trust-root-resolved
+        project_roots).
         """
         paths: list[Path] = []
         if "user" in self.sources:
             user_path = VIBE_HOME.path / AGENTS_MD_FILENAME
-            if user_path.exists():
+            if self._agents_md_has_content(user_path):
                 paths.append(user_path)
         seen: set[Path] = set()
         walk_starts: list[Path] = []
@@ -293,21 +342,28 @@ class HarnessFilesManager:
         walk_starts.extend(dedup_paths(self._additional_dirs))
         for start in walk_starts:
             stop = trusted_folders_manager.find_trust_root(start) or start
-            stop_resolved = stop.resolve()
-            if not start.is_relative_to(stop):
+            try:
+                start_resolved = start.resolve()
+                stop_resolved = stop.resolve()
+            except (ValueError, OSError):
                 continue
-            current = start
+            if not start_resolved.is_relative_to(stop_resolved):
+                continue
+            current = start_resolved
             while True:
                 path = current / AGENTS_MD_FILENAME
-                resolved = path.resolve()
+                try:
+                    resolved = path.resolve()
+                except (ValueError, OSError):
+                    resolved = path
                 if (
-                    path.exists()
-                    and resolved not in seen
-                    and resolved_within(resolved, stop_resolved)
+                    resolved not in seen
+                    and resolved_within(path, stop_resolved)
+                    and self._agents_md_has_content(path)
                 ):
                     seen.add(resolved)
                     paths.append(path)
-                if current == stop:
+                if current == stop_resolved:
                     break
                 parent = current.parent
                 if parent == current:
@@ -320,7 +376,9 @@ _manager: HarnessFilesManager | None = None
 
 
 def init_harness_files_manager(
-    *sources: FileSource, additional_dirs: list[Path] | None = None
+    *sources: FileSource,
+    additional_dirs: list[Path] | None = None,
+    cwd: Path | None = None,
 ) -> None:
     """Initialize the global HarnessFilesManager singleton.
 
@@ -330,7 +388,7 @@ def init_harness_files_manager(
     """
     global _manager
     candidate = HarnessFilesManager(
-        sources=sources, _additional_dirs=tuple(dedup_paths(additional_dirs or []))
+        sources=sources, cwd=cwd, _additional_dirs=tuple(additional_dirs or [])
     )
     if _manager is not None:
         if _manager == candidate:
@@ -371,9 +429,9 @@ def add_session_dirs(dirs: list[Path]) -> None:
         )
     if not dirs:
         return
-    merged = dedup_paths([*_manager._additional_dirs, *dirs])
-    if len(merged) == len(_manager._additional_dirs):
+    merged = dedup_paths([*_manager.additional_dirs, *dirs])
+    if len(merged) == len(_manager.additional_dirs):
         return
     _manager = HarnessFilesManager(
-        sources=_manager.sources, _additional_dirs=tuple(merged)
+        sources=_manager.sources, cwd=_manager.cwd, _additional_dirs=tuple(merged)
     )

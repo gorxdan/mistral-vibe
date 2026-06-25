@@ -365,6 +365,9 @@ class TestFindSubdirectoryAgentsMd:
         cwd.mkdir()
         monkeypatch.chdir(cwd)
         monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: True)
+        monkeypatch.setattr(
+            trusted_folders_manager, "find_trust_root", lambda _: cwd.resolve()
+        )
         outside = tmp_path / "other" / "file.py"
         outside.parent.mkdir(parents=True)
         outside.write_text("", encoding="utf-8")
@@ -445,6 +448,82 @@ class TestFindSubdirectoryAgentsMd:
         target.write_text("", encoding="utf-8")
         mgr = HarnessFilesManager(sources=("user", "project"))
         assert mgr.find_subdirectory_agents_md(target) == []
+
+    def test_stops_at_cwd_when_cwd_below_trust_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cwd = tmp_path / "repo" / "pkg"
+        sub = cwd / "src"
+        sub.mkdir(parents=True)
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: True)
+        monkeypatch.setattr(
+            trusted_folders_manager, "find_trust_root", lambda _: tmp_path / "repo"
+        )
+        (tmp_path / "repo" / "AGENTS.md").write_text("# Repo", encoding="utf-8")
+        (cwd / "AGENTS.md").write_text("# Cwd", encoding="utf-8")
+        (sub / "AGENTS.md").write_text("# Sub", encoding="utf-8")
+        target = sub / "file.py"
+        target.write_text("", encoding="utf-8")
+
+        mgr = HarnessFilesManager(sources=("user", "project"))
+
+        assert [d for d, _ in mgr.load_project_docs()] == [tmp_path / "repo", cwd]
+        assert mgr.find_subdirectory_agents_md(target) == [(sub, "# Sub")]
+
+
+class TestAgentsMdFilePaths:
+    def test_skips_empty_agents_md(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: True)
+        monkeypatch.setattr(
+            trusted_folders_manager, "find_trust_root", lambda _: tmp_path.resolve()
+        )
+        (tmp_path / "AGENTS.md").write_text("   \n", encoding="utf-8")
+
+        mgr = HarnessFilesManager(sources=("user", "project"))
+
+        assert tmp_path / "AGENTS.md" not in mgr.agents_md_file_paths()
+
+    def test_handles_symlinked_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        sub = repo / "sub"
+        sub.mkdir(parents=True)
+        link = tmp_path / "link"
+        link.symlink_to(sub, target_is_directory=True)
+        (repo / "AGENTS.md").write_text("# Repo", encoding="utf-8")
+        monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: True)
+        monkeypatch.setattr(
+            trusted_folders_manager, "find_trust_root", lambda _: repo.resolve()
+        )
+
+        mgr = HarnessFilesManager(sources=("user", "project"), cwd=link)
+
+        assert repo.resolve() / "AGENTS.md" in mgr.agents_md_file_paths()
+
+
+class TestSymlinkedCwdProjectDocs:
+    def test_load_project_docs_handles_symlinked_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        sub = repo / "sub"
+        sub.mkdir(parents=True)
+        link = tmp_path / "link"
+        link.symlink_to(sub, target_is_directory=True)
+        (repo / "AGENTS.md").write_text("# Repo", encoding="utf-8")
+        monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: True)
+        monkeypatch.setattr(
+            trusted_folders_manager, "find_trust_root", lambda _: repo.resolve()
+        )
+
+        mgr = HarnessFilesManager(sources=("user", "project"), cwd=link)
+
+        assert mgr.load_project_docs() == [(repo.resolve(), "# Repo")]
 
 
 class TestProjectSkillsDirs:

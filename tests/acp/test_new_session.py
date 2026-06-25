@@ -104,7 +104,7 @@ class TestACPNewSession:
         assert session_response.modes is not None
         assert session_response.modes.current_mode_id is not None
         assert session_response.modes.available_modes is not None
-        assert len(session_response.modes.available_modes) == 5
+        assert len(session_response.modes.available_modes) == 6
 
         assert session_response.modes.current_mode_id == BuiltinAgentName.DEFAULT
         # Check that all primary agents are available (order may vary)
@@ -115,6 +115,7 @@ class TestACPNewSession:
             BuiltinAgentName.AUTO_APPROVE,
             BuiltinAgentName.PLAN,
             BuiltinAgentName.ACCEPT_EDITS,
+            BuiltinAgentName.COORDINATOR,
         }
 
         # Check config_options
@@ -126,7 +127,7 @@ class TestACPNewSession:
         assert mode_config.id == "mode"
         assert mode_config.category == "mode"
         assert mode_config.current_value == BuiltinAgentName.DEFAULT
-        assert len(mode_config.options) == 5
+        assert len(mode_config.options) == 6
         mode_option_values = {opt.value for opt in mode_config.options}
         assert mode_option_values == {
             BuiltinAgentName.DEFAULT,
@@ -134,6 +135,7 @@ class TestACPNewSession:
             BuiltinAgentName.AUTO_APPROVE,
             BuiltinAgentName.PLAN,
             BuiltinAgentName.ACCEPT_EDITS,
+            BuiltinAgentName.COORDINATOR,
         }
 
         # Model config option
@@ -151,6 +153,68 @@ class TestACPNewSession:
         assert thinking_config.category == "thinking"
         assert thinking_config.current_value == "off"
         assert len(thinking_config.options) == 5
+
+    @pytest.mark.asyncio
+    async def test_new_session_rejects_invalid_additional_directory(
+        self,
+        acp_agent_loop: VibeAcpAgentLoop,
+        tmp_working_directory: Path,
+        tmp_path: Path,
+    ) -> None:
+        missing = tmp_path / "missing"
+
+        with pytest.raises(InvalidRequestError, match="additional_directories"):
+            await acp_agent_loop.new_session(
+                cwd=str(tmp_working_directory),
+                additional_directories=[str(missing)],
+                mcp_servers=[],
+            )
+
+    @pytest.mark.asyncio
+    async def test_new_session_registers_additional_directory_after_decline(
+        self,
+        acp_agent_loop: VibeAcpAgentLoop,
+        tmp_working_directory: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        extra = tmp_path / "extra"
+        extra.mkdir()
+        (extra / "AGENTS.md").write_text("Extra instructions", encoding="utf-8")
+        _enable_workspace_trust(acp_agent_loop)
+        request_trust = AsyncMock(return_value={"decision": "decline"})
+        monkeypatch.setattr(acp_agent_loop.client, "ext_method", request_trust)
+
+        session_response = await acp_agent_loop.new_session(
+            cwd=str(tmp_working_directory),
+            additional_directories=[str(extra)],
+            mcp_servers=[],
+        )
+
+        assert session_response.session_id is not None
+        request_trust.assert_awaited_once()
+        assert trusted_folders_manager.is_trusted(extra) is True
+        assert "Extra instructions" in _system_prompt(
+            acp_agent_loop, session_response.session_id
+        )
+
+    @pytest.mark.asyncio
+    async def test_new_session_registers_plain_additional_directory(
+        self,
+        acp_agent_loop: VibeAcpAgentLoop,
+        tmp_working_directory: Path,
+        tmp_path: Path,
+    ) -> None:
+        extra = tmp_path / "extra"
+        extra.mkdir()
+
+        await acp_agent_loop.new_session(
+            cwd=str(tmp_working_directory),
+            additional_directories=[str(extra)],
+            mcp_servers=[],
+        )
+
+        assert trusted_folders_manager.is_trusted(extra) is True
 
     @pytest.mark.asyncio
     async def test_new_session_loads_root_agents_md_from_workspace_cwd(

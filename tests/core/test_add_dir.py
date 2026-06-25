@@ -6,6 +6,7 @@ import pytest
 
 from vibe.core.config.harness_files import (
     HarnessFilesManager,
+    add_session_dirs,
     get_harness_files_manager,
     init_harness_files_manager,
     reset_harness_files_manager,
@@ -72,6 +73,45 @@ class TestHarnessFilesManagerAdditionalDirs:
         init_harness_files_manager("user", "project", additional_dirs=[d1])
         with pytest.raises(RuntimeError, match="different configuration"):
             init_harness_files_manager("user", "project", additional_dirs=[d2])
+
+    def test_reinit_with_reordered_sources_is_idempotent(self) -> None:
+        reset_harness_files_manager()
+        init_harness_files_manager("user", "project")
+        init_harness_files_manager("project", "user", "project")
+
+
+class TestAddSessionDirs:
+    def test_raises_when_uninitialized(self, tmp_path: Path) -> None:
+        reset_harness_files_manager()
+        with pytest.raises(RuntimeError, match="not initialized"):
+            add_session_dirs([tmp_path])
+
+    def test_merges_and_dedupes_dirs(self, tmp_path: Path) -> None:
+        d1 = tmp_path / "extra1"
+        d1.mkdir()
+        d2 = tmp_path / "extra2"
+        d2.mkdir()
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user", "project", additional_dirs=[d1])
+        add_session_dirs([d1, d2])
+
+        assert get_harness_files_manager().additional_dirs == (
+            d1.resolve(),
+            d2.resolve(),
+        )
+
+    def test_preserves_cwd_on_rebuild(self, tmp_path: Path) -> None:
+        cwd = tmp_path / "cwd"
+        extra = tmp_path / "extra"
+        cwd.mkdir()
+        extra.mkdir()
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user", "project", cwd=cwd)
+        add_session_dirs([extra])
+
+        assert get_harness_files_manager().cwd == cwd
 
 
 class TestAdditionalDirsDiscovery:
@@ -307,9 +347,20 @@ class TestHookFilesAdditionalDirs:
         self, tmp_path: Path
     ) -> None:
         extra = tmp_path / "extra"
-        extra.mkdir()
+        (extra / ".vibe").mkdir(parents=True)
         mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
         assert extra / ".vibe" / "hooks.toml" in mgr.hook_files
+
+    def test_hook_files_excludes_symlink_escaping_root(self, tmp_path: Path) -> None:
+        extra = tmp_path / "extra"
+        outside = tmp_path / "outside"
+        (extra / ".vibe").mkdir(parents=True)
+        outside.mkdir()
+        (extra / ".vibe" / "hooks.toml").symlink_to(outside / "hooks.toml")
+
+        mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
+
+        assert extra / ".vibe" / "hooks.toml" not in mgr.hook_files
 
     def test_hook_files_deduplicates_workdir_and_additional_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -328,6 +379,17 @@ class TestHookFilesAdditionalDirs:
 
 
 class TestProjectPromptsDirsAdditionalDirs:
+    def test_excludes_symlink_escaping_root(self, tmp_path: Path) -> None:
+        extra = tmp_path / "extra"
+        outside = tmp_path / "outside"
+        (extra / ".vibe").mkdir(parents=True)
+        outside.mkdir()
+        (extra / ".vibe" / "prompts").symlink_to(outside, target_is_directory=True)
+
+        mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
+
+        assert extra / ".vibe" / "prompts" not in mgr.project_prompts_dirs
+
     def test_project_prompts_dirs_deduplicates_workdir_and_additional_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -341,6 +403,19 @@ class TestProjectPromptsDirsAdditionalDirs:
         )
 
         assert len(mgr.project_prompts_dirs) == 1
+
+
+class TestPluginDirsAdditionalDirs:
+    def test_excludes_symlink_escaping_root(self, tmp_path: Path) -> None:
+        extra = tmp_path / "extra"
+        outside = tmp_path / "outside"
+        (extra / ".vibe").mkdir(parents=True)
+        outside.mkdir()
+        (extra / ".vibe" / "plugins").symlink_to(outside, target_is_directory=True)
+
+        mgr = HarnessFilesManager(sources=("user",), _additional_dirs=(extra,))
+
+        assert extra / ".vibe" / "plugins" not in mgr.plugin_dirs
 
 
 class TestProjectRootsNestedDedup:

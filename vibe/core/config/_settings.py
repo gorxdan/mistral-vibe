@@ -124,47 +124,55 @@ class TomlFileSettingsSource(PydanticBaseSettingsSource):
                 merged[key] = value
         return merged
 
+    @staticmethod
+    def _confine_plugin_paths(
+        data: dict[str, Any], project_root: Path
+    ) -> dict[str, Any]:
+        if not isinstance(data.get("plugin_paths"), list):
+            return data
+        root_resolved = project_root.resolve()
+        kept: list[Any] = []
+        for entry in data["plugin_paths"]:
+            resolved: Path | None = None
+            try:
+                entry_path = Path(str(entry)).expanduser()
+                resolved = (
+                    entry_path.resolve()
+                    if entry_path.is_absolute()
+                    else (root_resolved / entry_path).resolve()
+                )
+                contained = resolved == root_resolved or resolved.is_relative_to(
+                    root_resolved
+                )
+            except (OSError, ValueError):
+                contained = False
+            if contained and resolved is not None:
+                kept.append(resolved)
+            else:
+                logger.warning(
+                    "plugin_paths entry %r from project config escapes the "
+                    "trusted project root %s; dropping",
+                    entry,
+                    root_resolved,
+                )
+        return {**data, "plugin_paths": kept}
+
     def _load_toml(self) -> dict[str, Any]:
         mgr = get_harness_files_manager()
-        file = mgr.config_file
-        if file is None:
-            return {}
-        data = self._read_toml(file)
-        # If the resolved config_file is a PROJECT config (trusted workdir),
-        # merge it on top of the USER config so project keys override rather
-        # than replace the user's settings. Without this, trusting a folder
-        # silently discards the user-level model/provider config.
         user_file = mgr.user_config_file
-        if file != user_file and user_file.is_file():
-            user_data = self._read_toml(user_file)
-            data = self._deep_merge(user_data, data)
-        # Confine project-sourced plugin_paths to the trust root: a project
-        # config is only loaded after the user trusts the workdir, but that
-        # trust must not extend to arbitrary absolute paths the project can
-        # name. Drop any entry that escapes the project root, with a warning,
-        # before the value reaches the field validator / loader.
-        project_root = mgr.trusted_workdir
-        if project_root is not None and isinstance(data.get("plugin_paths"), list):
-            root_resolved = Path(project_root).resolve()
-            kept: list[Any] = []
-            for entry in data["plugin_paths"]:
-                try:
-                    resolved = Path(str(entry)).expanduser().resolve()
-                    contained = resolved == root_resolved or resolved.is_relative_to(
-                        root_resolved
-                    )
-                except (OSError, ValueError):
-                    contained = False
-                if contained:
-                    kept.append(entry)
-                else:
-                    logger.warning(
-                        "plugin_paths entry %r from project config escapes the "
-                        "trusted project root %s; dropping",
-                        entry,
-                        root_resolved,
-                    )
-            data["plugin_paths"] = kept
+        data = (
+            self._read_toml(user_file)
+            if "user" in mgr.sources and user_file.is_file()
+            else {}
+        )
+        project_configs = mgr.project_config_files_with_roots
+        if not project_configs:
+            return data
+        for file, project_root in reversed(project_configs):
+            project_data = self._confine_plugin_paths(
+                self._read_toml(file), project_root
+            )
+            data = self._deep_merge(data, project_data)
         return data
 
     def get_field_value(
