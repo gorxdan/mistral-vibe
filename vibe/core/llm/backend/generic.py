@@ -25,6 +25,7 @@ from vibe.core.llm.provider_limiter import provider_slot
 from vibe.core.types import (
     AvailableTool,
     LLMChunk,
+    LLMChunkAccumulator,
     LLMMessage,
     LLMUsage,
     Role,
@@ -328,7 +329,9 @@ class GenericBackend:
         # requests with "Stream must be set to true", so route through the
         # streaming path and aggregate the chunks into a single LLMChunk.
         if getattr(self._provider, "api_style", "openai") == "openai-chatgpt":
-            aggregated: LLMChunk | None = None
+            # Aggregate streamed deltas in O(n); folding with LLMChunk.__add__
+            # per chunk re-concatenates the whole message every delta (O(n^2)).
+            accumulator = LLMChunkAccumulator()
             async for chunk in self.complete_streaming(
                 model=model,
                 messages=messages,
@@ -341,7 +344,8 @@ class GenericBackend:
                 response_format=response_format,
                 extra_body=extra_body,
             ):
-                aggregated = chunk if aggregated is None else aggregated + chunk
+                accumulator.add(chunk)
+            aggregated = accumulator.build()
             if aggregated is None:
                 raise BackendErrorBuilder.build_request_error(
                     provider=self._provider.name,

@@ -548,6 +548,7 @@ class LLMChunkAccumulator:
         self._usage = LLMUsage()
         self._saw_usage = False
         self._stop: StopInfo | None = None
+        self._correlation_id: str | None = None
 
     @property
     def empty(self) -> bool:
@@ -564,6 +565,8 @@ class LLMChunkAccumulator:
             self._saw_usage = True
         if chunk.stop is not None:
             self._stop = chunk.stop
+        if chunk.correlation_id:
+            self._correlation_id = chunk.correlation_id
 
     def build(self) -> LLMChunk | None:
         if self._message.empty:
@@ -571,6 +574,7 @@ class LLMChunkAccumulator:
         return LLMChunk(
             message=self._message.build(),
             usage=self._usage if self._saw_usage else None,
+            correlation_id=self._correlation_id,
             stop=self._stop,
         )
 

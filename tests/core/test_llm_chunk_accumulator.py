@@ -159,6 +159,7 @@ def test_chunk_accumulator_matches_chunk_fold():
         LLMChunk(
             message=LLMMessage(**_ASSISTANT, content="b"),
             usage=LLMUsage(prompt_tokens=10, completion_tokens=1),
+            correlation_id="corr-1",
         ),
         LLMChunk(
             message=LLMMessage(**_ASSISTANT, content="c"),
@@ -175,6 +176,8 @@ def test_chunk_accumulator_matches_chunk_fold():
     assert built.message.model_dump() == folded.message.model_dump()
     assert built.usage == folded.usage
     assert built.stop == folded.stop
+    # correlation_id is the last non-None, matching LLMChunk.__add__.
+    assert built.correlation_id == folded.correlation_id == "corr-1"
     # Running usage total is exposed for the caller's stats.
     assert acc.usage == LLMUsage(prompt_tokens=10, completion_tokens=3)
 
