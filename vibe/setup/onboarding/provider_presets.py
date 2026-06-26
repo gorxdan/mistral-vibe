@@ -59,7 +59,7 @@ PRESETS: list[ProviderPreset] = [
         requires_api_key=True,
         help_url=ZAI_HELP_URL,
         provider=ProviderConfig(
-            name="zai", api_base=ZAI_API_BASE, api_key_env_var="ZAI_API_KEY"
+            name="zai", api_base=ZAI_API_BASE, api_key_env_var="ZAI_API_KEY", discover_models=True
         ),
         model=ModelConfig(
             name="glm-5.2",
@@ -84,6 +84,7 @@ PRESETS: list[ProviderPreset] = [
             api_base=KIMI_API_BASE,
             api_key_env_var="KIMI_API_KEY",
             extra_headers={"User-Agent": KIMI_USER_AGENT},
+            discover_models=True,
         ),
         model=ModelConfig(
             name="kimi-k2.7-code",
@@ -111,6 +112,7 @@ PRESETS: list[ProviderPreset] = [
             api_base=MINIMAX_API_BASE,
             api_key_env_var="MINIMAX_API_KEY",
             api_style="openai-responses",
+            discover_models=True,
         ),
         model=ModelConfig(
             name="MiniMax-M3",
@@ -139,6 +141,7 @@ PRESETS: list[ProviderPreset] = [
             api_base=OPENAI_API_BASE,
             api_key_env_var="OPENAI_API_KEY",
             api_style="openai-responses",
+            discover_models=True,
         ),
         model=ModelConfig(
             name="gpt-5.5",
@@ -203,6 +206,7 @@ PRESETS: list[ProviderPreset] = [
             # Fugu documents the Responses API with reasoning.effort (high /
             # xhigh), matching the openai-responses adapter's effort mapping.
             api_style="openai-responses",
+            discover_models=True,
         ),
         model=ModelConfig(
             name="fugu",

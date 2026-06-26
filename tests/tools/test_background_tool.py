@@ -877,8 +877,6 @@ async def test_background_cap_rejects_and_terminates_orphan(monkeypatch, tmp_pat
     Regression for a leak where the failure handler only closed the log and
     passively awaited (sending no signal), orphaning the child to init.
     """
-    import asyncio.subprocess
-
     import vibe.core.tools.background as bgmod
     import vibe.core.tools.builtins.bash as bashmod
 
