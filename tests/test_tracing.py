@@ -203,7 +203,7 @@ class TestAgentSpan:
     async def test_span_name_status_and_attributes(
         self, _otel_provider: _CollectingExporter
     ) -> None:
-        async with agent_span(model="devstral", session_id="s1"):
+        async with agent_span(model="devstral", session_id="s1", provider="mistral"):
             pass
 
         assert len(_otel_provider.spans) == 1
@@ -227,6 +227,8 @@ class TestAgentSpan:
         attrs = dict(_otel_provider.spans[0].attributes)
         assert "gen_ai.request.model" not in attrs
         assert "gen_ai.conversation.id" not in attrs
+        # Unknown provider is omitted, never defaulted to a vendor.
+        assert "gen_ai.provider.name" not in attrs
 
     @pytest.mark.asyncio
     async def test_records_error_on_exception(
@@ -377,7 +379,11 @@ class TestErrorIsolation:
                 raise asyncio.CancelledError
 
         span = _otel_provider.spans[0]
+        # CancelledError is a BaseException, not an Exception: not a failure, so
+        # status stays non-ERROR, but the span is flagged cancelled so it is
+        # distinguishable from a span left unset by an instrumentation gap.
         assert span.status.status_code != StatusCode.ERROR
+        assert dict(span.attributes).get("vibe.cancelled") is True
 
     @pytest.mark.asyncio
     async def test_success_path_swallows_span_end_failure(
@@ -513,6 +519,39 @@ class TestLogProcessor:
         # easily synthesize a LogRecord here, so just confirm it builds and the
         # underlying file target is wired (force_flush is a safe no-op probe).
         assert processor.force_flush() in (True, None)
+
+    def test_log_record_to_json_reads_nested_record(self) -> None:
+        # SDK 1.39's batch processor hands the exporter ReadableLogRecord
+        # wrappers whose fields live on .log_record; reading them off the wrapper
+        # (the old bug) produced all-None records.
+        from types import SimpleNamespace
+
+        from vibe.core.tracing import _log_record_to_json
+
+        nested = SimpleNamespace(
+            body="hello world",
+            timestamp=123,
+            severity_number=SimpleNamespace(value=9),
+            attributes={"k": "v"},
+        )
+        payload = json.loads(_log_record_to_json(SimpleNamespace(log_record=nested)))
+        assert payload["body"] == "hello world"
+        assert payload["timestamp"] == 123
+        assert payload["severity"] == 9
+        assert payload["attributes"] == {"k": "v"}
+
+    def test_log_record_to_json_falls_back_to_bare_record(self) -> None:
+        from types import SimpleNamespace
+
+        from vibe.core.tracing import _log_record_to_json
+
+        bare = SimpleNamespace(
+            body="x", timestamp=1, severity_number=None, attributes=None
+        )
+        payload = json.loads(_log_record_to_json(bare))
+        assert payload["body"] == "x"
+        assert payload["severity"] is None
+        assert payload["attributes"] == {}
 
     def test_metrics_and_logs_setup_are_best_effort(self) -> None:
         # _setup_metrics / _setup_logging must not raise when the optional SDK

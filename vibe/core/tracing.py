@@ -38,9 +38,11 @@ _PROVIDER_ALIASES = {
 }
 
 
-def _normalize_provider(name: str | None) -> str:
+def _normalize_provider(name: str | None) -> str | None:
+    # Never default an unknown provider to a vendor: return None so callers omit
+    # the attribute rather than misattributing spend/errors to Mistral.
     if not name:
-        return gen_ai_attributes.GenAiProviderNameValues.MISTRAL_AI.value
+        return None
     return _PROVIDER_ALIASES.get(name, name)
 
 
@@ -105,12 +107,18 @@ class _JsonlLogExporter:
 
 
 def _log_record_to_json(log: Any) -> str:
-    body = getattr(log, "body", None)
+    # The batch processor hands us ReadableLogRecord wrappers (SDK 1.39) whose
+    # fields live on the nested .log_record, not on the wrapper itself; reading
+    # them off the wrapper yields all-None records. Fall back to the object
+    # itself for exporters/tests that pass a bare LogRecord.
+    record = getattr(log, "log_record", log)
+    body = getattr(record, "body", None)
+    severity = getattr(record, "severity_number", None)
     payload: dict[str, Any] = {
-        "timestamp": getattr(log, "timestamp", None),
-        "severity": getattr(log, "severity_number", None),
+        "timestamp": getattr(record, "timestamp", None),
+        "severity": getattr(severity, "value", severity),
         "body": body if isinstance(body, str) else str(body),
-        "attributes": dict(getattr(log, "attributes", {}) or {}),
+        "attributes": dict(getattr(record, "attributes", {}) or {}),
     }
     return json.dumps(payload, default=str)
 
@@ -318,6 +326,13 @@ async def _safe_span(
                 span.record_exception(exc_info)
             elif exc_info is None:
                 span.set_status(StatusCode.OK)
+            else:
+                # BaseException-but-not-Exception: CancelledError / GeneratorExit
+                # / KeyboardInterrupt. Not a failure, so leave status non-ERROR
+                # (don't inflate error rates on interrupt/shutdown), but flag it
+                # so a cancelled span is distinguishable from one left unset by an
+                # instrumentation gap.
+                span.set_attribute("vibe.cancelled", True)
         except Exception:
             logger.warning("Failed to record span status", exc_info=True)
         finally:
@@ -336,9 +351,10 @@ async def agent_span(
 ) -> AsyncGenerator[trace.Span]:
     attributes: dict[str, Any] = {
         gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.INVOKE_AGENT.value,
-        gen_ai_attributes.GEN_AI_PROVIDER_NAME: _normalize_provider(provider),
         gen_ai_attributes.GEN_AI_AGENT_NAME: VIBE_AGENT_NAME,
     }
+    if (prov := _normalize_provider(provider)) is not None:
+        attributes[gen_ai_attributes.GEN_AI_PROVIDER_NAME] = prov
     if model:
         attributes[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = model
     if session_id:
@@ -364,8 +380,9 @@ async def chat_span(
 ) -> AsyncGenerator[trace.Span]:
     attributes: dict[str, Any] = {
         gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.CHAT.value,
-        gen_ai_attributes.GEN_AI_PROVIDER_NAME: _normalize_provider(provider),
     }
+    if (prov := _normalize_provider(provider)) is not None:
+        attributes[gen_ai_attributes.GEN_AI_PROVIDER_NAME] = prov
     if model:
         attributes[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = model
     if conv_id := baggage.get_baggage(gen_ai_attributes.GEN_AI_CONVERSATION_ID):
