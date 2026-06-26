@@ -386,7 +386,7 @@ def create_mcp_http_proxy_tool_class(
     startup_timeout_sec: float | None = None,
     tool_timeout_sec: float | None = None,
     sampling_enabled: bool = True,
-) -> type[BaseTool[_OpenArgs, MCPToolResult, BaseToolConfig, BaseToolState]]:
+) -> type[MCPTool]:
     from urllib.parse import urlparse
 
     def _alias_from_url(url: str) -> str:
@@ -607,7 +607,7 @@ def create_mcp_stdio_proxy_tool_class(
     startup_timeout_sec: float | None = None,
     tool_timeout_sec: float | None = None,
     sampling_enabled: bool = True,
-) -> type[BaseTool[_OpenArgs, MCPToolResult, BaseToolConfig, BaseToolState]]:
+) -> type[MCPTool]:
     def _alias_from_command(cmd: list[str]) -> str:
         prog = Path(cmd[0]).name.replace(".", "_") if cmd else "mcp"
         digest = hashlib.blake2s(

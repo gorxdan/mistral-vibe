@@ -692,6 +692,32 @@ class TestMCPRegistry:
         assert name == "demo_hello"
 
     @pytest.mark.asyncio
+    async def test_discover_injects_shared_pool_into_proxy_classes(self):
+        # Activation: every proxy class the registry builds must carry the
+        # registry's shared MCPSessionPool so calls reuse one session per server.
+        registry = MCPRegistry()
+        srv = self._make_http_server("demo", url="http://demo:9090")
+        remote = RemoteTool(name="hello")
+
+        with patch(
+            "vibe.core.tools.mcp.registry.list_tools_http", return_value=[remote]
+        ):
+            tools = await registry._discover_http(srv)
+
+        assert tools is not None
+        proxy_cls = next(iter(tools.values()))
+        assert proxy_cls._pool is registry.pool
+
+    @pytest.mark.asyncio
+    async def test_clear_replaces_pool_so_stale_sessions_drop(self):
+        # clear() (config refresh) must swap in a fresh pool so the old pooled
+        # connections are not reused against changed server config.
+        registry = MCPRegistry()
+        old_pool = registry.pool
+        registry.clear()
+        assert registry.pool is not old_pool
+
+    @pytest.mark.asyncio
     async def test_discover_http_failure_returns_none(self):
         registry = MCPRegistry()
         srv = self._make_http_server("fail", url="http://fail:1")

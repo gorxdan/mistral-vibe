@@ -800,6 +800,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             await self.backend.__aexit__(None, None, None)
         with contextlib.suppress(Exception):
             await self.experiment_manager.aclose()
+        # Tear down pooled MCP connections (subprocess/SSE) so no server is
+        # left alive after the agent exits.
+        with contextlib.suppress(Exception):
+            await self.mcp_registry.close()
 
     def _create_connector_registry(self) -> ConnectorRegistry | None:
         if not self._base_config.enable_connectors:

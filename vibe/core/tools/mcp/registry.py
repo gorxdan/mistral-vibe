@@ -8,6 +8,7 @@ import httpx
 
 from vibe.core.logger import logger
 from vibe.core.tools.base import BaseTool
+from vibe.core.tools.mcp.pool import MCPSessionPool
 from vibe.core.tools.mcp.tools import (
     create_mcp_http_proxy_tool_class,
     create_mcp_stdio_proxy_tool_class,
@@ -26,10 +27,21 @@ class MCPRegistry:
     Survives agent switches so that shift-tab does not re-discover
     servers whose config has not changed.  The cache is keyed by a
     stable fingerprint derived from each server's full config.
+
+    A shared :class:`MCPSessionPool` is injected into every proxy class so
+    repeated calls to the same server reuse one live session instead of paying
+    a full connect handshake per call. The pool is torn down on :meth:`clear`
+    (config refresh) and :meth:`close` (shutdown).
     """
 
     def __init__(self) -> None:
         self._cache: dict[str, dict[str, type[BaseTool]]] = {}
+        self._pool = MCPSessionPool()
+
+    @property
+    def pool(self) -> MCPSessionPool:
+        """The shared connection pool injected into every proxy tool class."""
+        return self._pool
 
     @staticmethod
     def _server_key(srv: MCPServer) -> str:
@@ -144,6 +156,7 @@ class MCPRegistry:
                     tool_timeout_sec=srv.tool_timeout_sec,
                     sampling_enabled=srv.sampling_enabled,
                 )
+                proxy_cls._pool = self._pool
                 tools[proxy_cls.get_name()] = proxy_cls
             except Exception as exc:
                 logger.warning(
@@ -185,6 +198,7 @@ class MCPRegistry:
                     tool_timeout_sec=srv.tool_timeout_sec,
                     sampling_enabled=srv.sampling_enabled,
                 )
+                proxy_cls._pool = self._pool
                 tools[proxy_cls.get_name()] = proxy_cls
             except Exception as exc:
                 logger.warning(
@@ -200,5 +214,27 @@ class MCPRegistry:
         return sum(self._server_key(srv) in self._cache for srv in servers)
 
     def clear(self) -> None:
-        """Drop all cached entries, forcing re-discovery on next use."""
+        """Drop all cached entries and tear down pooled connections.
+
+        Config refresh invalidates both the discovery cache and any live pooled
+        sessions (a server whose config changed must be reconnected). The old
+        pool's teardown is best-effort: if an event loop is running it is
+        scheduled so this stays non-blocking; otherwise the pool is replaced
+        and its connections are left to be reaped (no live loop to close them).
+        """
         self._cache.clear()
+        old, self._pool = self._pool, MCPSessionPool()
+        self._schedule_close(old)
+
+    async def close(self) -> None:
+        """Tear down all pooled connections. Call at agent shutdown."""
+        self._cache.clear()
+        await self._pool.close_all()
+
+    @staticmethod
+    def _schedule_close(pool: MCPSessionPool) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no running loop; nothing to schedule onto
+        loop.create_task(pool.close_all())
