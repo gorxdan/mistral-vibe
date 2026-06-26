@@ -121,12 +121,12 @@ class MemoryEntry(BaseModel):
     def id(self) -> str:
         return self.metadata.id
 
-    def index_line(self) -> str:
+    def index_line(self, today: _dt.date | None = None) -> str:
         m = self.metadata
         tags = f" (tags: {', '.join(m.tags)})" if m.tags else ""
         desc = f": {m.description}" if m.description else ""
         scope = " (project)" if m.scope == "project" else ""
-        age = age_label(m.updated)
+        age = age_label(m.updated, today)
         # Fold age into the bracketed tag so it stays one token: `[project, 3d]`.
         # When there is no type AND no age, omit the brackets entirely (legacy
         # shape); with either, include both comma-separated.

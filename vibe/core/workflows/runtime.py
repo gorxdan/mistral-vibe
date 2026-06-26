@@ -53,6 +53,7 @@ from vibe.core.workflows.security import build_namespace, validate_script
 
 if TYPE_CHECKING:
     from vibe.core.agent_loop import AgentLoop
+    from vibe.core.config import VibeConfig
     from vibe.core.tools.base import InvokeContext
 
 
@@ -1079,7 +1080,7 @@ class WorkflowRuntime:
         completed = True
         error_msg: str | None = None
 
-        base_config: Any = None
+        base_config: VibeConfig | None = None
         if self.agent_loop_factory is None:
             # Load config once per spawn (off the event loop) and reuse across
             # schema-retry attempts — session_logging/model are constant for the
@@ -1337,7 +1338,7 @@ class WorkflowRuntime:
             schema_errors=list(last_errors),
         )
 
-    def _resolve_agent_config(self, *, agent: str, model: str | None = None) -> Any:
+    def _resolve_agent_config(self, *, agent: str, model: str | None = None) -> VibeConfig:
         """Build the per-agent VibeConfig (session logging + model override).
 
         Runs the blocking config load (TOML/env reads, migration, SSL init) so it
@@ -1362,7 +1363,7 @@ class WorkflowRuntime:
         *,
         agent: str,
         model: str | None = None,
-        base_config: Any = None,
+        base_config: VibeConfig | None = None,
     ) -> AgentLoop:
         if self.agent_loop_factory is not None:
             return self.agent_loop_factory(
@@ -1371,7 +1372,7 @@ class WorkflowRuntime:
         return self._create_real_loop(agent=agent, model=model, base_config=base_config)
 
     def _create_real_loop(
-        self, *, agent: str, model: str | None = None, base_config: Any = None
+        self, *, agent: str, model: str | None = None, base_config: VibeConfig | None = None
     ) -> AgentLoop:
         from vibe.core.agent_loop import AgentLoop as _AgentLoop
 

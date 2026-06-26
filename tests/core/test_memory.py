@@ -662,6 +662,19 @@ async def test_auto_extract_scheduled_under_normal_effort() -> None:
     loop._mem_extract_task.cancel()
 
 
+@pytest.mark.asyncio
+async def test_maybe_schedule_extraction_held_off_while_consolidation_runs() -> None:
+    # Extraction must not run while a consolidation task is in flight: the two
+    # never mutate the store concurrently (symmetric to the consolidation guard).
+    loop = _loop_with_auto_extract("normal")
+    loop._mem_consolidate_task = asyncio.create_task(asyncio.sleep(0))  # pretend live
+    try:
+        loop._maybe_schedule_memory_extraction()
+        assert loop._mem_extract_task is None  # held off
+    finally:
+        await loop._mem_consolidate_task
+
+
 # --- type-driven scope in _extract_memories --- #
 
 
@@ -962,7 +975,7 @@ def test_index_line_includes_age_when_updated() -> None:
         ),
         body="",
     )
-    assert "[project, 2d]" in e.index_line()
+    assert "[project, 2d]" in e.index_line(today=_dt.date(2026, 6, 26))
 
 
 def test_index_line_omits_brackets_without_type_or_age() -> None:

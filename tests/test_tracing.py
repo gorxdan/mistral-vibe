@@ -457,7 +457,8 @@ class TestIntegration:
             tool_attrs["gen_ai.tool.call.arguments"] == '{"action":"read","todos":null}'
         )
         assert tool_attrs["gen_ai.tool.call.result"] == (
-            "message: Retrieved 0 todos\ntodos: []\ntotal_count: 0"
+            "message: Retrieved 0 todos\ntodos: []\ntotal_count: 0\n"
+            "verification_nudge: False"
         )
         # Conversation ID propagated via baggage from agent_span
         assert tool_attrs["gen_ai.conversation.id"] == agent_loop.session_id

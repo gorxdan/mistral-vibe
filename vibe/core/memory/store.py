@@ -351,8 +351,10 @@ class MemoryStore:
         marker = self._user_dir / ".last_consolidation"
         if not marker.exists():
             return None
+        from vibe.core.utils.io import read_safe
+
         try:
-            return datetime.date.fromisoformat(marker.read_text().strip())
+            return datetime.date.fromisoformat(read_safe(marker).text.strip())
         except (OSError, ValueError):
             return None
 

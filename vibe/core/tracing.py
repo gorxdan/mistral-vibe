@@ -362,11 +362,6 @@ async def agent_span(
 async def chat_span(
     *, model: str | None = None, provider: str | None = None
 ) -> AsyncGenerator[trace.Span]:
-    """One LLM inference call (gen_ai `chat`).
-
-    Nested under the loop-level ``invoke_agent`` span so per-call token usage is
-    attributable. Usage attributes are attached post-call via :func:`set_usage`.
-    """
     attributes: dict[str, Any] = {
         gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.CHAT.value,
         gen_ai_attributes.GEN_AI_PROVIDER_NAME: _normalize_provider(provider),

@@ -1493,6 +1493,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         mem = self.config.memory
         if not mem.auto_extract:
             return
+        if self._mem_consolidate_task is not None and not self._mem_consolidate_task.done():
+            # Symmetric to _maybe_schedule_consolidation: a turn completing during
+            # a ~45s consolidation must not upsert the store concurrently with the
+            # consolidation's merge/trash. Defer to the next turn.
+            return
         if self._mem_extract_writes >= mem.auto_extract_max_writes:
             return
         start = self._mem_extract_cursor
