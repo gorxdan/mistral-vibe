@@ -363,6 +363,125 @@ class LLMMessage(BaseModel):
         )
 
 
+class LLMMessageAccumulator:
+    """Accumulates streamed delta messages into a single LLMMessage in O(n) total.
+
+    Folding a stream with ``LLMMessage.__add__`` per chunk re-concatenates the
+    whole accumulated content (and every tool-call argument string, plus a
+    deepcopy of every tool call) on each delta, which is O(n^2) over a response.
+    This builds the same final message by appending fragments and joining once.
+
+    It mirrors ``__add__``'s left-fold semantics exactly: identical validation,
+    content/reasoning/signature concatenated in arrival order, first-seen value
+    wins for ids/images/name/role/tool_call_id, and tool calls merged by index
+    with their argument strings concatenated. ``build()`` constructs the result
+    via the same ``LLMMessage(...)`` constructor, so the model validators run as
+    they would for ``__add__``.
+    """
+
+    def __init__(self) -> None:
+        self._started = False
+        self._role: Role | None = None
+        self._name: str | None = None
+        self._tool_call_id: str | None = None
+        self._reasoning_message_id: str | None = None
+        self._message_id: str | None = None
+        self._images: list[ImageAttachment] | None = None
+        self._images_set = False
+        self._content: list[str] = []
+        self._reasoning_content: list[str] = []
+        self._reasoning_signature: list[str] = []
+        self._reasoning_state: list[str] = []
+        self._tool_calls = OrderedDict[int, ToolCall]()
+        self._tool_call_arg_parts = OrderedDict[int, list[str]]()
+
+    @property
+    def empty(self) -> bool:
+        return not self._started
+
+    def add(self, message: LLMMessage) -> None:
+        if not self._started:
+            self._init_header(message)
+        else:
+            self._merge_header(message)
+
+        if message.content:
+            self._content.append(message.content)
+        if message.reasoning_content:
+            self._reasoning_content.append(message.reasoning_content)
+        if message.reasoning_signature:
+            self._reasoning_signature.append(message.reasoning_signature)
+        if message.reasoning_state:
+            self._reasoning_state.extend(message.reasoning_state)
+
+        for tc in message.tool_calls or []:
+            self._merge_tool_call(tc)
+
+    def _init_header(self, message: LLMMessage) -> None:
+        self._started = True
+        self._role = message.role
+        self._name = message.name
+        self._tool_call_id = message.tool_call_id
+        self._reasoning_message_id = message.reasoning_message_id
+        self._message_id = message.message_id
+        self._images = message.images
+        self._images_set = message.images is not None
+
+    def _merge_header(self, message: LLMMessage) -> None:
+        if self._role != message.role:
+            raise ValueError("Can't accumulate messages with different roles")
+        if self._name != message.name:
+            raise ValueError("Can't accumulate messages with different names")
+        if self._tool_call_id != message.tool_call_id:
+            raise ValueError("Can't accumulate messages with different tool_call_ids")
+        if self._reasoning_message_id is None:
+            self._reasoning_message_id = message.reasoning_message_id
+        if not self._images_set and message.images is not None:
+            self._images = message.images
+            self._images_set = True
+
+    def _merge_tool_call(self, tc: ToolCall) -> None:
+        if tc.index is None:
+            raise ValueError("Tool call chunk missing index")
+        if tc.index not in self._tool_calls:
+            self._tool_calls[tc.index] = copy.deepcopy(tc)
+            self._tool_call_arg_parts[tc.index] = []
+            return
+        existing = self._tool_calls[tc.index]
+        existing_name = existing.function.name
+        new_name = tc.function.name
+        if existing_name and new_name and existing_name != new_name:
+            raise ValueError("Can't accumulate messages with different tool call names")
+        if new_name and not existing_name:
+            existing.function.name = new_name
+        self._tool_call_arg_parts[tc.index].append(tc.function.arguments or "")
+
+    def build(self) -> LLMMessage:
+        content = "".join(self._content) or None
+        reasoning_content = "".join(self._reasoning_content) or None
+        reasoning_signature = "".join(self._reasoning_signature) or None
+        reasoning_state = list(self._reasoning_state) if self._reasoning_state else None
+
+        for index, tc in self._tool_calls.items():
+            extra = self._tool_call_arg_parts[index]
+            if extra:
+                tc.function.arguments = (tc.function.arguments or "") + "".join(extra)
+
+        return LLMMessage(
+            role=self._role or Role.assistant,
+            content=content,
+            images=self._images,
+            reasoning_content=reasoning_content,
+            reasoning_state=reasoning_state,
+            reasoning_signature=reasoning_signature,
+            reasoning_message_id=self._reasoning_message_id,
+            tool_calls=list(self._tool_calls.values()) or None,
+            name=self._name,
+            tool_call_id=self._tool_call_id,
+            message_id=self._message_id,
+        )
+
+
 class LLMUsage(BaseModel):
     model_config = ConfigDict(frozen=True)
     prompt_tokens: int = 0
@@ -412,6 +531,47 @@ class LLMChunk(BaseModel):
             usage=new_usage,
             correlation_id=other.correlation_id or self.correlation_id,
             stop=other.stop or self.stop,
+        )
+
+
+class LLMChunkAccumulator:
+    """Accumulates streamed LLMChunks into one final chunk in O(n) total.
+
+    The streaming equivalent of folding with ``LLMChunk.__add__`` per delta, but
+    without the per-chunk O(n^2) message rebuild (see LLMMessageAccumulator).
+    Usage is summed; the last non-None stop wins. ``usage`` exposes the running
+    total so callers don't need to track it separately.
+    """
+
+    def __init__(self) -> None:
+        self._message = LLMMessageAccumulator()
+        self._usage = LLMUsage()
+        self._saw_usage = False
+        self._stop: StopInfo | None = None
+
+    @property
+    def empty(self) -> bool:
+        return self._message.empty
+
+    @property
+    def usage(self) -> LLMUsage:
+        return self._usage
+
+    def add(self, chunk: LLMChunk) -> None:
+        self._message.add(chunk.message)
+        if chunk.usage is not None:
+            self._usage += chunk.usage
+            self._saw_usage = True
+        if chunk.stop is not None:
+            self._stop = chunk.stop
+
+    def build(self) -> LLMChunk | None:
+        if self._message.empty:
+            return None
+        return LLMChunk(
+            message=self._message.build(),
+            usage=self._usage if self._saw_usage else None,
+            stop=self._stop,
         )
 
 
