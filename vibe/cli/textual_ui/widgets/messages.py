@@ -533,11 +533,14 @@ class BashOutputMessage(ClickWithoutDragMixin, SpinnerMixin, Static):
         return max(0, len(self._output.splitlines()) - self.PREVIEW_LINES)
 
     def _refresh_output_widgets(self) -> None:
-        count = self._overflow_count()
+        # Called per output chunk: split the buffer once and derive preview /
+        # overflow / count from it rather than re-splitlines()'ing three times.
+        lines = self._output.splitlines()
+        count = max(0, len(lines) - self.PREVIEW_LINES)
         if self._output_widget:
-            self._output_widget.update(self._preview_text())
+            self._output_widget.update("\n".join(lines[: self.PREVIEW_LINES]))
         if self._overflow_widget:
-            self._overflow_widget.update(self._overflow_text())
+            self._overflow_widget.update("\n".join(lines[self.PREVIEW_LINES :]))
         if self._section:
             self._section.display = count > 0
             self._section.set_collapsed_label(lines_label(count, prefix="+"))
