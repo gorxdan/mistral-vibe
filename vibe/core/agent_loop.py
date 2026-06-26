@@ -457,6 +457,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._mem_extract_cursor: int = 0
         self._mem_extract_writes: int = 0
         self._mem_extract_task: asyncio.Task[None] | None = None
+        # Deep-recall prefetch task (see _kick/_consume/_cancel_memory_prefetch).
+        self._mem_prefetch_task: asyncio.Task[list[str]] | None = None
         self.user_input_callback: UserInputCallback | None = None
         self.entrypoint_metadata = entrypoint_metadata
         self.terminal_emulator = terminal_emulator
@@ -1299,6 +1301,99 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self.messages.update_system_prompt(new)
 
     # ------------------------------------------------------------------ #
+    # Non-blocking deep-recall prefetch (races the LLM loop)             #
+    # ------------------------------------------------------------------ #
+
+    def _kick_memory_prefetch(self, user_msg: str) -> None:
+        """Inject the always-on index now and race deep recall in the background.
+
+        The selector runs as a fire-and-forget task; its result is folded in by
+        ``_consume_memory_prefetch`` only if it settles before the first LLM
+        turn. An unsettled selector never blocks: index-only is already in
+        context, so deep recall simply defers. This replaces a blocking await
+        that could stall the turn for the full selector timeout with zero added
+        wait — a slow backend degrades to index-only rather than dead time.
+        """
+        self._cancel_memory_prefetch()
+        self._mem_extract_cursor = len(self.messages)
+        try:
+            store = self._get_memory_store()
+            if store is None:
+                return
+            mem = self.config.memory
+            if mem.select_mode == "per-session" and self._memory_applied:
+                return
+            index_md = store.index_markdown(mem.max_entries_scanned)
+            if not index_md:
+                self._set_memory_section("")
+                self._memory_applied = True
+                return
+            # Index goes in immediately so the model always knows what exists.
+            self._set_memory_section(self._compose_memory_section(index_md, ""))
+            self._memory_applied = True
+            # select_mode == "always" needs no selector call: inject synchronously.
+            if mem.select_mode == "always":
+                self._apply_memory_recall(store.ids()[: mem.max_selected])
+                return
+            selector = self._resolve_memory_selector()
+            if selector is None:
+                return
+            task = asyncio.create_task(
+                selector.select(
+                    store.index(mem.max_entries_scanned),
+                    user_msg,
+                    set(store.ids()),
+                    already_surfaced=self._mem_surfaced,
+                )
+            )
+            self._mem_prefetch_task = task
+            task.add_done_callback(self._on_prefetch_done)
+        except Exception as e:
+            logger.warning("memory prefetch kick failed (%s); continuing without", e)
+
+    def _on_prefetch_done(self, task: asyncio.Task[list[str]]) -> None:
+        # The reference is cleared on consume/cancel; this callback only swallows
+        # stray exceptions so an errored prefetch never warns as an unhandled task.
+        if task is self._mem_prefetch_task and not task.cancelled():
+            with contextlib.suppress(Exception):
+                task.result()
+
+    def _consume_memory_prefetch(self) -> None:
+        """Fold deep-recall bodies in iff the prefetch settled before the first
+        LLM turn. Never waits — a still-running selector is abandoned to
+        index-only and cleaned up at turn end.
+        """
+        task = self._mem_prefetch_task
+        if task is None or not task.done() or task.cancelled():
+            return
+        self._mem_prefetch_task = None
+        try:
+            ids = task.result()
+        except Exception as e:
+            logger.warning("memory prefetch errored (%s); index-only stays", e)
+            return
+        self._apply_memory_recall(ids)
+
+    def _apply_memory_recall(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        store = self._get_memory_store()
+        if store is None:
+            return
+        self._mem_surfaced.update(ids)
+        mem = self.config.memory
+        bodies = store.bodies(ids, mem.max_inject_chars)
+        index_md = store.index_markdown(mem.max_entries_scanned)
+        self._set_memory_section(self._compose_memory_section(index_md, bodies))
+
+    def _cancel_memory_prefetch(self) -> None:
+        task = self._mem_prefetch_task
+        if task is None:
+            return
+        self._mem_prefetch_task = None
+        task.cancel()
+
+    # ------------------------------------------------------------------ #
     # Post-turn auto-extraction (Tier 2)                                 #
     # ------------------------------------------------------------------ #
 
@@ -1385,6 +1480,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _extract_memories(self, start: int, end: int) -> None:
         import datetime as _dt
 
+        from vibe.core.memory.extractor import merge_memory_body
         from vibe.core.memory.models import (
             MemoryEntry,
             MemoryMetadata,
@@ -1412,6 +1508,36 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             for pm in proposed:
                 if budget <= 0:
                     break
+                if pm.action == "update":
+                    # Merge into the named existing memory instead of a blind
+                    # overwrite. An unknown/missing id is dropped rather than
+                    # fabricated into a new entry — the extractor was told to
+                    # name a real id, and guessing would scatter duplicates.
+                    if not pm.id:
+                        continue
+                    target = store.get(pm.id)
+                    if target is None:
+                        continue
+                    merged = merge_memory_body(target.body, pm.body, today)
+                    meta = target.metadata.model_copy(
+                        update={
+                            "updated": today,
+                            "description": (
+                                pm.description or target.metadata.description
+                            ),
+                            "tags": pm.tags or target.metadata.tags,
+                            "type": (
+                                pm.type if pm.type is not None else target.metadata.type
+                            ),
+                        }
+                    )
+                    store.upsert(
+                        MemoryEntry(metadata=meta, body=merged),
+                        project=(target.metadata.scope == "project"),
+                    )
+                    self._mem_extract_writes += 1
+                    budget -= 1
+                    continue
                 mid = slugify(pm.title)
                 existing_entry = store.get(mid)
                 created = existing_entry.metadata.created if existing_entry else today
@@ -1603,7 +1729,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 LLMMessage(role=Role.user, content=ctx_text, injected=True)
             )
 
-        await self._apply_memory_selection(user_msg)
+        if self.config.memory.prefetch:
+            self._kick_memory_prefetch(user_msg)
+        else:
+            await self._apply_memory_selection(user_msg)
 
         if auto_title is not None and self.session_logger.set_initial_auto_title(
             auto_title
@@ -1644,6 +1773,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 if first_llm_turn:
                     self._is_user_prompt_call = True
                     first_llm_turn = False
+                    # Fold in deep recall only if it settled while middleware
+                    # yielded to the event loop; never blocks the first call.
+                    self._consume_memory_prefetch()
                 try:
                     async for event in self._perform_llm_turn():
                         if is_user_cancellation_event(event):
@@ -1735,6 +1867,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             # best-effort memory extraction. Fire-and-forget; never raises.
             self._maybe_schedule_memory_extraction()
         finally:
+            # Abandon any prefetch that never settled so it can't leak across
+            # turns or race the next kick.
+            self._cancel_memory_prefetch()
             # Fold in any messages staged after the loop's last drain (e.g. a
             # double-enter inject that landed during the post-turn hooks) so
             # they become injected context for the next turn instead of being

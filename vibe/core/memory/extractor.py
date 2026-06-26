@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -39,8 +39,16 @@ or ephemeral task state — those are derivable or short-lived. If the user
 explicitly asks to save something derivable, extract only the surprising or
 non-obvious part.
 
+When the transcript REFINES or CORRECTS a memory already in the index, emit
+"action": "update" with "id" set to that EXISTING memory's id (copy it exactly
+from the index) and "body" holding only the new/changed detail. Otherwise omit
+"action" (it defaults to "create"). Never invent an id for a create, and never
+reuse a create's slug as an update target — an update must name a real id from
+the index or it is dropped.
+
 Return ONLY JSON: {"memories": [{"title": "...", "description": "...", \
-"type": "user|feedback|project|reference", "tags": ["..."], "body": "..."}]}.
+"type": "user|feedback|project|reference", "tags": ["..."], "body": "...", \
+"action": "create|update", "id": "<existing id, update only>"}]}.
 At most 2 memories. Return {"memories": []} if nothing durable was said. The
 description must be <=300 chars and specific — it drives future recall, so name
 the concrete thing, not a category."""
@@ -54,6 +62,10 @@ class ExtractedMemory(BaseModel):
     type: MemoryType | None = None
     tags: list[str] = Field(default_factory=list)
     body: str = ""
+    # "create" writes a new memory (default); "update" merges into the memory
+    # whose id matches `id` (must already exist or the proposal is dropped).
+    action: Literal["create", "update"] = "create"
+    id: str | None = None
 
     @field_validator("type", mode="before")
     @classmethod
@@ -66,6 +78,16 @@ class ExtractedMemory(BaseModel):
             return MemoryType(v)
         except ValueError:
             return None
+
+
+def merge_memory_body(existing: str, addition: str, today: str) -> str:
+    # Append the new detail as a dated addendum so an update never destroys the
+    # prior text. A future consolidation pass can reconcile the combined body;
+    # until then the history stays recoverable and auditable.
+    add = (addition or "").strip()
+    if not add:
+        return existing
+    return f"{(existing or '').rstrip()}\n\n--- Updated {today} ---\n{add}"
 
 
 class MemoryExtractor:

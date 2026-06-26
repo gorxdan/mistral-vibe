@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, Literal
@@ -9,11 +10,16 @@ import pytest
 
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from vibe.core.config import MemoryConfig
-from vibe.core.memory.extractor import MemoryExtractor
+from vibe.core.memory.extractor import (
+    ExtractedMemory,
+    MemoryExtractor,
+    merge_memory_body,
+)
 from vibe.core.memory.models import (
     MemoryEntry,
     MemoryMetadata,
     MemoryType,
+    age_label,
     freshness_note,
     slugify,
 )
@@ -918,3 +924,248 @@ def test_project_and_reference_types_route_to_project_namespace() -> None:
 
 def test_project_type_falls_back_to_user_without_project() -> None:
     assert _default_scope(mem_type=MemoryType.PROJECT, project=None) == "user"
+
+
+# --------------------------------------------------------------------------- #
+# Recency signal in the selector index line                                    #
+# --------------------------------------------------------------------------- #
+
+
+def test_age_label_buckets() -> None:
+    import datetime as _dt
+
+    today = _dt.date(2026, 6, 26)
+    assert age_label("", today) == ""  # no date -> no cue (legacy entries)
+    assert age_label("not-a-date", today) == ""
+    assert age_label("2026-06-26", today) == "today"
+    assert age_label("2026-06-24", today) == "2d"
+    assert age_label("2026-06-19", today) == "1w"
+    assert age_label("2026-05-01", today) == "1mo"
+    assert age_label("2024-01-01", today) == "2y"
+
+
+def test_index_line_includes_age_when_updated() -> None:
+    # The selector sees recency folded into the bracketed tag so it can weigh
+    # freshness, not just textual relevance. 2026-06-24 is 2 days before the
+    # hardcoded "today" (2026-06-26) used elsewhere in this file.
+    e = MemoryEntry(
+        metadata=MemoryMetadata(
+            id="x", title="X", type=MemoryType.PROJECT, updated="2026-06-24"
+        ),
+        body="",
+    )
+    assert "[project, 2d]" in e.index_line()
+
+
+def test_index_line_omits_brackets_without_type_or_age() -> None:
+    e = MemoryEntry(metadata=MemoryMetadata(id="x", title="X"), body="")
+    # No type and no updated date -> no trailing bracketed tag at all.
+    assert e.index_line() == "- [x] X"
+
+
+# --------------------------------------------------------------------------- #
+# Non-blocking deep-recall prefetch (races the LLM loop)                       #
+# --------------------------------------------------------------------------- #
+
+
+def _prefetch_loop(monkeypatch, tmp_path) -> Any:
+    loop = build_test_agent_loop()
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("hit", body="deep detail", desc="relevant"))
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    return loop
+
+
+@pytest.mark.asyncio
+async def test_prefetch_kick_injects_index_only_immediately(
+    monkeypatch, tmp_path
+) -> None:
+    loop = _prefetch_loop(monkeypatch, tmp_path)
+
+    async def _hit(*a: Any, **k: Any) -> list[str]:
+        return ["hit"]
+
+    monkeypatch.setattr(loop, "_resolve_memory_selector", lambda: _StubSelector(_hit))
+
+    loop._kick_memory_prefetch("query")
+    # The selector task is pending, not settled: only the index is in context.
+    assert loop._mem_prefetch_task is not None
+    prompt = loop.messages[0].content or ""
+    assert "## Memory index" in prompt
+    assert "[hit]" in prompt
+    assert "deep detail" not in prompt  # bodies deferred until settle
+    loop._cancel_memory_prefetch()
+
+
+@pytest.mark.asyncio
+async def test_prefetch_consume_folds_bodies_when_settled(
+    monkeypatch, tmp_path
+) -> None:
+    loop = _prefetch_loop(monkeypatch, tmp_path)
+
+    async def _hit(*a: Any, **k: Any) -> list[str]:
+        return ["hit"]
+
+    monkeypatch.setattr(loop, "_resolve_memory_selector", lambda: _StubSelector(_hit))
+
+    loop._kick_memory_prefetch("query")
+    task = loop._mem_prefetch_task
+    assert task is not None
+    await task  # let the selector settle deterministically
+    loop._consume_memory_prefetch()
+    assert loop._mem_prefetch_task is None
+    prompt = loop.messages[0].content or ""
+    assert "## Relevant details" in prompt
+    assert "deep detail" in prompt  # bodies now folded in
+
+
+@pytest.mark.asyncio
+async def test_prefetch_consume_noop_when_unsettled(monkeypatch, tmp_path) -> None:
+    loop = _prefetch_loop(monkeypatch, tmp_path)
+    # A selector that never settles (blocks on an unsets Event): consume must
+    # return without waiting, leaving the task pending for turn-end cancel.
+    never = asyncio.Event()
+
+    async def _blocked(*a: Any, **k: Any) -> list[str]:
+        await never.wait()
+        return ["hit"]
+
+    monkeypatch.setattr(
+        loop, "_resolve_memory_selector", lambda: _StubSelector(_blocked)
+    )
+
+    loop._kick_memory_prefetch("query")
+    loop._consume_memory_prefetch()  # selector still running -> must not block
+    assert loop._mem_prefetch_task is not None  # left pending for turn-end cancel
+    prompt = loop.messages[0].content or ""
+    assert "deep detail" not in prompt  # index-only stays
+    # Reap the cancelled task so it can't hang the event loop on teardown.
+    task = loop._mem_prefetch_task
+    loop._cancel_memory_prefetch()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_prefetch_cancel_clears_task(monkeypatch, tmp_path) -> None:
+    loop = _prefetch_loop(monkeypatch, tmp_path)
+    never = asyncio.Event()
+
+    async def _blocked(*a: Any, **k: Any) -> list[str]:
+        await never.wait()
+        return ["hit"]
+
+    monkeypatch.setattr(
+        loop, "_resolve_memory_selector", lambda: _StubSelector(_blocked)
+    )
+
+    loop._kick_memory_prefetch("query")
+    assert loop._mem_prefetch_task is not None
+    task = loop._mem_prefetch_task
+    loop._cancel_memory_prefetch()
+    assert loop._mem_prefetch_task is None
+    await asyncio.gather(task, return_exceptions=True)
+
+
+# --------------------------------------------------------------------------- #
+# Extraction update-action (merge into existing instead of blind overwrite)    #
+# --------------------------------------------------------------------------- #
+
+
+def test_merge_memory_body_appends_dated_addendum() -> None:
+    out = merge_memory_body("old detail", "new twist", "2026-06-26")
+    assert "old detail" in out
+    assert "new twist" in out
+    assert "--- Updated 2026-06-26 ---" in out
+
+
+def test_merge_memory_body_empty_addition_is_noop() -> None:
+    assert merge_memory_body("keep", "  ", "2026-06-26") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_extract_update_merges_into_existing(monkeypatch, tmp_path) -> None:
+    loop = build_test_agent_loop()
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="prefers-terse",
+                title="Prefers terse",
+                description="d",
+                updated="2026-01-01",
+            ),
+            body="old detail",
+        )
+    )
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    monkeypatch.setattr(
+        loop,
+        "_resolve_memory_extractor",
+        lambda: _StubExtractor([
+            ExtractedMemory(
+                title="ignored-on-update",
+                action="update",
+                id="prefers-terse",
+                body="new twist",
+                type=MemoryType.FEEDBACK,
+            )
+        ]),
+    )
+
+    await loop._extract_memories(0, len(loop.messages))
+
+    got = store.get("prefers-terse")
+    assert got is not None
+    assert "old detail" in got.body  # preserved, not overwritten
+    assert "new twist" in got.body
+    assert got.metadata.type == MemoryType.FEEDBACK  # refined metadata applied
+    # No duplicate file was created from the (ignored) title.
+    assert store.ids() == ["prefers-terse"]
+
+
+@pytest.mark.asyncio
+async def test_extract_update_unknown_id_is_dropped(monkeypatch, tmp_path) -> None:
+    loop = build_test_agent_loop()
+    store = MemoryStore(user_dir=tmp_path)
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    monkeypatch.setattr(
+        loop,
+        "_resolve_memory_extractor",
+        lambda: _StubExtractor([
+            ExtractedMemory(
+                title="ghost", action="update", id="does-not-exist", body="x"
+            )
+        ]),
+    )
+
+    await loop._extract_memories(0, len(loop.messages))
+
+    assert store.ids() == []  # never fabricated into a new entry
+
+
+@pytest.mark.asyncio
+async def test_extract_update_respects_write_cap(monkeypatch, tmp_path) -> None:
+    loop = build_test_agent_loop()
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(id="m", title="M", updated="2026-01-01"),
+            body="original",
+        )
+    )
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    monkeypatch.setattr(
+        loop,
+        "_resolve_memory_extractor",
+        lambda: _StubExtractor([
+            ExtractedMemory(title="x", action="update", id="m", body="should-not-apply")
+        ]),
+    )
+    # Exhaust the per-session budget: an update must not slip past the cap.
+    loop._mem_extract_writes = loop.config.memory.auto_extract_max_writes
+
+    await loop._extract_memories(0, len(loop.messages))
+
+    got = store.get("m")
+    assert got is not None
+    assert got.body == "original"  # unchanged: budget gate held

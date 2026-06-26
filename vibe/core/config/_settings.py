@@ -327,6 +327,12 @@ class MemoryConfig(BaseSettings):
 
     enabled: bool = True
     select_mode: Literal["per-turn", "per-session", "always"] = "per-turn"
+    # When true, deep-recall selection races the LLM loop instead of blocking
+    # it: the always-on index is injected at turn start, and full bodies are
+    # folded in only if the selector settles before the first LLM call. A slow
+    # selector is abandoned to index-only rather than stalling the turn for the
+    # full timeout. Set false to restore the blocking pre-loop selection.
+    prefetch: bool = True
     model: str | None = None  # alias; falls back to compaction/active model
     max_selected: int = 5
     max_inject_chars: int = 8000
