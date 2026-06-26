@@ -1063,7 +1063,7 @@ class VibeApp(App):  # noqa: PLR0904
         self, message: ApprovalApp.ApprovalGranted
     ) -> None:
         if self._pending_approval and not self._pending_approval.done():
-            self._pending_approval.set_result((ApprovalResponse.YES, None))
+            self._pending_approval.set_result((ApprovalResponse.YES, None, None))
 
     async def on_approval_app_approval_granted_always_tool(
         self, message: ApprovalApp.ApprovalGrantedAlwaysTool
@@ -1071,7 +1071,7 @@ class VibeApp(App):  # noqa: PLR0904
         self.agent_loop.approve_always(message.tool_name, message.required_permissions)
 
         if self._pending_approval and not self._pending_approval.done():
-            self._pending_approval.set_result((ApprovalResponse.YES, None))
+            self._pending_approval.set_result((ApprovalResponse.YES, None, None))
 
     async def on_approval_app_approval_granted_always_permanent(
         self, message: ApprovalApp.ApprovalGrantedAlwaysPermanent
@@ -1081,7 +1081,7 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
         if self._pending_approval and not self._pending_approval.done():
-            self._pending_approval.set_result((ApprovalResponse.YES, None))
+            self._pending_approval.set_result((ApprovalResponse.YES, None, None))
 
     async def on_approval_app_approval_rejected(
         self, message: ApprovalApp.ApprovalRejected
@@ -1090,7 +1090,22 @@ class VibeApp(App):  # noqa: PLR0904
             feedback = str(
                 get_user_cancellation_message(CancellationReason.OPERATION_CANCELLED)
             )
-            self._pending_approval.set_result((ApprovalResponse.NO, feedback))
+            self._pending_approval.set_result((ApprovalResponse.NO, feedback, None))
+
+        if self._loading_widget and self._loading_widget.parent:
+            await self._remove_loading_widget()
+
+    async def on_approval_app_approval_modify(
+        self, message: ApprovalApp.ApprovalModify
+    ) -> None:
+        if self._pending_approval and not self._pending_approval.done():
+            # Engine re-validates and re-dispatches with the edited args; the
+            # user already approved the modified form, so no re-prompt.
+            self._pending_approval.set_result((
+                ApprovalResponse.MODIFY,
+                None,
+                message.modified_args,
+            ))
 
         if self._loading_widget and self._loading_widget.parent:
             await self._remove_loading_widget()
@@ -1971,12 +1986,12 @@ class VibeApp(App):  # noqa: PLR0904
         tool_call_id: str,
         required_permissions: list[RequiredPermission] | None,
         judge_note: str | None = None,
-    ) -> tuple[ApprovalResponse, str | None]:
+    ) -> tuple[ApprovalResponse, str | None, dict[str, Any] | None]:
         # Auto-approve only if parent is in auto-approve mode AND tool is enabled
         # This ensures subagents respect the main agent's tool restrictions
         if self.agent_loop and self.agent_loop.config.bypass_tool_permissions:
             if self._is_tool_enabled_in_main_agent(tool):
-                return (ApprovalResponse.YES, None)
+                return (ApprovalResponse.YES, None, None)
 
         # The judge note arrives via the callback argument (threaded from
         # _ask_approval) rather than the loop-local pending_judge_deferral
@@ -2363,7 +2378,7 @@ class VibeApp(App):  # noqa: PLR0904
             feedback = str(
                 get_user_cancellation_message(CancellationReason.TOOL_INTERRUPTED)
             )
-            self._pending_approval.set_result((ApprovalResponse.NO, feedback))
+            self._pending_approval.set_result((ApprovalResponse.NO, feedback, None))
         if self._pending_question and not self._pending_question.done():
             self._pending_question.set_result(
                 AskUserQuestionResult(answers=[], cancelled=True)

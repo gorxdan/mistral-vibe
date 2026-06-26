@@ -370,7 +370,7 @@ class Task(
             return verdict.reason
         from vibe.core.types import ApprovalResponse
 
-        response, _feedback = await approval_callback(
+        response, _feedback, _modified = await approval_callback(
             f"task_isolated:{agent}",
             None,
             f"task-isolated-spawn-{agent}",

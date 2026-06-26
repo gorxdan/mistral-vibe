@@ -232,6 +232,7 @@ class Role(StrEnum):
 class ApprovalResponse(StrEnum):
     YES = "y"
     NO = "n"
+    MODIFY = "m"
 
 
 IMAGE_EXTENSIONS: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
@@ -706,7 +707,7 @@ class OutputFormat(StrEnum):
 
 type ApprovalCallback = Callable[
     [str, BaseModel, str, list[RequiredPermission] | None, str | None],
-    Awaitable[tuple[ApprovalResponse, str | None]],
+    Awaitable[tuple[ApprovalResponse, str | None, dict[str, Any] | None]],
 ]
 
 

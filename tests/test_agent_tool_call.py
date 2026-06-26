@@ -174,8 +174,8 @@ async def test_tool_call_approved_by_callback(telemetry_events: list[dict]) -> N
         _tool_call_id: str,
         _rp: list | None = None,
         _judge_note: str | None = None,
-    ) -> tuple[ApprovalResponse, str | None]:
-        return (ApprovalResponse.YES, None)
+    ) -> tuple[ApprovalResponse, str | None, dict | None]:
+        return (ApprovalResponse.YES, None, None)
 
     agent_loop = make_agent_loop(
         auto_approve=False,
@@ -222,8 +222,8 @@ async def test_tool_call_rejected_when_auto_approve_disabled_and_rejected_by_cal
         _tool_call_id: str,
         _rp: list | None = None,
         _judge_note: str | None = None,
-    ) -> tuple[ApprovalResponse, str | None]:
-        return (ApprovalResponse.NO, custom_feedback)
+    ) -> tuple[ApprovalResponse, str | None, dict | None]:
+        return (ApprovalResponse.NO, custom_feedback, None)
 
     agent_loop = make_agent_loop(
         auto_approve=False,
@@ -315,14 +315,14 @@ async def test_approval_always_sets_tool_permission_for_subsequent_calls() -> No
         _tool_call_id: str,
         _rp: list | None = None,
         _judge_note: str | None = None,
-    ) -> tuple[ApprovalResponse, str | None]:
+    ) -> tuple[ApprovalResponse, str | None, dict | None]:
         callback_invocations.append(tool_name)
         # Set permission to ALWAYS for this tool (simulating the new behavior)
         assert agent_ref is not None
         if tool_name not in agent_ref.config.tools:
             agent_ref.config.tools[tool_name] = {}
         agent_ref.config.tools[tool_name]["permission"] = "always"
-        return (ApprovalResponse.YES, None)
+        return (ApprovalResponse.YES, None, None)
 
     agent_loop = make_agent_loop(
         auto_approve=False,
@@ -524,7 +524,7 @@ async def test_after_tool_does_not_fire_when_cancel_lands_before_tool_execution(
         _tool_call_id: str,
         _rp: list | None = None,
         _judge_note: str | None = None,
-    ) -> tuple[ApprovalResponse, str | None]:
+    ) -> tuple[ApprovalResponse, str | None, dict | None]:
         raise asyncio.CancelledError()
 
     agent_loop = make_agent_loop(
@@ -561,8 +561,8 @@ async def test_after_tool_does_not_fire_when_user_denies_at_approval_prompt() ->
         _tool_call_id: str,
         _rp: list | None = None,
         _judge_note: str | None = None,
-    ) -> tuple[ApprovalResponse, str | None]:
-        return (ApprovalResponse.NO, "do not run this please")
+    ) -> tuple[ApprovalResponse, str | None, dict | None]:
+        return (ApprovalResponse.NO, "do not run this please", None)
 
     agent_loop = make_agent_loop(
         auto_approve=False,
@@ -816,9 +816,9 @@ async def test_parallel_tool_calls_with_approval_callback(
         tool_call_id: str,
         _rp: list | None = None,
         _judge_note: str | None = None,
-    ) -> tuple[ApprovalResponse, str | None]:
+    ) -> tuple[ApprovalResponse, str | None, dict | None]:
         approval_calls.append(tool_call_id)
-        return (ApprovalResponse.YES, None)
+        return (ApprovalResponse.YES, None, None)
 
     tool_call_1 = make_todo_tool_call("call_a1", index=0)
     tool_call_2 = make_todo_tool_call("call_a2", index=1)
@@ -864,13 +864,13 @@ async def test_parallel_approvals_can_run_concurrently() -> None:
         tool_call_id: str,
         _rp: list | None = None,
         _judge_note: str | None = None,
-    ) -> tuple[ApprovalResponse, str | None]:
+    ) -> tuple[ApprovalResponse, str | None, dict | None]:
         nonlocal concurrency, max_concurrency
         concurrency += 1
         max_concurrency = max(max_concurrency, concurrency)
         await asyncio.sleep(0.01)
         concurrency -= 1
-        return (ApprovalResponse.YES, None)
+        return (ApprovalResponse.YES, None, None)
 
     tool_calls = [make_todo_tool_call(f"call_s{i}", index=i) for i in range(3)]
     agent_loop = make_agent_loop(
@@ -902,10 +902,10 @@ async def test_parallel_mixed_approval_and_rejection(
         tool_call_id: str,
         _rp: list | None = None,
         _judge_note: str | None = None,
-    ) -> tuple[ApprovalResponse, str | None]:
+    ) -> tuple[ApprovalResponse, str | None, dict | None]:
         if tool_call_id == "call_yes":
-            return (ApprovalResponse.YES, None)
-        return (ApprovalResponse.NO, "Denied by user")
+            return (ApprovalResponse.YES, None, None)
+        return (ApprovalResponse.NO, "Denied by user", None)
 
     tc_yes = make_todo_tool_call("call_yes", index=0)
     tc_no = make_todo_tool_call("call_no", index=1)
@@ -1045,9 +1045,9 @@ async def test_parallel_all_permission_never() -> None:
         tool_call_id: str,
         _rp: list | None = None,
         _judge_note: str | None = None,
-    ) -> tuple[ApprovalResponse, str | None]:
+    ) -> tuple[ApprovalResponse, str | None, dict | None]:
         approval_calls.append(tool_call_id)
-        return (ApprovalResponse.YES, None)
+        return (ApprovalResponse.YES, None, None)
 
     tc1 = make_todo_tool_call("call_nv1", index=0)
     tc2 = make_todo_tool_call("call_nv2", index=1)

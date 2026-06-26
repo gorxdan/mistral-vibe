@@ -904,7 +904,7 @@ class WorkflowRuntime:
             )
         from vibe.core.types import ApprovalResponse
 
-        response, _feedback = await ctx.approval_callback(
+        response, _feedback, _modified = await ctx.approval_callback(
             f"workflow_worker:{agent}",
             _WorkerSpawnArgs(prompt=prompt, agent=agent, label=label),
             f"worker-spawn-{agent}-{label or 'anon'}",

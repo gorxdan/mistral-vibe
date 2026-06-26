@@ -70,7 +70,7 @@ async def test_ask_approval_fires_permission_notification() -> None:
     loop._hooks_manager = mgr  # type: ignore[assignment]
 
     async def approve(*a: Any, **k: Any):
-        return ApprovalResponse.YES, None
+        return ApprovalResponse.YES, None, None
 
     class _Args(BaseModel):
         pass

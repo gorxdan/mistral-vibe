@@ -242,6 +242,10 @@ class ToolDecision(BaseModel):
     approval_type: ToolPermission
     feedback: str | None = None
     judge_approved: bool = False
+    # When the user chose MODIFY at approval, the tool is re-validated and
+    # re-dispatched with these args (user already approved the modified form,
+    # so no re-prompt). None for EXECUTE/SKIP decisions.
+    modified_args: dict[str, Any] | None = None
 
 
 class AgentLoopError(Exception):
@@ -305,17 +309,24 @@ def _refusal_error(provider: str, model: str, chunk: LLMChunk) -> RefusalError:
 def _degenerate_response_reason(chunk: LLMChunk) -> str | None:
     """Reason if a completed response is an unusable no-op, else None.
 
-    A response with no content, no tool calls, and no reasoning produces
-    nothing and (as an assistant message) silently ends the turn. Detecting it
-    lets the caller retry instead of accepting the no-op.
+    Conservative: only flag when the response has no content, no tool calls,
+    no reasoning, AND no usage. A model can legitimately produce an empty
+    response (e.g. a follow-up after tool results) to end its turn, and such
+    responses still carry usage — so requiring usage to be absent avoids
+    false-positives on legitimate turn-ends. In the streaming path the
+    pre-existing ``usage is None`` guard already raises before this runs, so
+    this check is effectively a defensive backstop for the non-streaming path
+    and any future caller, not a hot-path retry trigger.
     """
     msg = chunk.message
     has_content = bool((msg.content or "").strip())
     has_tool_calls = bool(msg.tool_calls)
     has_reasoning = bool((msg.reasoning_content or "").strip())
-    if not (has_content or has_tool_calls or has_reasoning):
-        return "empty response (no content, tool calls, or reasoning)"
-    return None
+    if has_content or has_tool_calls or has_reasoning:
+        return None
+    if chunk.usage is not None:
+        return None
+    return "empty response (no content, tool calls, or reasoning) and no usage"
 
 
 def _raise_for_backend_error(
@@ -2675,6 +2686,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 tool_instance, tool_call.validated_args, tool_call.call_id
             )
 
+            # Apply a user MODIFY (re-validate edited args); a validation
+            # failure comes back as a feedback SKIP decision handled below.
+            tool_call, tool_input, decision = self._resolve_modification(
+                tool_call, tool_input, decision
+            )
+
             if decision.verdict == ToolExecutionResponse.SKIP:
                 async for ev in self._handle_tool_skip(tool_call, decision, span=span):
                     yield ev
@@ -3057,6 +3074,52 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         while len(cache) > self._judge_verdict_cache_maxsize:
             cache.popitem(last=False)
 
+    def _apply_modification(
+        self, tool_call: ResolvedToolCall, modified_args: dict[str, Any]
+    ) -> tuple[ResolvedToolCall, dict[str, Any]] | ToolDecision:
+        """Re-validate user-modified args and rebuild the tool call for dispatch.
+
+        Mirrors the before_tool-hook rewrite path: validates against the tool's
+        args model, rebuilds ``ResolvedToolCall``, patches the assistant message
+        so the transcript reflects what actually ran. Returns a feedback SKIP
+        decision on validation failure (the user edited the args, so the
+        validation error is theirs to understand) instead of raising.
+        """
+        tool_class = tool_call.tool_class
+        args_model, _ = tool_class._get_tool_args_results()
+        try:
+            new_validated = args_model.model_validate(modified_args)
+        except Exception as exc:
+            return ToolDecision(
+                verdict=ToolExecutionResponse.SKIP,
+                approval_type=ToolPermission.ASK,
+                feedback=f"Modified arguments failed validation and were rejected: {exc}",
+            )
+        new_tool_call = tool_call.model_copy(update={"validated_args": new_validated})
+        new_tool_input = self._serialize_tool_input(new_tool_call)
+        self._patch_assistant_tool_call_args(tool_call.call_id, new_tool_input)
+        return new_tool_call, new_tool_input
+
+    def _resolve_modification(
+        self,
+        tool_call: ResolvedToolCall,
+        tool_input: dict[str, Any],
+        decision: ToolDecision,
+    ) -> tuple[ResolvedToolCall, dict[str, Any], ToolDecision]:
+        """Apply a MODIFY decision, returning (tool_call, tool_input, decision).
+
+        On a validation failure the returned decision is a feedback SKIP so the
+        caller's unified SKIP path handles it; otherwise the decision is passed
+        through unchanged. No-op (returns inputs as-is) when there is nothing to
+        modify.
+        """
+        if decision.modified_args is None:
+            return tool_call, tool_input, decision
+        modified = self._apply_modification(tool_call, decision.modified_args)
+        if isinstance(modified, ToolDecision):
+            return tool_call, tool_input, modified
+        return modified[0], modified[1], decision
+
     async def _ask_approval(
         self,
         tool_name: str,
@@ -3073,7 +3136,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         await self._fire_notification_hooks(
             "permission_required", f"Approval needed for {tool_name}", tool_name
         )
-        response, feedback = await self.approval_callback(
+        response, feedback, modified_args = await self.approval_callback(
             tool_name,
             args,
             tool_call_id,
@@ -3089,11 +3152,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         match response:
             case ApprovalResponse.YES:
                 verdict = ToolExecutionResponse.EXECUTE
+            case ApprovalResponse.MODIFY:
+                verdict = ToolExecutionResponse.EXECUTE
             case _:
                 verdict = ToolExecutionResponse.SKIP
 
         return ToolDecision(
-            verdict=verdict, approval_type=ToolPermission.ASK, feedback=feedback
+            verdict=verdict,
+            approval_type=ToolPermission.ASK,
+            feedback=feedback,
+            modified_args=modified_args
+            if response == ApprovalResponse.MODIFY
+            else None,
         )
 
     def _apply_tool_result_budget(self, tool_call: ResolvedToolCall, text: str) -> str:

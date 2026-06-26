@@ -50,8 +50,8 @@ class TestInvokeContext:
             _args: BaseModel,
             _tool_call_id: str,
             _rp: list | None = None,
-        ) -> tuple[ApprovalResponse, str | None]:
-            return ApprovalResponse.YES, None
+        ) -> tuple[ApprovalResponse, str | None, dict | None]:
+            return ApprovalResponse.YES, None, None
 
         callback: ApprovalCallback = dummy_callback
         ctx = InvokeContext(tool_call_id="test-call-id", approval_callback=callback)
@@ -83,8 +83,8 @@ class TestToolInvokeWithContext:
             _args: BaseModel,
             _tool_call_id: str,
             _rp: list | None = None,
-        ) -> tuple[ApprovalResponse, str | None]:
-            return ApprovalResponse.YES, None
+        ) -> tuple[ApprovalResponse, str | None, dict | None]:
+            return ApprovalResponse.YES, None, None
 
         callback: ApprovalCallback = dummy_callback
         ctx = InvokeContext(tool_call_id="test-call-id", approval_callback=callback)

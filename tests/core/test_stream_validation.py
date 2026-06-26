@@ -5,12 +5,8 @@ import pytest
 from tests.conftest import build_test_agent_loop
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
-from vibe.core.agent_loop import (
-    _STREAM_DEGENERATE_RETRIES,
-    InvalidStreamError,
-    _degenerate_response_reason,
-)
-from vibe.core.types import FunctionCall, Role, ToolCall
+from vibe.core.agent_loop import InvalidStreamError, _degenerate_response_reason
+from vibe.core.types import FunctionCall, LLMChunk, LLMMessage, Role, ToolCall
 
 
 def _chunk(
@@ -25,11 +21,22 @@ def _chunk(
 
 
 class TestDegenerateResponseReason:
-    def test_empty_response_is_degenerate(self) -> None:
-        assert _degenerate_response_reason(_chunk(content="")) is not None
+    def test_empty_response_with_no_usage_is_degenerate(self) -> None:
+        # The only genuinely degenerate case: nothing usable AND no usage. The
+        # streaming/non-streaming paths' own ``usage is None`` guard raises
+        # before this runs, so this is the defensive backstop trigger.
+        chunk = LLMChunk(
+            message=LLMMessage(role=Role.assistant, content=""), usage=None
+        )
+        assert _degenerate_response_reason(chunk) is not None
 
-    def test_whitespace_only_is_degenerate(self) -> None:
-        assert _degenerate_response_reason(_chunk(content="   \n  ")) is not None
+    def test_empty_response_with_usage_is_not_degenerate(self) -> None:
+        # A model can legitimately end its turn with empty content but still
+        # report usage (e.g. a follow-up after tool results). Must NOT retry.
+        assert _degenerate_response_reason(_chunk(content="")) is None
+
+    def test_whitespace_only_with_usage_is_not_degenerate(self) -> None:
+        assert _degenerate_response_reason(_chunk(content="   \n  ")) is None
 
     def test_content_is_not_degenerate(self) -> None:
         assert _degenerate_response_reason(_chunk(content="hello")) is None
@@ -43,11 +50,6 @@ class TestDegenerateResponseReason:
     def test_reasoning_not_degenerate(self) -> None:
         assert _degenerate_response_reason(_chunk(reasoning="thinking")) is None
 
-    def test_reason_describes_emptiness(self) -> None:
-        reason = _degenerate_response_reason(_chunk(content=""))
-        assert reason is not None
-        assert "empty" in reason
-
 
 class TestInvalidStreamError:
     def test_carries_reason(self) -> None:
@@ -56,41 +58,22 @@ class TestInvalidStreamError:
         assert "boom" in str(err)
 
 
-class TestChatStreamingRetry:
+class TestChatStreamingNoFalsePositive:
+    """Regression guards: the degenerate-retry must not fire on legitimate
+    empty/whitespace responses (which carry usage), only on the genuinely
+    malformed no-usage case the usage guard already catches upstream.
+    """
+
     @pytest.mark.asyncio
-    async def test_retries_degenerate_then_succeeds(self) -> None:
-        # Stream 1: degenerate (empty, but has usage so it passes that check).
-        # Stream 2: a valid response with content.
-        backend = FakeBackend(
-            chunks=[[mock_llm_chunk(content="")], [mock_llm_chunk(content="Hello!")]]
-        )
+    async def test_empty_response_with_usage_not_retried(self) -> None:
+        backend = FakeBackend(chunks=[[mock_llm_chunk(content="")]])
         loop = build_test_agent_loop(backend=backend)
 
         chunks = [c async for c in loop._chat_streaming()]
 
-        # The valid content reached the caller.
-        assert any((c.message.content or "") for c in chunks)
-        # Exactly two streaming requests: the failed attempt + the retry.
-        assert len(backend.requests_messages) == _STREAM_DEGENERATE_RETRIES
-        # Only the valid assistant message was committed; the degenerate one
-        # was rejected before append.
-        assistants = [m for m in loop.messages if m.role == Role.assistant]
-        assert len(assistants) == 1
-        assert (assistants[0].content or "") == "Hello!"
-
-    @pytest.mark.asyncio
-    async def test_raises_after_retries_exhausted(self) -> None:
-        backend = FakeBackend(
-            chunks=[[mock_llm_chunk(content="")], [mock_llm_chunk(content="")]]
-        )
-        loop = build_test_agent_loop(backend=backend)
-
-        with pytest.raises(InvalidStreamError):
-            [c async for c in loop._chat_streaming()]
-
-        assert len(backend.requests_messages) == _STREAM_DEGENERATE_RETRIES
-        # Nothing committed when every attempt was degenerate.
-        assert not [m for m in loop.messages if m.role == Role.assistant]
+        # Accepted as a legitimate (empty) turn-end: exactly one request.
+        assert len(backend.requests_messages) == 1
+        assert all((c.message.content or "") == "" for c in chunks)
 
     @pytest.mark.asyncio
     async def test_no_retry_when_response_valid(self) -> None:

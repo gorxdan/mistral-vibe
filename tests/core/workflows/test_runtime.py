@@ -2043,7 +2043,7 @@ class _RecordingApprovalCB:
         self.calls += 1
         # 5th positional arg is judge_note (see ApprovalCallback signature).
         self.judge_notes.append(args[4] if len(args) >= 5 else kwargs.get("judge_note"))
-        return self.response, None
+        return self.response, None, None
 
 
 async def test_isolated_worker_judge_approved_proceeds() -> None:

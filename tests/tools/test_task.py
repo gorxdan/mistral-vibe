@@ -462,7 +462,7 @@ class TestIsolatedSpawnJudgeGate:
                 return JudgeVerdict(safe=False, reason="looks risky")
 
         async def approve(*args, **kwargs):
-            return ApprovalResponse.YES, None
+            return ApprovalResponse.YES, None, None
 
         cctx = self._ctx_with_factory(
             ctx, lambda: _DenyJudge(), approval_callback=approve

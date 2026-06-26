@@ -5,6 +5,7 @@ from contextlib import aclosing
 import os
 from pathlib import Path
 import sys
+from typing import Any
 
 import orjson
 from pydantic import BaseModel
@@ -81,7 +82,7 @@ async def _isolated_auto_approve(
     tool_call_id: str,
     required_permissions: list[RequiredPermission] | None,
     judge_deferral: str | None,
-) -> tuple[ApprovalResponse, str | None]:
+) -> tuple[ApprovalResponse, str | None, dict[str, Any] | None]:
     """Auto-yes every ASK-gated tool in an isolated subprocess.
 
     The spawn was pre-judged (task._judge_isolated_spawn / workflow runtime) and
@@ -90,7 +91,7 @@ async def _isolated_auto_approve(
     isolated worker/editor SKIPs every write/edit/bash and silently produces no
     work — see programmatic.run_programmatic for the env-flag handshake.
     """
-    return ApprovalResponse.YES, None
+    return ApprovalResponse.YES, None, None
 
 
 def _wire_isolated_approval(agent_loop: AgentLoop) -> None:

@@ -57,7 +57,7 @@ async def test_isolated_auto_approve_returns_yes() -> None:
     class _DummyArgs(BaseModel):
         pass
 
-    response, feedback = await _isolated_auto_approve(
+    response, feedback, _modified = await _isolated_auto_approve(
         "write_file", _DummyArgs(), "tc-1", None, None
     )
     assert response == ApprovalResponse.YES

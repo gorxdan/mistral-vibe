@@ -925,18 +925,18 @@ class VibeAcpAgentLoop(AcpAgent):
             option_id: str,
             tool_name: str,
             required_permissions: list[RequiredPermission] | None,
-        ) -> tuple[ApprovalResponse, str | None]:
+        ) -> tuple[ApprovalResponse, str | None, dict[str, Any] | None]:
             match option_id:
                 case ToolOption.ALLOW_ONCE:
-                    return (ApprovalResponse.YES, None)
+                    return (ApprovalResponse.YES, None, None)
                 case ToolOption.ALLOW_ALWAYS:
                     session.agent_loop.approve_always(tool_name, required_permissions)
-                    return (ApprovalResponse.YES, None)
+                    return (ApprovalResponse.YES, None, None)
                 case ToolOption.ALLOW_ALWAYS_PERMANENT:
                     session.agent_loop.approve_always(
                         tool_name, required_permissions, save_permanently=True
                     )
-                    return (ApprovalResponse.YES, None)
+                    return (ApprovalResponse.YES, None, None)
                 case ToolOption.REJECT_ONCE:
                     session.agent_loop.telemetry_client.send_user_cancelled_action(
                         "reject_approval"
@@ -944,9 +944,10 @@ class VibeAcpAgentLoop(AcpAgent):
                     return (
                         ApprovalResponse.NO,
                         "User rejected the tool call, provide an alternative plan",
+                        None,
                     )
                 case _:
-                    return (ApprovalResponse.NO, f"Unknown option: {option_id}")
+                    return (ApprovalResponse.NO, f"Unknown option: {option_id}", None)
 
         async def approval_callback(
             tool_name: str,
@@ -954,7 +955,7 @@ class VibeAcpAgentLoop(AcpAgent):
             tool_call_id: str,
             required_permissions: list | None = None,
             judge_note: str | None = None,
-        ) -> tuple[ApprovalResponse, str | None]:
+        ) -> tuple[ApprovalResponse, str | None, dict[str, Any] | None]:
             typed_permissions: list[RequiredPermission] | None = (
                 [
                     rp
@@ -985,6 +986,7 @@ class VibeAcpAgentLoop(AcpAgent):
                             CancellationReason.OPERATION_CANCELLED
                         )
                     ),
+                    None,
                 )
 
         return approval_callback

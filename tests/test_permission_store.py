@@ -124,10 +124,10 @@ class TestAgentLoopSharesStore:
             tool_call_id: str,
             required_permissions: list[RequiredPermission] | None,
             _judge_note: str | None = None,
-        ) -> tuple[ApprovalResponse, str | None]:
+        ) -> tuple[ApprovalResponse, str | None, dict | None]:
             nonlocal approval_requested
             approval_requested = True
-            return ApprovalResponse.NO, None
+            return ApprovalResponse.NO, None, None
 
         tool_call = ToolCall(
             id="call_1",

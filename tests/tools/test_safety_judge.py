@@ -49,9 +49,9 @@ class _RecordingApproval:
 
     async def __call__(
         self, *args: Any, **kwargs: Any
-    ) -> tuple[ApprovalResponse, None]:
+    ) -> tuple[ApprovalResponse, None, dict | None]:
         self.called = True
-        return self.response, None
+        return self.response, None, None
 
 
 # --------------------------------------------------------------------------- #
@@ -161,14 +161,14 @@ class _NoteCapturingApproval:
 
     async def __call__(
         self, *args: Any, **kwargs: Any
-    ) -> tuple[ApprovalResponse, None]:
+    ) -> tuple[ApprovalResponse, None, dict | None]:
         self.called = True
         # The 5th positional argument is judge_note (see ApprovalCallback).
         if len(args) >= 5:
             self.judge_note = args[4]
         elif "judge_note" in kwargs:
             self.judge_note = kwargs["judge_note"]
-        return self.response, None
+        return self.response, None, None
 
 
 @pytest.mark.asyncio

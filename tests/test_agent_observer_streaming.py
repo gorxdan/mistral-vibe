@@ -395,7 +395,7 @@ async def test_act_handles_user_cancellation_during_streaming() -> None:
 
     async def _reject_callback(
         _name: str, _args: BaseModel, _id: str, _rp: list | None = None
-    ) -> tuple[ApprovalResponse, str | None]:
+    ) -> tuple[ApprovalResponse, str | None, dict | None]:
         return (
             ApprovalResponse.NO,
             str(get_user_cancellation_message(CancellationReason.OPERATION_CANCELLED)),

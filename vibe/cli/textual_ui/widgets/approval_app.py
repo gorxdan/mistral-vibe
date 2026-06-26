@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import ClassVar
 
+import orjson
 from pydantic import BaseModel
 from textual import events
 from textual.app import ComposeResult
@@ -12,6 +13,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static
 
+from vibe.cli.textual_ui.external_editor import ExternalEditor
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.cli.textual_ui.widgets.tool_widgets import get_approval_widget
 from vibe.core.config import VibeConfig
@@ -36,6 +38,7 @@ class ApprovalApp(Container):
         Binding("3", "select_3", "Always Permanent", show=False),
         Binding("4", "select_4", "No", show=False),
         Binding("n", "select_4", "No", show=False),
+        Binding("e", "modify", "Edit args before approving", show=False),
     ]
 
     class ApprovalGranted(Message):
@@ -73,6 +76,23 @@ class ApprovalApp(Container):
             super().__init__()
             self.tool_name = tool_name
             self.tool_args = tool_args
+
+    class ApprovalModify(Message):
+        """User chose to edit the tool args before approving.
+
+        ``modified_args`` carries the JSON-decoded dict the user edited in the
+        external editor; the host re-validates and re-dispatches via the engine
+        MODIFY path. ``modified_args`` is None if the user closed the editor
+        without changing anything (treated as a no-op cancel).
+        """
+
+        def __init__(
+            self, tool_name: str, tool_args: BaseModel, modified_args: dict | None
+        ) -> None:
+            super().__init__()
+            self.tool_name = tool_name
+            self.tool_args = tool_args
+            self.modified_args = modified_args
 
     def __init__(
         self,
@@ -121,7 +141,8 @@ class ApprovalApp(Container):
                 self.option_widgets.append(widget)
                 yield widget
             self.help_widget = NoMarkupStatic(
-                "↑↓ navigate  Enter select  ESC reject", classes="approval-help"
+                "↑↓ navigate  Enter select  e edit args  ESC reject",
+                classes="approval-help",
             )
             yield self.help_widget
 
@@ -242,6 +263,30 @@ class ApprovalApp(Container):
 
     def action_reject(self) -> None:
         self._select_if_unguarded(3)
+
+    def action_modify(self) -> None:
+        if self.is_within_grace_period():
+            return
+        # Open the proposed args as JSON in $EDITOR; if the user changes and
+        # saves, post MODIFY with the edited dict. An unchanged/closed editor
+        # is a no-op (stays on the approval screen).
+        initial = orjson.dumps(
+            self.tool_args.model_dump(), option=orjson.OPT_INDENT_2
+        ).decode("utf-8")
+        edited = ExternalEditor().edit(initial)
+        if edited is None or edited.strip() == initial.strip():
+            return
+        try:
+            modified_args = orjson.loads(edited)
+        except (orjson.JSONDecodeError, ValueError):
+            return
+        self.post_message(
+            self.ApprovalModify(
+                tool_name=self.tool_name,
+                tool_args=self.tool_args,
+                modified_args=modified_args,
+            )
+        )
 
     def _handle_selection(self, option: int) -> None:
         match option:
