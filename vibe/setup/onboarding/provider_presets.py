@@ -139,6 +139,7 @@ PRESETS: list[ProviderPreset] = [
             api_base=OPENAI_API_BASE,
             api_key_env_var="OPENAI_API_KEY",
             api_style="openai-responses",
+            discover_models=True,
         ),
         model=ModelConfig(
             name="gpt-5.5",
