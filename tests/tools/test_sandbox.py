@@ -10,6 +10,7 @@ from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
 from vibe.core.tools.sandbox import (
     BUBBLEWRAP_INSTALL_NUDGE,
     SandboxSpec,
+    _detect_auto_backend,
     build_sandbox_command,
     build_seatbelt_profile,
     detect_backend,
@@ -29,6 +30,7 @@ def test_detect_backend_honors_override() -> None:
 
 def test_detect_backend_windows_is_none(monkeypatch) -> None:
     monkeypatch.setattr("vibe.core.tools.sandbox.is_windows", lambda: True)
+    _detect_auto_backend.cache_clear()
     assert detect_backend("auto") == "none"
 
 

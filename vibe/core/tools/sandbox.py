@@ -15,6 +15,7 @@ Backends, by platform:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import functools
 import os
 from pathlib import Path
 import shutil
@@ -56,10 +57,12 @@ class SandboxSpec:
     extra_args: list[str] = field(default_factory=list)
 
 
-def detect_backend(override: str = "auto") -> str:
-    """Resolve the sandbox backend name, or 'none' when unavailable."""
-    if override != "auto":
-        return override
+@functools.lru_cache(maxsize=1)
+def _detect_auto_backend() -> str:
+    """Resolve the auto-detected sandbox backend. Process-stable, so cached.
+
+    Tests that monkeypatch is_windows/shutil.which call _detect_auto_backend.cache_clear().
+    """
     if is_windows():
         return "none"
     if sys.platform == "darwin":
@@ -70,6 +73,13 @@ def detect_backend(override: str = "auto") -> str:
     if shutil.which("unshare"):
         return "unshare"
     return "none"
+
+
+def detect_backend(override: str = "auto") -> str:
+    """Resolve the sandbox backend name, or 'none' when unavailable."""
+    if override != "auto":
+        return override
+    return _detect_auto_backend()
 
 
 # BUBBLEWRAP_INSTALL_NUDGE is surfaced to the user (UI toast / startup issue)
