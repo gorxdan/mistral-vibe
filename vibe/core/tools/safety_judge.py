@@ -20,8 +20,8 @@ Design constraints (security):
 from __future__ import annotations
 
 import asyncio
-import json
 
+import orjson
 from pydantic import BaseModel
 
 from vibe.core.config import ModelConfig, ProviderConfig, SafetyJudgeConfig
@@ -194,8 +194,8 @@ class SafetyJudge:
         if start == -1 or end <= start:
             return _FAIL_CLOSED
         try:
-            data = json.loads(text[start : end + 1])
-        except (json.JSONDecodeError, ValueError):
+            data = orjson.loads(text[start : end + 1])
+        except (orjson.JSONDecodeError, ValueError):
             return _FAIL_CLOSED
         if not isinstance(data, dict) or not isinstance(data.get("safe"), bool):
             return _FAIL_CLOSED

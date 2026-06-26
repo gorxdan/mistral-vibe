@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 from typing import Any, ClassVar
+
+import orjson
 
 from vibe.core.config import ProviderConfig
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
@@ -161,7 +162,7 @@ class ReasoningAdapter(APIAdapter):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = orjson.dumps(payload)
         return PreparedRequest(self.endpoint, headers, body)
 
     @staticmethod

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -10,6 +9,7 @@ import re
 from typing import TYPE_CHECKING
 
 from cachetools import TTLCache
+import orjson
 
 if TYPE_CHECKING:
     from acp.connection import StreamEvent
@@ -32,7 +32,7 @@ def is_acp_logging_enabled() -> bool:
 
 class JsonLineFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        return json.dumps(record.msg, separators=(",", ":"))
+        return orjson.dumps(record.msg).decode("utf-8")
 
 
 def _get_logger() -> logging.Logger:
@@ -60,7 +60,7 @@ def _get_logger() -> logging.Logger:
 
 
 def _extract_session_id(message: dict) -> str | None:
-    json_str = json.dumps(message)
+    json_str = orjson.dumps(message).decode("utf-8")
     match = re.search(r'"(?:session_id|sessionId)":\s*"([^"]+)"', json_str)
     return match.group(1) if match else None
 

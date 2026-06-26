@@ -9,9 +9,9 @@ error/timeout — extraction is best-effort and must never break a session.
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any, Literal
 
+import orjson
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from vibe.core.config import ModelConfig, ProviderConfig
@@ -156,8 +156,8 @@ class MemoryExtractor:
         if start == -1 or end <= start:
             return []
         try:
-            data = json.loads(text[start : end + 1])
-        except (json.JSONDecodeError, ValueError):
+            data = orjson.loads(text[start : end + 1])
+        except (orjson.JSONDecodeError, ValueError):
             return []
         items = data.get("memories") if isinstance(data, dict) else None
         if not isinstance(items, list):

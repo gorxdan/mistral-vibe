@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from opentelemetry import trace
+import orjson
 from pydantic import ValidationError
 
 from vibe.core.hooks.models import (
@@ -455,7 +455,7 @@ class AgentLoopHooksMixin:
         """
         if not call_id:
             return
-        encoded = json.dumps(new_args)
+        encoded = orjson.dumps(new_args).decode("utf-8")
         for message in reversed(self.messages):
             if not message.tool_calls:
                 continue

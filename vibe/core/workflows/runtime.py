@@ -7,12 +7,12 @@ from dataclasses import dataclass, field
 import functools
 import hashlib
 import inspect
-import json
 from pathlib import Path
 import re
 import time
 from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar, cast
 
+import orjson
 from pydantic import BaseModel
 
 from vibe.core.llm.exceptions import BackendError
@@ -293,7 +293,7 @@ def _coerce_json_safe(value: Any) -> Any:
     if value is None:
         return None
     try:
-        return json.loads(json.dumps(value, default=str))
+        return orjson.loads(orjson.dumps(value, default=str))
     except (TypeError, ValueError):
         return str(value)
 
@@ -443,12 +443,12 @@ def _parse_stats(stderr_text: str) -> dict[str, int] | None:
     for line in reversed(stderr_text.splitlines()):
         if line.startswith(_ISOLATED_STATS_SENTINEL):
             try:
-                data = json.loads(line[len(_ISOLATED_STATS_SENTINEL) :])
+                data = orjson.loads(line[len(_ISOLATED_STATS_SENTINEL) :])
                 return {
                     "prompt_tokens": int(data.get("prompt_tokens", 0)),
                     "completion_tokens": int(data.get("completion_tokens", 0)),
                 }
-            except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+            except (orjson.JSONDecodeError, ValueError, TypeError, AttributeError):
                 return None
     return None
 
@@ -1208,8 +1208,8 @@ class WorkflowRuntime:
                 return response_text
 
             try:
-                parsed = json.loads(_strip_code_fences(response_text))
-            except json.JSONDecodeError as e:
+                parsed = orjson.loads(_strip_code_fences(response_text))
+            except orjson.JSONDecodeError as e:
                 last_errors = [f"JSON parse error: {e}"]
             else:
                 if strip_unknown:
@@ -1700,8 +1700,8 @@ class WorkflowRuntime:
         output: str, schema: dict, strip_unknown: bool
     ) -> tuple[str | dict[str, Any] | None, list[str]]:
         try:
-            parsed = json.loads(_strip_code_fences(output))
-        except json.JSONDecodeError as e:
+            parsed = orjson.loads(_strip_code_fences(output))
+        except orjson.JSONDecodeError as e:
             return None, [f"isolated agent returned invalid JSON: {e}"]
         if strip_unknown:
             parsed = strip_unknown_properties(parsed, schema)

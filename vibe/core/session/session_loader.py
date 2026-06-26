@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
+
+import orjson
 
 from vibe.core.logger import logger
 from vibe.core.session.session_id import shorten_session_id
@@ -34,7 +35,7 @@ class SessionLoader:
 
         messages: list[dict[str, Any]] = []
         for line in lines:
-            message = json.loads(line)
+            message = orjson.loads(line)
             if not isinstance(message, dict):
                 return None
             messages.append(message)
@@ -51,7 +52,7 @@ class SessionLoader:
             return None
 
         try:
-            metadata = json.loads(read_safe(metadata_path).text)
+            metadata = orjson.loads(read_safe(metadata_path).text)
             if not isinstance(metadata, dict):
                 return None
             if working_directory is not None:
@@ -62,7 +63,7 @@ class SessionLoader:
                     return None
 
             messages = SessionLoader._parse_message_lines(read_safe(messages_path).text)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, orjson.JSONDecodeError):
             return None
 
         if messages is None:
@@ -257,8 +258,8 @@ class SessionLoader:
             )
 
         try:
-            data = [json.loads(line) for line in content]
-        except json.JSONDecodeError as e:
+            data = [orjson.loads(line) for line in content]
+        except orjson.JSONDecodeError as e:
             raise ValueError(
                 f"Session messages contain invalid JSON (may have been corrupted): "
                 f"{filepath}\nDetails: {e}"
@@ -273,8 +274,8 @@ class SessionLoader:
 
         if metadata_filepath.exists():
             try:
-                metadata = json.loads(read_safe(metadata_filepath).text)
-            except json.JSONDecodeError as e:
+                metadata = orjson.loads(read_safe(metadata_filepath).text)
+            except orjson.JSONDecodeError as e:
                 raise ValueError(
                     f"Session metadata contains invalid JSON (may have been corrupted): "
                     f"{filepath}\nDetails: {e}"

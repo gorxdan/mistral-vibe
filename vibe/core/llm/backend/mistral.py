@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
-import json
 import os
 import types
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
@@ -32,6 +31,7 @@ from mistralai.client.models import (
     UserMessage,
 )
 from mistralai.client.utils.retries import BackoffStrategy, RetryConfig
+import orjson
 
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
 from vibe.core.llm.exceptions import BackendErrorBuilder
@@ -177,7 +177,7 @@ class MistralMapper:
                     name=tool_call.function.name,
                     arguments=tool_call.function.arguments
                     if isinstance(tool_call.function.arguments, str)
-                    else json.dumps(tool_call.function.arguments, ensure_ascii=False),
+                    else orjson.dumps(tool_call.function.arguments).decode("utf-8"),
                 ),
                 index=tool_call.index,
             )

@@ -11,7 +11,6 @@ from functools import wraps
 import hashlib
 from http import HTTPStatus
 import inspect
-import json
 import os
 from pathlib import Path
 import re
@@ -22,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from opentelemetry import trace
+import orjson
 from pydantic import BaseModel
 
 from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
@@ -3114,8 +3114,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 if tc.function.name not in {"read", "write_file"}:
                     continue
                 try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except (json.JSONDecodeError, TypeError):
+                    args = orjson.loads(tc.function.arguments or "{}")
+                except (orjson.JSONDecodeError, TypeError):
                     continue
                 raw_path = args.get("file_path") or args.get("path")
                 if not raw_path:

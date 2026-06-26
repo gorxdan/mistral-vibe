@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any
 
+import orjson
 from pydantic import ValidationError
 
 from vibe.core.llm.models import (
@@ -77,8 +77,8 @@ class APIToolFormatHandler:
             if not (function_call := tc.function):
                 continue
             try:
-                args = json.loads(function_call.arguments or "{}")
-            except json.JSONDecodeError:
+                args = orjson.loads(function_call.arguments or "{}")
+            except orjson.JSONDecodeError:
                 args = {}
 
             tool_calls.append(

@@ -3,11 +3,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 import hashlib
-import json
 import os
 from pathlib import Path
 from typing import IO, Any
 
+import orjson
 from pydantic_core import to_jsonable_python
 
 from vibe.core.config.types import ConcurrencyConflictError
@@ -41,7 +41,7 @@ def file_fingerprint(path: Path) -> str:
 
 def create_dict_fingerprint(source: dict[str, Any]) -> str:
     """Return an opaque token representing the current state of a dict."""
-    payload = json.dumps(
-        to_jsonable_python(source), sort_keys=True, separators=(",", ":")
+    payload = orjson.dumps(
+        to_jsonable_python(source), option=orjson.OPT_SORT_KEYS
     )
-    return hashlib.sha256(payload.encode()).hexdigest()
+    return hashlib.sha256(payload).hexdigest()

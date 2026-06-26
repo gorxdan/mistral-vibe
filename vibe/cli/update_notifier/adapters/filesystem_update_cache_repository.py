@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
+
+import orjson
 
 from vibe.cli.cache import read_cache, write_cache
 from vibe.cli.update_notifier.ports.update_cache_repository import (
@@ -50,8 +51,8 @@ class FileSystemUpdateCacheRepository(UpdateCacheRepository):
             return section
 
         try:
-            data = json.loads(read_safe(self._legacy_json).text)
-        except (OSError, json.JSONDecodeError):
+            data = orjson.loads(read_safe(self._legacy_json).text)
+        except (OSError, orjson.JSONDecodeError):
             return None
 
         if isinstance(data, dict):

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from http import HTTPStatus
-import json
 from typing import Any
 
 import httpx
 from mistralai.client.errors import SDKError
+import orjson
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from vibe.core.types import AvailableTool, LLMMessage, StrToolChoice
@@ -229,10 +229,10 @@ class BackendErrorBuilder:
         if not body_text:
             return None
         try:
-            data = json.loads(body_text)
+            data = orjson.loads(body_text)
             error_model = ErrorResponse.model_validate(data)
             return error_model.primary_message
-        except (json.JSONDecodeError, ValidationError):
+        except (orjson.JSONDecodeError, ValidationError):
             return None
 
     @staticmethod

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-import json
 import logging
 import os
 import time
 from typing import Any, Protocol
+
+import orjson
 
 from vibe.core.logger import logger
 from vibe.core.lsp._types import (
@@ -140,7 +141,7 @@ class JsonRpcConnection:
                 payload.get("method", "?"),
                 payload.get("id", "-"),
             )
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        body = orjson.dumps(payload)
         header = (
             f"Content-Length: {len(body)}\r\n"
             f"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n"
@@ -177,7 +178,7 @@ class JsonRpcConnection:
         if length <= 0:
             return None
         body = await self._reader.readexactly(length)
-        return json.loads(body.decode("utf-8"))
+        return orjson.loads(body)
 
     @staticmethod
     def _parse_content_length(header: bytes) -> int:

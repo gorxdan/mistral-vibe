@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import aclosing
-import json
 import os
 from pathlib import Path
 import sys
 
+import orjson
 from pydantic import BaseModel
 
 # Sentinel-prefixed stderr line carrying real token stats, emitted when
@@ -197,10 +197,10 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
                 )
 
             if os.environ.get("VIBE_WORKFLOW_EMIT_STATS") == "1":
-                stats_line = _STATS_SENTINEL + json.dumps({
+                stats_line = _STATS_SENTINEL + orjson.dumps({
                     "prompt_tokens": agent_loop.stats.session_prompt_tokens,
                     "completion_tokens": agent_loop.stats.session_completion_tokens,
-                })
+                }).decode("utf-8")
                 sys.stderr.write("\n" + stats_line + "\n")
                 sys.stderr.flush()
             return formatter.finalize()

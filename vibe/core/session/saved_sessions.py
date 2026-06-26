@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 import shutil
 from typing import Any
+
+import orjson
 
 from vibe.core.config import SessionLoggingConfig
 from vibe.core.session import last_session_pointer
@@ -39,7 +40,7 @@ def _find_saved_session_dir(
     ):
         try:
             metadata = _load_raw_metadata(session_dir)
-        except (OSError, ValueError, json.JSONDecodeError):
+        except (OSError, ValueError, orjson.JSONDecodeError):
             continue
 
         if metadata.get("session_id") == session_id:
@@ -50,7 +51,7 @@ def _find_saved_session_dir(
 
 def _load_raw_metadata(session_dir: Path) -> dict[str, Any]:
     metadata_path = session_dir / METADATA_FILENAME
-    metadata = json.loads(read_safe(metadata_path).text)
+    metadata = orjson.loads(read_safe(metadata_path).text)
     if not isinstance(metadata, dict):
         raise ValueError(f"Session metadata must be an object: {metadata_path}")
 

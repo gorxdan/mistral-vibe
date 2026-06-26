@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from typing import Any
+
+import orjson
 
 
 class SchemaValidationError(Exception):
@@ -153,6 +154,6 @@ def build_response_format(schema: dict) -> dict:
 def build_prompt_fallback(schema: dict) -> str:
     return (
         "\n\nYou MUST respond with a single valid JSON object matching this schema:\n"
-        f"{json.dumps(schema, indent=2)}\n"
+        f"{orjson.dumps(schema, option=orjson.OPT_INDENT_2).decode('utf-8')}\n"
         "Respond with ONLY the JSON object, no markdown fences, no explanation."
     )

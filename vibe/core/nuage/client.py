@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
-import json
 from typing import Any
 
 import httpx
+import orjson
 from pydantic import BaseModel
 
 from vibe.core.logger import logger
@@ -71,7 +71,7 @@ class WorkflowsClient:
     def _parse_sse_data(
         self, raw_data: str, event_type: str | None
     ) -> StreamEvent | None:
-        parsed = json.loads(raw_data)
+        parsed = orjson.loads(raw_data)
         if event_type == "error" or (isinstance(parsed, dict) and "error" in parsed):
             error_msg = (
                 parsed.get("error", "Unknown stream error")

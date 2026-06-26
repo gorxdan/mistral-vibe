@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import threading
 from typing import Any, ClassVar
 
 import google.auth
 import google.auth.credentials
 from google.auth.transport.requests import Request
+import orjson
 
 from vibe.core.llm.backend.adapter_port import PreparedRequest, RequestParams
 from vibe.core.llm.backend.anthropic import AnthropicAdapter
@@ -115,5 +115,5 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         )
         base_url = build_vertex_base_url(region)
 
-        body = json.dumps(payload).encode("utf-8")
+        body = orjson.dumps(payload)
         return PreparedRequest(endpoint, headers, body, base_url=base_url)

@@ -8,7 +8,6 @@ from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from enum import StrEnum, auto
 import gc
-import json
 import os
 from pathlib import Path
 import signal
@@ -17,6 +16,7 @@ from typing import Any, ClassVar, cast
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
+import orjson
 from pydantic import BaseModel
 from rich import print as rprint
 from textual.app import WINDOWS, App, ComposeResult
@@ -3864,7 +3864,9 @@ class VibeApp(App):  # noqa: PLR0904
         if isinstance(value, str):
             return value
         try:
-            return json.dumps(value, indent=2, default=str, ensure_ascii=False)
+            return orjson.dumps(
+                value, option=orjson.OPT_INDENT_2, default=str
+            ).decode("utf-8")
         except (TypeError, ValueError):
             return str(value)
 

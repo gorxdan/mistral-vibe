@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-import json
 import re
 from typing import Any, ClassVar
+
+import orjson
 
 from vibe.core.config import ProviderConfig
 from vibe.core.llm.backend._image import to_base64 as _to_base64
@@ -91,8 +92,8 @@ class AnthropicMapper:
 
     def _convert_tool_call(self, tc: ToolCall) -> dict[str, Any]:
         try:
-            tool_input = json.loads(tc.function.arguments or "{}")
-        except json.JSONDecodeError:
+            tool_input = orjson.loads(tc.function.arguments or "{}")
+        except orjson.JSONDecodeError:
             tool_input = {}
         return {
             "type": "tool_use",
@@ -176,7 +177,7 @@ class AnthropicMapper:
                         index=idx,
                         function=FunctionCall(
                             name=block.get("name"),
-                            arguments=json.dumps(block.get("input", {})),
+                            arguments=orjson.dumps(block.get("input", {})).decode("utf-8"),
                         ),
                     )
                 )
@@ -495,7 +496,7 @@ class AnthropicAdapter(APIAdapter):
         if api_key:
             headers["x-api-key"] = api_key
 
-        body = json.dumps(payload).encode("utf-8")
+        body = orjson.dumps(payload)
         return PreparedRequest(self.endpoint, headers, body)
 
     def parse_response(

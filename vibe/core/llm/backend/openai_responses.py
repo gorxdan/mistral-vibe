@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-import json
 from typing import TYPE_CHECKING, Any, ClassVar, TypedDict, cast
 
+import orjson
 from pydantic import TypeAdapter
 
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
@@ -623,7 +623,7 @@ class OpenAIResponsesAdapter(APIAdapter):
         )
 
         headers = self.build_headers(api_key)
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = orjson.dumps(payload)
 
         return PreparedRequest(self.endpoint, headers, body)
 
@@ -748,7 +748,7 @@ class ChatGPTResponsesAdapter(OpenAIResponsesAdapter):
         # the work via super().prepare_request(params) avoids re-deriving the
         # payload here and keeps the override focused on the ChatGPT deltas.
         base = super().prepare_request(params)
-        body = json.loads(base.body.decode("utf-8"))
+        body = orjson.loads(base.body)
 
         instructions, conversation = self._split_system(params.messages)
         # Rebuild the input list from the system-stripped conversation; the
@@ -768,5 +768,5 @@ class ChatGPTResponsesAdapter(OpenAIResponsesAdapter):
         if params.tools and "tool_choice" not in body:
             body["tool_choice"] = "auto"
 
-        new_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        new_body = orjson.dumps(body)
         return PreparedRequest(base.endpoint, base.headers, new_body)

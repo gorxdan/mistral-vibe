@@ -24,12 +24,13 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
-import json
 import os
 from pathlib import Path
 import signal
 import time
 from typing import TYPE_CHECKING, Any
+
+import orjson
 
 from vibe.core.logger import logger
 
@@ -232,8 +233,8 @@ def _format_jsonl_tail(
         if not line:
             continue
         try:
-            msg = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
+            msg = orjson.loads(line)
+        except (orjson.JSONDecodeError, ValueError):
             out.append(line)
             continue
         if not isinstance(msg, dict):

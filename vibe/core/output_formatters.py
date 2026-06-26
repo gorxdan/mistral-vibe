@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 import sys
 from typing import TextIO
+
+import orjson
 
 from vibe.core.output_formatters_port import OutputFormatter
 from vibe.core.teleport.types import (
@@ -52,7 +53,11 @@ class JsonOutputFormatter(OutputFormatter):
 
     def finalize(self) -> str | None:
         messages_data = [msg.model_dump(mode="json") for msg in self._messages]
-        json.dump(messages_data, self.stream, indent=2, ensure_ascii=False)
+        self.stream.write(
+            orjson.dumps(
+                messages_data, option=orjson.OPT_INDENT_2
+            ).decode("utf-8")
+        )
         self.stream.write("\n")
         self.stream.flush()
         return None
@@ -60,7 +65,7 @@ class JsonOutputFormatter(OutputFormatter):
 
 class StreamingJsonOutputFormatter(OutputFormatter):
     def on_message_added(self, message: LLMMessage) -> None:
-        json.dump(message.model_dump(mode="json"), self.stream, ensure_ascii=False)
+        self.stream.write(orjson.dumps(message.model_dump(mode="json")).decode("utf-8"))
         self.stream.write("\n")
         self.stream.flush()
 

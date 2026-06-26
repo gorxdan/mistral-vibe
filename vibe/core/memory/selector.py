@@ -9,8 +9,9 @@ must never break a turn.
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
+
+import orjson
 
 from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
@@ -114,8 +115,8 @@ class MemorySelector:
         if start == -1 or end <= start:
             return []
         try:
-            data = json.loads(text[start : end + 1])
-        except (json.JSONDecodeError, ValueError):
+            data = orjson.loads(text[start : end + 1])
+        except (orjson.JSONDecodeError, ValueError):
             return []
         ids = data.get("ids") if isinstance(data, dict) else None
         if not isinstance(ids, list):

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Callable
-import json
 from typing import Any, cast
 
 from jsonpatch import JsonPatch, JsonPatchException
+import orjson
 from pydantic import BaseModel, ValidationError
 
 from vibe.core.logger import logger
@@ -1122,8 +1122,8 @@ class RemoteWorkflowEventTranslator:
             return cast(dict[str, Any], self._json_safe_value(value))
         if isinstance(value, str):
             try:
-                parsed = json.loads(value)
-            except json.JSONDecodeError:
+                parsed = orjson.loads(value)
+            except orjson.JSONDecodeError:
                 return {}
             if isinstance(parsed, dict):
                 return cast(dict[str, Any], self._json_safe_value(parsed))
@@ -1134,8 +1134,8 @@ class RemoteWorkflowEventTranslator:
             return cast(dict[str, Any], self._json_safe_value(output))
         if isinstance(output, str):
             try:
-                parsed = json.loads(output)
-            except json.JSONDecodeError:
+                parsed = orjson.loads(output)
+            except orjson.JSONDecodeError:
                 return {"value": output}
             if isinstance(parsed, dict):
                 return cast(dict[str, Any], self._json_safe_value(parsed))
@@ -1311,4 +1311,4 @@ class RemoteWorkflowEventTranslator:
         return value
 
     def _json_string(self, value: Any) -> str:
-        return json.dumps(self._json_safe_value(value))
+        return orjson.dumps(self._json_safe_value(value)).decode("utf-8")

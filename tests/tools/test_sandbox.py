@@ -32,6 +32,7 @@ def test_detect_backend_windows_is_none(monkeypatch) -> None:
     monkeypatch.setattr("vibe.core.tools.sandbox.is_windows", lambda: True)
     _detect_auto_backend.cache_clear()
     assert detect_backend("auto") == "none"
+    _detect_auto_backend.cache_clear()  # avoid polluting later tests with "none"
 
 
 def test_bwrap_argv_network_and_binds(tmp_path) -> None:

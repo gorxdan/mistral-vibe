@@ -1685,7 +1685,7 @@ class TestAgentLoopIntegration:
         assert last_tool_calls is not None
         tc_args = last_tool_calls[0].function.arguments
         assert tc_args is not None
-        assert '"text": "rewritten"' in tc_args
+        assert json.loads(tc_args)["text"] == "rewritten"
 
     @pytest.mark.asyncio
     async def test_before_tool_rewrite_is_persisted_to_messages_jsonl(self) -> None:
@@ -1738,7 +1738,7 @@ class TestAgentLoopIntegration:
         persisted_args = assistants_with_calls[-1]["tool_calls"][0]["function"][
             "arguments"
         ]
-        assert '"text": "rewritten"' in persisted_args, (
+        assert json.loads(persisted_args)["text"] == "rewritten", (
             f"messages.jsonl still contains the original args: {persisted_args}"
         )
 

@@ -19,7 +19,6 @@ import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import hashlib
-import json
 import os
 from pathlib import Path
 import secrets
@@ -27,6 +26,7 @@ from typing import Any, Final
 import urllib.parse
 
 import httpx
+import orjson
 
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
@@ -149,8 +149,8 @@ def decode_jwt_claims(token: str) -> dict[str, Any]:
     if len(parts) < _JWT_MIN_PARTS:
         raise OpenAIOAuthError("Malformed JWT: expected at least two segments.")
     try:
-        payload = json.loads(_b64url_decode(parts[1]))
-    except (ValueError, json.JSONDecodeError) as exc:
+        payload = orjson.loads(_b64url_decode(parts[1]))
+    except (ValueError, orjson.JSONDecodeError) as exc:
         raise OpenAIOAuthError("Could not decode JWT payload.") from exc
     if not isinstance(payload, dict):
         raise OpenAIOAuthError("JWT payload is not a JSON object.")
@@ -176,18 +176,18 @@ def load_tokens() -> OpenAIOAuthTokens | None:
         return None
     except OSError as exc:
         raise OpenAIOAuthError(f"Could not read token store: {exc}") from exc
-    return OpenAIOAuthTokens.from_json(json.loads(raw))
+    return OpenAIOAuthTokens.from_json(orjson.loads(raw))
 
 
 def save_tokens(tokens: OpenAIOAuthTokens) -> None:
     """Persist tokens to ``$VIBE_HOME/auth/openai.json`` with 0600 perms."""
     path = token_store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(tokens.to_json(), indent=2)
+    payload = orjson.dumps(tokens.to_json(), option=orjson.OPT_INDENT_2)
     # Create the file private from the start (umask-independent), then write.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.write(fd, payload.encode("utf-8"))
+        os.write(fd, payload)
     finally:
         os.close(fd)
     # Tighten perms even if the file pre-existed with looser bits.

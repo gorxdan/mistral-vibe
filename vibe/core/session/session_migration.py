@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
+
+import orjson
 
 from vibe.core.config import SessionLoggingConfig
 from vibe.core.session.session_logger import SessionLogger
@@ -24,7 +25,7 @@ async def migrate_sessions(session_config: SessionLoggingConfig) -> int:
     for session_file in session_files:
         try:
             session_data = read_safe(session_file).text
-            session_json = json.loads(session_data)
+            session_json = orjson.loads(session_data)
             metadata = session_json["metadata"]
             messages = session_json["messages"]
 

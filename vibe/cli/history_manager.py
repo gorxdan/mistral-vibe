@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import tempfile
+
+import orjson
 
 from vibe.core.utils.io import read_safe
 
@@ -31,8 +32,8 @@ class HistoryManager:
             if not raw_line:
                 continue
             try:
-                entry = json.loads(raw_line)
-            except json.JSONDecodeError:
+                entry = orjson.loads(raw_line)
+            except orjson.JSONDecodeError:
                 entry = raw_line
             entries.append(entry if isinstance(entry, str) else str(entry))
         self._entries = entries[-self.max_entries :]
@@ -49,7 +50,7 @@ class HistoryManager:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     for entry in self._entries:
-                        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                        f.write(orjson.dumps(entry).decode("utf-8") + "\n")
                 os.replace(tmp_path, self.history_file)
             except OSError:
                 Path(tmp_path).unlink(missing_ok=True)

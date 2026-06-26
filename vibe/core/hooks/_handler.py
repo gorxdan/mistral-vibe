@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-
+import orjson
 from pydantic import ValidationError
 
 from vibe.core.hooks._port import HookExternalAttrs, HookHandler, _HookAction
@@ -53,8 +52,8 @@ def _parse_structured_response(stdout: str) -> HookStructuredResponse | None:
     if not stdout:
         return None
     try:
-        parsed = json.loads(stdout)
-    except json.JSONDecodeError as e:
+        parsed = orjson.loads(stdout)
+    except orjson.JSONDecodeError as e:
         raise HookOutputError(
             f"stdout was not valid JSON: {e.msg} at line {e.lineno} col {e.colno}"
         ) from e

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import time
 
 from filelock import FileLock
+import orjson
 
 from vibe.core.logger import logger
 from vibe.core.teams.models import Task, TaskStatus
@@ -27,7 +27,7 @@ class TaskStore:
         if not self._tasks_file.exists():
             return {}
         try:
-            data = json.loads(read_safe(self._tasks_file).text)
+            data = orjson.loads(read_safe(self._tasks_file).text)
             return {t["id"]: Task.model_validate(t) for t in data.get("tasks", [])}
         except Exception as e:
             logger.warning("Failed to load tasks from %s: %s", self._tasks_file, e)
@@ -37,7 +37,9 @@ class TaskStore:
         """Write tasks to disk. Caller must already hold ``_lock``."""
         self._team_dir.mkdir(parents=True, exist_ok=True)
         data = {"tasks": [t.model_dump(mode="json") for t in tasks.values()]}
-        self._tasks_file.write_text(json.dumps(data, indent=2))
+        self._tasks_file.write_text(
+            orjson.dumps(data, option=orjson.OPT_INDENT_2).decode("utf-8")
+        )
 
     def _load(self) -> None:
         with self._lock():
