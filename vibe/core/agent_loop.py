@@ -17,7 +17,7 @@ import re
 import threading
 from threading import Thread
 import time
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 from uuid import uuid4
 
 from opentelemetry import trace
@@ -57,6 +57,7 @@ from vibe.core.middleware import (
     AutoCompactMiddleware,
     ContextWarningMiddleware,
     ConversationContext,
+    LoopDetectionMiddleware,
     MicrocompactMiddleware,
     MiddlewareAction,
     MiddlewarePipeline,
@@ -255,6 +256,26 @@ class AgentLoopLLMResponseError(AgentLoopError):
     """Raised when LLM response is malformed or missing expected data."""
 
 
+# Bounded retry count for a degenerate streamed response (no content, tool calls,
+# or reasoning): one initial attempt plus a single re-request. A degenerate
+# response yields inert (empty) chunks upstream, so a retry with a fresh
+# accumulator is clean; two failures means something is structurally wrong.
+_STREAM_DEGENERATE_RETRIES = 2
+
+
+class InvalidStreamError(AgentLoopLLMResponseError):
+    """A streamed response was structurally unusable (degenerate/empty).
+
+    Raised after stream assembly so a bounded retry can re-request rather than
+    silently appending a no-op assistant turn that ends the loop producing
+    nothing.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"Invalid streamed response: {reason}")
+
+
 class CompactionFailedError(AgentLoopError):
     """Raised when a compaction turn did not produce a usable summary."""
 
@@ -279,6 +300,48 @@ def _refusal_error(provider: str, model: str, chunk: LLMChunk) -> RefusalError:
         category=stop.category if stop else None,
         explanation=stop.explanation if stop else None,
     )
+
+
+def _degenerate_response_reason(chunk: LLMChunk) -> str | None:
+    """Reason if a completed response is an unusable no-op, else None.
+
+    A response with no content, no tool calls, and no reasoning produces
+    nothing and (as an assistant message) silently ends the turn. Detecting it
+    lets the caller retry instead of accepting the no-op.
+    """
+    msg = chunk.message
+    has_content = bool((msg.content or "").strip())
+    has_tool_calls = bool(msg.tool_calls)
+    has_reasoning = bool((msg.reasoning_content or "").strip())
+    if not (has_content or has_tool_calls or has_reasoning):
+        return "empty response (no content, tool calls, or reasoning)"
+    return None
+
+
+def _raise_for_backend_error(
+    e: Exception, provider_name: str, model_name: str
+) -> NoReturn:
+    """Classify a backend exception and re-raise as a typed AgentLoop error.
+
+    Shared by the streaming and non-streaming chat paths so the rate-limit /
+    context-too-long / response-too-long / content-filter / non-retryable
+    classification lives in one place. Always raises.
+    """
+    if isinstance(e, RefusalError):
+        raise
+    if _should_raise_rate_limit_error(e):
+        raise RateLimitError(provider_name, model_name) from e
+    if _is_context_too_long_error(e):
+        raise ContextTooLongError(provider_name, model_name) from e
+    if _is_response_too_long_error(e):
+        raise ResponseTooLongError(provider_name, model_name) from e
+    if _is_content_filter_error(e):
+        raise ContentFilterError(provider_name, model_name) from e
+    if _is_non_retryable_error(e):
+        raise
+    raise RuntimeError(
+        f"API error from {provider_name} (model: {model_name}): {e}"
+    ) from e
 
 
 def _should_raise_rate_limit_error(e: Exception) -> bool:
@@ -1068,6 +1131,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         if self._max_session_tokens is not None:
             self.middleware_pipeline.add(TokenLimitMiddleware(self._max_session_tokens))
+
+        # Heuristic: detect an agent stuck repeating the same tool call, beyond
+        # the hard turn cap. Cheap (history-only), no extra model calls.
+        self.middleware_pipeline.add(LoopDetectionMiddleware())
 
         # Cheap, local context shapers run before the LLM-summary fallback.
         # Both no-op when disabled (read their config live), so registration is
@@ -3187,22 +3254,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             )
 
         except Exception as e:
-            if isinstance(e, RefusalError):
-                raise
-            if _should_raise_rate_limit_error(e):
-                raise RateLimitError(provider.name, active_model.name) from e
-            if _is_context_too_long_error(e):
-                raise ContextTooLongError(provider.name, active_model.name) from e
-            if _is_response_too_long_error(e):
-                raise ResponseTooLongError(provider.name, active_model.name) from e
-            if _is_content_filter_error(e):
-                raise ContentFilterError(provider.name, active_model.name) from e
-            if _is_non_retryable_error(e):
-                raise
-
-            raise RuntimeError(
-                f"API error from {provider.name} (model: {active_model.name}): {e}"
-            ) from e
+            _raise_for_backend_error(e, provider.name, active_model.name)
 
     async def _chat_streaming(
         self, max_tokens: int | None = None
@@ -3231,70 +3283,78 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             ),
         )
 
-        try:
-            async with chat_span(
-                model=active_model.name, provider=provider.name
-            ) as _span:
-                start_time = time.perf_counter()
-                # Accumulate streamed deltas in O(n) instead of folding with
-                # LLMChunk.__add__ per chunk (which re-concatenates the whole
-                # message every delta -> O(n^2) over a response).
-                chunk_acc = LLMChunkAccumulator()
-                async for chunk in self.backend.complete_streaming(
-                    model=active_model,
-                    messages=self._messages_for_backend(active_model),
-                    temperature=active_model.temperature,
-                    tools=available_tools,
-                    tool_choice=tool_choice,
-                    extra_headers=self._get_extra_headers(),
-                    max_tokens=max_tokens,
-                    metadata=backend_metadata.model_dump(exclude_none=True),
-                    response_format=self._response_format,
-                ):
-                    if chunk.correlation_id:
-                        self.telemetry_client.last_correlation_id = chunk.correlation_id
-                    processed_chunk = LLMChunk(
-                        message=self.format_handler.process_api_response_message(
-                            chunk.message
-                        ),
-                        usage=chunk.usage,
-                        stop=chunk.stop,
+        for attempt in range(_STREAM_DEGENERATE_RETRIES):
+            try:
+                async with chat_span(
+                    model=active_model.name, provider=provider.name
+                ) as _span:
+                    start_time = time.perf_counter()
+                    # Accumulate streamed deltas in O(n) instead of folding with
+                    # LLMChunk.__add__ per chunk (which re-concatenates the whole
+                    # message every delta -> O(n^2) over a response).
+                    chunk_acc = LLMChunkAccumulator()
+                    async for chunk in self.backend.complete_streaming(
+                        model=active_model,
+                        messages=self._messages_for_backend(active_model),
+                        temperature=active_model.temperature,
+                        tools=available_tools,
+                        tool_choice=tool_choice,
+                        extra_headers=self._get_extra_headers(),
+                        max_tokens=max_tokens,
+                        metadata=backend_metadata.model_dump(exclude_none=True),
+                        response_format=self._response_format,
+                    ):
+                        if chunk.correlation_id:
+                            self.telemetry_client.last_correlation_id = (
+                                chunk.correlation_id
+                            )
+                        processed_chunk = LLMChunk(
+                            message=self.format_handler.process_api_response_message(
+                                chunk.message
+                            ),
+                            usage=chunk.usage,
+                            stop=chunk.stop,
+                        )
+                        chunk_acc.add(processed_chunk)
+                        yield processed_chunk
+                    end_time = time.perf_counter()
+
+                    chunk_agg = chunk_acc.build()
+                    if chunk_agg is None or chunk_agg.usage is None:
+                        raise AgentLoopLLMResponseError(
+                            "Usage data missing in final chunk of streamed completion"
+                        )
+                    # Reject a degenerate no-op response (no content, tool calls,
+                    # or reasoning) so it is re-requested below rather than
+                    # silently ending the turn producing nothing. A degenerate
+                    # response yields inert empty chunks upstream, so the retry
+                    # with a fresh accumulator is clean.
+                    degenerate_reason = _degenerate_response_reason(chunk_agg)
+                    if degenerate_reason is not None:
+                        raise InvalidStreamError(degenerate_reason)
+                    self._update_stats(
+                        usage=chunk_acc.usage, time_seconds=end_time - start_time
                     )
-                    chunk_acc.add(processed_chunk)
-                    yield processed_chunk
-                end_time = time.perf_counter()
+                    set_usage(_span, chunk_acc.usage)
 
-                chunk_agg = chunk_acc.build()
-                if chunk_agg is None or chunk_agg.usage is None:
-                    raise AgentLoopLLMResponseError(
-                        "Usage data missing in final chunk of streamed completion"
+                self.messages.append(chunk_agg.message)
+                if chunk_agg.stop and chunk_agg.stop.is_refusal:
+                    raise _refusal_error(provider.name, active_model.name, chunk_agg)
+                return
+
+            except InvalidStreamError as e:
+                if attempt < _STREAM_DEGENERATE_RETRIES - 1:
+                    logger.warning(
+                        "Degenerate streamed response (%s); re-requesting stream "
+                        "attempt %d/%d",
+                        e.reason,
+                        attempt + 1,
+                        _STREAM_DEGENERATE_RETRIES,
                     )
-                self._update_stats(
-                    usage=chunk_acc.usage, time_seconds=end_time - start_time
-                )
-                set_usage(_span, chunk_acc.usage)
-
-            self.messages.append(chunk_agg.message)
-            if chunk_agg.stop and chunk_agg.stop.is_refusal:
-                raise _refusal_error(provider.name, active_model.name, chunk_agg)
-
-        except Exception as e:
-            if isinstance(e, RefusalError):
+                    continue
                 raise
-            if _should_raise_rate_limit_error(e):
-                raise RateLimitError(provider.name, active_model.name) from e
-            if _is_context_too_long_error(e):
-                raise ContextTooLongError(provider.name, active_model.name) from e
-            if _is_response_too_long_error(e):
-                raise ResponseTooLongError(provider.name, active_model.name) from e
-            if _is_content_filter_error(e):
-                raise ContentFilterError(provider.name, active_model.name) from e
-            if _is_non_retryable_error(e):
-                raise
-
-            raise RuntimeError(
-                f"API error from {provider.name} (model: {active_model.name}): {e}"
-            ) from e
+            except Exception as e:
+                _raise_for_backend_error(e, provider.name, active_model.name)
 
     def _update_stats(self, usage: LLMUsage, time_seconds: float) -> None:
         self.stats.last_turn_duration = time_seconds

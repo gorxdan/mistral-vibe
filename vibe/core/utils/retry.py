@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 import functools
 import logging
+import random
 
 import httpx
 
@@ -28,6 +29,15 @@ def _is_retryable_http_error(e: Exception) -> bool:
 
 # Cap on how long we'll honor a server's Retry-After (avoid pathological waits).
 _MAX_RETRY_AFTER_S = 60.0
+
+# ±30% symmetric jitter on the computed exponential backoff. Without it,
+# concurrent retries (workflow fan-out, parallel secondary calls) that hit a
+# transient error at the same instant re-fire on the identical computed delay
+# and re-trip the limit together — the "Retries exhausted" lockstep storm.
+_BACKOFF_JITTER = 0.3
+# 0..+20% jitter on a server Retry-After: spreads clients that received the same
+# header, always upward so no client fires before the advertised window.
+_RETRY_AFTER_JITTER = 0.2
 
 # Body bytes retained in the retry-log diagnostic so a 429's cause is provable
 # from logs alone (transient rate limit vs. quota/credit exhaustion).
@@ -61,12 +71,19 @@ def _retry_after_seconds(e: Exception) -> float | None:
 def _retry_delay(
     attempt: int, delay_seconds: float, backoff_factor: float, exc: Exception
 ) -> float:
-    """Exponential backoff, overridden upward by a Retry-After header if larger."""
+    """Exponential backoff with jitter, overridden upward by a Retry-After header.
+
+    Jitter de-synchronizes concurrent retries (workflow fan-out, parallel
+    secondary calls) that would otherwise re-fire in lockstep on the identical
+    computed delay. A Retry-After header is jittered upward only so concurrent
+    clients never fire before the server's advertised window.
+    """
     base = (delay_seconds * (backoff_factor**attempt)) + (0.05 * attempt)
     retry_after = _retry_after_seconds(exc)
     if retry_after is not None:
-        return min(max(base, retry_after), _MAX_RETRY_AFTER_S)
-    return base
+        jittered = retry_after * (1.0 + _RETRY_AFTER_JITTER * random.random())
+        return min(max(base, jittered), _MAX_RETRY_AFTER_S)
+    return max(0.0, base * (1.0 + _BACKOFF_JITTER * (random.random() * 2.0 - 1.0)))
 
 
 def _http_response_detail(exc: Exception) -> str:

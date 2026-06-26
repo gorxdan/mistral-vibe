@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
+import json
 from typing import TYPE_CHECKING, Any, Protocol
 
 from vibe.core.agents import AgentProfile
 from vibe.core.logger import logger
+from vibe.core.types import Role
 from vibe.core.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
@@ -442,6 +444,87 @@ class ContextWarningMiddleware:
 
     def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
         self.has_warned = False
+
+
+def _canonical_tool_args(arguments: str | None) -> str:
+    """Canonical (whitespace/key-order-insensitive) form of a tool call's args.
+
+    Two calls with the same logical arguments but different JSON formatting
+    (key order, whitespace) fingerprint equal, so a loop is detected even when
+    the model emits near-identical serializations. Falls back to the raw string
+    when the arguments are not valid JSON.
+    """
+    if not arguments:
+        return ""
+    try:
+        return json.dumps(json.loads(arguments), sort_keys=True)
+    except (ValueError, TypeError):
+        return arguments
+
+
+def _trailing_tool_call_fingerprints(
+    messages: MessageList, limit: int
+) -> list[tuple[str, str]]:
+    """Last ``limit`` (tool_name, canonical_args) fingerprints from the history.
+
+    Scans every assistant tool call in order and returns the trailing window so
+    a caller can detect a consecutive run of identical calls (an agent stuck
+    repeating itself).
+    """
+    fingerprints: list[tuple[str, str]] = []
+    for msg in messages:
+        if msg.role != Role.assistant or not msg.tool_calls:
+            continue
+        for tc in msg.tool_calls:
+            name = tc.function.name or ""
+            fingerprints.append((name, _canonical_tool_args(tc.function.arguments)))
+    if len(fingerprints) > limit:
+        return fingerprints[-limit:]
+    return fingerprints
+
+
+class LoopDetectionMiddleware:
+    """Detects an agent stuck repeating identical tool calls.
+
+    A hard turn cap (:class:`TurnLimitMiddleware`) bounds total work but won't
+    notice a model re-emitting the exact same call (re-reading an unchanged
+    file, re-running a failing build) until the cap. Strike 1 injects a nudge to
+    change approach; strike 2 stops the turn. Pure history inspection — no
+    extra model calls.
+    """
+
+    def __init__(self, threshold: int = 5) -> None:
+        self._threshold = threshold
+        self._warned = False
+
+    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
+        fingerprints = _trailing_tool_call_fingerprints(
+            context.messages, self._threshold
+        )
+        # Need a full window of identical calls to call it a loop; a single
+        # different call resets the stuck state so a later loop can warn again.
+        if len(fingerprints) < self._threshold or len(set(fingerprints)) > 1:
+            self._warned = False
+            return MiddlewareResult()
+        name = fingerprints[-1][0]
+        if not self._warned:
+            self._warned = True
+            return MiddlewareResult(
+                action=MiddlewareAction.INJECT_MESSAGE,
+                message=(
+                    f"<{VIBE_WARNING_TAG}>You appear to be stuck repeating the same "
+                    f"tool call ({name}) without making progress. Stop and change "
+                    f"your approach: inspect a different file, adjust the command, "
+                    f"or report what is blocking you.</{VIBE_WARNING_TAG}>"
+                ),
+            )
+        return MiddlewareResult(
+            action=MiddlewareAction.STOP,
+            reason=f"Tool-call loop detected: {name} repeated {self._threshold}+ times",
+        )
+
+    def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
+        self._warned = False
 
 
 def make_plan_agent_reminder(

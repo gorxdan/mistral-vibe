@@ -12,6 +12,7 @@ from vibe.core.llm.exceptions import (
     PayloadSummary,
 )
 from vibe.core.utils.retry import (
+    _RETRY_AFTER_JITTER,
     _is_retryable_http_error,
     _retry_after_seconds,
     _retry_delay,
@@ -180,7 +181,9 @@ def test_retry_after_seconds_invalid_returns_none() -> None:
 def test_retry_delay_uses_retry_after_when_larger() -> None:
     exc = _http_status_error(429, headers={"retry-after": "10"})
     delay = _retry_delay(0, delay_seconds=0.1, backoff_factor=2.0, exc=exc)
-    assert delay == 10.0
+    # Retry-After wins over the tiny backoff and is jittered upward into
+    # [10, 12] (positive-only), never below the server's advertised window.
+    assert 10.0 <= delay <= 10.0 * (1.0 + _RETRY_AFTER_JITTER)
 
 
 def test_retry_delay_uses_base_when_no_retry_after() -> None:
