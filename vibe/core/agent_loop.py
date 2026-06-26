@@ -3809,6 +3809,14 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self._base_config = base_config
             self.agent_manager.invalidate_config()
 
+        # A reload re-establishes the configured active model as authoritative, so
+        # drop any transient rate-limit/fallback override. Otherwise the backend
+        # is rebuilt for the newly-configured model while _resolve_active_model
+        # still forces the stale override onto it (e.g. a switched-away glm-5.2
+        # reaching a kimi backend -> "invalid temperature / unknown model").
+        self._fallback_model_override = None
+        self._tried_fallback_aliases.clear()
+
         self.backend = self.backend_factory()
 
         if max_turns is not None:

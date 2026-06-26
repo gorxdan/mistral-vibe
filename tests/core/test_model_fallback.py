@@ -183,3 +183,23 @@ async def test_streaming_honors_fallback_model_override() -> None:
     assert backend.requests_models[-1].alias == "backup", (
         "streaming must send the switched-to model, not the configured one"
     )
+
+
+@pytest.mark.asyncio
+async def test_reload_clears_fallback_override() -> None:
+    # A rate-limit/fallback switch sets _fallback_model_override. A later reload
+    # (e.g. /model picker -> _reload_config) rebuilds the backend for the newly
+    # configured model, so the stale override MUST be cleared — otherwise
+    # resolution forces the old model onto the new backend (glm-5.2 reaching a
+    # kimi backend -> "invalid temperature / unknown model").
+    loop = _loop([])
+    backup = next(m for m in loop.config.models if m.alias == "backup")
+    loop._fallback_model_override = backup
+    loop._tried_fallback_aliases.add("primary")
+
+    await loop.reload_with_initial_messages()
+
+    assert loop._fallback_model_override is None
+    assert loop._tried_fallback_aliases == set()
+    model, _ = loop._resolve_active_model()
+    assert model.alias == "primary", "resolution follows config, not the override"
