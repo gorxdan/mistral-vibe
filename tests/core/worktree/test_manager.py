@@ -235,6 +235,17 @@ class TestGracefulRefusal:
         handle = manager.enter("test", config)
         assert handle is None
 
+    def test_refuses_not_a_git_repo(self, manager: WorktreeManager, tmp_path: Path):
+        # Regression: launching from outside a git repo must not hard-fail
+        # under mode="on". There is no live checkout to protect, so enter()
+        # returns None (run in-place) instead of raising WorktreeError.
+        os.chdir(str(tmp_path))
+
+        config = WorktreeConfig(mode="on")
+        handle = manager.enter("test", config)
+        assert handle is None
+        assert manager.active is None
+
 
 class TestCreationFailureIsolation:
     """mode='on' fails closed on a creation error; auto-by-entrypoint is soft."""
@@ -244,7 +255,7 @@ class TestCreationFailureIsolation:
     ):
         os.chdir(str(temp_repo))
 
-        def _boom(self, label, config):  # noqa: ANN001
+        def _boom(self, label, config):
             raise RuntimeError("disk on fire")
 
         monkeypatch.setattr(WorktreeManager, "_do_enter", _boom)
@@ -260,7 +271,7 @@ class TestCreationFailureIsolation:
     ):
         os.chdir(str(temp_repo))
 
-        def _boom(self, label, config):  # noqa: ANN001
+        def _boom(self, label, config):
             raise RuntimeError("disk on fire")
 
         monkeypatch.setattr(WorktreeManager, "_do_enter", _boom)

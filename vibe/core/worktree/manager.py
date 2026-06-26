@@ -20,7 +20,7 @@ import time
 from typing import TYPE_CHECKING
 
 from git import Repo
-from git.exc import GitCommandError
+from git.exc import GitCommandError, InvalidGitRepositoryError
 
 from vibe.core.config import WorktreeConfig
 from vibe.core.logger import logger
@@ -140,9 +140,10 @@ class WorktreeManager:
     def enter(self, label: str, config: WorktreeConfig) -> WorktreeHandle | None:
         """Create a worktree, carry dirty state, and chdir into it.
 
-        Returns ``None`` (run in-place) if the repo is mid-operation or has
-        dirty submodules — deliberate data-safety refusals that must never lose
-        the user's in-progress work.
+        Returns ``None`` (run in-place) if the cwd is not inside a git repo, or
+        the repo is mid-operation, or has dirty submodules — deliberate refusals
+        that must never lose the user's in-progress work (and the non-repo case
+        has no live checkout to isolate in the first place).
 
         Raises :class:`WorktreeError` if worktree creation itself failed while
         isolation was explicitly required (``mode="on"`` or ``--worktree``).
@@ -184,7 +185,19 @@ class WorktreeManager:
 
         # 2. Resolve original repo root via git (NOT find_git_repo_ancestor,
         #    which requires .git to be a dir and misses worktree roots).
-        repo = self._get_repo(Path.cwd())
+        try:
+            repo = self._get_repo(Path.cwd())
+        except InvalidGitRepositoryError:
+            # Not inside a git repo: there is no live checkout to isolate
+            # agent writes from, so running in-place violates nothing. Fail
+            # soft (even under mode="on") rather than blocking launch outside
+            # a repo. Mirrors the mid-operation / dirty-submodule refusals.
+            logger.warning(
+                "Not a git repository: skipping worktree isolation and "
+                "running in-place. Run from inside a git repo (or use "
+                "mode='off' / --no-worktree) to suppress this warning."
+            )
+            return None
         working_tree_dir = repo.working_tree_dir
         if working_tree_dir is None:
             raise RuntimeError("Cannot resolve working tree dir (bare repo?)")
