@@ -327,8 +327,7 @@ phased plan with risks and the files to touch (it plans, you decide).
 - `security` — defensive vuln audit of a change or area: traces untrusted input \
 to sinks and returns severity-ranked findings with fixes.
 - `verifier` — gate a *completed* implementation: proves it works by trying to \
-break it, then emits a PASS/FAIL/PARTIAL verdict with command evidence. Use \
-after non-trivial work, before reporting done (see the verification contract).
+break it, then emits a PASS/FAIL/PARTIAL verdict with command evidence.
 
 Fan out: issue several `task` calls in one turn so independent sub-questions \
 run in parallel. Give each a self-contained brief and ask for findings and \
