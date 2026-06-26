@@ -518,6 +518,10 @@ class VibeApp(App):  # noqa: PLR0904
         self._loading_widget: LoadingWidget | None = None
         self._pending_approval: asyncio.Future | None = None
         self._pending_question: asyncio.Future | None = None
+        # Set while a rate-limit model-switch dialog is open mid-turn; the model
+        # picker resolves it with the chosen alias (or None on cancel) so the
+        # agent loop can switch model and retry instead of surfacing the 429.
+        self._pending_model_switch: asyncio.Future | None = None
         self._user_interaction_lock = asyncio.Lock()
         self.event_handler: EventHandler | None = None
         self._chat_input_container: ChatInputContainer | None = None
@@ -782,6 +786,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         self.agent_loop.set_approval_callback(self._approval_callback)
         self.agent_loop.set_user_input_callback(self._user_input_callback)
+        self.agent_loop.set_rate_limit_callback(self._rate_limit_callback)
         self._refresh_profile_widgets()
 
         chat_input_container = self.query_one(ChatInputContainer)
@@ -1315,6 +1320,15 @@ class VibeApp(App):  # noqa: PLR0904
     async def on_model_picker_app_model_selected(
         self, message: ModelPickerApp.ModelSelected
     ) -> None:
+        # Mid-turn rate-limit switch: hand the chosen alias back to the agent
+        # loop (which rebuilds the backend and retries). Transient override —
+        # do NOT persist active_model; _rate_limit_callback restores the UI.
+        if (
+            self._pending_model_switch is not None
+            and not self._pending_model_switch.done()
+        ):
+            self._pending_model_switch.set_result(message.alias)
+            return
         target = getattr(self, "_model_picker_target", "active")
         self._model_picker_target = "active"
         discovered = getattr(self, "_discovered_models", {})
@@ -1346,6 +1360,14 @@ class VibeApp(App):  # noqa: PLR0904
     async def on_model_picker_app_cancelled(
         self, _event: ModelPickerApp.Cancelled
     ) -> None:
+        # Cancel during a rate-limit switch: resolve with None so the agent loop
+        # surfaces the error; _rate_limit_callback restores the UI.
+        if (
+            self._pending_model_switch is not None
+            and not self._pending_model_switch.done()
+        ):
+            self._pending_model_switch.set_result(None)
+            return
         self._model_picker_target = "active"
         await self._switch_to_input_app()
 
@@ -1994,6 +2016,45 @@ class VibeApp(App):  # noqa: PLR0904
             finally:
                 self._pending_question = None
                 await self._switch_to_input_app()
+
+    async def _rate_limit_callback(
+        self, provider: str, model: str, candidates: list[str]
+    ) -> str | None:
+        """Rate-limit recovery dialog: a turn hit a 429 with no automatic
+        fallback. Show the model picker (limited to switchable models) and return
+        the chosen alias so the agent loop switches and retries, or None if the
+        user cancels (Esc) — then the loop surfaces the error.
+        """
+        async with self._user_interaction_lock:
+            await self._wait_for_typing_pause()
+            self._pending_model_switch = asyncio.Future()
+            self._terminal_notifier.notify(NotificationContext.ACTION_REQUIRED)
+            try:
+                with paused_timer(self._loading_widget):
+                    await self._mount_and_scroll(
+                        WarningMessage(
+                            f"Rate limited on {model!r} ({provider}). "
+                            "Pick a model to switch to, or press Esc to stop."
+                        )
+                    )
+                    await self._switch_to_rate_limit_picker_app(model, candidates)
+                    chosen = await self._pending_model_switch
+                return chosen
+            finally:
+                self._pending_model_switch = None
+                await self._switch_to_input_app()
+
+    async def _switch_to_rate_limit_picker_app(
+        self, current_model: str, candidates: list[str]
+    ) -> None:
+        display_names = {m.alias: m.name for m in self.config.available_models}
+        await self._switch_from_input(
+            ModelPickerApp(
+                model_aliases=candidates,
+                current_model=current_model,
+                display_names=display_names,
+            )
+        )
 
     async def _handle_turn_error(self) -> None:
         if self._loading_widget and self._loading_widget.parent:
@@ -4978,6 +5039,7 @@ class VibeApp(App):  # noqa: PLR0904
                     future.result()
                     self.agent_loop.set_approval_callback(self._approval_callback)
                     self.agent_loop.set_user_input_callback(self._user_input_callback)
+                    self.agent_loop.set_rate_limit_callback(self._rate_limit_callback)
                 finally:
                     if (
                         self._chat_input_container

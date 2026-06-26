@@ -143,6 +143,7 @@ from vibe.core.types import (
     MessageList,
     PlanReviewEndedEvent,
     PlanReviewRequestedEvent,
+    RateLimitCallback,
     RateLimitError,
     ReasoningEvent,
     RefusalError,
@@ -497,6 +498,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         # Consolidation task (see _maybe_schedule_consolidation).
         self._mem_consolidate_task: asyncio.Task[None] | None = None
         self.user_input_callback: UserInputCallback | None = None
+        # Asked when a turn is rate-limited and no automatic fallback is
+        # available, to let the user pick a model to switch to (the rate-limit
+        # model-switch dialog). None in headless/ACP runs → surface the error.
+        self.rate_limit_callback: RateLimitCallback | None = None
         self.entrypoint_metadata = entrypoint_metadata
         self.terminal_emulator = terminal_emulator
 
@@ -683,6 +688,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
     def set_user_input_callback(self, callback: UserInputCallback) -> None:
         self.user_input_callback = callback
+
+    def set_rate_limit_callback(self, callback: RateLimitCallback) -> None:
+        self.rate_limit_callback = callback
 
     def set_tool_permission(
         self, tool_name: str, permission: ToolPermission, save_permanently: bool = False
@@ -1879,13 +1887,60 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             model = next((m for m in self.config.models if m.alias == alias), None)
             if model is None or not self.config.is_model_available(model):
                 continue
-            provider = self.config.get_provider_for_model(model)
-            self._fallback_model_override = model
-            self.backend = BACKEND_FACTORY[provider.backend](
-                provider=provider, timeout=self.config.api_timeout
-            )
-            return model
+            return self._activate_model(model)
         return None
+
+    def _activate_model(self, model: ModelConfig) -> ModelConfig:
+        """Make ``model`` the active override and rebuild the backend for it.
+
+        Shared by automatic fallback and the interactive rate-limit switch.
+        """
+        self._tried_fallback_aliases.add(model.alias)
+        provider = self.config.get_provider_for_model(model)
+        self._fallback_model_override = model
+        self.backend = BACKEND_FACTORY[provider.backend](
+            provider=provider, timeout=self.config.api_timeout
+        )
+        return model
+
+    def _switchable_model_aliases(self) -> list[str]:
+        """Available configured models not already tried this session — the
+        candidates offered when the user is asked to switch off a rate-limited
+        model. Excludes the current/tried models so the pool drains and the
+        prompt terminates instead of re-offering a model just rate-limited.
+        """
+        return [
+            m.alias
+            for m in self.config.models
+            if m.alias not in self._tried_fallback_aliases
+            and self.config.is_model_available(m)
+        ]
+
+    def _switch_to_chosen_model(self, alias: str) -> ModelConfig | None:
+        """Switch to an explicitly chosen model alias, rebuilding the backend.
+        Returns the activated model, or None if the alias is unknown/unavailable.
+        """
+        model = next((m for m in self.config.models if m.alias == alias), None)
+        if model is None or not self.config.is_model_available(model):
+            return None
+        return self._activate_model(model)
+
+    async def _prompt_model_switch_on_rate_limit(
+        self, error: RateLimitError
+    ) -> ModelConfig | None:
+        """Ask the user to pick a model when a rate-limited turn has no automatic
+        fallback. Returns the activated model, or None (no callback wired, no
+        candidates left, or the user declined) so the caller surfaces the error.
+        """
+        if self.rate_limit_callback is None:
+            return None
+        candidates = self._switchable_model_aliases()
+        if not candidates:
+            return None
+        chosen = await self.rate_limit_callback(error.provider, error.model, candidates)
+        if not chosen:
+            return None
+        return self._switch_to_chosen_model(chosen)
 
     def _warn_failover_unavailable(self, reason: str) -> None:
         """Explain why automatic failover could not proceed before re-raising.
@@ -2071,16 +2126,21 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     ):
                         yield ev
                     continue
-                except RateLimitError:
+                except RateLimitError as e:
                     # Fail over to the next configured fallback model and retry,
-                    # instead of surfacing a terminal rate-limit error. When the
-                    # fallback pool is exhausted, re-raise.
-                    fallback = self._switch_to_fallback_model()
+                    # instead of surfacing a terminal rate-limit error. With no
+                    # automatic fallback, ask the user to pick a model (the
+                    # rate-limit model-switch dialog) before giving up. Re-raise
+                    # only if neither path yields a model.
+                    fallback = (
+                        self._switch_to_fallback_model()
+                        or await self._prompt_model_switch_on_rate_limit(e)
+                    )
                     if fallback is None:
                         self._warn_failover_unavailable("Active model rate-limited")
                         raise
                     logger.warning(
-                        "Active model rate-limited; falling back to %r", fallback.alias
+                        "Active model rate-limited; switching to %r", fallback.alias
                     )
                     continue
                 except ContentFilterError as e:

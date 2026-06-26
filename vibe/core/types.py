@@ -714,6 +714,12 @@ type UserInputCallback = Callable[[BaseModel], Awaitable[BaseModel]]
 
 type SwitchAgentCallback = Callable[[str], Awaitable[None]]
 
+# Asks the host to let the user pick a model when a turn is rate-limited and no
+# automatic fallback is available. Given (provider, model, candidate_aliases),
+# returns the chosen model alias to switch to and retry, or None to surface the
+# rate-limit error (no callback / user declined).
+type RateLimitCallback = Callable[[str, str, list[str]], Awaitable[str | None]]
+
 
 class MessageList(Sequence[LLMMessage]):
     def __init__(
