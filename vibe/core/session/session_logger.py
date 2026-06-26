@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 import getpass
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -11,6 +10,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any, Literal
 
 from anyio import NamedTemporaryFile, Path as AsyncPath
+import orjson
 
 from vibe.core.session.session_id import shorten_session_id
 from vibe.core.session.session_loader import (
@@ -225,7 +225,9 @@ class SessionLogger:
                 encoding="utf-8",
             ) as f:
                 temp_metadata_filepath = Path(str(f.name))
-                await f.write(json.dumps(metadata, indent=2, ensure_ascii=False))
+                await f.write(
+                    orjson.dumps(metadata, option=orjson.OPT_INDENT_2).decode("utf-8")
+                )
                 await f.flush()
                 os.fsync(f.wrapped.fileno())
 
@@ -253,7 +255,7 @@ class SessionLogger:
                 "a", encoding="utf-8"
             ) as f:
                 for message in messages:
-                    await f.write(json.dumps(message, ensure_ascii=False) + "\n")
+                    await f.write(orjson.dumps(message).decode("utf-8") + "\n")
                     await f.flush()
                     os.fsync(f.wrapped.fileno())
         except Exception as e:
@@ -290,7 +292,7 @@ class SessionLogger:
         try:
             if metadata_path.exists():
                 raw = (await read_safe_async(metadata_path)).text
-                old_metadata = json.loads(raw)
+                old_metadata = orjson.loads(raw)
                 old_total_messages = old_metadata["total_messages"]
             else:
                 old_total_messages = 0
@@ -364,8 +366,8 @@ class SessionLogger:
             return
         try:
             raw = (await read_safe_async(metadata_path)).text
-            metadata = json.loads(raw)
-        except (OSError, json.JSONDecodeError) as e:
+            metadata = orjson.loads(raw)
+        except (OSError, orjson.JSONDecodeError) as e:
             raise RuntimeError(
                 f"Failed to read session metadata at {metadata_path}: {e}"
             ) from e
@@ -384,8 +386,8 @@ class SessionLogger:
             return
         try:
             raw = (await read_safe_async(metadata_path)).text
-            metadata = json.loads(raw)
-        except (OSError, json.JSONDecodeError) as e:
+            metadata = orjson.loads(raw)
+        except (OSError, orjson.JSONDecodeError) as e:
             raise RuntimeError(
                 f"Failed to read session metadata at {metadata_path}: {e}"
             ) from e
@@ -426,8 +428,8 @@ class SessionLogger:
             return
         try:
             raw = (await read_safe_async(metadata_path)).text
-            metadata = json.loads(raw)
-        except (OSError, json.JSONDecodeError) as e:
+            metadata = orjson.loads(raw)
+        except (OSError, orjson.JSONDecodeError) as e:
             raise RuntimeError(
                 f"Failed to read session metadata at {metadata_path}: {e}"
             ) from e

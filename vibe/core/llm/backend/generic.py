@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
-import json
 import os
 import types
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 import httpx
+import orjson
 
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
 from vibe.core.llm.backend.adapter_port import (
@@ -174,7 +174,7 @@ class OpenAIAdapter(APIAdapter):
             payload["stream_options"] = stream_options
 
         headers = self.build_headers(params.api_key)
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = orjson.dumps(payload)
 
         return PreparedRequest(self.endpoint, headers, body)
 
@@ -534,7 +534,7 @@ class GenericBackend:
                         continue
                     if value == "[DONE]":
                         return
-                    yield json.loads(value.strip())
+                    yield orjson.loads(value.strip())
 
     async def close(self) -> None:
         if self._owns_client and self._client:
