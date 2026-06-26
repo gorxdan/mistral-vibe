@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import math
 import os
 from typing import TYPE_CHECKING, Any
+import urllib.parse
 
 import httpx
 
@@ -174,6 +175,15 @@ async def _chatgpt_headers(provider: ProviderConfig) -> dict[str, str]:
 _CHATGPT_CTX_KEYS = ("context_window", "max_context_window")
 
 
+def _chatgpt_models_url(provider: ProviderConfig) -> str:
+    from vibe.core.auth.openai_oauth import OPENAI_CODEX_VERSION
+
+    base = f"{provider.api_base.rstrip('/')}/models"
+    separator = "&" if "?" in base else "?"
+    query = urllib.parse.urlencode({"client_version": OPENAI_CODEX_VERSION})
+    return f"{base}{separator}{query}"
+
+
 async def _get_json(
     client: httpx.AsyncClient, url: str, headers: dict[str, str], provider_name: str
 ) -> Any | None:
@@ -221,8 +231,9 @@ async def _fetch_chatgpt_models(
     headers = await _chatgpt_headers(provider)
     if not headers:
         return []
-    url = f"{provider.api_base.rstrip('/')}/models"
-    data = await _get_json(client, url, headers, provider.name)
+    data = await _get_json(
+        client, _chatgpt_models_url(provider), headers, provider.name
+    )
     items = data.get("models") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []
