@@ -283,10 +283,40 @@ def test_format_workflow_delivery_truncates_large_result() -> None:
     assert len(payload) < VibeApp._WORKFLOW_DELIVERY_CHAR_CAP + 500
 
 
-async def test_on_workflow_complete_delivers_return_value_to_agent_context() -> None:
-    # End-to-end: a completed workflow's return_value must land in the host
-    # agent's message context, not just the UI. _mount_and_scroll is stubbed so
-    # this runs without a mounted Textual app.
+async def test_on_workflow_complete_folds_into_running_turn() -> None:
+    # When a turn is in flight, the result is staged into the pending-injection
+    # path (the running loop drains it and keeps going) rather than appended to
+    # history, which a running turn never re-reads.
+    from tests.conftest import build_test_vibe_app
+
+    app = build_test_vibe_app()
+
+    async def _noop_mount(_w: Any) -> None:
+        return None
+
+    app._mount_and_scroll = _noop_mount  # type: ignore[method-assign]
+    app._agent_running = True
+
+    result = _result(
+        summary="Workflow completed: 1 agents, 10 tokens, $0.0001",
+        return_value={"findings": ["all good"]},
+        status=WorkflowStatus.COMPLETED,
+    )
+    history_before = len(app.agent_loop.messages)
+    await app._on_workflow_complete(result)
+
+    staged = app.agent_loop._pending_injected_messages
+    assert len(staged) == 1, "result must be staged into the live turn"
+    assert "all good" in (staged[-1].content or "")
+    assert "Workflow completed" in (staged[-1].content or "")
+    # Not appended directly to history (the running turn would never see it).
+    assert len(app.agent_loop.messages) == history_before
+
+
+async def test_on_workflow_complete_resumes_idle_agent() -> None:
+    # When the agent is idle (the launching turn already ended), a completed run
+    # auto-resumes the agent: a continuation turn is driven with the delivery as
+    # its prompt so the agent acts on the outcome instead of stalling.
     from tests.conftest import build_test_vibe_app
 
     app = build_test_vibe_app()
@@ -296,19 +326,30 @@ async def test_on_workflow_complete_delivers_return_value_to_agent_context() -> 
 
     app._mount_and_scroll = _noop_mount  # type: ignore[method-assign]
 
+    started: list[str] = []
+
+    async def _fake_turn(prompt: str, **_kw: Any) -> None:
+        started.append(prompt)
+
+    app._handle_agent_loop_turn = _fake_turn  # type: ignore[method-assign]
+    assert app._agent_running is False
+
     result = _result(
         summary="Workflow completed: 1 agents, 10 tokens, $0.0001",
         return_value={"findings": ["all good"]},
         status=WorkflowStatus.COMPLETED,
     )
-    before = len(app.agent_loop.messages)
     await app._on_workflow_complete(result)
-    after = len(app.agent_loop.messages)
 
-    assert after == before + 1, "result must be injected into the agent context"
-    injected = app.agent_loop.messages[-1]
-    assert "all good" in (injected.content or "")
-    assert "Workflow completed" in (injected.content or "")
+    # _agent_running is set synchronously so a racing user submit can't double
+    # start; the continuation turn is scheduled as a task.
+    assert app._agent_running is True
+    assert app._agent_task is not None
+    await app._agent_task
+
+    assert len(started) == 1, "an idle agent must be resumed to act on the result"
+    assert "all good" in started[0]
+    assert "Workflow completed" in started[0]
 
 
 async def test_persist_callback_fires_on_cancel() -> None:

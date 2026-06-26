@@ -3861,7 +3861,20 @@ class VibeApp(App):  # noqa: PLR0904
                     # the agent would otherwise appear to stop on a failed run.
                     self.agent_loop.stage_injected_message(payload)
                 else:
-                    await self.agent_loop.inject_user_context(payload)
+                    # Idle: the launching turn already ended, so there is no live
+                    # loop to fold into. Auto-resume — drive a continuation turn
+                    # with the delivery as its prompt so the agent acts on the
+                    # outcome instead of stalling until the next human message.
+                    # The event consumer ignores UserMessageEvent, so this adds
+                    # no redundant user bubble on top of the summary shown above.
+                    # Set _agent_running synchronously (before the task is
+                    # scheduled) so a user submit racing on the same loop tick
+                    # cannot also start a turn and clobber _agent_task.
+                    self._agent_running = True
+                    self._agent_task = asyncio.create_task(
+                        self._handle_agent_loop_turn(payload)
+                    )
+                    self._queue.notify_busy_changed()
             except Exception:
                 logger.warning(
                     "Failed to deliver workflow result to agent loop", exc_info=True
