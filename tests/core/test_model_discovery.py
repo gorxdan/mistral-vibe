@@ -579,7 +579,10 @@ def test_persist_does_not_duplicate_existing_provider(
 
 # --- ChatGPT (codex) discovery ---------------------------------------------
 
-CHATGPT_MODELS_URL = f"{oauth.OPENAI_CHATGPT_API_BASE}/models"
+CHATGPT_MODELS_URL = (
+    f"{oauth.OPENAI_CHATGPT_API_BASE}/models"
+    f"?client_version={oauth.OPENAI_CODEX_VERSION}"
+)
 
 
 def _chatgpt_provider(**kw: object) -> ProviderConfig:
@@ -636,7 +639,9 @@ async def test_fetch_models_chatgpt_sends_oauth_bearer() -> None:
         return_value=httpx.Response(200, json={"models": []})
     )
     await fetch_models(_chatgpt_provider())
-    headers = route.calls.last.request.headers
+    request = route.calls.last.request
+    assert request.url.params["client_version"] == oauth.OPENAI_CODEX_VERSION
+    headers = request.headers
     assert headers["Authorization"] == "Bearer access-1"
     assert headers["ChatGPT-Account-ID"] == "acct_123"
 
