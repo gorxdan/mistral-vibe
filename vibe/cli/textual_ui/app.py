@@ -3851,7 +3851,17 @@ class VibeApp(App):  # noqa: PLR0904
         payload = self._format_workflow_delivery(result)
         if payload:
             try:
-                await self.agent_loop.inject_user_context(payload)
+                if self._agent_running:
+                    # A turn is in flight (typically the one that launched this
+                    # run, which is still going when a fast run — e.g. a script
+                    # that errors at 0 agents — completes). Fold the outcome into
+                    # it via the pending-injection path so the loop keeps going
+                    # and the agent acts on the result. inject_user_context only
+                    # appends to history, which a running turn never re-reads, so
+                    # the agent would otherwise appear to stop on a failed run.
+                    self.agent_loop.stage_injected_message(payload)
+                else:
+                    await self.agent_loop.inject_user_context(payload)
             except Exception:
                 logger.warning(
                     "Failed to deliver workflow result to agent loop", exc_info=True
@@ -3864,9 +3874,9 @@ class VibeApp(App):  # noqa: PLR0904
         if isinstance(value, str):
             return value
         try:
-            return orjson.dumps(
-                value, option=orjson.OPT_INDENT_2, default=str
-            ).decode("utf-8")
+            return orjson.dumps(value, option=orjson.OPT_INDENT_2, default=str).decode(
+                "utf-8"
+            )
         except (TypeError, ValueError):
             return str(value)
 
@@ -4316,9 +4326,9 @@ class VibeApp(App):  # noqa: PLR0904
         # (the friendly alias is what gets persisted as active_model). Discovered
         # models already carry name == api id.
         display_names = {m.alias: m.name for m in self.config.available_models}
-        display_names.update(
-            {alias: dm.model.name for alias, dm in self._discovered_models.items()}
-        )
+        display_names.update({
+            alias: dm.model.name for alias, dm in self._discovered_models.items()
+        })
         if target == "judge":
             current_model = str(self.config.safety_judge.model or "")
         else:
