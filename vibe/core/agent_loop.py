@@ -1508,7 +1508,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if self._is_subagent:
             return
         mem = self.config.memory
-        if not mem.auto_extract:
+        if not (mem.auto_extract or self.config.is_le_chaton()):
             return
         if (
             self._mem_consolidate_task is not None
@@ -1696,10 +1696,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         Runs only after the turn's extraction pass has settled, so the two
         never mutate the store concurrently.
         """
-        if self._is_subagent or self.config.is_le_chaton():
+        if self._is_subagent:
             return
         mem = self.config.memory
-        if not mem.consolidate:
+        if not (mem.consolidate or self.config.is_le_chaton()):
             return
         # In-flight guards (two reasons, one return): (a) the interval stamp is
         # day-granularity and only written at the END of a run, so a second turn
@@ -1942,26 +1942,27 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return None
         return self._switch_to_chosen_model(chosen)
 
-    def _warn_failover_unavailable(self, reason: str) -> None:
-        """Explain why automatic failover could not proceed before re-raising.
+    def _failover_unavailable_hint(self, reason: str) -> str:
+        """Build the actionable hint for when automatic failover cannot proceed.
 
         The rate-limit / content-filter handlers fall over to
-        ``fallback_models``, which defaults to empty — so on stock config the
-        recovery path is a silent no-op. Surface why so the terminal error is
-        actionable rather than mysterious.
+        ``fallback_models``, which defaults to empty, so on stock config the
+        recovery path is a silent no-op. Return why so it can be logged AND
+        attached to the terminal error, so the hint reaches the user instead
+        of only the log file.
         """
         if not self.config.fallback_models:
-            logger.warning(
-                "%s and no fallback_models configured; set config.fallback_models "
-                "to enable automatic failover. Surfacing the error.",
-                reason,
+            hint = (
+                f"{reason} and no fallback_models configured; set "
+                "config.fallback_models to enable automatic failover."
             )
         else:
-            logger.warning(
-                "%s and fallback pool exhausted (tried %s); surfacing the error.",
-                reason,
-                sorted(self._tried_fallback_aliases),
+            hint = (
+                f"{reason} and fallback pool exhausted (tried "
+                f"{sorted(self._tried_fallback_aliases)})."
             )
+        logger.warning("%s", hint)
+        return hint
 
     def _escalate_max_output(self) -> int | None:
         """Compute the next, larger output budget after a truncated response.
@@ -2131,13 +2132,16 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     # instead of surfacing a terminal rate-limit error. With no
                     # automatic fallback, ask the user to pick a model (the
                     # rate-limit model-switch dialog) before giving up. Re-raise
-                    # only if neither path yields a model.
+                    # only if neither path yields a model, attaching the reason
+                    # to the terminal error so the user sees why recovery failed.
                     fallback = (
                         self._switch_to_fallback_model()
                         or await self._prompt_model_switch_on_rate_limit(e)
                     )
                     if fallback is None:
-                        self._warn_failover_unavailable("Active model rate-limited")
+                        e.failover_hint = self._failover_unavailable_hint(
+                            "Active model rate-limited"
+                        )
                         raise
                     logger.warning(
                         "Active model rate-limited; switching to %r", fallback.alias
@@ -2148,10 +2152,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     # 1301) — frequently a false positive on defensive-security
                     # work. Fail over to the next configured fallback model; when
                     # the pool is exhausted, surface the clean error instead of a
-                    # raw RuntimeError dump.
+                    # raw RuntimeError dump, with the reason attached.
                     fallback = self._switch_to_fallback_model()
                     if fallback is None:
-                        self._warn_failover_unavailable(
+                        e.failover_hint = self._failover_unavailable_hint(
                             f"Request blocked by {e.provider!r} content filter"
                         )
                         raise

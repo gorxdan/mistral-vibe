@@ -239,6 +239,7 @@ from vibe.core.types import (
     ApprovalResponse,
     Backend,
     BaseEvent,
+    ContentFilterError,
     ContextTooLongError,
     ImageAttachment,
     LLMMessage,
@@ -2172,6 +2173,8 @@ class VibeApp(App):  # noqa: PLR0904
     def _resolve_turn_error_message(self, e: Exception) -> str:
         if isinstance(e, RateLimitError):
             return self._rate_limit_message(e)
+        if isinstance(e, ContentFilterError):
+            return self._content_filter_message(e)
         if isinstance(e, ContextTooLongError):
             return self._context_too_long_message()
         if isinstance(e, RefusalError):
@@ -2194,15 +2197,28 @@ class VibeApp(App):  # noqa: PLR0904
             )
         )
         if upgrade_to_pro:
-            return (
+            base = (
                 f"Rate limits exceeded for {target}. Please wait a moment before "
                 "trying again, or upgrade to Pro for higher rate limits and "
                 "uninterrupted access."
             )
-        return (
-            f"Rate limits exceeded for {target}. "
-            "Please wait a moment before trying again."
+        else:
+            base = (
+                f"Rate limits exceeded for {target}. "
+                "Please wait a moment before trying again."
+            )
+        if e.failover_hint:
+            base = f"{base}\n\n{e.failover_hint}"
+        return base
+
+    def _content_filter_message(self, e: ContentFilterError) -> str:
+        base = (
+            f"The request to {e.model} ({e.provider}) was blocked by the "
+            "content filter."
         )
+        if e.failover_hint:
+            base = f"{base}\n\n{e.failover_hint}"
+        return base
 
     def _context_too_long_message(self) -> str:
         return (

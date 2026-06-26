@@ -811,6 +811,8 @@ class MessageList(Sequence[LLMMessage]):
 
 
 class RateLimitError(Exception):
+    failover_hint: str | None = None
+
     def __init__(self, provider: str, model: str) -> None:
         self.provider = provider
         self.model = model
@@ -839,6 +841,8 @@ class ResponseTooLongError(Exception):
 
 
 class ContentFilterError(Exception):
+    failover_hint: str | None = None
+
     def __init__(self, provider: str, model: str) -> None:
         self.provider = provider
         self.model = model

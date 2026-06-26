@@ -67,12 +67,19 @@ async def test_rate_limit_with_no_fallback_surfaces_error(
 
     loop._perform_llm_turn = always_rate_limited  # type: ignore[method-assign]
 
+    raised: RateLimitError | None = None
     with caplog.at_level("WARNING"):
-        with pytest.raises(RateLimitError):
+        with pytest.raises(RateLimitError) as exc_info:
             _ = [e async for e in loop._conversation_loop("hi")]
+        raised = exc_info.value
     assert loop._fallback_model_override is None
-    # The silent no-op is now diagnosable: an actionable hint is logged.
+    # The silent no-op is now diagnosable: an actionable hint is logged AND
+    # attached to the terminal error so it reaches the user-visible message
+    # rather than only the log file.
     assert "no fallback_models configured" in caplog.text
+    assert raised is not None
+    assert raised.failover_hint is not None
+    assert "no fallback_models configured" in raised.failover_hint
 
 
 @pytest.mark.asyncio

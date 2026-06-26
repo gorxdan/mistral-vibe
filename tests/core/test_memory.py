@@ -1424,6 +1424,25 @@ async def test_maybe_schedule_consolidation_disabled_by_default(
 
 
 @pytest.mark.asyncio
+async def test_maybe_schedule_consolidation_runs_under_le_chaton(
+    monkeypatch, tmp_path
+) -> None:
+    # Le-chaton is the flagship mode and gets every benefit, consolidation
+    # included. The old blanket is_le_chaton() exclusion is dropped; the
+    # config gate (consolidate) is bypassed in le-chaton, so a corpus with
+    # enough stale candidates schedules a run even with consolidate=False.
+    config = build_test_vibe_config(effort_mode="le-chaton")
+    loop = build_test_agent_loop(config=config)
+    store = MemoryStore(user_dir=tmp_path)
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    for letter in "abcdefgh":
+        store.upsert(_stale_entry(letter, body=f"body {letter}"))
+    loop._maybe_schedule_consolidation()
+    assert loop._mem_consolidate_task is not None
+    loop._mem_consolidate_task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_consolidate_applies_merge_via_reversible_trash(
     monkeypatch, tmp_path
 ) -> None:
