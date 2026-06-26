@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, TypedDict, cast
 
 import orjson
@@ -102,9 +102,29 @@ _RESPONSES_ERROR_DATA_ADAPTER = TypeAdapter(_ResponsesErrorData)
 class _ResponsesToolCallState:
     call_id: str | None = None
     name: str | None = None
-    arguments: str = ""
     name_emitted: bool = False
     arguments_emitted: bool = False
+    # Arguments arrive as a stream of deltas. Buffer the fragments and join on
+    # read instead of re-concatenating the whole string on every delta, which is
+    # O(n^2) over a large tool-call payload.
+    _arg_base: str = ""
+    _arg_parts: list[str] = field(default_factory=list)
+
+    @property
+    def arguments(self) -> str:
+        if self._arg_parts:
+            self._arg_base += "".join(self._arg_parts)
+            self._arg_parts.clear()
+        return self._arg_base
+
+    @arguments.setter
+    def arguments(self, value: str) -> None:
+        self._arg_base = value
+        self._arg_parts.clear()
+
+    def append_arguments(self, delta: str) -> None:
+        if delta:
+            self._arg_parts.append(delta)
 
 
 class _OpenAIResponsesStreamParser:
@@ -296,12 +316,15 @@ class _OpenAIResponsesStreamParser:
         if index is None:
             raise ValueError("Tool call chunk missing index")
 
-        state = self._tool_call_states.get(index, _ResponsesToolCallState())
+        state = self._tool_call_states.setdefault(index, _ResponsesToolCallState())
+        # Append the delta to the buffer (O(1)); the full string is materialised
+        # lazily when state.arguments is read at finalize.
+        state.append_arguments(delta)
         self._remember_tool_call_state(
             index=index,
             call_id=data.get("call_id"),
             name=data.get("name"),
-            arguments=state.arguments + delta,
+            arguments=None,
             name_emitted=state.name_emitted,
             arguments_emitted=state.arguments_emitted,
         )

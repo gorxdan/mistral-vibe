@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Iterator
+import functools
 import hashlib
 import importlib.util
 import inspect
@@ -56,6 +57,14 @@ def _compute_module_name(path: Path) -> str:
     path_hash = hashlib.md5(str(resolved).encode()).hexdigest()[:8]
     stem = re.sub(r"[^0-9A-Za-z_]", "_", path.stem) or "mod"
     return f"vibe_tools_discovered_{stem}_{path_hash}"
+
+
+@functools.cache
+def _is_available_takes_config(cls: type[BaseTool]) -> bool:
+    # is_available's signature is static per class; inspect.signature is costly,
+    # so memoise the "does it accept config" decision rather than re-introspecting
+    # on every availability check.
+    return bool(inspect.signature(cls.is_available).parameters)
 
 
 class NoSuchToolError(Exception):
@@ -222,7 +231,7 @@ class ToolManager:
     def _is_tool_available(self, cls: type[BaseTool]) -> bool:
         # Backwards-compatibility check to avoid breaking
         # existing custom tools that call is_available without parameters
-        if inspect.signature(cls.is_available).parameters:
+        if _is_available_takes_config(cls):
             return cls.is_available(self._config)
         return cls.is_available()
 

@@ -137,6 +137,7 @@ from vibe.core.types import (
     ContextTooLongError,
     ImageAttachment,
     LLMChunk,
+    LLMChunkAccumulator,
     LLMMessage,
     LLMUsage,
     MessageList,
@@ -3072,8 +3073,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 model=active_model.name, provider=provider.name
             ) as _span:
                 start_time = time.perf_counter()
-                usage = LLMUsage()
-                chunk_agg: LLMChunk | None = None
+                # Accumulate streamed deltas in O(n) instead of folding with
+                # LLMChunk.__add__ per chunk (which re-concatenates the whole
+                # message every delta -> O(n^2) over a response).
+                chunk_acc = LLMChunkAccumulator()
                 async for chunk in self.backend.complete_streaming(
                     model=active_model,
                     messages=self._messages_for_backend(active_model),
@@ -3087,27 +3090,26 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 ):
                     if chunk.correlation_id:
                         self.telemetry_client.last_correlation_id = chunk.correlation_id
-                    processed_message = (
-                        self.format_handler.process_api_response_message(chunk.message)
-                    )
                     processed_chunk = LLMChunk(
-                        message=processed_message, usage=chunk.usage, stop=chunk.stop
+                        message=self.format_handler.process_api_response_message(
+                            chunk.message
+                        ),
+                        usage=chunk.usage,
+                        stop=chunk.stop,
                     )
-                    chunk_agg = (
-                        processed_chunk
-                        if chunk_agg is None
-                        else chunk_agg + processed_chunk
-                    )
-                    usage += chunk.usage or LLMUsage()
+                    chunk_acc.add(processed_chunk)
                     yield processed_chunk
                 end_time = time.perf_counter()
 
+                chunk_agg = chunk_acc.build()
                 if chunk_agg is None or chunk_agg.usage is None:
                     raise AgentLoopLLMResponseError(
                         "Usage data missing in final chunk of streamed completion"
                     )
-                self._update_stats(usage=usage, time_seconds=end_time - start_time)
-                set_usage(_span, usage)
+                self._update_stats(
+                    usage=chunk_acc.usage, time_seconds=end_time - start_time
+                )
+                set_usage(_span, chunk_acc.usage)
 
             self.messages.append(chunk_agg.message)
             if chunk_agg.stop and chunk_agg.stop.is_refusal:

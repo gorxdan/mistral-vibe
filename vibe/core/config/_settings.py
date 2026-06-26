@@ -11,7 +11,6 @@ from typing import Annotated, Any, ClassVar, Literal, get_args
 from urllib.parse import urljoin
 
 from dotenv import dotenv_values
-from mistralai.client.models import SpeechOutputFormat
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -27,7 +26,6 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
-from textual.theme import BUILTIN_THEMES
 import tomli_w
 
 from vibe.core.agents.models import BuiltinAgentName
@@ -877,6 +875,11 @@ class TTSProviderConfig(BaseModel):
     client: TTSClient = TTSClient.MISTRAL
 
 
+# Inlined from mistralai.client.models.SpeechOutputFormat to avoid importing the
+# mistralai SDK (~170ms) on every config-only startup path (ACP, -p, worktree, tests).
+SpeechOutputFormat = Literal["pcm", "wav", "mp3", "flac", "opus"]
+
+
 class TTSModelConfig(BaseModel):
     name: str
     provider: str
@@ -1468,6 +1471,10 @@ class VibeConfig(BaseSettings):
     def _validate_theme(cls, v: Any) -> str:
         if not isinstance(v, str) or not v:
             return DEFAULT_THEME
+        if v == DEFAULT_THEME:
+            return v
+        from textual.theme import BUILTIN_THEMES
+
         if v not in BUILTIN_THEMES:
             logger.warning(
                 "Unknown theme=%s in config; falling back to %s", v, DEFAULT_THEME

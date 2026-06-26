@@ -35,8 +35,6 @@ from vibe.core.tracing import setup_tracing
 from vibe.core.trusted_folders import find_trustable_files, trusted_folders_manager
 from vibe.core.types import LLMMessage, OutputFormat, Role
 from vibe.core.utils import ConversationLimitException
-from vibe.setup.onboarding import run_onboarding
-from vibe.setup.update_prompt import UpdatePromptResult, ask_update_prompt
 
 
 def _build_cli_entrypoint_metadata() -> EntrypointMetadata:
@@ -89,6 +87,8 @@ def load_config_or_exit(*, interactive: bool) -> VibeConfig:
                 file=sys.stderr,
             )
             sys.exit(1)
+        from vibe.setup.onboarding import run_onboarding
+
         run_onboarding(entrypoint_metadata=_build_cli_entrypoint_metadata())
         return VibeConfig.load()
     except ValidationError as e:
@@ -302,6 +302,8 @@ def _maybe_run_startup_update_prompt(
     if not config.enable_update_checks:
         return
 
+    from vibe.setup.update_prompt import UpdatePromptResult, ask_update_prompt
+
     try:
         latest_version = asyncio.run(
             get_pending_update_from_cache(repository, __version__)
@@ -346,6 +348,8 @@ def run_cli(args: argparse.Namespace) -> None:
     bootstrap_config_files()
 
     if args.setup:
+        from vibe.setup.onboarding import run_onboarding
+
         run_onboarding(entrypoint_metadata=_build_cli_entrypoint_metadata())
         sys.exit(0)
 

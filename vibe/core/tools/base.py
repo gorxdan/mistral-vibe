@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Awaitable, Callable
-import copy
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
 import functools
@@ -22,6 +21,7 @@ from typing import (
     get_type_hints,
 )
 
+import orjson
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from vibe.core.logger import logger
@@ -414,12 +414,14 @@ class BaseTool[
         """Return a cleaned-up JSON-schema dict describing the arguments model
         with which this concrete tool was parametrised.
 
-        Returns a fresh deep copy of the cached schema so callers remain free to
-        mutate the result without corrupting the cache.
+        Returns a fresh copy of the cached schema so callers remain free to
+        mutate the result without corrupting the cache. An orjson round-trip is
+        markedly faster than copy.deepcopy for this JSON-shaped dict.
         """
-        return copy.deepcopy(cls._build_parameters())
+        return orjson.loads(orjson.dumps(cls._build_parameters()))
 
     @classmethod
+    @functools.cache
     def get_name(cls) -> str:
         name = cls.__name__
         snake_case = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()

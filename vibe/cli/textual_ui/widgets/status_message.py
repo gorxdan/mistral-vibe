@@ -43,13 +43,15 @@ class StatusMessage(SpinnerMixin, NoMarkupStatic):
     def _update_spinner_frame(self) -> None:
         if not self._is_spinning:
             return
-        self.update_display()
+        # The spinner timer fires ~10Hz; only the indicator frame changes per
+        # tick. get_content() (and any ToolUIDataAdapter it builds) is static
+        # between explicit state changes, so skip recomputing/re-rendering the
+        # text on every tick — refresh just the indicator.
+        self._refresh_indicator()
 
-    def update_display(self) -> None:
-        if not self._indicator_widget or not self._text_widget:
+    def _refresh_indicator(self) -> None:
+        if not self._indicator_widget:
             return
-
-        content = self.get_content()
 
         if self._is_spinning:
             self._indicator_widget.update(self._spinner.next_frame())
@@ -64,7 +66,12 @@ class StatusMessage(SpinnerMixin, NoMarkupStatic):
             self._indicator_widget.add_class("error")
             self._indicator_widget.remove_class("success")
 
-        self._text_widget.update(content)
+    def update_display(self) -> None:
+        if not self._indicator_widget or not self._text_widget:
+            return
+
+        self._refresh_indicator()
+        self._text_widget.update(self.get_content())
 
     def get_content(self) -> str:
         return self._initial_text
