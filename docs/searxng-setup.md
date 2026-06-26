@@ -24,12 +24,20 @@ searxng_autostart = true                 # start at session start if down
 searxng_stop_on_exit = true              # stop on exit, only if Chaton started it
 searxng_timeout = 30                      # per-request timeout (seconds)
 searxng_health_timeout = 60              # total seconds to wait for a cold-starting container
-searxng_disabled_engines = ["google"]    # fragile engines to disable in the managed container
+# Force-enable these general-web engines in every managed container:
+searxng_enabled_engines = ["bing", "duckduckgo", "startpage", "google", "qwant", "mojeek"]
+searxng_disabled_engines = []             # engines to force-disable (overrides enabled_engines)
 ```
 
 `web_search` routes to SearXNG whenever `searxng_url` is set (or the `SEARXNG_URL` environment variable is present). With no SearXNG URL, it falls back to Mistral web search.
 
-`searxng_timeout` caps a single search request; `searxng_health_timeout` is the separate, larger budget Chaton waits for a managed container to become healthy on a cold start. `searxng_disabled_engines` marks named engines as `disabled: true` in the managed container's `settings.yml` (then restarts it once). Commercial engines like `google`, `startpage`, `duckduckgo`, and `brave` are the most likely to rate-limit or CAPTCHA a self-hosted instance; disabling them shifts load to more tolerant engines.
+`searxng_timeout` caps a single search request; `searxng_health_timeout` is the separate, larger budget Chaton waits for a managed container to become healthy on a cold start.
+
+### Engine selection
+
+The upstream SearXNG image ships most general-web engines (`google`, `bing`, `duckduckgo`, `startpage`, `qwant`, `mojeek`) as `disabled: true`, leaving only `brave` serving a plain query. Chaton's default `searxng_enabled_engines` force-enables a broad set in every container it manages so that when one engine rate-limits itself there are still others returning results — no single point of failure. The reconciliation runs once at session start (and after Chaton starts a fresh container): it removes `disabled: true` from each named engine in `settings.yml` and restarts once, then is a no-op on subsequent starts.
+
+`searxng_disabled_engines` is the inverse — engines to force *off*. It overrides `searxng_enabled_engines`: an engine named in both lists ends disabled (an explicit disable beats the default enable). Set `searxng_enabled_engines = []` to opt out of force-enabling any engine and accept the upstream defaults.
 
 ## How lifecycle management works
 

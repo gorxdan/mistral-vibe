@@ -17,6 +17,17 @@ from vibe.core.utils.io import read_safe
 DEFAULT_IMAGE = "searxng/searxng:latest"
 DEFAULT_CONTAINER_NAME = "vibe-searxng"
 DEFAULT_PORT = 8888
+# Upstream image ships most general-web engines disabled (only `brave` serves a
+# plain query); force-enable this curated set in every managed container so one
+# engine rate-limiting itself never zeroes results.
+DEFAULT_ENABLED_ENGINES = (
+    "bing",
+    "duckduckgo",
+    "startpage",
+    "google",
+    "qwant",
+    "mojeek",
+)
 # SearXNG's limiter (botdetection) scores non-browser User-Agents as bots and
 # rate-limits them; a browser UA keeps our JSON requests through.
 BROWSER_USER_AGENT = (
@@ -60,6 +71,7 @@ class SearxngSettings:
     autostart: bool = True
     stop_on_exit: bool = True
     health_timeout: int = 60
+    enabled_engines: tuple[str, ...] = ()
     disabled_engines: tuple[str, ...] = ()
 
     @property
@@ -155,8 +167,8 @@ async def ensure_running(
 ) -> StartOutcome:
     url = settings.effective_url
     if await health_check(url):
-        if settings.disabled_engines:
-            await _apply_disabled_engines(settings)
+        if settings.enabled_engines or settings.disabled_engines:
+            await _reconcile_engines(settings)
         return StartOutcome(ok=True, already_running=True, detail="already running")
 
     engine = engine or detect_engine()
@@ -176,8 +188,8 @@ async def ensure_running(
         _started_by_us.add(settings.container_name)
 
     ok = await _wait_for_health(url, settings.health_timeout)
-    if ok and settings.disabled_engines:
-        await _apply_disabled_engines(settings)
+    if ok and (settings.enabled_engines or settings.disabled_engines):
+        await _reconcile_engines(settings)
     return StartOutcome(
         ok=ok,
         started=we_started and ok,
@@ -296,6 +308,83 @@ async def _ensure_json_format(engine: str, name: str) -> None:
 _YAML_TRUTHY = frozenset("true yes on y".split())
 
 
+def _enable_stanza_edit(
+    item: yaml.MappingNode, targets: set[str]
+) -> tuple[str, int, int | None] | None:
+    # Scan one engine stanza for a target with a truthy `disabled` flag. Returns
+    # (name, disabled_line, promote_from): promote_from is set when `disabled` is
+    # the first key sharing the sequence dash line, requiring a sibling key to be
+    # hoisted onto the dash line instead of a plain line delete.
+    name: str | None = None
+    disabled_line: int | None = None
+    disabled_idx: int | None = None
+    for idx, (k, v) in enumerate(item.value):
+        if not isinstance(k, yaml.ScalarNode) or not isinstance(v, yaml.ScalarNode):
+            continue
+        if k.value == "name":
+            name = v.value
+        elif k.value == "disabled" and str(v.value).lower() in _YAML_TRUTHY:
+            disabled_line = k.start_mark.line
+            disabled_idx = idx
+    if name not in targets or name is None or disabled_line is None:
+        return None
+    if (
+        disabled_line == item.start_mark.line
+        and disabled_idx is not None
+        and disabled_idx + 1 < len(item.value)
+    ):
+        return name, disabled_line, item.value[disabled_idx + 1][0].start_mark.line
+    return name, disabled_line, None
+
+
+def enable_engines_in_settings(text: str, engines: list[str]) -> tuple[str, list[str]]:
+    # Surgical, comment-preserving edit: yaml.safe_dump would nuke comments and reformat.
+    # Compose for line-accurate marks, then drop the `disabled: <truthy>` key from each
+    # target stanza. Absence (or `disabled: false`) already means enabled — SearXNG
+    # convention — so those stanzas are untouched. Idempotent.
+    if not engines:
+        return text, []
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError:
+        return text, []
+    if not isinstance(root, yaml.MappingNode):
+        return text, []
+
+    engines_node: yaml.Node | None = None
+    for key_node, value_node in root.value:
+        if isinstance(key_node, yaml.ScalarNode) and key_node.value == "engines":
+            engines_node = value_node
+            break
+    if not isinstance(engines_node, yaml.SequenceNode):
+        return text, []
+
+    targets = set(engines)
+    edits: list[tuple[int, int | None]] = []
+    changed: list[str] = []
+    for item in engines_node.value:
+        if not isinstance(item, yaml.MappingNode):
+            continue
+        edit = _enable_stanza_edit(item, targets)
+        if edit is not None:
+            name, line, promote_from = edit
+            edits.append((line, promote_from))
+            changed.append(name)
+
+    if not edits:
+        return text, []
+
+    lines = text.splitlines(keepends=True)
+    for line_no, promote_from in sorted(edits, key=lambda e: e[0], reverse=True):
+        if promote_from is None:
+            del lines[line_no]
+        else:
+            indent = " " * (len(lines[line_no]) - len(lines[line_no].lstrip(" ")))
+            lines[line_no] = f"{indent}- {lines[promote_from].lstrip(' ')}"
+            del lines[promote_from]
+    return "".join(lines), changed
+
+
 def disable_engines_in_settings(text: str, engines: list[str]) -> tuple[str, list[str]]:
     # Surgical, comment-preserving edit: yaml.safe_dump would nuke comments and reformat.
     # Compose for line-accurate marks, then insert one `disabled: true` per target stanza. Idempotent.
@@ -347,13 +436,15 @@ def disable_engines_in_settings(text: str, engines: list[str]) -> tuple[str, lis
     return "".join(lines), changed
 
 
-# Best-effort: patches settings.yml to disable fragile engines, then restarts. Idempotent; failures warn and return.
-async def _apply_disabled_engines(settings: SearxngSettings) -> None:
-    if not settings.disabled_engines:
+# Best-effort: patches settings.yml to reconcile engines (enable then disable), then restarts
+# once. Enable precedes disable so an engine in both sets ends disabled (explicit user disable
+# wins) with no duplicate key. Idempotent; failures warn and return.
+async def _reconcile_engines(settings: SearxngSettings) -> None:
+    if not settings.enabled_engines and not settings.disabled_engines:
         return
     engine = detect_engine()
     if engine is None:
-        logger.warning("Cannot apply SearXNG disabled engines: no docker/podman found.")
+        logger.warning("Cannot reconcile SearXNG engines: no docker/podman found.")
         return
     name = settings.container_name
     # mkdtemp, not TemporaryDirectory: the test scratchpad fixture patches tempfile.mkdtemp with a 1-arg signature.
@@ -370,9 +461,11 @@ async def _apply_disabled_engines(settings: SearxngSettings) -> None:
             )
             return
         text = read_safe(local).text
-        new_text, changed = disable_engines_in_settings(
+        text, enabled = enable_engines_in_settings(text, list(settings.enabled_engines))
+        new_text, disabled = disable_engines_in_settings(
             text, list(settings.disabled_engines)
         )
+        changed = enabled + disabled
         if not changed:
             return
         local.write_text(new_text, encoding="utf-8")
@@ -390,12 +483,17 @@ async def _apply_disabled_engines(settings: SearxngSettings) -> None:
         )
         if rc != 0:
             logger.warning(
-                "Could not restart SearXNG %s after disabling engines: %s",
+                "Could not restart SearXNG %s after reconciling engines: %s",
                 name,
                 err.strip(),
             )
             return
-        logger.info("Disabled SearXNG engines in %s: %s", name, ", ".join(changed))
+        parts = []
+        if enabled:
+            parts.append("enabled " + ", ".join(enabled))
+        if disabled:
+            parts.append("disabled " + ", ".join(disabled))
+        logger.info("Reconciled SearXNG engines in %s: %s", name, "; ".join(parts))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

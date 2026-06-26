@@ -22,6 +22,7 @@ from vibe.core.config import DEFAULT_MISTRAL_API_ENV_KEY, VibeConfig
 from vibe.core.search import (
     BROWSER_USER_AGENT,
     DEFAULT_CONTAINER_NAME as DEFAULT_SEARXNG_CONTAINER_NAME,
+    DEFAULT_ENABLED_ENGINES,
     DEFAULT_IMAGE as DEFAULT_SEARXNG_IMAGE,
     DEFAULT_PORT as DEFAULT_SEARXNG_PORT,
     SearxngSettings,
@@ -170,13 +171,21 @@ class WebSearchConfig(BaseToolConfig):
         default=True,
         description="Stop the SearXNG container on exit, but only if vibe started it.",
     )
+    searxng_enabled_engines: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_ENABLED_ENGINES),
+        description=(
+            "SearXNG general-web engine names to force-enable in the managed "
+            "container. The upstream image ships most of them disabled, leaving "
+            "only `brave` serving a plain query; this default set keeps multiple "
+            "engines live so one rate-limiting itself never zeroes results. Set "
+            "to [] to opt out of force-enabling any engines."
+        ),
+    )
     searxng_disabled_engines: list[str] = Field(
         default_factory=list,
         description=(
-            "SearXNG engine names to disable in the managed container, e.g. "
-            "['google', 'startpage', 'duckduckgo', 'brave']. These commercial "
-            "engines are the most likely to rate-limit or CAPTCHA a self-hosted "
-            "instance; disabling them shifts load to more tolerant engines."
+            "SearXNG engine names to disable in the managed container. Overrides "
+            "searxng_enabled_engines: an engine named in both lists ends disabled."
         ),
     )
 
@@ -191,6 +200,7 @@ def _settings_from_config(config: WebSearchConfig) -> SearxngSettings:
         autostart=config.searxng_autostart,
         stop_on_exit=config.searxng_stop_on_exit,
         health_timeout=config.searxng_health_timeout,
+        enabled_engines=tuple(config.searxng_enabled_engines),
         disabled_engines=tuple(config.searxng_disabled_engines),
     )
 

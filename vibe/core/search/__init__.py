@@ -3,6 +3,7 @@ from __future__ import annotations
 from vibe.core.search.searxng import (
     BROWSER_USER_AGENT,
     DEFAULT_CONTAINER_NAME,
+    DEFAULT_ENABLED_ENGINES,
     DEFAULT_IMAGE,
     DEFAULT_PORT,
     SearxngSettings,
@@ -10,6 +11,7 @@ from vibe.core.search.searxng import (
     begin_autostart,
     default_url,
     detect_engine,
+    enable_engines_in_settings,
     ensure_running,
     health_check,
     reset_state,
@@ -24,6 +26,7 @@ from vibe.core.search.searxng import (
 __all__ = [
     "BROWSER_USER_AGENT",
     "DEFAULT_CONTAINER_NAME",
+    "DEFAULT_ENABLED_ENGINES",
     "DEFAULT_IMAGE",
     "DEFAULT_PORT",
     "SearxngSettings",
@@ -31,6 +34,7 @@ __all__ = [
     "begin_autostart",
     "default_url",
     "detect_engine",
+    "enable_engines_in_settings",
     "ensure_running",
     "health_check",
     "reset_state",

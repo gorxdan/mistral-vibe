@@ -227,6 +227,9 @@ searxng_container_name = "vibe-searxng"
 searxng_port = 8888
 searxng_autostart = true                 # start at session start if down
 searxng_stop_on_exit = true              # stop on exit, only if vibe started it
+# General-web engines vibe force-enables in every managed container so a single
+# engine rate-limiting itself never zeroes results. Override to change; [] opts out.
+searxng_enabled_engines = ["bing", "duckduckgo", "startpage", "google", "qwant", "mojeek"]
 
 # Task tool isolation: write-capable subagents run in their own git worktree
 # so destructive commands/edits can't race the parent tree or sibling agents.
