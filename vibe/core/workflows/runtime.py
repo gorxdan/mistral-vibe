@@ -502,7 +502,7 @@ async def run_isolated_agent(
     """
     from vibe.core.worktree.ephemeral import create_ephemeral_worktree
 
-    wt = create_ephemeral_worktree(Path.cwd(), label or agent)
+    wt = await asyncio.to_thread(create_ephemeral_worktree, Path.cwd(), label or agent)
     if keep_worktree:
         # Caller (workflow executor) owns verification + reap on SUCCESS; hand
         # the live worktree back so it can verify against the tree before
@@ -520,7 +520,9 @@ async def run_isolated_agent(
             wt, prompt, agent, max_turns, deliver=deliver, model=model
         )
         try:
-            _maybe_reap_isolated_worktree(wt, result.delivered, result)
+            await asyncio.to_thread(
+                _maybe_reap_isolated_worktree, wt, result.delivered, result
+            )
         except (OSError, RuntimeError) as e:
             logger.warning("isolated worktree cleanup failed: %s", e)
         return result
@@ -623,7 +625,7 @@ async def _spawn_isolated(
             f"{stderr_text[:300]}"
         )
     output = (stdout or b"").decode("utf-8", "replace")
-    delivered = deliver and deliver_ephemeral_worktree(wt)
+    delivered = deliver and await asyncio.to_thread(deliver_ephemeral_worktree, wt)
     return IsolatedResult(
         output=output, stats=_parse_stats(stderr_text), delivered=delivered, wt=stamp_wt
     )
@@ -1077,9 +1079,20 @@ class WorkflowRuntime:
         completed = True
         error_msg: str | None = None
 
+        base_config: Any = None
+        if self.agent_loop_factory is None:
+            # Load config once per spawn (off the event loop) and reuse across
+            # schema-retry attempts — session_logging/model are constant for the
+            # spawn, so reloading per attempt (the previous behavior) was pure
+            # blocking waste on the shared loop.
+            base_config = await asyncio.to_thread(
+                self._resolve_agent_config, agent=agent, model=model
+            )
         for attempt in range(self.schema_retries + 1):
             accumulated = []
-            loop = self._create_loop(effective_prompt, agent=agent, model=model)
+            loop = self._create_loop(
+                effective_prompt, agent=agent, model=model, base_config=base_config
+            )
             # Point the background tool at this attempt's transcript so it can
             # be tailed; refreshed each retry, so it follows the live log.
             live.log_path = _loop_log_path(loop)
@@ -1324,18 +1337,43 @@ class WorkflowRuntime:
             schema_errors=list(last_errors),
         )
 
+    def _resolve_agent_config(self, *, agent: str, model: str | None = None) -> Any:
+        """Build the per-agent VibeConfig (session logging + model override).
+
+        Runs the blocking config load (TOML/env reads, migration, SSL init) so it
+        can be offloaded to a worker thread by callers.
+        """
+        from vibe.core.config import SessionLoggingConfig, VibeConfig
+
+        ctx = self.parent_context
+        session_logging = SessionLoggingConfig(
+            save_dir=str(ctx.session_dir / "agents") if ctx and ctx.session_dir else "",
+            session_prefix=agent,
+            enabled=ctx is not None and ctx.session_dir is not None,
+        )
+        overrides: dict[str, Any] = {}
+        if model:
+            overrides["active_model"] = model
+        return VibeConfig.load(session_logging=session_logging, **overrides)
+
     def _create_loop(
-        self, prompt: str, *, agent: str, model: str | None = None
+        self,
+        prompt: str,
+        *,
+        agent: str,
+        model: str | None = None,
+        base_config: Any = None,
     ) -> AgentLoop:
         if self.agent_loop_factory is not None:
             return self.agent_loop_factory(
                 prompt, agent=agent, parent_context=self.parent_context
             )
-        return self._create_real_loop(agent=agent, model=model)
+        return self._create_real_loop(agent=agent, model=model, base_config=base_config)
 
-    def _create_real_loop(self, *, agent: str, model: str | None = None) -> AgentLoop:
+    def _create_real_loop(
+        self, *, agent: str, model: str | None = None, base_config: Any = None
+    ) -> AgentLoop:
         from vibe.core.agent_loop import AgentLoop as _AgentLoop
-        from vibe.core.config import SessionLoggingConfig, VibeConfig
 
         ctx = self.parent_context
 
@@ -1352,15 +1390,8 @@ class WorkflowRuntime:
                     f"Only subagents can be used in workflows."
                 )
 
-        session_logging = SessionLoggingConfig(
-            save_dir=str(ctx.session_dir / "agents") if ctx and ctx.session_dir else "",
-            session_prefix=agent,
-            enabled=ctx is not None and ctx.session_dir is not None,
-        )
-        overrides: dict[str, Any] = {}
-        if model:
-            overrides["active_model"] = model
-        base_config = VibeConfig.load(session_logging=session_logging, **overrides)
+        if base_config is None:
+            base_config = self._resolve_agent_config(agent=agent, model=model)
         # Subagents inherit the parent worktree; never call worktree_manager.enter().
         # Workflow stages share one worktree.
         loop = _AgentLoop(
@@ -1713,13 +1744,16 @@ class WorkflowRuntime:
             if contract is not None and wt is not None:
                 contract_report = verify_contract(wt.path, contract)
                 if contract_report.passed:
-                    contract_report.delivered = deliver_ephemeral_worktree(wt)
+                    contract_report.delivered = await asyncio.to_thread(
+                        deliver_ephemeral_worktree, wt
+                    )
         finally:
             if wt is not None:
                 # Delivered -> work is in the parent, force-remove. Otherwise
                 # keep so undelivered (failed contract or ff refused) work
                 # stays recoverable via `git merge <branch>`.
-                remove_ephemeral_worktree(
+                await asyncio.to_thread(
+                    remove_ephemeral_worktree,
                     wt,
                     keep_if_changed=not (contract_report and contract_report.delivered),
                 )

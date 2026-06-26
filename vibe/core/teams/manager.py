@@ -146,8 +146,11 @@ class TeamManager:
         task_id: str | None = None,
     ) -> Task:
         """Create a task and fire the TASK_CREATED lifecycle hook."""
-        task = self.task_store.add_task(
-            description, dependencies=dependencies, task_id=task_id
+        task = await asyncio.to_thread(
+            self.task_store.add_task,
+            description,
+            dependencies=dependencies,
+            task_id=task_id,
         )
         await self._dispatch_hook(
             "task_created",
@@ -161,7 +164,9 @@ class TeamManager:
         self, task_id: str, result: str | None = None
     ) -> Task | None:
         """Mark a task complete and fire the TASK_COMPLETED lifecycle hook."""
-        task = self.task_store.complete_task(task_id, result=result)
+        task = await asyncio.to_thread(
+            self.task_store.complete_task, task_id, result=result
+        )
         if task is not None:
             await self._dispatch_hook(
                 "task_completed",
@@ -180,7 +185,7 @@ class TeamManager:
         max_turns: int = 20,
     ) -> str:
         member = TeamMember(name=name, agent_type=agent, status="running")
-        self.add_member(member)
+        await asyncio.to_thread(self.add_member, member)
 
         task = asyncio.create_task(self._run_teammate(name, prompt, agent, max_turns))
         self._teammate_tasks[name] = task
@@ -223,29 +228,33 @@ class TeamManager:
             )
             self._teammate_procs[name] = proc
 
-            self.update_member_status(name, f"running:pid={proc.pid}")
-            config = self._load_config()
+            await asyncio.to_thread(
+                self.update_member_status, name, f"running:pid={proc.pid}"
+            )
+            config = await asyncio.to_thread(self._load_config)
             for m in config.members:
                 if m.name == name:
                     m.pid = proc.pid
                     break
-            self._save_config(config)
+            await asyncio.to_thread(self._save_config, config)
 
             stdout, stderr = await proc.communicate()
 
             if proc.returncode == 0:
                 result = stdout.decode() if stdout else ""
-                self.update_member_status(name, "completed")
+                await asyncio.to_thread(self.update_member_status, name, "completed")
                 logger.info("Teammate %s completed: %s chars output", name, len(result))
             else:
                 err = stderr.decode() if stderr else "unknown error"
-                self.update_member_status(name, f"failed:{err[:200]}")
+                await asyncio.to_thread(
+                    self.update_member_status, name, f"failed:{err[:200]}"
+                )
                 logger.error(
                     "Teammate %s failed (rc=%s): %s", name, proc.returncode, err
                 )
 
         except Exception as e:
-            self.update_member_status(name, f"error:{e}")
+            await asyncio.to_thread(self.update_member_status, name, f"error:{e}")
             logger.error("Teammate %s error", name, exc_info=e)
         finally:
             # If the task is dying (cancel/stop) with the subprocess still
@@ -323,7 +332,7 @@ class TeamManager:
             await task
         except (asyncio.CancelledError, Exception):
             pass
-        self.update_member_status(name, "stopped")
+        await asyncio.to_thread(self.update_member_status, name, "stopped")
         return True
 
     async def stop_all(self) -> None:

@@ -2472,7 +2472,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent | HookEvent]:
         self.stats.tool_calls_agreed += 1
 
-        snapshot = tool_instance.get_file_snapshot(tool_call.validated_args)
+        # Snapshot read (rewind/undo) does blocking file I/O; run it off the
+        # event loop so a write tool on a large file doesn't stall concurrent
+        # readers in the same turn.
+        snapshot = await asyncio.to_thread(
+            tool_instance.get_file_snapshot, tool_call.validated_args
+        )
         if snapshot is not None:
             self.rewind_manager.add_snapshot(snapshot)
 

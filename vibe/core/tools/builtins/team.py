@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 import os
 from pathlib import Path
@@ -133,13 +134,17 @@ class Team(
 
         match args.action:
             case "list_tasks":
-                tasks = [t.model_dump(mode="json") for t in task_store.get_all_tasks()]
+                tasks = [
+                    t.model_dump(mode="json")
+                    for t in await asyncio.to_thread(task_store.get_all_tasks)
+                ]
                 yield TeamResult(
                     action=args.action, message=f"{len(tasks)} task(s).", tasks=tasks
                 )
             case "available_tasks":
                 tasks = [
-                    t.model_dump(mode="json") for t in task_store.get_available_tasks()
+                    t.model_dump(mode="json")
+                    for t in await asyncio.to_thread(task_store.get_available_tasks)
                 ]
                 yield TeamResult(
                     action=args.action,
@@ -150,7 +155,9 @@ class Team(
                 if not args.task_id:
                     raise ToolError("task_id is required for claim_task.")
                 assignee = self._self_name()
-                task = task_store.claim_task(args.task_id, assignee)
+                task = await asyncio.to_thread(
+                    task_store.claim_task, args.task_id, assignee
+                )
                 if task is None:
                     raise ToolError(
                         f"Could not claim task {args.task_id} (missing, already "
@@ -165,8 +172,11 @@ class Team(
                 if not args.task_id:
                     raise ToolError("task_id is required for complete_task.")
                 actor = self._self_name()
-                task = task_store.complete_task(
-                    args.task_id, args.description, actor=actor
+                task = await asyncio.to_thread(
+                    task_store.complete_task,
+                    args.task_id,
+                    args.description,
+                    actor=actor,
                 )
                 if task is None:
                     raise ToolError(
@@ -184,7 +194,9 @@ class Team(
                         "to_name and content are required for send_message."
                     )
                 from_name = self._self_name()
-                msg = mailbox.send(from_name, args.to_name, args.content)
+                msg = await asyncio.to_thread(
+                    mailbox.send, from_name, args.to_name, args.content
+                )
                 yield TeamResult(
                     action=args.action,
                     message=f"Sent message to {args.to_name}.",
@@ -192,7 +204,9 @@ class Team(
                 )
             case "read_messages":
                 recipient = self._self_name()
-                msgs = mailbox.read(recipient, mark_read=args.mark_read)
+                msgs = await asyncio.to_thread(
+                    mailbox.read, recipient, mark_read=args.mark_read
+                )
                 yield TeamResult(
                     action=args.action,
                     message=f"{len(msgs)} message(s).",
@@ -200,7 +214,7 @@ class Team(
                 )
             case "unread_messages":
                 recipient = self._self_name()
-                msgs = mailbox.get_unread(recipient)
+                msgs = await asyncio.to_thread(mailbox.get_unread, recipient)
                 yield TeamResult(
                     action=args.action,
                     message=f"{len(msgs)} unread message(s).",

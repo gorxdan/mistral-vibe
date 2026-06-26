@@ -55,10 +55,7 @@ def _team_env_or_raise() -> tuple[str, str, str]:
 
 
 async def escalate_to_lead(
-    tool: str,
-    description: str,
-    *,
-    timeout_s: float = _DEFAULT_TIMEOUT_S,
+    tool: str, description: str, *, timeout_s: float = _DEFAULT_TIMEOUT_S
 ) -> None:
     """Ask the lead to approve ``description`` for ``tool``; block until answered.
 
@@ -77,7 +74,8 @@ async def escalate_to_lead(
         "description": description,
         "teammate": teammate_name,
     }
-    mailbox.send(
+    await asyncio.to_thread(
+        mailbox.send,
         teammate_name,
         "lead",
         f"Requesting approval for {tool}: {description}",
@@ -85,21 +83,19 @@ async def escalate_to_lead(
         payload=payload,
     )
     logger.info(
-        "Escalation %s posted for tool=%s teammate=%s",
-        request_id,
-        tool,
-        teammate_name,
+        "Escalation %s posted for tool=%s teammate=%s", request_id, tool, teammate_name
     )
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        for msg in mailbox.get_unread(teammate_name):
+        unread = await asyncio.to_thread(mailbox.get_unread, teammate_name)
+        for msg in unread:
             if msg.kind is not MessageKind.PERMISSION_RESPONSE:
                 continue
             if msg.payload.get("request_id") != request_id:
                 continue
             # Mark consumed so it doesn't reprocess next poll.
-            mailbox.read(teammate_name, mark_read=True)
+            await asyncio.to_thread(mailbox.read, teammate_name, mark_read=True)
             decision = str(msg.payload.get("decision", "deny")).lower()
             if decision != "allow":
                 reason = msg.payload.get("reason")

@@ -191,7 +191,14 @@ class Glob(
         )
 
     def _detect_backend(self) -> GlobBackend:
-        return GlobBackend.RIPGREP if shutil.which("rg") else GlobBackend.WALK
+        # Per-instance cache: shutil.which walks PATH on every call otherwise.
+        # Tests that monkeypatch shutil.which get a fresh instance per fixture.
+        cached = getattr(self, "_backend_cache", None)
+        if cached is not None:
+            return cached
+        backend = GlobBackend.RIPGREP if shutil.which("rg") else GlobBackend.WALK
+        self._backend_cache = backend
+        return backend
 
     async def run(
         self, args: GlobArgs, ctx: InvokeContext | None = None

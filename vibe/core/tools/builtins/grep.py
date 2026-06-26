@@ -230,14 +230,23 @@ class Grep(
         )
 
     def _detect_backend(self) -> GrepBackend:
+        # Per-instance cache: shutil.which walks PATH on every call otherwise.
+        # Tests that monkeypatch shutil.which get a fresh instance per fixture.
+        cached = getattr(self, "_backend_cache", None)
+        if cached is not None:
+            return cached
         if shutil.which("rg"):
-            return GrepBackend.RIPGREP
-        if shutil.which("grep"):
-            return GrepBackend.GNU_GREP
-        raise ToolError(
-            "Neither ripgrep (rg) nor grep is installed. "
-            "Please install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
-        )
+            backend = GrepBackend.RIPGREP
+        elif shutil.which("grep"):
+            backend = GrepBackend.GNU_GREP
+        else:
+            raise ToolError(
+                "Neither ripgrep (rg) nor grep is installed. "
+                "Please install ripgrep: "
+                "https://github.com/BurntSushi/ripgrep#installation"
+            )
+        self._backend_cache = backend
+        return backend
 
     async def run(
         self, args: GrepArgs, ctx: InvokeContext | None = None
