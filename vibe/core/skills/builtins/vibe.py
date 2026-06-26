@@ -154,6 +154,7 @@ active_tts_model = "voxtral-tts"
 # Workflows and effort
 effort_mode = "normal"            # "normal" or "le-chaton" (max thinking + auto-workflow)
 disable_workflows = false         # Disable all workflow features
+verification_subsystem = true     # Host verification layer (todo nudge + contract section → verifier subagent)
 workflow_paths = []               # Additional dirs to search for workflow scripts
 ```
 
@@ -232,7 +233,7 @@ searxng_stop_on_exit = true              # stop on exit, only if vibe started it
 # "auto" (default) isolates only write-capable profiles (worker/auto-approve/
 # editor, and any profile with write_file/edit or un-jailed bash); read-only
 # and read-jailed profiles (explore/research/planner/reviewer/debugger/
-# security) stay in-process for speed. "always" isolates every subagent;
+# security/verifier) stay in-process for speed. "always" isolates every subagent;
 # "off" forces in-process (the historical behavior).
 # An isolated spawn is pre-flight judged: the safety judge (when configured)
 # evaluates the delegation prompt before the subprocess starts — safe proceeds,
@@ -782,6 +783,14 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
 
 - **explore**: Read-only codebase exploration subagent (grep + read only).
   Spawned by the model, not selectable by the user.
+- **research**, **reviewer**, **debugger**, **planner**, **security**: other
+  read-only investigation/audit subagents (see the Orchestration section).
+- **verifier**: verdict-oriented gate that proves a *completed* implementation
+  works by trying to break it, emitting a strict PASS/FAIL/PARTIAL verdict with
+  command evidence. The host verification contract (on by default via
+  `verification_subsystem`) requires spawning it before reporting non-trivial
+  work done; the todo tool appends a nudge when a 3+ item list closes without a
+  verify step.
 
 Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 

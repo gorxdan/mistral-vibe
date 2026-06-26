@@ -65,6 +65,10 @@ hatch-vcs derives the version from `vX.Y.Z` git tags (`dynamic = ["version"]` in
 Workflow scripts: restricted namespace, safelisted builtins, AST validator blocks unsafe imports/dunders/`str.format`. **Defense-in-depth not hard boundary** — still `exec`s in-process; real boundary is `launch_workflow` ASK gate + `disable_workflows`. Treat model-authored scripts as untrusted.
 `launch_workflow` hidden when `disable_workflows = true` (`is_available(config)`). Teammates spawned as `vibe -p` subprocesses; shared state via `filelock` (no in-process locks). Hooks: `TeammateIdle` (teammate idle), `TaskCreated`/`TaskCompleted` (lead-initiated `/team task add|done` only — teammate writes don't fire lead-side hooks).
 
+## Verification
+
+Host-agent completeness layer (on by default; `verification_subsystem = false` to disable). `verifier` subagent (`agents/models.py`) is a verdict gate distinct from `reviewer`: proves a completed implementation works by trying to break it, emits a strict `VERDICT: PASS|FAIL|PARTIAL` with command evidence. `_get_verification_contract_section` (`system_prompt.py`) tells the host to spawn it before reporting non-trivial work done; the todo tool (`tools/builtins/todo.py`) appends a structural nudge when a 3+ item list closes without a verify step. Read-only (read/grep/lsp + jailed bash, reuses `_review_bash_overrides`).
+
 ## Autoimprovement
 
 Suggest new AGENTS.md rules from user input/PR comments when generalizable | suggest README.md updates for features | keep builtin Vibe Skill (`vibe/core/skills/builtins/vibe.py`) current (args, flags, config, commands, agents, file discovery).

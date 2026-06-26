@@ -132,11 +132,9 @@ class VibeConfigSchema(ConfigSchema):
             description="Per-connector settings (disable, disabled_tools).",
         )
     )
-    lsp_servers: Annotated[list[LSPServer], WithUnionMerge(merge_key="name")] = (
-        Field(
-            default_factory=list,
-            description="Language Server Protocol server configurations.",
-        )
+    lsp_servers: Annotated[list[LSPServer], WithUnionMerge(merge_key="name")] = Field(
+        default_factory=list,
+        description="Language Server Protocol server configurations.",
     )
 
     # Agents
@@ -249,6 +247,17 @@ class VibeConfigSchema(ConfigSchema):
             "'normal' (default) works turn-by-turn. 'le-chaton' combines max "
             "thinking with automatic workflow planning — the agent writes and "
             "runs workflow scripts to orchestrate parallel agents."
+        ),
+    )
+    verification_subsystem: Annotated[bool, WithReplaceMerge()] = Field(
+        default=True,
+        description=(
+            "Enable the host-agent verification layer: a completion nudge in "
+            "the todo tool and a verification contract in the system prompt "
+            "that require independent verification (the 'verifier' subagent) "
+            "before non-trivial work is reported done. The verifier profile "
+            "itself is always available; this gates the host-side nudge and "
+            "contract section."
         ),
     )
 

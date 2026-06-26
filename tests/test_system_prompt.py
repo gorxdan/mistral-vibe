@@ -355,3 +355,65 @@ def test_config_reference_section_absent_when_disabled() -> None:
     )
 
     assert "## Configuring Vibe (quick reference)" not in prompt
+
+
+def test_verifier_subagent_registered_with_verdict_prompt() -> None:
+    from vibe.core.agents.models import BUILTIN_AGENTS, AgentType, BuiltinAgentName
+    from vibe.core.prompts import load_system_prompt
+
+    verifier = BUILTIN_AGENTS[BuiltinAgentName.VERIFIER]
+    assert verifier.agent_type == AgentType.SUBAGENT
+    assert verifier.overrides["enabled_tools"] == ["read", "grep", "lsp", "bash"]
+    assert verifier.overrides["system_prompt_id"] == "verifier"
+
+    sp = load_system_prompt("verifier")
+    # The verdict contract the caller parses.
+    assert "VERDICT: PASS" in sp
+    assert "VERDICT: FAIL" in sp
+    assert "VERDICT: PARTIAL" in sp
+    # Anti-rationalization + adversarial stance.
+    assert "break it" in sp.lower()
+    assert "Reading is not verification" in sp
+    # Mandatory command evidence on every PASS.
+    assert "Command run" in sp
+
+
+def test_verification_contract_section_present_when_subsystem_enabled() -> None:
+    common = {
+        "system_prompt_id": "tests",
+        "include_project_context": False,
+        "include_prompt_detail": True,
+        "include_model_info": False,
+        "include_commit_signature": False,
+        "include_humanizer_guidance": False,
+    }
+    on = build_test_vibe_config(verification_subsystem=True, **common)
+    prompt_on = get_universal_system_prompt(
+        ToolManager(lambda: on),
+        on,
+        SkillManager(lambda: on),
+        AgentManager(lambda: on),
+    )
+    assert "## Verification contract" in prompt_on
+    assert "spawn the `verifier`" in prompt_on.lower()
+    # The verifier profile appears in the orchestration map.
+    assert "- `verifier` —" in prompt_on
+
+
+def test_verification_contract_section_absent_when_subsystem_disabled() -> None:
+    common = {
+        "system_prompt_id": "tests",
+        "include_project_context": False,
+        "include_prompt_detail": True,
+        "include_model_info": False,
+        "include_commit_signature": False,
+        "include_humanizer_guidance": False,
+    }
+    off = build_test_vibe_config(verification_subsystem=False, **common)
+    prompt_off = get_universal_system_prompt(
+        ToolManager(lambda: off),
+        off,
+        SkillManager(lambda: off),
+        AgentManager(lambda: off),
+    )
+    assert "## Verification contract" not in prompt_off

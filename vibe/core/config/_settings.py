@@ -1227,6 +1227,17 @@ class VibeConfig(BaseSettings):
             "automatic workflow planning)."
         ),
     )
+    verification_subsystem: bool = Field(
+        default=True,
+        description=(
+            "Enable the host-agent verification layer: a completion nudge in "
+            "the todo tool and a verification contract in the system prompt "
+            "that require independent verification (the 'verifier' subagent) "
+            "before non-trivial work is reported done. The verifier profile "
+            "itself is always available; this gates the host-side nudge and "
+            "contract section."
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="VIBE_", case_sensitive=False, extra="ignore"

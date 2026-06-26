@@ -49,6 +49,7 @@ class TodoResult(BaseModel):
     message: str
     todos: list[TodoItem]
     total_count: int
+    verification_nudge: bool = False
 
 
 class TodoConfig(BaseToolConfig):
@@ -58,6 +59,34 @@ class TodoConfig(BaseToolConfig):
 
 class TodoState(BaseToolState):
     todos: list[TodoItem] = Field(default_factory=list)
+
+
+# Minimum closed-out list size that triggers the verification nudge. Below this,
+# the work is small enough that independent verification is optional.
+_VERIFICATION_NUDGE_MIN_TODOS = 3
+
+
+def _verification_subsystem_enabled(ctx: InvokeContext | None) -> bool:
+    """Read the ``verification_subsystem`` config flag. Defaults to True (the
+    feature ships on) when the config isn't reachable — e.g. a bare tool call
+    without an agent manager wired up.
+    """
+    if ctx is None or ctx.agent_manager is None:
+        return True
+    return bool(getattr(ctx.agent_manager.config, "verification_subsystem", True))
+
+
+def _should_nudge(todos: list[TodoItem], verification_enabled: bool) -> bool:
+    """Structural completion-nudge: fires when a 3+ item list is being closed
+    out as all-completed and none of the items was a verification step. Catches
+    the exact loop-exit moment where verification gets skipped. Gated on the
+    ``verification_subsystem`` config flag.
+    """
+    if not verification_enabled or len(todos) < _VERIFICATION_NUDGE_MIN_TODOS:
+        return False
+    if not all(t.status == TodoStatus.COMPLETED for t in todos):
+        return False
+    return not any("verif" in t.content.lower() for t in todos)
 
 
 class Todo(
@@ -95,11 +124,12 @@ class Todo(
     async def run(
         self, args: TodoArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | TodoResult, None]:
+        verification_enabled = _verification_subsystem_enabled(ctx)
         match args.action:
             case "read":
                 yield self._read_todos()
             case "write":
-                yield self._write_todos(args.todos or [])
+                yield self._write_todos(args.todos or [], verification_enabled)
             case _:
                 raise ToolError(
                     f"Invalid action '{args.action}'. Use 'read' or 'write'."
@@ -112,7 +142,9 @@ class Todo(
             total_count=len(self.state.todos),
         )
 
-    def _write_todos(self, todos: list[TodoItem]) -> TodoResult:
+    def _write_todos(
+        self, todos: list[TodoItem], verification_enabled: bool
+    ) -> TodoResult:
         if len(todos) > self.config.max_todos:
             raise ToolError(f"Cannot store more than {self.config.max_todos} todos")
 
@@ -122,8 +154,20 @@ class Todo(
 
         self.state.todos = todos
 
+        message = f"Updated {len(todos)} todos"
+        nudge = _should_nudge(todos, verification_enabled)
+        if nudge:
+            message += (
+                "\n\nNOTE: you closed 3+ todos and none was a verification step. "
+                "Before your final summary, run independent verification — spawn "
+                "the `verifier` subagent with the task, the files that changed, "
+                "and the approach. You can't self-assign done by listing caveats; "
+                "only a verifier issues a verdict."
+            )
+
         return TodoResult(
-            message=f"Updated {len(todos)} todos",
+            message=message,
             todos=self.state.todos,
             total_count=len(self.state.todos),
+            verification_nudge=nudge,
         )

@@ -326,6 +326,9 @@ the root cause; returns the cause + minimal fix (it diagnoses, you apply).
 phased plan with risks and the files to touch (it plans, you decide).
 - `security` — defensive vuln audit of a change or area: traces untrusted input \
 to sinks and returns severity-ranked findings with fixes.
+- `verifier` — gate a *completed* implementation: proves it works by trying to \
+break it, then emits a PASS/FAIL/PARTIAL verdict with command evidence. Use \
+after non-trivial work, before reporting done (see the verification contract).
 
 Fan out: issue several `task` calls in one turn so independent sub-questions \
 run in parallel. Give each a self-contained brief and ask for findings and \
@@ -335,10 +338,11 @@ investigation costs you only the returned conclusions.
 Don't delegate trivia. For a single known lookup — you already have the file \
 path or symbol — just `read`/`grep` it directly. Delegate breadth and \
 uncertainty; handle pinpoints yourself. The read-only profiles (explore, \
-research, reviewer, debugger, planner, security) can't write files or ask the \
-user — you own every edit and all user interaction. `editor` and `worker` are \
-write-capable but only function inside a workflow worktree; in a plain `task` \
-call their writes are approval-gated and skipped, so treat every edit as yours."""
+research, reviewer, debugger, planner, security, verifier) can't write files or \
+ask the user — you own every edit and all user interaction. `editor` and \
+`worker` are write-capable but only function inside a workflow worktree; in a \
+plain `task` call their writes are approval-gated and skipped, so treat every \
+edit as yours."""
 
 
 def _get_orchestration_section() -> str:
@@ -347,6 +351,41 @@ def _get_orchestration_section() -> str:
     whenever subagents exist (le-chaton layers workflows on top of this).
     """
     return _ORCHESTRATION_SECTION
+
+
+def _get_verification_contract_section() -> str:
+    """Host-agent verification contract. Pairs with the structural nudge in the
+    todo tool and the ``verifier`` subagent profile: defines when independent
+    verification is required before the host may report work done. Gated on the
+    ``verification_subsystem`` config flag at the call site.
+    """
+    return (
+        "## Verification contract\n\n"
+        "When non-trivial implementation happens on your turn — 3+ file edits, "
+        "backend/API changes, or infrastructure changes — independent "
+        "verification must happen before you report completion, regardless of "
+        "who did the implementing (you directly, a subagent, or a workflow). "
+        "You are the one reporting to the user; you own the gate.\n\n"
+        "Spawn the `verifier` subagent via the `task` tool. Pass the original "
+        "task, every file that changed (by anyone), and the approach taken. "
+        "Flag concerns you have, but do NOT share your own test results or "
+        "claim things work — the verifier verifies independently. Your own "
+        "checks and a subagent's self-checks do not substitute; only the "
+        "verifier assigns a verdict, and you cannot self-assign done by "
+        "listing caveats in your summary.\n\n"
+        "- On **FAIL**: fix the issue and re-run the verifier with its findings "
+        "plus your fix. Repeat until PASS.\n"
+        "- On **PASS**: spot-check it. Re-run 2-3 of the commands from the "
+        "verifier's report and confirm every PASS step has a command block "
+        "whose output matches your re-run. If a PASS step has no command, or "
+        "the output diverges, resume the verifier with the specifics.\n"
+        "- On **PARTIAL**: report to the user what passed and what could not be "
+        "verified (and why — missing tool, server wouldn't start, no test "
+        "framework). Do not present PARTIAL as success.\n\n"
+        "Trivial work (a one-line fix, a single read-only answer, a typo) does "
+        "not need a verifier. Use judgment — but when in doubt on non-trivial "
+        "work, verify."
+    )
 
 
 def _get_scratchpad_section(scratchpad_dir: Path | None) -> str | None:
@@ -514,6 +553,8 @@ def _build_prompt_detail_sections(
     if subagents_section:
         sections.append(subagents_section)
         sections.append(_get_orchestration_section())
+        if getattr(config, "verification_subsystem", True):
+            sections.append(_get_verification_contract_section())
 
     sections.extend(filter(None, [_get_scratchpad_section(scratchpad_dir)]))
     return sections

@@ -26,6 +26,7 @@ class SystemPrompt(Prompt):
     DEBUGGER = auto()
     PLANNER = auto()
     SECURITY = auto()
+    VERIFIER = auto()
     EDITOR = auto()
     TESTS = auto()
     LEAN = auto()

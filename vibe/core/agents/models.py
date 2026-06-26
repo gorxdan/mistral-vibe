@@ -47,6 +47,7 @@ class BuiltinAgentName(StrEnum):
     DEBUGGER = "debugger"
     PLANNER = "planner"
     SECURITY = "security"
+    VERIFIER = "verifier"
     EDITOR = "editor"
     WORKER = "worker"
     LEAN = "lean"
@@ -478,6 +479,27 @@ SECURITY = AgentProfile(
     },
 )
 
+VERIFIER = AgentProfile(
+    name=BuiltinAgentName.VERIFIER,
+    display_name="Verifier",
+    description=(
+        "Verdict-oriented verification subagent: proves a *completed* "
+        "implementation works by trying to break it, then emits a strict "
+        "PASS/FAIL/PARTIAL verdict with command-level evidence. Distinct from "
+        "'reviewer' (which surveys a diff for issues across diverse lenses). "
+        "Read-only: read/grep/lsp + a jailed read-only bash that auto-runs "
+        "tests/lint/git-inspection but denies mutations, network, and package "
+        "installs. The gate, not the surveyor."
+    ),
+    safety=AgentSafety.NEUTRAL,
+    agent_type=AgentType.SUBAGENT,
+    overrides={
+        "enabled_tools": ["read", "grep", "lsp", "bash"],
+        "system_prompt_id": "verifier",
+        **_review_bash_overrides(),
+    },
+)
+
 EDITOR = AgentProfile(
     name=BuiltinAgentName.EDITOR,
     display_name="Editor",
@@ -604,6 +626,7 @@ BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.DEBUGGER: DEBUGGER,
     BuiltinAgentName.PLANNER: PLANNER,
     BuiltinAgentName.SECURITY: SECURITY,
+    BuiltinAgentName.VERIFIER: VERIFIER,
     BuiltinAgentName.EDITOR: EDITOR,
     BuiltinAgentName.WORKER: WORKER,
     BuiltinAgentName.LEAN: LEAN,
