@@ -3,6 +3,8 @@ from __future__ import annotations
 import atexit
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
+import json
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -69,10 +71,83 @@ class _JsonlSpanExporter(SpanExporter):
         return True
 
 
-def _local_trace_path() -> Path:
+class _JsonlLogExporter:
+    """Local JSONL sink for OTel logs (mirrors :class:`_JsonlSpanExporter`).
+
+    A plain callable-style exporter (export/shutdown/force_flush). It is wrapped
+    by :class:`_OtelLogExporterAdapter` at setup time to satisfy the
+    ``LogRecordExporter`` protocol, so this class never imports the optional logs
+    SDK at module load. Used so structured logs reach a durable local file
+    without requiring the ``opentelemetry-exporter-otlp-proto-http`` log exporter
+    subpackage (not currently a dependency). Each record is one JSON line:
+    timestamp, severity, body, and attributes.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def export(self, batch: Sequence[Any]) -> object:
+        from opentelemetry.sdk._logs.export import LogRecordExportResult
+
+        try:
+            with self._path.open("a", encoding="utf-8") as f:
+                for log in batch:
+                    f.write(_log_record_to_json(log) + "\n")
+        except Exception:
+            logger.warning("Failed to write log to %s", self._path, exc_info=True)
+        return LogRecordExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        pass
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
+
+
+def _log_record_to_json(log: Any) -> str:
+    body = getattr(log, "body", None)
+    payload: dict[str, Any] = {
+        "timestamp": getattr(log, "timestamp", None),
+        "severity": getattr(log, "severity_number", None),
+        "body": body if isinstance(body, str) else str(body),
+        "attributes": dict(getattr(log, "attributes", {}) or {}),
+    }
+    return json.dumps(payload, default=str)
+
+
+def _make_log_processor(path: Path) -> Any:
+    """Build a BatchLogRecordProcessor wrapping a local-JSONL LogRecordExporter.
+
+    Defined lazily (only called from _setup_logging, which already imported the
+    logs SDK) so the LogRecordExporter base resolves at runtime, not at module
+    import — keeping the logs pillar optional.
+    """
+    from opentelemetry.sdk._logs.export import (
+        BatchLogRecordProcessor,
+        LogRecordExporter,
+        LogRecordExportResult,
+    )
+
+    class _LocalLogExporter(LogRecordExporter):
+        def __init__(self) -> None:
+            self._sink = _JsonlLogExporter(path)
+
+        def export(self, batch: Sequence[Any]) -> LogRecordExportResult:  # type: ignore[override]
+            return self._sink.export(batch)  # type: ignore[return-value]
+
+        def shutdown(self) -> None:
+            self._sink.shutdown()
+
+        def force_flush(self, timeout_millis: int = 30000) -> bool:
+            return self._sink.force_flush(timeout_millis)
+
+    return BatchLogRecordProcessor(_LocalLogExporter())
+
+
+def _local_trace_path(prefix: str) -> Path:
     ts = utc_now().strftime("%Y%m%d_%H%M%S")
     TRACE_LOG_DIR.path.mkdir(parents=True, exist_ok=True)
-    return TRACE_LOG_DIR.path / f"trace_{ts}_{os.getpid()}.jsonl"
+    return TRACE_LOG_DIR.path / f"{prefix}_{ts}_{os.getpid()}.jsonl"
 
 
 def setup_tracing(config: VibeConfig) -> None:
@@ -105,11 +180,111 @@ def setup_tracing(config: VibeConfig) -> None:
 
     if local_export:
         provider.add_span_processor(
-            SimpleSpanProcessor(_JsonlSpanExporter(_local_trace_path()))
+            SimpleSpanProcessor(_JsonlSpanExporter(_local_trace_path("trace")))
         )
 
     trace.set_tracer_provider(provider)
     atexit.register(provider.shutdown)
+
+    # Pillar 2 (metrics) + Pillar 3 (logs): best-effort, never fatal to startup.
+    _setup_metrics(config, resource, exporter_cfg, local_export)
+    _setup_logging(config, resource, exporter_cfg, local_export)
+
+    # W3C TraceContext propagation (traceparent + tracestate) so descendant
+    # spans — including those in the Mistral SDK — inherit the full W3C
+    # context, not just baggage.
+    try:
+        from opentelemetry.trace.propagation.tracecontext import (
+            TraceContextTextMapPropagator,
+        )
+
+        context.attach(TraceContextTextMapPropagator().extract(context.get_current()))
+    except Exception:
+        logger.debug("W3C TraceContext propagator unavailable; using default")
+
+
+def _setup_metrics(
+    config: VibeConfig, resource: Any, exporter_cfg: Any, local_export: bool
+) -> None:
+    """Install a MeterProvider when the metric SDK + exporter are importable."""
+    try:
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+            OTLPMetricExporter,
+        )
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    except ImportError:
+        logger.debug("OTel metric exporter unavailable; metrics pillar skipped")
+        return
+
+    readers: list[Any] = []
+    if exporter_cfg is not None:
+        metric_endpoint = _swap_otel_path(exporter_cfg.endpoint, "metrics")
+        readers.append(
+            PeriodicExportingMetricReader(
+                OTLPMetricExporter(
+                    endpoint=metric_endpoint, headers=exporter_cfg.headers
+                )
+            )
+        )
+    meter_provider = MeterProvider(resource=resource, metric_readers=readers)
+    from opentelemetry import metrics
+
+    metrics.set_meter_provider(meter_provider)
+    atexit.register(meter_provider.shutdown)
+
+
+def _setup_logging(
+    config: VibeConfig, resource: Any, exporter_cfg: Any, local_export: bool
+) -> None:
+    """Install a LoggerProvider bridging stdlib logging.
+
+    Exports structured logs locally (JSONL). The OTLP log exporter is optional —
+    it lights up if ``opentelemetry-exporter-otlp-proto-http`` ships a log
+    exporter in a future version, but is not a hard dependency today.
+    """
+    try:
+        from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    except ImportError:
+        logger.debug("OTel logging SDK unavailable; logs pillar skipped")
+        return
+
+    log_provider = LoggerProvider(resource=resource)
+
+    # Local JSONL export mirrors the span path: durable, no collector needed.
+    if local_export:
+        log_provider.add_log_record_processor(
+            _make_log_processor(_local_trace_path("log"))
+        )
+
+    # An OTLP log exporter would slot in here once the
+    # ``opentelemetry-exporter-otlp-proto-http`` log subpackage is a dependency;
+    # it is intentionally not a hard requirement today, so local logs are the
+    # default export path.
+
+    from opentelemetry import _logs
+
+    _logs.set_logger_provider(log_provider)
+
+    # Bridge stdlib logging so vibe's logger output reaches the OTel log stream.
+    handler = LoggingHandler(logger_provider=log_provider)
+    handler.setLevel(logging.INFO)
+    root = logging.getLogger()
+    if not any(isinstance(h, LoggingHandler) for h in root.handlers):
+        root.addHandler(handler)
+    atexit.register(log_provider.shutdown)
+
+
+def _swap_otel_path(endpoint: str, signal: str) -> str:
+    """Replace the trailing OTLP signal path (traces -> metrics|logs).
+
+    OTLP HTTP endpoints end in a signal segment (``.../v1/traces``); swap it to
+    the requested signal. Falls back to appending when the pattern isn't found.
+    """
+    for seg in ("traces", "metrics", "logs"):
+        if endpoint.rstrip("/").endswith(f"/{seg}"):
+            return endpoint.rstrip("/")[: -len(seg)] + signal
+    return f"{endpoint.rstrip('/')}/{signal}"
 
 
 def _get_tracer() -> trace.Tracer:

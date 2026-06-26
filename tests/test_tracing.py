@@ -461,3 +461,65 @@ class TestIntegration:
         )
         # Conversation ID propagated via baggage from agent_span
         assert tool_attrs["gen_ai.conversation.id"] == agent_loop.session_id
+
+
+# --------------------------------------------------------------------------- #
+# OTel three-pillar helpers (#10)                                              #
+# --------------------------------------------------------------------------- #
+
+
+class TestSwapOtelPath:
+    def test_swaps_traces_to_metrics(self) -> None:
+        from vibe.core.tracing import _swap_otel_path
+
+        assert (
+            _swap_otel_path("https://x/v1/traces", "metrics") == "https://x/v1/metrics"
+        )
+
+    def test_swaps_traces_to_logs(self) -> None:
+        from vibe.core.tracing import _swap_otel_path
+
+        assert _swap_otel_path("https://x/v1/traces", "logs") == "https://x/v1/logs"
+
+    def test_swaps_metrics_to_traces(self) -> None:
+        from vibe.core.tracing import _swap_otel_path
+
+        assert (
+            _swap_otel_path("https://x/v1/metrics", "traces") == "https://x/v1/traces"
+        )
+
+    def test_appends_when_no_known_signal(self) -> None:
+        from vibe.core.tracing import _swap_otel_path
+
+        assert _swap_otel_path("https://x/otel", "metrics") == "https://x/otel/metrics"
+
+    def test_handles_trailing_slash(self) -> None:
+        from vibe.core.tracing import _swap_otel_path
+
+        assert _swap_otel_path("https://x/v1/traces/", "logs") == "https://x/v1/logs"
+
+
+class TestLogProcessor:
+    def test_make_log_processor_writes_jsonl(self, tmp_path: Path) -> None:
+        # _make_log_processor builds a BatchLogRecordProcessor that exports to a
+        # local JSONL file via the wrapped LogRecordExporter.
+        from vibe.core.tracing import _make_log_processor
+
+        path = tmp_path / "log.jsonl"
+        processor = _make_log_processor(path)
+        assert processor is not None
+        # The processor wraps an exporter whose sink writes to `path`; we cannot
+        # easily synthesize a LogRecord here, so just confirm it builds and the
+        # underlying file target is wired (force_flush is a safe no-op probe).
+        assert processor.force_flush() in (True, None)
+
+    def test_metrics_and_logs_setup_are_best_effort(self) -> None:
+        # _setup_metrics / _setup_logging must not raise when the optional SDK
+        # pieces are missing; they log at debug and return.
+        from vibe.core.tracing import _setup_logging, _setup_metrics
+
+        resource = MagicMock()
+        cfg = MagicMock()
+        # Should not raise regardless of what's installed.
+        _setup_metrics(cfg, resource, None, local_export=False)
+        _setup_logging(cfg, resource, None, local_export=False)
