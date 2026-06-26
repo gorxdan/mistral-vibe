@@ -133,7 +133,14 @@ class Task(
         "write/edit/read are auto-approved and confined to the worktree, so "
         "edits can't race the parent tree or escape it; read-only profiles run "
         "in-memory for speed. Override with the task.isolation config "
-        "(off|auto|always)."
+        "(off|auto|always).\n\n"
+        "Delegation hygiene: hand the subagent the concrete context you already "
+        "have — the exact file:line refs you found, the diff, and the specific "
+        "question to answer — so it verifies rather than re-discovers. Do NOT "
+        "tell it to broadly explore a large or external repo you have already "
+        "searched; point it at specific paths/symbols and scope its searches. A "
+        "subagent has its own, often smaller, context window, so an open-ended "
+        "broad search there can overflow it — give it targets, not a hunt."
     )
 
     is_subagent_spawner: ClassVar[bool] = True
