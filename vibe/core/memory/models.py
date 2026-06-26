@@ -35,7 +35,7 @@ def slugify(text: str) -> str:
 def freshness_note(updated: str, today: _dt.date | None = None) -> str:
     # Returns '' for fresh/unknown dates so callers add no noise. A memory citing
     # code state can go stale; the age cue nudges verification over assertion.
-    age = _age_days(updated, today)
+    age = memory_age_days(updated, today)
     if age is None or age <= _STALE_DAYS:
         return ""
     return (
@@ -48,7 +48,7 @@ def age_label(updated: str, today: _dt.date | None = None) -> str:
     # Compact recency cue for the selector's index line (e.g. "3d", "2w", "1mo"),
     # so recall can weigh freshness alongside relevance. Empty for unknown dates
     # (no frontmatter `updated`) so legacy entries render unchanged.
-    age = _age_days(updated, today)
+    age = memory_age_days(updated, today)
     if age is None or age < 0:
         return ""
     if age == 0:
@@ -62,7 +62,10 @@ def age_label(updated: str, today: _dt.date | None = None) -> str:
     return f"{age // _YEAR_DAYS}y"
 
 
-def _age_days(updated: str, today: _dt.date | None = None) -> int | None:
+def memory_age_days(updated: str, today: _dt.date | None = None) -> int | None:
+    # Age of a memory in days from its frontmatter `updated` date. None for
+    # missing/unparseable dates so callers can treat "unknown age" distinctly
+    # from "fresh" (0).
     if not updated:
         return None
     try:

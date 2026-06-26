@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import json
 from pathlib import Path
 from typing import Any, Literal
@@ -1169,3 +1170,323 @@ async def test_extract_update_respects_write_cap(monkeypatch, tmp_path) -> None:
     got = store.get("m")
     assert got is not None
     assert got.body == "original"  # unchanged: budget gate held
+
+
+# --------------------------------------------------------------------------- #
+# Tier 3: consolidation — reversible trash/ledger, store ops, consolidator,    #
+#         and agent-loop apply path                                            #
+# --------------------------------------------------------------------------- #
+
+
+def _stale_entry(mid: str, body: str = "b", *, days: int = 30) -> MemoryEntry:
+    import datetime as _dt
+
+    updated = (_dt.date(2026, 6, 26) - _dt.timedelta(days=days)).isoformat()
+    return MemoryEntry(
+        metadata=MemoryMetadata(id=mid, title=mid, updated=updated), body=body
+    )
+
+
+# --- store-level consolidation primitives --- #
+
+
+def test_effective_path_prefers_project_over_user(tmp_path) -> None:
+    user = tmp_path / "user"
+    proj = tmp_path / "proj"
+    user.mkdir()
+    proj.mkdir()
+    store = MemoryStore(user_dir=user, project_dirs=[proj])
+    store.upsert(_entry("x"), project=False)  # lands in user dir
+    store.upsert(_entry("x"), project=True)  # shadows in project dir
+    path = store._effective_path("x")
+    assert path is not None and path.parent == proj
+
+
+def test_trash_moves_file_and_writes_ledger(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("dup", body="old"))
+    assert store.trash("dup", reason="merge", into="keeper") is True
+    assert store.get("dup") is None  # no longer effective
+    trash_dir = tmp_path / ".trash"
+    ledger = trash_dir / "ledger.jsonl"
+    assert trash_dir.is_dir()
+    assert ledger.exists()
+    line = json.loads(ledger.read_text().strip())
+    assert line["id"] == "dup"
+    assert line["reason"] == "merge"
+    assert line["into"] == "keeper"
+    # The original file is recoverable from trash, not hard-deleted.
+    assert any(p.name.startswith("dup-") for p in trash_dir.glob("dup-*.md"))
+
+
+def test_trash_missing_id_returns_false(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    assert store.trash("nope", reason="delete") is False
+
+
+def test_trash_rejects_path_escape(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    victim = tmp_path.parent / "victim.md"
+    victim.write_text("keep")
+    assert store.trash("../../victim", reason="delete") is False
+    assert victim.exists()
+
+
+def test_apply_merge_rewrites_target_and_trashes_sources(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("keeper", body="core fact"))
+    store.upsert(_entry("dup1", body="extra"))
+    store.upsert(_entry("dup2", body="more"))
+
+    trashed = store.apply_merge(
+        "keeper", ["dup1", "dup2"], "reconciled body", "2026-06-26"
+    )
+    assert trashed == 2
+    keeper = store.get("keeper")
+    assert keeper is not None
+    assert keeper.body == "reconciled body"
+    assert keeper.metadata.updated == "2026-06-26"
+    assert keeper.metadata.source == "auto"
+    # Sources gone from the effective set, recoverable in trash.
+    assert store.get("dup1") is None and store.get("dup2") is None
+    assert (tmp_path / ".trash" / "ledger.jsonl").exists()
+
+
+def test_apply_merge_skips_source_equal_to_target(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("keeper", body="core"))
+    # A self-referential source list must not trash the target.
+    trashed = store.apply_merge("keeper", ["keeper"], "new body", "2026-06-26")
+    assert trashed == 0
+    keeper = store.get("keeper")
+    assert keeper is not None
+    assert keeper.body == "new body"
+
+
+def test_apply_merge_unknown_target_is_noop(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("dup", body="x"))
+    assert store.apply_merge("ghost", ["dup"], "body", "2026-06-26") == 0
+    assert store.get("dup") is not None  # source untouched
+
+
+def test_consolidation_candidates_excludes_fresh_and_undated(tmp_path) -> None:
+    import datetime as _dt
+
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_stale_entry("old", days=30))
+    store.upsert(_stale_entry("ancient", days=200))
+    # Fresh (today) and undated (no `updated`) must be excluded.
+    store.upsert(MemoryEntry(metadata=MemoryMetadata(id="fresh", title="f"), body="b"))
+    cands = store.consolidation_candidates(min_age_days=14, today=_dt.date(2026, 6, 26))
+    ids = {c.id for c in cands}
+    assert ids == {"old", "ancient"}
+
+
+def test_last_and_stamp_consolidation_round_trip(tmp_path) -> None:
+    import datetime as _dt
+
+    store = MemoryStore(user_dir=tmp_path)
+    assert store.last_consolidation() is None
+    store.stamp_consolidation("2026-06-01")
+    assert store.last_consolidation() == _dt.date(2026, 6, 1)
+
+
+# --- consolidator parse + validation --- #
+
+
+def _consolidator() -> Any:
+    from vibe.core.config import ModelConfig, ProviderConfig
+    from vibe.core.memory.consolidator import MemoryConsolidator
+
+    return MemoryConsolidator(
+        model=ModelConfig(name="m", provider="p", alias="m"),
+        provider=ProviderConfig(name="p", api_base="x", backend=Backend.GENERIC),
+    )
+
+
+def test_consolidator_parse_valid_merge_and_delete() -> None:
+
+    ex = _consolidator()
+    valid = {"a", "b", "c"}
+    payload = json.dumps({
+        "actions": [
+            {"kind": "merge", "into": "a", "sources": ["b", "c"], "body": "x"},
+            {"kind": "delete", "id": "c", "reason": "obsolete"},
+        ]
+    })
+    out = ex._parse(payload, valid)
+    # 'c' was consumed by the merge, so the delete is deduped out.
+    assert len(out) == 1
+    assert out[0].kind == "merge"
+    assert out[0].into == "a"
+    assert out[0].sources == ["b", "c"]
+
+
+def test_consolidator_rejects_action_on_non_candidate_id() -> None:
+    ex = _consolidator()
+    valid = {"a", "b"}
+    payload = json.dumps({"actions": [{"kind": "delete", "id": "zzz", "reason": "x"}]})
+    # The model can only act on ids it was given bodies for — a delete on an
+    # unknown id is dropped, never applied.
+    assert ex._parse(payload, valid) == []
+
+
+def test_consolidator_rejects_merge_with_no_sources() -> None:
+    ex = _consolidator()
+    valid = {"a"}
+    payload = json.dumps({
+        "actions": [{"kind": "merge", "into": "a", "sources": [], "body": "x"}]
+    })
+    assert ex._parse(payload, valid) == []
+
+
+def test_consolidator_parse_garbage_returns_empty() -> None:
+    ex = _consolidator()
+    valid = {"a"}
+    assert ex._parse("no json", valid) == []
+    assert ex._parse('{"actions": "nope"}', valid) == []
+    assert ex._parse(None, valid) == []
+
+
+def test_consolidator_clamps_to_max_actions() -> None:
+    ex = _consolidator()
+    ex._max_actions = 1
+    valid = {f"id{i}" for i in range(5)}
+    payload = json.dumps({
+        "actions": [{"kind": "delete", "id": f"id{i}", "reason": "x"} for i in range(5)]
+    })
+    out = ex._parse(payload, valid)
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_consolidator_fails_to_empty_on_backend_error(monkeypatch) -> None:
+    class _Boom:
+        async def __aenter__(self) -> _Boom:
+            return self
+
+        async def __aexit__(self, *e: Any) -> None:
+            return None
+
+        async def complete(self, **k: Any) -> Any:
+            raise RuntimeError("down")
+
+    monkeypatch.setattr(
+        "vibe.core.memory.consolidator.BACKEND_FACTORY", {"generic": _Boom}
+    )
+    out = await _consolidator().consolidate(["- [a] A"], "body", {"a"})
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_consolidator_empty_candidates_skips_call() -> None:
+    assert await _consolidator().consolidate(["- [a] A"], "body", set()) == []
+
+
+# --- agent-loop apply path + gates --- #
+
+
+def _consolidate_loop(monkeypatch, tmp_path, *, config_overrides: Any = None) -> Any:
+    loop = build_test_agent_loop()
+    store = MemoryStore(user_dir=tmp_path)
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    return loop, store
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_consolidation_disabled_by_default(
+    monkeypatch, tmp_path
+) -> None:
+    loop, _store = _consolidate_loop(monkeypatch, tmp_path)
+    loop._maybe_schedule_consolidation()
+    assert loop._mem_consolidate_task is None  # default config has consolidate=False
+
+
+@pytest.mark.asyncio
+async def test_consolidate_applies_merge_via_reversible_trash(
+    monkeypatch, tmp_path
+) -> None:
+    from vibe.core.memory.consolidator import ConsolidationAction
+
+    loop, store = _consolidate_loop(monkeypatch, tmp_path)
+    store.upsert(_stale_entry("a", body="alpha"))
+    store.upsert(_stale_entry("b", body="beta"))
+    store.upsert(_stale_entry("c", body="gamma"))
+    candidates = store.consolidation_candidates(min_age_days=14)
+
+    async def _stub(*a: Any, **k: Any) -> list[Any]:
+        return [
+            ConsolidationAction(
+                kind="merge", into="a", sources=["b", "c"], body="reconciled"
+            )
+        ]
+
+    monkeypatch.setattr(
+        loop, "_resolve_memory_consolidator", lambda: _StubConsolidator(_stub)
+    )
+    await loop._consolidate_memories(candidates, _dt.date(2026, 6, 26))
+
+    keeper = store.get("a")
+    assert keeper is not None and keeper.body == "reconciled"
+    assert store.get("b") is None and store.get("c") is None  # trashed, not deleted
+    # Sources recoverable in trash with a ledger entry.
+    ledger = (tmp_path / ".trash" / "ledger.jsonl").read_text()
+    assert '"reason": "merge"' in ledger
+    # Interval marker stamped so it doesn't retry every turn.
+    assert store.last_consolidation() == _dt.date(2026, 6, 26)
+
+
+@pytest.mark.asyncio
+async def test_consolidate_respects_action_cap(monkeypatch, tmp_path) -> None:
+    from vibe.core.memory.consolidator import ConsolidationAction
+
+    loop, store = _consolidate_loop(monkeypatch, tmp_path)
+    for i in range(8):
+        store.upsert(_stale_entry(f"id{i}", body=f"body{i}"))
+    candidates = store.consolidation_candidates(min_age_days=14)
+
+    async def _stub(*a: Any, **k: Any) -> list[Any]:
+        # Propose more deletes than the cap allows.
+        return [
+            ConsolidationAction(kind="delete", id=f"id{i}", reason="x")
+            for i in range(8)
+        ]
+
+    # Lower the cap to 2 so the gate is exercised without 8 separate trashes.
+    loop.config.memory.consolidate_max_actions = 2
+    monkeypatch.setattr(
+        loop, "_resolve_memory_consolidator", lambda: _StubConsolidator(_stub)
+    )
+    await loop._consolidate_memories(candidates, _dt.date(2026, 6, 26))
+
+    ledger_lines = [
+        ln
+        for ln in (tmp_path / ".trash" / "ledger.jsonl").read_text().splitlines()
+        if ln
+    ]
+    assert len(ledger_lines) == 2  # capped
+
+
+@pytest.mark.asyncio
+async def test_consolidate_fail_soft_on_exception(monkeypatch, tmp_path) -> None:
+    loop, store = _consolidate_loop(monkeypatch, tmp_path)
+    store.upsert(_stale_entry("a", body="alpha"))
+
+    def _boom() -> Any:
+        raise RuntimeError("consolidator build failed")
+
+    monkeypatch.setattr(loop, "_resolve_memory_consolidator", _boom)
+    # Must not raise — consolidation is best-effort.
+    await loop._consolidate_memories(
+        store.consolidation_candidates(min_age_days=14), _dt.date(2026, 6, 26)
+    )
+    assert store.get("a") is not None  # memory untouched
+
+
+class _StubConsolidator:
+    def __init__(self, coro_fn: Any) -> None:
+        self._fn = coro_fn
+
+    async def consolidate(self, *a: Any, **k: Any) -> list[Any]:
+        return await self._fn(*a, **k)

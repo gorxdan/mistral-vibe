@@ -10,7 +10,9 @@ shared tree never tear a sibling file.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -20,7 +22,13 @@ import tempfile
 from pydantic import ValidationError
 import yaml
 
-from vibe.core.memory.models import _SLUG, MemoryEntry, MemoryMetadata, freshness_note
+from vibe.core.memory.models import (
+    _SLUG,
+    MemoryEntry,
+    MemoryMetadata,
+    freshness_note,
+    memory_age_days,
+)
 from vibe.core.paths import VIBE_HOME
 from vibe.core.skills.parser import SkillParseError, parse_skill_markdown
 
@@ -184,6 +192,111 @@ class MemoryStore:
         if removed:
             self._cache = None
         return removed
+
+    # --- consolidation support (reversible trash + ledger) ------------- #
+
+    def _effective_path(self, memory_id: str) -> Path | None:
+        # The file that actually backs this id under shadowing: project dirs
+        # override user (loaded last in _entries), so the effective file is the
+        # first hit scanning project dirs first, then user. None if absent.
+        if not _ID_RE.match(memory_id):
+            return None
+        for d in reversed(self._search_dirs()):
+            if not d.is_dir():
+                continue
+            path = d / f"{memory_id}.md"
+            if path.exists():
+                return path
+        return None
+
+    def trash(self, memory_id: str, *, reason: str, into: str | None = None) -> bool:
+        """Move a memory's effective file into a per-dir ``.trash/`` tree with
+        a ledger entry. Never hard-deletes — the file stays recoverable and the
+        ledger records why it moved (consolidation merge/delete). Returns False
+        if the id has no effective file (nothing to trash).
+        """
+        src = self._effective_path(memory_id)
+        if src is None:
+            return False
+        trash_dir = src.parent / ".trash"
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        dest = trash_dir / f"{memory_id}-{ts}.md"
+        try:
+            src.replace(dest)  # atomic rename within one filesystem
+        except OSError:
+            # Cross-device mount of ~/.vibe: copy then unlink so the recoverable
+            # trash copy still lands inside the trash tree.
+            dest.write_bytes(src.read_bytes())
+            src.unlink()
+        entry = {
+            "id": memory_id,
+            "ts": ts,
+            "reason": reason,
+            "into": into,
+            "file": dest.name,
+            "from": src.name,
+        }
+        with (trash_dir / "ledger.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+        self._cache = None
+        return True
+
+    def apply_merge(
+        self, into_id: str, source_ids: list[str], merged_body: str, today: str
+    ) -> int:
+        """Rewrite ``into_id`` with a reconciled body and trash its sources.
+
+        The target keeps its metadata (scope/type/tags); only ``updated`` is
+        bumped to ``today`` so the recency signal reflects the reconciliation,
+        and ``source`` is marked ``auto``. Returns the count of source files
+        actually trashed. A source equal to the target is skipped (not trashed).
+        """
+        target = self.get(into_id)
+        if target is None:
+            return 0
+        meta = target.metadata.model_copy(update={"updated": today, "source": "auto"})
+        self.upsert(
+            MemoryEntry(metadata=meta, body=merged_body),
+            project=(target.metadata.scope == "project"),
+        )
+        trashed = 0
+        for sid in source_ids:
+            if sid == into_id:
+                continue
+            if self.trash(sid, reason="merge", into=into_id):
+                trashed += 1
+        return trashed
+
+    def consolidation_candidates(
+        self, *, min_age_days: int, today: datetime.date | None = None
+    ) -> list[MemoryEntry]:
+        """Effective entries older than ``min_age_days`` — the consolidation
+        set. Fresh memories and undated entries (unknown age) are excluded: a
+        consolidate pass should never merge away something just learned.
+        """
+        out: list[MemoryEntry] = []
+        for e in self._entries().values():
+            age = memory_age_days(e.metadata.updated, today)
+            if age is not None and age >= min_age_days:
+                out.append(e)
+        return out
+
+    def last_consolidation(self) -> datetime.date | None:
+        # Throttle marker for consolidation runs. Stored under the user dir so
+        # one throttle covers the whole corpus (user + active project tier).
+        marker = self._user_dir / ".last_consolidation"
+        if not marker.exists():
+            return None
+        try:
+            return datetime.date.fromisoformat(marker.read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+    def stamp_consolidation(self, today_iso: str) -> None:
+        self._user_dir.mkdir(parents=True, exist_ok=True)
+        with (self._user_dir / ".last_consolidation").open("w", encoding="utf-8") as f:
+            f.write(today_iso)
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:

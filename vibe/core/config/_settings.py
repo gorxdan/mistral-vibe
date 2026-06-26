@@ -349,6 +349,17 @@ class MemoryConfig(BaseSettings):
     auto_extract_max_writes: int = 3  # per-session cap on extracted memories
     auto_extract_min_messages: int = 4  # skip extraction on trivial turns
     auto_extract_timeout: float = 30.0
+    # Consolidation: a periodic pass that reconciles fragmented/duplicate
+    # memories and prunes obsolete ones. Off by default. Applies via reversible
+    # trash + ledger (MemoryStore.trash), so a bad pass is recoverable — never
+    # a hard delete. Shares the selector model/extra_body when its own is unset.
+    consolidate: bool = False
+    consolidate_model: str | None = None  # alias; falls back to model/compaction/active
+    consolidate_min_age_days: int = 14  # only memories this old are candidates
+    consolidate_min_candidates: int = 6  # skip unless this many old candidates exist
+    consolidate_interval_days: int = 7  # min gap between consolidation runs
+    consolidate_max_actions: int = 5  # cap on merges+deletes applied per run
+    consolidate_timeout: float = 45.0
 
 
 class SandboxConfig(BaseModel):
