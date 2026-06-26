@@ -17,6 +17,12 @@ from vibe.core.utils.io import read_safe
 DEFAULT_IMAGE = "searxng/searxng:latest"
 DEFAULT_CONTAINER_NAME = "vibe-searxng"
 DEFAULT_PORT = 8888
+# SearXNG's limiter (botdetection) scores non-browser User-Agents as bots and
+# rate-limits them; a browser UA keeps our JSON requests through.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/125.0.0.0 Safari/537.36"
+)
 # SearXNG listens on 8080 inside the container; we map a host port to it.
 _INTERNAL_PORT = 8080
 # Loopback only: a 0.0.0.0 bind (docker's `-p port:port` default) exposes the unauthenticated instance to the LAN.
@@ -133,7 +139,10 @@ async def health_check(url: str, *, timeout: float = _QUICK_HTTP_TIMEOUT) -> boo
     target = f"{url.rstrip('/')}/search"
     try:
         async with httpx.AsyncClient(
-            follow_redirects=False, verify=build_ssl_context(), timeout=timeout
+            follow_redirects=False,
+            verify=build_ssl_context(),
+            timeout=timeout,
+            headers={"User-Agent": BROWSER_USER_AGENT},
         ) as client:
             response = await client.get(target, params={"q": "ping", "format": "json"})
             return response.status_code == _HTTP_OK

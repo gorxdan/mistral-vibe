@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from vibe.core.search.searxng import (
+    BROWSER_USER_AGENT,
     DEFAULT_CONTAINER_NAME,
     DEFAULT_IMAGE,
     DEFAULT_PORT,
@@ -21,6 +22,7 @@ from vibe.core.search.searxng import (
 )
 
 __all__ = [
+    "BROWSER_USER_AGENT",
     "DEFAULT_CONTAINER_NAME",
     "DEFAULT_IMAGE",
     "DEFAULT_PORT",

@@ -56,3 +56,18 @@ docker run -d --name vibe-searxng -p 127.0.0.1:8888:8080 searxng/searxng:latest
 Bind to `127.0.0.1` (not the bare `-p 8888:8080`, which Docker exposes on `0.0.0.0` and so to your whole LAN). Chaton only ever talks to the instance over localhost.
 
 SearXNG must allow the JSON response format, which Chaton uses to read results. Recent SearXNG images enable it by default; if you see empty results, ensure `json` is listed under `search.formats` in your SearXNG `settings.yml`.
+
+## Rate limiting (the limiter) and remote instances
+
+SearXNG ships a [limiter](https://docs.searxng.org/admin/searx.limiter.html) that uses [bot detection](https://docs.searxng.org/admin/searx.limiter.html) to rate-limit or block programmatic clients. Its job is to stop bots hammering the instance (which gets SearXNG itself blocked by upstream engines), and it is on by default on most public instances. Two things matter for Chaton:
+
+- **Chaton identifies as a browser.** The limiter scores the default `python-httpx/*` User-Agent as a bot, so Chaton sends a browser User-Agent on both its readiness probe and its search requests. You do not need to configure anything for this.
+- **Rate limits fall back, config errors don't.** If the instance returns `429 Too Many Requests` (the limiter throttling Chaton) or a `5xx` (overloaded), Chaton treats it as "down" and offers to fall back to Mistral web search for that request or the session. A `4xx` other than `429` (e.g. `404`) is treated as a configuration error and surfaced as a hard error rather than a silent fallback.
+
+When pointing `searxng_url` at an instance you do not control (a public SearXNG), keep two caveats in mind:
+
+1. **The limiter may still throttle you** under sustained use, regardless of User-Agent — the limiter also rate-limits by IP behaviour, not just headers. If searches frequently fall back to Mistral, run your own instance instead.
+2. **JSON must be enabled.** Many public admins remove `json` from `search.formats` to deter automation; without it Chaton gets empty results or a `403`. Chaton can only patch `search.formats` on a container it manages, so a remote instance without JSON enabled will not work.
+
+For a self-hosted single-user instance bound to localhost, the limiter adds little (there is only one client, seen as `127.0.0.1`), so leaving it off is reasonable; the value of `searxng_disabled_engines` is reducing rate-limiting from *upstream* engines, which the limiter does not address.
+

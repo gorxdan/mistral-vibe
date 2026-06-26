@@ -118,6 +118,21 @@ async def test_health_check_down():
 
 
 @pytest.mark.asyncio
+async def test_health_check_sends_browser_user_agent():
+    # The limiter scores non-browser UAs as bots; the readiness probe must
+    # identify as a browser so a healthy instance isn't rate-limited into a
+    # false "not healthy".
+    with respx.mock() as mock:
+        mock.get("http://x/search").mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        assert await searxng.health_check("http://x") is True
+        sent_ua = mock.calls.last.request.headers.get("user-agent", "")
+    assert sent_ua == searxng.BROWSER_USER_AGENT
+    assert sent_ua.startswith("Mozilla/5.0")
+
+
+@pytest.mark.asyncio
 async def test_ensure_running_already_up(monkeypatch):
     monkeypatch.setattr(searxng, "health_check", AsyncMock(return_value=True))
     outcome = await searxng.ensure_running(_SETTINGS, engine="docker")

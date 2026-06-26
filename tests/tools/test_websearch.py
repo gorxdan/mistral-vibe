@@ -659,6 +659,48 @@ async def test_run_searxng_4xx_raises_tool_error_not_recovery(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_searxng_429_routes_to_down_message_non_interactive(monkeypatch):
+    # A 429 is the limiter throttling us -- operationally "down" -- so it must
+    # surface as the actionable down message (offering fallback), like a 503,
+    # not the hard ToolError a 4xx config error produces.
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(return_value=httpx.Response(429))
+        with pytest.raises(ToolError) as exc_info:
+            await collect_result(ws.run(WebSearchArgs(query="test")))
+
+    msg = str(exc_info.value)
+    assert "is not responding" in msg
+    assert "HTTP 429" in msg
+
+
+@pytest.mark.asyncio
+async def test_run_searxng_request_sends_browser_user_agent(monkeypatch):
+    # The limiter scores non-browser UAs as bots; the search request must
+    # identify as a browser to stay under the limiter's botdetection.
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    config = WebSearchConfig(searxng_url="http://localhost:8080")
+    ws = WebSearch(config_getter=lambda: config, state=BaseToolState())
+
+    with respx.mock() as mock:
+        mock.get("http://localhost:8080/search").mock(
+            return_value=httpx.Response(
+                200,
+                json={"results": [{"title": "T", "url": "http://u", "content": "c"}]},
+            )
+        )
+        result = await collect_result(ws.run(WebSearchArgs(query="q")))
+        sent_ua = mock.calls.last.request.headers.get("user-agent", "")
+
+    assert "T" in result.answer
+    assert sent_ua == searxng.BROWSER_USER_AGENT
+    assert sent_ua.startswith("Mozilla/5.0")
+
+
+@pytest.mark.asyncio
 async def test_run_searxng_read_timeout_routes_to_down_message(monkeypatch):
     # A server-side ReadTimeout (instance reachable but stalled) must be treated
     # as "down" so the caller can fall back, not hard-fail as a request error.

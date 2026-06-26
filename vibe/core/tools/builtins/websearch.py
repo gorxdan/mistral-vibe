@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from vibe.core.config import DEFAULT_MISTRAL_API_ENV_KEY, VibeConfig
 from vibe.core.search import (
+    BROWSER_USER_AGENT,
     DEFAULT_CONTAINER_NAME as DEFAULT_SEARXNG_CONTAINER_NAME,
     DEFAULT_IMAGE as DEFAULT_SEARXNG_IMAGE,
     DEFAULT_PORT as DEFAULT_SEARXNG_PORT,
@@ -58,6 +59,7 @@ _DOWN_CHOICE_MISTRAL_STOP = "Use Mistral, stop asking"
 
 _MAX_SEARXNG_RESULTS = 10
 _SERVER_ERROR_STATUS = 500
+_TOO_MANY_REQUESTS = 429
 _MAX_CONCURRENT_SEARCHES = 2
 _search_semaphore: asyncio.Semaphore | None = None
 # Includes bidi-override codepoints (U+202A-E, U+2066-9): "Trojan Source" chars
@@ -436,6 +438,7 @@ class WebSearch(
             follow_redirects=False,
             verify=ssl_context,
             timeout=self.config.searxng_timeout,
+            headers={"User-Agent": BROWSER_USER_AGENT},
         ) as client:
             try:
                 response = await client.get(
@@ -448,8 +451,11 @@ class WebSearch(
             except httpx.TimeoutException:
                 raise
             except httpx.HTTPStatusError as exc:
-                # 5xx re-raises (overloaded -> fall back to Mistral); 4xx is a client/config error.
-                if exc.response.status_code >= _SERVER_ERROR_STATUS:
+                # 5xx (overloaded) and 429 (limiter rate-limit) are operationally
+                # "down" -- re-raise so the caller can fall back. Other 4xx is a
+                # deterministic client/config error.
+                status = exc.response.status_code
+                if status >= _SERVER_ERROR_STATUS or status == _TOO_MANY_REQUESTS:
                     raise
                 raise ToolError(f"SearXNG request failed: {exc}") from exc
             except httpx.InvalidURL as exc:
