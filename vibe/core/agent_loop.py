@@ -29,6 +29,7 @@ from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
 from vibe.core.compaction import (
     build_extractive_summary,
+    collect_leading_injected_context,
     collect_prior_user_messages,
     render_compaction_context,
 )
@@ -3371,13 +3372,20 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 summary_content = build_extractive_summary(history_snapshot)
 
             system_message = self.messages[0]
+            # Preserve the leading injected environment context (file-tree,
+            # AGENTS.md, deep-memory) across compaction. collect_prior_user_messages
+            # skips every injected message, so without this the model's grounding
+            # vanishes after every reset.
+            leading_context = collect_leading_injected_context(history_snapshot)
             compaction_context = render_compaction_context(
                 prior_user_messages, summary_content
             )
             compaction_context_message = LLMMessage(
                 role=Role.user, content=compaction_context, injected=True
             )
-            self.messages.reset([system_message, compaction_context_message])
+            self.messages.reset(
+                [system_message, *leading_context, compaction_context_message]
+            )
 
             await self._reset_session()
 

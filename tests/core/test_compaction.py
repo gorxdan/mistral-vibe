@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from vibe.core.compaction import (
     build_extractive_summary,
+    collect_leading_injected_context,
     collect_prior_user_messages,
     parse_previous_user_messages,
     render_compaction_context,
@@ -192,3 +193,47 @@ def test_extractive_summary_respects_token_budget() -> None:
     messages = [LLMMessage(role=Role.assistant, content="line " + "z" * 10_000)]
     summary = build_extractive_summary(messages, max_tokens=10)
     assert "[... truncated ...]" in summary
+
+
+class TestCollectLeadingInjectedContext:
+    def _sys(self) -> LLMMessage:
+        return LLMMessage(role=Role.system, content="sys")
+
+    def test_returns_leading_injected_after_system(self) -> None:
+        messages = [
+            self._sys(),
+            _user("env context", injected=True),
+            _user("file-tree", injected=True),
+            _user("real ask"),
+        ]
+        out = collect_leading_injected_context(messages)
+        assert [m.content for m in out] == ["env context", "file-tree"]
+
+    def test_stops_at_first_non_injected(self) -> None:
+        messages = [
+            self._sys(),
+            _user("env", injected=True),
+            _user("real ask"),
+            _user("later middleware", injected=True),
+        ]
+        out = collect_leading_injected_context(messages)
+        assert [m.content for m in out] == ["env"]
+
+    def test_empty_when_no_leading_injected(self) -> None:
+        messages = [self._sys(), _user("real ask")]
+        assert collect_leading_injected_context(messages) == []
+
+    def test_stops_at_prior_compaction_context(self) -> None:
+        prior_summary = render_compaction_context([_user("old")], "old summary")
+        messages = [
+            self._sys(),
+            _user("env", injected=True),
+            LLMMessage(role=Role.user, content=prior_summary, injected=True),
+            _user("after compact"),
+        ]
+        out = collect_leading_injected_context(messages)
+        assert [m.content for m in out] == ["env"]
+
+    def test_empty_when_no_system_message(self) -> None:
+        messages = [_user("env", injected=True)]
+        assert collect_leading_injected_context(messages) == []

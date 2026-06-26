@@ -131,6 +131,32 @@ def collect_prior_user_messages(
     return selected
 
 
+def collect_leading_injected_context(messages: list[LLMMessage]) -> list[LLMMessage]:
+    """Return the leading injected environment-context messages to preserve.
+
+    These are the consecutive injected (non-compaction-context) messages
+    immediately after the system message — environment context, file-tree,
+    AGENTS.md, deep-memory — set up at session start. They are dropped by
+    :func:`collect_prior_user_messages` (which skips every ``injected=True``
+    message), so without re-injection they vanish after every compaction and
+    the model loses its grounding mid-session.
+
+    Stops at the first non-injected message (real conversation) or a prior
+    compaction-context message, so mid-conversation middleware injections and
+    stale summaries are never carried forward.
+    """
+    if not messages or messages[0].role != Role.system:
+        return []
+    leading: list[LLMMessage] = []
+    for msg in messages[1:]:
+        if not msg.injected:
+            break
+        if _is_compaction_context_message(msg):
+            break
+        leading.append(msg)
+    return leading
+
+
 def _first_line(text: str, limit: int = 200) -> str:
     line = text.strip().splitlines()[0].strip() if text.strip() else ""
     return line[:limit]
