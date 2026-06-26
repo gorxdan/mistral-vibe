@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from vibe.core.tools.mcp.pool import MCPSessionPool
 from vibe.core.tools.mcp.registry import MCPRegistry
 from vibe.core.tools.mcp.tools import (
     MCPToolResult,
@@ -19,6 +20,7 @@ from vibe.core.tools.mcp.tools import (
 
 __all__ = [
     "MCPRegistry",
+    "MCPSessionPool",
     "MCPToolResult",
     "RemoteTool",
     "RemoteToolAnnotations",

@@ -21,6 +21,7 @@ from vibe.core.tools.base import (
     ToolError,
     ToolPermission,
 )
+from vibe.core.tools.mcp.pool import MCPSessionPool
 from vibe.core.tools.mcp_sampling import MCPSamplingHandler
 from vibe.core.tools.permissions import PermissionContext
 from vibe.core.tools.ui import ToolResultDisplay, ToolUIData
@@ -135,6 +136,10 @@ class MCPTool(
     # ASK even when the tool's config permission is ALWAYS.
     _read_only_hint: ClassVar[bool | None] = None
     _destructive_hint: ClassVar[bool | None] = None
+    # When the registry injects a shared MCPSessionPool, calls reuse one live
+    # session per server instead of paying a full connect handshake each call.
+    # None (default) keeps the original one-shot connect-per-call behavior.
+    _pool: ClassVar[MCPSessionPool | None] = None
 
     @classmethod
     def get_server_name(cls) -> str | None:
@@ -332,6 +337,44 @@ async def call_tool_http(
                 return _parse_call_result(url, tool_name, result)
 
 
+async def build_pooled_http_session(
+    stack: contextlib.AsyncExitStack,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    auth: httpx.Auth | None = None,
+    startup_timeout_sec: float | None = None,
+    sampling_callback: MCPSamplingHandler | None = None,
+) -> Any:
+    """Build an initialized ClientSession for a pooled HTTP connection.
+
+    Enters the transport + session async context managers into ``stack`` so they
+    stay alive for the pooled connection's lifetime and are torn down when the
+    pool closes the stack. Mirrors :func:`call_tool_http` but returns the live
+    session instead of consuming it.
+    """
+    _load_mcp()
+    init_timeout = (
+        timedelta(seconds=startup_timeout_sec) if startup_timeout_sec else None
+    )
+    http_client = await stack.enter_async_context(
+        create_vibe_mcp_http_client(headers, auth=auth)
+    )
+    read, write, _ = await stack.enter_async_context(
+        streamable_http_client(url, http_client=http_client)
+    )
+    session = await stack.enter_async_context(
+        ClientSession(
+            read,
+            write,
+            read_timeout_seconds=init_timeout,
+            sampling_callback=sampling_callback,
+        )
+    )
+    await session.initialize()
+    return session
+
+
 def create_mcp_http_proxy_tool_class(
     *,
     url: str,
@@ -396,16 +439,46 @@ def create_mcp_http_proxy_tool_class(
                     ctx.sampling_callback if ctx and self._sampling_enabled else None
                 )
                 payload = args.model_dump(exclude_none=True)
-                yield await call_tool_http(
-                    self._mcp_url,
-                    self._remote_name,
-                    payload,
-                    headers=self._headers,
-                    auth=self._auth,
-                    startup_timeout_sec=self._startup_timeout_sec,
-                    tool_timeout_sec=self._tool_timeout_sec,
-                    sampling_callback=sampling_callback,
+                call_timeout = (
+                    timedelta(seconds=self._tool_timeout_sec)
+                    if self._tool_timeout_sec
+                    else None
                 )
+                if self._pool is not None:
+                    fingerprint = f"http:{self._mcp_url}"
+
+                    async def factory(stack: contextlib.AsyncExitStack) -> Any:
+                        return await build_pooled_http_session(
+                            stack,
+                            self._mcp_url,
+                            headers=self._headers,
+                            auth=self._auth,
+                            startup_timeout_sec=self._startup_timeout_sec,
+                            sampling_callback=sampling_callback,
+                        )
+
+                    async def call(session: Any) -> MCPToolResult:
+                        result = await session.call_tool(
+                            self._remote_name,
+                            payload,
+                            read_timeout_seconds=call_timeout,
+                        )
+                        return _parse_call_result(
+                            self._mcp_url, self._remote_name, result
+                        )
+
+                    yield await self._pool.call(fingerprint, factory, call)
+                else:
+                    yield await call_tool_http(
+                        self._mcp_url,
+                        self._remote_name,
+                        payload,
+                        headers=self._headers,
+                        auth=self._auth,
+                        startup_timeout_sec=self._startup_timeout_sec,
+                        tool_timeout_sec=self._tool_timeout_sec,
+                        sampling_callback=sampling_callback,
+                    )
             except Exception as exc:
                 raise ToolError(f"MCP call failed: {exc}") from exc
 
@@ -486,6 +559,43 @@ async def call_tool_stdio(
         return _parse_call_result("stdio:" + " ".join(command), tool_name, result)
 
 
+async def build_pooled_stdio_session(
+    stack: contextlib.AsyncExitStack,
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    startup_timeout_sec: float | None = None,
+    sampling_callback: MCPSamplingHandler | None = None,
+) -> Any:
+    """Build an initialized ClientSession for a pooled stdio connection.
+
+    Enters the stderr capture, stdio transport, and session async context
+    managers into ``stack`` so they stay alive for the pooled connection's
+    lifetime and are torn down (subprocess reaped) when the pool closes the
+    stack. Mirrors :func:`call_tool_stdio` but returns the live session.
+    """
+    _load_mcp()
+    params = StdioServerParameters(
+        command=command[0], args=command[1:], env=env, cwd=cwd
+    )
+    init_timeout = (
+        timedelta(seconds=startup_timeout_sec) if startup_timeout_sec else None
+    )
+    await stack.enter_async_context(_mcp_stderr_capture())
+    read, write = await stack.enter_async_context(stdio_client(params))
+    session = await stack.enter_async_context(
+        ClientSession(
+            read,
+            write,
+            read_timeout_seconds=init_timeout,
+            sampling_callback=sampling_callback,
+        )
+    )
+    await session.initialize()
+    return session
+
+
 def create_mcp_stdio_proxy_tool_class(
     *,
     command: list[str],
@@ -549,17 +659,48 @@ def create_mcp_stdio_proxy_tool_class(
                     ctx.sampling_callback if ctx and self._sampling_enabled else None
                 )
                 payload = args.model_dump(exclude_none=True)
-                result = await call_tool_stdio(
-                    self._stdio_command,
-                    self._remote_name,
-                    payload,
-                    env=self._env,
-                    cwd=self._cwd,
-                    startup_timeout_sec=self._startup_timeout_sec,
-                    tool_timeout_sec=self._tool_timeout_sec,
-                    sampling_callback=sampling_callback,
+                call_timeout = (
+                    timedelta(seconds=self._tool_timeout_sec)
+                    if self._tool_timeout_sec
+                    else None
                 )
-                yield result
+                if self._pool is not None:
+                    fingerprint = "stdio:" + "\0".join(self._stdio_command)
+
+                    async def factory(stack: contextlib.AsyncExitStack) -> Any:
+                        return await build_pooled_stdio_session(
+                            stack,
+                            self._stdio_command,
+                            env=self._env,
+                            cwd=self._cwd,
+                            startup_timeout_sec=self._startup_timeout_sec,
+                            sampling_callback=sampling_callback,
+                        )
+
+                    async def call(session: Any) -> MCPToolResult:
+                        result = await session.call_tool(
+                            self._remote_name,
+                            payload,
+                            read_timeout_seconds=call_timeout,
+                        )
+                        return _parse_call_result(
+                            "stdio:" + " ".join(self._stdio_command),
+                            self._remote_name,
+                            result,
+                        )
+
+                    yield await self._pool.call(fingerprint, factory, call)
+                else:
+                    yield await call_tool_stdio(
+                        self._stdio_command,
+                        self._remote_name,
+                        payload,
+                        env=self._env,
+                        cwd=self._cwd,
+                        startup_timeout_sec=self._startup_timeout_sec,
+                        tool_timeout_sec=self._tool_timeout_sec,
+                        sampling_callback=sampling_callback,
+                    )
             except Exception as exc:
                 raise ToolError(f"MCP stdio call failed: {exc!r}") from exc
 
