@@ -435,6 +435,74 @@ class TestCreateMCPHttpProxyToolClass:
 
         assert params == {"type": "object", "properties": {"arg": {"type": "string"}}}
 
+    def test_dereferences_ref_with_siblings_in_parameters(self):
+        # Strict OpenAI-compatible backends (Moonshot/kimi) reject a tool schema
+        # whose property is {"$ref": "#/$defs/X", "description": ...} ("conflicting
+        # keywords found after $ref expansion"). A remote MCP server can publish
+        # exactly that shape, so get_parameters must inline the reference.
+        remote = RemoteTool.model_validate({
+            "name": "my_tool",
+            "inputSchema": {
+                "$defs": {
+                    "Kind": {"type": "string", "enum": ["a", "b"], "title": "Kind"}
+                },
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "$ref": "#/$defs/Kind",
+                        "description": "which kind",
+                        "default": "a",
+                    }
+                },
+            },
+        })
+        tool_cls = create_mcp_http_proxy_tool_class(
+            url="http://localhost:8080", remote=remote
+        )
+
+        params = tool_cls.get_parameters()
+
+        kind = params["properties"]["kind"]
+        assert "$ref" not in kind
+        assert kind["enum"] == ["a", "b"]
+        # Remote-authored siblings (description/default) survive inline.
+        assert kind["description"] == "which kind"
+        assert kind["default"] == "a"
+        assert "$defs" not in params
+
+    def test_dereferences_multilevel_ref_chain_in_parameters(self):
+        # A definition may itself reference another definition
+        # (Kind -> BaseKind -> {type, enum}). The dereferencer must follow the
+        # whole chain, otherwise $defs is dropped while a $ref survives — a
+        # dangling reference the backend cannot resolve.
+        remote = RemoteTool.model_validate({
+            "name": "my_tool",
+            "inputSchema": {
+                "$defs": {
+                    "Kind": {"$ref": "#/$defs/BaseKind"},
+                    "BaseKind": {
+                        "type": "string",
+                        "enum": ["a", "b"],
+                        "minLength": 1,
+                    },
+                },
+                "type": "object",
+                "properties": {"kind": {"$ref": "#/$defs/Kind"}},
+            },
+        })
+        tool_cls = create_mcp_http_proxy_tool_class(
+            url="http://localhost:8080", remote=remote
+        )
+
+        params = tool_cls.get_parameters()
+
+        kind = params["properties"]["kind"]
+        assert "$ref" not in kind
+        assert "$defs" not in params
+        assert kind["enum"] == ["a", "b"]
+        assert kind["type"] == "string"
+        assert kind["minLength"] == 1
+
 
 class TestCreateMCPStdioProxyToolClass:
     def test_creates_tool_class_with_alias(self):
@@ -476,6 +544,34 @@ class TestCreateMCPStdioProxyToolClass:
 
         assert tool_cls._startup_timeout_sec == 15.0  # type: ignore[attr-defined]
         assert tool_cls._tool_timeout_sec == 90.0  # type: ignore[attr-defined]
+
+    def test_dereferences_ref_with_siblings_in_parameters(self):
+        # Same regression as the http proxy: a stdio MCP server may publish a
+        # $ref with sibling keywords, which strict backends reject. stdio and
+        # http proxies share the get_parameters contract, so both must inline.
+        remote = RemoteTool.model_validate({
+            "name": "my_tool",
+            "inputSchema": {
+                "$defs": {
+                    "Kind": {"type": "string", "enum": ["a", "b"], "title": "Kind"}
+                },
+                "type": "object",
+                "properties": {
+                    "kind": {"$ref": "#/$defs/Kind", "description": "which kind"}
+                },
+            },
+        })
+        tool_cls = create_mcp_stdio_proxy_tool_class(
+            command=["python", "-m", "mcp_server"], remote=remote
+        )
+
+        params = tool_cls.get_parameters()
+
+        kind = params["properties"]["kind"]
+        assert "$ref" not in kind
+        assert kind["enum"] == ["a", "b"]
+        assert kind["description"] == "which kind"
+        assert "$defs" not in params
 
     def test_includes_hint_in_description(self):
         remote = RemoteTool(name="my_tool", description="Base description")

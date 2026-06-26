@@ -10,6 +10,7 @@ import httpx
 from mistralai.client import Mistral
 
 from vibe.core.logger import logger
+from vibe.core.tools._schema import dereference_refs
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -175,7 +176,9 @@ def create_connector_proxy_tool_class(
 
         @classmethod
         def get_parameters(cls) -> dict[str, Any]:
-            return dict(cls._input_schema)
+            # Connector remote schemas (like MCP) may publish a $ref with
+            # sibling keywords; strict backends reject that. Inline refs.
+            return dereference_refs(dict(cls._input_schema))
 
         async def run(
             self, args: _OpenArgs, ctx: InvokeContext | None = None

@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from vibe.core.logger import logger
 from vibe.core.rewind.manager import FileSnapshot
+from vibe.core.tools._schema import dereference_refs, strip_titles
 from vibe.core.types import ToolStreamEvent
 from vibe.core.utils.io import read_safe
 
@@ -176,64 +177,6 @@ class BaseToolState(BaseModel):
     model_config = ConfigDict(
         extra="forbid", validate_default=True, arbitrary_types_allowed=True
     )
-
-
-def _dereference_refs(schema: dict[str, Any]) -> dict[str, Any]:
-    """Inline every ``$defs`` reference so the schema is flat.
-
-    Pydantic emits ``{"$ref": "#/$defs/X", ...siblings}`` for referenced
-    sub-schemas; strict OpenAI-compatible backends (Moonshot/kimi) reject a
-    ``$ref`` with sibling keywords ("conflicting keywords found after $ref
-    expansion"). Each reference is expanded by deep-merging its target and
-    letting the sibling keys (description/default) override. Genuinely
-    recursive definitions (a model that contains itself) cannot be inlined
-    and keep their ``$ref``; their ``$defs`` entry is retained so it resolves.
-    """
-    defs = schema.get("$defs", {})
-    cycled: set[str] = set()
-
-    def expand(node: Any, resolving: frozenset[str]) -> Any:
-        if isinstance(node, dict):
-            ref = node.get("$ref")
-            if isinstance(ref, str) and ref.startswith("#/$defs/"):
-                name = ref[len("#/$defs/") :]
-                target = defs.get(name)
-                if target is not None:
-                    if name in resolving:
-                        cycled.add(name)
-                        return node
-                    merged: dict[str, Any] = {}
-                    nested = resolving | {name}
-                    for k, v in target.items():
-                        merged[k] = expand(v, nested)
-                    for k, v in node.items():
-                        if k != "$ref":
-                            merged[k] = expand(v, nested)
-                    return merged
-            return {k: expand(v, resolving) for k, v in node.items()}
-        if isinstance(node, list):
-            return [expand(v, resolving) for v in node]
-        return node
-
-    expanded = expand(schema, frozenset())
-    if "$defs" in expanded:
-        if cycled:
-            expanded["$defs"] = {
-                n: v for n, v in expanded["$defs"].items() if n in cycled
-            }
-        else:
-            del expanded["$defs"]
-    return expanded
-
-
-def _strip_titles(node: Any) -> None:
-    if isinstance(node, dict):
-        node.pop("title", None)
-        for v in node.values():
-            _strip_titles(v)
-    elif isinstance(node, list):
-        for v in node:
-            _strip_titles(v)
 
 
 class BaseTool[
@@ -469,9 +412,9 @@ class BaseTool[
         """
         args_model, _ = cls._get_tool_args_results()
         schema = args_model.model_json_schema()
-        schema = _dereference_refs(schema)
+        schema = dereference_refs(schema)
         schema.pop("description", None)
-        _strip_titles(schema)
+        strip_titles(schema)
         return schema
 
     @classmethod

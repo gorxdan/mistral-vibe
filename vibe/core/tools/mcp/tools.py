@@ -13,6 +13,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from vibe.core.logger import logger
+from vibe.core.tools._schema import dereference_refs
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -429,7 +430,11 @@ def create_mcp_http_proxy_tool_class(
 
         @classmethod
         def get_parameters(cls) -> dict[str, Any]:
-            return dict(cls._input_schema)
+            # Remote MCP servers may publish a $ref with sibling keywords
+            # ({"$ref": "#/$defs/X", "description": ...}); strict backends
+            # (Moonshot/kimi) reject that. Inline references so the wire schema
+            # is flat. Titles are remote-authored and preserved.
+            return dereference_refs(dict(cls._input_schema))
 
         async def run(
             self, args: _OpenArgs, ctx: InvokeContext | None = None
@@ -649,7 +654,11 @@ def create_mcp_stdio_proxy_tool_class(
 
         @classmethod
         def get_parameters(cls) -> dict[str, Any]:
-            return dict(cls._input_schema)
+            # Remote MCP servers may publish a $ref with sibling keywords
+            # ({"$ref": "#/$defs/X", "description": ...}); strict backends
+            # (Moonshot/kimi) reject that. Inline references so the wire schema
+            # is flat. Titles are remote-authored and preserved.
+            return dereference_refs(dict(cls._input_schema))
 
         async def run(
             self, args: _OpenArgs, ctx: InvokeContext | None = None

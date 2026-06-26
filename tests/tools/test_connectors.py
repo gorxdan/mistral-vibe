@@ -104,6 +104,44 @@ class TestCreateConnectorProxyTool:
         params = cls.get_parameters()
         assert params["properties"]["query"]["type"] == "string"
 
+    def test_dereferences_ref_with_siblings_in_parameters(self) -> None:
+        # Connector proxy tools publish a remote inputSchema that may contain a
+        # $ref with sibling keywords — the shape strict backends (Moonshot/kimi)
+        # reject. get_parameters must inline the reference.
+        schema = {
+            "$defs": {
+                "Mode": {"type": "string", "enum": ["fast", "slow"], "title": "Mode"}
+            },
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "$ref": "#/$defs/Mode",
+                    "description": "search mode",
+                    "default": "fast",
+                }
+            },
+        }
+        remote = RemoteTool.model_validate({
+            "name": "search",
+            "description": "Search",
+            "inputSchema": schema,
+        })
+        cls = create_connector_proxy_tool_class(
+            connector_name="conn",
+            connector_alias="conn",
+            connector_id="id-3",
+            remote=remote,
+            api_key="key",
+        )
+        params = cls.get_parameters()
+
+        mode = params["properties"]["mode"]
+        assert "$ref" not in mode
+        assert mode["enum"] == ["fast", "slow"]
+        assert mode["description"] == "search mode"
+        assert mode["default"] == "fast"
+        assert "$defs" not in params
+
     def test_server_name_is_connector_alias(self) -> None:
         remote = RemoteTool(name="tool1", description="A tool")
         cls = cast(
