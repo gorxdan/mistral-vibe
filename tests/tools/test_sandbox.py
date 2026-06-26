@@ -81,6 +81,68 @@ def test_seatbelt_rejects_quoted_roots(tmp_path) -> None:
     assert 'a"b' not in profile  # never injected into the SBPL string
 
 
+def test_bwrap_overlays_protected_metadata_readonly(tmp_path) -> None:
+    # A writable root with .git/.env present must get read-only --ro-bind
+    # overlays AFTER the writable --bind, so a sandboxed command can read but
+    # not rewrite git history or secrets.
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".git").mkdir()
+    (root / ".env").write_text("SECRET=1")
+    (root / "src").mkdir()  # not protected
+
+    spec = SandboxSpec(write_roots=[root], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    r = str(root.resolve())
+    bind_idx = argv.index("--bind")
+    assert argv[bind_idx + 1] == r and argv[bind_idx + 2] == r
+    # --ro-bind for .git and .env must follow the --bind (left-to-right wins).
+    git_ro = argv.index("--ro-bind", bind_idx)
+    assert argv[git_ro + 1] == f"{r}/.git"
+    env_ro = argv.index("--ro-bind", git_ro + 1)
+    assert argv[env_ro + 1] == f"{r}/.env"
+    # src/ is not protected: no ro-bind for it.
+    assert f"{r}/src" not in [a for a in argv[bind_idx:]]
+
+
+def test_bwrap_skips_symlinked_protected_metadata(tmp_path) -> None:
+    # A symlinked .git could point outside the root; never bind through it.
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".git").symlink_to(tmp_path / "elsewhere")
+
+    spec = SandboxSpec(write_roots=[root], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    assert f"{root.resolve()}/.git" not in argv
+
+
+def test_seatbelt_denies_protected_metadata(tmp_path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".git").mkdir()
+    (root / ".env").write_text("SECRET=1")
+
+    spec = SandboxSpec(write_roots=[root], allow_network=True)
+    profile = build_seatbelt_profile(spec)
+    r = str(root.resolve())
+    assert f'(allow file-write* (subpath "{r}"))' in profile
+    assert f'(deny file-write* (subpath "{r}/.git"))' in profile
+    assert f'(deny file-write* (subpath "{r}/.env"))' in profile
+
+
+def test_bwrap_no_overlay_when_no_protected_metadata(tmp_path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()  # no .git/.vibe/.env
+
+    spec = SandboxSpec(write_roots=[root], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    # Only the single root --ro-bind (the / / root), no metadata overlays.
+    assert argv.count("--ro-bind") == 1
+
+
 def test_unshare_backend_warns_when_containment_requested(tmp_path, caplog) -> None:
     # The unshare backend cannot enforce filesystem confinement or network
     # denial. When the spec asks for either, a loud warning must fire so the

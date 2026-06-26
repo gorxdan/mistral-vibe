@@ -139,6 +139,13 @@ def _canonical_roots(roots: list[Path]) -> list[str]:
     return sorted(seen)
 
 
+# Sensitive subpaths layered read-only over each writable root so a sandboxed
+# command can read repo metadata but not rewrite git history, hooks, agent
+# config, or secrets. Applied AFTER the writable --bind (bwrap is left-to-right,
+# so the later mount wins) and as explicit seatbelt denies after the write-allow.
+_PROTECTED_SUBPATHS = (".git", ".vibe", ".env")
+
+
 def build_sandbox_command(
     spec: SandboxSpec, backend: str
 ) -> tuple[list[str] | None, str, Path | None]:
@@ -173,6 +180,25 @@ def build_sandbox_command(
     return None, "none", None
 
 
+def _protected_subpaths_for(root: str) -> list[str]:
+    """Existing sensitive subpaths (``.git``/``.vibe``/``.env``) under *root*.
+
+    Skips symlinks: a symlinked ``.git`` could point outside the root, and
+    bind-mounting through it would mount the link target read-only rather than
+    the metadata dir. Real dirs/files only.
+    """
+    found: list[str] = []
+    base = Path(root)
+    for name in _PROTECTED_SUBPATHS:
+        candidate = base / name
+        try:
+            if candidate.exists() and not candidate.is_symlink():
+                found.append(str(candidate))
+        except OSError:
+            continue
+    return found
+
+
 def _bwrap_argv(spec: SandboxSpec) -> list[str]:
     # bwrap applies operations left to right inside the new namespace, so the
     # read-only root bind MUST precede the pseudo-filesystem overlays. Placing
@@ -198,7 +224,11 @@ def _bwrap_argv(spec: SandboxSpec) -> list[str]:
     if not spec.allow_network:
         argv.append("--unshare-net")
     for root in _canonical_roots(spec.write_roots):
+        # Writable bind first, then layer read-only over sensitive metadata
+        # (bwrap is left-to-right, so the later --ro-bind wins for that subpath).
         argv += ["--bind", root, root]
+        for sub in _protected_subpaths_for(root):
+            argv += ["--ro-bind", sub, sub]
     argv += ["--chdir", str(Path.cwd())]
     argv += spec.extra_args
     argv.append("--")
@@ -228,6 +258,12 @@ def build_seatbelt_profile(spec: SandboxSpec) -> str:
         if '"' in root or "\n" in root:
             continue  # never inject into the profile string
         lines.append(f'(allow file-write* (subpath "{root}"))')
+        # Re-deny sensitive metadata so a sandboxed command can read but not
+        # rewrite git history, hooks, agent config, or secrets under the root.
+        for sub in _protected_subpaths_for(root):
+            if '"' in sub or "\n" in sub:
+                continue
+            lines.append(f'(deny file-write* (subpath "{sub}"))')
     lines.append("(allow network*)" if spec.allow_network else "(deny network*)")
     return "\n".join(lines) + "\n"
 
