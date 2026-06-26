@@ -641,10 +641,17 @@ def _loop_with_auto_extract(effort_mode: str):
     return loop
 
 
-def test_auto_extract_suppressed_under_le_chaton() -> None:
+@pytest.mark.asyncio
+async def test_auto_extract_runs_under_le_chaton() -> None:
+    # Le-chaton is the flagship mode and gets every benefit, memory capture
+    # included. The old blanket skip was a 429 mitigation from 3dbef2c; that
+    # commit's real fix (the per-provider concurrency limiter) is in place and
+    # protects extraction calls. Recall (prefetch) already runs ungated in
+    # le-chaton, so ungating capture removes a read/write asymmetry.
     loop = _loop_with_auto_extract("le-chaton")
     loop._maybe_schedule_memory_extraction()
-    assert loop._mem_extract_task is None
+    assert loop._mem_extract_task is not None
+    loop._mem_extract_task.cancel()
 
 
 @pytest.mark.asyncio

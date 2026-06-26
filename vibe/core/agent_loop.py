@@ -1452,8 +1452,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         """
         if self._is_subagent:
             return
-        if self.config.is_le_chaton():
-            return
         mem = self.config.memory
         if not mem.auto_extract:
             return
