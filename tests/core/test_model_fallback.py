@@ -139,3 +139,47 @@ async def test_rate_limit_dialog_declined_surfaces_error() -> None:
     with pytest.raises(RateLimitError):
         _ = [e async for e in loop._conversation_loop("hi")]
     assert loop._fallback_model_override is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_model_prefers_fallback_override() -> None:
+    loop = _loop([])
+    backup = next(m for m in loop.config.models if m.alias == "backup")
+    loop._fallback_model_override = backup
+    model, provider = loop._resolve_active_model()
+    assert model.alias == "backup"
+    assert provider.name == loop.config.get_provider_for_model(backup).name
+    # An explicit per-call override beats the fallback override.
+    primary = next(m for m in loop.config.models if m.alias == "primary")
+    m2, _ = loop._resolve_active_model(model_override=primary)
+    assert m2.alias == "primary"
+
+
+@pytest.mark.asyncio
+async def test_streaming_honors_fallback_model_override() -> None:
+    # Regression: _chat_streaming must use _fallback_model_override (set by a
+    # model switch) like _chat does — not config.get_active_model(). Otherwise
+    # the rebuilt backend gets the OLD model name (e.g. gpt-5.5 sent to zai ->
+    # "Unknown Model"), which stalled live sessions. The prior fallback tests
+    # faked _perform_llm_turn, so the streaming path was never exercised.
+    from tests.mock.utils import mock_llm_chunk
+    from tests.stubs.fake_backend import FakeBackend
+    from vibe.core.types import LLMMessage, Role
+
+    config = build_test_vibe_config(
+        providers=[_PROVIDER],
+        models=[_model("primary"), _model("backup")],
+        active_model="primary",
+    )
+    backend = FakeBackend([[mock_llm_chunk(content="ok")]])
+    loop = build_test_agent_loop(config=config, backend=backend)
+    backup = next(m for m in loop.config.models if m.alias == "backup")
+    loop._fallback_model_override = backup
+    loop.messages.append(LLMMessage(role=Role.user, content="hi", message_id="u1"))
+
+    _ = [chunk async for chunk in loop._chat_streaming()]
+
+    assert backend.requests_models, "streaming should have reached the backend"
+    assert backend.requests_models[-1].alias == "backup", (
+        "streaming must send the switched-to model, not the configured one"
+    )

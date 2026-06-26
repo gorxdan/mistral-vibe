@@ -3250,6 +3250,25 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return 0
         return sum(1 for m in self.messages if m.images)
 
+    def _resolve_active_model(
+        self, model_override: ModelConfig | None = None
+    ) -> tuple[ModelConfig, ProviderConfig]:
+        """Pick the (model, provider) for an LLM call. An explicit
+        ``model_override`` wins (e.g. compaction), then a fallback/rate-limit
+        override set by a model switch, then the configured active model.
+
+        Streaming and non-streaming MUST resolve identically: a model switch
+        rebuilds ``self.backend`` for the new provider, so if one path ignored
+        the override it would send the old model name to the new provider's
+        backend (e.g. gpt-5.5 → zai → "Unknown Model").
+        """
+        active_model = (
+            model_override
+            or self._fallback_model_override
+            or self.config.get_active_model()
+        )
+        return active_model, self.config.get_provider_for_model(active_model)
+
     async def _chat(
         self, max_tokens: int | None = None, model_override: ModelConfig | None = None
     ) -> LLMChunk:
@@ -3257,12 +3276,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         # that set model_override (e.g. compaction summary) must not inherit it.
         if max_tokens is None and model_override is None:
             max_tokens = self._max_output_override
-        active_model = (
-            model_override
-            or self._fallback_model_override
-            or self.config.get_active_model()
-        )
-        provider = self.config.get_provider_for_model(active_model)
+        active_model, provider = self._resolve_active_model(model_override)
         backend_metadata = self._build_backend_metadata()
 
         available_tools = self.format_handler.get_available_tools(self.tool_manager)
@@ -3331,8 +3345,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     ) -> AsyncGenerator[LLMChunk]:
         if max_tokens is None:
             max_tokens = self._max_output_override
-        active_model = self.config.get_active_model()
-        provider = self.config.get_active_provider()
+        active_model, provider = self._resolve_active_model()
         backend_metadata = self._build_backend_metadata()
 
         available_tools = self.format_handler.get_available_tools(self.tool_manager)
@@ -3369,7 +3382,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         temperature=active_model.temperature,
                         tools=available_tools,
                         tool_choice=tool_choice,
-                        extra_headers=self._get_extra_headers(),
+                        extra_headers=self._get_extra_headers(provider),
                         max_tokens=max_tokens,
                         metadata=backend_metadata.model_dump(exclude_none=True),
                         response_format=self._response_format,
