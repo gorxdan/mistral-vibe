@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan
 
     from vibe.core.config import VibeConfig
+    from vibe.core.types import LLMUsage
 
 from vibe.core.logger import logger
 from vibe.core.paths import TRACE_LOG_DIR
@@ -163,6 +164,40 @@ async def agent_span(
     finally:
         if token is not None:
             context.detach(token)
+
+
+@asynccontextmanager
+async def chat_span(*, model: str | None = None) -> AsyncGenerator[trace.Span]:
+    """One LLM inference call (gen_ai `chat`).
+
+    Nested under the loop-level ``invoke_agent`` span so per-call token usage is
+    attributable. Usage attributes are attached post-call via :func:`set_usage`.
+    """
+    attributes: dict[str, Any] = {
+        gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.CHAT.value,
+        gen_ai_attributes.GEN_AI_PROVIDER_NAME: gen_ai_attributes.GenAiProviderNameValues.MISTRAL_AI.value,
+    }
+    if model:
+        attributes[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = model
+    if conv_id := baggage.get_baggage(gen_ai_attributes.GEN_AI_CONVERSATION_ID):
+        attributes[gen_ai_attributes.GEN_AI_CONVERSATION_ID] = conv_id
+
+    async with _safe_span(f"chat {VIBE_AGENT_NAME}", attributes) as span:
+        yield span
+
+
+def set_usage(span: trace.Span, usage: LLMUsage) -> None:
+    # cached_tokens has no stable gen_ai constant; emit a vibe-namespaced attr.
+    try:
+        span.set_attribute(
+            gen_ai_attributes.GEN_AI_USAGE_INPUT_TOKENS, usage.prompt_tokens
+        )
+        span.set_attribute(
+            gen_ai_attributes.GEN_AI_USAGE_OUTPUT_TOKENS, usage.completion_tokens
+        )
+        span.set_attribute("gen_ai.usage.cached_input_tokens", usage.cached_tokens)
+    except Exception:
+        pass
 
 
 @asynccontextmanager

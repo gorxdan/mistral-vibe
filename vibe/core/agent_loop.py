@@ -112,7 +112,13 @@ from vibe.core.tools.permissions import (
 )
 from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
 from vibe.core.tools.tool_result_store import ToolResultStore
-from vibe.core.tracing import agent_span, set_tool_result, tool_span
+from vibe.core.tracing import (
+    agent_span,
+    chat_span,
+    set_tool_result,
+    set_usage,
+    tool_span,
+)
 from vibe.core.trusted_folders import has_agents_md_file
 from vibe.core.types import (
     AgentProfileChangedEvent,
@@ -2885,25 +2891,29 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
         try:
-            start_time = time.perf_counter()
-            result = await self.backend.complete(
-                model=active_model,
-                messages=self._messages_for_backend(active_model),
-                temperature=active_model.temperature,
-                tools=available_tools,
-                tool_choice=tool_choice,
-                extra_headers=self._get_extra_headers(provider),
-                max_tokens=max_tokens,
-                metadata=backend_metadata.model_dump(exclude_none=True),
-                response_format=self._response_format,
-            )
-            end_time = time.perf_counter()
-
-            if result.usage is None:
-                raise AgentLoopLLMResponseError(
-                    "Usage data missing in non-streaming completion response"
+            async with chat_span(model=active_model.alias) as _span:
+                start_time = time.perf_counter()
+                result = await self.backend.complete(
+                    model=active_model,
+                    messages=self._messages_for_backend(active_model),
+                    temperature=active_model.temperature,
+                    tools=available_tools,
+                    tool_choice=tool_choice,
+                    extra_headers=self._get_extra_headers(provider),
+                    max_tokens=max_tokens,
+                    metadata=backend_metadata.model_dump(exclude_none=True),
+                    response_format=self._response_format,
                 )
-            self._update_stats(usage=result.usage, time_seconds=end_time - start_time)
+                end_time = time.perf_counter()
+
+                if result.usage is None:
+                    raise AgentLoopLLMResponseError(
+                        "Usage data missing in non-streaming completion response"
+                    )
+                self._update_stats(
+                    usage=result.usage, time_seconds=end_time - start_time
+                )
+                set_usage(_span, result.usage)
 
             if result.correlation_id:
                 self.telemetry_client.last_correlation_id = result.correlation_id
@@ -2962,42 +2972,46 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
         try:
-            start_time = time.perf_counter()
-            usage = LLMUsage()
-            chunk_agg: LLMChunk | None = None
-            async for chunk in self.backend.complete_streaming(
-                model=active_model,
-                messages=self._messages_for_backend(active_model),
-                temperature=active_model.temperature,
-                tools=available_tools,
-                tool_choice=tool_choice,
-                extra_headers=self._get_extra_headers(),
-                max_tokens=max_tokens,
-                metadata=backend_metadata.model_dump(exclude_none=True),
-                response_format=self._response_format,
-            ):
-                if chunk.correlation_id:
-                    self.telemetry_client.last_correlation_id = chunk.correlation_id
-                processed_message = self.format_handler.process_api_response_message(
-                    chunk.message
-                )
-                processed_chunk = LLMChunk(
-                    message=processed_message, usage=chunk.usage, stop=chunk.stop
-                )
-                chunk_agg = (
-                    processed_chunk
-                    if chunk_agg is None
-                    else chunk_agg + processed_chunk
-                )
-                usage += chunk.usage or LLMUsage()
-                yield processed_chunk
-            end_time = time.perf_counter()
+            async with chat_span(model=active_model.alias) as _span:
+                start_time = time.perf_counter()
+                usage = LLMUsage()
+                chunk_agg: LLMChunk | None = None
+                async for chunk in self.backend.complete_streaming(
+                    model=active_model,
+                    messages=self._messages_for_backend(active_model),
+                    temperature=active_model.temperature,
+                    tools=available_tools,
+                    tool_choice=tool_choice,
+                    extra_headers=self._get_extra_headers(),
+                    max_tokens=max_tokens,
+                    metadata=backend_metadata.model_dump(exclude_none=True),
+                    response_format=self._response_format,
+                ):
+                    if chunk.correlation_id:
+                        self.telemetry_client.last_correlation_id = (
+                            chunk.correlation_id
+                        )
+                    processed_message = (
+                        self.format_handler.process_api_response_message(chunk.message)
+                    )
+                    processed_chunk = LLMChunk(
+                        message=processed_message, usage=chunk.usage, stop=chunk.stop
+                    )
+                    chunk_agg = (
+                        processed_chunk
+                        if chunk_agg is None
+                        else chunk_agg + processed_chunk
+                    )
+                    usage += chunk.usage or LLMUsage()
+                    yield processed_chunk
+                end_time = time.perf_counter()
 
-            if chunk_agg is None or chunk_agg.usage is None:
-                raise AgentLoopLLMResponseError(
-                    "Usage data missing in final chunk of streamed completion"
-                )
-            self._update_stats(usage=usage, time_seconds=end_time - start_time)
+                if chunk_agg is None or chunk_agg.usage is None:
+                    raise AgentLoopLLMResponseError(
+                        "Usage data missing in final chunk of streamed completion"
+                    )
+                self._update_stats(usage=usage, time_seconds=end_time - start_time)
+                set_usage(_span, usage)
 
             self.messages.append(chunk_agg.message)
             if chunk_agg.stop and chunk_agg.stop.is_refusal:
