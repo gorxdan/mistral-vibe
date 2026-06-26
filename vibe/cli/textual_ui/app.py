@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 import collections
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from enum import StrEnum, auto
@@ -22,6 +22,7 @@ from rich import print as rprint
 from textual.app import WINDOWS, App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
+from textual.css.query import NoMatches
 from textual.driver import Driver
 from textual.events import AppBlur, AppFocus, MouseUp
 from textual.theme import BUILTIN_THEMES
@@ -277,6 +278,7 @@ class BottomApp(StrEnum):
     EffortPicker = auto()
     Input = auto()
     MCP = auto()
+    MCPAdd = auto()
     ModelPicker = auto()
     ProxySetup = auto()
     Question = auto()
@@ -4389,9 +4391,9 @@ class VibeApp(App):  # noqa: PLR0904
 
             self._feedback_bar.hide()
 
-            self._current_bottom_app = BottomApp[
-                type(widget).__name__.removesuffix("App")
-            ]
+            self._current_bottom_app = self._BOTTOM_APP_BY_WIDGET.get(
+                type(widget), BottomApp.Input
+            )
             await bottom_container.mount(widget)
 
         self.call_after_refresh(widget.focus)
@@ -4545,14 +4547,42 @@ class VibeApp(App):  # noqa: PLR0904
         BottomApp.Question: QuestionApp,
         BottomApp.SessionPicker: SessionPickerApp,
         BottomApp.MCP: MCPApp,
+        BottomApp.MCPAdd: MCPAddApp,
         BottomApp.ConnectorAuth: ConnectorAuthApp,
         BottomApp.Rewind: RewindApp,
         BottomApp.Voice: VoiceApp,
         BottomApp.Tasks: TasksApp,
     }
+    # Reverse of _BOTTOM_APP_WIDGET: the active panel is derived from the mounted
+    # widget's class via this single map instead of the fragile "<X>App" naming
+    # convention, so a widget whose name breaks that convention (e.g. MCPAddApp)
+    # no longer raises KeyError.
+    _BOTTOM_APP_BY_WIDGET: ClassVar[dict[type[Widget], BottomApp]] = {
+        cls: app for app, cls in _BOTTOM_APP_WIDGET.items()
+    }
+
+    def _close_bottom_panel(
+        self, source: str, action: Callable[[], None], *, clear_timestamp: bool = True
+    ) -> None:
+        """Run a bottom-panel escape/focus action.
+
+        Swallows NoMatches (the panel isn't mounted — expected during teardown or
+        when the user Escapes before a panel is focused) but logs every other
+        exception instead of burying it, so focus/telemetry/close failures stop
+        being invisible. ``clear_timestamp`` resets the double-Esc tracker (False
+        for the focus path, which doesn't consume an Esc).
+        """
+        try:
+            action()
+        except NoMatches:
+            pass
+        except Exception:
+            logger.warning("bottom-panel %s action failed", source, exc_info=True)
+        if clear_timestamp:
+            self._last_escape_time = None
 
     def _focus_current_bottom_app(self) -> None:
-        try:
+        def _focus() -> None:
             app = self._current_bottom_app
             if app == BottomApp.Input:
                 self.query_one(ChatInputContainer).focus_input()
@@ -4560,90 +4590,76 @@ class VibeApp(App):  # noqa: PLR0904
                 widget_cls = self._BOTTOM_APP_WIDGET.get(app)
                 if widget_cls is not None:
                     self.query_one(widget_cls).focus()
-        except Exception:
-            pass
+
+        self._close_bottom_panel("focus", _focus, clear_timestamp=False)
 
     def _handle_config_app_escape(self) -> None:
-        try:
-            config_app = self.query_one(ConfigApp)
-            config_app.action_close()
-        except Exception:
-            pass
-        self._last_escape_time = None
+        def _close() -> None:
+            self.query_one(ConfigApp).action_close()
+
+        self._close_bottom_panel("config", _close)
 
     def _handle_voice_app_escape(self) -> None:
-        try:
-            voice_app = self.query_one(VoiceApp)
-            voice_app.action_close()
-        except Exception:
-            pass
-        self._last_escape_time = None
+        def _close() -> None:
+            self.query_one(VoiceApp).action_close()
+
+        self._close_bottom_panel("voice", _close)
 
     def _handle_approval_app_escape(self) -> None:
-        try:
+        def _close() -> None:
             approval_app = self.query_one(ApprovalApp)
             if not approval_app.is_within_grace_period():
                 approval_app.action_reject()
                 self.agent_loop.telemetry_client.send_user_cancelled_action(
                     "reject_approval"
                 )
-        except Exception:
-            pass
-        self._last_escape_time = None
+
+        self._close_bottom_panel("approval", _close)
 
     def _handle_question_app_escape(self) -> None:
-        try:
+        def _close() -> None:
             question_app = self.query_one(QuestionApp)
             if not question_app.is_within_grace_period():
                 question_app.action_cancel()
                 self.agent_loop.telemetry_client.send_user_cancelled_action(
                     "cancel_question"
                 )
-        except Exception:
-            pass
-        self._last_escape_time = None
+
+        self._close_bottom_panel("question", _close)
 
     def _handle_model_picker_app_escape(self) -> None:
-        try:
-            model_picker = self.query_one(ModelPickerApp)
-            model_picker.post_message(ModelPickerApp.Cancelled())
-        except Exception:
-            pass
-        self._last_escape_time = None
+        def _close() -> None:
+            self.query_one(ModelPickerApp).post_message(ModelPickerApp.Cancelled())
+
+        self._close_bottom_panel("model-picker", _close)
 
     def _handle_theme_picker_app_escape(self) -> None:
-        try:
-            theme_picker = self.query_one(ThemePickerApp)
-            theme_picker.post_message(
+        def _close() -> None:
+            self.query_one(ThemePickerApp).post_message(
                 ThemePickerApp.Cancelled(original_theme=self.config.theme)
             )
-        except Exception:
-            pass
-        self._last_escape_time = None
+
+        self._close_bottom_panel("theme-picker", _close)
 
     def _handle_thinking_picker_app_escape(self) -> None:
-        try:
-            thinking_picker = self.query_one(ThinkingPickerApp)
-            thinking_picker.post_message(ThinkingPickerApp.Cancelled())
-        except Exception:
-            pass
-        self._last_escape_time = None
+        def _close() -> None:
+            self.query_one(ThinkingPickerApp).post_message(
+                ThinkingPickerApp.Cancelled()
+            )
+
+        self._close_bottom_panel("thinking-picker", _close)
 
     def _handle_session_picker_app_escape(self) -> None:
-        try:
-            session_picker = self.query_one(SessionPickerApp)
-            session_picker.action_cancel()
-        except Exception:
-            pass
-        self._last_escape_time = None
+        def _close() -> None:
+            self.query_one(SessionPickerApp).action_cancel()
+
+        self._close_bottom_panel("session-picker", _close)
 
     def _handle_tasks_app_escape(self) -> None:
-        try:
-            tasks_app = self.query_one(TasksApp)
-            tasks_app.action_back()
-        except Exception:
-            pass
-        self._last_escape_time = None
+        def _close() -> None:
+            self.query_one(TasksApp).action_back()
+
+        self._close_bottom_panel("tasks", _close)
 
     # --- Rewind mode ---
 
@@ -4843,63 +4859,66 @@ class VibeApp(App):  # noqa: PLR0904
     # --- End rewind mode ---
 
     def _handle_input_app_escape(self) -> None:
-        try:
-            input_widget = self.query_one(ChatInputContainer)
-            input_widget.value = ""
-        except Exception:
-            pass
-        self._last_escape_time = None
+        def _close() -> None:
+            self.query_one(ChatInputContainer).value = ""
+
+        self._close_bottom_panel("input", _close)
 
     def _handle_agent_running_escape(self) -> None:
         self.agent_loop.telemetry_client.send_user_cancelled_action("interrupt_agent")
         self.run_worker(self._interrupt_agent_loop(), exclusive=False)
 
     def _handle_bottom_app_close_escape(
-        self, widget_type: type[MCPApp] | type[ProxySetupApp] | type[ConnectorAuthApp]
+        self,
+        widget_type: (
+            type[MCPApp]
+            | type[MCPAddApp]
+            | type[ProxySetupApp]
+            | type[ConnectorAuthApp]
+        ),
     ) -> None:
-        try:
+        def _close() -> None:
             self.query_one(widget_type).action_close()
-        except Exception:
-            pass
-        self._last_escape_time = None
+
+        self._close_bottom_panel(widget_type.__name__, _close)
 
     def _try_interrupt_bottom_app_escape(self) -> bool:
-        if self._current_bottom_app == BottomApp.Config:
-            self._handle_config_app_escape()
-        elif self._current_bottom_app == BottomApp.Voice:
-            self._handle_voice_app_escape()
-        elif self._current_bottom_app == BottomApp.MCP:
-            self._handle_bottom_app_close_escape(MCPApp)
-        elif self._current_bottom_app == BottomApp.ConnectorAuth:
-            self._handle_bottom_app_close_escape(ConnectorAuthApp)
-        elif self._current_bottom_app == BottomApp.ProxySetup:
-            self._handle_bottom_app_close_escape(ProxySetupApp)
-        elif self._current_bottom_app == BottomApp.Approval:
-            self._handle_approval_app_escape()
-        elif self._current_bottom_app == BottomApp.Question:
-            self._handle_question_app_escape()
-        elif self._current_bottom_app == BottomApp.ModelPicker:
-            self._handle_model_picker_app_escape()
-        elif self._current_bottom_app == BottomApp.ThemePicker:
-            self._handle_theme_picker_app_escape()
-        elif self._current_bottom_app == BottomApp.ThinkingPicker:
-            self._handle_thinking_picker_app_escape()
-        elif self._current_bottom_app == BottomApp.SessionPicker:
-            self._handle_session_picker_app_escape()
-        elif self._current_bottom_app == BottomApp.Tasks:
-            self._handle_tasks_app_escape()
-        elif self._current_bottom_app == BottomApp.Rewind:
+        app = self._current_bottom_app
+        handlers: dict[BottomApp, Callable[[], None]] = {
+            BottomApp.Config: self._handle_config_app_escape,
+            BottomApp.Voice: self._handle_voice_app_escape,
+            BottomApp.MCP: lambda: self._handle_bottom_app_close_escape(MCPApp),
+            BottomApp.MCPAdd: lambda: self._handle_bottom_app_close_escape(MCPAddApp),
+            BottomApp.ConnectorAuth: lambda: self._handle_bottom_app_close_escape(
+                ConnectorAuthApp
+            ),
+            BottomApp.ProxySetup: lambda: self._handle_bottom_app_close_escape(
+                ProxySetupApp
+            ),
+            BottomApp.Approval: self._handle_approval_app_escape,
+            BottomApp.Question: self._handle_question_app_escape,
+            BottomApp.ModelPicker: self._handle_model_picker_app_escape,
+            BottomApp.ThemePicker: self._handle_theme_picker_app_escape,
+            BottomApp.ThinkingPicker: self._handle_thinking_picker_app_escape,
+            BottomApp.SessionPicker: self._handle_session_picker_app_escape,
+            BottomApp.Tasks: self._handle_tasks_app_escape,
+        }
+        handler = handlers.get(app)
+        if handler is not None:
+            handler()
+            return True
+        if app == BottomApp.Rewind:
             self.run_worker(self._exit_rewind_mode(), exclusive=False)
             self._last_escape_time = None
-        elif (
-            self._current_bottom_app == BottomApp.Input
+            return True
+        if (
+            app == BottomApp.Input
             and self._last_escape_time is not None
             and (time.monotonic() - self._last_escape_time) < DOUBLE_ESC_DELAY
         ):
             self._handle_input_app_escape()
-        else:
-            return False
-        return True
+            return True
+        return False
 
     def _try_interrupt_no_job_steps(self) -> bool:
         if self._voice_manager.transcribe_state != TranscribeState.IDLE:

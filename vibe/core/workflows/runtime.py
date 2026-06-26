@@ -1100,20 +1100,43 @@ class WorkflowRuntime:
             # Load config once per spawn (off the event loop) and reuse across
             # schema-retry attempts — session_logging/model are constant for the
             # spawn, so reloading per attempt (the previous behavior) was pure
-            # blocking waste on the shared loop.
-            base_config = await asyncio.to_thread(
-                self._resolve_agent_config, agent=agent, model=model
-            )
+            # blocking waste on the shared loop. A raise here escapes before the
+            # per-attempt try block runs _finalize_agent, so release the
+            # reservation (guarded by reservation.reconciled) to avoid leaking it
+            # and permanently understating Budget.remaining(), then propagate.
+            try:
+                base_config = await asyncio.to_thread(
+                    self._resolve_agent_config, agent=agent, model=model
+                )
+            except Exception as e:
+                if not reservation.reconciled:
+                    self._finalize_agent(
+                        _FinalizeArgs(
+                            prompt=prompt,
+                            response="",
+                            label=label,
+                            phase=phase,
+                            tokens_in=0,
+                            tokens_out=0,
+                            reservation=reservation,
+                            completed=False,
+                            error=f"agent config load failed: {e}",
+                            cache_key=cache_key,
+                            agent=agent,
+                            model=model,
+                            live=live,
+                        )
+                    )
+                raise
         for attempt in range(self.schema_retries + 1):
             accumulated = []
-            loop = self._create_loop(
-                effective_prompt, agent=agent, model=model, base_config=base_config
-            )
-            # Point the background tool at this attempt's transcript so it can
-            # be tailed; refreshed each retry, so it follows the live log.
-            live.log_path = _loop_log_path(loop)
-
             try:
+                loop = self._create_loop(
+                    effective_prompt, agent=agent, model=model, base_config=base_config
+                )
+                # Point the background tool at this attempt's transcript so it can
+                # be tailed; refreshed each retry, so it follows the live log.
+                live.log_path = _loop_log_path(loop)
                 async with aclosing(
                     loop.act(effective_prompt, response_format=response_format)
                 ) as events:

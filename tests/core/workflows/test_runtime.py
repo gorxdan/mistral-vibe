@@ -441,6 +441,50 @@ async def test_budget_reconciled_after_spawn(runtime: WorkflowRuntime) -> None:
     assert snap.reserved == 0
 
 
+async def test_budget_reservation_released_when_config_load_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # _resolve_agent_config runs only on the real-loop path (agent_loop_factory
+    # is None), before the per-attempt try that finalizes the agent. A raise
+    # there must still reconcile the reservation (otherwise Budget.remaining()
+    # is permanently understated) and record the agent as failed, not drop it.
+    rt = WorkflowRuntime(agent_loop_factory=None, budget_total=1_000_000)
+
+    def boom(*, agent: str, model: str | None = None) -> Any:
+        raise RuntimeError("config load exploded")
+
+    monkeypatch.setattr(rt, "_resolve_agent_config", boom)
+    with pytest.raises(RuntimeError, match="config load exploded"):
+        await rt.spawn_agent("test")
+
+    assert rt._budget.snapshot().reserved == 0
+    assert len(rt._live_agents) == 0
+    failed = [
+        r for p in rt._phases.values() for r in p.agent_results if not r.completed
+    ]
+    assert len(failed) == 1
+
+
+async def test_budget_reservation_released_when_loop_creation_fails() -> None:
+    # _create_loop (factory invocation) now runs inside the per-attempt try, so a
+    # raise there is finalized instead of escaping and leaking the reservation.
+    def raising_factory(
+        prompt: str, *, agent: str, parent_context: Any | None = None
+    ) -> Any:
+        raise RuntimeError("loop creation exploded")
+
+    rt = WorkflowRuntime(agent_loop_factory=raising_factory, budget_total=1_000_000)
+    with pytest.raises(WorkflowError, match="loop creation exploded"):
+        await rt.spawn_agent("test")
+
+    assert rt._budget.snapshot().reserved == 0
+    assert len(rt._live_agents) == 0
+    failed = [
+        r for p in rt._phases.values() for r in p.agent_results if not r.completed
+    ]
+    assert len(failed) == 1
+
+
 async def test_parallel_returns_results_in_order(runtime: WorkflowRuntime) -> None:
     async def thunk_a() -> str:
         await asyncio.sleep(0.01)
