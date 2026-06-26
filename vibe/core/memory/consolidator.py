@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -41,8 +42,16 @@ Two actions:
 - delete: the candidate is obsolete, derivable from code/git, or fully
   superseded by another memory. Give a one-line "reason".
 
+The merged body MUST preserve every distinct claim from all sources AND the
+"into" memory — including technical tokens (identifiers, file paths, version
+numbers, config keys like foo_bar or v2.1). Technical tokens are never
+paraphrased, so dropping one is always loss. If a fact cannot be cleanly
+reconciled into the body, keep it verbatim rather than dropping it.
+
 Be conservative: when uncertain whether two memories overlap, do not merge.
-Never delete a memory that still carries unique information.
+Prefer "delete" for fully-superseded memories over "merge" — deletes only move
+a file to recoverable trash, while a lossy merge would silently degrade the
+survivor. Never delete a memory that still carries unique information.
 
 Return ONLY JSON: {"actions": [{"kind": "merge", "into": "<candidate id>", \
 "sources": ["<candidate id>", ...], "body": "<reconciled body>"}, {"kind": \
@@ -54,6 +63,102 @@ At most K actions. Return {"actions": []} if nothing is worth consolidating."""
 # path (defense-in-depth: a future caller that bypasses the consolidator is
 # still bounded).
 _MAX_BODY_CHARS = 4000
+
+# Coverage guard: a merge that drops technical tokens or too much prose is
+# refused before it can degrade the survivor. Technical tokens (identifiers,
+# paths, versions, config keys) carry identity — they are never paraphrased, so
+# dropping one is near-certain loss. Prose coverage is a fallback for memories
+# with no technical tokens.
+_TECH_CHARS = set("0123456789_:./-")
+_MIN_TECH_TOKEN_LEN = 3
+_PROSE_MIN_COVERAGE = 0.6
+_PROSE_STOPWORDS = frozenset({
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "have",
+    "will",
+    "been",
+    "they",
+    "were",
+    "but",
+    "not",
+    "are",
+    "was",
+    "you",
+    "your",
+    "use",
+    "when",
+    "then",
+    "than",
+    "into",
+    "over",
+    "only",
+    "also",
+    "must",
+    "should",
+    "would",
+    "could",
+    "their",
+    "there",
+    "these",
+    "those",
+    "what",
+})
+
+
+def _tokenize_technical(body: str) -> set[str]:
+    """Identity-carrying tokens: identifiers, paths, versions, config keys.
+
+    A token counts if it contains a digit or a separator (_ : . / -). Pure-alpha
+    runs are prose (see _tokenize_prose). These tokens are the ones whose silent
+    loss is catastrophic, and they are rarely reworded, so a faithful merge
+    preserves them.
+    """
+    out: set[str] = set()
+    for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9_:./-]*", body):
+        if len(tok) >= _MIN_TECH_TOKEN_LEN and any(c in _TECH_CHARS for c in tok):
+            out.add(tok.lower())
+    return out
+
+
+def _tokenize_prose(body: str) -> set[str]:
+    """Lowercase alpha tokens >= 4 chars, minus a small stoplist."""
+    return {
+        t for t in re.findall(r"[a-z]{4,}", body.lower()) if t not in _PROSE_STOPWORDS
+    }
+
+
+def merge_coverage_gap(
+    merged_body: str, into_body: str, source_bodies: list[str]
+) -> tuple[set[str], float]:
+    """Return (dropped_technical_tokens, prose_coverage) for a proposed merge.
+
+    A merge is safe to apply when ``dropped_technical_tokens`` is empty AND
+    ``prose_coverage >= _PROSE_MIN_COVERAGE``. Any dropped technical token is
+    treated as certain loss (zero tolerance); for pure-prose memories with no
+    technical tokens, the prose-coverage ratio is the fallback signal.
+    """
+    tech_required = _tokenize_technical(into_body)
+    for sb in source_bodies:
+        tech_required |= _tokenize_technical(sb)
+    tech_present = _tokenize_technical(merged_body)
+    dropped_tech = tech_required - tech_present
+
+    prose_required = _tokenize_prose(into_body)
+    for sb in source_bodies:
+        prose_required |= _tokenize_prose(sb)
+    prose_present = _tokenize_prose(merged_body)
+    prose_coverage = (
+        len(prose_required & prose_present) / len(prose_required)
+        if prose_required
+        else 1.0
+    )
+    return dropped_tech, prose_coverage
 
 
 class ConsolidationAction(BaseModel):

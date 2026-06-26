@@ -1290,6 +1290,52 @@ def test_apply_merge_unknown_target_is_noop(tmp_path) -> None:
     assert store.get("dup") is not None  # source untouched
 
 
+def test_apply_merge_unions_extra_tags(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(id="keeper", title="k", tags=["git", "workflow"]),
+            body="core",
+        )
+    )
+    store.upsert(_entry("dup", body="extra"))
+    trashed = store.apply_merge(
+        "keeper", ["dup"], "reconciled", "2026-06-26", extra_tags=["commits", "git"]
+    )
+    assert trashed == 1
+    keeper = store.get("keeper")
+    assert keeper is not None
+    # Union of survivor + source tags, de-duped.
+    assert set(keeper.metadata.tags) == {"git", "workflow", "commits"}
+
+
+def test_merge_coverage_gap_flags_dropped_technical_token() -> None:
+    from vibe.core.memory.consolidator import merge_coverage_gap
+
+    dropped, coverage = merge_coverage_gap(
+        "use tooling for versioning",  # dropped hatch-vcs, PEP 440
+        "use hatch-vcs for PEP 440 versions",
+        ["see agent_loop.py for the gate"],  # dropped agent_loop.py
+    )
+    assert "hatch-vcs" in dropped
+    assert "440" in dropped
+    assert "agent_loop.py" in dropped
+    assert coverage < 1.0
+
+
+def test_merge_coverage_gap_clean_when_faithful() -> None:
+    from vibe.core.memory.consolidator import merge_coverage_gap
+
+    dropped, coverage = merge_coverage_gap(
+        "alpha beta gamma delta epsilon",
+        "alpha beta gamma delta",
+        ["alpha beta gamma epsilon"],
+    )
+    # No technical tokens; faithful prose merge → full coverage, nothing dropped.
+    assert dropped == set()
+    assert coverage == 1.0
+
+
 def test_consolidation_candidates_excludes_fresh_and_undated(tmp_path) -> None:
     import datetime as _dt
 
@@ -1449,15 +1495,18 @@ async def test_consolidate_applies_merge_via_reversible_trash(
     from vibe.core.memory.consolidator import ConsolidationAction
 
     loop, store = _consolidate_loop(monkeypatch, tmp_path)
-    store.upsert(_stale_entry("a", body="alpha"))
-    store.upsert(_stale_entry("b", body="beta"))
-    store.upsert(_stale_entry("c", body="gamma"))
+    store.upsert(_stale_entry("a", body="alpha beta gamma delta"))
+    store.upsert(_stale_entry("b", body="alpha beta gamma epsilon"))
+    store.upsert(_stale_entry("c", body="alpha beta gamma zeta"))
     candidates = store.consolidation_candidates(min_age_days=14)
 
     async def _stub(*a: Any, **k: Any) -> list[Any]:
         return [
             ConsolidationAction(
-                kind="merge", into="a", sources=["b", "c"], body="reconciled"
+                kind="merge",
+                into="a",
+                sources=["b", "c"],
+                body="alpha beta gamma delta epsilon zeta",
             )
         ]
 
@@ -1467,13 +1516,96 @@ async def test_consolidate_applies_merge_via_reversible_trash(
     await loop._consolidate_memories(candidates, _dt.date(2026, 6, 26))
 
     keeper = store.get("a")
-    assert keeper is not None and keeper.body == "reconciled"
+    assert keeper is not None and keeper.body == "alpha beta gamma delta epsilon zeta"
     assert store.get("b") is None and store.get("c") is None  # trashed, not deleted
     # Sources recoverable in trash with a ledger entry.
     ledger = (tmp_path / ".trash" / "ledger.jsonl").read_text()
     assert '"reason": "merge"' in ledger
     # Interval marker stamped so it doesn't retry every turn.
     assert store.last_consolidation() == _dt.date(2026, 6, 26)
+
+
+@pytest.mark.asyncio
+async def test_consolidate_refuses_lossy_merge_and_leaves_inputs_live(
+    monkeypatch, tmp_path
+) -> None:
+    # Coverage guard: a merge that drops a technical token is refused; all
+    # inputs stay live rather than being silently degraded. This is the exact
+    # failure mode where a consolidator dropped "hatch-vcs" / "PEP 440".
+    from vibe.core.memory.consolidator import ConsolidationAction
+
+    loop, store = _consolidate_loop(monkeypatch, tmp_path)
+    store.upsert(_stale_entry("a", body="use hatch-vcs for PEP 440 versions"))
+    store.upsert(_stale_entry("b", body="see agent_loop.py:1495 for the gate"))
+    candidates = store.consolidation_candidates(min_age_days=14)
+
+    async def _stub(*a: Any, **k: Any) -> list[Any]:
+        return [
+            ConsolidationAction(
+                kind="merge",
+                into="a",
+                sources=["b"],
+                # Drops every technical token from both inputs.
+                body="use tooling for versioning; see the gate",
+            )
+        ]
+
+    monkeypatch.setattr(
+        loop, "_resolve_memory_consolidator", lambda: _StubConsolidator(_stub)
+    )
+    await loop._consolidate_memories(candidates, _dt.date(2026, 6, 26))
+
+    # Both inputs untouched — the lossy merge was refused.
+    assert store.get("a") is not None and store.get("b") is not None
+    assert store.get("a").body == "use hatch-vcs for PEP 440 versions"
+    # Nothing trashed.
+    assert not (tmp_path / ".trash" / "ledger.jsonl").exists()
+
+
+@pytest.mark.asyncio
+async def test_consolidate_unions_source_tags_into_survivor(
+    monkeypatch, tmp_path
+) -> None:
+    from vibe.core.memory.consolidator import ConsolidationAction
+    from vibe.core.memory.models import MemoryMetadata
+
+    loop, store = _consolidate_loop(monkeypatch, tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="git", title="git", tags=["git", "workflow"], updated="2026-05-01"
+            ),
+            body="conventional commits subject under 72 chars",
+        )
+    )
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="commits", title="commits", tags=["commits"], updated="2026-05-02"
+            ),
+            body="no Co-Authored-By signatures in commits",
+        )
+    )
+    candidates = store.consolidation_candidates(min_age_days=14)
+
+    async def _stub(*a: Any, **k: Any) -> list[Any]:
+        return [
+            ConsolidationAction(
+                kind="merge",
+                into="git",
+                sources=["commits"],
+                body="conventional commits subject under 72 chars no Co-Authored-By signatures",
+            )
+        ]
+
+    monkeypatch.setattr(
+        loop, "_resolve_memory_consolidator", lambda: _StubConsolidator(_stub)
+    )
+    await loop._consolidate_memories(candidates, _dt.date(2026, 6, 26))
+
+    survivor = store.get("git")
+    assert survivor is not None
+    assert set(survivor.metadata.tags) == {"git", "workflow", "commits"}
 
 
 @pytest.mark.asyncio

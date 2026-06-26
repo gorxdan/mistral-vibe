@@ -298,14 +298,23 @@ class MemoryStore:
         return None
 
     def apply_merge(
-        self, into_id: str, source_ids: list[str], merged_body: str, today: str
+        self,
+        into_id: str,
+        source_ids: list[str],
+        merged_body: str,
+        today: str,
+        *,
+        extra_tags: list[str] | None = None,
     ) -> int:
         """Rewrite ``into_id`` with a reconciled body and trash its sources.
 
-        The target keeps its metadata (scope/type/tags); only ``updated`` is
-        bumped to ``today`` so the recency signal reflects the reconciliation,
-        and ``source`` is marked ``auto``. Returns the count of source files
-        actually trashed. A source equal to the target is skipped (not trashed).
+        The target keeps its metadata (scope/type); only ``updated`` is bumped
+        to ``today`` so the recency signal reflects the reconciliation, and
+        ``source`` is marked ``auto``. Tags from the folded-in sources are
+        unioned in via ``extra_tags`` so a merge does not silently lose a source
+        tag (e.g. folding a [commits] memory into a [git] one). Returns the
+        count of source files actually trashed. A source equal to the target is
+        skipped (not trashed).
 
         The survivor's PRE-merge body is backed up to trash before the rewrite,
         so a merge is reversible end to end — not just its sources. Use
@@ -315,7 +324,10 @@ class MemoryStore:
         target = self.get(into_id)
         if target is None:
             return 0
-        meta = target.metadata.model_copy(update={"updated": today, "source": "auto"})
+        merged_tags = sorted(set(target.metadata.tags) | set(extra_tags or []))
+        meta = target.metadata.model_copy(
+            update={"updated": today, "source": "auto", "tags": merged_tags}
+        )
         # Back up the surviving memory's current body before overwriting it: the
         # only consolidation mutation that was previously non-reversible.
         self.trash(into_id, reason="merge-backup", into=into_id)

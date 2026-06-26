@@ -1759,8 +1759,14 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             actions = await consolidator.consolidate(
                 index_lines, candidate_payload, valid
             )
+            by_id = {e.id: e for e in candidates}
             applied = self._apply_consolidation_actions(
-                actions, valid, mem.consolidate_max_actions, today_iso, _MAX_BODY_CHARS
+                actions,
+                valid,
+                mem.consolidate_max_actions,
+                today_iso,
+                _MAX_BODY_CHARS,
+                by_id,
             )
             # Stamp only on a clean run (success or barren): a failed/partial
             # pass falls through to except below WITHOUT stamping, so the
@@ -1801,10 +1807,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         max_actions: int,
         today_iso: str,
         max_body_chars: int,
+        by_id: dict[str, MemoryEntry],
     ) -> int:
-        # Apply parsed actions with a per-run cap, a consumed-id dedupe, and a
+        # Apply parsed actions with a per-run cap, a consumed-id dedupe, a
         # defense-in-depth body clamp (the consolidator already clamps in
-        # _parse; this bounds a future caller that bypasses it).
+        # _parse), and a coverage guard that refuses any merge that drops a
+        # technical token or too much prose from its inputs — the inputs are
+        # left live rather than silently degraded.
+        from vibe.core.memory.consolidator import (
+            _PROSE_MIN_COVERAGE,
+            merge_coverage_gap,
+        )
+
         store = self._get_memory_store()
         if store is None:
             return 0
@@ -1816,8 +1830,40 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             if act.kind == "merge" and act.into is not None:
                 sources = [s for s in act.sources if s in valid and s not in consumed]
                 if act.into in valid and act.into not in consumed and sources:
+                    into_entry = by_id.get(act.into)
+                    source_entries = [by_id[s] for s in sources if s in by_id]
                     body = act.body[:max_body_chars]
-                    store.apply_merge(act.into, sources, body, today_iso)
+                    # Coverage guard: refuse a merge that loses content. The
+                    # merged body must cover the into + sources' distinctive
+                    # tokens; any dropped technical token or <60% prose coverage
+                    # leaves all inputs live and skips the action.
+                    if into_entry is not None and len(source_entries) == len(sources):
+                        dropped, coverage = merge_coverage_gap(
+                            body, into_entry.body, [e.body for e in source_entries]
+                        )
+                        if dropped or coverage < _PROSE_MIN_COVERAGE:
+                            logger.warning(
+                                "skipping lossy merge into %r: dropped technical "
+                                "tokens=%s prose_coverage=%.2f; leaving inputs live",
+                                act.into,
+                                sorted(dropped),
+                                coverage,
+                            )
+                            consumed.add(act.into)
+                            consumed.update(sources)
+                            continue
+                    extra_tags = sorted(
+                        t
+                        for e in (
+                            [into_entry, *source_entries]
+                            if into_entry
+                            else source_entries
+                        )
+                        for t in e.metadata.tags
+                    )
+                    store.apply_merge(
+                        act.into, sources, body, today_iso, extra_tags=extra_tags
+                    )
                     consumed.add(act.into)
                     consumed.update(sources)
                     applied += 1
