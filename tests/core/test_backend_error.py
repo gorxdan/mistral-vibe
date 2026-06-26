@@ -102,6 +102,28 @@ class TestBackendErrorIsContextTooLong:
         assert not err.is_context_too_long
 
 
+class TestBackendErrorIsContentFiltered:
+    @pytest.mark.parametrize(
+        "body_text",
+        [
+            '{"contentFilter":[{"level":1,"role":"assistant"}],"error":{"code":"1301"}}',
+            '{"error":{"code": "1301"}}',
+            "request blocked by ContentFilter policy",
+        ],
+    )
+    def test_true_on_400(self, body_text: str) -> None:
+        err = _make_error(status=400, body_text=body_text)
+        assert err.is_content_filtered
+
+    def test_false_on_non_400(self) -> None:
+        err = _make_error(status=422, body_text='{"error":{"code":"1301"}}')
+        assert not err.is_content_filtered
+
+    def test_false_without_filter_markers(self) -> None:
+        err = _make_error(status=400, body_text="some unrelated 400")
+        assert not err.is_content_filtered
+
+
 class TestBackendErrorIsResponseTooLong:
     @pytest.mark.parametrize(
         "body_text",

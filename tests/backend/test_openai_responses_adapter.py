@@ -238,8 +238,8 @@ class TestPrepareRequest:
         )
 
         assert payload["input"] == [
-            {"type": "reasoning", "encrypted_content": "enc:abc"},
-            {"type": "reasoning", "encrypted_content": "enc:def"},
+            {"type": "reasoning", "encrypted_content": "enc:abc", "summary": []},
+            {"type": "reasoning", "encrypted_content": "enc:def", "summary": []},
             {
                 "role": "assistant",
                 "content": [{"type": "output_text", "text": "Answer"}],

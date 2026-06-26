@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import types
 
 import pytest
 
@@ -35,6 +36,36 @@ def grep_gnu_only(tmp_path, monkeypatch):
     monkeypatch.setattr("shutil.which", mock_which)
     config = GrepToolConfig()
     return Grep(config_getter=lambda: config, state=BaseToolState())
+
+
+def test_vibe_data_excludes_anchored_when_root_is_vibe_home(
+    grep, tmp_path, monkeypatch
+):
+    vibe_home = tmp_path / "dotvibe"
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep.VIBE_HOME", types.SimpleNamespace(path=vibe_home)
+    )
+    assert grep._vibe_data_excludes(str(vibe_home)) == ["!/worktrees/", "!/logs/"]
+
+
+def test_vibe_data_excludes_relative_when_root_is_parent(grep, tmp_path, monkeypatch):
+    vibe_home = tmp_path / "dotvibe"
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep.VIBE_HOME", types.SimpleNamespace(path=vibe_home)
+    )
+    assert grep._vibe_data_excludes(str(tmp_path)) == [
+        "!/dotvibe/worktrees/",
+        "!/dotvibe/logs/",
+    ]
+
+
+def test_vibe_data_excludes_empty_inside_worktree(grep, tmp_path, monkeypatch):
+    vibe_home = tmp_path / "dotvibe"
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep.VIBE_HOME", types.SimpleNamespace(path=vibe_home)
+    )
+    inside = vibe_home / "worktrees" / "repo"
+    assert grep._vibe_data_excludes(str(inside)) == []
 
 
 def test_detects_ripgrep_when_available(grep):

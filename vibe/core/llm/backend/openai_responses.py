@@ -503,9 +503,12 @@ class OpenAIResponsesAdapter(APIAdapter):
 
                 case Role.assistant:
                     for encrypted_content in msg.reasoning_state or []:
+                        # `summary` is required by the /responses schema even when
+                        # empty; omitting it 400s on replayed reasoning items.
                         input_items.append({
                             "type": "reasoning",
                             "encrypted_content": encrypted_content,
+                            "summary": [],
                         })
                     input_items.append({
                         "role": "assistant",

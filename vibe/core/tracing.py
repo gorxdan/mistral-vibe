@@ -27,6 +27,20 @@ from vibe.core.utils import utc_now
 VIBE_TRACER_NAME = "chaton"
 VIBE_AGENT_NAME = "chaton"
 
+# Map internal backend identifiers to the OTel gen_ai.provider.name well-known
+# values where one exists; unknown backends (zai, sakana, ...) pass through as
+# free-form strings, which the convention permits.
+_PROVIDER_ALIASES = {
+    "mistral": gen_ai_attributes.GenAiProviderNameValues.MISTRAL_AI.value,
+    "openai-chatgpt": gen_ai_attributes.GenAiProviderNameValues.OPENAI.value,
+}
+
+
+def _normalize_provider(name: str | None) -> str:
+    if not name:
+        return gen_ai_attributes.GenAiProviderNameValues.MISTRAL_AI.value
+    return _PROVIDER_ALIASES.get(name, name)
+
 
 class _JsonlSpanExporter(SpanExporter):
     """Appends each ended span as one JSON line to a local file.
@@ -140,11 +154,14 @@ async def _safe_span(
 
 @asynccontextmanager
 async def agent_span(
-    *, model: str | None = None, session_id: str | None = None
+    *,
+    model: str | None = None,
+    session_id: str | None = None,
+    provider: str | None = None,
 ) -> AsyncGenerator[trace.Span]:
     attributes: dict[str, Any] = {
         gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.INVOKE_AGENT.value,
-        gen_ai_attributes.GEN_AI_PROVIDER_NAME: gen_ai_attributes.GenAiProviderNameValues.MISTRAL_AI.value,
+        gen_ai_attributes.GEN_AI_PROVIDER_NAME: _normalize_provider(provider),
         gen_ai_attributes.GEN_AI_AGENT_NAME: VIBE_AGENT_NAME,
     }
     if model:
@@ -167,7 +184,9 @@ async def agent_span(
 
 
 @asynccontextmanager
-async def chat_span(*, model: str | None = None) -> AsyncGenerator[trace.Span]:
+async def chat_span(
+    *, model: str | None = None, provider: str | None = None
+) -> AsyncGenerator[trace.Span]:
     """One LLM inference call (gen_ai `chat`).
 
     Nested under the loop-level ``invoke_agent`` span so per-call token usage is
@@ -175,7 +194,7 @@ async def chat_span(*, model: str | None = None) -> AsyncGenerator[trace.Span]:
     """
     attributes: dict[str, Any] = {
         gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.CHAT.value,
-        gen_ai_attributes.GEN_AI_PROVIDER_NAME: gen_ai_attributes.GenAiProviderNameValues.MISTRAL_AI.value,
+        gen_ai_attributes.GEN_AI_PROVIDER_NAME: _normalize_provider(provider),
     }
     if model:
         attributes[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = model
@@ -244,5 +263,24 @@ async def hook_span(
 def set_tool_result(span: trace.Span, result: str) -> None:
     try:
         span.set_attribute(gen_ai_attributes.GEN_AI_TOOL_CALL_RESULT, result)
+    except Exception:
+        pass
+
+
+def set_tool_error(span: trace.Span, message: str) -> None:
+    # Tool failures are caught in the agent loop and never reach _safe_span, so
+    # the span would stay OK; flag it ERROR so failures are queryable.
+    try:
+        span.set_status(StatusCode.ERROR, message)
+        span.set_attribute("gen_ai.tool.is_error", True)
+    except Exception:
+        pass
+
+
+def set_tool_exec_duration(span: trace.Span, seconds: float) -> None:
+    # The execute_tool span also wraps the approval gate + hooks; record the
+    # exec-only interval so the span lifetime is not misread as command runtime.
+    try:
+        span.set_attribute("vibe.tool.exec_duration_s", seconds)
     except Exception:
         pass

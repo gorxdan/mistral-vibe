@@ -97,6 +97,21 @@ class BackendError(RuntimeError):
         body = (self.body_text or "").lower()
         return any(s in body for s in _STRUCTURED_OUTPUT_REJECTION_SUBSTRINGS)
 
+    @property
+    def is_content_filtered(self) -> bool:
+        # 400 where the provider's content filter rejected the prompt or the
+        # generation (e.g. zai code 1301, body {"contentFilter":[...]}). Not the
+        # same as a context/structured-output rejection: retrying the same
+        # backend won't help — only failing over to another backend will.
+        if self.status != HTTPStatus.BAD_REQUEST:
+            return False
+        body = (self.body_text or "").lower()
+        return (
+            "contentfilter" in body
+            or '"code":"1301"' in body
+            or '"code": "1301"' in body
+        )
+
     def _fmt(self) -> str:
         if self.status == HTTPStatus.UNAUTHORIZED:
             return "Invalid API key. Please check your API key and try again."

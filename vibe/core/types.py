@@ -668,6 +668,13 @@ class ResponseTooLongError(Exception):
         )
 
 
+class ContentFilterError(Exception):
+    def __init__(self, provider: str, model: str) -> None:
+        self.provider = provider
+        self.model = model
+        super().__init__(f"The request was blocked by the {provider} content filter.")
+
+
 class RefusalError(Exception):
     def __init__(
         self,

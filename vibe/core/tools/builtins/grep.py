@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
 
+from vibe.core.paths import VIBE_HOME
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -341,9 +342,34 @@ class Grep(
         for pattern in exclude_patterns:
             cmd.extend(["--glob", f"!{pattern}"])
 
+        for anchored in self._vibe_data_excludes(args.path):
+            cmd.extend(["--glob", anchored])
+
         cmd.extend(["-e", args.pattern, args.path])
 
         return cmd
+
+    def _vibe_data_excludes(self, search_path: str) -> list[str]:
+        # Root-anchored (`!/…`) excludes for Vibe's own multi-GB worktree copies
+        # and logs under ~/.vibe, applied only when they sit strictly inside the
+        # search root so a project's own worktrees//logs/ is never excluded.
+        try:
+            root = Path(search_path).expanduser()
+            if not root.is_absolute():
+                root = Path.cwd() / root
+            root = root.resolve()
+        except Exception:
+            return []
+
+        globs: list[str] = []
+        for sub in (VIBE_HOME.path / "worktrees", VIBE_HOME.path / "logs"):
+            try:
+                resolved = sub.resolve()
+            except Exception:
+                continue
+            if root in resolved.parents:
+                globs.append(f"!/{resolved.relative_to(root).as_posix()}/")
+        return globs
 
     def _ripgrep_context_flags(self, args: GrepArgs) -> list[str]:
         if args.context:

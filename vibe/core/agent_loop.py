@@ -115,6 +115,8 @@ from vibe.core.tools.tool_result_store import ToolResultStore
 from vibe.core.tracing import (
     agent_span,
     chat_span,
+    set_tool_error,
+    set_tool_exec_duration,
     set_tool_result,
     set_usage,
     tool_span,
@@ -130,6 +132,7 @@ from vibe.core.types import (
     BaseEvent,
     CompactEndEvent,
     CompactStartEvent,
+    ContentFilterError,
     ContextTooLongError,
     ImageAttachment,
     LLMChunk,
@@ -280,6 +283,14 @@ def _is_response_too_long_error(e: Exception) -> bool:
         return e.is_response_too_long
     if isinstance(e, RuntimeError) and isinstance(e.__cause__, BackendError):
         return e.__cause__.is_response_too_long
+    return False
+
+
+def _is_content_filter_error(e: Exception) -> bool:
+    if isinstance(e, BackendError):
+        return e.is_content_filtered
+    if isinstance(e, RuntimeError) and isinstance(e.__cause__, BackendError):
+        return e.__cause__.is_content_filtered
     return False
 
 
@@ -919,7 +930,17 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     self.messages.append(
                         LLMMessage(role=Role.user, content=ctx_text, injected=True)
                     )
-            async with agent_span(model=model_name, session_id=self.session_id):
+            agent_provider: str | None = None
+            if active_model is not None:
+                try:
+                    agent_provider = self.config.get_provider_for_model(
+                        active_model
+                    ).name
+                except Exception:
+                    agent_provider = None
+            async with agent_span(
+                model=model_name, session_id=self.session_id, provider=agent_provider
+            ):
                 async for event in self._conversation_loop(
                     msg,
                     client_message_id=client_message_id,
@@ -2012,6 +2033,21 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         "Active model rate-limited; falling back to %r", fallback.alias
                     )
                     continue
+                except ContentFilterError as e:
+                    # Provider content filter blocked the request (e.g. zai code
+                    # 1301) — frequently a false positive on defensive-security
+                    # work. Fail over to the next configured fallback model; when
+                    # the pool is exhausted, surface the clean error instead of a
+                    # raw RuntimeError dump.
+                    fallback = self._switch_to_fallback_model()
+                    if fallback is None:
+                        raise
+                    logger.warning(
+                        "Request blocked by %r content filter; falling back to %r",
+                        e.provider,
+                        fallback.alias,
+                    )
+                    continue
                 except ResponseTooLongError:
                     # Self-heal: retry the turn with a larger output budget
                     # rather than dead-ending on a truncated response. When
@@ -2521,6 +2557,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 result_model = item
 
         duration = time.perf_counter() - start_time
+        set_tool_exec_duration(span, duration)
         if result_model is None:
             raise ToolError("Tool did not yield a result")
 
@@ -2810,6 +2847,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         if span is not None:
             set_tool_result(span, text)
+            if status == "failure":
+                set_tool_error(span, text)
         self.telemetry_client.send_tool_call_finished(
             tool_call=tool_call,
             agent_profile_name=self.agent_profile.name,
@@ -2891,7 +2930,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
         try:
-            async with chat_span(model=active_model.alias) as _span:
+            async with chat_span(
+                model=active_model.name, provider=provider.name
+            ) as _span:
                 start_time = time.perf_counter()
                 result = await self.backend.complete(
                     model=active_model,
@@ -2937,6 +2978,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 raise ContextTooLongError(provider.name, active_model.name) from e
             if _is_response_too_long_error(e):
                 raise ResponseTooLongError(provider.name, active_model.name) from e
+            if _is_content_filter_error(e):
+                raise ContentFilterError(provider.name, active_model.name) from e
             if _is_non_retryable_error(e):
                 raise
 
@@ -2972,7 +3015,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
         try:
-            async with chat_span(model=active_model.alias) as _span:
+            async with chat_span(
+                model=active_model.name, provider=provider.name
+            ) as _span:
                 start_time = time.perf_counter()
                 usage = LLMUsage()
                 chunk_agg: LLMChunk | None = None
@@ -2988,9 +3033,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     response_format=self._response_format,
                 ):
                     if chunk.correlation_id:
-                        self.telemetry_client.last_correlation_id = (
-                            chunk.correlation_id
-                        )
+                        self.telemetry_client.last_correlation_id = chunk.correlation_id
                     processed_message = (
                         self.format_handler.process_api_response_message(chunk.message)
                     )
@@ -3026,6 +3069,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 raise ContextTooLongError(provider.name, active_model.name) from e
             if _is_response_too_long_error(e):
                 raise ResponseTooLongError(provider.name, active_model.name) from e
+            if _is_content_filter_error(e):
+                raise ContentFilterError(provider.name, active_model.name) from e
             if _is_non_retryable_error(e):
                 raise
 
