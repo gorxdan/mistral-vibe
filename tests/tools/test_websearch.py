@@ -19,7 +19,7 @@ import respx
 from tests.conftest import build_test_vibe_config
 from tests.mock.utils import collect_result
 from vibe.core.config import ProviderConfig, VibeConfig
-from vibe.core.search import searxng
+from vibe.core.search import DEFAULT_ENABLED_ENGINES, searxng
 from vibe.core.search.searxng import StartOutcome
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError, ToolPermission
 from vibe.core.tools.builtins.ask_user_question import Answer, AskUserQuestionResult
@@ -819,6 +819,27 @@ def test_resolve_searxng_settings_carries_disabled_engines():
 def test_resolve_searxng_settings_disabled_engines_default_empty():
     settings = resolve_searxng_settings({})
     assert settings.disabled_engines == ()
+
+
+def test_resolve_searxng_settings_enabled_engines_default_curated():
+    # An empty config yields the curated broad set, so every managed container
+    # ships with multiple general-web engines live — not just upstream's `brave`.
+    settings = resolve_searxng_settings({})
+    assert settings.enabled_engines == DEFAULT_ENABLED_ENGINES
+
+
+def test_resolve_searxng_settings_enabled_engines_override_replaces_default():
+    # An explicit list replaces (not appends to) the curated default.
+    settings = resolve_searxng_settings({
+        "web_search": {"searxng_enabled_engines": ["bing"]}
+    })
+    assert settings.enabled_engines == ("bing",)
+
+
+def test_resolve_searxng_settings_enabled_engines_opt_out():
+    # An empty list opts out of force-enabling any engine.
+    settings = resolve_searxng_settings({"web_search": {"searxng_enabled_engines": []}})
+    assert settings.enabled_engines == ()
 
 
 def test_resolve_searxng_settings_health_timeout_decoupled_from_request():
