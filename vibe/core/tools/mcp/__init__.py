@@ -4,6 +4,7 @@ from vibe.core.tools.mcp.registry import MCPRegistry
 from vibe.core.tools.mcp.tools import (
     MCPToolResult,
     RemoteTool,
+    RemoteToolAnnotations,
     _mcp_stderr_capture,
     _parse_call_result,
     _stderr_logger_thread,
@@ -20,6 +21,7 @@ __all__ = [
     "MCPRegistry",
     "MCPToolResult",
     "RemoteTool",
+    "RemoteToolAnnotations",
     "_mcp_stderr_capture",
     "_parse_call_result",
     "_stderr_logger_thread",

@@ -15,10 +15,12 @@ import pytest
 from tests.conftest import build_test_vibe_config
 from tests.stubs.fake_mcp_registry import FakeMCPRegistry
 from vibe.core.config import MCPHttp, MCPOAuth, MCPStdio, MCPStreamableHttp, VibeConfig
+from vibe.core.tools.base import BaseToolConfig, BaseToolState, ToolPermission
 from vibe.core.tools.mcp import (
     MCPRegistry,
     MCPToolResult,
     RemoteTool,
+    RemoteToolAnnotations,
     _mcp_stderr_capture,
     _parse_call_result,
     _stderr_logger_thread,
@@ -30,6 +32,7 @@ from vibe.core.tools.mcp import (
     list_tools_http,
     list_tools_stdio,
 )
+from vibe.core.tools.mcp.tools import _OpenArgs
 
 
 class TestRemoteTool:
@@ -74,6 +77,54 @@ class TestRemoteTool:
     def test_rejects_invalid_input_schema(self):
         with pytest.raises(ValueError, match="inputSchema must be a dict"):
             RemoteTool.model_validate({"name": "test", "inputSchema": 12345})
+
+    def test_captures_annotations_from_sdk_tool(self):
+        tool = RemoteTool.model_validate({
+            "name": "search",
+            "inputSchema": {"type": "object", "properties": {}},
+            "annotations": {"readOnlyHint": True, "destructiveHint": False},
+        })
+        assert tool.annotations is not None
+        assert tool.annotations.read_only_hint is True
+        assert tool.annotations.destructive_hint is False
+
+    def test_annotations_default_none(self):
+        tool = RemoteTool(name="x")
+        assert tool.annotations is None
+
+
+class TestMCPProxyAnnotations:
+    """readOnlyHint auto-approves; destructiveHint forces ASK."""
+
+    def _make(self, remote: RemoteTool):
+        cls = create_mcp_http_proxy_tool_class(
+            url="https://mcp.example.com", remote=remote, alias="srv"
+        )
+        return cls(config_getter=lambda: BaseToolConfig(), state=BaseToolState())
+
+    def test_read_only_hint_auto_approves(self):
+        remote = RemoteTool(
+            name="search", annotations=RemoteToolAnnotations(read_only_hint=True)
+        )
+        tool = self._make(remote)
+        result = tool.resolve_permission(_OpenArgs())
+        assert result is not None
+        assert result.permission is ToolPermission.ALWAYS
+
+    def test_destructive_hint_forces_ask_even_when_always(self):
+        remote = RemoteTool(
+            name="delete", annotations=RemoteToolAnnotations(destructive_hint=True)
+        )
+        tool = self._make(remote)
+        result = tool.resolve_permission(_OpenArgs())
+        assert result is not None
+        assert result.permission is ToolPermission.ASK
+        assert result.reason is not None
+
+    def test_no_hints_falls_through(self):
+        remote = RemoteTool(name="plain")
+        tool = self._make(remote)
+        assert tool.resolve_permission(_OpenArgs()) is None
 
 
 class TestMCPToolResult:

@@ -19,8 +19,10 @@ from vibe.core.tools.base import (
     BaseToolState,
     InvokeContext,
     ToolError,
+    ToolPermission,
 )
 from vibe.core.tools.mcp_sampling import MCPSamplingHandler
+from vibe.core.tools.permissions import PermissionContext
 from vibe.core.tools.ui import ToolResultDisplay, ToolUIData
 from vibe.core.types import ToolStreamEvent
 from vibe.core.utils.http import build_ssl_context
@@ -128,6 +130,11 @@ class MCPTool(
     _server_name: ClassVar[str] = ""
     _remote_name: ClassVar[str] = ""
     _is_connector: ClassVar[bool] = False
+    # Hints captured from the server's declared ToolAnnotations (None when the
+    # server declares none). readOnlyHint auto-approves; destructiveHint forces
+    # ASK even when the tool's config permission is ALWAYS.
+    _read_only_hint: ClassVar[bool | None] = None
+    _destructive_hint: ClassVar[bool | None] = None
 
     @classmethod
     def get_server_name(cls) -> str | None:
@@ -141,6 +148,43 @@ class MCPTool(
     def is_connector(cls) -> bool:
         return cls._is_connector
 
+    def resolve_permission(self, args: _OpenArgs) -> PermissionContext | None:
+        # A destructive tool always forces an approval prompt, even when config
+        # permission is ALWAYS — the server itself declares side effects.
+        if self._destructive_hint:
+            return PermissionContext(
+                permission=ToolPermission.ASK,
+                reason=(
+                    f"MCP tool {self.get_remote_name()} declares a destructive "
+                    "hint; approval required."
+                ),
+            )
+        # A read-only tool auto-approves (the server declares no side effects).
+        if self._read_only_hint:
+            return PermissionContext(permission=ToolPermission.ALWAYS)
+        return None
+
+
+class RemoteToolAnnotations(BaseModel):
+    """Hints an MCP server declares about a tool's effects.
+
+    Mirrors the MCP SDK ``ToolAnnotations``. ``readOnlyHint`` means the tool
+    has no side effects and is safe to auto-approve; ``destructiveHint`` means
+    it mutates state and should force an approval prompt.
+    """
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    title: str | None = None
+    read_only_hint: bool | None = Field(default=None, validation_alias="readOnlyHint")
+    destructive_hint: bool | None = Field(
+        default=None, validation_alias="destructiveHint"
+    )
+    idempotent_hint: bool | None = Field(
+        default=None, validation_alias="idempotentHint"
+    )
+    open_world_hint: bool | None = Field(default=None, validation_alias="openWorldHint")
+
 
 class RemoteTool(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -151,6 +195,7 @@ class RemoteTool(BaseModel):
         default_factory=lambda: {"type": "object", "properties": {}},
         validation_alias="inputSchema",
     )
+    annotations: RemoteToolAnnotations | None = None
 
     @field_validator("name")
     @classmethod
@@ -320,6 +365,12 @@ def create_mcp_http_proxy_tool_class(
         _mcp_url: ClassVar[str] = url
         _remote_name: ClassVar[str] = remote.name
         _input_schema: ClassVar[dict[str, Any]] = remote.input_schema
+        _read_only_hint: ClassVar[bool | None] = (
+            remote.annotations.read_only_hint if remote.annotations else None
+        )
+        _destructive_hint: ClassVar[bool | None] = (
+            remote.annotations.destructive_hint if remote.annotations else None
+        )
         _headers: ClassVar[dict[str, str]] = dict(headers or {})
         # TODO(VIBE-3057+): concurrent refresh coordinated by per-alias
         # asyncio.Lock in MCPRegistry (PR 4 / project decision #6) — this
@@ -470,6 +521,12 @@ def create_mcp_stdio_proxy_tool_class(
         _stdio_command: ClassVar[list[str]] = command
         _remote_name: ClassVar[str] = remote.name
         _input_schema: ClassVar[dict[str, Any]] = remote.input_schema
+        _read_only_hint: ClassVar[bool | None] = (
+            remote.annotations.read_only_hint if remote.annotations else None
+        )
+        _destructive_hint: ClassVar[bool | None] = (
+            remote.annotations.destructive_hint if remote.annotations else None
+        )
         _env: ClassVar[dict[str, str] | None] = env
         _cwd: ClassVar[str | None] = cwd
         _startup_timeout_sec: ClassVar[float | None] = startup_timeout_sec
