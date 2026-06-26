@@ -1494,7 +1494,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         mem = self.config.memory
         if not mem.auto_extract:
             return
-        if self._mem_consolidate_task is not None and not self._mem_consolidate_task.done():
+        if (
+            self._mem_consolidate_task is not None
+            and not self._mem_consolidate_task.done()
+        ):
             # Symmetric to _maybe_schedule_consolidation: a turn completing during
             # a ~45s consolidation must not upsert the store concurrently with the
             # consolidation's merge/trash. Defer to the next turn.
@@ -1876,6 +1879,27 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return model
         return None
 
+    def _warn_failover_unavailable(self, reason: str) -> None:
+        """Explain why automatic failover could not proceed before re-raising.
+
+        The rate-limit / content-filter handlers fall over to
+        ``fallback_models``, which defaults to empty — so on stock config the
+        recovery path is a silent no-op. Surface why so the terminal error is
+        actionable rather than mysterious.
+        """
+        if not self.config.fallback_models:
+            logger.warning(
+                "%s and no fallback_models configured; set config.fallback_models "
+                "to enable automatic failover. Surfacing the error.",
+                reason,
+            )
+        else:
+            logger.warning(
+                "%s and fallback pool exhausted (tried %s); surfacing the error.",
+                reason,
+                sorted(self._tried_fallback_aliases),
+            )
+
     def _escalate_max_output(self) -> int | None:
         """Compute the next, larger output budget after a truncated response.
 
@@ -2045,6 +2069,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     # fallback pool is exhausted, re-raise.
                     fallback = self._switch_to_fallback_model()
                     if fallback is None:
+                        self._warn_failover_unavailable("Active model rate-limited")
                         raise
                     logger.warning(
                         "Active model rate-limited; falling back to %r", fallback.alias
@@ -2058,6 +2083,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     # raw RuntimeError dump.
                     fallback = self._switch_to_fallback_model()
                     if fallback is None:
+                        self._warn_failover_unavailable(
+                            f"Request blocked by {e.provider!r} content filter"
+                        )
                         raise
                     logger.warning(
                         "Request blocked by %r content filter; falling back to %r",
