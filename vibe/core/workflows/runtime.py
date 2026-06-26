@@ -367,6 +367,9 @@ class _LiveAgent:
     tokens_out: int = 0
     started_at: float = field(default_factory=time.monotonic)
     error: str | None = None
+    # The prompt this agent was spawned with, so observers (/workflows, the Tasks
+    # pane) can show what an in-flight agent was asked to do — not only its label.
+    prompt: str = ""
     # The asyncio task running this agent, captured so cancel_agent() can abort
     # a single in-flight agent without stopping the whole run. Set inside the
     # agent coroutine via asyncio.current_task(); None for agents that run on
@@ -795,12 +798,22 @@ class WorkflowRuntime:
         self._phases[phase_name].agent_results.append(result)
 
     def _register_live(
-        self, agent: str, model: str | None, label: str | None, phase: str | None
+        self,
+        agent: str,
+        model: str | None,
+        label: str | None,
+        phase: str | None,
+        prompt: str = "",
     ) -> _LiveAgent:
         live_id = f"la-{self._next_live_id}"
         self._next_live_id += 1
         live = _LiveAgent(
-            agent_id=live_id, agent=agent, model=model, label=label, phase=phase
+            agent_id=live_id,
+            agent=agent,
+            model=model,
+            label=label,
+            phase=phase,
+            prompt=prompt,
         )
         self._live_agents[live_id] = live
         return live
@@ -1042,7 +1055,9 @@ class WorkflowRuntime:
         if schema is not None:
             effective_prompt = prompt + build_prompt_fallback(schema)
 
-        live = self._register_live(agent=agent, model=model, label=label, phase=phase)
+        live = self._register_live(
+            agent=agent, model=model, label=label, phase=phase, prompt=prompt
+        )
         # Capture the running task so cancel_agent() can abort this single
         # agent. None when spawn_agent is awaited directly (no wrapping task);
         # in that case the agent can't be cancelled individually, only via the
@@ -1534,7 +1549,9 @@ class WorkflowRuntime:
         effective_prompt = prompt + (
             build_prompt_fallback(schema) if schema is not None else ""
         )
-        live = self._register_live(agent=agent, model=model, label=label, phase=phase)
+        live = self._register_live(
+            agent=agent, model=model, label=label, phase=phase, prompt=prompt
+        )
         live.task = asyncio.current_task()
         # contract needs the worktree's files, so only the default executor
         # (which owns the worktree lifecycle) supports it.

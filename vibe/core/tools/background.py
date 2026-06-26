@@ -378,11 +378,7 @@ class BackgroundRegistry:
         return task_id
 
     def register_async_agent(
-        self,
-        agent: str,
-        task: asyncio.Task[Any],
-        *,
-        label: str | None = None,
+        self, agent: str, task: asyncio.Task[Any], *, label: str | None = None
     ) -> str:
         """Record an async subagent and start its completion-watcher.
 
@@ -391,9 +387,7 @@ class BackgroundRegistry:
         immediately so the agent turn unblocks. On completion the result is
         queued for the parent agent loop via ``pop_async_completions``.
         """
-        running = sum(
-            1 for r in self._async_agents.values() if r.status == "running"
-        )
+        running = sum(1 for r in self._async_agents.values() if r.status == "running")
         if running >= _MAX_RUNNING_PROCS:
             raise RuntimeError(
                 f"background async-agent cap reached ({_MAX_RUNNING_PROCS} running); "
@@ -605,10 +599,7 @@ class BackgroundRegistry:
         if category in {None, TaskCategory.ASYNC_AGENT}:
             for rec in sorted(
                 self._async_agents.values(),
-                key=lambda r: (
-                    r.status != "running",
-                    int(r.task_id.split("-")[1]),
-                ),
+                key=lambda r: (r.status != "running", int(r.task_id.split("-")[1])),
             ):
                 entries.append(
                     TaskEntry(
@@ -674,6 +665,9 @@ class BackgroundRegistry:
                                 "tokens_total": getattr(la, "tokens_total", 0),
                                 "agent": getattr(la, "agent", None),
                                 "model": getattr(la, "model", None),
+                                "prompt": getattr(la, "prompt", "") or "",
+                                "response_preview": getattr(la, "response_so_far", "")
+                                or "",
                             },
                             parent_id=entry.run_id,
                         )

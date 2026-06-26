@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from textual.containers import VerticalScroll
 
+from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.cli.textual_ui.widgets.tasks_app import (
     TasksApp,
     _build_row_text,
@@ -38,6 +40,7 @@ class _FakeRunEntry:
     agent_count: int = 1
     tokens_total: int = 0
     phases: list[str] = field(default_factory=lambda: ["audit"])
+    phase_reports: list[Any] = field(default_factory=list)
     live_agents: list[Any] = field(default_factory=list)
     is_paused: bool = False
     result: Any = None
@@ -243,6 +246,134 @@ async def test_drill_down_shows_workflow_detail():
         await pilot.pause()
         # Detail widget is mounted in the detail view.
         app.query_one("#tasks-detail")
+        await app.action_quit()
+
+
+@pytest.mark.asyncio
+async def test_workflow_detail_lists_agents_and_drill_down_shows_prompt_response():
+    """A workflow's agents render as a navigable list, and drilling into one
+    shows its prompt + response (the gap this change closes: previously the
+    detail view showed only aggregate counts and a 'response not available'
+    string).
+    """
+    from textual.app import App, ComposeResult
+    from textual.containers import Container
+
+    from vibe.core.workflows.models import AgentResult, PhaseReport
+
+    runner = _FakeWorkflowRunner()
+    result = AgentResult(
+        label="auditor",
+        agent="explore",
+        phase="audit",
+        prompt="Review auth.py for injection sinks.",
+        response="No injection found; parameterized queries throughout.",
+        tokens_in=120,
+        tokens_out=80,
+    )
+    runner.runs.append(
+        _FakeRunEntry(
+            run_id="wf-1",
+            status=_WorkflowStatus("running"),
+            phases=["audit"],
+            phase_reports=[PhaseReport(name="audit", agent_results=[result])],
+            agent_count=1,
+            tokens_total=200,
+        )
+    )
+    reg = _registry(runner)
+
+    class _Harness(App):
+        def compose(self) -> ComposeResult:
+            yield Container(TasksApp(registry=reg, workflow_runner=runner))
+
+        async def key_escape(self) -> None:
+            pass
+
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tasks = app.query_one(TasksApp)
+        tasks._selected_task_id = "wf-1"
+        tasks._view = "detail"
+        await tasks._render_view()
+        await pilot.pause()
+        # The agent list is mounted beneath the summary.
+        agent_list = app.query_one("#tasks-agent-list")
+        assert len(agent_list._options) == 1
+        # Drill into the agent (the event handler strips the 'agent:' prefix;
+        # _open_agent_view takes the bare key).
+        tasks._open_agent_view("wf-1/done-audit-0")
+        await tasks._render_view()
+        await pilot.pause()
+        body = str(
+            app
+            .query_one("#tasks-agent", VerticalScroll)
+            .query_one(NoMarkupStatic)
+            .render()
+        )
+        assert "Review auth.py for injection sinks." in body
+        assert "No injection found" in body
+        await app.action_quit()
+
+
+@pytest.mark.asyncio
+async def test_live_agent_detail_shows_prompt_and_streaming_preview():
+    """An in-flight agent's prompt + response_so_far render in the agent
+    category detail (previously a hardcoded 'response not available' string
+    even though the preview existed).
+    """
+    from textual.app import App, ComposeResult
+    from textual.containers import Container
+
+    @dataclass
+    class _LiveAgent:
+        agent_id: str = "la-0"
+        agent: str = "explore"
+        label: str | None = "live-auditor"
+        phase: str | None = "audit"
+        model: str | None = None
+        status: str = "running"
+        tokens_total: int = 50
+        prompt: str = "Audit the login flow."
+        response_so_far: str = "partial findings..."
+
+    runner = _FakeWorkflowRunner()
+    runner.runs.append(
+        _FakeRunEntry(
+            run_id="wf-1",
+            status=_WorkflowStatus("running"),
+            phases=["audit"],
+            live_agents=[_LiveAgent()],
+        )
+    )
+    reg = _registry(runner)
+
+    class _Harness(App):
+        def compose(self) -> ComposeResult:
+            yield Container(TasksApp(registry=reg, workflow_runner=runner))
+
+        async def key_escape(self) -> None:
+            pass
+
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tasks = app.query_one(TasksApp)
+        # Registry exposes the live agent as its own AGENT row.
+        agent_entry = next(e for e in reg.list_tasks() if e.task_id == "wf-1/live-la-0")
+        tasks._selected_task_id = agent_entry.task_id
+        tasks._view = "detail"
+        await tasks._render_view()
+        await pilot.pause()
+        body = str(
+            app
+            .query_one("#tasks-detail", VerticalScroll)
+            .query_one(NoMarkupStatic)
+            .render()
+        )
+        assert "Audit the login flow." in body
+        assert "partial findings..." in body
         await app.action_quit()
 
 

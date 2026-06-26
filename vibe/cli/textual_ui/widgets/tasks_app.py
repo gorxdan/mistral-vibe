@@ -12,7 +12,8 @@ actions handled on VibeApp) so the existing app wiring transfers cleanly.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import json
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
@@ -88,6 +89,116 @@ def _build_row_text(entry: TaskEntry) -> Text:
     return text
 
 
+# Snippet caps for the inline agent summary in the detail view.
+_AGENT_PROMPT_SNIPPET = 280
+_AGENT_RESPONSE_SNIPPET = 700
+
+
+@dataclass
+class _AgentRow:
+    """A browsable agent within a workflow run — live or finalized.
+
+    Unifies an in-flight _LiveAgent (partial response in response_so_far) and a
+    finalized AgentResult (full response) so the workflow detail can list both
+    and the drill-down view can render a full prompt + response for either.
+    """
+
+    key: str
+    label: str
+    phase: str | None
+    status: str
+    profile: str | None
+    model: str | None
+    tokens: int
+    prompt: str
+    response: str
+    run_id: str
+    error: str | None = None
+    schema_errors: list[str] | None = None
+
+
+def _agent_row_text(agent: _AgentRow) -> Text:
+    text = Text(no_wrap=True)
+    color = _STATUS_COLORS.get(agent.status, "white")
+    text.append(f"{agent.status:9}", style=color)
+    text.append("  ")
+    text.append(f"{_fmt_tokens(agent.tokens):>7}", style="dim")
+    text.append("  ")
+    text.append(f"{(agent.phase or '-'):14}", style="cyan")
+    text.append("  ")
+    text.append(_truncate(agent.label or agent.profile or agent.key), style="white")
+    return text
+
+
+def _gather_workflow_agents(runner: WorkflowRunner, run_id: str) -> list[_AgentRow]:
+    """Collect a run's agents (finalized first, then live) for the detail list.
+
+    Finalized agents come straight from the runner's phase reports — the registry
+    only carries live-agent rows, so finalized results are read here to avoid
+    duplicating them into the flat task list. Each carries its full prompt and
+    response; live agents carry their prompt and the streaming response_so_far.
+    """
+    entry = runner.find_run(run_id)
+    if entry is None:
+        return []
+    rows: list[_AgentRow] = []
+    for report in entry.phase_reports:
+        for i, res in enumerate(report.agent_results):
+            response = res.response
+            if not isinstance(response, str):
+                response = json.dumps(response, indent=2)
+            rows.append(
+                _AgentRow(
+                    key=f"{run_id}/done-{report.name}-{i}",
+                    label=res.label or res.agent or f"agent-{i}",
+                    phase=res.phase or report.name,
+                    status="completed" if res.completed else "failed",
+                    profile=res.agent,
+                    model=None,
+                    tokens=res.tokens_total,
+                    prompt=res.prompt or "",
+                    response=response,
+                    run_id=run_id,
+                    error=res.error,
+                    schema_errors=list(res.schema_errors)
+                    if res.schema_errors
+                    else None,
+                )
+            )
+    for la in entry.live_agents:
+        rows.append(
+            _AgentRow(
+                key=f"{run_id}/live-{getattr(la, 'agent_id', id(la))}",
+                label=getattr(la, "label", None) or getattr(la, "agent", "agent"),
+                phase=getattr(la, "phase", None),
+                status=getattr(la, "status", "running") or "running",
+                profile=getattr(la, "agent", None),
+                model=getattr(la, "model", None),
+                tokens=getattr(la, "tokens_total", 0),
+                prompt=getattr(la, "prompt", "") or "",
+                response=getattr(la, "response_so_far", "") or "",
+                run_id=run_id,
+            )
+        )
+    return rows
+
+
+@dataclass
+class _AgentViewData:
+    """Carries a drilled-into agent's full prompt + response into the view."""
+
+    title: str
+    phase: str | None
+    status: str
+    tokens: int
+    prompt: str
+    response: str
+    run_id: str
+    key: str
+    error: str | None = None
+    schema_errors: list[str] = field(default_factory=list)
+
+
 @dataclass
 class _WorkflowScriptRef:
     """Carries a workflow run's script source so SaveRequested/script view work
@@ -150,9 +261,10 @@ class TasksApp(Container):
         super().__init__(id="tasks-app", **kwargs)
         self._registry = registry
         self._workflow_runner = workflow_runner
-        self._view: str = "list"  # list | detail | script
+        self._view: str = "list"  # list | detail | script | agent
         self._filter_idx = 0  # index into _FILTERS
         self._selected_task_id: str | None = None
+        self._agent_view_data: _AgentViewData | None = None
         self._poll_timer: Any = None
 
     # --- lifecycle / compose ---
@@ -187,6 +299,8 @@ class TasksApp(Container):
             self._refresh_list_view()
         elif self._view == "detail":
             self._refresh_detail_view()
+        elif self._view == "agent":
+            self._refresh_agent_view()
         # "script" view is static.
 
     # --- rendering ---
@@ -200,6 +314,8 @@ class TasksApp(Container):
             await self._render_detail_view(body)
         elif self._view == "script":
             await self._render_script_view(body)
+        elif self._view == "agent":
+            await self._render_agent_view(body)
         self._update_header()
         self._update_help()
 
@@ -232,6 +348,9 @@ class TasksApp(Container):
             header.update(
                 Text(f"{self._selected_task_id} \u2192 Script", style="bold cyan")
             )
+        elif self._view == "agent":
+            title = self._agent_view_data.title if self._agent_view_data else "Agent"
+            header.update(Text(f"Agent: {title}", style="bold cyan"))
 
     def _entries(self) -> list[TaskEntry]:
         return self._registry.list_tasks(category=self._current_filter())
@@ -275,6 +394,15 @@ class TasksApp(Container):
         scroll = VerticalScroll(id="tasks-detail")
         await body.mount(scroll)
         await scroll.mount(NoMarkupStatic(self._build_detail_text(entry)))
+        # Workflows get a navigable agent list below the summary so each agent's
+        # prompt + response is one Enter away. Other categories are read-only.
+        if entry.category == TaskCategory.WORKFLOW:
+            agents = _gather_workflow_agents(self._workflow_runner, entry.task_id)
+            if agents:
+                options = [
+                    Option(_agent_row_text(a), id=f"agent:{a.key}") for a in agents
+                ]
+                await scroll.mount(OptionList(*options, id="tasks-agent-list"))
 
     def _refresh_detail_view(self) -> None:
         if self._view != "detail":
@@ -286,10 +414,26 @@ class TasksApp(Container):
             scroll = self.query_one("#tasks-detail", VerticalScroll)
         except Exception:
             return
-        # Replace the single child with refreshed content (cheap; one widget).
+        # Preserve scroll + agent-list highlight across the refresh.
+        highlighted_agent: int | None = None
+        try:
+            agent_list = self.query_one("#tasks-agent-list", OptionList)
+            highlighted_agent = agent_list.highlighted
+        except Exception:
+            pass
         for child in list(scroll.children):
             child.remove()
         scroll.mount(NoMarkupStatic(self._build_detail_text(entry)))
+        if entry.category == TaskCategory.WORKFLOW:
+            agents = _gather_workflow_agents(self._workflow_runner, entry.task_id)
+            if agents:
+                options = [
+                    Option(_agent_row_text(a), id=f"agent:{a.key}") for a in agents
+                ]
+                al = OptionList(*options, id="tasks-agent-list")
+                scroll.mount(al)
+                if highlighted_agent is not None and highlighted_agent < len(agents):
+                    al.highlighted = highlighted_agent
 
     async def _render_script_view(self, body: Vertical) -> None:
         ref = self._workflow_script_ref()
@@ -300,6 +444,75 @@ class TasksApp(Container):
                 Text(ref.script_source if ref else "(no script)", style="dim")
             )
         )
+
+    async def _render_agent_view(self, body: Vertical) -> None:
+        scroll = VerticalScroll(id="tasks-agent")
+        await body.mount(scroll)
+        await scroll.mount(NoMarkupStatic(self._build_agent_view_text()))
+
+    def _refresh_agent_view(self) -> None:
+        if self._view != "agent" or self._agent_view_data is None:
+            return
+        # Live agents stream: refresh the carried data from the live object so
+        # the partial response updates while the view is open.
+        self._refresh_agent_view_data()
+        try:
+            scroll = self.query_one("#tasks-agent", VerticalScroll)
+        except Exception:
+            return
+        for child in list(scroll.children):
+            child.remove()
+        scroll.mount(NoMarkupStatic(self._build_agent_view_text()))
+
+    def _refresh_agent_view_data(self) -> None:
+        """Re-read a live agent's streaming response into the view data.
+
+        Finalized agents are immutable, so only live agents need refreshing.
+        """
+        av = self._agent_view_data
+        if av is None or "/live-" not in av.key:
+            return
+        for la in self._workflow_runner_live_agents(av.run_id):
+            la_id = getattr(la, "agent_id", None)
+            if la_id and av.key.endswith(f"live-{la_id}"):
+                av.response = getattr(la, "response_so_far", "") or ""
+                av.tokens = getattr(la, "tokens_total", 0)
+                av.status = getattr(la, "status", av.status) or av.status
+                return
+
+    def _workflow_runner_live_agents(self, run_id: str) -> list[Any]:
+        entry = self._workflow_runner.find_run(run_id)
+        return list(entry.live_agents) if entry is not None else []
+
+    def _build_agent_view_text(self) -> Text:
+        av = self._agent_view_data
+        text = Text()
+        if av is None:
+            text.append("(no agent selected)", style="dim")
+            return text
+        text.append(av.title, style="bold cyan")
+        color = _STATUS_COLORS.get(av.status, "white")
+        text.append(f"  {av.status}", style=color)
+        text.append(f"  {_fmt_tokens(av.tokens)} tokens", style="dim")
+        if av.phase:
+            text.append(f"  phase: {av.phase}", style="dim")
+        text.append("\n\n--- Prompt ---", style="bold")
+        text.append(f"\n{av.prompt or '(empty)'}")
+        text.append("\n\n--- Response ---", style="bold")
+        if av.error:
+            text.append(f"\nERROR: {av.error}", style="red")
+        if av.schema_errors:
+            text.append("\n\nSchema validation errors:", style="bold red")
+            for e in av.schema_errors:
+                text.append(f"\n  {e}", style="red")
+        if av.response:
+            text.append(f"\n{av.response}")
+        elif not av.error:
+            text.append(
+                "\n(Streaming — response appears here as the agent produces it.)",
+                style="dim",
+            )
+        return text
 
     def _build_detail_text(self, entry: TaskEntry) -> Text:
         text = Text()
@@ -327,6 +540,15 @@ class TasksApp(Container):
                 style="dim",
             )
             text.append(f"\nElapsed: {_fmt_seconds(entry.elapsed)}", style="dim")
+            agents = _gather_workflow_agents(self._workflow_runner, entry.task_id)
+            if agents:
+                text.append(
+                    f"\n\nAgents ({len(agents)}):  "
+                    "\u2191\u2193 select, Enter to view prompt + response",
+                    style="bold",
+                )
+            else:
+                text.append("\n\n(no agents yet)", style="dim")
         elif entry.category == TaskCategory.AGENT:
             text.append(f"\nAgent: {entry.label}", style="white")
             text.append(
@@ -338,9 +560,21 @@ class TasksApp(Container):
                 text.append(f"\nProfile: {d['agent']}", style="dim")
             if d.get("model"):
                 text.append(f"  Model: {d['model']}", style="dim")
-            text.append(
-                "\n\n(In-flight — response not available until the agent finishes.)"
-            )
+            prompt = d.get("prompt") or ""
+            if prompt:
+                text.append("\n\n--- Prompt ---", style="bold")
+                text.append(f"\n{_truncate(prompt, _AGENT_PROMPT_SNIPPET)}")
+            preview = d.get("response_preview") or ""
+            if preview:
+                text.append("\n\n--- Response (streaming) ---", style="bold")
+                text.append(f"\n{_truncate(preview, _AGENT_RESPONSE_SNIPPET)}")
+            elif entry.status == "running":
+                text.append(
+                    "\n\n(Streaming — response appears here as the agent produces it.)",
+                    style="dim",
+                )
+            else:
+                text.append("\n\n(No response captured.)", style="dim")
         elif entry.category == TaskCategory.TEAM:
             text.append(f"\nName: {d.get('name')}", style="white")
             text.append(f"\nType: {entry.label}", style="dim")
@@ -410,6 +644,33 @@ class TasksApp(Container):
             run_id=entry.run_id, script_source=getattr(entry, "script_source", "") or ""
         )
 
+    def _open_agent_view(self, key: str) -> bool:
+        """Resolve an agent key to view data and switch to the agent view.
+
+        Returns False (no transition) if the agent no longer exists — e.g. a
+        finalized agent whose run was pruned between render and Enter.
+        """
+        run_id = key.split("/")[0] if "/" in key else self._selected_task_id
+        if run_id is None:
+            return False
+        for a in _gather_workflow_agents(self._workflow_runner, run_id):
+            if a.key == key:
+                self._agent_view_data = _AgentViewData(
+                    title=a.label or a.profile or key,
+                    phase=a.phase,
+                    status=a.status,
+                    tokens=a.tokens,
+                    prompt=a.prompt,
+                    response=a.response,
+                    run_id=a.run_id,
+                    key=a.key,
+                    error=a.error,
+                    schema_errors=list(a.schema_errors) if a.schema_errors else [],
+                )
+                self._view = "agent"
+                return True
+        return False
+
     def _update_help(self) -> None:
         help_widget = self.query_one("#tasks-help", NoMarkupStatic)
         if self._view == "list":
@@ -421,15 +682,21 @@ class TasksApp(Container):
             entry = self._focused_entry()
             hints = "x Stop  Esc Back"
             if entry is not None and entry.category == TaskCategory.WORKFLOW:
-                hints = "x Stop  p Pause  s Save  o Script  Esc Back"
+                hints = "\u2191\u2193 Agents  Enter View  x Stop  p Pause  s Save  o Script  Esc Back"
             help_widget.update(hints)
         elif self._view == "script":
+            help_widget.update("Esc Back")
+        elif self._view == "agent":
             help_widget.update("Esc Back")
 
     # --- actions ---
 
     def action_back(self) -> None:
-        if self._view == "script":
+        if self._view == "agent":
+            self._view = "detail"
+            self._agent_view_data = None
+            self.run_worker(self._render_view(), exclusive=True)
+        elif self._view == "script":
             self._view = "detail"
             self.run_worker(self._render_view(), exclusive=True)
         elif self._view == "detail":
@@ -475,9 +742,10 @@ class TasksApp(Container):
         if self._view == "list":
             self.run_worker(self._render_view(), exclusive=True)
         else:
-            # Switching filter from a detail view jumps back to the list.
+            # Switching filter from any drill-down view jumps back to the list.
             self._view = "list"
             self._selected_task_id = None
+            self._agent_view_data = None
             self.run_worker(self._render_view(), exclusive=True)
 
     def action_filter_all(self) -> None:
@@ -504,3 +772,11 @@ class TasksApp(Container):
             self._selected_task_id = str(event.option.id)
             self._view = "detail"
             await self._render_view()
+        elif (
+            self._view == "detail"
+            and event.option.id
+            and str(event.option.id).startswith("agent:")
+        ):
+            key = str(event.option.id)[len("agent:") :]
+            if self._open_agent_view(key):
+                await self._render_view()
