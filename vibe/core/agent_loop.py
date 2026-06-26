@@ -5,6 +5,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
 import contextlib
 import copy
+import datetime as _dt
 from enum import StrEnum, auto
 from functools import wraps
 import hashlib
@@ -164,9 +165,11 @@ except ImportError:
     _TeleportService = None
 
 if TYPE_CHECKING:
+    from vibe.core.config import MemoryConfig
     from vibe.core.loop import Scheduler
-    from vibe.core.memory.consolidator import MemoryConsolidator
+    from vibe.core.memory.consolidator import ConsolidationAction, MemoryConsolidator
     from vibe.core.memory.extractor import MemoryExtractor
+    from vibe.core.memory.models import MemoryEntry
     from vibe.core.memory.selector import MemorySelector
     from vibe.core.memory.store import MemoryStore
     from vibe.core.teleport.teleport import TeleportService
@@ -753,6 +756,22 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
+        # Reap the fire-and-forget memory tasks so a session ending mid-flight
+        # can't leave a dangling, state-mutating consolidation. Order matters:
+        # consolidation writes first (merge/trash), then extraction (upsert),
+        # then the short-lived prefetch. Each is cancelled then awaited so no
+        # task outlives the loop (which would otherwise warn and leak).
+        for attr in (
+            "_mem_consolidate_task",
+            "_mem_extract_task",
+            "_mem_prefetch_task",
+        ):
+            task = getattr(self, attr)
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
+            setattr(self, attr, None)
         with contextlib.suppress(Exception):
             await self.backend.__aexit__(None, None, None)
         with contextlib.suppress(Exception):
@@ -1355,11 +1374,14 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             logger.warning("memory prefetch kick failed (%s); continuing without", e)
 
     def _on_prefetch_done(self, task: asyncio.Task[list[str]]) -> None:
-        # The reference is cleared on consume/cancel; this callback only swallows
-        # stray exceptions so an errored prefetch never warns as an unhandled task.
+        # The reference is cleared on consume/cancel; this callback only reaps
+        # a settled prefetch's result so an errored selector surfaces as a log
+        # line rather than an unhandled-task warning.
         if task is self._mem_prefetch_task and not task.cancelled():
-            with contextlib.suppress(Exception):
+            try:
                 task.result()
+            except Exception as e:
+                logger.warning("memory prefetch errored (%s); index-only stays", e)
 
     def _consume_memory_prefetch(self) -> None:
         """Fold deep-recall bodies in iff the prefetch settled before the first
@@ -1463,7 +1485,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return False
 
     def _on_extract_done(self, task: asyncio.Task[None]) -> None:
-        self._mem_extract_task = None
+        # Conditional like the consolidation/prefetch callbacks: only clear the
+        # slot if this task still owns it, so an older done-callback can't
+        # clobber a newer extraction task's reference.
+        if task is self._mem_extract_task:
+            self._mem_extract_task = None
         try:
             task.result()
         except Exception as e:
@@ -1603,19 +1629,29 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
     def _maybe_schedule_consolidation(self) -> None:
-        """Fire-and-forget consolidation at turn end, gated by config, the
-        candidate floor, and a per-corpus interval. Never raises.
+        """Fire-and-forget consolidation at turn end, gated by config, an
+        in-flight guard, the candidate floor, and a per-corpus interval.
+
+        Runs only after the turn's extraction pass has settled, so the two
+        never mutate the store concurrently.
         """
         if self._is_subagent or self.config.is_le_chaton():
             return
         mem = self.config.memory
         if not mem.consolidate:
             return
+        # In-flight guards (two reasons, one return): (a) the interval stamp is
+        # day-granularity and only written at the END of a run, so a second turn
+        # completing during a 45s consolidation would otherwise pass the gate
+        # and spawn a second mutating task; (b) this turn's extraction pass
+        # (scheduled just before us) may still be writing. Either way, defer.
+        for attr in ("_mem_consolidate_task", "_mem_extract_task"):
+            task = getattr(self, attr)
+            if task is not None and not task.done():
+                return
         store = self._get_memory_store()
         if store is None:
             return
-        import datetime as _dt
-
         today = _dt.date.today()
         last = store.last_consolidation()
         if last is not None and (today - last).days < mem.consolidate_interval_days:
@@ -1630,22 +1666,27 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         task.add_done_callback(self._on_consolidate_done)
 
     def _on_consolidate_done(self, task: asyncio.Task[None]) -> None:
-        self._mem_consolidate_task = None
-        with contextlib.suppress(Exception):
+        # Conditional like the prefetch callback: an older task's done-callback
+        # must NOT clobber a newer task's reference (which would orphan the
+        # newer, unkillable task). Only clear if this task still owns the slot.
+        if task is self._mem_consolidate_task:
+            self._mem_consolidate_task = None
+        try:
             task.result()
+        except Exception as e:
+            logger.warning("memory consolidation task failed (%s)", e)
 
-    async def _consolidate_memories(self, candidates: list, today: object) -> None:
-        import datetime as _dt
-
-        from vibe.core.memory.models import age_label
+    async def _consolidate_memories(
+        self, candidates: list[MemoryEntry], today: _dt.date
+    ) -> None:
+        from vibe.core.memory.consolidator import _MAX_BODY_CHARS
 
         try:
             store = self._get_memory_store()
             if store is None:
                 return
             consolidator = self._resolve_memory_consolidator()
-            today_date = today if isinstance(today, _dt.date) else _dt.date.today()
-            today_iso = today_date.isoformat()
+            today_iso = today.isoformat()
             if consolidator is None:
                 # No usable model: still stamp so we don't re-scan every turn.
                 store.stamp_consolidation(today_iso)
@@ -1653,50 +1694,78 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             mem = self.config.memory
             valid = {e.id for e in candidates}
             index_lines = store.index(mem.max_entries_scanned)
-            # Candidate payload: id + age + body, bounded so a large corpus
-            # can't blow the prompt. Later candidates truncate first.
-            char_budget = mem.max_inject_chars
-            parts: list[str] = []
-            used = 0
-            for e in candidates:
-                age = age_label(e.metadata.updated, today_date)
-                block = f"[{e.id}] (age {age or 'unknown'})\n{e.body}"
-                if used + len(block) > char_budget:
-                    block = block[: max(0, char_budget - used)]
-                parts.append(block)
-                used += len(block)
-                if used >= char_budget:
-                    break
-            candidate_payload = "\n\n".join(parts)
+            candidate_payload = self._consolidation_payload(candidates, today, mem)
             actions = await consolidator.consolidate(
                 index_lines, candidate_payload, valid
             )
-            applied = 0
-            consumed: set[str] = set()
-            for act in actions:
-                if applied >= mem.consolidate_max_actions:
-                    break
-                if act.kind == "merge" and act.into is not None:
-                    sources = [
-                        s for s in act.sources if s in valid and s not in consumed
-                    ]
-                    if act.into in valid and act.into not in consumed and sources:
-                        store.apply_merge(act.into, sources, act.body, today_iso)
-                        consumed.add(act.into)
-                        consumed.update(sources)
-                        applied += 1
-                elif act.kind == "delete" and act.id is not None:
-                    if act.id in valid and act.id not in consumed:
-                        store.trash(act.id, reason=f"delete: {act.reason}")
-                        consumed.add(act.id)
-                        applied += 1
-            # Stamp regardless of outcome so a barren pass doesn't retry every
-            # turn; the interval gate throttles the next attempt.
+            applied = self._apply_consolidation_actions(
+                actions, valid, mem.consolidate_max_actions, today_iso, _MAX_BODY_CHARS
+            )
+            # Stamp only on a clean run (success or barren): a failed/partial
+            # pass falls through to except below WITHOUT stamping, so the
+            # interval gate lets the next turn retry instead of suppressing it
+            # for a full interval. The "regardless of outcome" framing was wrong.
             store.stamp_consolidation(today_iso)
             if applied:
                 logger.info("memory consolidation applied %d actions", applied)
         except Exception as e:
             logger.warning("memory consolidation failed (%s)", e)
+
+    @staticmethod
+    def _consolidation_payload(
+        candidates: list[MemoryEntry], today: _dt.date, mem: MemoryConfig
+    ) -> str:
+        from vibe.core.memory.models import age_label
+
+        # Candidate payload: id + age + body, bounded so a large corpus can't
+        # blow the prompt. Later candidates truncate first.
+        char_budget = mem.max_inject_chars
+        parts: list[str] = []
+        used = 0
+        for e in candidates:
+            age = age_label(e.metadata.updated, today)
+            block = f"[{e.id}] (age {age or 'unknown'})\n{e.body}"
+            if used + len(block) > char_budget:
+                block = block[: max(0, char_budget - used)]
+            parts.append(block)
+            used += len(block)
+            if used >= char_budget:
+                break
+        return "\n\n".join(parts)
+
+    def _apply_consolidation_actions(
+        self,
+        actions: list[ConsolidationAction],
+        valid: set[str],
+        max_actions: int,
+        today_iso: str,
+        max_body_chars: int,
+    ) -> int:
+        # Apply parsed actions with a per-run cap, a consumed-id dedupe, and a
+        # defense-in-depth body clamp (the consolidator already clamps in
+        # _parse; this bounds a future caller that bypasses it).
+        store = self._get_memory_store()
+        if store is None:
+            return 0
+        applied = 0
+        consumed: set[str] = set()
+        for act in actions:
+            if applied >= max_actions:
+                break
+            if act.kind == "merge" and act.into is not None:
+                sources = [s for s in act.sources if s in valid and s not in consumed]
+                if act.into in valid and act.into not in consumed and sources:
+                    body = act.body[:max_body_chars]
+                    store.apply_merge(act.into, sources, body, today_iso)
+                    consumed.add(act.into)
+                    consumed.update(sources)
+                    applied += 1
+            elif act.kind == "delete" and act.id is not None:
+                if act.id in valid and act.id not in consumed:
+                    store.trash(act.id, reason=f"delete: {act.reason}")
+                    consumed.add(act.id)
+                    applied += 1
+        return applied
 
     def _resolve_safety_judge(self) -> SafetyJudge | None:
         """Build the LLM safety judge if configured & usable, else None.
@@ -1991,7 +2060,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             # Turn fully complete (no hook/stop-hook continuation): schedule
             # best-effort memory extraction. Fire-and-forget; never raises.
             self._maybe_schedule_memory_extraction()
-            # Periodic consolidation (throttled, default-off, reversible).
+            # Periodic consolidation (throttled, default-off, reversible). Runs
+            # only after extraction has settled (its own in-flight guard holds
+            # off while _mem_extract_task is live) so the two never mutate the
+            # store concurrently from sibling tasks.
             self._maybe_schedule_consolidation()
         finally:
             # Abandon any prefetch that never settled so it can't leak across

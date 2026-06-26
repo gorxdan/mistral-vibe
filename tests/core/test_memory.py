@@ -1490,3 +1490,242 @@ class _StubConsolidator:
 
     async def consolidate(self, *a: Any, **k: Any) -> list[Any]:
         return await self._fn(*a, **k)
+
+
+# --------------------------------------------------------------------------- #
+# Hardening fixes: restore, slug fullmatch, backup-merge, in-flight guard,
+# teardown, conditional callbacks, payload clamp
+# --------------------------------------------------------------------------- #
+
+
+def test_restore_recovers_trashed_memory_without_ledger(tmp_path) -> None:
+    # restore() scans .trash/ by filename, so recovery does not depend on the
+    # ledger being intact — a trashed file is recoverable even with no ledger.
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_stale_entry("a", body="original"))
+    assert store.trash("a", reason="delete: obsolete")
+    # Delete the ledger entirely: recovery must still work (filename scan).
+    (tmp_path / ".trash" / "ledger.jsonl").unlink()
+    assert store.get("a") is None  # gone from live set
+
+    restored = store.restore("a")
+    assert restored is not None
+    back = store.get("a")
+    assert back is not None and back.body == "original"
+
+
+def test_restore_refuses_to_clobber_live_memory(tmp_path) -> None:
+    # A re-created live file blocks restore so the current memory isn't
+    # silently destroyed; the caller resolves the conflict explicitly.
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("a", body="v1"))
+    store.trash("a", reason="delete: old")
+    store.upsert(_entry("a", body="v2"))  # re-created after trash
+    assert store.restore("a") is None
+    live = store.get("a")
+    assert live is not None and live.body == "v2"
+
+
+def test_restore_returns_none_when_nothing_trashed(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("a"))
+    assert store.restore("never-trashed") is None
+    # Refuses even though "a" is live — restore only acts on trash, not live.
+    assert store.restore("a") is None
+
+
+def test_apply_merge_backs_up_survivor_pre_merge_body(tmp_path) -> None:
+    # The survivor's pre-merge body is now reversible too: it's backed up to
+    # trash before the rewrite, so a bad merge is recoverable end to end.
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_stale_entry("a", body="alpha-original"))
+    store.upsert(_stale_entry("b", body="beta"))
+    store.apply_merge("a", ["b"], "reconciled", _dt.date(2026, 6, 26).isoformat())
+
+    # The survivor now holds the reconciled body.
+    keeper = store.get("a")
+    assert keeper is not None and keeper.body == "reconciled"
+    # Delete the live merged copy, then restore: the pre-merge body comes back.
+    store.delete("a")
+    store.restore("a")
+    recovered = store.get("a")
+    assert recovered is not None and recovered.body == "alpha-original"
+
+
+def test_trash_filename_collision_safe_within_a_second(tmp_path) -> None:
+    # Two trashes of the same id (re-create + re-trash) within one second must
+    # not clobber each other: the random suffix keeps both copies recoverable.
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("a", body="first"))
+    store.trash("a", reason="one")
+    store.upsert(_entry("a", body="second"))
+    store.trash("a", reason="two")
+    copies = list((tmp_path / ".trash").glob("a-*.md"))
+    assert len(copies) == 2  # both retained, no overwrite
+
+
+def test_id_re_fullmatch_rejects_trailing_newline(tmp_path) -> None:
+    # Python `$` matches before a trailing newline; the store path gates must
+    # use fullmatch() so "slug\n" can't reach a filename interpolation.
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("a"))
+    # A trailing-newline id must be rejected at every path-gating surface.
+    assert store.restore("a\n") is None
+    assert not store.trash("a\n", reason="x")
+    assert not store.delete("a\n")
+    # No spurious file with a newline in its name was created.
+    assert list((tmp_path / ".trash").glob("*")) == []
+
+
+def test_stamp_consolidation_is_atomic(tmp_path) -> None:
+    # stamp_consolidation uses _atomic_write (temp + os.replace), so a crash
+    # can't leave a truncated throttle marker.
+    store = MemoryStore(user_dir=tmp_path)
+    store.stamp_consolidation("2026-06-26")
+    assert store.last_consolidation() == _dt.date(2026, 6, 26)
+    # The marker is a clean single ISO date line, not a partial write.
+    assert (tmp_path / ".last_consolidation").read_text().strip() == "2026-06-26"
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_consolidation_in_flight_guard(
+    monkeypatch, tmp_path
+) -> None:
+    # A second schedule call while consolidation is already running must NOT
+    # spawn a concurrent task: the in-flight guard holds it off.
+    loop, store = _consolidate_loop(monkeypatch, tmp_path)
+    loop.config.memory.consolidate = True
+    for i in range(8):
+        store.upsert(_stale_entry(f"id{i}"))
+    # No usable consolidator -> the task spins up, stamps, returns quickly. We
+    # inject a slow one instead so the task stays live across a second call.
+    started = asyncio.Event()
+
+    class _Slow:
+        async def consolidate(self, *a: Any, **k: Any) -> list[Any]:
+            started.set()
+            await asyncio.Event().wait()  # never settles
+            return []
+
+    monkeypatch.setattr(loop, "_resolve_memory_consolidator", lambda: _Slow())
+
+    loop._maybe_schedule_consolidation()
+    first = loop._mem_consolidate_task
+    assert first is not None
+    await started.wait()  # ensure the task is actually in flight
+    # Second schedule while the first runs: must be a no-op.
+    loop._maybe_schedule_consolidation()
+    assert loop._mem_consolidate_task is first  # unchanged, not a new task
+    # Reap.
+    first.cancel()
+    await asyncio.gather(first, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_consolidation_held_off_while_extraction_runs(
+    monkeypatch, tmp_path
+) -> None:
+    # Consolidation must not run while an extraction task is in flight: the two
+    # never mutate the store concurrently.
+    loop, store = _consolidate_loop(monkeypatch, tmp_path)
+    loop.config.memory.consolidate = True
+    for i in range(8):
+        store.upsert(_stale_entry(f"id{i}"))
+    loop._mem_extract_task = asyncio.create_task(asyncio.sleep(0))  # pretend live
+    try:
+        loop._maybe_schedule_consolidation()
+        assert loop._mem_consolidate_task is None  # held off
+    finally:
+        await loop._mem_extract_task
+
+
+@pytest.mark.asyncio
+async def test_on_consolidate_done_conditional_null(monkeypatch, tmp_path) -> None:
+    # An older task's done-callback must NOT clobber a newer task's reference
+    # (which would orphan the newer, unkillable task).
+    loop, _store = _consolidate_loop(monkeypatch, tmp_path)
+    old = asyncio.create_task(asyncio.sleep(0))
+    new = asyncio.create_task(asyncio.sleep(0.05))
+    loop._mem_consolidate_task = new
+    await old  # settle the OLD one
+    loop._on_consolidate_done(old)  # its callback fires
+    assert loop._mem_consolidate_task is new  # newer reference preserved
+    await new
+
+
+@pytest.mark.asyncio
+async def test_aclose_cancels_in_flight_consolidation(monkeypatch, tmp_path) -> None:
+    # teardown reaps the state-mutating consolidation task so a session ending
+    # mid-flight leaves no dangling task.
+    loop, _store = _consolidate_loop(monkeypatch, tmp_path)
+    never = asyncio.Event()
+    loop._mem_consolidate_task = asyncio.create_task(never.wait())
+    loop._mem_extract_task = asyncio.create_task(never.wait())
+    loop._mem_prefetch_task = asyncio.create_task(never.wait())
+    await loop.aclose()
+    assert loop._mem_consolidate_task is None
+    assert loop._mem_extract_task is None
+    assert loop._mem_prefetch_task is None
+
+
+@pytest.mark.asyncio
+async def test_apply_consolidation_clamps_body_at_apply_path(
+    monkeypatch, tmp_path
+) -> None:
+    # Defense-in-depth: the apply path clamps the merged body independent of
+    # the consolidator's own clamp, bounding a future caller that bypasses it.
+    from vibe.core.memory.consolidator import ConsolidationAction
+
+    loop, store = _consolidate_loop(monkeypatch, tmp_path)
+    store.upsert(_stale_entry("a", body="alpha"))
+    store.upsert(_stale_entry("b", body="beta"))
+    candidates = store.consolidation_candidates(min_age_days=14)
+    huge = "X" * 100_000
+
+    async def _stub(*a: Any, **k: Any) -> list[Any]:
+        return [ConsolidationAction(kind="merge", into="a", sources=["b"], body=huge)]
+
+    monkeypatch.setattr(
+        loop, "_resolve_memory_consolidator", lambda: _StubConsolidator(_stub)
+    )
+    await loop._consolidate_memories(candidates, _dt.date(2026, 6, 26))
+
+    keeper = store.get("a")
+    assert keeper is not None
+    assert len(keeper.body) <= 4000  # clamped, not the full 100k
+
+
+@pytest.mark.asyncio
+async def test_consolidate_does_not_stamp_on_exception(monkeypatch, tmp_path) -> None:
+    # A failed pass must NOT stamp: the interval gate must let the next turn
+    # retry rather than suppressing it for a full interval.
+    loop, store = _consolidate_loop(monkeypatch, tmp_path)
+    store.upsert(_stale_entry("a"))
+
+    async def _boom(*a: Any, **k: Any) -> list[Any]:
+        raise RuntimeError("backend down")
+
+    monkeypatch.setattr(
+        loop, "_resolve_memory_consolidator", lambda: _StubConsolidator(_boom)
+    )
+    await loop._consolidate_memories(
+        store.consolidation_candidates(min_age_days=14), _dt.date(2026, 6, 26)
+    )
+    assert store.last_consolidation() is None  # not stamped -> retry allowed
+
+
+def test_merge_memory_body_survives_frontmatter_reparse(tmp_path) -> None:
+    # A merged body containing a yaml document marker ("---") at column 0 must
+    # not bleed into frontmatter on re-read: the parser splits only the first
+    # boundary pair, so body markers are plain markdown.
+    store = MemoryStore(user_dir=tmp_path)
+    existing = "original fact"
+    addition = "--- not a boundary ---\nmore: like: yaml: trickery"
+    merged = merge_memory_body(existing, addition, "2026-06-26")
+    store.upsert(_entry("a", body=merged))
+    reloaded = store.get("a")
+    assert reloaded is not None
+    assert "original fact" in reloaded.body
+    assert "--- not a boundary ---" in reloaded.body
+    # Frontmatter stayed clean: no injected keys from the body.
+    assert reloaded.metadata.scope == "user"

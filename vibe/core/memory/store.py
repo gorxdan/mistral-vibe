@@ -33,7 +33,10 @@ from vibe.core.paths import VIBE_HOME
 from vibe.core.skills.parser import SkillParseError, parse_skill_markdown
 
 # Compiled slug pattern (same source as MemoryMetadata.id) for the delete path,
-# which bypasses the pydantic model and interpolates the id into a path.
+# which bypasses the pydantic model and interpolates the id into a path. MUST be
+# used with .fullmatch() (not .match()): the shared ^...$ pattern still lets a
+# trailing newline through under .match(), and an id like "slug\n" must not
+# reach a filename interpolation. See models._SLUG for the engine constraint.
 _ID_RE = re.compile(_SLUG)
 
 
@@ -162,7 +165,7 @@ class MemoryStore:
         (project shadows user by id; without this, a project->user re-scope is
         invisible because the stale project file keeps winning).
         """
-        if not _ID_RE.match(memory_id):
+        if not _ID_RE.fullmatch(memory_id):
             return False
         target = (
             self._project_dirs[0] if project and self._project_dirs else self._user_dir
@@ -179,7 +182,7 @@ class MemoryStore:
         # the add/update paths enforce this via MemoryMetadata, but delete()
         # built `{memory_id}.md` directly, so an id like "../../x" could unlink
         # a .md file outside the memory dir.
-        if not _ID_RE.match(memory_id):
+        if not _ID_RE.fullmatch(memory_id):
             return False
         # Clear every tier: a project memory shadows a same-id user one, so a
         # first-match early-return would leave the shadowed id still visible.
@@ -199,7 +202,7 @@ class MemoryStore:
         # The file that actually backs this id under shadowing: project dirs
         # override user (loaded last in _entries), so the effective file is the
         # first hit scanning project dirs first, then user. None if absent.
-        if not _ID_RE.match(memory_id):
+        if not _ID_RE.fullmatch(memory_id):
             return None
         for d in reversed(self._search_dirs()):
             if not d.is_dir():
@@ -211,9 +214,9 @@ class MemoryStore:
 
     def trash(self, memory_id: str, *, reason: str, into: str | None = None) -> bool:
         """Move a memory's effective file into a per-dir ``.trash/`` tree with
-        a ledger entry. Never hard-deletes — the file stays recoverable and the
-        ledger records why it moved (consolidation merge/delete). Returns False
-        if the id has no effective file (nothing to trash).
+        a ledger entry. Never hard-deletes — the file stays recoverable (see
+        ``restore``) and the ledger records why it moved. Returns False if the
+        id has no effective file (nothing to trash).
         """
         src = self._effective_path(memory_id)
         if src is None:
@@ -221,7 +224,12 @@ class MemoryStore:
         trash_dir = src.parent / ".trash"
         trash_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
-        dest = trash_dir / f"{memory_id}-{ts}.md"
+        # Collision-safe suffix: trashing the same id twice within a second
+        # (re-create + re-trash, or a concurrent pass) would otherwise make an
+        # identical ``{id}-{ts}.md`` and ``replace`` would clobber the first
+        # copy. A short random tail keeps both recoverable.
+        suffix = os.urandom(3).hex()
+        dest = trash_dir / f"{memory_id}-{ts}-{suffix}.md"
         try:
             src.replace(dest)  # atomic rename within one filesystem
         except OSError:
@@ -229,18 +237,65 @@ class MemoryStore:
             # trash copy still lands inside the trash tree.
             dest.write_bytes(src.read_bytes())
             src.unlink()
-        entry = {
-            "id": memory_id,
-            "ts": ts,
-            "reason": reason,
-            "into": into,
-            "file": dest.name,
-            "from": src.name,
-        }
-        with (trash_dir / "ledger.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+        self._append_ledger(
+            trash_dir,
+            {
+                "id": memory_id,
+                "ts": ts,
+                "reason": reason,
+                "into": into,
+                "file": dest.name,
+                "from": src.name,
+            },
+        )
         self._cache = None
         return True
+
+    def restore(self, memory_id: str) -> Path | None:
+        """Restore the most recently trashed copy of ``memory_id`` back to a
+        live memory file, returning its path. The undo is itself ledger-audited.
+
+        Recovery scans ``.trash/`` trees by filename, so it does NOT depend on
+        the ledger being intact — a trashed file is recoverable even if its
+        ledger line was lost to a crash. Returns None when no trashed copy
+        exists, or when a live file already occupies the id: restore refuses to
+        clobber (delete it first if you really want the old copy back).
+        """
+        if not _ID_RE.fullmatch(memory_id):
+            return None
+        # Refuse to clobber a live memory: restoring over it would silently
+        # destroy the current one. The caller resolves the conflict explicitly.
+        if self._effective_path(memory_id) is not None:
+            return None
+        for d in reversed(self._search_dirs()):
+            trash_dir = d / ".trash"
+            if not trash_dir.is_dir():
+                continue
+            copies = sorted(
+                trash_dir.glob(f"{memory_id}-*.md"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if not copies:
+                continue
+            src = copies[0]
+            dest = d / f"{memory_id}.md"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            src.replace(dest)
+            self._append_ledger(
+                trash_dir,
+                {
+                    "id": memory_id,
+                    "ts": datetime.datetime.now().strftime("%Y%m%dT%H%M%S"),
+                    "reason": "restore",
+                    "into": None,
+                    "file": src.name,
+                    "from": dest.name,
+                },
+            )
+            self._cache = None
+            return dest
+        return None
 
     def apply_merge(
         self, into_id: str, source_ids: list[str], merged_body: str, today: str
@@ -251,11 +306,19 @@ class MemoryStore:
         bumped to ``today`` so the recency signal reflects the reconciliation,
         and ``source`` is marked ``auto``. Returns the count of source files
         actually trashed. A source equal to the target is skipped (not trashed).
+
+        The survivor's PRE-merge body is backed up to trash before the rewrite,
+        so a merge is reversible end to end — not just its sources. Use
+        ``restore(into_id)`` to recover the pre-merge state (after deleting the
+        reconciled copy, since restore refuses to clobber a live file).
         """
         target = self.get(into_id)
         if target is None:
             return 0
         meta = target.metadata.model_copy(update={"updated": today, "source": "auto"})
+        # Back up the surviving memory's current body before overwriting it: the
+        # only consolidation mutation that was previously non-reversible.
+        self.trash(into_id, reason="merge-backup", into=into_id)
         self.upsert(
             MemoryEntry(metadata=meta, body=merged_body),
             project=(target.metadata.scope == "project"),
@@ -294,9 +357,11 @@ class MemoryStore:
             return None
 
     def stamp_consolidation(self, today_iso: str) -> None:
+        # Atomic like every other state mutation: a plain open("w") could leave
+        # a truncated marker on crash. The read side tolerates corruption
+        # (returns None -> re-run), but a clean write keeps the throttle honest.
         self._user_dir.mkdir(parents=True, exist_ok=True)
-        with (self._user_dir / ".last_consolidation").open("w", encoding="utf-8") as f:
-            f.write(today_iso)
+        self._atomic_write(self._user_dir / ".last_consolidation", today_iso)
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
@@ -309,6 +374,23 @@ class MemoryStore:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
+
+    @staticmethod
+    def _append_ledger(trash_dir: Path, entry: dict[str, object]) -> None:
+        # Crash-safe append: flush + fsync the JSON line so a crash can't leave a
+        # partial trailing record (a half-written line would corrupt the JSONL).
+        # The file move already happened by the time we get here, so a ledger
+        # failure leaves a file in .trash/ with no ledger entry — still
+        # recoverable via restore() (which scans by filename, not the ledger),
+        # just not audited. We accept that: durability of the move beats the
+        # ledger, and the ledger is best-effort audit.
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        ledger = trash_dir / "ledger.jsonl"
+        line = json.dumps(entry) + "\n"
+        with ledger.open("a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
+            os.fsync(f.fileno())
 
 
 def _project_identity(workdir: Path) -> Path:

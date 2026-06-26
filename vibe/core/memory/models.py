@@ -7,6 +7,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+# Engine-neutral anchors (^/$ work in both Python `re` and the Rust regex
+# pydantic uses for Field validation; \A/\Z and \z are NOT shared, so neither
+# can anchor both). The path-gating code in store.py pairs this with
+# _ID_RE.fullmatch() — NOT .match() — because Python `$` also matches just
+# before a trailing newline, so "slug\n" would otherwise pass and interpolate a
+# newline into a filename.
 _SLUG = r"^[a-z0-9]+(-[a-z0-9]+)*$"
 
 # Memories older than this (days) get a "verify before relying on it" caveat

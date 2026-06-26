@@ -50,7 +50,9 @@ Return ONLY JSON: {"actions": [{"kind": "merge", "into": "<candidate id>", \
 At most K actions. Return {"actions": []} if nothing is worth consolidating."""
 
 # Hard cap on a single reconciled body so a runaway merge can't bloat the
-# system-prompt tax. The agent-loop caller also clamps; this is defense-in-depth.
+# system-prompt tax. Enforced here in _parse AND again at the agent-loop apply
+# path (defense-in-depth: a future caller that bypasses the consolidator is
+# still bounded).
 _MAX_BODY_CHARS = 4000
 
 
