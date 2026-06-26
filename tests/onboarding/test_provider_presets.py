@@ -92,6 +92,7 @@ def test_sakana_preset_provider_config() -> None:
     assert provider.api_key_env_var == "SAKANA_API_KEY"
     # Fugu documents the Responses API with reasoning.effort.
     assert provider.api_style == "openai-responses"
+    assert provider.discover_models is True
 
 
 def test_sakana_preset_model_config() -> None:
@@ -141,3 +142,24 @@ def test_apply_sakana_preset_persists_provider_and_model(
     persisted = {m["alias"]: m for m in config["models"]}
     assert persisted["fugu"]["auto_compact_threshold"] == 880000
     assert persisted["fugu-ultra"]["auto_compact_threshold"] == 880000
+
+
+def test_zai_preset_discovers_models() -> None:
+    preset = next((p for p in PRESETS if p.key == "zai"), None)
+    assert preset is not None
+    assert preset.provider is not None
+    assert preset.provider.discover_models is True
+
+
+def test_kimi_preset_discovers_models() -> None:
+    preset = next((p for p in PRESETS if p.key == "kimi"), None)
+    assert preset is not None
+    assert preset.provider is not None
+    assert preset.provider.discover_models is True
+
+
+def test_minimax_preset_discovers_models() -> None:
+    preset = next((p for p in PRESETS if p.key == "minimax"), None)
+    assert preset is not None
+    assert preset.provider is not None
+    assert preset.provider.discover_models is True
