@@ -215,6 +215,12 @@ JUDGE_ARGS_TRUNCATED_SENTINEL = (
     "could be hidden beyond this point; do not auto-approve on the basis of "
     "the visible prefix.]"
 )
+# Capped recent-transcript window handed to the safety judge so it can tell a
+# call the user explicitly requested from one the agent decided unprompted.
+# Last user/assistant turns only (tool results and injections are noise), and
+# the total is char-bounded so it never dominates the judge's input budget.
+JUDGE_TRANSCRIPT_LIMIT = 2000
+JUDGE_TRANSCRIPT_TURNS = 4
 
 
 class ToolExecutionResponse(StrEnum):
@@ -448,7 +454,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         # calls reuse a verdict instead of re-querying the judge model. Only real
         # verdicts are cached; fail-closed ones (timeout/error) are retried.
         self._judge_verdict_cache: OrderedDict[
-            tuple[str, str, tuple[str, ...]], JudgeVerdict
+            tuple[str, str, tuple[str, ...], str], JudgeVerdict
         ] = OrderedDict()
         self._judge_verdict_cache_maxsize: int = config.safety_judge.verdict_cache_size
         # Judge model alias the cached verdicts were produced under. When the
@@ -2671,6 +2677,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         # sentinel appended when truncated).
         args_key, args_repr, truncated = self._serialize_args(args)
         flagged_reasons = [rp.label for rp in uncovered]
+        # Recent transcript gives the judge intent context (a call the user
+        # asked for vs one the agent decided unprompted). Hashed into the cache
+        # key so different contexts don't share a verdict.
+        transcript = self._judge_transcript_window()
+        transcript_key = hashlib.sha256(
+            transcript.encode("utf-8", errors="replace")
+        ).hexdigest()
         # Truncation blind spot: when the args exceed the judge's input window,
         # a destructive tail can hide beyond what the model sees. This method is
         # only reached for ASK-gated calls, and `uncovered` non-empty means a
@@ -2691,13 +2704,15 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 JUDGE_ARGS_LIMIT,
             )
             return None
-        cache_key = (tool_name, args_key, tuple(flagged_reasons))
+        cache_key = (tool_name, args_key, tuple(flagged_reasons), transcript_key)
         # Reuse a real verdict for an identical call instead of re-querying the
         # judge model. Fail-closed verdicts (verdict.failed) are never stored,
         # so a transient timeout/error is retried on the next identical call.
         verdict = self._judge_verdict_cache_get(cache_key)
         if verdict is None:
-            verdict = await judge.judge(tool_name, args_repr, flagged_reasons)
+            verdict = await judge.judge(
+                tool_name, args_repr, flagged_reasons, transcript=transcript
+            )
             if not verdict.failed:
                 self._judge_verdict_cache_put(cache_key, verdict)
         else:
@@ -2750,8 +2765,36 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             repr_ = blob
         return digest, repr_, truncated
 
+    def _judge_transcript_window(self) -> str:
+        """Build a capped recent-turns excerpt for the safety judge.
+
+        Takes the last ``JUDGE_TRANSCRIPT_TURNS`` user/assistant messages (real
+        turns only — injected context, tool calls, and tool results are noise for
+        an intent check), joins them role-labeled, and truncates to
+        ``JUDGE_TRANSCRIPT_LIMIT`` chars. Returns "" when there is no usable
+        recent context, which leaves the judge on its original, context-free path.
+        """
+        turns: list[str] = []
+        for msg in reversed(self.messages):
+            if len(turns) >= JUDGE_TRANSCRIPT_TURNS:
+                break
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            if msg.role == Role.user and not msg.injected:
+                turns.append(f"user: {content}")
+            elif msg.role == Role.assistant:
+                turns.append(f"assistant: {content}")
+        if not turns:
+            return ""
+        turns.reverse()
+        text = "\n".join(turns)
+        if len(text) > JUDGE_TRANSCRIPT_LIMIT:
+            text = text[:JUDGE_TRANSCRIPT_LIMIT] + "\n...[truncated]"
+        return text
+
     def _judge_verdict_cache_get(
-        self, key: tuple[str, str, tuple[str, ...]]
+        self, key: tuple[str, str, tuple[str, ...], str]
     ) -> JudgeVerdict | None:
         """Return a cached verdict, marking it most-recently-used, or None."""
         if self._judge_verdict_cache_maxsize <= 0:
@@ -2763,7 +2806,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return verdict
 
     def _judge_verdict_cache_put(
-        self, key: tuple[str, str, tuple[str, ...]], verdict: JudgeVerdict
+        self, key: tuple[str, str, tuple[str, ...], str], verdict: JudgeVerdict
     ) -> None:
         """Store a verdict with bounded-LRU eviction. No-op when disabled."""
         if self._judge_verdict_cache_maxsize <= 0:
@@ -3383,9 +3426,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             compaction_context_message = LLMMessage(
                 role=Role.user, content=compaction_context, injected=True
             )
-            self.messages.reset(
-                [system_message, *leading_context, compaction_context_message]
-            )
+            self.messages.reset([
+                system_message,
+                *leading_context,
+                compaction_context_message,
+            ])
 
             await self._reset_session()
 

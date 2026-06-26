@@ -31,7 +31,12 @@ class _FakeJudge:
         self.calls: list[tuple[str, str, list[str]]] = []
 
     async def judge(
-        self, tool_name: str, args_repr: str, flagged: list[str]
+        self,
+        tool_name: str,
+        args_repr: str,
+        flagged: list[str],
+        *,
+        transcript: str = "",
     ) -> JudgeVerdict:
         self.calls.append((tool_name, args_repr, flagged))
         return self.verdict
@@ -320,7 +325,9 @@ async def test_fail_closed_verdict_is_not_cached() -> None:
         def __init__(self) -> None:
             self.calls = 0
 
-        async def judge(self, tool_name, args_repr, flagged) -> JudgeVerdict:  # type: ignore[no-untyped-def]
+        async def judge(
+            self, tool_name, args_repr, flagged, *, transcript=""
+        ) -> JudgeVerdict:  # type: ignore[no-untyped-def]
             self.calls += 1
             if self.calls == 1:
                 return JudgeVerdict(safe=False, reason="timed out", failed=True)
@@ -519,3 +526,70 @@ class TestSystemPromptSelection:
 
     def test_workflow_and_default_prompts_differ(self) -> None:
         assert _WORKFLOW_SYSTEM_PROMPT != _SYSTEM_PROMPT
+
+
+# --------------------------------------------------------------------------- #
+# Transcript-aware judging (#7)                                                #
+# --------------------------------------------------------------------------- #
+
+
+class _TranscriptCapturingJudge:
+    """Records the transcript the judge was handed."""
+
+    def __init__(self) -> None:
+        self.seen_transcript: str | None = None
+
+    async def judge(self, tool_name, args_repr, flagged, *, transcript=""):  # type: ignore[no-untyped-def]
+        self.seen_transcript = transcript
+        return JudgeVerdict(safe=True, reason="ok")
+
+
+@pytest.mark.asyncio
+async def test_transcript_window_extracts_recent_user_assistant_turns() -> None:
+    from vibe.core.types import LLMMessage, Role
+
+    config = build_test_vibe_config(
+        safety_judge=SafetyJudgeConfig(enabled=True, model="any")
+    )
+    loop = build_test_agent_loop(config=config)
+    fake = _TranscriptCapturingJudge()
+    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
+    loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
+
+    # Inject context + a real user request + an assistant reply + tool noise.
+    loop.messages.append(
+        LLMMessage(role=Role.user, content="env context", injected=True)
+    )
+    loop.messages.append(
+        LLMMessage(role=Role.user, content="please delete the build dir")
+    )
+    loop.messages.append(LLMMessage(role=Role.assistant, content="on it"))
+    loop.messages.append(
+        LLMMessage(role=Role.tool, content="big tool result", tool_call_id="x")
+    )
+
+    args = BashArgs(command="rm -rf build")
+    loop._judge_transcript_window()  # warm
+    await loop._should_execute_tool(_bash(), args, "c1")
+
+    assert fake.seen_transcript is not None
+    assert "please delete the build dir" in fake.seen_transcript
+    assert "on it" in fake.seen_transcript
+    # Injected context and tool results are noise and must not appear.
+    assert "env context" not in fake.seen_transcript
+    assert "big tool result" not in fake.seen_transcript
+
+
+def test_transcript_window_empty_when_no_real_turns() -> None:
+    config = build_test_vibe_config(
+        safety_judge=SafetyJudgeConfig(enabled=True, model="any")
+    )
+    loop = build_test_agent_loop(config=config)
+    # Only a system message + injected context: no real turns.
+    assert loop._judge_transcript_window() == ""
+
+
+def test_system_prompt_mentions_conversation_context() -> None:
+    # The default prompt must guide the judge to use the transcript for intent.
+    assert "Recent conversation" in _SYSTEM_PROMPT
+    assert "intent" in _SYSTEM_PROMPT.lower()
