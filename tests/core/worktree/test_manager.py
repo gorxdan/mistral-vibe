@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 
 from git import Repo
 import pytest
@@ -678,23 +679,33 @@ class TestGc:
         }
         (repo_dir / "f.txt").write_text("x\n")
         root.git.add("-A")
-        root.git.execute(["git", "commit", "-m", "old base"], env=env)
+        subprocess.run(
+            ["git", "commit", "-m", "old base"],
+            cwd=str(repo_dir),
+            env=env,
+            check=True,
+            capture_output=True,
+        )
         return root
 
     def test_gc_deletes_merged_old_branch(
         self, manager: WorktreeManager, tmp_path: Path
     ):
         root = self._old_repo(tmp_path)
+        wd = root.working_tree_dir
+        assert wd is not None
         root.git.branch("vibe/merged-old", "HEAD")  # merged (==HEAD), old date
-        os.chdir(root.working_tree_dir)
+        os.chdir(wd)
 
         manager._gc_abandoned_worktrees(root, WorktreeConfig(gc_age_days=7))
         assert "vibe/merged-old" not in [b.name for b in root.branches]
 
     def test_gc_keeps_unmerged_branch(self, manager: WorktreeManager, tmp_path: Path):
         root = self._old_repo(tmp_path)
-        _commit_branch_ahead(root, Path(root.working_tree_dir), "vibe/unmerged-old")
-        os.chdir(root.working_tree_dir)
+        wd = root.working_tree_dir
+        assert wd is not None
+        _commit_branch_ahead(root, Path(wd), "vibe/unmerged-old")
+        os.chdir(wd)
 
         manager._gc_abandoned_worktrees(root, WorktreeConfig(gc_age_days=7))
         # Unmerged work is never GC'd regardless of age.
@@ -702,8 +713,10 @@ class TestGc:
 
     def test_gc_disabled_when_age_zero(self, manager: WorktreeManager, tmp_path: Path):
         root = self._old_repo(tmp_path)
+        wd = root.working_tree_dir
+        assert wd is not None
         root.git.branch("vibe/merged-old", "HEAD")
-        os.chdir(root.working_tree_dir)
+        os.chdir(wd)
 
         manager._gc_abandoned_worktrees(root, WorktreeConfig(gc_age_days=0))
         assert "vibe/merged-old" in [b.name for b in root.branches]
