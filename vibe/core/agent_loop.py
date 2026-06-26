@@ -2568,41 +2568,47 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         start_time = time.perf_counter()
         result_model = None
-        async for item in tool_instance.invoke(
-            ctx=InvokeContext(
-                tool_call_id=tool_call.call_id,
-                scheduler=self.scheduler,
-                agent_manager=self.agent_manager,
-                session_dir=self.session_logger.session_dir,
-                entrypoint_metadata=self.entrypoint_metadata,
-                approval_callback=self.approval_callback,
-                user_input_callback=self.user_input_callback,
-                sampling_callback=self._sampling_handler,
-                plan_file_path=self._plan_session.plan_file_path,
-                switch_agent_callback=self.switch_agent,
-                skill_manager=self.skill_manager,
-                scratchpad_dir=self.scratchpad_dir,
-                permission_store=self._permission_store,
-                hook_config_result=self._hook_config_result,
-                session_id=self.session_id,
-                terminal_emulator=self.terminal_emulator,
-                launch_workflow_callback=self.launch_workflow_callback,
-                workflow_status_callback=self.workflow_status_callback,
-                workflow_results_callback=self.workflow_results_callback,
-                workflow_stop_callback=self.workflow_stop_callback,
-                team_dir_callback=self.team_dir_callback,
-                background_registry=self.background_registry,
-                files_read=self._files_read,
-            ),
-            **tool_call.args_dict,
-        ):
-            if isinstance(item, ToolStreamEvent):
-                yield item
-            else:
-                result_model = item
-
-        duration = time.perf_counter() - start_time
-        set_tool_exec_duration(span, duration)
+        duration = 0.0
+        try:
+            async for item in tool_instance.invoke(
+                ctx=InvokeContext(
+                    tool_call_id=tool_call.call_id,
+                    scheduler=self.scheduler,
+                    agent_manager=self.agent_manager,
+                    session_dir=self.session_logger.session_dir,
+                    entrypoint_metadata=self.entrypoint_metadata,
+                    approval_callback=self.approval_callback,
+                    user_input_callback=self.user_input_callback,
+                    sampling_callback=self._sampling_handler,
+                    plan_file_path=self._plan_session.plan_file_path,
+                    switch_agent_callback=self.switch_agent,
+                    skill_manager=self.skill_manager,
+                    scratchpad_dir=self.scratchpad_dir,
+                    permission_store=self._permission_store,
+                    hook_config_result=self._hook_config_result,
+                    session_id=self.session_id,
+                    terminal_emulator=self.terminal_emulator,
+                    launch_workflow_callback=self.launch_workflow_callback,
+                    workflow_status_callback=self.workflow_status_callback,
+                    workflow_results_callback=self.workflow_results_callback,
+                    workflow_stop_callback=self.workflow_stop_callback,
+                    team_dir_callback=self.team_dir_callback,
+                    background_registry=self.background_registry,
+                    files_read=self._files_read,
+                ),
+                **tool_call.args_dict,
+            ):
+                if isinstance(item, ToolStreamEvent):
+                    yield item
+                else:
+                    result_model = item
+        finally:
+            # Stamp exec duration on EVERY exit — success, ToolError (nonzero
+            # exit / size cap / not-found), and cancellation. invoke() raises
+            # past this point on failure, which previously skipped the success-
+            # only call below and left failure/timeout latency uninstrumented.
+            duration = time.perf_counter() - start_time
+            set_tool_exec_duration(span, duration)
         if result_model is None:
             raise ToolError("Tool did not yield a result")
 

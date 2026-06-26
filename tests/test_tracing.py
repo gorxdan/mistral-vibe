@@ -469,6 +469,46 @@ class TestIntegration:
         # Conversation ID propagated via baggage from agent_span
         assert tool_attrs["gen_ai.conversation.id"] == agent_loop.session_id
 
+    @pytest.mark.asyncio
+    async def test_failed_tool_span_still_records_exec_duration(
+        self, _otel_provider: _CollectingExporter
+    ) -> None:
+        # H2: vibe.tool.exec_duration_s must be stamped even when the tool raises
+        # (ToolError), not only on the success path — failure latency was blind.
+        # grep is read_only (auto-permitted, no approval gate) and raises a
+        # ToolError on an empty pattern from inside invoke() — a deterministic
+        # in-invoke failure that exercises the finally stamp.
+        tool_call = ToolCall(
+            id="call_1",
+            index=0,
+            function=FunctionCall(
+                name="grep", arguments='{"pattern": "", "path": "."}'
+            ),
+        )
+        backend = FakeBackend([
+            [mock_llm_chunk(content="Searching.", tool_calls=[tool_call])],
+            [mock_llm_chunk(content="Done.")],
+        ])
+        config = build_test_vibe_config(
+            enabled_tools=["grep"],
+            tools={"grep": BaseToolConfig(permission=ToolPermission.ALWAYS)},
+            system_prompt_id="tests",
+            include_project_context=False,
+            include_prompt_detail=False,
+        )
+        agent_loop = build_test_agent_loop(config=config, backend=backend)
+
+        await self._collect_events(agent_loop, "read it")
+
+        tool_spans = [s for s in _otel_provider.spans if "execute_tool" in s.name]
+        assert len(tool_spans) == 1
+        attrs = dict(tool_spans[0].attributes)
+        assert attrs.get("gen_ai.tool.is_error") is True, "the read should have failed"
+        assert "vibe.tool.exec_duration_s" in attrs, (
+            "exec_duration must be stamped on the failure path"
+        )
+        assert attrs["vibe.tool.exec_duration_s"] >= 0.0
+
 
 # --------------------------------------------------------------------------- #
 # OTel three-pillar helpers (#10)                                              #
