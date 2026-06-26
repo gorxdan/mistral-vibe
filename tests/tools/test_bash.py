@@ -147,6 +147,58 @@ def test_resolve_permission():
     assert empty is None
 
 
+class TestDestructiveAndArgumentSafety:
+    """Destructive-command detector and argument-aware gating (Vibe-native)."""
+
+    def _make_bash(self, **kwargs) -> Bash:
+        config = BashToolConfig(**kwargs)
+        return Bash(config_getter=lambda: config, state=BaseToolState())
+
+    def test_rm_rf_forces_ask_with_destructive_reason(self):
+        bash_tool = self._make_bash(permission=ToolPermission.ALWAYS)
+        result = bash_tool.resolve_permission(BashArgs(command="rm -rf build/"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is ToolPermission.ASK
+        assert result.reason is not None
+        assert "destructive" in result.reason
+
+    def test_rm_rf_not_auto_approved_even_when_rm_allowlisted(self):
+        bash_tool = self._make_bash(allowlist=["rm"], permission=ToolPermission.ALWAYS)
+        result = bash_tool.resolve_permission(BashArgs(command="rm -rf /"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+
+    def test_sudo_rm_caught(self):
+        bash_tool = self._make_bash(permission=ToolPermission.ALWAYS)
+        result = bash_tool.resolve_permission(BashArgs(command="sudo rm -rf build"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+        assert result.reason is not None
+
+    def test_find_delete_not_auto_approved_when_find_allowlisted(self):
+        bash_tool = self._make_bash(
+            allowlist=["find"], permission=ToolPermission.ALWAYS
+        )
+        result = bash_tool.resolve_permission(BashArgs(command="find . -delete"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+        assert result.reason is not None
+
+    def test_find_plain_still_auto_approved(self):
+        bash_tool = self._make_bash(
+            allowlist=["find"], permission=ToolPermission.ALWAYS
+        )
+        result = bash_tool.resolve_permission(BashArgs(command="find . -name foo"))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is ToolPermission.ALWAYS
+
+    def test_chmod_777_forces_ask(self):
+        bash_tool = self._make_bash(permission=ToolPermission.ALWAYS)
+        result = bash_tool.resolve_permission(BashArgs(command="chmod 777 ."))
+        assert isinstance(result, PermissionContext)
+        assert result.permission is not ToolPermission.ALWAYS
+
+
 class TestResolvePermissionWindowsSyntax:
     """Verify allowlist/denylist works with Windows-style commands."""
 

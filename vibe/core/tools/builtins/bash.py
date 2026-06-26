@@ -26,6 +26,10 @@ from vibe.core.tools.base import (
     ToolError,
     ToolPermission,
 )
+from vibe.core.tools.command_safety import (
+    allowlisted_argument_is_unsafe,
+    destructive_command_reason,
+)
 from vibe.core.tools.permissions import (
     PermissionContext,
     PermissionScope,
@@ -497,6 +501,17 @@ class Bash(
             _matches_pattern(command, pattern) for pattern in self.config.allowlist
         )
 
+    def _is_auto_approved(self, command: str) -> bool:
+        """Allowlisted AND argument-safe.
+
+        A binary that is allowlisted can still be dangerous in a particular
+        invocation (e.g. ``find -delete``); the argument gate keeps those from
+        being unconditionally auto-approved.
+        """
+        return self._is_allowlisted(command) and (
+            allowlisted_argument_is_unsafe(command) is None
+        )
+
     def _is_sensitive(self, command: str) -> bool:
         tokens = command.split()
         if not tokens:
@@ -546,7 +561,7 @@ class Bash(
         if self.config.permission == ToolPermission.ALWAYS:
             return True
 
-        return all(self._is_allowlisted(part) for part in command_parts) and (
+        return all(self._is_auto_approved(part) for part in command_parts) and (
             not outside_dirs
         )
 
@@ -564,7 +579,7 @@ class Bash(
                 continue
 
             is_sensitive = self._is_sensitive(part)
-            if not is_sensitive and self._is_allowlisted(part):
+            if not is_sensitive and self._is_auto_approved(part):
                 continue
 
             if is_sensitive:
@@ -618,8 +633,39 @@ class Bash(
             return guardrail_permission
         outside_dirs = _collect_outside_dirs(command_parts)
         blocker = _auto_approval_blocker(args.command)
+        return self._resolve_auto_or_ask(
+            args.command, command_parts, outside_dirs, blocker, guardrail_permission
+        )
+
+    def _resolve_auto_or_ask(
+        self,
+        raw_command: str,
+        command_parts: list[str],
+        outside_dirs: set[str],
+        blocker: str | None,
+        guardrail_permission: PermissionContext | None,
+    ) -> PermissionContext | None:
+        """Decide ALWAYS vs ASK vs None once guardrails have run.
+
+        A destructive command (``rm -rf``) or an allowlisted binary with dangerous
+        arguments (``find -delete``) is never auto-approved; its reason is surfaced
+        on the ASK so the user/LLM understands the escalation.
+
+        The raw command is scanned alongside tree-sitter's parsed parts because the
+        bash parser drops bare numeric arguments (e.g. ``chmod 777 .`` extracts as
+        ``chmod .``), which would hide the mode from the destructive detector.
+        """
+        destructive = destructive_command_reason([*command_parts, raw_command])
+        arg_reason: str | None = None
+        for part in command_parts:
+            if self._is_allowlisted(part):
+                arg_reason = allowlisted_argument_is_unsafe(part)
+                if arg_reason:
+                    break
         if (
             blocker is None
+            and destructive is None
+            and arg_reason is None
             and self._is_unconditionally_allowed(command_parts, outside_dirs)
             and not guardrail_permission
         ):
@@ -628,13 +674,12 @@ class Bash(
         required = self._build_required_permissions(command_parts, outside_dirs)
         if guardrail_permission:
             required.extend(guardrail_permission.required_permissions)
-        if not required:
-            if blocker is not None:
-                return PermissionContext(permission=ToolPermission.ASK, reason=blocker)
+        reason = destructive or arg_reason or blocker
+        if not required and reason is None:
             return None
 
         return PermissionContext(
-            permission=ToolPermission.ASK, required_permissions=required
+            permission=ToolPermission.ASK, required_permissions=required, reason=reason
         )
 
     @final
