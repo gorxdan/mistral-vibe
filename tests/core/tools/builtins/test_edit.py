@@ -41,6 +41,50 @@ async def test_exact_match_replaces(
 
 
 @pytest.mark.asyncio
+async def test_fuzzy_match_tolerates_trailing_whitespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # File has trailing spaces the model's old_string omits.
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path, "f.txt", "def foo():\n    return 1   \n")
+    edit = _make_edit()
+
+    await collect_result(
+        edit.run(
+            EditArgs(
+                file_path="f.txt",
+                old_string="def foo():\n    return 1\n",
+                new_string="def foo():\n    return 2\n",
+            )
+        )
+    )
+
+    assert (tmp_path / "f.txt").read_text() == "def foo():\n    return 2\n"
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_match_tolerates_smart_quotes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # File uses curly quotes; model emits straight quotes in old_string.
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path, "f.txt", "msg = \u201chello\u201d\n")
+    edit = _make_edit()
+
+    await collect_result(
+        edit.run(
+            EditArgs(
+                file_path="f.txt",
+                old_string='msg = "hello"\n',
+                new_string='msg = "bye"\n',
+            )
+        )
+    )
+
+    assert (tmp_path / "f.txt").read_text() == 'msg = "bye"\n'
+
+
+@pytest.mark.asyncio
 async def test_replace_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     _write(tmp_path, "f.txt", "aaa bbb aaa\n")

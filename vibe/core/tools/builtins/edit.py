@@ -28,7 +28,7 @@ from vibe.core.utils.io import (
     file_write_lock,
     read_safe_async,
 )
-from vibe.core.utils.text import snippet_start_line
+from vibe.core.utils.text import locate_edit_matches, snippet_start_line
 
 
 class EditArgs(BaseModel):
@@ -149,15 +149,17 @@ class Edit(
                 result = await self._read_file(file_path)
                 original = result.text
 
-                if args.old_string not in original:
+                spans = locate_edit_matches(
+                    original, args.old_string, replace_all=args.replace_all
+                )
+                if not spans:
                     raise ToolError(
                         f"String to replace not found in file.\n"
                         f"String: {args.old_string}"
                     )
-                occurrences = original.count(args.old_string)
-                if occurrences > 1 and not args.replace_all:
+                if len(spans) > 1 and not args.replace_all:
                     raise ToolError(
-                        f"Found {occurrences} matches of the string to replace, "
+                        f"Found {len(spans)} matches of the string to replace, "
                         f"but replace_all is false. To replace all occurrences, "
                         f"set replace_all to true. To replace only one occurrence, "
                         f"please provide more context to uniquely identify the "
@@ -166,9 +168,7 @@ class Edit(
 
                 start_line = snippet_start_line(original, args.old_string)
 
-                modified = self._apply_edit(
-                    original, args.old_string, args.new_string, args.replace_all
-                )
+                modified = self._apply_spans(original, spans, args.new_string)
 
                 if modified != original:
                     await self._write_file(
@@ -239,9 +239,16 @@ class Edit(
         return file_path
 
     @staticmethod
-    def _apply_edit(
-        content: str, old_string: str, new_string: str, replace_all: bool
+    def _apply_spans(
+        content: str, spans: list[tuple[int, int]], new_string: str
     ) -> str:
-        if replace_all:
-            return content.replace(old_string, new_string)
-        return content.replace(old_string, new_string, 1)
+        """Splice ``new_string`` into ``content`` at each (start, end) span.
+
+        Spans are original-byte offsets (from locate_edit_matches), so this
+        replaces real text regardless of how the match was located. Built from
+        right to left so earlier offsets stay valid as we mutate.
+        """
+        out = content
+        for start, end in sorted(spans, reverse=True):
+            out = out[:start] + new_string + out[end:]
+        return out
