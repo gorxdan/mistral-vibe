@@ -1338,7 +1338,9 @@ class WorkflowRuntime:
             schema_errors=list(last_errors),
         )
 
-    def _resolve_agent_config(self, *, agent: str, model: str | None = None) -> VibeConfig:
+    def _resolve_agent_config(
+        self, *, agent: str, model: str | None = None
+    ) -> VibeConfig:
         """Build the per-agent VibeConfig (session logging + model override).
 
         Runs the blocking config load (TOML/env reads, migration, SSL init) so it
@@ -1372,7 +1374,11 @@ class WorkflowRuntime:
         return self._create_real_loop(agent=agent, model=model, base_config=base_config)
 
     def _create_real_loop(
-        self, *, agent: str, model: str | None = None, base_config: VibeConfig | None = None
+        self,
+        *,
+        agent: str,
+        model: str | None = None,
+        base_config: VibeConfig | None = None,
     ) -> AgentLoop:
         from vibe.core.agent_loop import AgentLoop as _AgentLoop
 
@@ -1951,7 +1957,26 @@ class WorkflowRuntime:
             isolation: str | None = None,
             strip_unknown: bool = True,
             contract: dict | None = None,
+            **extra: Any,
         ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure:
+            # Tolerate unknown kwargs so one stray argument degrades a single
+            # agent() call instead of crashing the whole workflow at 0 agents.
+            # `agentType`/`agent_type` is a common cross-API spelling of `agent`;
+            # honor it rather than silently running the default agent. Everything
+            # else (e.g. max_concurrency, which belongs on parallel()/pipeline())
+            # is warned about and ignored.
+            if extra:
+                alias = extra.pop("agentType", None) or extra.pop("agent_type", None)
+                if alias and agent == "explore":
+                    agent = alias
+                if extra:
+                    ignored = ", ".join(sorted(extra))
+                    self._log(f"agent(): ignoring unsupported kwarg(s): {ignored}")
+                    logger.warning(
+                        "workflow agent() called with unsupported kwarg(s) %s; "
+                        "ignoring",
+                        ignored,
+                    )
             return await self.spawn_agent(
                 prompt,
                 agent=agent,

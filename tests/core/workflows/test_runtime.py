@@ -89,6 +89,32 @@ async def test_spawn_agent_returns_string(runtime: WorkflowRuntime) -> None:
     assert runtime._agent_count == 1
 
 
+async def test_namespace_agent_tolerates_unknown_kwargs() -> None:
+    # A stray kwarg (e.g. max_concurrency, which belongs on parallel/pipeline)
+    # must degrade a single agent() call, not crash the whole workflow at 0
+    # agents. agentType/agent_type is honored as an alias for agent.
+    seen: list[str] = []
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        seen.append(agent)
+        return MockAgentLoop()
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=factory, max_agents=10, budget_total=1_000_000
+    )
+    agent_fn = rt.build_script_namespace()["agent"]
+
+    # Unknown kwarg does not raise; the agent still runs.
+    assert await agent_fn("p", max_concurrency=3) == "mock response"
+    # agentType alias is honored rather than silently downgraded to the default.
+    await agent_fn("p2", agentType="reviewer")
+    # Unknown kwarg alongside an explicit agent= is ignored, agent= preserved.
+    await agent_fn("p3", agent="planner", effort="high")
+
+    assert rt._agent_count == 3
+    assert seen == ["explore", "reviewer", "planner"]
+
+
 async def test_phase_binds_subsequent_agents_implicitly() -> None:
     # i5: phase('x') sets an ambient phase. Subsequent agent() calls without an
     # explicit phase= kwarg inherit it. Explicit phase= always wins. phase(None)
