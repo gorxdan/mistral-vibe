@@ -199,6 +199,24 @@ class BaseTool[
     # tools serialize.
     read_only: ClassVar[bool] = False
 
+    # Whether this tool spawns subagents (the task tool). Used to cap how many
+    # subagent fan-outs run at once so a concurrent batch doesn't overwhelm the
+    # backend; ordinary tools are unaffected.
+    is_subagent_spawner: ClassVar[bool] = False
+
+    @classmethod
+    def call_is_read_only(cls, args: BaseModel, *, agent_manager: Any = None) -> bool:
+        """Whether THIS specific call is side-effect-free and safe to run
+        concurrently with other tool calls in the same turn.
+
+        Defaults to the static :attr:`read_only` flag. Tools whose effect
+        depends on their arguments override this — e.g. ``task`` spawns a
+        read-only subagent for some profiles (safe to fan out) and a
+        write-capable one for others (must serialize). Kept distinct from the
+        static flag, which still governs permission auto-approval.
+        """
+        return cls.read_only
+
     def __init__(
         self, config_getter: Callable[[], ToolConfig], state: ToolState
     ) -> None:

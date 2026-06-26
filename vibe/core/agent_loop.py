@@ -223,6 +223,12 @@ JUDGE_ARGS_TRUNCATED_SENTINEL = (
 JUDGE_TRANSCRIPT_LIMIT = 2000
 JUDGE_TRANSCRIPT_TURNS = 4
 
+# Cap on how many subagent (task) fan-outs run concurrently in one turn. Bounds
+# backend throughput contention / rate-limiting when the model emits several
+# independent read-only task calls at once; ordinary concurrent tools (read,
+# grep, glob) are not gated.
+MAX_CONCURRENT_SUBAGENTS = 4
+
 
 class ToolExecutionResponse(StrEnum):
     SKIP = auto()
@@ -504,6 +510,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._current_user_message_id: str | None = None
         self._is_user_prompt_call: bool = False
         self._pending_injected_messages: list[LLMMessage] = []
+        # Bounds concurrent subagent fan-out (see MAX_CONCURRENT_SUBAGENTS).
+        self._subagent_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUBAGENTS)
         self._response_format: dict[str, Any] | None = None
         self.launch_workflow_callback: Callable[[str, str | None], str] | None = None
         self.workflow_status_callback: (
@@ -2363,12 +2371,16 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent | None
         ] = asyncio.Queue()
 
-        readers = [
-            tc for tc in tool_calls if getattr(tc.tool_class, "read_only", False)
-        ]
-        writers = [
-            tc for tc in tool_calls if not getattr(tc.tool_class, "read_only", False)
-        ]
+        def _concurrent_safe(tc: ResolvedToolCall) -> bool:
+            # Per-call, not just the static read_only flag: a `task` spawning a
+            # read-only in-process subagent is safe to fan out, while one
+            # spawning a write-capable subagent must serialize.
+            return tc.tool_class.call_is_read_only(
+                tc.validated_args, agent_manager=self.agent_manager
+            )
+
+        readers = [tc for tc in tool_calls if _concurrent_safe(tc)]
+        writers = [tc for tc in tool_calls if not _concurrent_safe(tc)]
 
         async def _run_writers_sequentially() -> None:
             for tc in writers:
@@ -2420,8 +2432,15 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         ],
     ) -> None:
         """Run a single tool call, sending events to the queue."""
-        async for event in self._process_one_tool_call(tc):
-            await queue.put(event)
+        # Cap concurrent subagent fan-out so a batch of independent task calls
+        # doesn't overwhelm the backend; other tools run uncapped.
+        if tc.tool_class.is_subagent_spawner:
+            async with self._subagent_semaphore:
+                async for event in self._process_one_tool_call(tc):
+                    await queue.put(event)
+        else:
+            async for event in self._process_one_tool_call(tc):
+                await queue.put(event)
 
     async def _process_one_tool_call(
         self, tool_call: ResolvedToolCall

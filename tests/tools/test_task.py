@@ -9,7 +9,11 @@ import pytest
 from tests.conftest import build_test_vibe_config
 from tests.mock.utils import collect_result
 from vibe.core.agents.manager import AgentManager
-from vibe.core.agents.models import BUILTIN_AGENTS, AgentType
+from vibe.core.agents.models import (
+    BUILTIN_AGENTS,
+    AgentType,
+    profile_requires_isolation,
+)
 from vibe.core.telemetry.types import TerminalEmulator
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError, ToolPermission
 from vibe.core.tools.builtins.task import Task, TaskArgs, TaskResult, TaskToolConfig
@@ -21,6 +25,52 @@ from vibe.core.types import AssistantEvent, LLMMessage, Role
 @pytest.fixture
 def task_tool() -> Task:
     return Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+
+
+class TestTaskConcurrencyGating:
+    """call_is_read_only decides whether a task call fans out concurrently
+    (read-only in-process subagent) or serializes with the writers.
+    """
+
+    @pytest.fixture
+    def manager(self) -> AgentManager:
+        config = build_test_vibe_config(
+            include_project_context=False, include_prompt_detail=False
+        )
+        return AgentManager(lambda: config)
+
+    def test_read_only_profile_is_concurrent_safe(self, manager: AgentManager) -> None:
+        args = TaskArgs(task="x", agent="explore")
+        assert Task.call_is_read_only(args, agent_manager=manager) is True
+
+    def test_write_capable_profile_serializes(self, manager: AgentManager) -> None:
+        writer = next(
+            (p.name for p in manager.get_subagents() if profile_requires_isolation(p)),
+            None,
+        )
+        assert writer is not None, "expected a write-capable builtin subagent"
+        args = TaskArgs(task="x", agent=writer)
+        assert Task.call_is_read_only(args, agent_manager=manager) is False
+
+    def test_async_run_serializes(self, manager: AgentManager) -> None:
+        args = TaskArgs(task="x", agent="explore", async_run=True)
+        assert Task.call_is_read_only(args, agent_manager=manager) is False
+
+    def test_no_agent_manager_serializes(self) -> None:
+        args = TaskArgs(task="x", agent="explore")
+        assert Task.call_is_read_only(args, agent_manager=None) is False
+
+    def test_task_is_marked_subagent_spawner(self) -> None:
+        assert Task.is_subagent_spawner is True
+
+    def test_base_default_mirrors_static_read_only_flag(self) -> None:
+        from vibe.core.tools.builtins.edit import Edit
+        from vibe.core.tools.builtins.grep import Grep
+
+        # Default impl ignores args and mirrors the class read_only flag.
+        assert Grep.call_is_read_only(MagicMock()) is True
+        assert Edit.call_is_read_only(MagicMock()) is False
+        assert Grep.is_subagent_spawner is False
 
 
 class TestTaskArgs:

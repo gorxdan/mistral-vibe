@@ -136,6 +136,29 @@ class Task(
         "(off|auto|always)."
     )
 
+    is_subagent_spawner: ClassVar[bool] = True
+
+    @classmethod
+    def call_is_read_only(
+        cls, args: BaseModel, *, agent_manager: object = None
+    ) -> bool:
+        # A subagent call is side-effect-free (safe to fan out concurrently)
+        # only when it runs in-process read-only: not a background async_run, and
+        # a profile that does not require isolation. Write-capable profiles stay
+        # sequential — conservative; isolation would make them concurrent-safe
+        # too, but this gate never needs the per-tool isolation config. Mirrors
+        # the in-process vs isolated decision in invoke().
+        if getattr(args, "async_run", False) or agent_manager is None:
+            return False
+        get_agent = getattr(agent_manager, "get_agent", None)
+        if get_agent is None:
+            return False
+        try:
+            profile = get_agent(getattr(args, "agent", ""))
+        except Exception:
+            return False
+        return not profile_requires_isolation(profile)
+
     @classmethod
     def get_call_display(cls, event: ToolCallEvent) -> ToolCallDisplay:
         args = event.args
