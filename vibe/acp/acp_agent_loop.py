@@ -1417,9 +1417,10 @@ class VibeAcpAgentLoop(AcpAgent):
             telemetry_active=agent_loop.telemetry_client.is_active(),
             is_mistral_model=agent_loop.config.is_active_model_mistral(),
             user_message_count=user_message_count,
+            cache_store=agent_loop.cache_store,
         ):
             return None
-        record_feedback_asked()
+        record_feedback_asked(agent_loop.cache_store)
         return {"show_feedback_prompt": True}
 
     def _build_text_prompt(self, acp_prompt: list[ContentBlock]) -> str:
@@ -1857,9 +1858,14 @@ class VibeAcpAgentLoop(AcpAgent):
 
         try:
             self._remove_api_key(provider)
+            # assess_auth_state classifies a dotenv credential (with no prior
+            # process-env value) as VIBE_HOME_ENV_FILE — the only dotenv state
+            # that is sign-out-able. A prior process-env value would have been
+            # classified PROCESS_ENV (sign_out_available=False) and rejected
+            # above, so this restoration is a guarded no-op there; it stays for
+            # the day assess_auth_state regains that granularity.
             if (
-                auth_state.kind
-                == AuthStateKind.VIBE_HOME_ENV_FILE_OVERRIDES_PROCESS_ENV
+                auth_state.kind == AuthStateKind.VIBE_HOME_ENV_FILE
                 and auth_state.env_key
             ):
                 process_env_value = self._process_env_value_before_dotenv_load(provider)
