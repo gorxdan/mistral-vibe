@@ -63,7 +63,8 @@ def _build_sandbox_env(config: SandboxConfig) -> dict[str, str]:
     return scrub_env(base, config.env_passthrough)
 
 
-def _extract_commands(command: str) -> list[str]:
+@lru_cache(maxsize=64)
+def _extract_commands_cached(command: str) -> tuple[str, ...]:
     parser = _get_parser()
     tree = parser.parse(command.encode("utf-8"))
 
@@ -93,7 +94,14 @@ def _extract_commands(command: str) -> list[str]:
             find_commands(child)
 
     find_commands(tree.root_node)
-    return commands
+    return tuple(commands)
+
+
+# Parse once per command string, reuse the result: resolve_permission() and
+# _resolve_sandbox() each extract the same command, and identical commands
+# recur across a session. Hand back a fresh list so callers may mutate freely.
+def _extract_commands(command: str) -> list[str]:
+    return list(_extract_commands_cached(command))
 
 
 def _get_shell_executable() -> str | None:

@@ -583,3 +583,26 @@ class TestParserDifferentialHardening:
         assert isinstance(result, PermissionContext)
         assert result.permission is ToolPermission.NEVER
         assert "carriage return" in (result.reason or "")
+
+
+def test_extract_commands_memoized_and_mutation_safe():
+    from vibe.core.tools.builtins.bash import (
+        _extract_commands,
+        _extract_commands_cached,
+    )
+
+    _extract_commands_cached.cache_clear()
+    cmd = "git status && ls -la /tmp"
+
+    first = _extract_commands(cmd)
+    assert first == ["git status", "ls -la /tmp"]
+    assert _extract_commands_cached.cache_info().misses == 1
+
+    hits_before = _extract_commands_cached.cache_info().hits
+    # Mutating a returned list must not poison the cache for the next caller
+    # (resolve_permission then _resolve_sandbox extract the same command).
+    first.append("poison")
+    second = _extract_commands(cmd)
+
+    assert _extract_commands_cached.cache_info().hits == hits_before + 1
+    assert second == ["git status", "ls -la /tmp"]
