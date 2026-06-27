@@ -39,7 +39,7 @@ from vibe.core.prompts import (
     load_system_prompt,
 )
 from vibe.core.types import Backend
-from vibe.core.utils import configure_ssl_context, get_server_url_from_api_base
+from vibe.core.utils import configure_ssl_context
 
 
 def _strip_bash_pattern_wildcard(pattern: str) -> str:
@@ -897,7 +897,6 @@ class OtelSpanExporterConfig(BaseModel):
     headers: dict[str, str] | None = None
 
 
-MISTRAL_OTEL_PATH = "/telemetry"
 DEFAULT_MISTRAL_SERVER_URL = "https://api.mistral.ai"
 
 DEFAULT_VIBE_CODE_WORKFLOW_ID = "__shared-nuage-workflow"
@@ -1053,9 +1052,9 @@ class VibeConfig(BaseSettings):
     vibe_code_project_name: str | None = Field(default=None, exclude=True)
 
     # TODO(otel): remove exclude=True once the feature is publicly available
-    enable_otel: bool = Field(default=False, exclude=True)
+    enable_otel: bool = Field(default=True, exclude=True)
     otel_endpoint: str = Field(default="", exclude=True)
-    otel_local_export: bool = Field(default=False, exclude=True)
+    otel_local_export: bool = Field(default=True, exclude=True)
 
     console_base_url: str = Field(default=DEFAULT_CONSOLE_BASE_URL, exclude=True)
     vibe_base_url: str = Field(default=DEFAULT_VIBE_BASE_URL, exclude=True)
@@ -1281,45 +1280,22 @@ class VibeConfig(BaseSettings):
 
     @property
     def otel_span_exporter_config(self) -> OtelSpanExporterConfig | None:
-        # When otel_endpoint is set explicitly, authentication is the user's responsibility
-        # (via OTEL_EXPORTER_OTLP_* env vars), so headers are left empty.
-        # Otherwise endpoint and API key are derived from the active provider if it's Mistral,
-        # or the first Mistral provider.
+        # Remote OTLP export is opt-in: configured only when the user points
+        # otel_endpoint at their own collector / OTLP receiver. Auth is the
+        # user's responsibility (via OTEL_EXPORTER_OTLP_* env vars), so no
+        # headers are attached. Local JSONL export (otel_local_export) is
+        # separate and on by default — traces are local-only out of the box.
         # Lazy: OTLP exporter pulls a heavy chain; _settings loads every startup.
+        if not self.otel_endpoint:
+            return None
+
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
             DEFAULT_TRACES_EXPORT_PATH,
         )
 
         traces_export_path = DEFAULT_TRACES_EXPORT_PATH.lstrip("/")
-        if self.otel_endpoint:
-            return OtelSpanExporterConfig(
-                endpoint=urljoin(
-                    f"{self.otel_endpoint.rstrip('/')}/", traces_export_path
-                )
-            )
-
-        provider = self.get_mistral_provider()
-
-        if provider is not None:
-            server_url = get_server_url_from_api_base(provider.api_base)
-            api_key_env = provider.api_key_env_var or DEFAULT_MISTRAL_API_ENV_KEY
-        else:
-            server_url = None
-            api_key_env = DEFAULT_MISTRAL_API_ENV_KEY
-
-        endpoint = urljoin(
-            f"{urljoin(server_url or DEFAULT_MISTRAL_SERVER_URL, MISTRAL_OTEL_PATH).rstrip('/')}/",
-            traces_export_path,
-        )
-
-        if not (api_key := os.getenv(api_key_env)):
-            logger.warning(
-                "OTEL tracing enabled but %s is not set; skipping.", api_key_env
-            )
-            return None
-
         return OtelSpanExporterConfig(
-            endpoint=endpoint, headers={"Authorization": f"Bearer {api_key}"}
+            endpoint=urljoin(f"{self.otel_endpoint.rstrip('/')}/", traces_export_path)
         )
 
     @property
