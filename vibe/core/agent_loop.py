@@ -1055,7 +1055,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 except Exception:
                     agent_provider = None
             async with agent_span(
-                model=model_name, session_id=self.session_id, provider=agent_provider
+                model=model_name,
+                session_id=self.session_id,
+                provider=agent_provider,
+                agent_profile=self.agent_profile.name,
             ):
                 async for event in self._conversation_loop(
                     msg,

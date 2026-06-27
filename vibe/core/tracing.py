@@ -348,11 +348,17 @@ async def agent_span(
     model: str | None = None,
     session_id: str | None = None,
     provider: str | None = None,
+    agent_profile: str | None = None,
 ) -> AsyncGenerator[trace.Span]:
     attributes: dict[str, Any] = {
         gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.INVOKE_AGENT.value,
         gen_ai_attributes.GEN_AI_AGENT_NAME: VIBE_AGENT_NAME,
     }
+    # gen_ai.agent.name stays the app identity ("chaton"); the actual profile
+    # (host vs a subagent like "Explore"/"worker") rides a separate attribute so
+    # in-process subagent turns are attributable in a trace.
+    if agent_profile:
+        attributes["vibe.agent.profile"] = agent_profile
     if (prov := _normalize_provider(provider)) is not None:
         attributes[gen_ai_attributes.GEN_AI_PROVIDER_NAME] = prov
     if model:

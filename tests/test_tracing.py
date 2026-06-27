@@ -229,6 +229,23 @@ class TestAgentSpan:
         assert "gen_ai.conversation.id" not in attrs
         # Unknown provider is omitted, never defaulted to a vendor.
         assert "gen_ai.provider.name" not in attrs
+        # No profile passed -> attribute omitted.
+        assert "vibe.agent.profile" not in attrs
+
+    @pytest.mark.asyncio
+    async def test_records_subagent_profile(
+        self, _otel_provider: _CollectingExporter
+    ) -> None:
+        # gen_ai.agent.name stays the app identity; the profile is attributable
+        # separately so an in-process subagent turn is distinguishable in a trace.
+        async with agent_span(
+            model="glm-5.2", session_id="s1", agent_profile="Explore"
+        ):
+            pass
+
+        attrs = dict(_otel_provider.spans[0].attributes)
+        assert attrs["gen_ai.agent.name"] == "chaton"
+        assert attrs["vibe.agent.profile"] == "Explore"
 
     @pytest.mark.asyncio
     async def test_records_error_on_exception(
