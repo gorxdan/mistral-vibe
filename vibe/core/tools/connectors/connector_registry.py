@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 from mistralai.client import Mistral
+import orjson
 
 from vibe.core.logger import logger
 from vibe.core.tools._schema import dereference_refs
@@ -177,10 +178,16 @@ def create_connector_proxy_tool_class(
             return published_name
 
         @classmethod
-        def get_parameters(cls) -> dict[str, Any]:
+        @functools.cache
+        def _build_parameters(cls) -> dict[str, Any]:
             # Connector remote schemas (like MCP) may publish a $ref with
             # sibling keywords; strict backends reject that. Inline refs.
+            # Cached: get_available_tools calls this per tool on every turn.
             return dereference_refs(dict(cls._input_schema))
+
+        @classmethod
+        def get_parameters(cls) -> dict[str, Any]:
+            return orjson.loads(orjson.dumps(cls._build_parameters()))
 
         async def run(
             self, args: _OpenArgs, ctx: InvokeContext | None = None

@@ -41,26 +41,34 @@ class ExpandingBorder(NonSelectableStatic):
     def __init__(self, *, classes: str | None = None) -> None:
         super().__init__(classes=classes)
         self._row_colors: dict[int, str] = {}
+        self._render_cache: tuple[object, Content | str] | None = None
 
     def set_row_colors(self, colors: dict[int, str]) -> None:
         self._row_colors = colors
+        self._render_cache = None
         self.refresh()
 
     def render(self) -> Content | str:
         height = self.size.height
+        cache_key = (height, tuple(sorted(self._row_colors.items())))
+        cached = self._render_cache
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+
         chars = ["⎢"] * (height - 1) + ["⎣"]
         if not self._row_colors:
-            return "\n".join(chars)
+            result: Content | str = "\n".join(chars)
+        else:
+            rows = [
+                Content.styled(ch, color)
+                if (color := self._row_colors.get(i))
+                else Content(ch)
+                for i, ch in enumerate(chars)
+            ]
+            result = Content("\n").join(rows)
 
-        rendered = Content("")
-        for i, ch in enumerate(chars):
-            if i > 0:
-                rendered += Content("\n")
-            if color := self._row_colors.get(i):
-                rendered += Content.styled(ch, color)
-            else:
-                rendered += Content(ch)
-        return rendered
+        self._render_cache = (cache_key, result)
+        return result
 
     def on_resize(self) -> None:
         self.refresh()
@@ -231,11 +239,27 @@ class TeleportUserMessage(UserMessage):
 class StreamingMessageBase(Static):
     def __init__(self, content: str) -> None:
         super().__init__()
-        self._content = content
+        self._content_parts: list[str] = [content] if content else []
+        self._content_cache = content
+        self._content_dirty = False
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
         self._content_initialized = False
         self._to_write_buffer = ""
+        self._chat_scroll: ChatScroll | None = None
+
+    @property
+    def _content(self) -> str:
+        if self._content_dirty:
+            self._content_cache = "".join(self._content_parts)
+            self._content_dirty = False
+        return self._content_cache
+
+    @_content.setter
+    def _content(self, value: str) -> None:
+        self._content_parts = [value] if value else []
+        self._content_cache = value
+        self._content_dirty = False
 
     def _get_markdown(self) -> Markdown:
         if self._markdown is None:
@@ -250,17 +274,21 @@ class StreamingMessageBase(Static):
         return self._stream
 
     def _is_chat_at_bottom(self) -> bool:
-        try:
-            chat = cast("ChatScroll", self.app.query_one("#chat"))
-            return chat.is_at_bottom
-        except Exception:
-            return True
+        chat = self._chat_scroll
+        if chat is None:
+            try:
+                chat = cast("ChatScroll", self.app.query_one("#chat"))
+            except Exception:
+                return True
+            self._chat_scroll = chat
+        return chat.is_at_bottom
 
     async def append_content(self, content: str) -> None:
         if not content:
             return
 
-        self._content += content
+        self._content_parts.append(content)
+        self._content_dirty = True
 
         if not self._should_write_content():
             return

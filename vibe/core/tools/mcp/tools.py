@@ -11,6 +11,7 @@ import threading
 from typing import TYPE_CHECKING, Any, ClassVar, TextIO
 
 import httpx
+import orjson
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from vibe.core.logger import logger
@@ -431,12 +432,18 @@ def create_mcp_http_proxy_tool_class(
             return published_name
 
         @classmethod
-        def get_parameters(cls) -> dict[str, Any]:
+        @functools.cache
+        def _build_parameters(cls) -> dict[str, Any]:
             # Remote MCP servers may publish a $ref with sibling keywords
             # ({"$ref": "#/$defs/X", "description": ...}); strict backends
             # (Moonshot/kimi) reject that. Inline references so the wire schema
-            # is flat. Titles are remote-authored and preserved.
+            # is flat. Titles are remote-authored and preserved. Cached because
+            # get_available_tools calls this for every tool on every LLM turn.
             return dereference_refs(dict(cls._input_schema))
+
+        @classmethod
+        def get_parameters(cls) -> dict[str, Any]:
+            return orjson.loads(orjson.dumps(cls._build_parameters()))
 
         async def run(
             self, args: _OpenArgs, ctx: InvokeContext | None = None
@@ -656,12 +663,18 @@ def create_mcp_stdio_proxy_tool_class(
             return published_name
 
         @classmethod
-        def get_parameters(cls) -> dict[str, Any]:
+        @functools.cache
+        def _build_parameters(cls) -> dict[str, Any]:
             # Remote MCP servers may publish a $ref with sibling keywords
             # ({"$ref": "#/$defs/X", "description": ...}); strict backends
             # (Moonshot/kimi) reject that. Inline references so the wire schema
-            # is flat. Titles are remote-authored and preserved.
+            # is flat. Titles are remote-authored and preserved. Cached because
+            # get_available_tools calls this for every tool on every LLM turn.
             return dereference_refs(dict(cls._input_schema))
+
+        @classmethod
+        def get_parameters(cls) -> dict[str, Any]:
+            return orjson.loads(orjson.dumps(cls._build_parameters()))
 
         async def run(
             self, args: _OpenArgs, ctx: InvokeContext | None = None
