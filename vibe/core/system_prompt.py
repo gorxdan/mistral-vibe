@@ -22,6 +22,7 @@ from vibe.core.utils import (
     is_dangerous_directory,
     is_windows,
 )
+from vibe.core.workflows.runtime import DEFAULT_MAX_CONCURRENT
 
 if TYPE_CHECKING:
     from vibe.core.agents import AgentManager
@@ -715,11 +716,14 @@ def _get_le_chaton_section() -> str:
         "| Run later / on a timer | `schedule` (a timer — executes nothing itself) |\n"
         "| Delegate one subagent, keep working here | `task(async_run=true)` |\n"
         "| Orchestrated fan-out (N agents, phases, budget, schema) | `launch_workflow` |\n\n"
-        "**Concurrency & rate limits:** Default `max_concurrency=3` on "
-        "`parallel`/`pipeline` — 16 is the hard ceiling, never the default. "
-        "Some providers throttle at 1–3 concurrent requests. Retry is "
-        "per-request and uncoordinated across agents, so a saturated provider "
-        "can fail several agents at once with `Retries exhausted`.\n\n"
+        "**Concurrency & rate limits:** Up to "
+        f"{DEFAULT_MAX_CONCURRENT} agents run concurrently per workflow (the "
+        "runtime's global cap). Pass `max_concurrency=N` on "
+        "`parallel`/`pipeline` only to throttle *below* that — prefer it over "
+        "hand-rolling chunked waves. Some providers throttle at 1–3 concurrent "
+        "requests, and retry is per-request and uncoordinated across agents, "
+        "so a saturated provider can fail several agents at once with "
+        "`Retries exhausted`.\n\n"
         "**Recovery (agent died of `Retries exhausted`):** do not re-launch the "
         "same fan-out. Re-run that phase with `max_concurrency=1`, or serialize "
         "via `pipeline`, or `schedule` a retry after the provider's "

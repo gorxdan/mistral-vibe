@@ -88,7 +88,7 @@ class _AwaitableResult:
 T = TypeVar("T")
 I = TypeVar("I")
 
-DEFAULT_MAX_CONCURRENT = 16
+DEFAULT_MAX_CONCURRENT = 32
 DEFAULT_MAX_AGENTS = 1000
 DEFAULT_BUDGET_TOTAL = None
 DEFAULT_SCHEMA_RETRIES = 2
@@ -1840,7 +1840,8 @@ class WorkflowRuntime:
         semaphore LOCAL to this call, distinct from the global spawn_agent
         semaphore, so there is no nested acquisition of a non-reentrant lock
         (the historical deadlock risk). When omitted, concurrency is bounded
-        only by the runtime's global ``max_concurrent`` (default 16).
+        only by the runtime's global ``max_concurrent``
+        (``DEFAULT_MAX_CONCURRENT``).
         """
         if len(thunks) == 1 and isinstance(thunks[0], (list, tuple)):
             thunk_list = list(thunks[0])

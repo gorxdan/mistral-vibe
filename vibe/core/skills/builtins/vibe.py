@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from vibe import __version__
 from vibe.core.skills.builtins.capsules import SkillDocCapsule
+from vibe.core.workflows.runtime import DEFAULT_MAX_CONCURRENT
 
 _PROMPT_TEMPLATE = """# Vibe CLI Self-Awareness
 
@@ -1219,10 +1220,10 @@ not prevented at spawn. `budget.total = None` means unlimited.
 
 ### Concurrency
 
-Up to 16 concurrent agents, 1000 total per run (constructor defaults on
+Up to __MAX_CONCURRENT_AGENTS__ concurrent agents, 1000 total per run (constructor defaults on
 `WorkflowRuntime`; not exposed as a config.toml key). `parallel` and
 `pipeline` share the same semaphore as `spawn_agent`. Pass `max_concurrency=N`
-to either to cap in-flight work below the global 16 (e.g. `3` when a provider
+to either to cap in-flight work below the global __MAX_CONCURRENT_AGENTS__ (e.g. `3` when a provider
 allows only a few concurrent agents) — prefer this over hand-rolling chunked
 waves.
 
@@ -1379,6 +1380,11 @@ VIBE_DOC_CAPSULE = SkillDocCapsule(
         "commands, flags, hooks, workflows, ~/.vibe — the source of truth."
     ),
     user_invocable=False,
-    prompt_template=_PROMPT_TEMPLATE,
+    # Substitute the runtime's concurrent-agent cap from the single source of
+    # truth (vibe.core.workflows.runtime) so this doc never holds a stale copy.
+    # __VIBE_VERSION__ is left intact for render_agent_prompt() to fill later.
+    prompt_template=_PROMPT_TEMPLATE.replace(
+        "__MAX_CONCURRENT_AGENTS__", str(DEFAULT_MAX_CONCURRENT)
+    ),
 )
 SKILL = VIBE_DOC_CAPSULE.to_skill_info(__version__)
