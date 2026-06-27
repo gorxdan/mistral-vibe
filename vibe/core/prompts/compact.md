@@ -1,12 +1,10 @@
-You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume this task.
+CONTEXT CHECKPOINT COMPACTION: write a handoff summary for the LLM that resumes this task.
 
 Include:
-- The user's current goal and any explicit constraints or preferences
-- Key decisions made and their rationale
-- Files touched and the current state of in-progress work (paths + one-line status)
-- What remains to be done — the concrete next step
-- Any data, identifiers, or references the next LLM needs to continue
+- Goal + explicit constraints or preferences
+- Key decisions + rationale
+- Files touched + current state of in-progress work (path + one-line status)
+- Remaining work — the concrete next step
+- Data, identifiers, or references the next LLM needs to continue
 
-Be concise and structured. One line per modified file unless a snippet is load-bearing. Do not repeat information already captured. Do not include a "Final Answer" section — the entire response IS the handoff.
-
-Respond with the summary text only — no preamble, no meta-discussion, no tool calls.
+Rules: concise and structured; one line per modified file unless a snippet is load-bearing; do not repeat info already captured; no "Final Answer" section — the entire response IS the handoff; summary text only — no preamble, no meta-discussion, no tool calls.

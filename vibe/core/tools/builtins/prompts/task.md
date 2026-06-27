@@ -2,22 +2,15 @@ Use `task` to delegate work to a subagent for independent execution.
 
 ## When to Use This Tool
 
-- **Context management**: Delegate tasks that would consume too much main conversation context
-- **Specialized work**: Use the appropriate subagent for the type of task (exploration, research, etc.)
-- **Parallel execution**: Launch multiple subagents for independent tasks
-- **Autonomous work**: Tasks that don't require back-and-forth with the user
+Use for: context offload (work that would bloat main context) | specialized work (match the subagent to the task: exploration, research, etc.) | parallel independent tasks | autonomous work needing no user back-and-forth.
 
 ## Best Practices
 
-1. **Write clear, detailed task descriptions** - The subagent works autonomously, so provide enough context for it to succeed independently
-
-2. **Choose the right subagent** - Match the subagent to the task type (see available subagents in system prompt)
-
-3. **Establish a local baseline first** - For an unfamiliar repository, map packages with `glob`, identify central symbols and callers with `lsp`, and read the entry points before delegating. This produces precise, independent briefs instead of asking agents to rediscover the same repository.
-
-4. **Prefer direct tools for coherent lookups** - If you know which file, symbol, or flow to inspect, use `read`/`lsp`/`grep` directly instead of spawning a subagent. File count alone does not make a task delegable.
-
-5. **Trust the subagent's judgment** - Let it explore and find information without micromanaging the approach
+1. **Write clear, detailed task descriptions** - the subagent works autonomously, so give it enough context to succeed independently.
+2. **Choose the right subagent** - match it to the task type (see available subagents in system prompt).
+3. **Establish a local baseline first** - for an unfamiliar repository, map packages with `glob`, identify central symbols and callers with `lsp`, and read the entry points before delegating.
+4. **Prefer direct tools for coherent lookups** - if you know which file, symbol, or flow to inspect, use `read`/`lsp`/`grep` directly instead of spawning a subagent. File count alone does not make a task delegable.
+5. **Trust the subagent's judgment** - don't micromanage the approach.
 
 ## Capabilities & limits
 
@@ -28,21 +21,10 @@ Use `task` to delegate work to a subagent for independent execution.
 
 ## Non-blocking delegation (`async_run=true`)
 
-For isolated (write-capable) subagents — `worker`, `editor`, `auto-approve`, or any
-profile with `bash`/`write_file`/`edit` — pass `async_run=true` to launch the
-subagent in the background and get a `task_id` back immediately instead of
-blocking until completion.
+For isolated (write-capable) subagents — `worker`, `editor`, `auto-approve`, or any profile with `bash`/`write_file`/`edit` — pass `async_run=true` to launch the subagent in its own git worktree subprocess and get a `task_id` back immediately instead of blocking until completion (same as the synchronous isolated path; only the parent's wait is removed).
 
-- The subagent runs as an isolated subprocess in its own git worktree, exactly
-  like the synchronous isolated path; only the parent's wait is removed.
-- `async_run=true` is rejected for read-only in-process profiles (e.g. `explore`)
-  — they share the parent's event loop, so "async" would not unblock it. Use
-  `launch_workflow` with `parallel()` for in-process fan-out instead.
-- The running task is visible via the `background` tool and cancellable with
-  `background stop <task_id>`.
-- Completion surfaces at the top of the next parent turn as a
-  `BackgroundTaskCompletedEvent` carrying the subagent's response.
+- `async_run=true` is rejected for read-only in-process profiles (e.g. `explore`) — they share the parent's event loop, so "async" would not unblock it. Use `launch_workflow` with `parallel()` for in-process fan-out instead.
+- The running task is visible via the `background` tool and cancellable with `background stop <task_id>`.
+- Completion surfaces at the top of the next parent turn as a `BackgroundTaskCompletedEvent` carrying the subagent's response.
 
-Use it for fan-out: 3+ independent write-capable delegations where the parent
-should keep working instead of waiting serially. For scripted fan-out with a
-budget cap and schema validation, prefer `launch_workflow`.
+Use it for fan-out: 3+ independent write-capable delegations where the parent should keep working instead of waiting serially. For scripted fan-out with a budget cap and schema validation, prefer `launch_workflow`.
