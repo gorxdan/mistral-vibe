@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import ClassVar, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -29,8 +29,7 @@ class Question(BaseModel):
     question: str = Field(description="The question text")
     header: str = Field(
         default="",
-        description="Short header for the question (1-2 words, e.g. 'Auth', 'Database')",
-        max_length=12,
+        description="Short header for the question (1-2 words, e.g. 'Auth', 'Database'). Display chip — truncated to 12 chars.",
     )
     options: list[Choice] = Field(
         description="Available options (2-4, not including 'Other'). An 'Other' option for free text is automatically added.",
@@ -43,6 +42,14 @@ class Question(BaseModel):
     hide_other: bool = Field(
         default=False, description="If true, hide the 'Other' free text option"
     )
+
+    @field_validator("header")
+    @classmethod
+    def _truncate_header(cls, v: str) -> str:
+        # The header is a display-only chip. Models routinely write longer,
+        # descriptive headers; truncate rather than reject the whole call (a
+        # max_length constraint here caused ~80% of ask_user_question failures).
+        return v[:12]
 
 
 class AskUserQuestionArgs(BaseModel):

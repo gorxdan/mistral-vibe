@@ -186,3 +186,19 @@ class TestToolUIDisplay:
         display = AskUserQuestion.get_result_display(event)
         assert display.success is True
         assert "(Other)" in display.message
+
+
+def test_long_header_truncates_instead_of_failing() -> None:
+    # Models routinely write descriptive headers > 12 chars ("Pre-existing
+    # errors"); a max_length constraint rejected the whole call (~80% of
+    # ask_user_question failures). Truncate to the display width instead.
+    q = Question(
+        question="How should I proceed?",
+        header="Pre-existing errors",
+        options=[Choice(label="A"), Choice(label="B")],
+    )
+    assert q.header == "Pre-existing"
+    assert len(q.header) == 12
+
+    args = AskUserQuestionArgs(questions=[q])
+    assert args.questions[0].header == "Pre-existing"
