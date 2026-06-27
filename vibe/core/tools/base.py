@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from vibe.core.loop import Scheduler
     from vibe.core.skills.manager import SkillManager
     from vibe.core.telemetry.types import EntrypointMetadata, TerminalEmulator
+    from vibe.core.tools.background import BackgroundRegistry
     from vibe.core.tools.mcp.pool import MCPSessionPool
     from vibe.core.tools.mcp_sampling import MCPSamplingHandler
     from vibe.core.tools.permissions import PermissionContext, PermissionStore
@@ -102,9 +103,9 @@ class InvokeContext:
     safety_judge_factory: Callable[[], Any] | None = field(default=None)
     # Unified background-task registry. Owns processes spawned by the bash tool
     # with background=True, and aggregates workflows/teams/loops for the Tasks
-    # pane and the `background` tool. None in headless/ACP runs without the TUI
-    # wiring; the bash tool refuses background=True when this is None.
-    background_registry: Any | None = field(default=None)
+    # pane and the `background` tool. None in headless/ACP runs without a
+    # registry wired; the bash tool refuses background=True when this is None.
+    background_registry: BackgroundRegistry | None = field(default=None)
     # Session-scoped map of resolved file paths to their stat fingerprint at
     # read/write time. Shared mutable reference — the agent loop creates one
     # dict and passes it into every InvokeContext so the edit tool can enforce

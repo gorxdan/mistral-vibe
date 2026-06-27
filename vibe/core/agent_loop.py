@@ -188,6 +188,7 @@ if TYPE_CHECKING:
     from vibe.core.memory.store import MemoryStore
     from vibe.core.teleport.teleport import TeleportService
     from vibe.core.teleport.types import TeleportPushResponseEvent, TeleportYieldEvent
+    from vibe.core.tools.background import BackgroundRegistry
 
 # Central cap on a single tool result's size before it enters the conversation.
 # Tools may self-limit, but read/MCP/connector tools can return arbitrarily large
@@ -605,9 +606,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         ) = None
         self.team_dir_callback: Callable[[], str | None] | None = None
         # Unified background-task registry — owns bash-backgrounded processes
-        # and aggregates workflows/teams/loops. None in headless runs; the bash
-        # tool refuses background=True without it. Set by the TUI app at startup.
-        self.background_registry: Any | None = None
+        # and aggregates workflows/teams/loops. None until wired by the entry
+        # point (TUI VibeApp, run_programmatic, or ACP _create_agent_loop); the
+        # bash tool refuses background=True without it.
+        self.background_registry: BackgroundRegistry | None = None
 
         self.experiment_manager = ExperimentManager(
             client=RemoteEvalClient.from_settings(
