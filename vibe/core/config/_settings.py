@@ -336,10 +336,11 @@ class MemoryConfig(BaseSettings):
     max_inject_chars: int = 8000
     # Where the volatile recall block is placed. "system" embeds it in the
     # system prompt (replaced each turn): a selection change then mutates the
-    # prefix root and busts the cached history behind it. "late" keeps the
-    # system prompt byte-stable and rides recall on an ephemeral message just
-    # before the latest user turn, so only the small tail is reprocessed.
-    inject_mode: Literal["system", "late"] = "system"
+    # prefix root and busts the cached history behind it. "late" (default) keeps
+    # the system prompt byte-stable and rides recall on an ephemeral message
+    # just before the latest user turn, so only the small tail is reprocessed.
+    # Live glm-5.2 A/B on a selection flip: 8.7% cached (system) -> 96.3% (late).
+    inject_mode: Literal["system", "late"] = "late"
     max_entries_scanned: int = 200
     timeout: float = 20.0
     extra_body: dict[str, Any] = Field(default_factory=dict)
