@@ -2090,6 +2090,20 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return None
         return self._activate_model(model)
 
+    def _auto_fallback_headless(self) -> ModelConfig | None:
+        """Auto-recover to the first available model when headless (no callback).
+
+        Headless contexts (ACP, workflow subagents, forked sessions, teammates)
+        have no interactive rate-limit prompt. Without this, a 429 dead-ends even
+        when alternative models are configured and available — the 53x "no
+        fallback_models configured" path. Picks the first untried available model,
+        draining the pool so repeated 429s eventually exhaust it and surface.
+        """
+        candidates = self._switchable_model_aliases()
+        if not candidates:
+            return None
+        return self._switch_to_chosen_model(candidates[0])
+
     async def _prompt_model_switch_on_rate_limit(
         self, error: RateLimitError
     ) -> ModelConfig | None:
@@ -2296,13 +2310,17 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     # Fail over to the next configured fallback model and retry,
                     # instead of surfacing a terminal rate-limit error. With no
                     # automatic fallback, ask the user to pick a model (the
-                    # rate-limit model-switch dialog) before giving up. Re-raise
-                    # only if neither path yields a model, attaching the reason
-                    # to the terminal error so the user sees why recovery failed.
-                    fallback = (
-                        self._switch_to_fallback_model()
-                        or await self._prompt_model_switch_on_rate_limit(e)
-                    )
+                    # rate-limit model-switch dialog) before giving up. When
+                    # headless (no callback), auto-recover to the first available
+                    # model so subagents/workflows/ACP don't dead-end. Re-raise
+                    # only if no path yields a model, attaching the reason to the
+                    # terminal error so the user sees why recovery failed.
+                    fallback = self._switch_to_fallback_model()
+                    if fallback is None:
+                        if self.rate_limit_callback is not None:
+                            fallback = await self._prompt_model_switch_on_rate_limit(e)
+                        else:
+                            fallback = self._auto_fallback_headless()
                     if fallback is None:
                         e.failover_hint = self._failover_unavailable_hint(
                             "Active model rate-limited"

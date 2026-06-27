@@ -23,10 +23,10 @@ def _model(alias: str) -> ModelConfig:
     )
 
 
-def _loop(fallbacks: list[str]):
+def _loop(fallbacks: list[str], *, models: list[ModelConfig] | None = None):
     config = build_test_vibe_config(
         providers=[_PROVIDER],
-        models=[_model("primary"), _model("backup")],
+        models=models or [_model("primary"), _model("backup")],
         active_model="primary",
         fallback_models=fallbacks,
     )
@@ -59,7 +59,9 @@ async def test_rate_limit_fails_over_to_fallback_and_retries() -> None:
 async def test_rate_limit_with_no_fallback_surfaces_error(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    loop = _loop([])  # no fallbacks configured
+    # Single configured model: no fallback_models AND no alternatives for
+    # headless auto-recovery, so the error surfaces with the actionable hint.
+    loop = _loop([], models=[_model("primary")])
 
     async def always_rate_limited() -> AsyncGenerator[BaseEvent, None]:
         raise RateLimitError("local", "primary")
@@ -80,6 +82,34 @@ async def test_rate_limit_with_no_fallback_surfaces_error(
     assert raised is not None
     assert raised.failover_hint is not None
     assert "no fallback_models configured" in raised.failover_hint
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_headless_auto_recovers_to_available_model() -> None:
+    # Headless (no rate_limit_callback) with no fallback_models configured but a
+    # second available model present: a 429 should auto-recover to it instead of
+    # dead-ending. This closes the gap where ACP/workflows/forked sessions failed
+    # ~69% of rate-limit events while the TUI recovered interactively.
+    loop = _loop([])  # primary + backup, no fallback_models, no callback
+    assert loop.rate_limit_callback is None
+
+    calls = {"turn": 0}
+
+    async def fake_turn() -> AsyncGenerator[BaseEvent, None]:
+        calls["turn"] += 1
+        if calls["turn"] == 1:
+            raise RateLimitError("local", "primary")
+        return
+        yield  # pragma: no cover
+
+    loop._perform_llm_turn = fake_turn  # type: ignore[method-assign]
+
+    events = [e async for e in loop._conversation_loop("hi")]
+
+    assert calls["turn"] == 2, "turn retried on the auto-recovered model"
+    assert loop._fallback_model_override is not None
+    assert loop._fallback_model_override.alias == "backup"
+    assert events
 
 
 @pytest.mark.asyncio
