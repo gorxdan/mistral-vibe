@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+from collections.abc import Iterator, MutableMapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from enum import StrEnum, auto
 import os
 from pathlib import Path
@@ -82,6 +84,23 @@ class MissingAPIKeyError(RuntimeError):
         )
         self.env_key = env_key
         self.provider_name = provider_name
+
+
+# API-key presence is environmental, not structural. Internal re-derivations of
+# an already-loaded config (AgentProfile.apply_to_config) run inside this guard
+# so a missing key never raises from lazy, unguarded call sites (UI banner
+# refresh, shutdown). A pydantic `context=` cannot do this: BaseSettings
+# validates twice and the inner sources-build pass ignores the context.
+_skip_api_key_check: ContextVar[bool] = ContextVar("_skip_api_key_check", default=False)
+
+
+@contextmanager
+def skip_api_key_check() -> Iterator[None]:
+    token = _skip_api_key_check.set(True)
+    try:
+        yield
+    finally:
+        _skip_api_key_check.reset(token)
 
 
 class TomlFileSettingsSource(PydanticBaseSettingsSource):
@@ -1465,6 +1484,8 @@ class VibeConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _check_api_key(self) -> VibeConfig:
+        if _skip_api_key_check.get():
+            return self
         try:
             provider = self.get_active_provider()
             api_key_env = provider.api_key_env_var

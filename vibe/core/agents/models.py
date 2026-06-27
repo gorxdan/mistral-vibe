@@ -87,7 +87,10 @@ class AgentProfile:
                 if not name_matches(t, base.disabled_tools)
             ]
 
-        return VC.model_validate(merged)
+        from vibe.core.config._settings import skip_api_key_check
+
+        with skip_api_key_check():
+            return VC.model_validate(merged)
 
     @classmethod
     def from_toml(cls, path: Path) -> AgentProfile:

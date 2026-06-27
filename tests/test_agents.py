@@ -18,7 +18,7 @@ from vibe.core.agents.models import (
     BuiltinAgentName,
     _deep_merge,
 )
-from vibe.core.config import VibeConfig
+from vibe.core.config import MissingAPIKeyError, VibeConfig
 from vibe.core.prompts import UtilityPrompt
 from vibe.core.tools.base import ToolPermission
 from vibe.core.types import LLMChunk, LLMMessage, LLMUsage, Role
@@ -232,6 +232,32 @@ class TestAgentApplyToConfig:
         result = CHAT.apply_to_config(base)
 
         assert "ask_user_question" in result.enabled_tools
+
+    def test_apply_to_config_does_not_raise_on_missing_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = VibeConfig(
+            include_project_context=False,
+            include_prompt_detail=False,
+        )
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+
+        result = BUILTIN_AGENTS[BuiltinAgentName.LEAN].apply_to_config(base)
+
+        assert result.active_model == "leanstral"
+
+    def test_authoritative_validate_still_raises_on_missing_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = VibeConfig(
+            include_project_context=False,
+            include_prompt_detail=False,
+        )
+        derived = BUILTIN_AGENTS[BuiltinAgentName.LEAN].apply_to_config(base)
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+
+        with pytest.raises(MissingAPIKeyError):
+            VibeConfig.model_validate(derived.model_dump())
 
     def test_custom_prompt_found_in_global_when_missing_from_project(
         self, mock_prompts_dirs: tuple[Path, Path]
