@@ -211,6 +211,14 @@ TOOL_RESULT_PREVIEW_CHARS = 12_000
 # flooding context. Full content is persisted before any inline compression.
 AGGREGATE_TOOL_RESULT_CHARS = 200_000
 
+# A single result may occupy up to this fraction of the model's context budget
+# before it is previewed-and-persisted. Scaling the fixed cap above to the
+# window stops large-context models (e.g. glm, 880k) from truncating big reads —
+# which forces ranged re-reads; small windows stay at MAX_TOOL_RESULT_CHARS via
+# the floor, so behaviour is unchanged below a ~500k-token window.
+TOOL_RESULT_WINDOW_FRACTION = 0.05
+TOOL_RESULT_CHARS_PER_TOKEN = 4
+
 # Safety-judge input window. _serialize_args hands the judge only this many
 # chars of the serialized tool args. A destructive tail hidden past the cut is
 # invisible to the judge, so (a) a sentinel is appended to the truncated repr
@@ -3279,8 +3287,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             tool_call.call_id,
             text,
             preview_chars=TOOL_RESULT_PREVIEW_CHARS,
-            hard_cap=MAX_TOOL_RESULT_CHARS,
+            hard_cap=self._tool_result_hard_cap(),
         )
+
+    def _tool_result_hard_cap(self) -> int:
+        try:
+            threshold = self.config.get_active_model().auto_compact_threshold
+        except Exception:
+            return MAX_TOOL_RESULT_CHARS
+        scaled = int(
+            threshold * TOOL_RESULT_CHARS_PER_TOKEN * TOOL_RESULT_WINDOW_FRACTION
+        )
+        return max(MAX_TOOL_RESULT_CHARS, scaled)
 
     def _handle_tool_response(
         self,
