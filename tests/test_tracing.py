@@ -506,6 +506,67 @@ class TestIntegration:
         )
         assert attrs["vibe.tool.exec_duration_s"] >= 0.0
 
+    @pytest.mark.asyncio
+    async def test_interactive_tool_excludes_user_wait_from_exec_duration(
+        self, _otel_provider: _CollectingExporter
+    ) -> None:
+        # exec_duration_s is meant to be exec-only. ask_user_question blocks on
+        # the human inside invoke(); that wait must NOT be counted as tool
+        # runtime (a multi-hour answer otherwise reads as hours of exec). It is
+        # recorded separately as vibe.tool.user_wait_s.
+        from vibe.core.tools.builtins.ask_user_question import (
+            Answer,
+            AskUserQuestionResult,
+        )
+
+        wait = 0.3
+
+        async def slow_answer(args: object) -> AskUserQuestionResult:
+            await asyncio.sleep(wait)
+            return AskUserQuestionResult(
+                cancelled=False,
+                answers=[Answer(question="Pick", answer="A")],
+            )
+
+        tool_call = ToolCall(
+            id="call_1",
+            index=0,
+            function=FunctionCall(
+                name="ask_user_question",
+                arguments=json.dumps({
+                    "questions": [
+                        {
+                            "question": "Pick",
+                            "options": [{"label": "A"}, {"label": "B"}],
+                        }
+                    ]
+                }),
+            ),
+        )
+        backend = FakeBackend([
+            [mock_llm_chunk(content="Asking.", tool_calls=[tool_call])],
+            [mock_llm_chunk(content="Done.")],
+        ])
+        config = build_test_vibe_config(
+            enabled_tools=["ask_user_question"],
+            tools={"ask_user_question": BaseToolConfig(permission=ToolPermission.ALWAYS)},
+            system_prompt_id="tests",
+            include_project_context=False,
+            include_prompt_detail=False,
+        )
+        agent_loop = build_test_agent_loop(config=config, backend=backend)
+        agent_loop.set_user_input_callback(slow_answer)
+
+        await self._collect_events(agent_loop, "ask me")
+
+        tool_spans = [s for s in _otel_provider.spans if "execute_tool" in s.name]
+        assert len(tool_spans) == 1
+        attrs = dict(tool_spans[0].attributes)
+        # The human wait is recorded...
+        assert attrs.get("vibe.tool.user_wait_s", 0.0) >= wait * 0.8
+        # ...and excluded from exec_duration, which stays near-zero exec-only.
+        assert attrs["vibe.tool.exec_duration_s"] < wait * 0.5
+
 
 # --------------------------------------------------------------------------- #
 # OTel three-pillar helpers (#10)                                              #

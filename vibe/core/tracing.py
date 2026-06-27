@@ -471,3 +471,13 @@ def set_tool_exec_duration(span: trace.Span, seconds: float) -> None:
         span.set_attribute("vibe.tool.exec_duration_s", seconds)
     except Exception:
         pass
+
+
+def set_tool_user_wait(span: trace.Span, seconds: float) -> None:
+    # Time an interactive tool (ask_user_question, in-tool approval) spent
+    # blocked on a human. Excluded from exec_duration so the latter stays
+    # exec-only; recorded here so the human-wait is still visible.
+    try:
+        span.set_attribute("vibe.tool.user_wait_s", seconds)
+    except Exception:
+        pass

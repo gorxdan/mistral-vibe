@@ -121,6 +121,7 @@ from vibe.core.tracing import (
     set_tool_error,
     set_tool_exec_duration,
     set_tool_result,
+    set_tool_user_wait,
     set_usage,
     tool_span,
 )
@@ -2801,6 +2802,26 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if snapshot is not None:
             self.rewind_manager.add_snapshot(snapshot)
 
+        # Interactive tools (ask_user_question, in-tool approval) block on a
+        # human inside invoke(). Time those awaits so they can be subtracted
+        # from exec_duration, which is meant to be exec-only — otherwise a
+        # multi-hour human answer is misread as tool runtime.
+        human_wait_s = 0.0
+
+        def _timed(cb: Any) -> Any:
+            if cb is None:
+                return None
+
+            async def _wrapped(*args: Any, **kwargs: Any) -> Any:
+                nonlocal human_wait_s
+                wait_start = time.perf_counter()
+                try:
+                    return await cb(*args, **kwargs)
+                finally:
+                    human_wait_s += time.perf_counter() - wait_start
+
+            return _wrapped
+
         start_time = time.perf_counter()
         result_model = None
         duration = 0.0
@@ -2812,8 +2833,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     agent_manager=self.agent_manager,
                     session_dir=self.session_logger.session_dir,
                     entrypoint_metadata=self.entrypoint_metadata,
-                    approval_callback=self.approval_callback,
-                    user_input_callback=self.user_input_callback,
+                    approval_callback=_timed(self.approval_callback),
+                    user_input_callback=_timed(self.user_input_callback),
                     sampling_callback=self._sampling_handler,
                     plan_file_path=self._plan_session.plan_file_path,
                     switch_agent_callback=self.switch_agent,
@@ -2842,8 +2863,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             # exit / size cap / not-found), and cancellation. invoke() raises
             # past this point on failure, which previously skipped the success-
             # only call below and left failure/timeout latency uninstrumented.
-            duration = time.perf_counter() - start_time
+            # Subtract human-wait so exec_duration stays exec-only (recorded
+            # separately as user_wait_s); duration flows to ToolResultEvent too.
+            duration = max(0.0, time.perf_counter() - start_time - human_wait_s)
             set_tool_exec_duration(span, duration)
+            if human_wait_s > 0:
+                set_tool_user_wait(span, human_wait_s)
         if result_model is None:
             raise ToolError("Tool did not yield a result")
 
