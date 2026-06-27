@@ -441,3 +441,42 @@ def test_verification_contract_section_absent_when_subsystem_disabled() -> None:
         AgentManager(lambda: off),
     )
     assert "## Verification contract" not in prompt_off
+
+
+def test_workflow_authoring_guide_is_lazy_not_always_on() -> None:
+    # The ~3.2k launch_workflow authoring guide must NOT be injected into every
+    # system prompt; it loads on demand via the `workflow-authoring` skill. The
+    # tool stays discoverable (concise stub + schema) and the full guide lives
+    # in the skill body (single source = launch_workflow.md).
+    from vibe.core.skills.builtins import BUILTIN_SKILLS
+
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+        effort_mode="le-chaton",
+    )
+    tool_manager = ToolManager(lambda: config)
+    skill_manager = SkillManager(lambda: config)
+    agent_manager = AgentManager(lambda: config)
+
+    prompt = get_universal_system_prompt(
+        tool_manager, config, skill_manager, agent_manager
+    )
+
+    # The bulky authoring prose is gone from the always-on prompt...
+    assert "## Local discovery comes first" not in prompt
+    assert "dedup_by" not in prompt
+    # ...replaced by a concise pointer to the on-demand skill.
+    assert "workflow-authoring" in prompt
+    assert "Pass the script SOURCE inline" in prompt  # the concise tool stub
+    # The tool schema is still sent to the API, so it stays callable.
+    assert "launch_workflow" in tool_manager.available_tools
+
+    # The full guide is preserved in the skill body.
+    skill = BUILTIN_SKILLS["workflow-authoring"]
+    assert "## Local discovery comes first" in skill.prompt
+    assert "dedup_by" in skill.prompt

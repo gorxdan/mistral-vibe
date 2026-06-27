@@ -63,6 +63,12 @@ class WorkflowStop(
     )
 
     @classmethod
+    def get_tool_prompt(cls) -> str | None:
+        # Detail lives in the on-demand `workflow-authoring` skill; the schema
+        # description is enough for the always-on baseline.
+        return None
+
+    @classmethod
     def is_available(cls, config: VibeConfig | None = None) -> bool:
         # Mirrors launch_workflow / workflow_status: hidden when workflows are
         # disabled, since there is nothing to stop.

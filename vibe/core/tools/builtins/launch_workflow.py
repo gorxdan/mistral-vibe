@@ -147,6 +147,22 @@ class LaunchWorkflow(
         return "Launching workflow"
 
     @classmethod
+    def get_tool_prompt(cls) -> str | None:
+        # The full ~3.2k authoring guide (prompts/launch_workflow.md) is loaded
+        # on demand via the `workflow-authoring` skill, not injected into every
+        # system prompt. Keep only a concise pointer here so the always-on
+        # baseline stays small while the tool remains discoverable + callable.
+        return (
+            "To author a workflow script, load the `workflow-authoring` skill "
+            "first — it is the single source of truth for the script API "
+            "(agent/parallel/pipeline/phase/log/budget/args + synthesis "
+            "helpers), the sandbox rules (allowlisted imports, no asyncio, no "
+            "str.format), and concurrency/rate-limit recovery. Do not write a "
+            "script from memory. Pass the script SOURCE inline in `script`; the "
+            "run is background and results return via `workflow_results(run_id)`."
+        )
+
+    @classmethod
     def is_available(cls, config: VibeConfig | None = None) -> bool:
         if config is None:
             return True
