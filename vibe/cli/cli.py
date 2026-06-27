@@ -199,7 +199,9 @@ def load_session(
 
     session_to_load = None
     if args.continue_session:
-        cwd = Path.cwd().resolve()
+        from vibe.core.worktree.manager import original_working_directory
+
+        cwd = Path(original_working_directory())
         pointer_session_id = last_session_pointer.load(config.session_logging)
         if pointer_session_id:
             session_to_load = SessionLoader.find_session_by_id(

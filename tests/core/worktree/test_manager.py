@@ -119,10 +119,34 @@ class TestWorktreeEnabled:
 
 
 class TestOriginalWorkingDirectory:
-    def test_returns_cwd_when_no_worktree(self):
+    def test_returns_resolved_cwd_outside_repo(self, tmp_path: Path):
         worktree_manager._active = None
+        os.chdir(str(tmp_path))
         result = original_working_directory()
-        assert result == str(Path.cwd())
+        assert Path(result) == tmp_path.resolve()
+
+    def test_returns_repo_root_from_main_checkout(self, temp_repo: Path):
+        worktree_manager._active = None
+        os.chdir(str(temp_repo))
+        result = original_working_directory()
+        assert Path(result) == temp_repo.resolve()
+
+    def test_returns_origin_root_from_external_worktree(
+        self, tmp_path: Path, temp_repo: Path
+    ):
+        # A worktree this process did NOT enter (active stays None): launched
+        # directly inside it. Must still resolve to the main checkout so resume
+        # finds sessions recorded under the origin repo.
+        worktree_manager._active = None
+        wt_path = tmp_path / "external-wt"
+        subprocess.run(
+            ["git", "-C", str(temp_repo), "worktree", "add", "-q", str(wt_path)],
+            check=True,
+            capture_output=True,
+        )
+        os.chdir(str(wt_path))
+        result = original_working_directory()
+        assert Path(result) == temp_repo.resolve()
 
     def test_returns_original_root_when_active(self, tmp_path: Path):
         handle = WorktreeHandle(

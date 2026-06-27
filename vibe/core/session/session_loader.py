@@ -19,6 +19,21 @@ METADATA_FILENAME = "meta.json"
 MESSAGES_FILENAME = "messages.jsonl"
 
 
+def _same_working_directory(stored: str, target: str) -> bool:
+    """True if two recorded working directories denote the same checkout.
+
+    Tolerates symlink and resolved/unresolved differences so sessions recorded
+    by older builds (which stored an unresolved cwd) still match the resolved
+    path the current resume picker computes.
+    """
+    if stored == target:
+        return True
+    try:
+        return Path(stored).resolve() == Path(target).resolve()
+    except OSError:
+        return False
+
+
 class SessionInfo(TypedDict):
     session_id: str
     cwd: str
@@ -59,7 +74,9 @@ class SessionLoader:
                 session_working_directory = (metadata.get("environment") or {}).get(
                     "working_directory"
                 )
-                if session_working_directory != str(working_directory):
+                if not _same_working_directory(
+                    session_working_directory or "", str(working_directory)
+                ):
                     return None
 
             messages = SessionLoader._parse_message_lines(read_safe(messages_path).text)
@@ -202,7 +219,7 @@ class SessionLoader:
             environment = metadata.get("environment", {})
             session_cwd = environment.get("working_directory", "")
 
-            if cwd is not None and session_cwd != cwd:
+            if cwd is not None and not _same_working_directory(session_cwd, cwd):
                 continue
 
             end_time = metadata.get("end_time")

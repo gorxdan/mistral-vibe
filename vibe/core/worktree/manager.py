@@ -104,16 +104,33 @@ def worktree_enabled(
 
 
 def original_working_directory() -> str:
-    """Return the original repo root if a worktree is active, else ``str(Path.cwd())``.
+    """Return the original repo root for the current checkout.
 
-    Used by :mod:`vibe.core.session.session_logger` so that the recorded
-    ``working_directory`` is the user's real checkout, not the worktree path.
-    This keeps the exact-string match in :mod:`vibe.core.session.session_loader`
-    working after the worktree is removed.
+    Used by :mod:`vibe.core.session.session_logger` to record a session's
+    ``working_directory`` and by the resume picker to scope to it, so the two
+    must agree. When a worktree this process entered is active, use its recorded
+    origin. Otherwise, if cwd sits inside a git worktree we did not enter (e.g.
+    launched directly inside one), resolve to the *main* working tree so a
+    session opened from a worktree still maps to the checkout it was recorded
+    under. Falls back to the resolved cwd outside any repo.
     """
     if worktree_manager.active is not None:
         return str(worktree_manager.active.original_repo_root)
-    return str(Path.cwd())
+    return _origin_repo_root_for_cwd()
+
+
+def _origin_repo_root_for_cwd() -> str:
+    cwd = Path.cwd()
+    try:
+        repo = Repo(str(cwd), search_parent_directories=True)
+        # `rev-parse --git-common-dir` resolves a linked worktree's `.git` file
+        # to the shared ``<main-repo>/.git`` (GitPython's `.common_dir` does
+        # not); its parent is the main working tree. The result may be relative
+        # to cwd (`.git` in a normal checkout), so join before resolving.
+        common = repo.git.rev_parse("--git-common-dir")
+        return str((cwd / common).resolve().parent)
+    except (InvalidGitRepositoryError, GitCommandError, OSError, ValueError):
+        return str(cwd.resolve())
 
 
 class WorktreeManager:

@@ -1287,3 +1287,42 @@ class TestSessionLoaderUTF8Encoding:
         assert len(messages) == 2
         assert messages[0].content == "Hello café"
         assert messages[1].content == "Hi there naïve"
+
+
+class TestWorkingDirectoryResolution:
+    """Scoping tolerates symlink / resolved-vs-unresolved path differences so
+    sessions recorded by older builds (unresolved cwd) still match the resolved
+    path the resume picker now computes. See _same_working_directory.
+    """
+
+    def test_same_working_directory_exact_and_symlink(self, tmp_path: Path) -> None:
+        from vibe.core.session.session_loader import _same_working_directory
+
+        real = tmp_path / "project"
+        real.mkdir()
+        link = tmp_path / "project-link"
+        link.symlink_to(real)
+
+        assert _same_working_directory(str(real), str(real))
+        assert _same_working_directory(str(link), str(real))
+        assert _same_working_directory(str(real), str(link))
+        assert not _same_working_directory(str(real), str(tmp_path / "other"))
+
+    def test_list_sessions_matches_across_symlink(
+        self,
+        session_config: SessionLoggingConfig,
+        create_test_session,
+        tmp_path: Path,
+    ) -> None:
+        real = tmp_path / "checkout"
+        real.mkdir()
+        link = tmp_path / "checkout-link"
+        link.symlink_to(real)
+        session_dir = Path(session_config.save_dir)
+        # Session recorded under the symlinked (unresolved) form.
+        create_test_session(session_dir, "aaaaaaaa", working_directory=link)
+
+        # Picker computes the resolved form; the session must still be found.
+        sessions = SessionLoader.list_sessions(session_config, cwd=str(real))
+        assert len(sessions) == 1
+        assert sessions[0]["session_id"] == "aaaaaaaa"
