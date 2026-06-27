@@ -481,3 +481,49 @@ def set_tool_user_wait(span: trace.Span, seconds: float) -> None:
         span.set_attribute("vibe.tool.user_wait_s", seconds)
     except Exception:
         pass
+
+
+@asynccontextmanager
+async def context_shaping_span(
+    *, op: str, trigger: str = "auto"
+) -> AsyncGenerator[trace.Span]:
+    """Span for a context-reshaping op (snip / microcompact / compact).
+
+    These rewrite history mid-session and so bust the provider's prefix cache;
+    tracing them makes each cache-busting event visible (otherwise a cache-rate
+    drop has no corresponding span). Emitted only when reshaping actually runs.
+    The caller stamps token deltas via :func:`set_context_shaping_result`.
+    """
+    attributes: dict[str, Any] = {
+        "vibe.context.op": op,
+        "vibe.context.trigger": trigger,
+    }
+    if conv_id := baggage.get_baggage(gen_ai_attributes.GEN_AI_CONVERSATION_ID):
+        attributes[gen_ai_attributes.GEN_AI_CONVERSATION_ID] = conv_id
+    async with _safe_span(f"context_shaping {op}", attributes) as span:
+        yield span
+
+
+def set_context_shaping_result(
+    span: trace.Span,
+    *,
+    tokens_before: int,
+    tokens_after: int,
+    threshold: int | None = None,
+    blocks: int | None = None,
+    status: str | None = None,
+) -> None:
+    try:
+        span.set_attribute("vibe.context.tokens_before", tokens_before)
+        span.set_attribute("vibe.context.tokens_after", tokens_after)
+        span.set_attribute(
+            "vibe.context.tokens_removed", max(0, tokens_before - tokens_after)
+        )
+        if threshold is not None:
+            span.set_attribute("vibe.context.threshold", threshold)
+        if blocks is not None:
+            span.set_attribute("vibe.context.blocks", blocks)
+        if status is not None:
+            span.set_attribute("vibe.context.status", status)
+    except Exception:
+        pass

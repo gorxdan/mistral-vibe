@@ -567,6 +567,35 @@ class TestIntegration:
         # ...and excluded from exec_duration, which stays near-zero exec-only.
         assert attrs["vibe.tool.exec_duration_s"] < wait * 0.5
 
+    @pytest.mark.asyncio
+    async def test_context_shaping_span_records_token_deltas(
+        self, _otel_provider: _CollectingExporter
+    ) -> None:
+        # Snip/microcompact/compact rewrite history and bust the prefix cache;
+        # the span makes each event visible with its token reduction so a
+        # cache-rate drop can be correlated to the reshape that caused it.
+        from vibe.core.tracing import context_shaping_span, set_context_shaping_result
+
+        async with context_shaping_span(op="snip", trigger="auto") as span:
+            set_context_shaping_result(
+                span,
+                tokens_before=1000,
+                tokens_after=600,
+                threshold=2000,
+                blocks=3,
+            )
+
+        spans = [s for s in _otel_provider.spans if s.name == "context_shaping snip"]
+        assert len(spans) == 1
+        a = dict(spans[0].attributes)
+        assert a["vibe.context.op"] == "snip"
+        assert a["vibe.context.trigger"] == "auto"
+        assert a["vibe.context.tokens_before"] == 1000
+        assert a["vibe.context.tokens_after"] == 600
+        assert a["vibe.context.tokens_removed"] == 400
+        assert a["vibe.context.threshold"] == 2000
+        assert a["vibe.context.blocks"] == 3
+
 
 # --------------------------------------------------------------------------- #
 # OTel three-pillar helpers (#10)                                              #

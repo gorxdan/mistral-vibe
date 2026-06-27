@@ -118,6 +118,8 @@ from vibe.core.tools.tool_result_store import ToolResultStore
 from vibe.core.tracing import (
     agent_span,
     chat_span,
+    context_shaping_span,
+    set_context_shaping_result,
     set_tool_error,
     set_tool_exec_duration,
     set_tool_result,
@@ -1262,22 +1264,33 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             logger.warning("pre_compact hook failed (%s); compacting anyway", e)
 
         compact_status: Literal["success", "failure", "cancelled"] = "success"
-        try:
-            summary = await self.compact()
-        except asyncio.CancelledError:
-            compact_status = "cancelled"
-            raise
-        except Exception:
-            compact_status = "failure"
-            raise
-        finally:
-            self.telemetry_client.send_auto_compact_triggered(
-                nb_context_tokens_before=old_tokens,
-                auto_compact_threshold=threshold,
-                status=compact_status,
-                session_id=old_session_id,
-                parent_session_id=old_parent_session_id,
-            )
+        async with context_shaping_span(op="compact", trigger=trigger) as span:
+            try:
+                summary = await self.compact()
+            except asyncio.CancelledError:
+                compact_status = "cancelled"
+                raise
+            except Exception:
+                compact_status = "failure"
+                raise
+            finally:
+                self.telemetry_client.send_auto_compact_triggered(
+                    nb_context_tokens_before=old_tokens,
+                    auto_compact_threshold=threshold,
+                    status=compact_status,
+                    session_id=old_session_id,
+                    parent_session_id=old_parent_session_id,
+                )
+                from vibe.core.utils.tokens import approx_token_count
+
+                after = sum(approx_token_count(m.content or "") for m in self.messages)
+                set_context_shaping_result(
+                    span,
+                    tokens_before=old_tokens,
+                    tokens_after=after,
+                    threshold=threshold,
+                    status=compact_status,
+                )
 
         yield CompactEndEvent(
             tool_call_id=tool_call_id,

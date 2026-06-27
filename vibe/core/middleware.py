@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from vibe.core.agents import AgentProfile
 from vibe.core.logger import logger
+from vibe.core.tracing import context_shaping_span, set_context_shaping_result
 from vibe.core.types import Role
 from vibe.core.utils import VIBE_WARNING_TAG
 
@@ -235,6 +236,14 @@ class SnipMiddleware(ContextShaperMiddleware):
                 cfg.high_watermark,
                 threshold,
             )
+            async with context_shaping_span(op="snip") as span:
+                set_context_shaping_result(
+                    span,
+                    tokens_before=est_before,
+                    tokens_after=est,
+                    threshold=threshold,
+                    blocks=snipped,
+                )
         return MiddlewareResult()
 
     @staticmethod
@@ -324,6 +333,14 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
                 cfg.high_watermark,
                 threshold,
             )
+            async with context_shaping_span(op="microcompact") as span:
+                set_context_shaping_result(
+                    span,
+                    tokens_before=est_before,
+                    tokens_after=est,
+                    threshold=threshold,
+                    blocks=done,
+                )
         return MiddlewareResult()
 
 
