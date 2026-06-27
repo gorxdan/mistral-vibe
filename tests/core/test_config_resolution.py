@@ -1582,6 +1582,11 @@ class TestConnectorRegistryActiveProviderGate:
         # non-Mistral provider, no registry should be built even if a leftover
         # Mistral provider with a set key exists — otherwise every session fires
         # an unauthorized 401 bootstrap.
+        #
+        # The leftover provider carries backend=MISTRAL (not just name="mistral")
+        # so get_mistral_provider() would return it under the OLD gate too —
+        # i.e. this test genuinely distinguishes old (builds registry -> 401)
+        # from new (is_active_model_mistral() is False -> None).
         cfg = build_test_vibe_config(
             enable_connectors=True,
             providers=[
@@ -1589,11 +1594,13 @@ class TestConnectorRegistryActiveProviderGate:
                     name="mistral",
                     api_base="https://api.mistral.ai/v1",
                     api_key_env_var="MISTRAL_API_KEY",
+                    backend=Backend.MISTRAL,
                 ),
                 ProviderConfig(
                     name="llamacpp",
                     api_base="http://127.0.0.1:8080/v1",
                     api_key_env_var="",
+                    backend=Backend.GENERIC,
                 ),
             ],
             models=[
@@ -1603,6 +1610,10 @@ class TestConnectorRegistryActiveProviderGate:
             ],
             active_model="llama-local",
         )
+
+        # Sanity: the OLD gate would have built a registry here.
+        assert cfg.get_mistral_provider() is not None
+        assert cfg.is_active_model_mistral() is False
 
         loop = build_test_agent_loop(config=cfg)
 
