@@ -29,7 +29,10 @@ from tests.constants import OPENAI_BASE_URL, OPENAI_RESPONSES_PATH
 from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.generic import GenericBackend
-from vibe.core.llm.backend.openai_responses import OpenAIResponsesAdapter
+from vibe.core.llm.backend.openai_responses import (
+    OpenAIResponsesAdapter,
+    _OpenAIResponsesStreamParser,
+)
 from vibe.core.types import (
     AvailableFunction,
     AvailableTool,
@@ -1470,3 +1473,19 @@ class TestGenericBackendIntegration:
             assert payload["stream"] is True
             # Responses API does not use stream_options
             assert "stream_options" not in payload
+
+
+def _cached(usage: dict | None) -> int:
+    return _OpenAIResponsesStreamParser._usage_from_response(usage).cached_tokens
+
+
+def test_responses_cached_tokens_from_input_tokens_details() -> None:
+    assert (
+        _cached({"input_tokens": 100, "input_tokens_details": {"cached_tokens": 80}})
+        == 80
+    )
+
+
+def test_responses_cached_tokens_absent_defaults_zero() -> None:
+    assert _cached({"input_tokens": 100, "output_tokens": 5}) == 0
+    assert _cached(None) == 0
