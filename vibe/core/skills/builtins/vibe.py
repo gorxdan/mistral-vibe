@@ -106,8 +106,10 @@ alongside local ones in the picker (tagged `remote`) and are not folder-scoped.
 The configuration file uses TOML format. Settings can also be overridden via
 environment variables with the `VIBE_` prefix (e.g., `VIBE_ACTIVE_MODEL=local`).
 
-Custom prompt IDs are resolved from project-local `.vibe/prompts/` first, then
-from `~/.vibe/prompts/`, and finally from the built-in bundled prompts.
+Custom prompt IDs are resolved in this order (first match wins): `prompt_paths`
+from config.toml first, then project-local `.vibe/prompts/` in trusted project
+roots, then `~/.vibe/prompts/` (user global), and finally the built-in bundled
+prompts.
 
 ### Key Settings
 
@@ -119,7 +121,7 @@ active_model = "mistral-medium-3.5"  # Model alias to use (see [[models]])
 vim_keybindings = false
 disable_welcome_banner_animation = false
 autocopy_to_clipboard = true
-file_watcher_for_autocomplete = false
+file_watcher_for_autocomplete = true   # default: on
 
 # Behavior
 bypass_tool_permissions = false    # Skip tool approval prompts
@@ -133,7 +135,7 @@ api_timeout = 720.0               # API request timeout in seconds
 auto_compact_threshold = 200000   # Token count before auto-compaction
 
 # Git commit behavior
-include_commit_signature = false   # Include commit guidance in system prompt
+include_commit_signature = true    # default: on — include commit guidance in system prompt
 
 # Writing style
 include_humanizer_guidance = true  # Prompt the model to avoid AI-writing patterns
@@ -156,6 +158,17 @@ effort_mode = "normal"            # "normal" or "le-chaton" (max thinking + auto
 disable_workflows = false         # Disable all workflow features
 verification_subsystem = true     # Host verification layer (todo nudge + contract section → verifier subagent)
 workflow_paths = []               # Additional dirs to search for workflow scripts
+
+# Additional top-level keys (defaults shown)
+theme = "ansi-dark"                # Default terminal theme (override via /theme or VIBE_THEME; empty coerces to this default)
+displayed_workdir = ""            # Override the workdir label shown in the UI
+compaction_model = ...            # Alias for compaction; default unset (uses active)
+fallback_models = []              # Aliases tried if the active model errors
+context_shaping = ...             # Sub-table controlling context window shaping
+safety_judge = ...                # Sub-table for the safety-judge backend (gates tools/spawns)
+prompt_paths = []                 # Additional dirs searched first for custom prompts
+plugin_paths = []                 # Additional dirs searched for plugin manifests
+installed_components = []         # Opt-in features, e.g. ["lsp"]
 ```
 
 ### Providers
@@ -173,6 +186,11 @@ api_base = "http://127.0.0.1:8080/v1"
 api_key_env_var = ""
 extra_headers = { "X-Custom-Header" = "value" }  # optional per-provider HTTP headers
 ```
+
+`[[providers]]` also accepts `api_style`, `reasoning_field_name`,
+`discover_models`, `project_id`, `region`, `cache` (sub-table: mode/style/extra_body),
+`max_concurrent_requests`, and `requests_per_minute` (rate limiting). See
+`vibe/core/config/_settings.py` (ProviderConfig, ProviderCacheConfig).
 
 ### Models
 
@@ -200,6 +218,9 @@ name = "devstral"
 provider = "llamacpp"
 alias = "local"
 ```
+
+`[[models]]` also accepts `max_output_tokens` (int, default unset — seeds/caps
+max-output escalation). See `vibe/core/config/_settings.py` (ModelConfig).
 
 ### Tool Configuration
 
@@ -230,6 +251,11 @@ searxng_stop_on_exit = true              # stop on exit, only if vibe started it
 # General-web engines vibe force-enables in every managed container so a single
 # engine rate-limiting itself never zeroes results. Override to change; [] opts out.
 searxng_enabled_engines = ["bing", "duckduckgo", "startpage", "google", "qwant", "mojeek"]
+searxng_disabled_engines = []              # engines to force-disable in a managed container
+searxng_timeout = 15.0                     # per-search timeout
+searxng_health_timeout = 5.0               # startup health-check timeout
+# search/request-level knobs: timeout (per request), model (alias for query
+# rewriting), permission. See vibe/core/tools/builtins/websearch.py (WebSearchConfig).
 
 # Task tool isolation: write-capable subagents run in their own git worktree
 # so destructive commands/edits can't race the parent tree or sibling agents.
@@ -407,6 +433,10 @@ command = "rust-analyzer"
 languages = { ".rs" = "rust" }
 ```
 
+`[[lsp_servers]]` also accepts `env` (map), `cwd`, `initialization_options` (map),
+`root_uri`, `manifest_markers` (list), `startup_timeout_sec` (default 20.0), and
+`request_timeout_sec` (default 10.0). See `vibe/core/config/_settings.py` (LSPServer).
+
 `/lsp` shows configured-server status (state + extensions + last error).
 
 ### Connectors
@@ -466,8 +496,9 @@ Hooks let users run shell commands automatically at lifecycle events.
 Hooks live in `hooks.toml` files (separate from `config.toml`), discovered in
 this order:
 
-1. `<project>/.vibe/hooks.toml` — loaded first, only when the folder is
-   trusted.
+1. `<root>/.vibe/hooks.toml` for each trusted project root — loaded first (only
+   when that root is trusted). With multiple `--add-dir`s, one project hook file
+   per root is appended before the user file.
 2. `~/.vibe/hooks.toml` — loaded second.
 
 A duplicate `name` across the two files is reported as a config issue and the
@@ -477,7 +508,7 @@ fields) surface in the TUI as warnings and the offending hook is skipped.
 ```toml
 [[hooks]]
 name = "lint"                       # Required: unique within the file.
-type = "post_agent_turn"            # Required: post_agent_turn | before_tool | after_tool.
+type = "post_agent_turn"            # Required. User-facing: post_agent_turn | before_tool | after_tool | user_prompt_submit. (Team/lifecycle hooks: teammate_idle | task_created | task_completed. Session hooks: session_start | session_end | stop | pre_compact.)
 command = "eslint --quiet ."        # Required: shell command run in cwd.
 timeout = 60.0                      # Default: 60s for all hooks.
 description = "Run ESLint"          # Optional.
@@ -679,11 +710,19 @@ system prompt. Selection fails open (no memories) on any error.
 [memory]
 enabled = true                   # Master switch
 select_mode = "per-turn"         # "per-turn" | "per-session" | "always"
-model = ""                       # Alias; falls back to compaction, then active
+model = ...                      # Alias; default unset (None) — falls back to compaction, then active
 max_selected = 5                 # Top-K injected
 max_inject_chars = 8000          # Hard cap on total injected body text
 max_entries_scanned = 200        # Cap on index lines sent to the selector
 timeout = 20.0                   # Per-selection LLM timeout
+prefetch = true                  # Warm the selector before the turn needs it
+inject_mode = "append"           # How selected bodies are attached to the prompt
+# Auto-extraction (write memories from conversation) and consolidation (merge
+# similar memories) families are also configurable: auto_extract,
+# auto_extract_model, auto_extract_max_writes, auto_extract_min_messages,
+# auto_extract_timeout, consolidate, consolidate_model, consolidate_min_age_days,
+# consolidate_min_candidates, consolidate_interval_days, consolidate_max_actions,
+# consolidate_timeout. See vibe/core/config/_settings.py (MemoryConfig) for defaults.
 ```
 
 **Scopes.** The `manage_memory` tool defaults new memories to the current
@@ -717,19 +756,22 @@ Tool, skill, and agent names support three matching modes:
 vibe [PROMPT]                       # Start interactive session with optional prompt
 vibe -p TEXT / --prompt TEXT         # Programmatic mode using `default_agent`, one-shot, exit
 vibe -p TEXT --auto-approve          # Programmatic mode with all tool calls approved
+vibe -p TEXT --keep-alive SECONDS    # Keep firing scheduled-loop turns for SECONDS before exiting (-p only)
 vibe --agent NAME                   # Select agent profile (falls back to `default_agent` config)
-vibe --auto-approve                  # Shortcut for `--agent auto-approve`
+vibe --model ALIAS                  # Active model for this session (overrides `active_model`; also threaded into isolated subagents)
+vibe --auto-approve / --yolo         # Shortcut for `--agent auto-approve`
 vibe --workdir DIR                  # Change working directory
 vibe --add-dir DIR                  # Extra working dir loaded for context (repeatable). Implicitly trusted.
 vibe --trust                        # Trust cwd for this invocation only (not persisted)
 vibe -c / --continue                # Continue most recent session in this terminal (TTY-scoped, falls back to latest in cwd)
-vibe --resume [SESSION_ID]          # Resume a specific session
+vibe --resume [SESSION_ID]          # Resume a session (no ID opens an interactive picker)
 vibe -v / --version                 # Show version
-vibe --setup                        # Run onboarding/setup
+vibe --setup                        # Run setup (configure API key) and exit
+vibe --check-upgrade                # Check for a Vibe update, prompt to install, and exit
 vibe --max-turns N                  # Max assistant turns (programmatic mode)
 vibe --max-price DOLLARS            # Max cost limit (programmatic mode)
 vibe --max-tokens N                 # Max total session tokens (programmatic mode)
-vibe --enabled-tools TOOL           # Enable specific tools (repeatable)
+vibe --enabled-tools TOOL           # Enable specific tools (repeatable; under -p, disables all others)
 vibe --output text|json|streaming   # Output format (programmatic mode)
 vibe --worktree                     # Force worktree isolation ON (overrides mode="off")
 vibe --no-worktree                  # Force worktree isolation OFF for this invocation
@@ -753,10 +795,12 @@ There are two kinds of agents:
 
 ### Agents
 
-- **default**: Standard interactive agent
-- **plan**: Planning-focused agent
+- **default**: Standard interactive agent; requires approval for tool executions
+- **chat**: Read-only conversational mode (grep/read/`ask_user_question`/`task`); no file edits or shell
+- **plan**: Read-only planning sandbox (writes only the plan file at `~/.vibe/plans/`)
 - **accept-edits**: Auto-approves file edits but asks for other tools
 - **auto-approve**: Auto-approves all tool calls
+- **coordinator**: Orchestration-only lead (read/grep/glob + `task`/`launch_workflow`/`team`); cannot write files or run bash directly
 - **lean**: Specialized Lean 4 proof assistant. Not available by default — must be
   installed with `/leanstall` (removed with `/unleanstall`)
 
@@ -784,10 +828,18 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
 
 ### Subagents
 
-- **explore**: Read-only codebase exploration subagent (grep + read only).
+- **explore**: Read-only codebase exploration subagent (grep + read + lsp only).
   Spawned by the model, not selectable by the user.
-- **research**, **reviewer**, **debugger**, **planner**, **security**: other
-  read-only investigation/audit subagents (see the Orchestration section).
+- **research**: read-only web research (adds web search/fetch).
+- **planner**: read-only (grep/read); returns a phased, code-grounded plan.
+- **reviewer**, **debugger**, **security**: investigation/audit subagents that add a
+  **jailed read-only bash** (allowlist auto-runs tests/lint/git-inspection; denies
+  mutations, network, and package installs) — their key differentiator from explore/planner.
+- **editor**: workflow-only subagent for surgical file edits (read/grep/lsp + write/edit,
+  no bash/MCP). Requires `isolation="worktree"`.
+- **worker**: full-capability workflow subagent (all builtin tools + MCP, no allowlist).
+  Requires `isolation="worktree"`; bash runs with the worktree as cwd but is not
+  path-confined — enable the OS bash sandbox when confinement matters.
 - **verifier**: verdict-oriented gate that proves a *completed* implementation
   works by trying to break it, emitting a strict PASS/FAIL/PARTIAL verdict with
   command evidence. The host verification contract (on by default via
@@ -808,10 +860,14 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/clear` - Clear conversation history
 - `/log` - Show path to current interaction log file
 - `/debug` - Toggle debug console
-- `/compact` - Compact conversation history by summarizing
+- `/compact` - Compact conversation history by summarizing (optionally pass instructions to guide the summary)
 - `/status` - Display agent statistics
+- `/copy` - Copy the last agent message to the clipboard
+- `/paste-image` - Paste an image from the OS clipboard into the prompt (supported platforms only)
+- `/rename` - Rename the current session
 - `/voice` - Configure voice settings
-- `/mcp` - Display available MCP servers (pass a server name to list its tools)
+- `/mcp` (or `/connectors`) - Display available MCP servers and connectors. Pass a name
+  to list its tools. Subcommands: `/mcp login|logout <name>`, `/mcp refresh`, `/mcp add`.
 - `/resume` (or `/continue`) - Browse and resume past sessions for the current
   folder (plus active remote sessions when Vibe Code is enabled). The picker
   header shows the folder being listed. Press `D` twice to delete a local saved
@@ -826,7 +882,6 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
     (no catch-up); `next_fire_at` advances to `now + interval`.
   - Loops are persisted in the session metadata (`loops` field of `meta.json`)
     and restored on `--resume`/`--continue`.
-- `/terminal-setup` - Configure Shift+Enter for newlines
 - `/proxy-setup` - Configure proxy and SSL certificate settings
 - `/leanstall` - Install the Lean 4 agent (leanstral)
 - `/unleanstall` - Uninstall the Lean 4 agent
@@ -836,13 +891,16 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 - `/data-retention` - Show data retention information
 - `/teleport` - Teleport session to Vibe Code Web (only available when Vibe Code is enabled)
 - `/effort` - Select effort mode: `normal` (turn-by-turn) or `le-chaton` (max thinking + auto-workflow planning)
-- `/workflows` - Manage workflow runs. With no args, opens a progress view.
-  Unlike other slash commands, `/workflows` (and its subcommands) stay usable
-  while the agent is busy or the queue is paused — that is when you need to
-  watch or stop a background run. `Ctrl+W` also toggles the progress view.
-  - `/workflows list` - List all runs with status, agents, tokens, elapsed
-  - `/workflows stop <id|all>` - Stop one or all runs
+- `/tasks` (or `/workflows`, `Ctrl+W`) - Unified background-task manager (processes,
+  workflows, teams, loops). Stays usable while the agent is busy or the queue is
+  paused — that is when you need to watch or stop a background run.
+  - `/tasks` (no args) - Open the task progress view
+  - `/tasks list` (or `/workflows list`) - List all runs with status, agents, tokens, elapsed
+  - `/tasks stop <id|all>` (or `/workflows stop <id|all>`) - Stop one or all runs
   - `/workflows snapshot <id>` - Show cached results for a run
+  - `/workflows resume <run-id>` - Resume a stopped/finished run
+- `/worktree` - Show worktree isolation status, diff, or trigger merge
+  (`/worktree status`, `/worktree diff`, or `/worktree merge`)
 - `/team` - Manage agent teams (multi-process coordination).
   - `/team list` - Show teammates with name, status, PID
   - `/team spawn <name> <prompt>` - Spawn a teammate as a separate vibe process
@@ -922,11 +980,20 @@ the `skill` tool loads the full instructions on demand.
 
 ### Skill Search Order (first match wins)
 
+Built-in skills are reserved: a custom skill whose name collides with a builtin
+is silently skipped, so the order below only resolves custom-vs-custom
+collisions. (Custom *agents* can override builtins on collision — skills cannot.)
+
 1. `skill_paths` from config.toml
-2. `.vibe/skills/` in trusted project directory
-3. `.agents/skills/` in trusted project directory
+2. `.vibe/skills/` in trusted project roots (cwd trust root + each `--add-dir`)
+3. `.agents/skills/` in trusted project roots
 4. `~/.vibe/skills/` (user global)
 5. `~/.agents/skills/` (user global, Agent Skills standard)
+
+**Plugins.** A plugin manifest (`plugin.toml` under `<root>/.vibe/plugins/*/` or
+`~/.vibe/plugins/*/`) additively extends every `*_paths` list (skills, tools,
+agents, workflows, prompts) and union-merges MCP servers — so plugin-supplied
+dirs sit at the same precedence as the matching `*_paths` entry above.
 
 ## Environment Variables
 
@@ -953,6 +1020,12 @@ the `skill` tool loads the full instructions on demand.
 - `VIBE_TEAM_NAME` - Team name (set by TeamManager when spawning teammates)
 - `VIBE_TEAM_DIR` - Team directory path (set by TeamManager when spawning teammates)
 - `VIBE_TEAMMATE_NAME` - Teammate name (set by TeamManager when spawning teammates)
+- `VIBE_THEME` - Override the terminal theme name (same effect as `/theme`)
+- `VIBE_PROFILE` - Set to `1` to activate the per-request profiler
+- `VIBE_ACP_LOGGING_ENABLED` - Set to `1`/`true`/`yes` to enable `vibe-acp` transport logging
+- `VIBE_LSP_TRACE` - Set to `1`/`true` to trace LSP JSON-RPC traffic (debug)
+- `OLLAMA_HOST`, `OLLAMA_CONTEXT_LENGTH` - Honored by the ollama provider to set the
+  server URL and default context length
 
 ## API Keys (.env file)
 

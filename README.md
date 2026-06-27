@@ -29,7 +29,7 @@ Chaton is a command-line coding assistant (a fork of mistral-vibe) powered by Mi
 **Linux and macOS**
 
 ```bash
-curl -LsSf https://mistral.ai/vibe/install.sh | bash
+curl -LsSf https://astral.sh/uv/install.sh | sh && uv tool install chaton
 ```
 
 **Windows**
@@ -134,7 +134,7 @@ Vibe comes with several built-in agent profiles, each designed for different use
 Use the `--agent` flag to select a different agent:
 
 ```bash
-vibe --agent plan
+chaton --agent plan
 ```
 
 To change the default agent used when `--agent` is not passed, set
@@ -220,10 +220,10 @@ Most modern terminals should work, but older or minimal terminal emulators may h
    cd /path/to/your/project
    ```
 
-2. Run Vibe:
+2. Run Chaton:
 
    ```bash
-   vibe
+   chaton
    ```
 
 3. If this is your first time running Vibe, it will:
@@ -231,7 +231,7 @@ Most modern terminals should work, but older or minimal terminal emulators may h
    - Prompt you to enter your API key if it's not already configured
    - Save your API key to `~/.vibe/.env` for future use
 
-   Alternatively, you can configure your API key separately using `vibe --setup`.
+   Alternatively, you can configure your API key separately using `chaton --setup`.
 
 4. Start interacting with the agent!
 
@@ -251,7 +251,7 @@ Most modern terminals should work, but older or minimal terminal emulators may h
 
 ### Interactive Mode
 
-Simply run `vibe` to enter the interactive chat loop.
+Simply run `chaton` to enter the interactive chat loop.
 
 - **Multi-line Input**: Press `Ctrl+J` or `Shift+Enter` for select terminals to insert a newline.
 - **File Paths**: Reference files in your prompt using the `@` symbol for smart autocompletion (e.g., `> Read the file @src/agent.py`).
@@ -266,7 +266,7 @@ Simply run `vibe` to enter the interactive chat loop.
 You can start Vibe with a prompt using the following command:
 
 ```bash
-vibe "Refactor the main function in cli/main.py to be more modular."
+chaton "Refactor the main function in cli/main.py to be more modular."
 ```
 
 ### Trust Folder System
@@ -282,7 +282,7 @@ This safety feature helps prevent accidental execution in sensitive directories.
 You can run Vibe non-interactively by piping input or using the `--prompt` flag. This is useful for scripting.
 
 ```bash
-vibe --prompt "Refactor the main function in cli/main.py to be more modular."
+chaton --prompt "Refactor the main function in cli/main.py to be more modular."
 ```
 
 By default, it uses your configured `default_agent` (`default` unless changed).
@@ -290,7 +290,7 @@ To approve all tool calls without prompting, pass `--auto-approve` or `--yolo`
 (also available for interactive sessions):
 
 ```bash
-vibe --prompt "Refactor the main function in cli/main.py to be more modular." --auto-approve
+chaton --prompt "Refactor the main function in cli/main.py to be more modular." --auto-approve
 ```
 
 #### Programmatic Mode Options
@@ -311,7 +311,7 @@ When using `--prompt`, you can specify additional options:
 Example:
 
 ```bash
-vibe --prompt "Analyze the codebase" --max-turns 5 --max-price 1.0 --max-tokens 50000 --output json
+chaton --prompt "Analyze the codebase" --max-turns 5 --max-price 1.0 --max-tokens 50000 --output json
 ```
 
 ## Voice Mode
@@ -442,7 +442,7 @@ Vibe is configured via a `config.toml` file. It looks for this file first in `./
 
 To use Vibe, you'll need a Mistral API key. You can obtain one by signing up at [https://console.mistral.ai](https://console.mistral.ai).
 
-You can configure your API key using `vibe --setup`, or through one of the methods below.
+You can configure your API key using `chaton --setup`, or through one of the methods below.
 
 Vibe supports multiple ways to configure your API keys:
 
@@ -686,7 +686,7 @@ You can create custom agent configurations for specific use cases (e.g., red-tea
 To use a custom agent, run Vibe with the `--agent` flag:
 
 ```bash
-vibe --agent my_custom_agent
+chaton --agent my_custom_agent
 ```
 
 Vibe will look for a file named `my_custom_agent.toml` in the agents directory and apply its configuration.
@@ -743,20 +743,20 @@ The `web_search` tool uses Mistral's web search by default — no setup required
 ```toml
 [tools.web_search]
 searxng_url = "http://localhost:8888"   # presence of this enables SearXNG
-searxng_manage = true                    # let vibe run the container (docker/podman)
+searxng_manage = true                    # let chaton run the container (docker/podman)
 searxng_image = "searxng/searxng:latest"
 searxng_container_name = "vibe-searxng"
 searxng_port = 8888
 searxng_autostart = true                 # start at session start if down
-searxng_stop_on_exit = true              # stop on exit — only if vibe started it
+searxng_stop_on_exit = true              # stop on exit — only if chaton started it
 ```
 
 Lifecycle, when `searxng_manage` is on and a container engine (`docker` or `podman`) is available:
 
-- **Session start** — if SearXNG is configured but not reachable, vibe starts the container (creating it on first use) and stops it on exit, but only if vibe was the one that started it. A container you started yourself is left untouched.
-- **During a search** — if the instance is down, vibe prompts you to start it, fall back to Mistral for that search, or use Mistral for the rest of the session.
+- **Session start** — if SearXNG is configured but not reachable, chaton starts the container (creating it on first use) and stops it on exit, but only if chaton was the one that started it. A container you started yourself is left untouched.
+- **During a search** — if the instance is down, chaton prompts you to start it, fall back to Mistral for that search, or use Mistral for the rest of the session.
 
-Set `searxng_manage = false` to point at a SearXNG instance you manage yourself (e.g. a remote one); vibe will then only query it, never start or stop it. The `SEARXNG_URL` environment variable is also honored and takes the place of `searxng_url`.
+Set `searxng_manage = false` to point at a SearXNG instance you manage yourself (e.g. a remote one); chaton will then only query it, never start or stop it. The `SEARXNG_URL` environment variable is also honored and takes the place of `searxng_url`.
 
 See [docs/searxng-setup.md](docs/searxng-setup.md) for details.
 
@@ -959,13 +959,13 @@ Vibe supports continuing from previous sessions:
 
 ```bash
 # Continue from last session
-vibe --continue
+chaton --continue
 
 # Open session picker
-vibe --resume
+chaton --resume
 
 # Resume specific session
-vibe --resume abc123
+chaton --resume abc123
 ```
 
 Session logging must be enabled in your configuration for these features to work.
@@ -975,29 +975,33 @@ Session logging must be enabled in your configuration for these features to work
 Use the `--workdir` option to specify a working directory:
 
 ```bash
-vibe --workdir /path/to/project
+chaton --workdir /path/to/project
 ```
 
-This is useful when you want to run Vibe from a different location than your current directory.
+This is useful when you want to run Chaton from a different location than your current directory.
 
 Use `--add-dir` (repeatable) to make additional directories available to the agent for the duration of the session:
 
 ```bash
-vibe --add-dir /path/to/other-project --add-dir /path/to/library
+chaton --add-dir /path/to/other-project --add-dir /path/to/library
 ```
 
 Each path is implicitly trusted (no trust prompt) and contributes its `AGENTS.md` and `.vibe/` configuration (tools, skills, agents, prompts, hooks) to the session. File-tool permissions treat each `--add-dir` path the same way as your primary working directory — reads and writes inside them don't require the "outside workdir" prompt. Nested paths collapse: passing `/repo` and `/repo/sub` is equivalent to passing just `/repo`.
 
 ### Update Settings
 
-Vibe checks PyPI at most once per day during a session. When a newer version is found, the next launch shows an update prompt before opening the chat, offering to either update immediately (via `uv tool upgrade mistral-vibe` or `brew upgrade mistral-vibe`) or continue with the current version.
+In-app update checks are **off by default** in this fork (`enable_update_checks = false`). The `mistral-vibe` and `chaton` PyPI names are unrelated to this fork, so never run `uv tool upgrade mistral-vibe` or `uv tool upgrade chaton` — they will not update this installation.
 
-Run `vibe --check-upgrade` to check PyPI immediately, prompt to install a newer version if one exists, and exit.
+Updates are pulled from the `mistralai/mistral-vibe` upstream via the `upstream` git remote and verified by the `upstream-sync` CI workflow. Apply them with:
 
-To disable the daily check entirely, add this to your `config.toml`:
+```bash
+git pull upstream <tag> && uv sync --all-extras
+```
+
+Run `chaton --check-upgrade` to check for an update, prompt to install it, and exit (only meaningful when update checks are re-enabled). To re-enable the daily check, add this to your `config.toml`:
 
 ```toml
-enable_update_checks = false
+enable_update_checks = true
 ```
 
 ### Notification Settings
@@ -1040,7 +1044,7 @@ A workflow script is a `.py` file with an `async def main()` function. Optional
 YAML frontmatter (`name:`, `description:`) precedes the Python source. The
 runtime injects these functions:
 
-- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent. Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `worker` (full tools incl. any configured MCP; **requires** `isolation="worktree"`). `isolation="worktree"` runs it as a `vibe -p` subprocess in a fresh git worktree (isolates file mutations for parallel agents); the branch is kept for manual merge if it changed files.
+- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent. Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `worker` (full tools incl. any configured MCP; **requires** `isolation="worktree"`). `isolation="worktree"` runs it as a `chaton -p` subprocess in a fresh git worktree (isolates file mutations for parallel agents); the branch is kept for manual merge if it changed files.
 - `parallel(*thunks)` — run thunks concurrently, results in order (a thunk that raises yields `None`)
 - `pipeline(items, *stages)` — run each item through all stages independently, no barrier between stages; each stage receives `(prev, item, index)`. One stage acts as a concurrent map.
 - `phase(name)` — declare a phase for progress tracking
@@ -1055,8 +1059,16 @@ dunder access blocked). Discovered from `workflow_paths` config, `.vibe/workflow
 
 ### Bundled Workflows
 
-- `/deep-research <question>` — fans out web searches across 5 angles, extracts
-  claims with structured output, verifies each claim, synthesizes a cited report.
+- `/deep-research <question>` — fans out web searches across angles, fetches and
+  cross-checks sources, synthesizes a cited report.
+- `/adversarial-review` — adversarially review the current diff via diverse-lens
+  finders, independent refute-verify, and gated synthesis.
+- `/verify-contract` — run a code task in an isolated worktree and gate delivery on
+  a code-artifact contract (files must exist, match grep/size rules, pass tests) or
+  the work is not delivered; the contract, not a model, decides.
+- `/security-fix-verify` — pre-merge gate for a security FIX branch: refute-only
+  per-finding panel, regression hunt, runtime gaps hard-block; emits a review packet,
+  never pushes.
 
 ### Managing Workflow Runs
 
@@ -1080,9 +1092,9 @@ with `disable_workflows = true`.
 
 ## Agent Teams
 
-Agent teams coordinate multiple independent Vibe instances. Unlike subagents
+Agent teams coordinate multiple independent Chaton instances. Unlike subagents
 (in-memory, same session) or workflows (asyncio tasks, same event loop),
-teammates are **separate OS processes** — each is a full `vibe -p` invocation.
+teammates are **separate OS processes** — each is a full `chaton -p` invocation.
 
 ### Team Commands
 
@@ -1115,6 +1127,8 @@ Use of Vibe is subject to our [Privacy Policy](https://legal.mistral.ai/terms/pr
 
 
 ## License
+
+Chaton is a fork of [mistral-vibe](https://github.com/mistralai/mistral-vibe), maintained by dan-campos.
 
 Copyright 2025 Mistral AI
 

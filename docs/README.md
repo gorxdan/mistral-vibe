@@ -1,6 +1,6 @@
 # Chaton Documentation
 
-Welcome to the Chaton documentation! For basic setup, see the [main README](https://github.com/mistralai/mistral-vibe#readme).
+Welcome to the Chaton documentation! For basic setup, see the [main README](https://github.com/dan-campos/chaton#readme).
 
 ## Available Documentation
 
