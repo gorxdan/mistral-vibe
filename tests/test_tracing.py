@@ -178,7 +178,12 @@ class TestJsonlSpanExporter:
         from vibe.core.tracing import _JsonlSpanExporter
 
         span = MagicMock()
-        span.to_json.return_value = '{"name": "invoke_agent chaton"}'
+        # The real ReadableSpan.to_json() returns multi-line indented JSON; a
+        # single-line mock hid the bug where the exporter wrote the blob raw and
+        # broke the one-record-per-line JSONL contract.
+        span.to_json.return_value = json.dumps(
+            {"name": "invoke_agent chaton"}, indent=4
+        )
         exporter = _JsonlSpanExporter(tmp_path / "traces.jsonl")
 
         result = exporter.export([span, span])

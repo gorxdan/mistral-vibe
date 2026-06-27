@@ -46,6 +46,13 @@ def _normalize_provider(name: str | None) -> str | None:
     return _PROVIDER_ALIASES.get(name, name)
 
 
+def _span_to_jsonl(span: ReadableSpan) -> str:
+    # ReadableSpan.to_json() returns multi-line indented JSON (SDK default); writing
+    # it raw breaks the one-record-per-line JSONL contract this exporter depends on.
+    # Round-trip through json to emit compact single-line JSON per span.
+    return json.dumps(json.loads(span.to_json()))
+
+
 class _JsonlSpanExporter(SpanExporter):
     """Appends each ended span as one JSON line to a local file.
 
@@ -61,7 +68,7 @@ class _JsonlSpanExporter(SpanExporter):
         try:
             with self._path.open("a", encoding="utf-8") as f:
                 for span in spans:
-                    f.write(span.to_json() + "\n")
+                    f.write(_span_to_jsonl(span) + "\n")
         except Exception:
             logger.warning("Failed to write span to %s", self._path, exc_info=True)
         return SpanExportResult.SUCCESS
