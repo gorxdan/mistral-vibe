@@ -307,11 +307,16 @@ def _get_available_subagents_section(agent_manager: AgentManager) -> str:
 
 _ORCHESTRATION_SECTION = """## Orchestrating Subagents
 
-Orchestration is a default skill, not a last resort. For non-trivial \
-investigation or review, you are the lead: spin up read-only subagents via the \
-`task` tool and keep the main context for synthesis, decisions, and edits. If \
-answering means reading 10+ files or reviewing a branch, send a subagent and \
-get back a conclusion — don't grind it all through here.
+Local tools first, delegation second. For an unfamiliar repository, establish a \
+baseline yourself before spawning subagents: map files with `glob`, resolve central \
+symbols and callers with `lsp`, then read the entry points and representative \
+tests. This reconnaissance determines whether delegation will add value and gives \
+you enough context to write precise briefs.
+
+Orchestration is a default skill for work that remains broad after reconnaissance, \
+not a substitute for reconnaissance. Use read-only subagents for independent \
+questions or a review that would otherwise require reading 10+ files. Keep the main \
+context for synthesis, decisions, and edits.
 
 Pick the profile by the question:
 - `explore` — codebase questions and searches: where/how is X done, trace a \
@@ -691,7 +696,11 @@ def _get_le_chaton_section() -> str:
         "Max thinking + automatic workflow orchestration. For substantive tasks "
         "(codebase audits, large migrations, cross-checked research, multi-file "
         "refactors), write a workflow script that orchestrates parallel agents "
-        "instead of working turn-by-turn.\n\n"
+        "instead of working turn-by-turn. Do not launch a workflow as the first "
+        "repository-discovery step. First use local `glob` and `lsp` to map the "
+        "repository, identify central symbols and callers, and read entry points. "
+        "A broad label such as 'analyze this repo' does not by itself justify a "
+        "workflow.\n\n"
         "**Canonical reference:** the `launch_workflow` tool doc is the single "
         "source of truth for the script API (`agent`/`parallel`/`pipeline`/"
         "`phase`/`log`/`budget`/`workflow`/`args` + synthesis helpers), sandbox "
@@ -714,9 +723,10 @@ def _get_le_chaton_section() -> str:
         "same fan-out. Re-run that phase with `max_concurrency=1`, or serialize "
         "via `pipeline`, or `schedule` a retry after the provider's "
         "`Retry-After` (honored up to 60s).\n\n"
-        "**Prefer workflows when:** 3+ independent agents | adversarial "
-        "verification adds value | work spans many files. Simple tasks → work "
-        "normally.\n\n"
+        "**Prefer workflows after reconnaissance when:** 3+ independent agents "
+        "| adversarial verification adds value | separable work can proceed "
+        "concurrently. File count alone is not a reason to delegate. Simple "
+        "tasks → work normally.\n\n"
         "**Don't poll workflows.** Completion is auto-delivered to your "
         "context as a user message — launching a workflow and then calling "
         "`workflow_status` repeatedly to watch it is a turn-wasting anti-"

@@ -1,14 +1,24 @@
 Use `launch_workflow` to run a workflow script that orchestrates parallel agents in the background.
 
+## Local discovery comes first
+
+Do not launch a workflow as the first step for an unfamiliar repository. First
+use `glob` to map packages, entry points, and tests; use `lsp` to resolve central
+symbols, references, and call paths; then read enough code to define independent
+questions. Launch only if that reconnaissance shows real parallel work. A broad
+request such as "analyze this repo" or a high file count is not sufficient by
+itself.
+
 ## When to Use This Tool
 
-- **Multi-agent tasks**: Codebase audits, large migrations, cross-checked research that needs 3+ independent agents
-- **Adversarial verification**: Findings that should be cross-checked by multiple skeptics
-- **Dynamic loops**: Tasks that need to loop until a condition is met (dry rounds, budget exhaustion)
-- **Parallel exploration**: Investigating multiple directories or angles simultaneously
+- **Multi-agent tasks**: Reconnaissance reveals 3+ independent questions or separable implementation areas
+- **Adversarial verification**: Findings should be cross-checked by independent skeptics
+- **Dynamic loops**: Work needs to loop until a condition is met (dry rounds, budget exhaustion)
+- **Parallel exploration**: Known directories or angles can be investigated independently
 
 ## When NOT to Use
 
+- Initial repository discovery or one coherent architecture trace — use `glob`, `lsp`, and targeted `read` calls
 - Single-file edits or quick questions — work normally
 - Tasks that need sequential, dependent steps — use subagents instead
 - Tasks requiring user interaction — workflow agents cannot ask questions

@@ -40,5 +40,10 @@ appears.
 symbol. Example: for `foo(bar)` where `foo` begins at column 5, pass
 `character=5`.
 
+For repository architecture analysis, start with `glob` to map packages and
+entry points, then use `workspace_symbol`/`document_symbol` to identify central
+symbols, and `find_references` or call hierarchy to verify dependency direction.
+Read only the files needed to confirm that semantic map.
+
 If the tool reports no server for an extension, no language server is
 configured for that language — fall back to `grep`.

@@ -13,9 +13,11 @@ Use `task` to delegate work to a subagent for independent execution.
 
 2. **Choose the right subagent** - Match the subagent to the task type (see available subagents in system prompt)
 
-3. **Prefer direct tools for simple operations** - If you know exactly which file to read or pattern to search, use those tools directly instead of spawning a subagent
+3. **Establish a local baseline first** - For an unfamiliar repository, map packages with `glob`, identify central symbols and callers with `lsp`, and read the entry points before delegating. This produces precise, independent briefs instead of asking agents to rediscover the same repository.
 
-4. **Trust the subagent's judgment** - Let it explore and find information without micromanaging the approach
+4. **Prefer direct tools for coherent lookups** - If you know which file, symbol, or flow to inspect, use `read`/`lsp`/`grep` directly instead of spawning a subagent. File count alone does not make a task delegable.
+
+5. **Trust the subagent's judgment** - Let it explore and find information without micromanaging the approach
 
 ## Capabilities & limits
 

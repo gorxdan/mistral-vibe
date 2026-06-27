@@ -68,7 +68,10 @@ def test_orchestration_section_present_in_normal_mode() -> None:
     # Normal mode: the host is directed to orchestrate subagents (no workflows).
     assert "# Available Subagents" in prompt
     assert "## Orchestrating Subagents" in prompt
-    assert "Orchestration is a default skill" in prompt
+    assert "Local tools first, delegation second" in prompt
+    assert "map files with `glob`" in prompt
+    assert "symbols and callers with `lsp`" in prompt
+    assert "not a substitute for reconnaissance" in prompt
     assert "`task`" in prompt
     # The profile→use map is present.
     for profile in ("`explore`", "`research`", "`reviewer`", "`debugger`"):
@@ -79,6 +82,30 @@ def test_orchestration_section_present_in_normal_mode() -> None:
     # only assert the le-chaton section itself is absent.)
     assert "Le Chaton Mode" not in prompt
     assert "le chaton effort mode" not in prompt
+
+
+def test_le_chaton_requires_local_reconnaissance_before_workflows() -> None:
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+        effort_mode="le-chaton",
+    )
+    prompt = get_universal_system_prompt(
+        ToolManager(lambda: config),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+    )
+
+    assert "## Le Chaton Mode" in prompt
+    assert "Do not launch a workflow as the first repository-discovery step" in prompt
+    assert "First use local `glob` and `lsp`" in prompt
+    assert "A broad label such as 'analyze this repo' does not by itself" in prompt
+    assert "File count alone is not a reason to delegate" in prompt
 
 
 def test_debugger_subagent_registered_with_systematic_prompt() -> None:
@@ -389,10 +416,7 @@ def test_verification_contract_section_present_when_subsystem_enabled() -> None:
     }
     on = build_test_vibe_config(verification_subsystem=True, **common)
     prompt_on = get_universal_system_prompt(
-        ToolManager(lambda: on),
-        on,
-        SkillManager(lambda: on),
-        AgentManager(lambda: on),
+        ToolManager(lambda: on), on, SkillManager(lambda: on), AgentManager(lambda: on)
     )
     assert "## Verification contract" in prompt_on
     assert "spawn the `verifier`" in prompt_on.lower()
