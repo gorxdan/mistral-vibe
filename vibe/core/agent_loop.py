@@ -909,10 +909,15 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if not self._base_config.enable_connectors:
             return None
 
-        provider = self._base_config.get_mistral_provider()
-        if provider is None:
+        # Connectors are a Mistral-cloud feature. Gate on the ACTIVE provider
+        # being Mistral — get_mistral_provider() returns any Mistral provider
+        # even when it isn't active, which spawned a registry (and a 401 fetch)
+        # for users whose active provider is non-Mistral but who keep a leftover
+        # Mistral provider with a set-but-unauthorized key.
+        if not self._base_config.is_active_model_mistral():
             return None
 
+        provider = self._base_config.get_active_provider()
         api_key_env = provider.api_key_env_var or "MISTRAL_API_KEY"
         api_key = os.getenv(api_key_env, "")
         if not api_key:

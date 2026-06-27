@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import tomli_w
 
-from tests.conftest import build_test_vibe_config
+from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.config._settings import (
     DEFAULT_MISTRAL_BROWSER_AUTH_API_BASE_URL,
@@ -1572,6 +1572,41 @@ class TestIsActiveModelMistral:
             active_model="llama-local",
         )
         assert cfg.is_active_model_mistral() is False
+
+
+class TestConnectorRegistryActiveProviderGate:
+    def test_non_mistral_active_skips_registry_with_leftover_mistral_provider(
+        self,
+    ) -> None:
+        # Connectors are a Mistral-cloud feature. When the ACTIVE model is on a
+        # non-Mistral provider, no registry should be built even if a leftover
+        # Mistral provider with a set key exists — otherwise every session fires
+        # an unauthorized 401 bootstrap.
+        cfg = build_test_vibe_config(
+            enable_connectors=True,
+            providers=[
+                ProviderConfig(
+                    name="mistral",
+                    api_base="https://api.mistral.ai/v1",
+                    api_key_env_var="MISTRAL_API_KEY",
+                ),
+                ProviderConfig(
+                    name="llamacpp",
+                    api_base="http://127.0.0.1:8080/v1",
+                    api_key_env_var="",
+                ),
+            ],
+            models=[
+                ModelConfig(
+                    name="llama-local", provider="llamacpp", alias="llama-local"
+                )
+            ],
+            active_model="llama-local",
+        )
+
+        loop = build_test_agent_loop(config=cfg)
+
+        assert loop.connector_registry is None
 
 
 class TestMigrateRenamedTools:
