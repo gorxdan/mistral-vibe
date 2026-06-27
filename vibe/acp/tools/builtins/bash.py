@@ -56,6 +56,10 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
 
         terminal_id = terminal.terminal_id
 
+        # Set when _wait_for_terminal_exit force-kills the terminal on timeout.
+        # Once killed, release_terminal would target an already-destroyed
+        # terminal and fail — so the finally skips the redundant call.
+        terminal_finalized = False
         try:
             if ctx is not None:
                 yield ToolTerminalOpenedEvent(
@@ -64,9 +68,13 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
                     terminal_id=terminal_id,
                 )
 
-            exit_response = await self._wait_for_terminal_exit(
-                terminal_id=terminal_id, timeout=timeout, command=args.command
-            )
+            try:
+                exit_response = await self._wait_for_terminal_exit(
+                    terminal_id=terminal_id, timeout=timeout, command=args.command
+                )
+            except ToolError:
+                terminal_finalized = True
+                raise
 
             output_response = await client.terminal_output(
                 session_id=session_id, terminal_id=terminal_id
@@ -80,15 +88,18 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
             )
 
         finally:
-            try:
-                await asyncio.wait_for(
-                    client.release_terminal(
-                        session_id=session_id, terminal_id=terminal_id
-                    ),
-                    timeout=_TERMINAL_CLEANUP_TIMEOUT,
-                )
-            except Exception as e:
-                logger.error("Failed to release terminal: %r", e)
+            if not terminal_finalized:
+                try:
+                    await asyncio.wait_for(
+                        client.release_terminal(
+                            session_id=session_id, terminal_id=terminal_id
+                        ),
+                        timeout=_TERMINAL_CLEANUP_TIMEOUT,
+                    )
+                except Exception as e:
+                    # Best-effort teardown: on session close the JSON-RPC pipe is
+                    # already gone, so this is expected — debug, not an error.
+                    logger.debug("Failed to release terminal: %r", e)
 
     @classmethod
     def get_summary(cls, args: BashArgs) -> str:
@@ -119,7 +130,7 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
                     timeout=_TERMINAL_CLEANUP_TIMEOUT,
                 )
             except Exception as e:
-                logger.error("Failed to kill terminal: %r", e)
+                logger.debug("Failed to kill terminal: %r", e)
 
             raise self._build_timeout_error(command, timeout)
 

@@ -457,11 +457,13 @@ class TestAcpBashCleanup:
         assert release_called
 
     @pytest.mark.asyncio
-    async def test_run_releases_terminal_on_timeout(
+    async def test_run_skips_release_after_timeout_kill(
         self, mock_client: MockClient
     ) -> None:
-        # The handle will wait 2 seconds, but timeout is 1 second,
-        # so asyncio.wait_for() will raise TimeoutError
+        # On timeout _wait_for_terminal_exit force-kills the terminal. A
+        # subsequent release_terminal would target an already-destroyed
+        # terminal and fail on the real backend, so release must be skipped
+        # once kill has finalized the terminal.
         custom_handle = MockTerminalHandle(
             terminal_id="timeout_cleanup_terminal",
             wait_delay=2.0,  # Longer than the 1 second timeout
@@ -484,13 +486,13 @@ class TestAcpBashCleanup:
         )
 
         args = BashArgs(command="slow", timeout=1)
-        # Timeout raises an error, but terminal should still be released
         try:
             await collect_result(tool.run(args))
         except ToolError:
             pass
 
-        assert release_called
+        assert custom_handle._killed
+        assert not release_called
 
     @pytest.mark.asyncio
     async def test_run_handles_release_failure(self, mock_client: MockClient) -> None:
