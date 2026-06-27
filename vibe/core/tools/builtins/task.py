@@ -324,7 +324,9 @@ class Task(
                     label=args.agent,
                     max_turns=DEFAULT_ISOLATED_MAX_TURNS,
                     deliver=True,
-                    model=args.model,
+                    # Inherit the parent model so the isolated subprocess doesn't
+                    # re-derive the hardcoded mistral default (no API key).
+                    model=args.model or ctx.agent_manager.config.active_model,
                 )
                 response_text = result.output
                 worktree_path = result.worktree_path
@@ -437,9 +439,14 @@ class Task(
             session_prefix=args.agent,
             enabled=ctx.session_dir is not None,
         )
+        # Inherit the parent session's resolved model when the caller didn't
+        # pick one. A fresh VibeConfig.load() otherwise falls back to the
+        # hardcoded default (mistral), which fails when no MISTRAL_API_KEY is set
+        # — the parent is running on some other provider (glm/zai/fugu/...).
+        inherited_model = args.model or ctx.agent_manager.config.active_model
         load_overrides: dict[str, str] = {}
-        if args.model:
-            load_overrides["active_model"] = args.model
+        if inherited_model:
+            load_overrides["active_model"] = inherited_model
         base_config = VibeConfig.load(session_logging=session_logging, **load_overrides)
         # Subagents inherit the parent worktree; never call worktree_manager.enter().
         subagent_loop = AgentLoop(

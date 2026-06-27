@@ -191,9 +191,12 @@ class TestTaskToolModelRouting:
             assert mock_load.call_args.kwargs.get("active_model") == valid_alias
 
     @pytest.mark.asyncio
-    async def test_omitted_model_does_not_override_in_process_loop(
+    async def test_omitted_model_inherits_parent_in_process_loop(
         self, task_tool: Task, ctx: InvokeContext
     ) -> None:
+        # When the caller omits a model, the subagent must inherit the parent's
+        # resolved active_model. Otherwise a fresh VibeConfig.load() falls back to
+        # the hardcoded mistral default and dies with "Missing MISTRAL_API_KEY".
         async def mock_act(task: str):
             yield AssistantEvent(content="ok")
 
@@ -213,7 +216,10 @@ class TestTaskToolModelRouting:
             args = TaskArgs(task="review", agent="explore")
             await collect_result(task_tool.run(args, ctx))
 
-            assert "active_model" not in mock_load.call_args.kwargs
+            assert (
+                mock_load.call_args.kwargs.get("active_model")
+                == ctx.agent_manager.config.active_model
+            )
 
     @pytest.mark.asyncio
     async def test_valid_model_threaded_into_isolated_spawn(
@@ -242,6 +248,35 @@ class TestTaskToolModelRouting:
             await collect_result(task_tool.run(args, ctx))
 
         assert mock_run.call_args.kwargs.get("model") == valid_alias
+
+    @pytest.mark.asyncio
+    async def test_omitted_model_inherits_parent_isolated_spawn(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        class _FakeIsolatedResult:
+            output = "done"
+            worktree_path = None
+            branch = None
+
+        async def fake_run(*a, **kw):
+            return _FakeIsolatedResult()
+
+        args = TaskArgs(task="review", agent="worker")
+        with (
+            patch(
+                "vibe.core.tools.builtins.task.profile_requires_isolation",
+                return_value=True,
+            ),
+            patch(
+                "vibe.core.tools.builtins.task.run_isolated_agent", side_effect=fake_run
+            ) as mock_run,
+        ):
+            await collect_result(task_tool.run(args, ctx))
+
+        assert (
+            mock_run.call_args.kwargs.get("model")
+            == ctx.agent_manager.config.active_model
+        )
 
 
 class TestTaskToolResolvePermission:

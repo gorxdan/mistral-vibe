@@ -1392,9 +1392,18 @@ class WorkflowRuntime:
             session_prefix=agent,
             enabled=ctx is not None and ctx.session_dir is not None,
         )
+        # Inherit the launching session's model when the workflow step didn't
+        # pin one, so the per-agent config doesn't re-derive the hardcoded
+        # mistral default (which fails without MISTRAL_API_KEY). This was killing
+        # workflow fan-out agents whose parent ran on glm/zai/fugu.
+        inherited_model = model or (
+            ctx.agent_manager.config.active_model
+            if ctx and ctx.agent_manager
+            else None
+        )
         overrides: dict[str, Any] = {}
-        if model:
-            overrides["active_model"] = model
+        if inherited_model:
+            overrides["active_model"] = inherited_model
         return VibeConfig.load(session_logging=session_logging, **overrides)
 
     def _create_loop(
