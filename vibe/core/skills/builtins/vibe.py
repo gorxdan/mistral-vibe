@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from vibe import __version__
-from vibe.core.skills.models import SkillInfo
+from vibe.core.skills.builtins.capsules import SkillDocCapsule
 
 _PROMPT_TEMPLATE = """# Vibe CLI Self-Awareness
 
@@ -1277,7 +1277,7 @@ For project-specific configuration, create/edit `.vibe/config.toml` in the
 project root (the folder must be trusted first)."""
 
 
-SKILL = SkillInfo(
+VIBE_DOC_CAPSULE = SkillDocCapsule(
     name="vibe",
     description=(
         "Authoritative reference for Chaton, the CLI agent you (the model) run "
@@ -1306,5 +1306,6 @@ SKILL = SkillInfo(
         "commands, flags, hooks, workflows, ~/.vibe — the source of truth."
     ),
     user_invocable=False,
-    prompt=_PROMPT_TEMPLATE.replace("__VIBE_VERSION__", __version__),
+    prompt_template=_PROMPT_TEMPLATE,
 )
+SKILL = VIBE_DOC_CAPSULE.to_skill_info(__version__)
