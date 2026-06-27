@@ -334,6 +334,12 @@ class MemoryConfig(BaseSettings):
     model: str | None = None  # alias; falls back to compaction/active model
     max_selected: int = 5
     max_inject_chars: int = 8000
+    # Where the volatile recall block is placed. "system" embeds it in the
+    # system prompt (replaced each turn): a selection change then mutates the
+    # prefix root and busts the cached history behind it. "late" keeps the
+    # system prompt byte-stable and rides recall on an ephemeral message just
+    # before the latest user turn, so only the small tail is reprocessed.
+    inject_mode: Literal["system", "late"] = "system"
     max_entries_scanned: int = 200
     timeout: float = 20.0
     extra_body: dict[str, Any] = Field(default_factory=dict)
