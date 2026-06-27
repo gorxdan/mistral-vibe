@@ -153,6 +153,7 @@ from vibe.core.skills.manager import SkillManager
 from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
 from vibe.core.telemetry.send import TelemetryClient
 from vibe.core.telemetry.types import EntrypointMetadata
+from vibe.core.tools.background import BackgroundRegistry
 from vibe.core.tools.permissions import RequiredPermission
 from vibe.core.trusted_folders import (
     WorkspaceTrustDecision,
@@ -759,6 +760,11 @@ class VibeAcpAgentLoop(AcpAgent):
             hook_config_result=hook_config_result,
         )
         agent_loop.agent_manager.register_agent(CHAT_AGENT)
+        # Per-session background registry so the bash tool's background=True
+        # works in ACP. Owns processes outright; aggregated categories stay
+        # empty (no Tasks pane). Reaped in _close_agent_loop so a backgrounded
+        # server does not survive the session.
+        agent_loop.background_registry = BackgroundRegistry()
         return agent_loop
 
     def _build_session_state(
@@ -1620,6 +1626,12 @@ class VibeAcpAgentLoop(AcpAgent):
         if deferred_init_thread is not None and deferred_init_thread.is_alive():
             await asyncio.to_thread(deferred_init_thread.join)
 
+        # Reap backgrounded processes owned by this session's registry before
+        # closing the loop, so a server started via background=True does not
+        # orphan to init when the ACP session closes.
+        registry = agent_loop.background_registry
+        if registry is not None:
+            await registry.shutdown()
         await teardown_lsp_async()
         await agent_loop.aclose()
         await agent_loop.telemetry_client.aclose()

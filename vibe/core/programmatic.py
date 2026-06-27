@@ -32,6 +32,7 @@ from vibe.core.teleport.types import (
     TeleportPushRequiredEvent,
     TeleportPushResponseEvent,
 )
+from vibe.core.tools.background import BackgroundRegistry
 from vibe.core.tools.permissions import RequiredPermission
 from vibe.core.types import (
     ApprovalResponse,
@@ -151,6 +152,13 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
     # persist and fire on a later interactive/ACP resume of the session.
     scheduler = LoopManager(agent_loop.session_logger)
     agent_loop.set_scheduler(scheduler)
+    # Wire a background registry so the bash tool's background=True works
+    # headless. Without this, ctx.background_registry is None and the bash
+    # tool refuses to spawn (ToolError). Owns processes outright; aggregated
+    # categories (workflows/teams/loops) stay empty — no Tasks pane here, but
+    # the `background` tool and async subagent completions still work.
+    background_registry = BackgroundRegistry()
+    agent_loop.background_registry = background_registry
     logger.info("USER: %s", prompt)
 
     async def _async_run() -> str | None:
@@ -207,6 +215,10 @@ def run_programmatic(  # noqa: PLR0913, PLR0917
             return formatter.finalize()
         finally:
             agent_loop.emit_session_closed_telemetry()
+            # Reap backgrounded processes so a `vibe -p` that started a server
+            # does not orphan it to init on exit. Aggregated categories own
+            # their own shutdown; this only reaps registry-owned processes.
+            await background_registry.shutdown()
             await _teardown_lsp_and_loop(agent_loop)
 
     try:
