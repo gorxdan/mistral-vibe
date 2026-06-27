@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import platform
 import sys
 
+from vibe.cli.constants import CLIPBOARD_IMAGE_PASTE_SUPPORTED_SYSTEM
 from vibe.cli.plan_offer.decide_plan_offer import PlanInfo
 from vibe.core.logger import logger
 
@@ -92,6 +94,14 @@ class CommandRegistry:
                 aliases=frozenset(["/copy"]),
                 description="Copy the last agent message to the clipboard",
                 handler="_copy_last_agent_message",
+            ),
+            "paste-image": Command(
+                aliases=frozenset(["/paste-image"]),
+                description="Paste an image from the OS clipboard into the prompt",
+                handler="_paste_clipboard_image_command",
+                is_available=lambda _: (
+                    platform.system() == CLIPBOARD_IMAGE_PASTE_SUPPORTED_SYSTEM
+                ),
             ),
             "log": Command(
                 aliases=frozenset(["/log"]),

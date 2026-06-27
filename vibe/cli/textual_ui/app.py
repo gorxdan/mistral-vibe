@@ -72,6 +72,9 @@ from vibe.cli.textual_ui.widgets.chat_input.input_kinds import (
     Teleport,
     classify,
 )
+from vibe.cli.textual_ui.widgets.chat_input.paste_image import (
+    handle_clipboard_image_paste,
+)
 from vibe.cli.textual_ui.widgets.chat_input.text_area import ChatTextArea
 from vibe.cli.textual_ui.widgets.collapsible import CollapsibleSection
 from vibe.cli.textual_ui.widgets.compact import CompactMessage
@@ -2431,6 +2434,9 @@ class VibeApp(App):  # noqa: PLR0904
         )
         if copied_text is not None:
             self.agent_loop.telemetry_client.send_user_copied_text(copied_text)
+
+    async def _paste_clipboard_image_command(self, **_kwargs: Any) -> None:
+        await handle_clipboard_image_paste(self, notify_when_empty=True)
 
     async def _refresh_mcp_browser(self) -> str:
         await self.agent_loop.tool_manager.refresh_remote_tools_async()

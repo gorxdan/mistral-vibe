@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
+from vibe.core.cache_store import InMemoryVibeCodeCacheStore, VibeCodeCacheStore
 from vibe.core.compaction import (
     build_extractive_summary,
     collect_leading_injected_context,
@@ -446,7 +447,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         hook_config_result: HookConfigResult | None = None,
         permission_store: PermissionStore | None = None,
         mcp_registry: MCPRegistry | None = None,
+        cache_store: VibeCodeCacheStore | None = None,
     ) -> None:
+        self.cache_store = cache_store or InMemoryVibeCodeCacheStore()
         self._base_config = config
         self._headless = headless
 

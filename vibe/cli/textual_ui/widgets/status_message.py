@@ -19,7 +19,7 @@ class StatusMessage(SpinnerMixin, NoMarkupStatic):
     def __init__(self, initial_text: str = "", **kwargs: Any) -> None:
         self._initial_text = initial_text
         self._indicator_widget: Static | None = None
-        self._text_widget: NoMarkupStatic | None = None
+        self._text_widget: Static | None = None
         self.success = True
         self.init_spinner()
         super().__init__(**kwargs)
@@ -71,7 +71,10 @@ class StatusMessage(SpinnerMixin, NoMarkupStatic):
             return
 
         self._refresh_indicator()
-        self._text_widget.update(self.get_content())
+        self._text_widget.update(self._format_text(self.get_content()))
+
+    def _format_text(self, content: str) -> str:
+        return content
 
     def get_content(self) -> str:
         return self._initial_text

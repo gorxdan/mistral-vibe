@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
+from tests import constants as c
 from vibe.core.config import ProviderConfig
 from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.vertex import (
@@ -33,8 +34,8 @@ def provider():
     return ProviderConfig(
         name="vertex",
         api_base="",
-        project_id="test-project",
-        region="us-central1",
+        project_id=c.VERTEX_PROJECT_ID,
+        region=c.VERTEX_REGION,
         api_style="vertex-anthropic",
     )
 
@@ -59,8 +60,8 @@ class TestBuildVertexEndpoint:
         )
 
     def test_base_url(self):
-        base = build_vertex_base_url("us-central1")
-        assert base == "https://us-central1-aiplatform.googleapis.com"
+        base = build_vertex_base_url(c.VERTEX_REGION)
+        assert base == c.VERTEX_BASE_URL
 
     def test_global_endpoint(self):
         endpoint = build_vertex_endpoint("global", "my-project", "claude-3-5-sonnet")
@@ -100,7 +101,7 @@ class TestPrepareRequest:
         assert req.headers["anthropic-beta"] == adapter.BETA_FEATURES
         assert "rawPredict" in req.endpoint
         assert "streamRawPredict" not in req.endpoint
-        assert req.base_url == "https://us-central1-aiplatform.googleapis.com"
+        assert req.base_url == c.VERTEX_BASE_URL
 
     def test_streaming_request(self, adapter, provider):
         messages = [LLMMessage(role=Role.user, content="Hello")]
@@ -198,7 +199,7 @@ class TestPrepareRequest:
         provider = ProviderConfig(
             name="vertex",
             api_base="",
-            region="us-central1",
+            region=c.VERTEX_REGION,
             api_style="vertex-anthropic",
         )
         with pytest.raises(ValueError, match="project_id"):
@@ -220,7 +221,7 @@ class TestPrepareRequest:
         provider = ProviderConfig(
             name="vertex",
             api_base="",
-            project_id="test-project",
+            project_id=c.VERTEX_PROJECT_ID,
             api_style="vertex-anthropic",
         )
         with pytest.raises(ValueError, match="region"):

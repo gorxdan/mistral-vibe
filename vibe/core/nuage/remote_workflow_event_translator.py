@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Callable
+import functools
 from typing import Any, cast
 
 from jsonpatch import JsonPatch, JsonPatchException
@@ -120,6 +121,7 @@ class _RemoteTool(
     remote_name = "remote_tool"
 
     @classmethod
+    @functools.cache
     def get_name(cls) -> str:
         return cls.remote_name
 

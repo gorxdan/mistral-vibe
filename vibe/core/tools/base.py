@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from vibe.core.loop import Scheduler
     from vibe.core.skills.manager import SkillManager
     from vibe.core.telemetry.types import EntrypointMetadata, TerminalEmulator
+    from vibe.core.tools.mcp.pool import MCPSessionPool
     from vibe.core.tools.mcp_sampling import MCPSamplingHandler
     from vibe.core.tools.permissions import PermissionContext, PermissionStore
     from vibe.core.types import ApprovalCallback, SwitchAgentCallback, UserInputCallback
@@ -66,6 +67,7 @@ class InvokeContext:
     permission_store: PermissionStore | None = field(default=None)
     hook_config_result: HookConfigResult | None = field(default=None)
     session_id: str | None = field(default=None)
+    mcp_pool: MCPSessionPool | None = field(default=None)
     terminal_emulator: TerminalEmulator | None = field(default=None)
     launch_workflow_callback: Callable[[str, str | None], str] | None = field(
         default=None
