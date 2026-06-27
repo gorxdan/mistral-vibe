@@ -257,7 +257,9 @@ class EditResultWidget(ToolResultWidget[EditResult]):
                 self.result.old_string,
                 self.result.new_string,
                 language_for_path(self.result.file),
-                self.result.ui_start_lines,
+                [self.result.ui_start_line]
+                if self.result.ui_start_line is not None
+                else None,
                 ansi=self.app.native_ansi_color,
                 dark=self.app.current_theme.dark,
             )

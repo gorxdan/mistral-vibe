@@ -161,7 +161,6 @@ class ChatInputContainer(Vertical):
         except Exception:
             return
         popup.update_menu(rows, selected_index)
-        self._position_popup(popup, [(row.text, row.description) for row in rows])
 
     def clear_completion_suggestions(self) -> None:
         try:
