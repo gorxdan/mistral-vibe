@@ -52,3 +52,22 @@ def test_cache_keyed_per_root() -> None:
     assert p1.get_git_status() == "root1"
     assert p2.get_git_status() == "root2"
     assert time.monotonic() > 0  # sanity
+
+
+def test_parse_git_log_preserves_conventional_commit_scope() -> None:
+    log = (
+        "e9b9920 perf(prompts): Vercel-style compression of 14 surfaces\n"
+        "ee4c21e fix(memory): derive manage_memory title from body"
+    )
+    parsed = ProjectContextProvider._parse_git_log(log)
+    assert parsed == [
+        "e9b9920 perf(prompts): Vercel-style compression of 14 surfaces",
+        "ee4c21e fix(memory): derive manage_memory title from body",
+    ]
+
+
+def test_parse_git_log_strips_trailing_pr_number_only() -> None:
+    parsed = ProjectContextProvider._parse_git_log(
+        "6bedf27 v2.18.0 (#843)\n725d3a5 fix(x): handle null (edge case)"
+    )
+    assert parsed == ["6bedf27 v2.18.0", "725d3a5 fix(x): handle null (edge case)"]

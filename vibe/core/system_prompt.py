@@ -86,12 +86,9 @@ class ProjectContextProvider:
                 continue
             if " " in line:
                 commit_hash, commit_msg = line.split(" ", 1)
-                if (
-                    "(" in commit_msg
-                    and ")" in commit_msg
-                    and (paren_index := commit_msg.rfind("(")) > 0
-                ):
-                    commit_msg = commit_msg[:paren_index].strip()
+                # anchor to a trailing "(#N)" so a conventional-commit scope
+                # like "perf(prompts):" is not mistaken for a PR suffix
+                commit_msg = re.sub(r"\s*\(#\d+\)$", "", commit_msg)
                 recent_commits.append(f"{commit_hash} {commit_msg}")
             else:
                 recent_commits.append(line)
@@ -111,9 +108,7 @@ class ProjectContextProvider:
                     self._run_git, ["status", "--porcelain"], timeout
                 )
                 log_future = pool.submit(
-                    self._run_git,
-                    ["log", "--oneline", f"-{num_commits}", "--decorate"],
-                    timeout,
+                    self._run_git, ["log", "--oneline", f"-{num_commits}"], timeout
                 )
 
             current_branch = branch_future.result().stdout.strip()
