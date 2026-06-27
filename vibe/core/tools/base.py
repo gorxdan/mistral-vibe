@@ -186,6 +186,26 @@ class BaseToolState(BaseModel):
     )
 
 
+@functools.cache
+def _load_tool_prompt(cls: type) -> str | None:
+    # Module-level cached loader backing BaseTool.get_tool_prompt. Kept outside
+    # the class so the method itself is a plain classmethod — subclass overrides
+    # (which return a literal or None) stay type-compatible with the base, instead
+    # of every override needing a matching @functools.cache decorator. The cache
+    # key is `cls`, so each tool class gets its own memoized read.
+    try:
+        class_file = inspect.getfile(cls)
+        class_path = Path(class_file)
+        prompt_dir = class_path.parent / "prompts"
+        prompt_path = cls.prompt_path or prompt_dir / f"{class_path.stem}.md"
+
+        return read_safe(prompt_path).text
+    except (FileNotFoundError, TypeError, OSError):
+        pass
+
+    return None
+
+
 class BaseTool[
     ToolArgs: BaseModel,
     ToolResult: BaseModel,
@@ -245,25 +265,14 @@ class BaseTool[
             yield
 
     @classmethod
-    @functools.cache
     def get_tool_prompt(cls) -> str | None:
         """Loads and returns the content of the tool's .md prompt file, if it exists.
 
         The prompt file is expected to be in a 'prompts' subdirectory relative to
         the tool's source file, with the same name but a .md extension
-        (e.g., bash.py -> prompts/bash.md).
+        (e.g., bash.py -> prompts/bash.md). Memoized via ``_load_tool_prompt``.
         """
-        try:
-            class_file = inspect.getfile(cls)
-            class_path = Path(class_file)
-            prompt_dir = class_path.parent / "prompts"
-            prompt_path = cls.prompt_path or prompt_dir / f"{class_path.stem}.md"
-
-            return read_safe(prompt_path).text
-        except (FileNotFoundError, TypeError, OSError):
-            pass
-
-        return None
+        return _load_tool_prompt(cls)
 
     async def invoke(
         self, ctx: InvokeContext | None = None, **raw: Any
