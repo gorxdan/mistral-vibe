@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 import contextlib
 from datetime import timedelta
+import functools
 import hashlib
 import os
 from pathlib import Path
@@ -425,6 +426,7 @@ def create_mcp_http_proxy_tool_class(
         _sampling_enabled: ClassVar[bool] = sampling_enabled
 
         @classmethod
+        @functools.cache
         def get_name(cls) -> str:
             return published_name
 
@@ -649,6 +651,7 @@ def create_mcp_stdio_proxy_tool_class(
         _sampling_enabled: ClassVar[bool] = sampling_enabled
 
         @classmethod
+        @functools.cache
         def get_name(cls) -> str:
             return published_name
 

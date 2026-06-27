@@ -4,14 +4,14 @@ from typing import Any
 
 from rich.cells import cell_len
 from rich.text import Text
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Static
 
 from vibe.core.autocompletion.menu import MenuRow, RowKind
 
 COMPLETION_POPUP_MAX_HEIGHT = 12
-COMPLETION_POPUP_MAX_WIDTH = 80
 COMPLETION_POPUP_PADDING_X = 1
+SELECTED_CLASS = "completion-selected"
 
 # Section labels ("COMMANDS"/"SKILLS") and the "+N more" footer are decoration:
 # muted so the selectable rows stand out, and never given a reverse highlight so
@@ -24,14 +24,18 @@ class _CompletionItem(Static):
     pass
 
 
+class _CompletionRow(Horizontal):
+    pass
+
+
 class CompletionPopup(VerticalScroll):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(id="completion-popup", **kwargs)
         self.styles.display = "none"
         self.styles.max_height = COMPLETION_POPUP_MAX_HEIGHT
-        self.styles.max_width = COMPLETION_POPUP_MAX_WIDTH
         self.styles.padding = (0, COMPLETION_POPUP_PADDING_X)
         self.can_focus = False
+        self._suggestions: list[tuple[str, str]] = []
 
     def update_suggestions(
         self, suggestions: list[tuple[str, str]], selected: int
@@ -40,27 +44,38 @@ class CompletionPopup(VerticalScroll):
             self.hide()
             return
 
-        self.remove_children()
-
-        items: list[_CompletionItem] = []
-        for idx, (label, description) in enumerate(suggestions):
-            text = Text()
-            label_style = "bold reverse" if idx == selected else "bold"
-            description_style = "italic" if idx == selected else "dim"
-
-            text.append(self._display_label(label), style=label_style)
-            if description:
-                text.append("  ")
-                text.append(description, style=description_style)
-
-            item = _CompletionItem(text)
-            items.append(item)
-
-        self.mount_all(items)
+        if suggestions != self._suggestions:
+            rows = self._rebuild(suggestions)
+        else:
+            rows = list(self.query(_CompletionRow))
+        self._select(rows, selected)
         self.styles.display = "block"
 
-        if 0 <= selected < len(items):
-            items[selected].scroll_visible(animate=False)
+    def _rebuild(self, suggestions: list[tuple[str, str]]) -> list[_CompletionRow]:
+        self.remove_children()
+        self._suggestions = suggestions
+        command_width = max(
+            cell_len(self._display_label(label)) for label, _ in suggestions
+        )
+        rows: list[_CompletionRow] = []
+        for label, description in suggestions:
+            command = _CompletionItem(
+                self._display_label(label), classes="completion-command"
+            )
+            command.styles.width = command_width
+            description_cell = _CompletionItem(
+                description, classes="completion-description"
+            )
+            rows.append(_CompletionRow(command, description_cell))
+        self.mount_all(rows)
+        return rows
+
+    @staticmethod
+    def _select(rows: list[_CompletionRow], selected: int) -> None:
+        for idx, row in enumerate(rows):
+            row.set_class(idx == selected, SELECTED_CLASS)
+        if 0 <= selected < len(rows):
+            rows[selected].scroll_visible(animate=False)
 
     def update_menu(self, rows: list[MenuRow], selected: int) -> None:
         if not rows:
@@ -101,6 +116,7 @@ class CompletionPopup(VerticalScroll):
 
     def hide(self) -> None:
         self.remove_children()
+        self._suggestions = []
         self.styles.display = "none"
 
     @property
@@ -112,10 +128,3 @@ class CompletionPopup(VerticalScroll):
         if label.startswith("@"):
             return label[1:]
         return label
-
-    @classmethod
-    def rendered_text_length(cls, label: str, description: str) -> int:
-        text_length = cell_len(cls._display_label(label)) + cell_len(description)
-        if description:
-            text_length += 2
-        return text_length

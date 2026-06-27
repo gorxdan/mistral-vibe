@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from enum import StrEnum
+import functools
 import re
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -171,6 +172,7 @@ def create_connector_proxy_tool_class(
         _base_url: ClassVar[str] = base_url
 
         @classmethod
+        @functools.cache
         def get_name(cls) -> str:
             return published_name
 

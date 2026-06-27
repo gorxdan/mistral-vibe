@@ -981,6 +981,31 @@ DEFAULT_TTS_MODELS = [DEFAULT_ACTIVE_TTS_MODEL_CONFIG]
 DEFAULT_THEME = "ansi-dark"
 
 
+def resolve_api_key(env_key: str) -> str | None:
+    """Resolve an API key value: process/.env environment first, then OS keyring."""
+    if not env_key:
+        return None
+    value = os.environ.get(env_key)
+    if value:
+        return value
+    from vibe.core.utils.keyring import get_api_key_from_keyring
+
+    return get_api_key_from_keyring(env_key)
+
+
+def resolve_theme_name(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        return DEFAULT_THEME
+    if value == DEFAULT_THEME:
+        return value
+    from textual.theme import BUILTIN_THEMES
+
+    if value not in BUILTIN_THEMES:
+        logger.warning("Unknown theme=%s; falling back to %s", value, DEFAULT_THEME)
+        return DEFAULT_THEME
+    return value
+
+
 class VibeConfig(BaseSettings):
     active_model: str = DEFAULT_ACTIVE_MODEL_CONFIG.alias
     vim_keybindings: bool = False

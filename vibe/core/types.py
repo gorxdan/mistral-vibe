@@ -240,12 +240,42 @@ MAX_IMAGE_BYTES: int = 10 * 1024 * 1024
 MAX_IMAGES_PER_MESSAGE: int = 8
 
 
+class FileImageSource(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal["file"] = "file"
+    path: Path
+
+
+class InlineImageSource(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal["inline"] = "inline"
+    # Raw base64-encoded bytes (no `data:` prefix). Used when the image has no
+    # durable file on disk (session logging disabled): memory-only, never
+    # persisted to a session transcript.
+    data: str
+
+
 class ImageAttachment(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    path: Path
+    source: Annotated[FileImageSource | InlineImageSource, Field(discriminator="kind")]
     alias: str
     mime_type: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_flat_source(cls, value: Any) -> Any:
+        # Accept and migrate the legacy flat shape `{path|data, ...}` from older
+        # session transcripts.
+        if not isinstance(value, dict) or "source" in value:
+            return value
+        if value.get("path") is not None:
+            return {**value, "source": {"kind": "file", "path": value["path"]}}
+        if value.get("data") is not None:
+            return {**value, "source": {"kind": "inline", "data": value["data"]}}
+        return value
 
 
 class LLMMessage(BaseModel):

@@ -46,6 +46,8 @@ from vibe.core.config._settings import (
     VibeConfig,
     WorktreeConfig,
     load_dotenv_values,
+    resolve_api_key,
+    resolve_theme_name,
 )
 from vibe.core.config.layer import (
     ConfigLayer,
@@ -155,4 +157,6 @@ __all__ = [
     "WithUnionMerge",
     "WorktreeConfig",
     "load_dotenv_values",
+    "resolve_api_key",
+    "resolve_theme_name",
 ]

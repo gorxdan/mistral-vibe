@@ -25,6 +25,19 @@ def snippet_start_line(content: str, snippet: str) -> int | None:
     return content.count("\n", 0, pos + leading) + 1
 
 
+def snippet_start_lines(content: str, snippet: str) -> list[int]:
+    """Return the 1-based start line of every non-overlapping occurrence of snippet."""
+    if not snippet.strip("\n"):
+        return []
+    leading = len(snippet) - len(snippet.lstrip("\n"))
+    lines: list[int] = []
+    pos = content.find(snippet)
+    while pos != -1:
+        lines.append(content.count("\n", 0, pos + leading) + 1)
+        pos = content.find(snippet, pos + len(snippet))
+    return lines
+
+
 def _normalize_with_map(s: str) -> tuple[str, list[int]]:
     """Normalize text for fuzzy matching, returning a source-position map.
 
