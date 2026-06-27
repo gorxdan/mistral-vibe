@@ -122,8 +122,6 @@ class QueuePorts:
     agent_running: Callable[[], bool]
     bash_task: Callable[[], asyncio.Task | None]
     active_model: Callable[[], ModelConfig | None]
-    remote_is_active: Callable[[], bool]
-    remote_stop_stream: Callable[[], Awaitable[None]]
     remove_loading_widget: Callable[[], Awaitable[None]]
     set_loading_queue_count: Callable[[int], None]
     inject_user_context: Callable[..., Awaitable[None]]
@@ -132,7 +130,6 @@ class QueuePorts:
     start_agent_turn: Callable[..., asyncio.Task]
     await_agent_turn: Callable[[], Awaitable[None]]
     run_bash: Callable[..., asyncio.Task]
-    handle_user_message: Callable[..., Awaitable[None]]
     maybe_show_feedback_bar: Callable[[], None]
     send_skill_telemetry: Callable[[str | None], None]
     send_at_mention_telemetry: Callable[[PathPromptPayload, str], None]
@@ -471,18 +468,6 @@ class QueueController:
 
         if not await self._gate_queued_images_for_vision(pending):
             return False
-
-        # Remote mode streams to a separate backend that does not read
-        # _pending_injected_messages; staging would silently drop the messages.
-        # Mirror _run_tail_prompt and send each via the remote user-message path.
-        if self._ports.remote_is_active():
-            for p in pending:
-                await p.widget.remove()
-                await self._ports.handle_user_message(p.item.content)
-                self._ports.send_skill_telemetry(p.item.skill_name)
-            await self._remove_header_if_empty()
-            self._push_loading_queue_count()
-            return True
 
         # Capture the history length once; staged messages append in order during
         # the next drain, so each widget's index is base + its batch position.

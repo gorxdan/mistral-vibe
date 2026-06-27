@@ -8,7 +8,6 @@ import httpx
 import pytest
 
 import vibe.core.feedback as feedback_mod
-from vibe.core.nuage.exceptions import ErrorCode, WorkflowsException
 from vibe.core.output_formatters import (
     JsonOutputFormatter,
     StreamingJsonOutputFormatter,
@@ -24,45 +23,6 @@ from vibe.core.teleport.types import (
     TeleportStartingWorkflowEvent,
 )
 from vibe.core.types import AssistantEvent, LLMMessage, OutputFormat, Role
-
-# --------------------------------------------------------------------------- #
-# nuage.exceptions                                                            #
-# --------------------------------------------------------------------------- #
-
-
-def test_workflows_exception_str_includes_code_and_status() -> None:
-    exc = WorkflowsException(
-        "boom", status=HTTPStatus.BAD_REQUEST, code=ErrorCode.GET_EXECUTIONS_ERROR
-    )
-    s = str(exc)
-    assert "boom" in s
-    assert "get_executions_error" in s
-    assert "400" in s
-
-
-def test_from_api_client_error_http_status_error() -> None:
-    resp = httpx.Response(404)
-    http_exc = httpx.HTTPStatusError(
-        "not found", request=httpx.Request("GET", "/x"), response=resp
-    )
-    exc = WorkflowsException.from_api_client_error(http_exc, message="failed")
-    assert exc.status == HTTPStatus.NOT_FOUND
-
-
-def test_from_api_client_error_connect_error_maps_to_bad_gateway() -> None:
-    exc = WorkflowsException.from_api_client_error(httpx.ConnectError("down"))
-    assert exc.status == HTTPStatus.BAD_GATEWAY
-
-
-def test_from_api_client_error_timeout_maps_to_bad_gateway() -> None:
-    exc = WorkflowsException.from_api_client_error(httpx.TimeoutException("slow"))
-    assert exc.status == HTTPStatus.BAD_GATEWAY
-
-
-def test_from_api_client_error_generic_maps_to_internal_server_error() -> None:
-    exc = WorkflowsException.from_api_client_error(RuntimeError("x"))
-    assert exc.status == HTTPStatus.INTERNAL_SERVER_ERROR
-
 
 # --------------------------------------------------------------------------- #
 # plan_session                                                                #
