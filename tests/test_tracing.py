@@ -264,6 +264,22 @@ class TestAgentSpan:
         assert span.status.status_code == StatusCode.ERROR
         assert "boom" in span.status.description
 
+    @pytest.mark.asyncio
+    async def test_records_aggregate_usage(
+        self, _otel_provider: _CollectingExporter
+    ) -> None:
+        from vibe.core.tracing import set_agent_usage
+
+        async with agent_span(model="glm-5.2", session_id="s1") as span:
+            set_agent_usage(
+                span, input_tokens=1234, output_tokens=56, cached_tokens=1000
+            )
+
+        attrs = dict(_otel_provider.spans[0].attributes)
+        assert attrs["gen_ai.usage.input_tokens"] == 1234
+        assert attrs["gen_ai.usage.output_tokens"] == 56
+        assert attrs["gen_ai.usage.cached_input_tokens"] == 1000
+
 
 class TestToolSpan:
     @pytest.mark.asyncio
@@ -546,8 +562,7 @@ class TestIntegration:
         async def slow_answer(args: object) -> AskUserQuestionResult:
             await asyncio.sleep(wait)
             return AskUserQuestionResult(
-                cancelled=False,
-                answers=[Answer(question="Pick", answer="A")],
+                cancelled=False, answers=[Answer(question="Pick", answer="A")]
             )
 
         tool_call = ToolCall(
@@ -571,7 +586,9 @@ class TestIntegration:
         ])
         config = build_test_vibe_config(
             enabled_tools=["ask_user_question"],
-            tools={"ask_user_question": BaseToolConfig(permission=ToolPermission.ALWAYS)},
+            tools={
+                "ask_user_question": BaseToolConfig(permission=ToolPermission.ALWAYS)
+            },
             system_prompt_id="tests",
             include_project_context=False,
             include_prompt_detail=False,
@@ -600,11 +617,7 @@ class TestIntegration:
 
         async with context_shaping_span(op="snip", trigger="auto") as span:
             set_context_shaping_result(
-                span,
-                tokens_before=1000,
-                tokens_after=600,
-                threshold=2000,
-                blocks=3,
+                span, tokens_before=1000, tokens_after=600, threshold=2000, blocks=3
             )
 
         spans = [s for s in _otel_provider.spans if s.name == "context_shaping snip"]

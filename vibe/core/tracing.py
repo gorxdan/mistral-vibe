@@ -392,7 +392,7 @@ async def chat_span(
     *, model: str | None = None, provider: str | None = None
 ) -> AsyncGenerator[trace.Span]:
     attributes: dict[str, Any] = {
-        gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.CHAT.value,
+        gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.CHAT.value
     }
     if (prov := _normalize_provider(provider)) is not None:
         attributes[gen_ai_attributes.GEN_AI_PROVIDER_NAME] = prov
@@ -405,18 +405,40 @@ async def chat_span(
         yield span
 
 
-def set_usage(span: trace.Span, usage: LLMUsage) -> None:
+def _set_usage_attrs(
+    span: trace.Span, *, input_tokens: int, output_tokens: int, cached_tokens: int
+) -> None:
     # cached_tokens has no stable gen_ai constant; emit a vibe-namespaced attr.
     try:
-        span.set_attribute(
-            gen_ai_attributes.GEN_AI_USAGE_INPUT_TOKENS, usage.prompt_tokens
-        )
-        span.set_attribute(
-            gen_ai_attributes.GEN_AI_USAGE_OUTPUT_TOKENS, usage.completion_tokens
-        )
-        span.set_attribute("gen_ai.usage.cached_input_tokens", usage.cached_tokens)
+        span.set_attribute(gen_ai_attributes.GEN_AI_USAGE_INPUT_TOKENS, input_tokens)
+        span.set_attribute(gen_ai_attributes.GEN_AI_USAGE_OUTPUT_TOKENS, output_tokens)
+        span.set_attribute("gen_ai.usage.cached_input_tokens", cached_tokens)
     except Exception:
         pass
+
+
+def set_usage(span: trace.Span, usage: LLMUsage) -> None:
+    _set_usage_attrs(
+        span,
+        input_tokens=usage.prompt_tokens,
+        output_tokens=usage.completion_tokens,
+        cached_tokens=usage.cached_tokens,
+    )
+
+
+def set_agent_usage(
+    span: trace.Span, *, input_tokens: int, output_tokens: int, cached_tokens: int
+) -> None:
+    # An invoke_agent span aggregates its child chat calls (a user turn, or a
+    # whole subagent run). Recording the summed usage here lets per-turn and
+    # per-subagent token cost be read off the agent span without re-summing
+    # children — closes the gap where invoke_agent spans carried no usage.
+    _set_usage_attrs(
+        span,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_tokens=cached_tokens,
+    )
 
 
 @asynccontextmanager

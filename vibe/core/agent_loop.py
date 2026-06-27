@@ -119,6 +119,7 @@ from vibe.core.tracing import (
     agent_span,
     chat_span,
     context_shaping_span,
+    set_agent_usage,
     set_context_shaping_result,
     set_tool_error,
     set_tool_exec_duration,
@@ -1059,14 +1060,26 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 session_id=self.session_id,
                 provider=agent_provider,
                 agent_profile=self.agent_profile.name,
-            ):
-                async for event in self._conversation_loop(
-                    msg,
-                    client_message_id=client_message_id,
-                    auto_title=auto_title,
-                    images=images,
-                ):
-                    yield event
+            ) as agent_turn_span:
+                prompt0 = self.stats.session_prompt_tokens
+                completion0 = self.stats.session_completion_tokens
+                cached0 = self.stats.session_cached_tokens
+                try:
+                    async for event in self._conversation_loop(
+                        msg,
+                        client_message_id=client_message_id,
+                        auto_title=auto_title,
+                        images=images,
+                    ):
+                        yield event
+                finally:
+                    set_agent_usage(
+                        agent_turn_span,
+                        input_tokens=self.stats.session_prompt_tokens - prompt0,
+                        output_tokens=self.stats.session_completion_tokens
+                        - completion0,
+                        cached_tokens=self.stats.session_cached_tokens - cached0,
+                    )
         finally:
             self._response_format = None
 
