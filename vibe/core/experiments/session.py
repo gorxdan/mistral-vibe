@@ -39,7 +39,6 @@ async def initialize_experiments(
         # manager is fail-open and stayed empty, so nothing changed —
         # don't trigger a system prompt refresh.
         return False
-    _apply_prompt_variant(manager)
     with contextlib.suppress(Exception):
         await session_logger.persist_experiments(state)
     return True
@@ -54,15 +53,7 @@ async def hydrate_experiments_from_session(
     if metadata is None or metadata.experiments is None:
         return False
     manager.hydrate(metadata.experiments)
-    _apply_prompt_variant(manager)
     return True
-
-
-def _apply_prompt_variant(manager: ExperimentManager) -> None:
-    from vibe.core.experiments.active import ExperimentName
-    from vibe.core.prompts import set_prompt_variant
-
-    set_prompt_variant(manager.get_variant(ExperimentName.PROMPT_COMPRESSION))
 
 
 def _build_attributes(
