@@ -583,10 +583,24 @@ class OpenAIResponsesAdapter(APIAdapter):
             "input": input_items,
             "store": False,
         }
+        # Pin the conversation to one OpenAI cache partition (the prefix
+        # auto-cache load-balances and misses without it). Same key the generic
+        # path derives. Responses adapters are always OpenAI, so no gating.
+        from vibe.core.llm.backend.cache_hints import prefix_cache_key
+
+        if cache_key := prefix_cache_key(input_items):
+            payload["prompt_cache_key"] = cache_key
+
         if self._is_temperature_supported(model_name):
             payload["temperature"] = temperature
 
-        payload["reasoning"] = {"effort": self._map_reasoning_effort(thinking)}
+        effort = self._map_reasoning_effort(thinking)
+        payload["reasoning"] = {"effort": effort}
+        # Request encrypted reasoning so it can be echoed back across turns
+        # (via reasoning_state in _convert_messages) instead of re-reasoned —
+        # privacy-safe (no store needed). Only meaningful when reasoning is on.
+        if effort != "none":
+            payload["include"] = ["reasoning.encrypted_content"]
 
         if tools:
             payload["tools"] = [

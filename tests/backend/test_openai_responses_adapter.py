@@ -125,6 +125,37 @@ class TestPrepareRequest:
         assert "instructions" not in payload
         assert payload["store"] is False
 
+    def test_prompt_cache_key_stable_per_conversation(self, adapter, provider):
+        # OpenAI's prefix cache misses without a routing key; the Responses path
+        # pins each conversation to one partition (same derivation as generic).
+        msgs = [
+            LLMMessage(role=Role.system, content="You are vibe."),
+            LLMMessage(role=Role.user, content="fix the bug"),
+        ]
+        key = _prepare(adapter, provider, msgs)["prompt_cache_key"]
+        assert key.startswith("vibe-")
+        # Stable as the conversation grows (prefix unchanged).
+        grown = msgs + [
+            LLMMessage(role=Role.assistant, content="ok"),
+            LLMMessage(role=Role.user, content="more"),
+        ]
+        assert _prepare(adapter, provider, grown)["prompt_cache_key"] == key
+        # Distinct per conversation.
+        other = [
+            LLMMessage(role=Role.system, content="You are vibe."),
+            LLMMessage(role=Role.user, content="a different opener"),
+        ]
+        assert _prepare(adapter, provider, other)["prompt_cache_key"] != key
+
+    def test_encrypted_reasoning_requested_only_when_reasoning_on(
+        self, adapter, provider
+    ):
+        msgs = [LLMMessage(role=Role.user, content="hi")]
+        on = _prepare(adapter, provider, msgs, thinking="high")
+        assert on.get("include") == ["reasoning.encrypted_content"]
+        off = _prepare(adapter, provider, msgs, thinking="off")
+        assert "include" not in off
+
     def test_system_message_becomes_system_input_item(self, adapter, provider):
         payload = _prepare(
             adapter,

@@ -1,9 +1,12 @@
-"""Opt-in prompt-cache hints for the generic / OpenAI-compatible path.
+"""Prompt-cache hints for the generic / OpenAI-compatible path.
 
-Most generic-path providers (OpenAI, DeepSeek, GLM, Together, Groq) auto-cache
-prefixes and need no hints — ``build_cache_hint`` returns None for them. This is
-a thin escape hatch for the minority of OpenAI-compatible gateways that expose
-an explicit cache knob, gated entirely behind ``provider.cache``.
+Non-OpenAI generic providers (DeepSeek, GLM/zai, Together, Groq) auto-cache
+prefixes reliably and get no hint — ``build_cache_hint`` returns an inert empty
+fragment unless a provider sets an explicit ``provider.cache`` knob. OpenAI is
+the exception: its prefix cache load-balances across machines and misses without
+a ``prompt_cache_key`` to pin a conversation to one partition, so OpenAI
+providers auto-get a stable per-conversation key (see ``_auto_openai_cache_key``
+/ ``prefix_cache_key``; the Responses backend uses the same derivation).
 """
 
 from __future__ import annotations
@@ -68,8 +71,19 @@ def _auto_openai_cache_key(
     """
     if not _is_openai_provider(provider):
         return None
-    sys_txt = _first_content(converted_messages, "system")
-    usr_txt = _first_content(converted_messages, "user")
+    return prefix_cache_key(converted_messages)
+
+
+def prefix_cache_key(messages: list[dict[str, Any]]) -> str | None:
+    """Stable per-conversation cache key from the prefix (system + first user).
+
+    Identical across a conversation's turns (the prefix doesn't change as history
+    grows) and distinct across conversations. Shared by the generic and Responses
+    OpenAI paths so the routing key is derived the same way. ``messages`` are
+    role/content dicts (chat or Responses input items).
+    """
+    sys_txt = _first_content(messages, "system")
+    usr_txt = _first_content(messages, "user")
     if sys_txt is None and usr_txt is None:
         return None
     digest = hashlib.sha256(f"{sys_txt}\x00{usr_txt}".encode()).hexdigest()
