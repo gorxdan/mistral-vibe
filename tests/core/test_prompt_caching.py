@@ -27,6 +27,56 @@ def test_default_passthrough_is_inert_empty_fragment() -> None:
     assert build_cache_hint(_provider(), [{"role": "user", "content": "hi"}]) == {}
 
 
+def test_openai_default_gets_stable_per_conversation_prompt_cache_key() -> None:
+    # OpenAI's prefix cache load-balances across machines and misses without a
+    # routing key; an OpenAI provider must auto-get a prompt_cache_key even with
+    # the default (no explicit cache_key) config. See codex (sends thread id).
+    p = ProviderConfig(name="openai", api_base="https://api.openai.com/v1")
+    msgs = [
+        {"role": "system", "content": "You are vibe."},
+        {"role": "user", "content": "hello"},
+    ]
+    hint = build_cache_hint(p, msgs)
+    assert "prompt_cache_key" in hint
+    key = hint["prompt_cache_key"]
+
+    # Stable across the conversation's turns (prefix unchanged as history grows).
+    grown = msgs + [
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "follow up"},
+    ]
+    assert build_cache_hint(p, grown)["prompt_cache_key"] == key
+
+    # Distinct per conversation (different opening turn -> different partition).
+    other = [
+        {"role": "system", "content": "You are vibe."},
+        {"role": "user", "content": "a different opener"},
+    ]
+    assert build_cache_hint(p, other)["prompt_cache_key"] != key
+
+
+def test_non_openai_provider_gets_no_auto_cache_key() -> None:
+    # GLM/zai, DeepSeek, etc. auto-cache reliably; do not perturb their path.
+    p = ProviderConfig(name="zai", api_base="https://api.z.ai/api/coding/paas/v4")
+    hint = build_cache_hint(
+        p,
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+    )
+    assert "prompt_cache_key" not in hint
+
+
+def test_explicit_cache_key_overrides_auto_openai_key() -> None:
+    cache = ProviderCacheConfig(cache_key="agent-main")
+    p = ProviderConfig(
+        name="openai", api_base="https://api.openai.com/v1", cache=cache
+    )
+    hint = build_cache_hint(
+        p,
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+    )
+    assert hint["prompt_cache_key"] == "agent-main"
+
+
 def test_passthrough_merges_extra_body_and_cache_key() -> None:
     cache = ProviderCacheConfig(
         mode="explicit",
