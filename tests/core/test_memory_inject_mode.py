@@ -58,8 +58,7 @@ def test_late_mode_empty_section_injects_nothing():
 
 
 def _divergence_vs_system_len(loop: AgentLoop) -> tuple[int, int]:
-    """Return (common-prefix len across a selection change, serialized system len)."""
-
+    # (common-prefix len across a selection change, serialized system-message len)
     def serialized() -> str:
         return "".join(
             json.dumps({"r": str(m.role), "c": m.content or ""}, sort_keys=True)
