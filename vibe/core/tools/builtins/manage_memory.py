@@ -96,9 +96,9 @@ class ManageMemoryArgs(BaseModel):
     scope: Literal["user", "project"] | None = None
     # Target a DIFFERENT project's namespace than the running one (cross-project
     # memory, e.g. leaving a resume-memory for a repo the agent isn't in).
-    # add/update resolve to that namespace; ignored for list/delete. Resolved
-    # via the same identity hash the harness uses, so it matches what an agent
-    # running inside project_path would see.
+    # Applies to every action: add/update write there, list/delete operate on
+    # that namespace. Resolved via the same identity hash the harness uses, so
+    # it matches what an agent running inside project_path would see.
     project_path: str | None = None
 
 
