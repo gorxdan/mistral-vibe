@@ -53,6 +53,31 @@ class _EmptyKeyring(KeyringBackend):
         raise keyring.errors.PasswordDeleteError()
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_prod_file_log() -> Generator[None, None, None]:
+    """Keep test log records out of the production log file.
+
+    ``vibe.core.logger`` attaches a ``RotatingFileHandler`` to the ``vibe``
+    logger at import time. Without this, pytest workers (separate processes)
+    sink their WARNING/ERROR records — including stub-induced failures such as
+    'backend down' and 'consolidator build failed' — into
+    ``~/.vibe/logs/vibe.log``, where they masquerade as live-session failures.
+    Detach file handlers for the test session and restore them on teardown.
+    """
+    import logging as _logging
+
+    from vibe.core.logger import logger as vibe_logger
+
+    saved = [h for h in vibe_logger.handlers if isinstance(h, _logging.FileHandler)]
+    for handler in saved:
+        vibe_logger.removeHandler(handler)
+    try:
+        yield
+    finally:
+        for handler in saved:
+            vibe_logger.addHandler(handler)
+
+
 @pytest.fixture(autouse=True)
 def _disable_os_keyring(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
     """Keep the suite off the real OS keyring.

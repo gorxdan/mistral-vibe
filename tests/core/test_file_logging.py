@@ -285,6 +285,21 @@ class TestApplyLoggingConfig:
         assert handler.maxBytes == 5242880
 
 
+class TestProdFileLogIsolation:
+    def test_vibe_logger_has_no_file_handler_under_tests(self) -> None:
+        # The session-scoped _isolate_prod_file_log autouse fixture detaches
+        # the production RotatingFileHandler so test records cannot leak into
+        # ~/.vibe/logs/vibe.log (where they would masquerade as live failures).
+        from vibe.core.logger import logger as vibe_logger
+
+        file_handlers = [
+            h for h in vibe_logger.handlers if isinstance(h, logging.FileHandler)
+        ]
+        assert not file_handlers, (
+            "test log records would leak to the production log file"
+        )
+
+
 class TestDecodeLogMessage:
     def test_plain_message_unchanged(self) -> None:
         assert decode_log_message("Hello world") == "Hello world"
