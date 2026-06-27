@@ -15,7 +15,16 @@ _GUIDE_PATH = (
     / "prompts"
     / "launch_workflow.md"
 )
-_PROMPT = _GUIDE_PATH.read_text(encoding="utf-8")
+
+
+def _load_guide() -> str:
+    from vibe.core.prompts import verbose_override
+
+    path = verbose_override(_GUIDE_PATH) or _GUIDE_PATH
+    return path.read_text(encoding="utf-8")
+
+
+_PROMPT = _load_guide()
 
 
 SKILL = SkillInfo(
@@ -37,3 +46,8 @@ SKILL = SkillInfo(
     source=SkillSource.BUILTIN,
     scope=SkillScope.BUILTIN,
 )
+
+
+def refresh_prompt() -> None:
+    """Re-resolve the baked authoring guide for the active prompt-compression arm."""
+    SKILL.prompt = _load_guide()

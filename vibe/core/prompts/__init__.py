@@ -10,6 +10,42 @@ from vibe.core.utils.io import read_safe
 
 PROMPTS_DIR = VIBE_ROOT / "core" / "prompts"
 
+_VERBOSE_SUBDIR = "_verbose"
+_prompt_variant = "compressed"
+
+
+def set_prompt_variant(variant: str) -> None:
+    """Select the prompt-compression A/B arm: "compressed" (default, the shipped
+    files) or "verbose" (the pre-compression copies under each prompt dir's
+    _verbose/). Resolved once from ExperimentName.PROMPT_COMPRESSION at session
+    bootstrap; refreshes the caches and baked prompts that captured the prior arm.
+    """
+    global _prompt_variant
+    normalized = "verbose" if variant == "verbose" else "compressed"
+    if normalized == _prompt_variant:
+        return
+    _prompt_variant = normalized
+    from vibe.core.tools.base import clear_tool_prompt_cache
+
+    clear_tool_prompt_cache()
+    from vibe.core.skills.builtins.workflow import refresh_prompt
+
+    refresh_prompt()
+
+
+def prompt_variant() -> str:
+    return _prompt_variant
+
+
+def verbose_override(path: Path) -> Path | None:
+    """The pre-compression copy under a sibling _verbose/ dir when the verbose arm
+    is active and that copy exists; else None (use the shipped file).
+    """
+    if _prompt_variant != "verbose":
+        return None
+    candidate = path.parent / _VERBOSE_SUBDIR / path.name
+    return candidate if candidate.is_file() else None
+
 
 class Prompt(StrEnum):
     @property
@@ -17,7 +53,8 @@ class Prompt(StrEnum):
         return (PROMPTS_DIR / self.value).with_suffix(".md")
 
     def read(self) -> str:
-        return read_safe(self.path).text.strip()
+        path = self.path
+        return read_safe(verbose_override(path) or path).text.strip()
 
 
 class SystemPrompt(Prompt):
@@ -98,8 +135,10 @@ def load_prompt(
             return read_safe(path).text.strip()
 
     builtin_path = builtins.get(prompt_id.lower())
-    if builtin_path is not None and builtin_path.is_file():
-        return read_safe(builtin_path).text.strip()
+    if builtin_path is not None:
+        chosen = verbose_override(builtin_path) or builtin_path
+        if chosen.is_file():
+            return read_safe(chosen).text.strip()
 
     custom_ids = sorted({p.stem for d in custom_dirs for p in d.glob("*.md")})
     raise MissingPromptFileError(
@@ -129,4 +168,7 @@ __all__ = [
     "UtilityPrompt",
     "load_prompt",
     "load_system_prompt",
+    "prompt_variant",
+    "set_prompt_variant",
+    "verbose_override",
 ]

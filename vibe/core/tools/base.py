@@ -30,6 +30,15 @@ from vibe.core.tools._schema import dereference_refs, strip_titles
 from vibe.core.types import ToolStreamEvent
 from vibe.core.utils.io import read_safe
 
+# Tool .md descriptions cached per (tool class, prompt-compression variant) so the
+# A/B verbose arm serves the pre-compression copy without a stale cache.
+_TOOL_PROMPT_CACHE: dict[tuple[type, str], str | None] = {}
+
+
+def clear_tool_prompt_cache() -> None:
+    _TOOL_PROMPT_CACHE.clear()
+
+
 if TYPE_CHECKING:
     from vibe.core.agents.manager import AgentManager
     from vibe.core.config import VibeConfig
@@ -241,25 +250,30 @@ class BaseTool[
             yield
 
     @classmethod
-    @functools.cache
     def get_tool_prompt(cls) -> str | None:
         """Loads and returns the content of the tool's .md prompt file, if it exists.
 
         The prompt file is expected to be in a 'prompts' subdirectory relative to
         the tool's source file, with the same name but a .md extension
-        (e.g., bash.py -> prompts/bash.md).
+        (e.g., bash.py -> prompts/bash.md). When the verbose prompt-compression
+        arm is active, the pre-compression copy under prompts/_verbose/ is served.
         """
+        from vibe.core.prompts import prompt_variant, verbose_override
+
+        key = (cls, prompt_variant())
+        if key in _TOOL_PROMPT_CACHE:
+            return _TOOL_PROMPT_CACHE[key]
+        result: str | None = None
         try:
             class_file = inspect.getfile(cls)
             class_path = Path(class_file)
             prompt_dir = class_path.parent / "prompts"
             prompt_path = cls.prompt_path or prompt_dir / f"{class_path.stem}.md"
-
-            return read_safe(prompt_path).text
+            result = read_safe(verbose_override(prompt_path) or prompt_path).text
         except (FileNotFoundError, TypeError, OSError):
-            pass
-
-        return None
+            result = None
+        _TOOL_PROMPT_CACHE[key] = result
+        return result
 
     async def invoke(
         self, ctx: InvokeContext | None = None, **raw: Any
