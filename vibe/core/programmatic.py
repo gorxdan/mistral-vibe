@@ -101,7 +101,7 @@ def _wire_isolated_approval(agent_loop: AgentLoop) -> None:
         agent_loop.set_approval_callback(_isolated_auto_approve)
 
 
-def run_programmatic(  # noqa: PLR0913, PLR0917
+def run_programmatic(  # noqa: PLR0913, PLR0915, PLR0917
     config: VibeConfig,
     prompt: str,
     max_turns: int | None = None,

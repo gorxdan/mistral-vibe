@@ -1,19 +1,20 @@
 """Unified background-task registry.
 
-Aggregates five categories of "background thing" into one read/cancel surface so
+Aggregates six categories of "background thing" into one read/cancel surface so
 the TUI's Tasks pane and the model-facing `background` tool see the same state:
 
-  - process : agent bash spawns with background=True (OWNED here — the only
-               place a process table exists; Bash.run() otherwise drops the PID)
-  - workflow: workflow runs (read from WorkflowRunner)
-  - agent   : in-flight workflow agents (read from WorkflowRuntime._live_agents)
-  - team    : teammate subprocesses (read from TeamManager)
-  - loop    : schedule timers (read from LoopManager)
+  - process    : agent bash spawns with background=True (OWNED here — the only
+                 place a process table exists; Bash.run() otherwise drops the PID)
+  - workflow   : workflow runs (read from WorkflowRunner)
+  - agent      : in-flight workflow agents (read from WorkflowRuntime._live_agents)
+  - team       : teammate subprocesses (read from TeamManager)
+  - loop       : schedule timers (read from LoopManager)
+  - async_agent: task(async_run=true) subagents (OWNED here as asyncio tasks)
 
-The registry owns processes outright and delegates everything else to the
-subsystem that already owns it, via injected refs. Nothing duplicates state.
-Cancellation routes by task-id prefix to the right owner's stop method, so the
-Tasks pane, the `background` tool, and any future caller all share one path.
+The registry owns processes and async subagents outright and delegates everything
+else to the subsystem that already owns it, via injected refs. Nothing duplicates
+state. Cancellation routes by task-id prefix to the right owner's stop method, so
+the Tasks pane, the `background` tool, and any future caller all share one path.
 
 See docs/design/tasks.md for the full design.
 """
@@ -714,7 +715,7 @@ class BackgroundRegistry:
             logger.debug("loop list failed: %s", exc)
             return []
         for loop in loops:
-            remaining = max(0.0, getattr(loop, "next_fire_at", wall_now) - wall_now)
+            remaining = max(0.0, loop.next_fire_at - wall_now)
             entries.append(
                 TaskEntry(
                     task_id=f"loop-{loop.id}",
