@@ -3613,6 +3613,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
         forked.session_id = generate_session_id(suffix=extract_suffix(self.session_id))
         forked.parent_session_id = self.session_id
+        # A forked session shares the parent's background registry: it is the
+        # single process-wide process table and aggregation surface, and a fork
+        # runs in the same process/event loop. Without this, a forked ACP
+        # session left background_registry=None and could not use bash
+        # background=True. The registry stays owned/reaped by the entry point
+        # that created it (TUI/programmatic/ACP _create_agent_loop).
+        forked.background_registry = self.background_registry
         forked.session_logger.reset_session(
             forked.session_id, parent_session_id=self.session_id
         )
