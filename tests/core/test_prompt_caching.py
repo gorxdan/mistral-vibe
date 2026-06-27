@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from vibe.core.config import ProviderCacheConfig, ProviderConfig
 from vibe.core.llm.backend.anthropic import AnthropicMapper
@@ -37,6 +38,7 @@ def test_openai_default_gets_stable_per_conversation_prompt_cache_key() -> None:
         {"role": "user", "content": "hello"},
     ]
     hint = build_cache_hint(p, msgs)
+    assert hint is not None
     assert "prompt_cache_key" in hint
     key = hint["prompt_cache_key"]
 
@@ -45,35 +47,69 @@ def test_openai_default_gets_stable_per_conversation_prompt_cache_key() -> None:
         {"role": "assistant", "content": "hi"},
         {"role": "user", "content": "follow up"},
     ]
-    assert build_cache_hint(p, grown)["prompt_cache_key"] == key
+    grown_hint = build_cache_hint(p, grown)
+    assert grown_hint is not None
+    assert grown_hint["prompt_cache_key"] == key
 
     # Distinct per conversation (different opening turn -> different partition).
     other = [
         {"role": "system", "content": "You are vibe."},
         {"role": "user", "content": "a different opener"},
     ]
-    assert build_cache_hint(p, other)["prompt_cache_key"] != key
+    other_hint = build_cache_hint(p, other)
+    assert other_hint is not None
+    assert other_hint["prompt_cache_key"] != key
 
 
 def test_non_openai_provider_gets_no_auto_cache_key() -> None:
     # GLM/zai, DeepSeek, etc. auto-cache reliably; do not perturb their path.
     p = ProviderConfig(name="zai", api_base="https://api.z.ai/api/coding/paas/v4")
     hint = build_cache_hint(
-        p,
-        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        p, [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
     )
+    assert hint is not None
     assert "prompt_cache_key" not in hint
+
+
+def test_sakana_gets_stable_per_conversation_prompt_cache_key() -> None:
+    # Sakana uses the OpenAI Responses wire format and needs the same partition
+    # pinning that OpenAI does.
+    p = ProviderConfig(name="sakana", api_base="https://api.sakana.ai/v1")
+    msgs = [
+        {"role": "system", "content": "You are vibe."},
+        {"role": "user", "content": "hello"},
+    ]
+    hint = build_cache_hint(p, msgs)
+    assert hint is not None
+    assert "prompt_cache_key" in hint
+    key = hint["prompt_cache_key"]
+
+    # Stable across the conversation's turns (prefix unchanged as history grows).
+    grown = msgs + [
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "follow up"},
+    ]
+    grown_hint = build_cache_hint(p, grown)
+    assert grown_hint is not None
+    assert grown_hint["prompt_cache_key"] == key
+
+    # Distinct per conversation (different opening turn -> different partition).
+    other = [
+        {"role": "system", "content": "You are vibe."},
+        {"role": "user", "content": "a different opener"},
+    ]
+    other_hint = build_cache_hint(p, other)
+    assert other_hint is not None
+    assert other_hint["prompt_cache_key"] != key
 
 
 def test_explicit_cache_key_overrides_auto_openai_key() -> None:
     cache = ProviderCacheConfig(cache_key="agent-main")
-    p = ProviderConfig(
-        name="openai", api_base="https://api.openai.com/v1", cache=cache
-    )
+    p = ProviderConfig(name="openai", api_base="https://api.openai.com/v1", cache=cache)
     hint = build_cache_hint(
-        p,
-        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        p, [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
     )
+    assert hint is not None
     assert hint["prompt_cache_key"] == "agent-main"
 
 
@@ -90,7 +126,7 @@ def test_passthrough_merges_extra_body_and_cache_key() -> None:
 
 def test_anthropic_compat_tags_last_system_and_user_str_content() -> None:
     cache = ProviderCacheConfig(mode="explicit", style="anthropic-compat")
-    msgs = [
+    msgs: list[dict[str, Any]] = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "first"},
         {"role": "assistant", "content": "mid"},
@@ -98,8 +134,12 @@ def test_anthropic_compat_tags_last_system_and_user_str_content() -> None:
     ]
     hint = build_cache_hint(_provider(cache), msgs)
     assert hint == {}  # in-place mutation
-    assert msgs[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
-    assert msgs[3]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    content0 = msgs[0]["content"]
+    assert isinstance(content0, list)
+    assert content0[0]["cache_control"] == {"type": "ephemeral"}
+    content3 = msgs[3]["content"]
+    assert isinstance(content3, list)
+    assert content3[0]["cache_control"] == {"type": "ephemeral"}
     assert msgs[1]["content"] == "first"  # earlier user untouched
     assert msgs[2]["content"] == "mid"  # assistant untouched
 

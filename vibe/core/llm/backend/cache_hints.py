@@ -50,7 +50,11 @@ def build_cache_hint(
 
 def _is_openai_provider(provider: ProviderConfig) -> bool:
     base = (getattr(provider, "api_base", "") or "").lower()
-    return getattr(provider, "name", "") == "openai" or "api.openai.com" in base
+    return (
+        getattr(provider, "name", "") == "openai"
+        or "api.openai.com" in base
+        or "api.sakana.ai" in base
+    )
 
 
 def _auto_openai_cache_key(
@@ -94,8 +98,10 @@ def _first_content(messages: list[dict[str, Any]], role: str) -> str | None:
     for m in messages:
         if m.get("role") == role:
             content = m.get("content")
-            return content if isinstance(content, str) else json.dumps(
-                content, sort_keys=True
+            return (
+                content
+                if isinstance(content, str)
+                else json.dumps(content, sort_keys=True)
             )
     return None
 

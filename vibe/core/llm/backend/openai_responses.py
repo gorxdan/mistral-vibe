@@ -590,9 +590,10 @@ class OpenAIResponsesAdapter(APIAdapter):
             "input": input_items,
             "store": False,
         }
-        # Pin the conversation to one OpenAI cache partition (the prefix
-        # auto-cache load-balances and misses without it). Same key the generic
-        # path derives. Responses adapters are always OpenAI, so no gating.
+        # Pin the conversation to one cache partition (OpenAI's prefix auto-cache
+        # load-balances across machines and misses without a routing key; Sakana
+        # shares the same need). Same key the generic path derives. Responses
+        # adapters cover OpenAI and Sakana, so no gating needed.
         from vibe.core.llm.backend.cache_hints import prefix_cache_key
 
         if cache_key := prefix_cache_key(input_items):
