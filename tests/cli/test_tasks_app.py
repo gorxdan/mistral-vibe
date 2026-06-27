@@ -318,6 +318,69 @@ async def test_workflow_detail_lists_agents_and_drill_down_shows_prompt_response
 
 
 @pytest.mark.asyncio
+async def test_detail_view_poll_refresh_does_not_duplicate_widgets():
+    """The 1s poll refresh must update widgets IN PLACE. Re-mounting fixed-id
+    widgets each tick raced Textual's deferred remove() and crashed the app with
+    DuplicateIds ('tasks-agent-list'). Several refreshes must leave exactly one.
+    """
+    from textual.app import App, ComposeResult
+    from textual.containers import Container
+
+    from vibe.core.workflows.models import AgentResult, PhaseReport
+
+    runner = _FakeWorkflowRunner()
+    runner.runs.append(
+        _FakeRunEntry(
+            run_id="wf-1",
+            status=_WorkflowStatus("running"),
+            phases=["audit"],
+            phase_reports=[
+                PhaseReport(
+                    name="audit",
+                    agent_results=[
+                        AgentResult(
+                            label="auditor",
+                            agent="explore",
+                            phase="audit",
+                            prompt="p",
+                            response="r",
+                            tokens_in=1,
+                            tokens_out=1,
+                        )
+                    ],
+                )
+            ],
+            agent_count=1,
+            tokens_total=2,
+        )
+    )
+    reg = _registry(runner)
+
+    class _Harness(App):
+        def compose(self) -> ComposeResult:
+            yield Container(TasksApp(registry=reg, workflow_runner=runner))
+
+        async def key_escape(self) -> None:
+            pass
+
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tasks = app.query_one(TasksApp)
+        tasks._selected_task_id = "wf-1"
+        tasks._view = "detail"
+        await tasks._render_view()
+        await pilot.pause()
+        # Simulate several poll ticks — must not crash or duplicate fixed ids.
+        for _ in range(3):
+            tasks._refresh_detail_view()
+            await pilot.pause()
+        assert len(app.query("#tasks-agent-list")) == 1
+        assert len(app.query("#tasks-detail-text")) == 1
+        await app.action_quit()
+
+
+@pytest.mark.asyncio
 async def test_live_agent_detail_shows_prompt_and_streaming_preview():
     """An in-flight agent's prompt + response_so_far render in the agent
     category detail (previously a hardcoded 'response not available' string

@@ -393,7 +393,9 @@ class TasksApp(Container):
             return
         scroll = VerticalScroll(id="tasks-detail")
         await body.mount(scroll)
-        await scroll.mount(NoMarkupStatic(self._build_detail_text(entry)))
+        await scroll.mount(
+            NoMarkupStatic(self._build_detail_text(entry), id="tasks-detail-text")
+        )
         # Workflows get a navigable agent list below the summary so each agent's
         # prompt + response is one Enter away. Other categories are read-only.
         if entry.category == TaskCategory.WORKFLOW:
@@ -411,29 +413,43 @@ class TasksApp(Container):
         if entry is None:
             return
         try:
-            scroll = self.query_one("#tasks-detail", VerticalScroll)
+            self.query_one("#tasks-detail", VerticalScroll)
         except Exception:
             return
-        # Preserve scroll + agent-list highlight across the refresh.
-        highlighted_agent: int | None = None
+        # Update widgets IN PLACE — do NOT remove + re-mount each tick. remove()
+        # is deferred in Textual, so a re-mounted fixed-id widget (tasks-agent-
+        # list) collides with the not-yet-removed old one -> DuplicateIds crash.
         try:
-            agent_list = self.query_one("#tasks-agent-list", OptionList)
-            highlighted_agent = agent_list.highlighted
+            self.query_one("#tasks-detail-text", NoMarkupStatic).update(
+                self._build_detail_text(entry)
+            )
         except Exception:
             pass
-        for child in list(scroll.children):
-            child.remove()
-        scroll.mount(NoMarkupStatic(self._build_detail_text(entry)))
-        if entry.category == TaskCategory.WORKFLOW:
-            agents = _gather_workflow_agents(self._workflow_runner, entry.task_id)
-            if agents:
-                options = [
-                    Option(_agent_row_text(a), id=f"agent:{a.key}") for a in agents
-                ]
-                al = OptionList(*options, id="tasks-agent-list")
-                scroll.mount(al)
-                if highlighted_agent is not None and highlighted_agent < len(agents):
-                    al.highlighted = highlighted_agent
+
+        agents = (
+            _gather_workflow_agents(self._workflow_runner, entry.task_id)
+            if entry.category == TaskCategory.WORKFLOW
+            else []
+        )
+        try:
+            agent_list = self.query_one("#tasks-agent-list", OptionList)
+        except Exception:
+            agent_list = None
+
+        if agents:
+            options = [Option(_agent_row_text(a), id=f"agent:{a.key}") for a in agents]
+            if agent_list is None:
+                self.query_one("#tasks-detail", VerticalScroll).mount(
+                    OptionList(*options, id="tasks-agent-list")
+                )
+            else:
+                highlighted = agent_list.highlighted
+                agent_list.clear_options()
+                agent_list.add_options(options)
+                if highlighted is not None and highlighted < len(agents):
+                    agent_list.highlighted = highlighted
+        elif agent_list is not None:
+            agent_list.remove()
 
     async def _render_script_view(self, body: Vertical) -> None:
         ref = self._workflow_script_ref()
@@ -448,21 +464,24 @@ class TasksApp(Container):
     async def _render_agent_view(self, body: Vertical) -> None:
         scroll = VerticalScroll(id="tasks-agent")
         await body.mount(scroll)
-        await scroll.mount(NoMarkupStatic(self._build_agent_view_text()))
+        await scroll.mount(
+            NoMarkupStatic(self._build_agent_view_text(), id="tasks-agent-text")
+        )
 
     def _refresh_agent_view(self) -> None:
         if self._view != "agent" or self._agent_view_data is None:
             return
         # Live agents stream: refresh the carried data from the live object so
-        # the partial response updates while the view is open.
+        # the partial response updates while the view is open. Update in place —
+        # re-mounting each tick races Textual's deferred remove() (see
+        # _refresh_detail_view).
         self._refresh_agent_view_data()
         try:
-            scroll = self.query_one("#tasks-agent", VerticalScroll)
+            self.query_one("#tasks-agent-text", NoMarkupStatic).update(
+                self._build_agent_view_text()
+            )
         except Exception:
-            return
-        for child in list(scroll.children):
-            child.remove()
-        scroll.mount(NoMarkupStatic(self._build_agent_view_text()))
+            pass
 
     def _refresh_agent_view_data(self) -> None:
         """Re-read a live agent's streaming response into the view data.
