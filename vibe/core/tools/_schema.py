@@ -58,16 +58,27 @@ def dereference_refs(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def strip_titles(node: Any) -> None:
-    """Recursively remove auto-generated ``title`` keys from a JSON schema.
+    """Recursively remove auto-generated ``title`` metadata from a JSON schema.
 
-    Pydantic emits a ``title`` (the field/model class name) on every node;
-    that is noise for tool args and never sent to the LLM. Recurses into dicts
-    and lists. Safe on the dereferenced output of :func:`dereference_refs`.
+    Pydantic emits a ``title`` (the field/model class name) on every node; that
+    is noise for tool args and never sent to the LLM. Recurses into dicts and
+    lists. Safe on the dereferenced output of :func:`dereference_refs`.
+
+    The keys inside a ``properties`` object are field *names*, not metadata: a
+    field literally named ``title`` (e.g. ``ManageMemoryArgs.title``) must
+    survive. Stripping happens only on schema nodes whose parent is not a
+    ``properties`` mapping; nested object schemas re-enter stripping under their
+    own ``properties``. See ``test_strip_titles_keeps_property_named_title``.
     """
-    if isinstance(node, dict):
-        node.pop("title", None)
-        for v in node.values():
-            strip_titles(v)
-    elif isinstance(node, list):
-        for v in node:
-            strip_titles(v)
+
+    def _strip(n: Any, in_properties: bool) -> None:
+        if isinstance(n, dict):
+            if not in_properties:
+                n.pop("title", None)
+            for k, v in n.items():
+                _strip(v, k == "properties")
+        elif isinstance(n, list):
+            for v in n:
+                _strip(v, False)
+
+    _strip(node, False)

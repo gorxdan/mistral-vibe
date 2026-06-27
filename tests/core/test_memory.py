@@ -25,7 +25,7 @@ from vibe.core.memory.models import (
     slugify,
 )
 from vibe.core.memory.selector import MemorySelector
-from vibe.core.memory.store import MemoryStore
+from vibe.core.memory.store import MemoryStore, project_memory_dir_for
 from vibe.core.types import Backend
 
 
@@ -314,6 +314,85 @@ def test_project_memory_dir_hashes_trusted_root(monkeypatch, tmp_path) -> None:
     assert created == expected
     assert created.is_dir()
     assert (created / ".origin").read_text().strip() == str(root.resolve())
+
+
+def test_project_memory_dir_for_matches_running_namespace(
+    monkeypatch, tmp_path
+) -> None:
+    # Cross-project targeting invariant: project_memory_dir_for(root) must
+    # resolve to the SAME namespace an agent running inside `root` would see.
+    # Otherwise a resume-memory written from outside the project would never be
+    # picked up by an agent working in it.
+    from vibe.core.memory import store as store_mod
+
+    target = tmp_path / "targetproj"
+    target.mkdir()
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe_home"))
+
+    class _Mgr:
+        def __init__(self, roots: list) -> None:
+            self.project_roots = roots
+
+    monkeypatch.setattr(
+        "vibe.core.config.harness_files.get_harness_files_manager",
+        lambda: _Mgr([target]),
+    )
+    running = store_mod.project_memory_dir()
+    explicit = store_mod.project_memory_dir_for(target)
+    assert running == explicit
+
+
+@pytest.mark.asyncio
+async def test_manage_memory_project_path_targets_other_namespace(
+    monkeypatch, tmp_path
+) -> None:
+    # Bug B: an agent in one project must be able to write a project-scoped
+    # memory into a DIFFERENT project's namespace (the "leave a resume-memory
+    # for a repo I'm not in" case). project_path overrides the running project.
+    from vibe.core.tools.base import BaseToolState
+    from vibe.core.tools.builtins.manage_memory import (
+        ManageMemory,
+        ManageMemoryArgs,
+        ManageMemoryConfig,
+        ManageMemoryResult,
+    )
+
+    running = tmp_path / "running"
+    target = tmp_path / "target"
+    running.mkdir()
+    target.mkdir()
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe_home"))
+
+    class _Mgr:
+        def __init__(self, roots: list) -> None:
+            self.project_roots = roots
+
+    # The harness's "running project" is `running`; the memory must NOT land
+    # there — project_path redirects it to `target`.
+    monkeypatch.setattr(
+        "vibe.core.config.harness_files.get_harness_files_manager",
+        lambda: _Mgr([running]),
+    )
+
+    tool = ManageMemory(
+        config_getter=lambda: ManageMemoryConfig(), state=BaseToolState()
+    )
+    args = ManageMemoryArgs(
+        action="add",
+        title="cross-project probe",
+        body="b",
+        scope="project",
+        project_path=str(target),
+    )
+    yielded = [r async for r in tool.run(args, None)]
+    results = [r for r in yielded if isinstance(r, ManageMemoryResult)]
+    assert results and results[-1].action == "add"
+
+    target_ns = project_memory_dir_for(target)
+    running_ns = project_memory_dir_for(running)
+    assert (target_ns / "cross-project-probe.md").exists()
+    # Critically, it did NOT leak into the running project's namespace.
+    assert not (running_ns / "cross-project-probe.md").exists()
 
 
 def test_project_memory_dir_shared_across_worktrees(monkeypatch, tmp_path) -> None:

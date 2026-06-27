@@ -9,7 +9,11 @@ from pydantic import BaseModel, Field
 
 from vibe.core.config import VibeConfig
 from vibe.core.memory.models import MemoryEntry, MemoryMetadata, MemoryType, slugify
-from vibe.core.memory.store import MemoryStore, project_memory_dir
+from vibe.core.memory.store import (
+    MemoryStore,
+    project_memory_dir,
+    project_memory_dir_for,
+)
 from vibe.core.paths import VIBE_HOME
 from vibe.core.tools.base import (
     BaseTool,
@@ -22,9 +26,38 @@ from vibe.core.tools.base import (
 from vibe.core.types import ToolStreamEvent
 
 
-def _memory_store() -> MemoryStore:
-    project_dirs = [d] if (d := project_memory_dir()) else []
+def _memory_store(project_dir: Path | None = None) -> MemoryStore:
+    # An explicit project_dir (from project_path) overrides the running
+    # project's namespace so the store reads/writes the TARGET repo's tier.
+    active = project_dir if project_dir is not None else project_memory_dir()
+    project_dirs = [active] if active is not None else []
     return MemoryStore(user_dir=VIBE_HOME.path / "memory", project_dirs=project_dirs)
+
+
+def _ensure_project_namespace(project_root: Path | None) -> Path | None:
+    # Materialize (mkdir + .origin stamp) the resolved project namespace.
+    # project_root=None -> the running project; else the explicit target.
+    if project_root is not None:
+        return project_memory_dir_for(project_root, create=True)
+    return project_memory_dir(create=True)
+
+
+def _resolve_target_namespace(
+    args: ManageMemoryArgs,
+) -> tuple[Path | None, Path | None]:
+    """Resolve ``(project_dir, project_root)`` for this invocation.
+
+    ``project_path`` targets another repo's namespace (cross-project memory);
+    otherwise the running project's namespace (or ``(None, None)`` outside a
+    trusted project). ``project_root`` is the explicit root to materialize on
+    write, or None for the running project.
+    """
+    if args.project_path is None:
+        return project_memory_dir(), None
+    root = Path(args.project_path).expanduser()
+    if not root.exists():
+        raise ToolError(f"project_path does not exist: {root}")
+    return project_memory_dir_for(root), root
 
 
 def _default_add_scope(
@@ -61,6 +94,12 @@ class ManageMemoryArgs(BaseModel):
     # add: defaults to the active project namespace, else user (see
     # _default_add_scope). update: None preserves the existing tier.
     scope: Literal["user", "project"] | None = None
+    # Target a DIFFERENT project's namespace than the running one (cross-project
+    # memory, e.g. leaving a resume-memory for a repo the agent isn't in).
+    # add/update resolve to that namespace; ignored for list/delete. Resolved
+    # via the same identity hash the harness uses, so it matches what an agent
+    # running inside project_path would see.
+    project_path: str | None = None
 
 
 class ManageMemoryResult(BaseModel):
@@ -90,7 +129,10 @@ class ManageMemory(
         "project, reference): user = who the user is; feedback = how they want you to "
         "work (with the why); project = ongoing work/decisions not in code/git; "
         "reference = pointers to external systems. Do not save code patterns, "
-        "architecture, git history, or fix recipes — those are derivable."
+        "architecture, git history, or fix recipes — those are derivable. "
+        "project_path (add/update) targets a DIFFERENT repo's project namespace "
+        "than the one you're running in — use it to leave a resume-memory for a "
+        "project you are not currently inside."
     )
 
     @classmethod
@@ -100,9 +142,12 @@ class ManageMemory(
     async def run(
         self, args: ManageMemoryArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | ManageMemoryResult, None]:
-        store = _memory_store()
+        # Resolve the effective project namespace: an explicit project_path
+        # targets another repo's namespace (cross-project memory); otherwise the
+        # running project's namespace (or None outside a trusted project).
+        project_dir, project_root = _resolve_target_namespace(args)
+        store = _memory_store(project_dir)
         today = _dt.date.today().isoformat()
-        project_dir = project_memory_dir()
 
         if args.action == "list":
             index = store.index()
@@ -154,7 +199,7 @@ class ManageMemory(
                 body=args.body or "",
             )
             if scope == "project":
-                project_memory_dir(create=True)
+                _ensure_project_namespace(project_root)
             path = store.upsert(entry, project=(scope == "project"))
             yield ManageMemoryResult(
                 action="add", id=mem_id, message=f"created {path.name} ({scope})"
@@ -196,7 +241,7 @@ class ManageMemory(
                 args.id, project=(existing.metadata.scope == "project")
             )
         if scope == "project":
-            project_memory_dir(create=True)
+            _ensure_project_namespace(project_root)
         store.upsert(
             MemoryEntry(metadata=meta, body=body), project=(scope == "project")
         )

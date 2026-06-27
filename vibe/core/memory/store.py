@@ -431,6 +431,35 @@ def _project_identity(workdir: Path) -> Path:
     return common if common.exists() else workdir.resolve()
 
 
+def _namespace_for(identity: Path, *, create: bool = False) -> Path:
+    """Memory namespace dir under ``~/.vibe`` for a resolved project identity.
+
+    Shared by the harness-rooted resolver (:func:`project_memory_dir`) and the
+    explicit-root resolver (:func:`project_memory_dir_for`). ``create`` also
+    stamps a ``.origin`` file so an opaque hash dir stays debuggable.
+    """
+    digest = hashlib.sha256(str(identity).encode("utf-8")).hexdigest()[:16]
+    ns = VIBE_HOME.path / "memory" / "projects" / digest
+    if create:
+        ns.mkdir(parents=True, exist_ok=True)
+        origin = ns / ".origin"
+        if not origin.exists():
+            with contextlib.suppress(OSError):
+                origin.write_text(f"{identity}\n", encoding="utf-8")
+    return ns
+
+
+def project_memory_dir_for(root: Path, *, create: bool = False) -> Path:
+    """Memory namespace for an *explicit* project root, not the running one.
+
+    Lets a caller target another repo's namespace (e.g. leaving a resume-memory
+    for a project the agent is not currently running in). The identity is the
+    same ``_project_identity`` the harness uses, so this resolves to the SAME
+    namespace that an agent running inside ``root`` would see.
+    """
+    return _namespace_for(_project_identity(root), create=create)
+
+
 def project_memory_dir(*, create: bool = False) -> Path | None:
     """Current project's memory namespace under ``~/.vibe``, or ``None``.
 
@@ -449,14 +478,4 @@ def project_memory_dir(*, create: bool = False) -> Path | None:
         return None
     if not roots:
         return None
-    identity = _project_identity(roots[0])
-    digest = hashlib.sha256(str(identity).encode("utf-8")).hexdigest()[:16]
-    ns = VIBE_HOME.path / "memory" / "projects" / digest
-    if create:
-        ns.mkdir(parents=True, exist_ok=True)
-        # Stamp the identity so an opaque hash dir stays debuggable.
-        origin = ns / ".origin"
-        if not origin.exists():
-            with contextlib.suppress(OSError):
-                origin.write_text(f"{identity}\n", encoding="utf-8")
-    return ns
+    return _namespace_for(_project_identity(roots[0]), create=create)
