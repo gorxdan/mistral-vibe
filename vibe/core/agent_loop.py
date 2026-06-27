@@ -3613,13 +3613,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
         forked.session_id = generate_session_id(suffix=extract_suffix(self.session_id))
         forked.parent_session_id = self.session_id
-        # A forked session shares the parent's background registry: it is the
-        # single process-wide process table and aggregation surface, and a fork
-        # runs in the same process/event loop. Without this, a forked ACP
-        # session left background_registry=None and could not use bash
-        # background=True. The registry stays owned/reaped by the entry point
-        # that created it (TUI/programmatic/ACP _create_agent_loop).
-        forked.background_registry = self.background_registry
+        # A forked session gets its OWN fresh background registry — not the
+        # parent's reference. _close_agent_loop calls registry.shutdown() on
+        # every session close, so sharing the parent's reference would reap
+        # the parent's running processes when the fork closes. A fresh instance
+        # lets the fork use bash background=True (the original gap) while
+        # keeping ownership boundaries clean: closing the fork reaps only the
+        # fork's own processes, and the parent's registry is untouched.
+        # Local import: BackgroundRegistry is TYPE_CHECKING-only at module
+        # scope (used in annotations), but fork() needs it at runtime.
+        from vibe.core.tools.background import BackgroundRegistry
+
+        forked.background_registry = BackgroundRegistry()
         forked.session_logger.reset_session(
             forked.session_id, parent_session_id=self.session_id
         )
