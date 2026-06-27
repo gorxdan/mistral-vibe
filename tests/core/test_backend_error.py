@@ -87,6 +87,13 @@ class TestBackendErrorIsContextTooLong:
             # orchestral_runtime wraps context errors as 422
             (422, '{"error":{"type":"model_context_exceeded"}}'),
             (422, '{"error":{"type":"prompt_too_long"}}'),
+            # kimi phrases overflow as "exceeded model token limit"
+            (
+                400,
+                '{"error":{"message":"Invalid request: Your request exceeded '
+                'model token limit: 262144 (requested: 262225)",'
+                '"type":"invalid_request_error"}}',
+            ),
         ],
     )
     def test_true(self, status: int, body_text: str) -> None:

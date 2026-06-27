@@ -13,7 +13,7 @@ from vibe.core.types import Role
 from vibe.core.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
-    from vibe.core.config import VibeConfig
+    from vibe.core.config import ModelConfig, VibeConfig
     from vibe.core.tools.tool_result_store import ToolResultStore
     from vibe.core.types import AgentStats, LLMMessage, MessageList
 
@@ -35,6 +35,10 @@ class ConversationContext:
     messages: MessageList
     stats: AgentStats
     config: VibeConfig
+    # The model actually serving this turn — the failover override when one is
+    # active, else None to fall back to the configured active model. Context
+    # budgeting must size to this, not the configured primary.
+    active_model: ModelConfig | None = None
 
 
 @dataclass
@@ -104,7 +108,9 @@ class TokenLimitMiddleware:
 
 class AutoCompactMiddleware:
     async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
-        threshold = context.config.get_active_model().auto_compact_threshold
+        threshold = (
+            context.active_model or context.config.get_active_model()
+        ).auto_compact_threshold
 
         if threshold > 0 and context.stats.context_tokens >= threshold:
             return MiddlewareResult(
@@ -138,7 +144,9 @@ class ContextShaperMiddleware:
 
     @staticmethod
     def _threshold(context: ConversationContext) -> int:
-        return context.config.get_active_model().auto_compact_threshold
+        return (
+            context.active_model or context.config.get_active_model()
+        ).auto_compact_threshold
 
     @staticmethod
     def _estimated_tokens(context: ConversationContext) -> int:
@@ -443,7 +451,9 @@ class ContextWarningMiddleware:
         if self.has_warned:
             return MiddlewareResult()
 
-        max_context = context.config.get_active_model().auto_compact_threshold
+        max_context = (
+            context.active_model or context.config.get_active_model()
+        ).auto_compact_threshold
         if max_context <= 0:
             return MiddlewareResult()
 

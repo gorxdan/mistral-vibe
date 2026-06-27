@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import pytest
 
-from tests.conftest import build_test_agent_loop, build_test_vibe_config
+from tests.conftest import (
+    build_test_agent_loop,
+    build_test_vibe_config,
+    make_test_models,
+)
 from vibe.core.agents.models import BUILTIN_AGENTS, CHAT, AgentProfile, BuiltinAgentName
 from vibe.core.config import VibeConfig
 from vibe.core.middleware import (
     CHAT_AGENT_EXIT,
     CHAT_AGENT_REMINDER,
     PLAN_AGENT_EXIT,
+    AutoCompactMiddleware,
     ConversationContext,
     MiddlewareAction,
     MiddlewarePipeline,
@@ -673,3 +678,37 @@ class TestTokenLimitMiddleware:
 
         assert result.action == MiddlewareAction.CONTINUE
         assert result.reason is None
+
+
+class TestAutoCompactHonorsFailoverModel:
+    @pytest.mark.asyncio
+    async def test_sizes_budget_to_failover_model_not_configured_primary(self) -> None:
+        config = build_test_vibe_config(
+            models=make_test_models(auto_compact_threshold=200_000)
+        )
+        failover = make_test_models(auto_compact_threshold=1)[0]
+        ctx = ConversationContext(
+            messages=MessageList(),
+            stats=AgentStats(),
+            config=config,
+            active_model=failover,
+        )
+        ctx.stats.context_tokens = 100
+
+        result = await AutoCompactMiddleware().before_turn(ctx)
+
+        assert result.action == MiddlewareAction.COMPACT
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_configured_model_when_no_override(self) -> None:
+        config = build_test_vibe_config(
+            models=make_test_models(auto_compact_threshold=200_000)
+        )
+        ctx = ConversationContext(
+            messages=MessageList(), stats=AgentStats(), config=config
+        )
+        ctx.stats.context_tokens = 100
+
+        result = await AutoCompactMiddleware().before_turn(ctx)
+
+        assert result.action == MiddlewareAction.CONTINUE

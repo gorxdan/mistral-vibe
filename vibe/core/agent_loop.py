@@ -1246,7 +1246,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     "old_tokens", self.stats.context_tokens
                 )
                 threshold = result.metadata.get(
-                    "threshold", self.config.get_active_model().auto_compact_threshold
+                    "threshold", self._effective_model().auto_compact_threshold
                 )
                 async for ev in self._run_compaction(old_tokens, threshold):
                     yield ev
@@ -1328,9 +1328,15 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             new_session_id=self.session_id,
         )
 
+    def _effective_model(self) -> ModelConfig:
+        return self._fallback_model_override or self.config.get_active_model()
+
     def _get_context(self) -> ConversationContext:
         return ConversationContext(
-            messages=self.messages, stats=self.stats, config=self.config
+            messages=self.messages,
+            stats=self.stats,
+            config=self.config,
+            active_model=self._effective_model(),
         )
 
     async def _try_reactive_shaping(self) -> bool:
@@ -1341,7 +1347,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         count (i.e. there was old history worth compressing). Mutates
         ``self.messages`` in place via the shapers.
         """
-        threshold = self.config.get_active_model().auto_compact_threshold
+        threshold = self._effective_model().auto_compact_threshold
         if threshold <= 0:
             return False
         ctx = self._get_context()
@@ -2324,7 +2330,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         if await self._try_reactive_shaping():
                             continue
                     emergency_compacted = True
-                    threshold = self.config.get_active_model().auto_compact_threshold
+                    threshold = self._effective_model().auto_compact_threshold
                     async for ev in self._run_compaction(
                         self.stats.context_tokens, threshold, trigger="emergency"
                     ):
@@ -3292,7 +3298,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
     def _tool_result_hard_cap(self) -> int:
         try:
-            threshold = self.config.get_active_model().auto_compact_threshold
+            threshold = self._effective_model().auto_compact_threshold
         except Exception:
             return MAX_TOOL_RESULT_CHARS
         scaled = int(

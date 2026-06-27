@@ -22,6 +22,8 @@ _CONTEXT_TOO_LONG_SUBSTRINGS = (
     # orchestral_runtime returns these as 422
     "model_context_exceeded",
     "prompt_too_long",
+    # kimi: "exceeded model token limit: N (requested: M)"
+    "model token limit",
 )
 
 _RESPONSE_TOO_LONG_SUBSTRINGS = ("max_tokens_exceeded", "finish_reason=length")
