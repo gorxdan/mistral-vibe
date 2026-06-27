@@ -60,6 +60,21 @@ def _resolve_target_namespace(
     return project_memory_dir_for(root), root
 
 
+def _derive_title(body: str | None) -> str:
+    """Derive a short title from a memory body when the caller omits one.
+
+    Takes the first non-empty line, strips markdown heading/list markers, and
+    caps the length. Returns "" when nothing usable is present.
+    """
+    if not body:
+        return ""
+    for raw in body.splitlines():
+        line = raw.strip().lstrip("#->*").strip()
+        if line:
+            return line[:60]
+    return ""
+
+
 def _default_add_scope(
     requested: Literal["user", "project"] | None,
     mem_type: MemoryType | None,
@@ -171,15 +186,20 @@ class ManageMemory(
             return
 
         if args.action == "add":
-            if not args.title:
-                raise ToolError("add requires 'title'")
+            # `title` is the only hard requirement for add, but the schema marks
+            # it optional, so models often omit it and hit a dead-end error.
+            # Derive one from the body's first line when missing rather than
+            # failing the call.
+            title = args.title or _derive_title(args.body)
+            if not title:
+                raise ToolError("add requires 'title' (or a non-empty 'body')")
             scope = _default_add_scope(args.scope, args.type, project_dir)
             if scope == "project" and project_dir is None:
                 raise ToolError(
                     "scope=project requires a trusted project directory; "
                     "run from a trusted folder or use scope=user."
                 )
-            mem_id = args.id or slugify(args.title)
+            mem_id = args.id or slugify(title)
             if store.get(mem_id) is not None:
                 raise ToolError(
                     f"Memory '{mem_id}' already exists; use action=update instead."
@@ -187,7 +207,7 @@ class ManageMemory(
             entry = MemoryEntry(
                 metadata=MemoryMetadata(
                     id=mem_id,
-                    title=args.title,
+                    title=title,
                     description=args.description or "",
                     tags=args.tags,
                     type=args.type,

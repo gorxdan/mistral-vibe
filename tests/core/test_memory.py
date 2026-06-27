@@ -399,6 +399,59 @@ async def test_manage_memory_project_path_targets_other_namespace(
     assert not (running_ns / "cross-project-probe.md").exists()
 
 
+@pytest.mark.asyncio
+async def test_manage_memory_add_derives_title_from_body(monkeypatch, tmp_path) -> None:
+    # add's only hard requirement is `title`, but the schema marks it optional,
+    # so models omit it and hit a dead-end "add requires 'title'". When omitted,
+    # derive a title from the body's first line instead of failing.
+    from vibe.core.tools.base import BaseToolState
+    from vibe.core.tools.builtins.manage_memory import (
+        ManageMemory,
+        ManageMemoryArgs,
+        ManageMemoryConfig,
+        ManageMemoryResult,
+        _derive_title,
+    )
+
+    assert _derive_title("# First Heading\nmore") == "First Heading"
+    assert _derive_title("\n\n- bullet point") == "bullet point"
+    assert _derive_title(None) == ""
+    assert _derive_title("   ") == ""
+
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe_home"))
+    tool = ManageMemory(
+        config_getter=lambda: ManageMemoryConfig(), state=BaseToolState()
+    )
+    args = ManageMemoryArgs(
+        action="add", body="Prefer tabs over spaces here", scope="user"
+    )
+    results = [
+        r async for r in tool.run(args, None) if isinstance(r, ManageMemoryResult)
+    ]
+    assert results and results[-1].action == "add"
+    assert results[-1].id == slugify("Prefer tabs over spaces here")
+
+
+@pytest.mark.asyncio
+async def test_manage_memory_add_without_title_or_body_errors(
+    monkeypatch, tmp_path
+) -> None:
+    from vibe.core.tools.base import BaseToolState, ToolError
+    from vibe.core.tools.builtins.manage_memory import (
+        ManageMemory,
+        ManageMemoryArgs,
+        ManageMemoryConfig,
+    )
+
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe_home"))
+    tool = ManageMemory(
+        config_getter=lambda: ManageMemoryConfig(), state=BaseToolState()
+    )
+    args = ManageMemoryArgs(action="add", scope="user")
+    with pytest.raises(ToolError, match="requires 'title'"):
+        [r async for r in tool.run(args, None)]
+
+
 def test_project_memory_dir_shared_across_worktrees(monkeypatch, tmp_path) -> None:
     # All worktrees of one repo must resolve to ONE memory namespace so multiple
     # agents/sessions on the same project share project memory regardless of
