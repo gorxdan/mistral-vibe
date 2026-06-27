@@ -16,7 +16,6 @@ from tests.conftest import build_test_vibe_config
 from tests.stubs.fake_backend import FakeBackend
 from tests.stubs.fake_client import FakeClient
 from vibe.acp.acp_agent_loop import VibeAcpAgentLoop
-from vibe.acp.user_display_content import USER_DISPLAY_CONTENT_META_KEY
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import ModelConfig, SessionLoggingConfig
@@ -231,50 +230,6 @@ class TestLoadSession:
         assert len(user_updates) == 1
         assert user_updates[0].update.content.text == "Hello world"
         assert user_updates[0].update.field_meta is None
-
-    @pytest.mark.asyncio
-    async def test_load_session_replays_user_display_content(
-        self,
-        acp_agent_with_session_config: tuple[VibeAcpAgentLoop, FakeClient],
-        temp_session_dir: Path,
-        create_test_session,
-    ) -> None:
-        acp_agent, client = acp_agent_with_session_config
-
-        session_id = "replay-dsp-123456"
-        cwd = str(Path.cwd())
-        user_display_content = {
-            "version": "1.0.0",
-            "host": "mistral-vscode",
-            "content": [
-                {"type": "text", "text": "Look at "},
-                {
-                    "type": "workspace_mention",
-                    "kind": "file",
-                    "uri": "file:///repo/src/app.ts",
-                    "name": "app.ts",
-                },
-            ],
-        }
-        messages = [
-            {
-                "role": "user",
-                "content": "Look at app.ts",
-                "user_display_content": user_display_content,
-            }
-        ]
-        create_test_session(temp_session_dir, session_id, cwd, messages=messages)
-
-        await acp_agent.load_session(cwd=cwd, mcp_servers=[], session_id=session_id)
-
-        user_updates = [
-            u for u in client._session_updates if isinstance(u.update, UserMessageChunk)
-        ]
-        assert len(user_updates) == 1
-        assert user_updates[0].update.content.text == "Look at app.ts"
-        assert user_updates[0].update.field_meta == {
-            USER_DISPLAY_CONTENT_META_KEY: user_display_content
-        }
 
     @pytest.mark.asyncio
     async def test_load_session_replays_assistant_messages(

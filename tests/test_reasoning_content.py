@@ -22,13 +22,7 @@ from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.generic import GenericBackend, OpenAIAdapter
 from vibe.core.llm.backend.mistral import MistralBackend, MistralMapper, ParsedContent
 from vibe.core.llm.format import APIToolFormatHandler
-from vibe.core.types import (
-    AssistantEvent,
-    LLMMessage,
-    ReasoningEvent,
-    Role,
-    UserDisplayContentMetadata,
-)
+from vibe.core.types import AssistantEvent, LLMMessage, ReasoningEvent, Role
 
 
 def make_config() -> VibeConfig:
@@ -463,49 +457,6 @@ class TestReasoningFieldNameConversion:
 
         assert payload["messages"][0]["reasoning_content"] == "Thinking..."
         assert "reasoning_state" not in payload["messages"][0]
-
-    def test_prepare_request_excludes_user_display_content_from_completions_payload(
-        self,
-    ):
-        adapter = OpenAIAdapter()
-        provider = ProviderConfig(
-            name="test",
-            api_base="https://api.example.com/v1",
-            api_key_env_var="API_KEY",
-        )
-
-        request = adapter.prepare_request(
-            model_name="test-model",
-            messages=[
-                LLMMessage(
-                    role=Role.user,
-                    content="Look at app.ts",
-                    user_display_content=UserDisplayContentMetadata(
-                        version="1.0.0",
-                        host="mistral-vscode",
-                        content=[
-                            {"type": "text", "text": "Look at "},
-                            {
-                                "type": "workspace_mention",
-                                "kind": "file",
-                                "uri": "file:///repo/src/app.ts",
-                                "name": "app.ts",
-                            },
-                        ],
-                    ),
-                )
-            ],
-            temperature=0.2,
-            tools=None,
-            max_tokens=None,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        )
-
-        payload = json.loads(request.body)
-
-        assert payload["messages"][0] == {"role": "user", "content": "Look at app.ts"}
 
     @pytest.mark.asyncio
     async def test_complete_with_custom_reasoning_field_name(self):

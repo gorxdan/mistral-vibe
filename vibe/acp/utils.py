@@ -24,7 +24,6 @@ from acp.schema import (
 )
 
 from vibe.acp.tools.session_update import resolve_kind, tool_call_session_update
-from vibe.acp.user_display_content import USER_DISPLAY_CONTENT_META_KEY
 from vibe.core.agents.models import AgentProfile, AgentType
 from vibe.core.config._settings import THINKING_LEVELS, ThinkingLevel
 from vibe.core.llm.format import ResolvedToolCall
@@ -290,20 +289,10 @@ def get_proxy_help_text() -> str:
 
 def create_user_message_replay(msg: LLMMessage) -> UserMessageChunk:
     content = msg.content if isinstance(msg.content, str) else ""
-    field_meta = (
-        {
-            USER_DISPLAY_CONTENT_META_KEY: msg.user_display_content.model_dump(
-                mode="json"
-            )
-        }
-        if msg.user_display_content is not None
-        else None
-    )
     return UserMessageChunk(
         session_update="user_message_chunk",
         content=TextContentBlock(type="text", text=content),
         message_id=msg.message_id,
-        field_meta=field_meta,
     )
 
 

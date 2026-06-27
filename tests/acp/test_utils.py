@@ -4,7 +4,6 @@ from acp.schema import ToolCallStart
 
 from vibe.acp.tools.builtins.task import Task as AcpTask
 from vibe.acp.tools.builtins.todo import Todo as AcpTodo, TodoArgs
-from vibe.acp.user_display_content import USER_DISPLAY_CONTENT_META_KEY
 from vibe.acp.utils import (
     TOOL_OPTIONS,
     ToolOption,
@@ -20,13 +19,7 @@ from vibe.core.paths import GLOBAL_ENV_FILE
 from vibe.core.proxy_setup import SUPPORTED_PROXY_VARS
 from vibe.core.tools.builtins.task import TaskArgs
 from vibe.core.tools.permissions import PermissionScope, RequiredPermission
-from vibe.core.types import (
-    FunctionCall,
-    LLMMessage,
-    Role,
-    ToolCall,
-    UserDisplayContentMetadata,
-)
+from vibe.core.types import FunctionCall, LLMMessage, Role, ToolCall
 
 
 def _write_env_file(content: str) -> None:
@@ -153,35 +146,6 @@ class TestCreateUserMessageReplay:
         assert replay.content.text == "Hello"
         assert replay.message_id == "msg-1"
         assert replay.field_meta is None
-
-    def test_replays_user_display_content_as_field_meta(self) -> None:
-        user_display_content = UserDisplayContentMetadata(
-            version="1.0.0",
-            host="mistral-vscode",
-            content=[
-                {"type": "text", "text": "Look at "},
-                {
-                    "type": "workspace_mention",
-                    "kind": "file",
-                    "uri": "file:///repo/src/app.ts",
-                    "name": "app.ts",
-                },
-            ],
-        )
-
-        replay = create_user_message_replay(
-            LLMMessage(
-                role=Role.user,
-                content="Look at app.ts",
-                message_id="msg-1",
-                user_display_content=user_display_content,
-            )
-        )
-
-        assert replay.content.text == "Look at app.ts"
-        assert replay.field_meta == {
-            USER_DISPLAY_CONTENT_META_KEY: user_display_content.model_dump(mode="json")
-        }
 
 
 class TestCreateToolCallReplay:
