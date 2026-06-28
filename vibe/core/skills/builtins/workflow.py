@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from vibe.core.skills.models import SkillInfo, SkillScope, SkillSource
+from vibe.core.utils.io import read_safe
 from vibe.core.workflows.runtime import DEFAULT_MAX_AGENTS, DEFAULT_MAX_CONCURRENT
 
 # Single source of truth: the workflow authoring guide lives in the
@@ -20,9 +21,8 @@ _GUIDE_PATH = (
 # never holds a stale copy (the concurrent/total caps live as constants in
 # vibe.core.workflows.runtime).
 _PROMPT = (
-    _GUIDE_PATH
-    .read_text(encoding="utf-8")
-    .replace("__MAX_CONCURRENT_AGENTS__", str(DEFAULT_MAX_CONCURRENT))
+    read_safe(_GUIDE_PATH)
+    .text.replace("__MAX_CONCURRENT_AGENTS__", str(DEFAULT_MAX_CONCURRENT))
     .replace("__MAX_TOTAL_AGENTS__", str(DEFAULT_MAX_AGENTS))
 )
 

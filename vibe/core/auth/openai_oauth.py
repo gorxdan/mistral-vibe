@@ -31,6 +31,7 @@ import orjson
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
 from vibe.core.utils.http import build_ssl_context
+from vibe.core.utils.io import read_safe
 
 # --- Codex OAuth client constants (from openai/codex codex-rs/login) ---------
 # The public, first-party Codex client id. Reusing it is what makes a ChatGPT
@@ -171,7 +172,7 @@ def account_id_from_token(token: str) -> str | None:
 def load_tokens() -> OpenAIOAuthTokens | None:
     path = token_store_path()
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = read_safe(path, raise_on_error=True).text
     except FileNotFoundError:
         return None
     except OSError as exc:
