@@ -151,11 +151,15 @@ class SkillInfo(BaseModel):
 
 
 class SkillConfigIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     file: Path
     message: str
 
 
 class ParsedSkillCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     content: str
     extra_instructions: str | None = None

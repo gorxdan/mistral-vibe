@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from opentelemetry import trace
 import orjson
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
 from vibe.core.agents.manager import AgentManager
@@ -260,6 +260,8 @@ class ToolExecutionResponse(StrEnum):
 
 
 class ToolDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     verdict: ToolExecutionResponse
     approval_type: ToolPermission
     feedback: str | None = None
@@ -3988,8 +3990,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         LLMMessage(role=Role.USER, content=summary_request)
                     )
                     summary_result = await self._chat(
-                        model_override=self.config.get_compaction_model(),
-                        harness=True,
+                        model_override=self.config.get_compaction_model(), harness=True
                     )
 
                 if summary_result.usage is None:

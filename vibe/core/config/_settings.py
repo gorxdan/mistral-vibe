@@ -935,7 +935,7 @@ class TTSModelConfig(BaseModel):
 
 
 class OtelSpanExporterConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     endpoint: str
     headers: dict[str, str] | None = None

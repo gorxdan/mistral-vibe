@@ -19,7 +19,7 @@ class ConfigDefinitionError(TypeError):
 class ConfigSchema(BaseModel):
     """Base for composite config schemas composed of fragments and merge-aware fields."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     _origins: dict[str, str] = PrivateAttr(default_factory=dict)
 
@@ -64,7 +64,7 @@ class ConfigSchema(BaseModel):
 class ConfigFragment(BaseModel):
     """Base for domain config groups with merge-aware top-level fields."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     @classmethod
     def __pydantic_on_complete__(cls) -> None:

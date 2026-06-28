@@ -5,7 +5,7 @@ import os
 import tomllib
 from typing import Any
 
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.config._settings import (
@@ -29,6 +29,8 @@ def _default_model_payloads() -> list[dict[str, Any]]:
 
 
 class _OnboardingSnapshot(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     active_model: str = DEFAULT_ACTIVE_MODEL_CONFIG.alias
     vibe_base_url: str = DEFAULT_VIBE_BASE_URL
     providers: list[Any] = Field(default_factory=_default_provider_payloads)

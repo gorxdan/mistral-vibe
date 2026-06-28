@@ -162,6 +162,8 @@ class SkillVersionInfo(BaseModel):
     not part of this list.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     version: int
     aliases: list[str] = Field(default_factory=list)
 

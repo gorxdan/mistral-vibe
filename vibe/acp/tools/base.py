@@ -11,7 +11,7 @@ from vibe.core.tools.manager import ToolManager
 
 
 class AcpToolState(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
     client: Annotated[Client | None, SkipValidation] = Field(
         default=None, description="ACP Client"

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TurnSummaryData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     user_message: str
     message_id: str | None = None
     assistant_fragments: list[str] = Field(default_factory=list)
@@ -11,5 +13,7 @@ class TurnSummaryData(BaseModel):
 
 
 class TurnSummaryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     generation: int
     summary: str | None
