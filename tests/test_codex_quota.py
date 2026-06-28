@@ -63,8 +63,7 @@ class TestParsePayload:
 
     def test_partial_windows(self):
         snap = _parse_payload(
-            {"rate_limit": {"primary_window": {"used_percent": 10.0}}},
-            captured_at=1.0,
+            {"rate_limit": {"primary_window": {"used_percent": 10.0}}}, captured_at=1.0
         )
         assert snap is not None
         assert snap.primary is not None
@@ -73,8 +72,7 @@ class TestParsePayload:
 
     def test_unlimited_credits(self):
         snap = _parse_payload(
-            {"credits": {"has_credits": True, "unlimited": True}},
-            captured_at=1.0,
+            {"credits": {"has_credits": True, "unlimited": True}}, captured_at=1.0
         )
         assert snap is not None
         assert snap.credits is not None
@@ -115,8 +113,7 @@ class TestFetchCodexQuota:
         respx.get(url).mock(return_value=Response(200, json=_payload()))
         # The fetch calls the module-level binding in _codex_quota; patch that.
         monkeypatch.setattr(
-            "vibe.core.usage._codex_quota.resolve_chatgpt_credentials",
-            _fake_resolve,
+            "vibe.core.usage._codex_quota.resolve_chatgpt_credentials", _fake_resolve
         )
         snap = await fetch_codex_quota("https://chatgpt.com/backend-api/codex")
         assert snap is not None
@@ -141,8 +138,7 @@ class TestFetchCodexQuota:
         url = "https://x/api/codex/usage"
         respx.get(url).mock(return_value=Response(429))
         monkeypatch.setattr(
-            "vibe.core.usage._codex_quota.resolve_chatgpt_credentials",
-            _fake_resolve,
+            "vibe.core.usage._codex_quota.resolve_chatgpt_credentials", _fake_resolve
         )
         assert await fetch_codex_quota("https://x") is None
 
@@ -152,8 +148,7 @@ class TestFetchCodexQuota:
         url = "https://x/api/codex/usage"
         respx.get(url).mock(return_value=Response(200, text="not json"))
         monkeypatch.setattr(
-            "vibe.core.usage._codex_quota.resolve_chatgpt_credentials",
-            _fake_resolve,
+            "vibe.core.usage._codex_quota.resolve_chatgpt_credentials", _fake_resolve
         )
         assert await fetch_codex_quota("https://x") is None
 
@@ -175,7 +170,5 @@ def test_window_percent_left_clamps():
 
 
 def test_monthly_percent_left_clamps():
-    m = CodexMonthlyLimit(
-        used="1", limit="10", remaining_percent=150, resets_at=1
-    )
+    m = CodexMonthlyLimit(used="1", limit="10", remaining_percent=150, resets_at=1)
     assert m.percent_left == 100.0

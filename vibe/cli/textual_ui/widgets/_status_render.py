@@ -174,7 +174,9 @@ def _session_section(stats: AgentStats, context_window: int | None) -> list[Text
     lines.append(
         _label_line(
             "Cost",
-            Text(_cost_or_unknown(stats.session_cost, stats.session_total_llm_tokens > 0)),
+            Text(
+                _cost_or_unknown(stats.session_cost, stats.session_total_llm_tokens > 0)
+            ),
         )
     )
 
@@ -320,7 +322,10 @@ def _window_label(window: CodexQuotaWindow) -> str:
 
 
 def _codex_quota_section(quota: CodexQuotaSnapshot) -> list[Text]:
-    lines: list[Text] = [Text("  ── Codex quota (ChatGPT plan) ──", style="dim"), Text()]
+    lines: list[Text] = [
+        Text("  ── Codex quota (ChatGPT plan) ──", style="dim"),
+        Text(),
+    ]
     if quota.primary is not None:
         w = quota.primary
         val = Text()

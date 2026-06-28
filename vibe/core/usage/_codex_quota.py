@@ -118,10 +118,7 @@ async def _fetch_codex_quota(api_base: str) -> CodexQuotaSnapshot | None:
         return None
 
     url = f"{api_base.rstrip('/')}{_USAGE_PATH}"
-    headers = {
-        "Authorization": f"Bearer {creds.access_token}",
-        **creds.auth_headers(),
-    }
+    headers = {"Authorization": f"Bearer {creds.access_token}", **creds.auth_headers()}
     try:
         async with httpx.AsyncClient(
             timeout=_FETCH_TIMEOUT, verify=build_ssl_context()
