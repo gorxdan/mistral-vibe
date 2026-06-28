@@ -151,7 +151,7 @@ class ToolPermission(StrEnum):
         except ValueError:
             raise ToolPermissionError(
                 f"Invalid tool permission: {name}. Must be one of {list(cls)}"
-            )
+            ) from None
 
 
 class BaseToolConfig(BaseModel):

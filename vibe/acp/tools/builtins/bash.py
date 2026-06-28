@@ -132,7 +132,7 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
             except Exception as e:
                 logger.debug("Failed to kill terminal: %r", e)
 
-            raise self._build_timeout_error(command, timeout)
+            raise self._build_timeout_error(command, timeout) from None
 
     @classmethod
     def tool_call_session_update(cls, event: ToolCallEvent) -> ToolCallStart | None:

@@ -958,7 +958,7 @@ class Bash(
                 )
             except TimeoutError:
                 await kill_async_subprocess(proc)
-                raise self._build_timeout_error(args.command, timeout)
+                raise self._build_timeout_error(args.command, timeout) from None
 
             stdout = (
                 decode_safe(stdout_bytes, from_subprocess=True).text[:max_bytes]
