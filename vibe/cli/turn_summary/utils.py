@@ -25,6 +25,5 @@ def create_narrator_backend(
     backend = create_backend(
         provider=provider,
         timeout=config.api_timeout,
-        retry_max_elapsed_time=config.api_retry_max_elapsed_time,
     )
     return backend, NARRATOR_MODEL
