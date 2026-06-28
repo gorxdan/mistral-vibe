@@ -77,14 +77,15 @@ class TaskArgs(BaseModel):
         ),
     )
     async_run: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "If true, run the subagent in the background and return immediately "
-            "with a task_id instead of blocking until completion. Works for any "
-            "subagent — read-only in-process or isolated write-capable. Completion "
-            "surfaces at the top of the next parent turn; the running task shows "
-            "in the Tasks pane and the `background` tool, and is cancellable via "
-            "`background stop <task_id>`."
+            "Background execution (the DEFAULT): returns immediately with a "
+            "task_id; the subagent runs in the background and its result is "
+            "delivered to you automatically at the start of a later turn (you "
+            "are auto-resumed on completion). The running task shows in the Tasks "
+            "pane and the `background` tool, cancellable via `background stop "
+            "<task_id>`. Set async_run=false ONLY to block and get the subagent's "
+            "result inline in this same turn."
         ),
     )
 
@@ -157,7 +158,13 @@ class Task(
         "tell it to broadly explore a large or external repo you have already "
         "searched; point it at specific paths/symbols and scope its searches. A "
         "subagent has its own, often smaller, context window, so an open-ended "
-        "broad search there can overflow it — give it targets, not a hunt."
+        "broad search there can overflow it — give it targets, not a hunt.\n\n"
+        "Execution: subagents run in the BACKGROUND by default — the call returns "
+        "a task_id immediately and the subagent's result is delivered to you "
+        "automatically at the start of a later turn (you are auto-resumed when it "
+        "finishes; the run is visible in the Tasks pane). Spawn what you need, "
+        "then continue other work or end your turn. Pass async_run=false only "
+        "when you must have the result inline in THIS turn (you block until done)."
     )
 
     is_subagent_spawner: ClassVar[bool] = True

@@ -40,7 +40,9 @@ class TestTaskConcurrencyGating:
         return AgentManager(lambda: config)
 
     def test_read_only_profile_is_concurrent_safe(self, manager: AgentManager) -> None:
-        args = TaskArgs(task="x", agent="explore")
+        # Concurrent fan-out applies to the inline path; background (the default)
+        # returns immediately, so it serializes rather than fanning out.
+        args = TaskArgs(task="x", agent="explore", async_run=False)
         assert Task.call_is_read_only(args, agent_manager=manager) is True
 
     def test_write_capable_profile_serializes(self, manager: AgentManager) -> None:
