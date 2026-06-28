@@ -6,7 +6,7 @@ Layout: `vibe/core` (engine: agent loop, tools, LLM backends, config, workflows,
 
 ## Rules
 
-Retrieval over recall | Read before edit (runtime-enforced) | Always `uv run` (never bare `python`/`pip`; git through `uv run` for pre-commit) | Strict pyright (no `# type: ignore`, no `# noqa`, no relative imports; fix at source) | Modern Python (built-in generics + `|` unions, `match`/`case`, early returns, `pathlib.Path`/`anyio.Path`, f-strings, never `Optional`/`Union`/`Dict`/`List`) | Pydantic (`model_validate`/validators, `ConfigDict(extra=...)` always set, no `from_sdk`) | Tests (`pytest`+`pytest-asyncio`+`respx`, no docstrings, autouse fixtures) | Lint (`ruff check --fix . && ruff format .` after changes, `pyright` gates CI) | File I/O (`read_safe`/`read_safe_async` over raw `Path.read_text()`) | Logging (`logger.error("msg %s", val)` not f-strings, `raise ... from e`)
+Retrieval over recall | Read before edit (runtime-enforced) | Always `uv run` (never bare `python`/`pip`; git through `uv run` for pre-commit) | Strict pyright (no `# type: ignore`, no `# noqa`, no relative imports; fix at source) | Modern Python (built-in generics + `|` unions, `match`/`case`, early returns, `pathlib.Path`/`anyio.Path`, f-strings, never `Optional`/`Union`/`Dict`/`List`) | Pydantic (`model_validate`/validators, `ConfigDict(extra=...)` always set, no `from_sdk`) | Tests (`pytest`+`pytest-asyncio`+`respx`, no docstrings, autouse fixtures) | Lint (`ruff check --fix . && ruff format .` after changes, `pyright` gates CI) | File I/O (`read_safe`/`read_safe_async`/`write_safe`/`atomic_replace` over raw `Path.read_text()`/`.write_text()`/`open()`) | Logging (`logger.error("msg %s", val)` not f-strings, `raise ... from e`)
 
 ## Commands
 
@@ -45,7 +45,7 @@ Search: `lsp` for symbol questions (`go_to_definition`/`find_references`/`hover`
 
 ## File I/O detail
 
-`read_safe`/`read_safe_async`/`decode_safe` return `ReadSafeResult(text, encoding)`: UTF-8 → BOM → locale → `charset_normalizer` lazily. `raise_on_error=True` only when distinguishing corrupt files. Default replaces undecodable with U+FFFD.
+`read_safe`/`read_safe_async`/`decode_safe` return `ReadSafeResult(text, encoding)`: UTF-8 → BOM → locale → `charset_normalizer` lazily. `raise_on_error=True` only when distinguishing corrupt files. Default replaces undecodable with U+FFFD. Writes go through `write_safe` (sync, atomic via tmpfile + `os.replace`) or `atomic_replace` (async); raw `.write_text()`/`open("w")` only for ephemeral scratch files never read back by another process.
 
 ## Tests
 

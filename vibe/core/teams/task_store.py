@@ -8,7 +8,7 @@ import orjson
 
 from vibe.core.logger import logger
 from vibe.core.teams.models import Task, TaskStatus
-from vibe.core.utils.io import read_safe
+from vibe.core.utils.io import read_safe, write_safe
 
 
 class TaskStore:
@@ -37,8 +37,9 @@ class TaskStore:
         """Write tasks to disk. Caller must already hold ``_lock``."""
         self._team_dir.mkdir(parents=True, exist_ok=True)
         data = {"tasks": [t.model_dump(mode="json") for t in tasks.values()]}
-        self._tasks_file.write_text(
-            orjson.dumps(data, option=orjson.OPT_INDENT_2).decode("utf-8")
+        write_safe(
+            self._tasks_file,
+            orjson.dumps(data, option=orjson.OPT_INDENT_2).decode("utf-8"),
         )
 
     def _load(self) -> None:

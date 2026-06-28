@@ -9,7 +9,7 @@ from filelock import FileLock
 
 from vibe.core.logger import logger
 from vibe.core.teams.models import Message, MessageKind
-from vibe.core.utils.io import read_safe
+from vibe.core.utils.io import read_safe, write_safe
 
 # A recipient name becomes a path component (the per-recipient inbox dir). These
 # names reach the mailbox from model-controlled tool args, so they must be a
@@ -59,7 +59,7 @@ class Mailbox:
         msg_file = inbox / f"{msg.id}.json"
         lock = FileLock(str(inbox / ".lock"), timeout=5)
         with lock:
-            msg_file.write_text(msg.model_dump_json(indent=2))
+            write_safe(msg_file, msg.model_dump_json(indent=2))
         return msg
 
     def _read_in_order(self, inbox: Path) -> list[tuple[Path, Message]]:
@@ -90,7 +90,7 @@ class Mailbox:
             for msg_file, msg in self._read_in_order(inbox):
                 if mark_read and not msg.read:
                     msg.read = True
-                    msg_file.write_text(msg.model_dump_json(indent=2))
+                    write_safe(msg_file, msg.model_dump_json(indent=2))
                 messages.append(msg)
         return messages
 

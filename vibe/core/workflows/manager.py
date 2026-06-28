@@ -12,7 +12,7 @@ import yaml
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.logger import logger
 from vibe.core.paths import dedup_paths
-from vibe.core.utils.io import read_safe
+from vibe.core.utils.io import read_safe, write_safe
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
@@ -95,7 +95,7 @@ class WorkflowManager:
         target_dir = self._resolve_save_dir(mgr, location)
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / f"{slug}.py"
-        path.write_text(source, encoding="utf-8")
+        write_safe(path, source)
         return path
 
     @staticmethod

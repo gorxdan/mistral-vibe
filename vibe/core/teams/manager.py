@@ -17,7 +17,7 @@ from vibe.core.paths import VIBE_HOME
 from vibe.core.teams.mailbox import Mailbox
 from vibe.core.teams.models import Task, TeamConfig, TeamMember
 from vibe.core.teams.task_store import TaskStore
-from vibe.core.utils.io import read_safe
+from vibe.core.utils.io import read_safe, write_safe
 
 if TYPE_CHECKING:
     from vibe.core.hooks.manager import HooksManager
@@ -90,7 +90,7 @@ class TeamManager:
     def _save_config(self, config: TeamConfig) -> None:
         lock = FileLock(str(self._config_lock), timeout=5)
         with lock:
-            self._config_file.write_text(config.model_dump_json(indent=2))
+            write_safe(self._config_file, config.model_dump_json(indent=2))
 
     def get_config(self) -> TeamConfig:
         return self._load_config()

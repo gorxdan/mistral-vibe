@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 import re
 
-from vibe.core.utils.io import read_safe
+from vibe.core.utils.io import read_safe, write_safe
 
 _UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -78,8 +78,7 @@ class ToolResultStore:
         if path is None:
             return None
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+            write_safe(path, content)
         except OSError:
             return None
         return path
