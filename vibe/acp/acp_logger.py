@@ -6,7 +6,7 @@ from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from cachetools import TTLCache
 import orjson
@@ -21,7 +21,9 @@ BACKUP_COUNT = 3
 
 ACP_LOGGING_ENABLED_KEY = "VIBE_ACP_LOGGING_ENABLED"
 
-_session_cache: TTLCache[int | str, str] = TTLCache(maxsize=1000, ttl=3600)
+_session_cache: TTLCache[int | str, str] = cast(
+    "TTLCache[int | str, str]", TTLCache(maxsize=1000, ttl=3600)
+)
 _current_session: str | None = None
 _logger: logging.Logger | None = None
 

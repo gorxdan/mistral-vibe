@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -12,26 +11,20 @@ from vibe.cli.textual_ui.widgets.mcp_oauth_app import (
     _LoginResult,
     _OAuthOptionId,
 )
+from vibe.core.config import MCPOAuth, MCPStreamableHttp
+
+_SERVER = MCPStreamableHttp(
+    name="oauth",
+    transport="streamable-http",
+    url="https://auth.example.com/mcp",
+    auth=MCPOAuth(type="oauth", scopes=[]),
+)
+
+_LOGIN_PATH = "vibe.cli.textual_ui.widgets.mcp_oauth_app.perform_oauth_login"
 
 
-class FakeLoginRegistry:
-    def __init__(self, *, error: Exception | None = None) -> None:
-        self.error = error
-        self.login_calls: list[str] = []
-
-    async def login(
-        self, alias: str, *, on_url: Callable[[str], Awaitable[None]]
-    ) -> None:
-        self.login_calls.append(alias)
-        await on_url("https://auth.example.com/oauth")
-        if self.error:
-            raise self.error
-
-
-def _make_app(registry: FakeLoginRegistry | None = None) -> MCPOAuthApp:
-    return MCPOAuthApp(
-        server_name="oauth", mcp_registry=cast(Any, registry or FakeLoginRegistry())
-    )
+def _make_app() -> MCPOAuthApp:
+    return MCPOAuthApp(server=_SERVER)
 
 
 def _wire_query(app: MCPOAuthApp) -> tuple[MagicMock, MagicMock, MagicMock]:
@@ -89,24 +82,32 @@ class TestMCPOAuthApp:
         assert _OAuthOptionId.SHOW in option_ids
 
     @pytest.mark.asyncio
-    async def test_run_login_starts_registry_login(self) -> None:
-        registry = FakeLoginRegistry()
-        app = _make_app(registry)
+    async def test_run_login_performs_oauth_login(self) -> None:
+        app = _make_app()
         _wire_query(app)
+        seen: list[Any] = []
 
-        result = await app._run_login()
+        async def fake_login(server: Any, *, on_url: Any) -> None:
+            seen.append(server)
+            await on_url("https://auth.example.com/oauth")
+
+        with patch(_LOGIN_PATH, fake_login):
+            result = await app._run_login()
 
         assert result == _LoginResult(authenticated=True)
-        assert registry.login_calls == ["oauth"]
+        assert seen == [_SERVER]
         assert app._auth_url == "https://auth.example.com/oauth"
 
     @pytest.mark.asyncio
     async def test_run_login_returns_error(self) -> None:
-        registry = FakeLoginRegistry(error=ValueError("bad auth"))
-        app = _make_app(registry)
+        app = _make_app()
         _wire_query(app)
 
-        result = await app._run_login()
+        async def fake_login(server: Any, *, on_url: Any) -> None:
+            raise ValueError("bad auth")
+
+        with patch(_LOGIN_PATH, fake_login):
+            result = await app._run_login()
 
         assert result == _LoginResult(authenticated=False, error="bad auth")
 

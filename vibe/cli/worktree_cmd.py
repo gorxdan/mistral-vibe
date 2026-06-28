@@ -9,11 +9,15 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from typing import TYPE_CHECKING
 
 from git import Repo
 from git.exc import GitCommandError
 
 from vibe.core.worktree.manager import worktree_manager
+
+if TYPE_CHECKING:
+    from vibe.core.config import WorktreeConfig
 
 _FLAGS = {"-f", "--force"}
 
@@ -56,7 +60,7 @@ def _print_usage() -> None:
     )
 
 
-def _load_worktree_config() -> object:
+def _load_worktree_config() -> WorktreeConfig:
     """Load the user's [worktree] config; fall back to defaults (this command
     must work without an API key, so a failed full-config load is tolerated).
     """

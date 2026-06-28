@@ -161,7 +161,7 @@ class Background(
     async def run(
         self, args: BackgroundArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | BackgroundResult, None]:
-        if ctx is None or getattr(ctx, "background_registry", None) is None:
+        if ctx is None or ctx.background_registry is None:
             raise ToolError("background tool requires a background registry in context")
         registry = ctx.background_registry
 

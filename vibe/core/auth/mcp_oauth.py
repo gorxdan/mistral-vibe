@@ -24,7 +24,7 @@ from vibe.core.config import MCPHttp, MCPOAuth, MCPStreamableHttp
 from vibe.core.logger import logger
 from vibe.core.utils.http import build_ssl_context
 
-_SERVICE: Final = "vibe"
+_SERVICE: Final = "ai.mistral.vibe"
 _USERNAME_PREFIX: Final = "mcp-oauth"
 _CLIENT_NAME: Final = "Chaton"
 _LOGIN_TIMEOUT_SECONDS: Final = 300.0
@@ -157,11 +157,17 @@ class Fingerprint(BaseModel):
 
 
 class KeyringTokenStorage(TokenStorage):
-    def __init__(self, alias: str) -> None:
+    def __init__(
+        self,
+        alias: str,
+        *,
+        fallback_client_info: OAuthClientInformationFull | None = None,
+    ) -> None:
         backend = keyring.get_keyring()
         if isinstance(backend, keyring.backends.fail.Keyring):
             raise MCPOAuthHeadlessError(server_alias=alias)
         self._alias = alias
+        self._fallback_client_info = fallback_client_info
 
     async def get_tokens(self) -> OAuthToken | None:
         raw = await _kr_get(_kr_username(self._alias, "tokens"))
@@ -175,7 +181,7 @@ class KeyringTokenStorage(TokenStorage):
     async def get_client_info(self) -> OAuthClientInformationFull | None:
         raw = await _kr_get(_kr_username(self._alias, "client_info"))
         if raw is None:
-            return None
+            return self._fallback_client_info
         return OAuthClientInformationFull.model_validate_json(raw)
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
@@ -457,10 +463,17 @@ def build_oauth_provider(
     client_metadata_url = (
         str(auth.client_metadata_url) if auth.client_metadata_url else None
     )
+    fallback_client_info = (
+        OAuthClientInformationFull(client_id=auth.client_id, **metadata.model_dump())
+        if auth.client_id
+        else None
+    )
     return _ConfidentialClientOAuthProvider(
         server_url=server.url,
         client_metadata=metadata,
-        storage=KeyringTokenStorage(alias=server.name),
+        storage=KeyringTokenStorage(
+            alias=server.name, fallback_client_info=fallback_client_info
+        ),
         redirect_handler=redirect_handler,
         callback_handler=callback_handler,
         client_metadata_url=client_metadata_url,
@@ -485,10 +498,8 @@ async def perform_oauth_login(
             auth=provider, timeout=_LOGIN_TIMEOUT_SECONDS, verify=build_ssl_context()
         ) as client:
             await client.get(server.url)
-    except OAuthTokenError as exc:
+    except (OAuthTokenError, OAuthFlowError) as exc:
         raise MCPOAuthLoginFailed(server_alias=server.name, reason=str(exc)) from exc
-    except OAuthFlowError:
-        raise
     await Fingerprint.compute(server).save(server.name)
 
 

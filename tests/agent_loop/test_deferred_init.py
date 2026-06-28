@@ -18,7 +18,6 @@ from vibe.core.agent_loop import AgentLoop
 from vibe.core.config import MCPStdio
 from vibe.core.telemetry.types import TerminalEmulator
 from vibe.core.tools.manager import ToolManager
-from vibe.core.tools.mcp import AuthStatus
 from vibe.core.tools.remote import RemoteTool
 
 
@@ -171,24 +170,6 @@ class TestIntegrateMcpIdempotency:
         # No servers means the method returns early without setting the flag,
         # so a future call with servers would still run discovery.
         assert not manager._mcp_integrated
-
-    def test_no_servers_syncs_shared_registry_status(self) -> None:
-        config = build_test_vibe_config(
-            mcp_servers=[MCPStdio(name="srv", transport="stdio", command="echo")]
-        )
-        registry = FakeMCPRegistry()
-        manager = ToolManager(lambda: config, mcp_registry=registry, defer_mcp=True)
-
-        manager.integrate_mcp()
-        assert registry.status() == {"srv": AuthStatus.STDIO}
-
-        config = build_test_vibe_config(mcp_servers=[])
-        manager = ToolManager(lambda: config, mcp_registry=registry, defer_mcp=True)
-        manager.integrate_mcp()
-
-        assert registry.status() == {}
-        assert not manager._mcp_integrated
-
 
 class TestRefreshRemoteTools:
     @pytest.mark.asyncio
