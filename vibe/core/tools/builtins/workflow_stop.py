@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -63,6 +64,7 @@ class WorkflowStop(
     )
 
     @classmethod
+    @functools.cache
     def get_tool_prompt(cls) -> str | None:
         # Detail lives in the on-demand `workflow-authoring` skill; the schema
         # description is enough for the always-on baseline.

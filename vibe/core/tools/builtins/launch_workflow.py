@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import AsyncGenerator
+import functools
 from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
@@ -147,6 +148,7 @@ class LaunchWorkflow(
         return "Launching workflow"
 
     @classmethod
+    @functools.cache
     def get_tool_prompt(cls) -> str | None:
         # The full ~3.2k authoring guide (prompts/launch_workflow.md) is loaded
         # on demand via the `workflow-authoring` skill, not injected into every

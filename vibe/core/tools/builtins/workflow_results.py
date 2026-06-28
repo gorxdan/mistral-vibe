@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -111,6 +112,7 @@ class WorkflowResults(
     _DEFAULT_RETURN_VALUE_CHAR_CAP: ClassVar[int] = 16_000
 
     @classmethod
+    @functools.cache
     def get_tool_prompt(cls) -> str | None:
         # Detail lives in the on-demand `workflow-authoring` skill; the schema
         # description is enough for the always-on baseline.
