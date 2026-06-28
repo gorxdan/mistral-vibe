@@ -28,16 +28,18 @@ class UpdatePromptMode(StrEnum):
     STARTUP = auto()
     CHECK_UPGRADE = auto()
 
+    @property
+    def continue_label(self) -> str:
+        match self:
+            case UpdatePromptMode.STARTUP:
+                return "Continue with current version"
+            case UpdatePromptMode.CHECK_UPGRADE:
+                return "Cancel upgrade"
+
 
 class UpdateChoice(StrEnum):
     UPDATE = auto()
     CONTINUE = auto()
-
-
-_CONTINUE_LABELS: dict[UpdatePromptMode, str] = {
-    UpdatePromptMode.STARTUP: "Continue with current version",
-    UpdatePromptMode.CHECK_UPGRADE: "Cancel upgrade",
-}
 
 
 class UpdatePromptDialog(CenterMiddle):
@@ -72,7 +74,7 @@ class UpdatePromptDialog(CenterMiddle):
         self.latest_version = latest_version
         self._choice_labels: dict[UpdateChoice, str] = {
             UpdateChoice.UPDATE: "Update now",
-            UpdateChoice.CONTINUE: _CONTINUE_LABELS[prompt_mode],
+            UpdateChoice.CONTINUE: prompt_mode.continue_label,
         }
         self.selected: UpdateChoice = UpdateChoice.UPDATE
         self._option_widgets: dict[UpdateChoice, NoMarkupStatic] = {}

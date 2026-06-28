@@ -52,19 +52,23 @@ class DiagnosticSeverity(IntEnum):
     INFORMATION = 3
     HINT = 4
 
-
-_SEVERITY_LABEL = {
-    DiagnosticSeverity.ERROR: "error",
-    DiagnosticSeverity.WARNING: "warning",
-    DiagnosticSeverity.INFORMATION: "info",
-    DiagnosticSeverity.HINT: "hint",
-}
+    @property
+    def label(self) -> str:
+        match self:
+            case DiagnosticSeverity.ERROR:
+                return "error"
+            case DiagnosticSeverity.WARNING:
+                return "warning"
+            case DiagnosticSeverity.INFORMATION:
+                return "info"
+            case DiagnosticSeverity.HINT:
+                return "hint"
 
 
 def severity_label(severity: int | DiagnosticSeverity) -> str:
     try:
-        return _SEVERITY_LABEL[DiagnosticSeverity(int(severity))]
-    except (ValueError, KeyError):
+        return DiagnosticSeverity(int(severity)).label
+    except ValueError:
         return "issue"
 
 
@@ -134,7 +138,7 @@ class Diagnostic:
 
     @property
     def label(self) -> str:
-        return _SEVERITY_LABEL.get(self.severity, "issue")
+        return self.severity.label
 
     @property
     def dedup_key(self) -> str:
