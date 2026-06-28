@@ -6,7 +6,12 @@ from rich.cells import cell_len
 from rich.text import Text
 
 from vibe.core.types import AgentStats
-from vibe.core.usage import ProviderBreakdown, UsageSummary, WindowRollup
+from vibe.core.usage import (
+    ProviderBreakdown,
+    RateLimitSnapshot,
+    UsageSummary,
+    WindowRollup,
+)
 
 _BAR_SEGMENTS = 20
 _BAR_FILLED = "█"
@@ -19,6 +24,8 @@ _BILLION = 1_000_000_000
 _CENT_THRESHOLD = 0.01
 _DECIMAL_BOUND_2 = 10.0
 _DECIMAL_BOUND_1 = 100.0
+_SECONDS_PER_MINUTE = 60
+_SECONDS_PER_HOUR = 3600
 _MODEL_COL = 24
 _TOKENS_COL = 7
 
@@ -179,6 +186,51 @@ def _windows_section(windows: list[WindowRollup]) -> list[Text]:
     return lines
 
 
+def _format_reset(seconds: float | None) -> str | None:
+    if seconds is None or seconds <= 0:
+        return None
+    if seconds < _SECONDS_PER_MINUTE:
+        return f"resets in {int(seconds)}s"
+    if seconds < _SECONDS_PER_HOUR:
+        return f"resets in {int(seconds / _SECONDS_PER_MINUTE)}m"
+    return f"resets in {seconds / _SECONDS_PER_HOUR:.1f}h"
+
+
+def _limits_section(snapshots: dict[str, RateLimitSnapshot]) -> list[Text]:
+    lines: list[Text] = [Text("  ── Provider limits (live) ──", style="dim"), Text()]
+    for snap in snapshots.values():
+        lines.append(Text(f"  {snap.provider}", style="bold"))
+        if snap.limit_tokens and snap.limit_tokens > 0:
+            used = snap.limit_tokens - (snap.remaining_tokens or 0)
+            ratio_used = min(used / snap.limit_tokens, 1.0)
+            pct_left = round((1.0 - ratio_used) * 100)
+            val = Text()
+            val.append(_progress_bar(1.0 - ratio_used) + " ")
+            val.append(
+                f"{format_tokens_compact(snap.remaining_tokens or 0)} of "
+                f"{format_tokens_compact(snap.limit_tokens)} left ({pct_left}%)"
+            )
+            reset = _format_reset(snap.reset_tokens_in_s)
+            if reset:
+                val.append(f" · {reset}", style="dim")
+            lines.append(_label_line("Tokens", val))
+        if snap.limit_requests and snap.limit_requests > 0:
+            used = snap.limit_requests - (snap.remaining_requests or 0)
+            ratio_used = min(used / snap.limit_requests, 1.0)
+            pct_left = round((1.0 - ratio_used) * 100)
+            val = Text()
+            val.append(_progress_bar(1.0 - ratio_used) + " ")
+            val.append(
+                f"{snap.remaining_requests or 0} of {snap.limit_requests} left "
+                f"({pct_left}%)"
+            )
+            reset = _format_reset(snap.reset_requests_in_s)
+            if reset:
+                val.append(f" · {reset}", style="dim")
+            lines.append(_label_line("Requests", val))
+    return lines
+
+
 def render_status_card(
     *,
     stats: AgentStats,
@@ -189,6 +241,7 @@ def render_status_card(
     workdir: Path,
     session_id: str,
     context_window: int | None = None,
+    rate_limits: dict[str, RateLimitSnapshot] | None = None,
     width: int = _CARD_WIDTH,
 ) -> Text:
     """Build the full status card as a Rich ``Text`` (box-drawing included).
@@ -203,6 +256,9 @@ def render_status_card(
 
     if summary.providers:
         lines.extend(_provider_section(summary.providers))
+        lines.append(Text())
+    if rate_limits:
+        lines.extend(_limits_section(rate_limits))
         lines.append(Text())
     if summary.windows:
         lines.extend(_windows_section(summary.windows))

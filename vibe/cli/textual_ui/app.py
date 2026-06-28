@@ -2591,6 +2591,7 @@ class VibeApp(App):  # noqa: PLR0904
                 workdir=Path(self.config.displayed_workdir or Path.cwd()),
                 session_id=self.agent_loop.session_id,
                 context_window=context_window,
+                rate_limits=self.agent_loop._rate_limit_store.all(),
             )
         )
 

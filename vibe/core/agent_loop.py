@@ -163,7 +163,12 @@ from vibe.core.types import (
     UserInputCallback,
     UserMessageEvent,
 )
-from vibe.core.usage import UsageRecord, get_usage_recorder
+from vibe.core.usage import (
+    RateLimitStore,
+    UsageRecord,
+    get_usage_recorder,
+    rate_limit_from_headers,
+)
 from vibe.core.utils import (
     TOOL_ERROR_TAG,
     VIBE_STOP_EVENT_TAG,
@@ -614,6 +619,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             pass
 
         self._usage_recorder = get_usage_recorder()
+        self._rate_limit_store = RateLimitStore()
 
         self._current_user_message_id: str | None = None
         self._is_user_prompt_call: bool = False
@@ -1411,17 +1417,21 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _codex_routing(
         self, provider: ProviderConfig
     ) -> tuple[dict[str, str], dict[str, str] | None]:
-        """Per-call routing headers + a sink to capture the next turn-state token.
+        """Per-call routing headers + a sink to capture response headers.
 
         For the codex (openai-chatgpt) backend, replay the captured
         ``x-codex-turn-state`` so the call sticks to the partition that already
         holds the warm prefix. The token is reset at each user turn (main_call)
         because codex forbids replaying a turn's token into the next turn.
-        Returns ``(headers, sink)``; ``sink`` is None for non-codex providers.
+
+        Returns ``(headers, sink)``. The sink is always a dict so the generic
+        backend can capture ``x-ratelimit-*`` headers from every provider
+        (ZAI, Kimi, OpenAI-compatible, …) for the /status limits view; codex
+        also reads its sticky-routing token out of it.
         """
         headers = self._get_extra_headers(provider)
         if getattr(provider, "api_style", "") != "openai-chatgpt":
-            return headers, None
+            return headers, {}
         if self._is_user_prompt_call:
             self._codex_turn_state = None
         elif self._codex_turn_state:
@@ -1432,6 +1442,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         """Stash the codex sticky-routing token from a response for the next call."""
         if sink and (ts := sink.get("x-codex-turn-state")):
             self._codex_turn_state = ts
+
+    def _capture_rate_limits(
+        self, provider: ProviderConfig, sink: dict[str, str] | None
+    ) -> None:
+        """Parse x-ratelimit-* headers from a response into the rate-limit store."""
+        if not sink:
+            return
+        snapshot = rate_limit_from_headers(
+            provider.name, sink, captured_at=time.time()
+        )
+        if snapshot is not None:
+            self._rate_limit_store.update(snapshot)
 
     def _get_memory_store(self) -> MemoryStore | None:
         if self._is_subagent or not self.config.memory.enabled:
@@ -3521,6 +3543,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 )
                 end_time = time.perf_counter()
                 self._capture_codex_turn_state(turn_state_sink)
+                self._capture_rate_limits(provider, turn_state_sink)
 
                 if result.usage is None:
                     raise AgentLoopLLMResponseError(
@@ -3614,6 +3637,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         yield processed_chunk
                     end_time = time.perf_counter()
                     self._capture_codex_turn_state(turn_state_sink)
+                    self._capture_rate_limits(provider, turn_state_sink)
 
                     chunk_agg = chunk_acc.build()
                     if chunk_agg is None or chunk_agg.usage is None:
