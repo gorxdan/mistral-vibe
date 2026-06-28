@@ -67,15 +67,16 @@ class TestReasoningEffort:
         )
         assert "reasoning_effort" not in payload
 
-    def test_max_maps_to_high(self, adapter, provider):
-        # chat-completions reasoning_effort tops out at "high"; never send "max".
+    def test_max_maps_to_xhigh(self, adapter, provider):
+        # "max" requests the top tier "xhigh"; never send the literal "max".
+        # Models without xhigh are downgraded by the backend's 400 retry.
         payload = _prepare(
             adapter,
             provider,
             [LLMMessage(role=Role.user, content="Hi")],
             thinking="max",
         )
-        assert payload["reasoning_effort"] == "high"
+        assert payload["reasoning_effort"] == "xhigh"
 
 
 class TestThinkingBlocksConversion:

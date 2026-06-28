@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
+from http import HTTPStatus
 import os
+import re
 import types
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
@@ -250,6 +252,59 @@ def _get_adapter(api_style: str) -> APIAdapter:
 _CONNECT_TIMEOUT = 15.0
 _NETWORK_OP_TIMEOUT = 60.0
 
+# Reasoning-effort tiers, highest → lowest. Used to recover when a backend
+# rejects an effort value (a model without "xhigh", or codex rejecting "none"):
+# retry with the supported value nearest the rejected one. Nearest-by-tier
+# downgrades a too-high request to the model's ceiling and lifts a too-low one
+# to its floor — i.e. "xhigh if available, else the highest level the model has".
+_EFFORT_ORDER: tuple[str, ...] = ("xhigh", "high", "medium", "low", "minimal", "none")
+_REJECTED_EFFORT_RE = re.compile(r"unsupported value:\s*'([^']+)'", re.IGNORECASE)
+_SUPPORTED_EFFORTS_RE = re.compile(r"supported values are:\s*([^.]+)", re.IGNORECASE)
+
+
+def _nearest_supported_effort(error_text: str) -> str | None:
+    """For an 'unsupported reasoning effort' 400 body, return the supported
+    effort nearest the rejected one (ties favour the higher tier), else None.
+    """
+    rejected_m = _REJECTED_EFFORT_RE.search(error_text)
+    supported_m = _SUPPORTED_EFFORTS_RE.search(error_text)
+    if not rejected_m or not supported_m:
+        return None
+    rejected = rejected_m.group(1).lower()
+    if rejected not in _EFFORT_ORDER:
+        return None
+    supported = [
+        v.lower()
+        for v in re.findall(r"'([^']+)'", supported_m.group(1))
+        if v.lower() in _EFFORT_ORDER
+    ]
+    if not supported:
+        return None
+    ri = _EFFORT_ORDER.index(rejected)
+    return min(
+        supported, key=lambda s: (abs(_EFFORT_ORDER.index(s) - ri), _EFFORT_ORDER.index(s))
+    )
+
+
+def _patch_reasoning_effort(body: bytes, effort: str) -> bytes | None:
+    """Return *body* with its reasoning effort set to *effort*; None if the body
+    has no effort field or already uses it. Handles both the Responses shape
+    (``reasoning.effort``) and chat-completions (``reasoning_effort``).
+    """
+    payload = orjson.loads(body)
+    reasoning = payload.get("reasoning")
+    if isinstance(reasoning, dict) and "effort" in reasoning:
+        if reasoning["effort"] == effort:
+            return None
+        reasoning["effort"] = effort
+    elif "reasoning_effort" in payload:
+        if payload["reasoning_effort"] == effort:
+            return None
+        payload["reasoning_effort"] = effort
+    else:
+        return None
+    return orjson.dumps(payload)
+
 
 class GenericBackend:
     def __init__(
@@ -328,6 +383,22 @@ class GenericBackend:
             )
             self._owns_client = True
         return self._client
+
+    def _retry_body_for_effort(
+        self, error: httpx.HTTPStatusError, body: bytes
+    ) -> bytes | None:
+        """On a 400 that rejects the reasoning effort, return a body patched to
+        the nearest supported effort (so ``max``→``xhigh`` falls back to the
+        model's ceiling); None when the error is unrelated.
+        """
+        response = error.response
+        if response is None or response.status_code != HTTPStatus.BAD_REQUEST:
+            return None
+        try:
+            effort = _nearest_supported_effort(response.text)
+        except Exception:
+            return None
+        return _patch_reasoning_effort(body, effort) if effort else None
 
     async def complete(  # noqa: PLR0913
         self,
@@ -418,6 +489,13 @@ class GenericBackend:
             return adapter.parse_response(res_data, self._provider)
 
         except httpx.HTTPStatusError as e:
+            if (retry_body := self._retry_body_for_effort(e, req.body)) is not None:
+                res_data, resp_headers = await self._make_request(
+                    url, retry_body, headers
+                )
+                if response_headers_sink is not None:
+                    response_headers_sink.update(resp_headers)
+                return adapter.parse_response(res_data, self._provider)
             raise BackendErrorBuilder.build_http_error(
                 provider=self._provider.name,
                 endpoint=url,
@@ -494,6 +572,14 @@ class GenericBackend:
                 yield adapter.parse_response(res_data, self._provider)
 
         except httpx.HTTPStatusError as e:
+            # A rejected reasoning effort 400s before any chunk is yielded, so a
+            # one-shot resend with the nearest supported effort is safe.
+            if (retry_body := self._retry_body_for_effort(e, req.body)) is not None:
+                async for res_data in self._make_streaming_request(
+                    url, retry_body, headers, response_headers_sink=response_headers_sink
+                ):
+                    yield adapter.parse_response(res_data, self._provider)
+                return
             raise BackendErrorBuilder.build_http_error(
                 provider=self._provider.name,
                 endpoint=url,

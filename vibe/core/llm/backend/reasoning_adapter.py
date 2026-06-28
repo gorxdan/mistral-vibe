@@ -104,10 +104,10 @@ class ReasoningAdapter(APIAdapter):
         }
 
         if thinking != "off":
-            # "max" is our internal top level; chat-completions `reasoning_effort`
-            # tops out at "high" ("xhigh" is Responses/codex-only), so translate
-            # it rather than send the invalid literal "max".
-            payload["reasoning_effort"] = "high" if thinking == "max" else thinking
+            # "max" is our internal top level → request the API's top, "xhigh".
+            # Models that don't support xhigh are handled by the backend's
+            # effort-downgrade retry (falls back to the highest the model lists).
+            payload["reasoning_effort"] = "xhigh" if thinking == "max" else thinking
 
         if tools:
             payload["tools"] = [tool.model_dump(exclude_none=True) for tool in tools]
