@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from os import getenv
 
 from vibe.cli.plan_offer.ports.whoami_gateway import (
     WhoAmIGateway,
@@ -14,6 +13,7 @@ from vibe.core.config import (
     DEFAULT_MISTRAL_API_ENV_KEY,
     DEFAULT_VIBE_BASE_URL,
     ProviderConfig,
+    resolve_api_key,
 )
 from vibe.core.logger import logger
 from vibe.core.types import Backend
@@ -104,7 +104,7 @@ def resolve_api_key_for_plan(provider: ProviderConfig) -> str | None:
     if provider.backend == Backend.MISTRAL:
         api_env_key = provider.api_key_env_var
 
-    return getenv(api_env_key)
+    return resolve_api_key(api_env_key)
 
 def plan_offer_cta(
     payload: PlanInfo | None, *, vibe_base_url: str = DEFAULT_VIBE_BASE_URL
