@@ -58,6 +58,7 @@ from vibe.cli.textual_ui.notifications import (
 from vibe.cli.textual_ui.quit_manager import QuitManager
 from vibe.cli.textual_ui.scheduled_loop_runner import ScheduledLoopRunner
 from vibe.cli.textual_ui.session_exit import print_session_resume_message
+from vibe.cli.textual_ui.widgets.agent_badge import AgentProfileBadge
 from vibe.cli.textual_ui.widgets.approval_app import ApprovalApp
 from vibe.cli.textual_ui.widgets.banner.banner import Banner
 from vibe.cli.textual_ui.widgets.chat_input import ChatInputContainer
@@ -758,6 +759,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         with Horizontal(id="bottom-bar"):
             yield PathDisplay(self.config.displayed_workdir or Path.cwd())
+            yield AgentProfileBadge()
             yield SubagentsBadge()
             yield NoMarkupStatic(id="spacer")
             yield ContextProgress()
@@ -5019,6 +5021,12 @@ class VibeApp(App):  # noqa: PLR0904
             self._chat_input_container.set_safety(profile.safety)
             self._chat_input_container.set_agent_name(profile.display_name.lower())
             self._chat_input_container.set_custom_border(None)
+        try:
+            self.query_one(AgentProfileBadge).set_profile(
+                profile.display_name.lower(), profile.safety
+            )
+        except NoMatches:
+            pass
 
     async def _cycle_agent(self) -> None:
         new_profile = self.agent_loop.agent_manager.next_agent(

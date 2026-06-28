@@ -1346,6 +1346,40 @@ ContextProgress {
     }
 }
 
+AgentProfileBadge,
+SubagentsBadge {
+    width: auto;
+    height: auto;
+    background: transparent;
+    padding: 0 0 0 2;
+    margin: 0;
+}
+
+AgentProfileBadge {
+    color: $text-muted;
+
+    &:ansi {
+        text-style: dim;
+    }
+
+    &.badge-safe {
+        color: $success;
+    }
+
+    &.badge-warning {
+        color: $warning;
+    }
+
+    &.badge-error {
+        color: $error;
+    }
+}
+
+SubagentsBadge {
+    color: $primary;
+    text-style: bold;
+}
+
 NarratorStatus {
     width: auto;
     height: auto;

@@ -18,5 +18,4 @@ class SubagentsBadge(NoMarkupStatic):
         extra = len(names) - _MAX_NAMES
         if extra > 0:
             shown += f" +{extra}"
-        plural = "s" if len(names) != 1 else ""
-        self.update(f"⧖ {len(names)} subagent{plural}: {shown}")
+        self.update(f"⟦⧖ {shown}⟧")
