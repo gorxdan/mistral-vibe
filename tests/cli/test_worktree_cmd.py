@@ -79,6 +79,33 @@ def test_merge_refuses_dirty_tree(tmp_path: Path) -> None:
     assert not (Path(root.working_tree_dir) / "work.txt").exists()
 
 
+def test_merge_rebases_diverged_branch(tmp_path: Path) -> None:
+    root, branch = _repo_with_orphan_branch(tmp_path)
+    # Advance main (disjoint) so the branch diverged -> a plain ff would fail.
+    (Path(root.working_tree_dir) / "main.txt").write_text("main advance\n")
+    root.git.add("-A")
+    root.git.commit("-m", "main advance")
+
+    assert run_worktree_command(["merge", branch]) == 0
+    # Both the branch work and the main advance landed.
+    assert (Path(root.working_tree_dir) / "work.txt").read_text() == "agent work\n"
+    assert (Path(root.working_tree_dir) / "main.txt").read_text() == "main advance\n"
+    assert "agent work" in root.git.log("--oneline")
+
+
+def test_merge_keeps_branch_on_conflict(tmp_path: Path) -> None:
+    root, branch = _repo_with_orphan_branch(tmp_path)
+    # Main adds the same file the branch added (different content) -> rebase
+    # conflict; the merge must fail cleanly and keep the branch.
+    (Path(root.working_tree_dir) / "work.txt").write_text("main version\n")
+    root.git.add("-A")
+    root.git.commit("-m", "main work.txt")
+
+    assert run_worktree_command(["merge", branch]) == 1
+    assert branch in [b.name for b in root.branches]
+    assert (Path(root.working_tree_dir) / "work.txt").read_text() == "main version\n"
+
+
 def test_discard_force_deletes_branch(tmp_path: Path) -> None:
     root, branch = _repo_with_orphan_branch(tmp_path)
     assert run_worktree_command(["discard", branch, "--force"]) == 0

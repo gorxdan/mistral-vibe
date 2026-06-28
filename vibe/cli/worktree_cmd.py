@@ -7,6 +7,7 @@ argument parser so it does not collide with the positional ``initial_prompt``.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 import sys
 from typing import TYPE_CHECKING
@@ -135,15 +136,44 @@ def _cmd_merge(branch: str) -> int:
         return 1
     try:
         repo.git.merge("--ff-only", branch)
-    except GitCommandError as exc:
-        print(
-            f"vibe worktree: fast-forward merge of {branch} failed: {exc}\n"
-            f"  HEAD may have diverged; use `git merge {branch}` to merge manually.",
-            file=sys.stderr,
-        )
-        return 1
-    print(f"Merged {branch} into HEAD (fast-forward).")
+    except GitCommandError:
+        # HEAD diverged: rebase the branch onto HEAD, then fast-forward.
+        if not _rebase_then_ff(repo, branch):
+            print(
+                f"vibe worktree: {branch} conflicts with HEAD and can't auto-merge; "
+                f"resolve manually or `vibe worktree discard {branch}`.",
+                file=sys.stderr,
+            )
+            return 1
+    print(f"Merged {branch} into HEAD.")
     return 0
+
+
+def _rebase_then_ff(repo: Repo, branch: str) -> bool:
+    """Rebase *branch* onto the current branch then fast-forward into it.
+
+    Returns False (leaving the repo back on its original branch) on conflict.
+    """
+    try:
+        original = repo.active_branch.name
+    except (TypeError, GitCommandError):
+        return False
+    head = repo.head.commit.hexsha
+    try:
+        repo.git.rebase(head, branch)
+    except GitCommandError:
+        with suppress(GitCommandError):
+            repo.git.rebase("--abort")
+        with suppress(GitCommandError):
+            repo.git.checkout(original)
+        return False
+    with suppress(GitCommandError):
+        repo.git.checkout(original)
+    try:
+        repo.git.merge("--ff-only", branch)
+    except GitCommandError:
+        return False
+    return True
 
 
 def _cmd_discard(branch: str, *, force: bool) -> int:
