@@ -121,6 +121,7 @@ from vibe.cli.textual_ui.widgets.proxy_setup_app import ProxySetupApp
 from vibe.cli.textual_ui.widgets.question_app import QuestionApp
 from vibe.cli.textual_ui.widgets.rewind_app import RewindApp
 from vibe.cli.textual_ui.widgets.session_picker import SessionPickerApp
+from vibe.cli.textual_ui.widgets.subagents_badge import SubagentsBadge
 from vibe.cli.textual_ui.widgets.tasks_app import TasksApp
 from vibe.cli.textual_ui.widgets.teleport_message import TeleportMessage
 from vibe.cli.textual_ui.widgets.theme_picker import ThemePickerApp, sorted_theme_names
@@ -220,7 +221,7 @@ from vibe.core.teleport.types import (
     TeleportPushResponseEvent,
     TeleportStartingWorkflowEvent,
 )
-from vibe.core.tools.background import BackgroundRegistry
+from vibe.core.tools.background import BackgroundRegistry, TaskCategory
 from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.builtins.ask_user_question import (
     AskUserQuestionArgs,
@@ -331,6 +332,7 @@ class ChatScroll(VerticalScroll):
 PRUNE_LOW_MARK = 1000
 PRUNE_HIGH_MARK = 1500
 DOUBLE_ESC_DELAY = 0.2
+_SUBAGENTS_BADGE_REFRESH_S = 1.0
 
 _DEFAULT_TYPING_DEBOUNCE_MS = 1000
 _TYPING_DEBOUNCE_ENV_VAR = "VIBE_TYPING_GRACE_PERIOD_MS"
@@ -733,6 +735,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         with Horizontal(id="bottom-bar"):
             yield PathDisplay(self.config.displayed_workdir or Path.cwd())
+            yield SubagentsBadge()
             yield NoMarkupStatic(id="spacer")
             yield ContextProgress()
 
@@ -784,6 +787,20 @@ class VibeApp(App):  # noqa: PLR0904
 
         self.agent_loop.stats.add_listener("context_tokens", update_context_progress)
         self.agent_loop.stats.trigger_listeners()
+
+        subagents_badge = self.query_one(SubagentsBadge)
+
+        def update_subagents_badge() -> None:
+            subagents_badge.running = tuple(
+                entry.label.split(":", 1)[0].strip()
+                for entry in self._background_registry.list_tasks(
+                    category=TaskCategory.ASYNC_AGENT
+                )
+                if entry.status == "running"
+            )
+
+        update_subagents_badge()
+        self.set_interval(_SUBAGENTS_BADGE_REFRESH_S, update_subagents_badge)
 
         self.agent_loop.set_approval_callback(self._approval_callback)
         self.agent_loop.set_user_input_callback(self._user_input_callback)
@@ -2564,11 +2581,7 @@ class VibeApp(App):  # noqa: PLR0904
     async def _show_status(self, **kwargs: Any) -> None:
         from vibe.cli.textual_ui.widgets._status_render import StatusCardData
         from vibe.cli.textual_ui.widgets.status_card import StatusCard
-        from vibe.core.usage import (
-            fetch_codex_quota,
-            get_usage_recorder,
-            summarize,
-        )
+        from vibe.core.usage import fetch_codex_quota, get_usage_recorder, summarize
 
         stats = self.agent_loop.stats
         try:
@@ -2619,13 +2632,11 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
     async def _show_config(self, **kwargs: Any) -> None:
-        """Switch to the configuration app in the bottom panel."""
         if self._current_bottom_app == BottomApp.Config:
             return
         await self._switch_to_config_app()
 
     async def _show_model(self, **kwargs: Any) -> None:
-        """Switch to the model picker in the bottom panel."""
         if self._current_bottom_app == BottomApp.ModelPicker:
             return
         await self._switch_to_model_picker_app()
@@ -2648,7 +2659,6 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
     async def _show_thinking(self, **kwargs: Any) -> None:
-        """Switch to the thinking level picker in the bottom panel."""
         if self._current_bottom_app == BottomApp.ThinkingPicker:
             return
         await self._switch_to_thinking_picker_app()
@@ -4586,8 +4596,6 @@ class VibeApp(App):  # noqa: PLR0904
 
         self._close_bottom_panel("tasks", _close)
 
-    # --- Rewind mode ---
-
     def _get_user_message_widgets(self) -> list[UserMessage]:
         """Return all UserMessage widgets currently visible in #messages.
 
@@ -4780,8 +4788,6 @@ class VibeApp(App):  # noqa: PLR0904
         await self._switch_to_input_app()
         if self._chat_input_container:
             self._chat_input_container.value = message_content
-
-    # --- End rewind mode ---
 
     def _handle_input_app_escape(self) -> None:
         def _close() -> None:
