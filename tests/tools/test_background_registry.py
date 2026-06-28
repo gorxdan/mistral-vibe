@@ -707,6 +707,22 @@ async def test_async_completion_fires_wake_callback():
 
 
 @pytest.mark.asyncio
+async def test_update_async_response_streams_into_detail():
+    reg = BackgroundRegistry()
+
+    async def long() -> _FakeIsolatedResult:
+        await asyncio.sleep(0.3)
+        return _FakeIsolatedResult(output="final")
+
+    task = asyncio.create_task(long())
+    task_id = reg.register_async_agent("worker", task)
+    reg.update_async_response(task_id, "partial so far")
+    entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
+    assert entries[0].detail["response_preview"] == "partial so far"
+    await task
+
+
+@pytest.mark.asyncio
 async def test_async_agent_failure_queued_with_error():
     reg = BackgroundRegistry()
 

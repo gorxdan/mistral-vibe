@@ -551,11 +551,15 @@ class Task(
         )
 
     async def _run_in_process_collect(
-        self, args: TaskArgs, ctx: InvokeContext
+        self,
+        args: TaskArgs,
+        ctx: InvokeContext,
+        task_id_holder: list[str] | None = None,
     ) -> _InProcessResult:
         # Background variant: drive to completion, return an IsolatedResult-shaped
         # object (no parent yields — the parent turn already returned).
         subagent_loop, task_text = self._build_subagent_loop(args, ctx)
+        registry = ctx.background_registry
         accumulated_response: list[str] = []
         completed = True
         try:
@@ -563,6 +567,10 @@ class Task(
                 async for event in events:
                     if isinstance(event, AssistantEvent) and event.content:
                         accumulated_response.append(event.content)
+                        if registry is not None and task_id_holder:
+                            registry.update_async_response(
+                                task_id_holder[0], "".join(accumulated_response)
+                            )
                         if event.stopped_by_middleware:
                             completed = False
                     elif isinstance(event, ToolResultEvent) and event.skipped:
@@ -585,12 +593,15 @@ class Task(
             async for result in self._run_in_process(args, ctx):
                 yield result
             return
+        task_id_holder: list[str] = []
         bg_task = asyncio.create_task(
-            self._run_in_process_collect(args, ctx), name=f"async-task-{args.agent}"
+            self._run_in_process_collect(args, ctx, task_id_holder),
+            name=f"async-task-{args.agent}",
         )
         task_id = registry.register_async_agent(
             args.agent, bg_task, label=self._subagent_label(args)
         )
+        task_id_holder.append(task_id)
         yield ToolStreamEvent(
             tool_name=self.get_name(),
             message=f"Launched {args.agent} subagent in background: {task_id}",

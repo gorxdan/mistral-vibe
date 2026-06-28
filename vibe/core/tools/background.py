@@ -145,6 +145,7 @@ class _AsyncAgentRec:
     status: str = "running"  # running | completed | failed | stopped
     finalizer: asyncio.Task[None] | None = None
     response: str = ""
+    response_so_far: str = ""
     completed: bool = False
     worktree_path: str | None = None
     branch: str | None = None
@@ -467,6 +468,11 @@ class BackgroundRegistry:
         self._async_completions.clear()
         return drained
 
+    def update_async_response(self, task_id: str, text: str) -> None:
+        rec = self._async_agents.get(task_id)
+        if rec is not None:
+            rec.response_so_far = text
+
     def _reap_finalized(self) -> None:
         """Drop oldest finalized entries beyond the cap; never reap running."""
         finalized = [tid for tid, r in self._procs.items() if r.status != "running"]
@@ -629,6 +635,7 @@ class BackgroundRegistry:
                         elapsed=now - rec.started_at,
                         detail={
                             "agent": rec.agent,
+                            "response_preview": rec.response_so_far,
                             "completed": rec.completed,
                             "worktree_path": rec.worktree_path,
                             "branch": rec.branch,

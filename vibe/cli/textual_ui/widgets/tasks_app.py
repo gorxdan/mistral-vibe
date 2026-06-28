@@ -529,6 +529,20 @@ class TasksApp(Container):
             )
         return text
 
+    @staticmethod
+    def _append_streaming_response(text: Text, d: dict[str, Any], status: str) -> None:
+        preview = d.get("response_preview") or ""
+        if preview:
+            text.append("\n\n--- Response (streaming) ---", style="bold")
+            text.append(f"\n{_truncate(preview, _AGENT_RESPONSE_SNIPPET)}")
+        elif status == "running":
+            text.append(
+                "\n\n(Streaming — response appears here as it is produced.)",
+                style="dim",
+            )
+        else:
+            text.append("\n\n(No response captured.)", style="dim")
+
     def _build_detail_text(self, entry: TaskEntry) -> Text:
         text = Text()
         text.append(f"{entry.task_id}", style="bold cyan")
@@ -579,17 +593,7 @@ class TasksApp(Container):
             if prompt:
                 text.append("\n\n--- Prompt ---", style="bold")
                 text.append(f"\n{_truncate(prompt, _AGENT_PROMPT_SNIPPET)}")
-            preview = d.get("response_preview") or ""
-            if preview:
-                text.append("\n\n--- Response (streaming) ---", style="bold")
-                text.append(f"\n{_truncate(preview, _AGENT_RESPONSE_SNIPPET)}")
-            elif entry.status == "running":
-                text.append(
-                    "\n\n(Streaming — response appears here as the agent produces it.)",
-                    style="dim",
-                )
-            else:
-                text.append("\n\n(No response captured.)", style="dim")
+            self._append_streaming_response(text, d, entry.status)
         elif entry.category == TaskCategory.TEAM:
             text.append(f"\nName: {d.get('name')}", style="white")
             text.append(f"\nType: {entry.label}", style="dim")
@@ -603,6 +607,14 @@ class TasksApp(Container):
                 f"fires in {_fmt_seconds(d.get('remaining_seconds', 0))}",
                 style="dim",
             )
+        elif entry.category == TaskCategory.ASYNC_AGENT:
+            text.append(f"\nSubagent: {entry.label}", style="white")
+            if d.get("agent"):
+                text.append(f"\nProfile: {d['agent']}", style="dim")
+            text.append(f"\nElapsed: {_fmt_seconds(entry.elapsed)}", style="dim")
+            if d.get("error"):
+                text.append(f"\nError: {d['error']}", style="red")
+            self._append_streaming_response(text, d, entry.status)
         return text
 
     def _find_selected(self) -> TaskEntry | None:

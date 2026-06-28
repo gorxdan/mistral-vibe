@@ -600,7 +600,7 @@ class TestAsyncRun:
         registry = BackgroundRegistry()
         ctx_with_registry = replace(ctx, background_registry=registry)
 
-        async def fake_collect(_self, _args, _ctx):
+        async def fake_collect(_self, _args, _ctx, _holder=None):
             return _InProcessResult(output="done", returncode=0)
 
         args = TaskArgs(task="find X", agent="explore", async_run=True)
