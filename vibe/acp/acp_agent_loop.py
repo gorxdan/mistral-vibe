@@ -1943,12 +1943,9 @@ class VibeAcpAgentLoop(AcpAgent):
     def on_connect(self, conn: Client) -> None:
         self.client = conn
 
-    # -- Command handlers ------------------------------------------------------
-
     async def _command_reply(
         self, session: AcpSessionLoop, text: str, message_id: str
     ) -> PromptResponse:
-        """Send a text message to the client and return an end-turn response."""
         await self.client.session_update(
             session_id=session.id,
             update=AgentMessageChunk(
@@ -2027,7 +2024,6 @@ class VibeAcpAgentLoop(AcpAgent):
         return PromptResponse(stop_reason="end_turn", user_message_id=message_id)
 
     async def _reload_session_config(self, session: AcpSessionLoop) -> None:
-        """Reload config from disk and reinitialize the agent loop."""
         new_config = VibeConfig.load(tool_paths=session.agent_loop.config.tool_paths)
         self._apply_client_project_name(new_config)
         _merge_non_interactive_disabled_tools(new_config)
@@ -2108,7 +2104,6 @@ class VibeAcpAgentLoop(AcpAgent):
     def _build_config_options(
         self, session: AcpSessionLoop
     ) -> list[SessionConfigOptionSelect | SessionConfigOptionBoolean]:
-        """Build the current modes + models config options for a session."""
         profiles = list(session.agent_loop.agent_manager.available_agents.values())
         _, modes_config = build_mode_state(
             profiles, session.agent_loop.agent_profile.name
@@ -2123,7 +2118,6 @@ class VibeAcpAgentLoop(AcpAgent):
         return [modes_config, models_config, thinking_config]
 
     async def _send_config_option_update(self, session: AcpSessionLoop) -> None:
-        """Push updated config options (modes, models) to the client."""
         await self.client.session_update(
             session_id=session.id,
             update=ConfigOptionUpdate(
@@ -2213,7 +2207,6 @@ def run_acp_server(
         # This is expected when the server is terminated
         pass
     except Exception as e:
-        # Log any unexpected errors
         print(f"ACP Agent Server error: {e}", file=sys.stderr)
         raise
     finally:

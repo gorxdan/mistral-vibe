@@ -26,8 +26,6 @@ class AcpSessionLoop:
         self._tasks: set[asyncio.Task[None]] = set()
         self._prompt_task: asyncio.Task[None] | None = None
 
-    # -- public API ------------------------------------------------------------
-
     @property
     def prompt_task(self) -> asyncio.Task[None] | None:
         return self._prompt_task
@@ -67,8 +65,6 @@ class AcpSessionLoop:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         self._prompt_task = None
-
-    # -- private ---------------------------------------------------------------
 
     def _clear_prompt_task(self, task: asyncio.Task[None]) -> None:
         if self._prompt_task is task:

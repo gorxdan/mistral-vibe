@@ -269,8 +269,6 @@ class TasksApp(Container):
         self._agent_view_data: _AgentViewData | None = None
         self._poll_timer: Any = None
 
-    # --- lifecycle / compose ---
-
     def compose(self) -> ComposeResult:
         with Vertical(id="tasks-content"):
             yield NoMarkupStatic("", id="tasks-header", classes="tasks-header")
@@ -284,8 +282,6 @@ class TasksApp(Container):
     def on_unmount(self) -> None:
         if self._poll_timer is not None:
             self._poll_timer.stop()
-
-    # --- polling ---
 
     def _schedule_poll(self) -> None:
         self._poll_timer = self.set_timer(_POLL_INTERVAL, self._tick)
@@ -304,8 +300,6 @@ class TasksApp(Container):
         elif self._view == "agent":
             self._refresh_agent_view()
         # "script" view is static.
-
-    # --- rendering ---
 
     async def _render_view(self) -> None:
         body = self.query_one("#tasks-body", Vertical)
@@ -611,8 +605,6 @@ class TasksApp(Container):
             )
         return text
 
-    # --- helpers ---
-
     def _find_selected(self) -> TaskEntry | None:
         if self._selected_task_id is None:
             return None
@@ -710,8 +702,6 @@ class TasksApp(Container):
         elif self._view == "agent":
             help_widget.update("Esc Back")
 
-    # --- actions ---
-
     def action_back(self) -> None:
         if self._view == "agent":
             self._view = "detail"
@@ -786,8 +776,6 @@ class TasksApp(Container):
 
     def action_filter_subagents(self) -> None:
         self._set_filter(5)
-
-    # --- OptionList events ---
 
     async def on_option_list_option_selected(
         self, event: OptionList.OptionSelected

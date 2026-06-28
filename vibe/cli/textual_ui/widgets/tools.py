@@ -101,13 +101,11 @@ class ToolCallMessage(StatusMessage):
         self._set_text(self.get_content(), self.get_content_suffix())
 
     def set_stream_message(self, message: str) -> None:
-        """Update the stream message displayed below the tool call indicator."""
         if self._stream_widget:
             self._stream_widget.update(f"→ {message}")
             self._stream_widget.display = True
 
     def stop_spinning(self, success: bool = True) -> None:
-        """Stop the spinner while keeping stream row stable to avoid layout jumps."""
         super().stop_spinning(success)
 
     def set_result_text(

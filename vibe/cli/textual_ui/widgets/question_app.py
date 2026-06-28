@@ -209,7 +209,6 @@ class QuestionApp(Container):
     def _format_option_prefix(
         self, idx: int, is_focused: bool, is_multi: bool, is_selected: bool
     ) -> str:
-        """Format the prefix for an option line (cursor + number + checkbox if multi)."""
         cursor = "› " if is_focused else "  "
         if is_multi:
             check = "[x]" if is_selected else "[ ]"
@@ -332,7 +331,6 @@ class QuestionApp(Container):
         self.selected_option = self._restore_cursor(new_idx)
 
     def _restore_cursor(self, question_idx: int) -> int:
-        """Return the option index to restore the cursor to for a previously answered question."""
         q = self.questions[question_idx]
 
         if q.multi_select:
@@ -372,7 +370,6 @@ class QuestionApp(Container):
             self._handle_single_select_action()
 
     def _handle_multi_select_action(self) -> None:
-        """Handle Enter key in multi-select mode: toggle option or submit."""
         if self._is_submit_selected:
             self._save_current_answer()
             self._advance_or_submit()
@@ -383,7 +380,6 @@ class QuestionApp(Container):
             self._toggle_selection(self.selected_option)
 
     def _handle_single_select_action(self) -> None:
-        """Handle Enter key in single-select mode: select and advance."""
         if self._is_other_selected:
             if self.other_input:
                 other_text = self.other_texts.get(self.current_question_idx, "").strip()
@@ -397,7 +393,6 @@ class QuestionApp(Container):
             self._advance_or_submit()
 
     def _toggle_selection(self, option_idx: int) -> None:
-        """Toggle an option's selection state (multi-select only)."""
         selections = self.multi_selections.setdefault(self.current_question_idx, set())
         if option_idx in selections:
             selections.discard(option_idx)
@@ -455,7 +450,6 @@ class QuestionApp(Container):
             selections.discard(other_idx)
 
     def _handle_number_key(self, event: events.Key) -> bool:
-        """Handle number key press to quickly select an option. Returns True if handled."""
         if self.other_input and self.other_input.has_focus:
             return False
         if not event.character or not event.character.isdigit():
@@ -501,7 +495,6 @@ class QuestionApp(Container):
             self._save_single_select_answer()
 
     def _save_multi_select_answer(self) -> None:
-        """Save answer for multi-select question (combines all selected options)."""
         q = self._current_question
         idx = self.current_question_idx
         selections = self.multi_selections.get(idx, set())
@@ -525,7 +518,6 @@ class QuestionApp(Container):
             self.answers[idx] = (", ".join(answers), has_other)
 
     def _save_single_select_answer(self) -> None:
-        """Save answer for single-select question."""
         idx = self.current_question_idx
 
         if self._is_other_selected:

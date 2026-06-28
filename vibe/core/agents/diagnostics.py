@@ -12,7 +12,6 @@ if TYPE_CHECKING:
 def excluded_agent_message(
     name: str, config: VibeConfig, discovered: dict[str, AgentProfile]
 ) -> str:
-    """Generate a message explaining why an agent is not available based on the config."""
     profile = discovered.get(name)
     if (
         profile is not None

@@ -31,7 +31,6 @@ _state = _State()
 
 
 def is_enabled() -> bool:
-    """Return True when profiling is activated via environment variable."""
     return bool(os.environ.get("VIBE_PROFILE"))
 
 

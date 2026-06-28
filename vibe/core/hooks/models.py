@@ -9,8 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from vibe.core.types import BaseEvent, StrEnum
 
-# --- Types & enums ---
-
 
 class HookMessageSeverity(StrEnum):
     OK = auto()
@@ -37,9 +35,6 @@ ToolStatus = Literal["success", "failure", "cancelled"]
 
 
 _DEFAULT_HOOK_TIMEOUT = 60.0
-
-
-# --- Declarative hook config (TOML on disk) ---
 
 
 class HookConfig(BaseModel):
@@ -91,9 +86,6 @@ class HookConfigResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     hooks: list[HookConfig]
     issues: list[HookConfigIssue]
-
-
-# --- Subprocess execution ---
 
 
 class HookSessionContext(BaseModel):
@@ -369,9 +361,6 @@ class HookExecutionResult(BaseModel):
     timed_out: bool
 
 
-# --- Structured stdout response (exit 0 + JSON) ---
-
-
 class HookSpecificOutput(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -393,9 +382,6 @@ class HookStructuredResponse(BaseModel):
     reason: str | None = None
     system_message: str | None = None
     hook_specific_output: HookSpecificOutput = Field(default_factory=HookSpecificOutput)
-
-
-# --- Decision values (consumed by the agent loop) ---
 
 
 class HookUserMessage(BaseModel):
@@ -446,9 +432,6 @@ class HookTextReplacement(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str
-
-
-# --- Transcript / UI events (BaseEvent) ---
 
 
 class HookEvent(BaseEvent):

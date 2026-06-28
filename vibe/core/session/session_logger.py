@@ -280,7 +280,6 @@ class SessionLogger:
         if not any(msg.role != Role.SYSTEM for msg in messages):
             return
 
-        # If the session directory does not exist, create it
         try:
             session_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -288,7 +287,6 @@ class SessionLogger:
                 f"Failed to create session directory at {session_dir}: {type(e).__name__}: {e}"
             ) from e
 
-        # Read old metadata and get total_messages
         try:
             if metadata_path.exists():
                 raw = (await read_safe_async(metadata_path)).text
@@ -303,7 +301,6 @@ class SessionLogger:
 
         try:
             non_system_messages = [m for m in messages if m.role != Role.SYSTEM]
-            # Append new messages
             new_messages = non_system_messages[old_total_messages:]
 
             if len(new_messages) == 0:
@@ -441,7 +438,6 @@ class SessionLogger:
     def reset_session(
         self, session_id: str, *, parent_session_id: str | None = None
     ) -> None:
-        """Clear existing session info and setup a new session."""
         if not self.enabled:
             return
 

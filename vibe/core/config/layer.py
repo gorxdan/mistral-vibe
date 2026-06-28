@@ -109,8 +109,6 @@ class ConfigLayer[S: BaseModel](ABC):
         self._state: _LayerState[S] = _LayerState()
         self._lock = asyncio.Lock()
 
-    # --- Overridable ---
-
     async def _check_trust(self) -> bool:
         """Resolve whether this layer should be trusted.
 
@@ -138,8 +136,6 @@ class ConfigLayer[S: BaseModel](ABC):
         Default is a no-op.
         """
         return
-
-    # --- Internal ---
 
     async def _notify_trust_change(self, old: bool | None, new: bool | None) -> None:
         """Call ``_on_trust_changed`` and wrap any error."""
@@ -253,8 +249,6 @@ class ConfigLayer[S: BaseModel](ABC):
 
     async def _handle_invalidate_cache(self, state: _LayerState[S]) -> _LayerState[S]:
         return _LayerState(is_trusted=state.is_trusted, data=None, fingerprint=None)
-
-    # --- Public ---
 
     @property
     def is_trusted(self) -> bool | None:

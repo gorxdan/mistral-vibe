@@ -9,8 +9,6 @@ from vibe.core.config.types import ConfigChangeCallback, ConfigChangeEvent
 
 @dataclass(frozen=True, slots=True)
 class Subscription:
-    """Represent a subscription to config change events."""
-
     keys: frozenset[str] | None
     callback: ConfigChangeCallback
 

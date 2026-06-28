@@ -63,7 +63,6 @@ class ProxySetupApp(Container):
             )
 
     def focus(self, scroll_visible: bool = True) -> ProxySetupApp:
-        """Override focus to focus the first input widget."""
         if self.inputs:
             first_input = list(self.inputs.values())[0]
             first_input.focus(scroll_visible=scroll_visible)

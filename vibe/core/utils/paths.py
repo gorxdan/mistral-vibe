@@ -4,15 +4,6 @@ from pathlib import Path
 
 
 def is_dangerous_directory(path: Path | str = ".") -> tuple[bool, str]:
-    """Check if the current directory is a dangerous folder that would cause
-    issues if we were to run the tool there.
-
-    Args:
-        path: Path to check (defaults to current directory)
-
-    Returns:
-        tuple[bool, str]: (is_dangerous, reason) where reason explains why it's dangerous
-    """
     path = Path(path).resolve()
 
     home_dir = Path.home()

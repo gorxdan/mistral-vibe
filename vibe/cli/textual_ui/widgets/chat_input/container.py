@@ -170,15 +170,6 @@ class ChatInputContainer(Vertical):
         popup.hide()
 
     def _format_insertion(self, replacement: str, suffix: str) -> str:
-        """Format the insertion text with appropriate spacing.
-
-        Args:
-            replacement: The text to insert
-            suffix: The text that follows the insertion point
-
-        Returns:
-            The formatted insertion text with spacing if needed
-        """
         if replacement.startswith("@"):
             if replacement.endswith("/"):
                 return replacement

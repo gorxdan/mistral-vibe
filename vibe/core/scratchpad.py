@@ -32,7 +32,6 @@ def init_scratchpad(session_id: str) -> Path | None:
 
 
 def get_scratchpad_dir(session_id: str) -> Path | None:
-    """Return the scratchpad directory for a given session, or None."""
     return _active_scratchpads.get(session_id)
 
 

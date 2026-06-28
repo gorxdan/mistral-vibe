@@ -129,14 +129,6 @@ class CancellableToolResult(BaseModel):
 
 
 class ToolInfo(BaseModel):
-    """Information about a tool.
-
-    Attributes:
-        name: The name of the tool.
-        description: A brief description of what the tool does.
-        parameters: A dictionary of parameters required by the tool.
-    """
-
     model_config = ConfigDict(extra="forbid")
     name: str
     description: str

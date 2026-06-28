@@ -207,7 +207,6 @@ def _eager_awaitable(fn: Any) -> Any:
     return wrapper
 
 
-# --- Synthesis helpers (injected into every workflow namespace) -------------
 # Pure functions so workflow authors don't reinvent flatten/dedup/merge in
 # every script. All sandbox-safe: no imports, no dunders, no I/O.
 

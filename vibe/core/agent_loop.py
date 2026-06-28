@@ -268,12 +268,10 @@ class ToolDecision(BaseModel):
     modified_args: dict[str, Any] | None = None
 
 
-class AgentLoopError(Exception):
-    """Base exception for AgentLoop errors."""
+class AgentLoopError(Exception): ...
 
 
-class AgentLoopStateError(AgentLoopError):
-    """Raised when agent loop is in an invalid state."""
+class AgentLoopStateError(AgentLoopError): ...
 
 
 class AgentLoopLLMResponseError(AgentLoopError):
@@ -308,12 +306,10 @@ class CompactionFailedError(AgentLoopError):
         super().__init__(f"Compaction did not produce a summary (reason={reason}).")
 
 
-class ImagesNotSupportedError(AgentLoopError):
-    """Raised when the active model does not support image attachments."""
+class ImagesNotSupportedError(AgentLoopError): ...
 
 
-class TeleportError(AgentLoopError):
-    """Raised when teleport to Vibe Code fails."""
+class TeleportError(AgentLoopError): ...
 
 
 def _refusal_error(provider: str, model: str, chunk: LLMChunk) -> RefusalError:
@@ -1607,10 +1603,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if new != current:
             self.messages.update_system_prompt(new)
 
-    # ------------------------------------------------------------------ #
-    # Non-blocking deep-recall prefetch (races the LLM loop)             #
-    # ------------------------------------------------------------------ #
-
     def _kick_memory_prefetch(self, user_msg: str) -> None:
         """Inject the always-on index now and race deep recall in the background.
 
@@ -1702,10 +1694,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return
         self._mem_prefetch_task = None
         task.cancel()
-
-    # ------------------------------------------------------------------ #
-    # Post-turn auto-extraction (Tier 2)                                 #
-    # ------------------------------------------------------------------ #
 
     def _resolve_memory_extractor(self) -> MemoryExtractor | None:
         from vibe.core.memory.extractor import MemoryExtractor
@@ -1893,10 +1881,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 budget -= 1
         except Exception as e:
             logger.warning("memory extraction failed (%s)", e)
-
-    # ------------------------------------------------------------------ #
-    # Periodic consolidation (reversible merge/prune)                    #
-    # ------------------------------------------------------------------ #
 
     def _resolve_memory_consolidator(self) -> MemoryConsolidator | None:
         from vibe.core.memory.consolidator import MemoryConsolidator

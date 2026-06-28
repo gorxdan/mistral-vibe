@@ -172,8 +172,6 @@ class QueueController:
     def __len__(self) -> int:
         return len(self._queue)
 
-    # -- pin target (used by the app's _mount_and_scroll) ------------------
-
     def pin_target(self, messages_area: Widget) -> Widget | None:
         target: Widget | None = self._header
         if target is None and self._widgets:
@@ -187,8 +185,6 @@ class QueueController:
             return self._widgets[-1]
         return self._header
 
-    # -- quit / count helpers --------------------------------------------
-
     def quit_warning_extra(self) -> str:
         if not self._queue:
             return ""
@@ -201,8 +197,6 @@ class QueueController:
 
     def notify_busy_changed(self) -> None:
         self._push_loading_queue_count()
-
-    # -- enqueue ----------------------------------------------------------
 
     async def enqueue_prompt(
         self,
@@ -243,8 +237,6 @@ class QueueController:
         self._push_loading_queue_count()
         return True
 
-    # -- header lifecycle -------------------------------------------------
-
     async def _ensure_header(self) -> None:
         if self._header is not None:
             return
@@ -271,8 +263,6 @@ class QueueController:
             self._queue.resume()
         if self._header is not None:
             self._header.set_paused(self._queue.paused)
-
-    # -- drain engine -----------------------------------------------------
 
     def start_drain_if_needed(self) -> None:
         if not self._drain_enabled:
@@ -431,8 +421,6 @@ class QueueController:
         for prev, curr in zip(widgets, widgets[1:], strict=False):
             prev.set_show_separator(False)
             curr.set_follows_previous(True)
-
-    # -- inject now (double-enter) ---------------------------------------
 
     async def inject_now(self) -> bool:
         """Fold the leading run of queued prompts into the running agent turn.

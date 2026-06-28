@@ -48,8 +48,6 @@ class MemoryStore:
         self._mtimes: dict[Path, float] = {}
         self.issues: list[str] = []
 
-    # --- discovery / read -------------------------------------------------- #
-
     def _search_dirs(self) -> list[Path]:
         # User first so project entries (loaded after) shadow by id.
         return [self._user_dir, *self._project_dirs]
@@ -161,8 +159,6 @@ class MemoryStore:
             used += len(block)
         return "\n\n".join(blocks)
 
-    # --- write (for the manage_memory tool) -------------------------------- #
-
     def upsert(self, entry: MemoryEntry, *, project: bool = False) -> Path:
         target_dir = (
             self._project_dirs[0] if project and self._project_dirs else self._user_dir
@@ -212,8 +208,6 @@ class MemoryStore:
         if removed:
             self._cache = None
         return removed
-
-    # --- consolidation support (reversible trash + ledger) ------------- #
 
     def _effective_path(self, memory_id: str) -> Path | None:
         # The file that actually backs this id under shadowing: project dirs

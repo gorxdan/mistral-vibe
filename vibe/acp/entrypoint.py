@@ -60,7 +60,6 @@ def bootstrap_config_files() -> None:
             raise
 
 
-# When DEBUG_MODE=true, attaches debugpy on localhost:5678.
 def handle_debug_mode() -> None:
     if os.environ.get("DEBUG_MODE") != "true":
         return
@@ -71,8 +70,6 @@ def handle_debug_mode() -> None:
         return
 
     debugpy.listen(("localhost", 5678))
-    # uncomment this to wait for the debugger to attach
-    # debugpy.wait_for_client()
 
 
 def main() -> None:

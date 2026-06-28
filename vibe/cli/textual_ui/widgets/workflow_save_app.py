@@ -103,8 +103,6 @@ class WorkflowSaveApp(Container):
         # Pre-select the placeholder name for easy overtyping.
         name_input.cursor_position = len(name_input.value)
 
-    # --- Actions ---
-
     def action_toggle_location(self) -> None:
         idx = _LOCATIONS.index(self._location)
         self._location = _LOCATIONS[(idx + 1) % len(_LOCATIONS)]

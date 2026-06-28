@@ -223,7 +223,6 @@ class GitRepository:
             result = await self._executor.run(
                 lambda: repo.remote(remote).push(branch, set_upstream=True)
             )
-            # Check if any push info indicates an error
             for info in result:
                 if info.flags & info.ERROR:
                     return False

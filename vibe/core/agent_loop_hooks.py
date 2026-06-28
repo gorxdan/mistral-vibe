@@ -103,10 +103,6 @@ class AgentLoopHooksMixin:
     def _serialize_tool_input(self, tool_call: ResolvedToolCall) -> dict[str, Any]:
         return tool_call.validated_args.model_dump(mode="json")
 
-    # ------------------------------------------------------------------
-    # Session context
-    # ------------------------------------------------------------------
-
     def _hook_session_context(self) -> HookSessionContext:
         transcript = ""
         if self.session_logger.enabled and self.session_logger.session_dir is not None:
@@ -117,10 +113,6 @@ class AgentLoopHooksMixin:
             cwd=str(Path.cwd().resolve()),
             parent_session_id=self.parent_session_id,
         )
-
-    # ------------------------------------------------------------------
-    # Hook runners
-    # ------------------------------------------------------------------
 
     async def _run_post_agent_turn_hooks(
         self,
@@ -311,10 +303,6 @@ class AgentLoopHooksMixin:
             if isinstance(ev, (HookEvent, HookTextReplacement)):
                 yield ev
 
-    # ------------------------------------------------------------------
-    # After-tool collection helpers
-    # ------------------------------------------------------------------
-
     async def _collect_after_tool_events(
         self, tool_call: ResolvedToolCall, **kwargs: Any
     ) -> tuple[str, list[HookEvent]]:
@@ -368,10 +356,6 @@ class AgentLoopHooksMixin:
         self._handle_tool_response(
             tool_call, final_text, response_status, decision, tool_output, span=span
         )
-
-    # ------------------------------------------------------------------
-    # Before-tool pipeline
-    # ------------------------------------------------------------------
 
     async def _run_before_tool_pipeline(
         self,
@@ -482,10 +466,6 @@ class AgentLoopHooksMixin:
             tool_call_id=tool_call.call_id,
         )
 
-    # ------------------------------------------------------------------
-    # Skip / cancel helpers
-    # ------------------------------------------------------------------
-
     async def _handle_tool_skip(
         self, tool_call: ResolvedToolCall, decision: ToolDecision, *, span: trace.Span
     ) -> AsyncGenerator[ToolResultEvent | HookEvent]:
@@ -550,10 +530,6 @@ class AgentLoopHooksMixin:
             self._handle_tool_response(
                 tool_call, cancel_text, "failure", decision, span=span
             )
-
-    # ------------------------------------------------------------------
-    # Post-turn hook dispatch
-    # ------------------------------------------------------------------
 
     async def _dispatch_post_turn_hooks(
         self,

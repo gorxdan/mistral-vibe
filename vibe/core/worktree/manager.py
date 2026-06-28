@@ -93,7 +93,6 @@ class StrandedBranch:
 def worktree_enabled(
     config: VibeConfig, *, programmatic: bool, cli_flag: bool = False
 ) -> bool:
-    """Return ``True`` if worktree isolation should be active."""
     m = config.worktree.mode
     if m == "off":
         return False
@@ -149,10 +148,6 @@ class WorktreeManager:
     @property
     def active(self) -> WorktreeHandle | None:
         return self._active
-
-    # ------------------------------------------------------------------
-    # enter
-    # ------------------------------------------------------------------
 
     def enter(self, label: str, config: WorktreeConfig) -> WorktreeHandle | None:
         """Create a worktree, carry dirty state, and chdir into it.
@@ -236,7 +231,6 @@ class WorktreeManager:
             )
             return None
 
-        # 5. Record create_head_sha.
         create_head_sha = repo.head.commit.hexsha
 
         # 6. Collision-free branch name (nanosecond resolution).
@@ -272,7 +266,6 @@ class WorktreeManager:
         # 11. Set orientation (footer shows original root).
         # Done by the caller via config.displayed_workdir.
 
-        # 12. chdir into worktree.
         os.chdir(worktree_path)
 
         # 13. Store handle and register cleanup backstops.
@@ -288,10 +281,6 @@ class WorktreeManager:
         self._active = handle
         self._register_cleanup_backstops()
         return handle
-
-    # ------------------------------------------------------------------
-    # exit
-    # ------------------------------------------------------------------
 
     def exit(self, handle: WorktreeHandle) -> None:
         """WIP-commit dirty state, optionally merge, then remove the worktree.
@@ -368,10 +357,6 @@ class WorktreeManager:
                 f"To merge: git merge {handle.branch}\n",
                 file=sys.stdout,
             )
-
-    # ------------------------------------------------------------------
-    # dirty carry
-    # ------------------------------------------------------------------
 
     def _carry_exclude_pathspecs(
         self, repo: Repo, carry_ignored: list[str]
@@ -491,10 +476,6 @@ class WorktreeManager:
             return None
         return hashlib.sha256(patch).hexdigest()
 
-    # ------------------------------------------------------------------
-    # symlink deps
-    # ------------------------------------------------------------------
-
     def _symlink_deps(
         self, original_root: Path, worktree_path: Path, config: WorktreeConfig
     ) -> list[Path]:
@@ -512,10 +493,6 @@ class WorktreeManager:
             except OSError as exc:
                 logger.warning("Failed to symlink %s: %s", name, exc)
         return symlinks
-
-    # ------------------------------------------------------------------
-    # crash recovery
-    # ------------------------------------------------------------------
 
     def _prune_and_report(self, config: WorktreeConfig) -> None:
         """Prune stale worktree admin entries and GC merged-and-old branches.
@@ -575,10 +552,6 @@ class WorktreeManager:
                 )
             except GitCommandError as exc:
                 logger.debug("GC: could not delete branch %s: %s", name, exc)
-
-    # ------------------------------------------------------------------
-    # recovery reporting
-    # ------------------------------------------------------------------
 
     def list_stranded_branches(self, config: WorktreeConfig) -> list[StrandedBranch]:
         """Enumerate ``branch_prefix`` branches that hold unmerged work and have
@@ -646,10 +619,6 @@ class WorktreeManager:
             )
         lines.append("  review/clean up:  vibe worktree list")
         print("\n".join(lines), file=sys.stderr)
-
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
 
     def _is_ancestor(self, repo: Repo, rev: str, ancestor_of: str) -> bool:
         """Return True if *rev* is an ancestor of *ancestor_of* (i.e. merged)."""
@@ -811,10 +780,6 @@ class WorktreeManager:
             logger.info("Auto-ff failed, manual merge needed: %s", exc)
             return False
 
-    # ------------------------------------------------------------------
-    # stash-bracketed fast-forward over a dirty tree
-    # ------------------------------------------------------------------
-
     def _stash_ref_for_message(self, repo: Repo, message: str) -> str | None:
         """Resolve the ``stash@{N}`` whose message equals *message*.
 
@@ -912,10 +877,6 @@ class WorktreeManager:
         # Nothing specific to clean — the worktree add either succeeded or
         # didn't. If it did, the branch persists for recovery.
         pass
-
-    # ------------------------------------------------------------------
-    # cleanup backstops
-    # ------------------------------------------------------------------
 
     def _register_cleanup_backstops(self) -> None:
         if not self._atexit_registered:

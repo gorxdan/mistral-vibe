@@ -256,7 +256,6 @@ class SessionLoader:
 
     @staticmethod
     def load_session(filepath: Path) -> tuple[list[LLMMessage], dict[str, Any]]:
-        # Load session messages from MESSAGES_FILENAME
         messages_filepath = filepath / MESSAGES_FILENAME
 
         try:
@@ -286,7 +285,6 @@ class SessionLoader:
             LLMMessage.model_validate(msg) for msg in data if msg["role"] != "system"
         ]
 
-        # Load session metadata from METADATA_FILENAME
         metadata_filepath = filepath / METADATA_FILENAME
 
         if metadata_filepath.exists():

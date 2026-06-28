@@ -9,8 +9,7 @@ from vibe.core.logger import logger
 from vibe.core.types import LLMMessage, MessageList, Role
 
 
-class RewindError(Exception):
-    """Raised when a rewind operation fails."""
+class RewindError(Exception): ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +74,6 @@ class RewindManager:
                 cp.files.append(snapshot)
 
     def has_file_changes_at(self, message_index: int) -> bool:
-        """Check if files have changed since the checkpoint at *message_index*."""
         checkpoint = self._get_checkpoint(message_index)
         if checkpoint is None:
             return False

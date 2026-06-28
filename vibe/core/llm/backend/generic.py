@@ -232,7 +232,6 @@ _ADAPTERS: dict[str, APIAdapter] = {
 
 
 def _get_adapter(api_style: str) -> APIAdapter:
-    """Load the adapter for the given API style."""
     if api_style == "openai-responses":
         return OpenAIResponsesAdapter()
     if api_style == "openai-chatgpt":
@@ -315,11 +314,6 @@ class GenericBackend:
         provider: ProviderConfig,
         timeout: float = 720.0,
     ) -> None:
-        """Initialize the backend.
-
-        Args:
-            client: Optional httpx client to use. If not provided, one will be created.
-        """
         self._client = client
         self._owns_client = client is None
         self._provider = provider

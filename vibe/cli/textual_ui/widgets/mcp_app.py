@@ -441,8 +441,6 @@ class MCPApp(Container):
             return option_id.removeprefix("connector:"), MCPSourceKind.CONNECTOR
         return None
 
-    # ── list view ────────────────────────────────────────────────────
-
     def _refresh_view(
         self, server_name: str | None, *, kind: MCPSourceKind | None = None
     ) -> None:
@@ -567,8 +565,6 @@ class MCPApp(Container):
                         text = "error - try refreshing"
                 _append_status(label, "○", "dim", text)
             option_list.add_option(Option(label, id=f"connector:{cname}"))
-
-    # ── detail view ──────────────────────────────────────────────────
 
     def _show_detail_view(
         self,

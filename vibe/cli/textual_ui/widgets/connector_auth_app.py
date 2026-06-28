@@ -103,8 +103,6 @@ class ConnectorAuthApp(Container):
             self._refresh_connector(), exclusive=True, group="connector_refresh"
         )
 
-    # ── workers ──────────────────────────────────────────────────────
-
     async def _fetch_auth_url(self) -> str | None:
         return await self._connector_registry.get_auth_url(self._connector_name)
 
@@ -127,8 +125,6 @@ class ConnectorAuthApp(Container):
                 event.worker.result if isinstance(event.worker.result, int) else 0
             )
             self._on_connector_refreshed(tool_count)
-
-    # ── auth UI ──────────────────────────────────────────────────────
 
     def _on_auth_url_fetched(self, result: object) -> None:
         option_list = self.query_one(OptionList)
@@ -188,8 +184,6 @@ class ConnectorAuthApp(Container):
             )
             self._set_help_text(_HELP)
 
-    # ── actions ──────────────────────────────────────────────────────
-
     def _open_browser(self) -> None:
         if self._auth_url is None:
             return
@@ -209,8 +203,6 @@ class ConnectorAuthApp(Container):
             return
         self._auth_url_visible = not self._auth_url_visible
         self._update_detail_text()
-
-    # ── helpers ──────────────────────────────────────────────────────
 
     def _update_detail_text(self) -> None:
         detail = self.query_one("#connectorauth-detail", NoMarkupStatic)

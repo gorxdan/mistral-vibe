@@ -4,8 +4,6 @@ from vibe.core.telemetry.types import TeleportFailureDetails
 
 
 class ServiceTeleportError(Exception):
-    """Base exception for teleport errors."""
-
     def __init__(
         self, message: str, *, telemetry_details: TeleportFailureDetails | None = None
     ) -> None:
