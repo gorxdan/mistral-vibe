@@ -5,10 +5,16 @@ import datetime as _dt
 from pathlib import Path
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from vibe.core.config import VibeConfig
-from vibe.core.memory.models import MemoryEntry, MemoryMetadata, MemoryType, slugify
+from vibe.core.memory.models import (
+    _DESC_MAX,
+    MemoryEntry,
+    MemoryMetadata,
+    MemoryType,
+    slugify,
+)
 from vibe.core.memory.store import (
     MemoryStore,
     project_memory_dir,
@@ -115,6 +121,16 @@ class ManageMemoryArgs(BaseModel):
     # that namespace. Resolved via the same identity hash the harness uses, so
     # it matches what an agent running inside project_path would see.
     project_path: str | None = None
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _clamp_description(cls, v: object) -> object:
+        # Truncate at input so the update path's model_copy(update=...) — which
+        # bypasses MemoryMetadata validation — also stays within the limit, not
+        # just the add path that constructs MemoryMetadata directly.
+        if isinstance(v, str) and len(v) > _DESC_MAX:
+            return v[:_DESC_MAX]
+        return v
 
 
 class ManageMemoryResult(BaseModel):

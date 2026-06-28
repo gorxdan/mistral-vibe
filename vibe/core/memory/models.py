@@ -15,6 +15,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # newline into a filename.
 _SLUG = r"^[a-z0-9]+(-[a-z0-9]+)*$"
 
+# Max length of a memory's frontmatter description: a recall-length summary only
+# (the full text lives in the body). Over-length values are truncated by the
+# _clamp_description validator rather than rejected, so a long model-authored
+# description never fails the save.
+_DESC_MAX = 300
+
 # Memories older than this (days) get a "verify before relying on it" caveat
 # when their full body is injected: file:line and API details drift over time.
 _STALE_DAYS = 7
@@ -88,7 +94,7 @@ class MemoryMetadata(BaseModel):
 
     id: str = Field(pattern=_SLUG)
     title: str
-    description: str = Field(default="", max_length=300)
+    description: str = Field(default="", max_length=_DESC_MAX)
     tags: list[str] = Field(default_factory=list)
     type: MemoryType | None = None
     scope: Literal["user", "project"] = "user"
@@ -99,6 +105,16 @@ class MemoryMetadata(BaseModel):
     # back to the session/turn that produced it (auto-extracted memories
     # especially). Empty for legacy/manual memories; never used for recall.
     session_id: str = ""
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _clamp_description(cls, v: object) -> object:
+        # Truncate rather than reject: the body holds the full text, so the
+        # frontmatter description only needs a recall-length summary. Guards
+        # long model-authored descriptions and legacy over-length files alike.
+        if isinstance(v, str) and len(v) > _DESC_MAX:
+            return v[:_DESC_MAX]
+        return v
 
     @field_validator("type", mode="before")
     @classmethod

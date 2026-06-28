@@ -17,6 +17,7 @@ from vibe.core.memory.extractor import (
     merge_memory_body,
 )
 from vibe.core.memory.models import (
+    _DESC_MAX,
     MemoryEntry,
     MemoryMetadata,
     MemoryType,
@@ -26,6 +27,7 @@ from vibe.core.memory.models import (
 )
 from vibe.core.memory.selector import MemorySelector
 from vibe.core.memory.store import MemoryStore, project_memory_dir_for
+from vibe.core.tools.builtins.manage_memory import ManageMemoryArgs
 from vibe.core.types import Backend
 
 
@@ -105,9 +107,23 @@ def test_slug_pattern_enforced() -> None:
     MemoryMetadata(id="ok-slug-1", title="t")  # valid
 
 
-def test_description_max_length() -> None:
-    with pytest.raises(ValidationError):
-        MemoryMetadata(id="x", title="t", description="z" * 301)
+def test_description_truncates_instead_of_failing() -> None:
+    # Models routinely write descriptions > 300 chars; a max_length constraint
+    # rejected the whole save (the body holds the full text anyway). Truncate
+    # the frontmatter summary instead, like ask_user_question's header.
+    meta = MemoryMetadata(id="x", title="t", description="z" * (_DESC_MAX + 50))
+    assert meta.description == "z" * _DESC_MAX
+    assert len(meta.description) == _DESC_MAX
+
+
+def test_manage_memory_args_clamps_description() -> None:
+    # Regression: the update path uses model_copy(update=...), which bypasses
+    # MemoryMetadata validation. Clamp at the args boundary so both add and
+    # update writes stay within the limit.
+    args = ManageMemoryArgs(action="update", id="x", description="z" * (_DESC_MAX + 50))
+    assert args.description is not None
+    assert args.description == "z" * _DESC_MAX
+    assert len(args.description) == _DESC_MAX
 
 
 # --------------------------------------------------------------------------- #
