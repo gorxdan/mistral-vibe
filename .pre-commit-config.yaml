@@ -33,3 +33,12 @@ repos:
       - id: typos
         args: [--write-changes]
         exclude: __snapshots__/.*\.svg$
+
+  - repo: local
+    hooks:
+      - id: agents-comments
+        name: AGENTS.md comments rule (terse hard-corners only)
+        entry: uv run python scripts/check_agents_comments.py
+        language: system
+        types: [python]
+        pass_filenames: true
