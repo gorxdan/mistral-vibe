@@ -76,6 +76,53 @@ def test_format_cost():
     assert format_cost(12.5) == "$12.50"
 
 
+def test_unpriced_usage_shows_em_dash_not_zero():
+    # Models with real usage but no configured pricing (input_price=0) must not
+    # claim $0.0000 — that reads as "free" when it really means "unknown".
+    from vibe.cli.textual_ui.widgets._status_render import _cost_or_unknown
+
+    assert _cost_or_unknown(0.0, has_usage=True) == "—"
+    # Genuine zero usage → $0.0000 is correct.
+    assert _cost_or_unknown(0.0, has_usage=False) == "$0.0000"
+    # Priced usage → real cost.
+    assert _cost_or_unknown(2.50, has_usage=True) == "$2.50"
+
+
+def test_render_hides_cost_for_unpriced_model():
+    # Mirrors the live report: glm-5.2 with 39.6M tokens, input_price=0.
+    s = AgentStats()
+    summary = summarize(
+        [
+            UsageRecord.from_usage(
+                timestamp=1_000_000.0,
+                provider="zai",
+                model="glm-5.2",
+                usage=LLMUsage(prompt_tokens=36_000_000, completion_tokens=3_600_000),
+                cost_usd=0.0,  # unpriced
+                duration_s=1.0,
+                session_id="s1",
+            )
+        ],
+        now=1_000_000.0,
+    )
+    text = render_status_card(
+        StatusCardData(
+            stats=s,
+            summary=summary,
+            version="0.1.1",
+            model_name="glm-5.2",
+            provider_name="zai",
+            workdir=Path("/home/dan/p"),
+            session_id="s1",
+        )
+    )
+    plain = text.plain
+    assert "glm-5.2" in plain
+    # The model row and windows must show — (pricing not configured), not $0.0000.
+    assert "—" in plain
+    assert "$0.0000" not in plain.split("By provider")[1]
+
+
 def test_render_status_card_snapshot():
     summary = summarize(_records(), now=1_000_000.0)
     text = render_status_card(

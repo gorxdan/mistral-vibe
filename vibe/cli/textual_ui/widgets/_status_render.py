@@ -87,6 +87,19 @@ def format_cost(value: float) -> str:
     return f"${value:.2f}"
 
 
+def _cost_or_unknown(cost: float, has_usage: bool) -> str:
+    """Formatted cost, or '—' when pricing is unset.
+
+    A zero cost with real usage means the model's ``input_price``/``output_price``
+    weren't configured (or it's a flat-rate subscription like the ChatGPT plan),
+    not that the usage was free. Showing '—' keeps the card honest instead of
+    displaying a misleading ``$0.0000``.
+    """
+    if cost <= 0.0 and has_usage:
+        return "—"
+    return format_cost(cost)
+
+
 def _progress_bar(ratio: float) -> str:
     ratio = max(0.0, min(1.0, ratio))
     filled = min(round(ratio * _BAR_SEGMENTS), _BAR_SEGMENTS)
@@ -158,7 +171,12 @@ def _session_section(stats: AgentStats, context_window: int | None) -> list[Text
             style="dim",
         )
     lines.append(_label_line("Cache", cache_val))
-    lines.append(_label_line("Cost", Text(format_cost(stats.session_cost))))
+    lines.append(
+        _label_line(
+            "Cost",
+            Text(_cost_or_unknown(stats.session_cost, stats.session_total_llm_tokens > 0)),
+        )
+    )
 
     if context_window and context_window > 0 and stats.context_tokens > 0:
         ratio = min(stats.context_tokens / context_window, 1.0)
@@ -184,7 +202,9 @@ def _provider_section(providers: list[ProviderBreakdown]) -> list[Text]:
             row.append(format_tokens_compact(mb.total_tokens).rjust(_TOKENS_COL) + " ")
             row.append(_progress_bar(share) + " ")
             row.append(f"{share:.0%}".rjust(3) + " ", style="dim")
-            row.append(format_cost(mb.cost_usd).rjust(_TOKENS_COL))
+            row.append(
+                _cost_or_unknown(mb.cost_usd, mb.total_tokens > 0).rjust(_TOKENS_COL)
+            )
             lines.append(row)
         prov_row = Text()
         prov_row.append("    ".ljust(_MODEL_COL), style="dim")
@@ -205,7 +225,7 @@ def _windows_section(windows: list[WindowRollup]) -> list[Text]:
             continue
         val = Text()
         val.append(f"{format_tokens_compact(win.total_tokens)} tokens")
-        val.append(f" · {format_cost(win.cost_usd)}", style="dim")
+        val.append(f" · {_cost_or_unknown(win.cost_usd, win.calls > 0)}", style="dim")
         calls_word = "call" if win.calls == 1 else "calls"
         val.append(f" · {win.calls} {calls_word}", style="dim")
         if win.sessions > 1:
