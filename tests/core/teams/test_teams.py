@@ -402,7 +402,9 @@ def test_complete_task_enforces_ownership_for_actor(tmp_path: Path) -> None:
 
     # Another teammate cannot complete alice's task.
     assert store.complete_task("task-1", "done", actor="bob") is None
-    assert store.get_task("task-1").status == TaskStatus.IN_PROGRESS
+    blocked = store.get_task("task-1")
+    assert blocked is not None
+    assert blocked.status == TaskStatus.IN_PROGRESS
 
     # The owner can.
     done = store.complete_task("task-1", "done", actor="alice")
@@ -481,6 +483,7 @@ async def test_team_command_task_verbs_route_to_manager() -> None:
     with correct parsing (done splits '<id> <multi word result>').
     """
     from dataclasses import dataclass as _dc
+    from typing import cast
 
     from vibe.cli.textual_ui.app import VibeApp
 
@@ -511,7 +514,9 @@ async def test_team_command_task_verbs_route_to_manager() -> None:
             pass
 
         async def _team_task(self, parts, ErrorMessage, UserCommandMessage) -> None:
-            await VibeApp._team_task(self, parts, ErrorMessage, UserCommandMessage)
+            await VibeApp._team_task(
+                cast(VibeApp, self), parts, ErrorMessage, UserCommandMessage
+            )
 
     stub = _Stub()
     await VibeApp._team_command(stub, "task add buy more milk")  # type: ignore[arg-type]

@@ -2293,7 +2293,7 @@ def test_sweep_trash_compacts_ledger(tmp_path) -> None:
     assert "keep" in ids
 
 
-def test_sweep_trash_preserves_unparseable_ledger_lines(tmp_path) -> None:
+def test_sweep_trash_preserves_unparsable_ledger_lines(tmp_path) -> None:
     # A corrupt ledger line must not be silently dropped by compaction — keep it
     # verbatim so the audit data is never lost to a parse quirk.
     store = MemoryStore(user_dir=tmp_path)

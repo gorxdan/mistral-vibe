@@ -152,12 +152,12 @@ def test_macos_class_reader_returns_bytes_when_osascript_succeeds(monkeypatch) -
         return _completed()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    assert _read_macos_class("PNGf") == _FAKE_PNG
+    assert _read_macos_class("ONGf") == _FAKE_PNG
 
 
 def test_macos_class_reader_returns_none_when_osascript_fails(monkeypatch) -> None:
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _completed(returncode=1))
-    assert _read_macos_class("PNGf") is None
+    assert _read_macos_class("ONGf") is None
 
 
 def test_macos_reader_falls_back_to_tiff_when_png_missing(monkeypatch) -> None:
@@ -170,8 +170,8 @@ def test_macos_reader_falls_back_to_tiff_when_png_missing(monkeypatch) -> None:
     def fake_run(cmd, **kwargs):
         if cmd[0] == "osascript":
             script_text = cmd[2]
-            if "PNGf" in script_text:
-                calls.append("PNGf")
+            if "ONGf" in script_text:
+                calls.append("ONGf")
                 return _completed(returncode=1)
             calls.append("TIFF")
             prefix = 'set targetFile to POSIX file "'
@@ -190,7 +190,7 @@ def test_macos_reader_falls_back_to_tiff_when_png_missing(monkeypatch) -> None:
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert _read_macos() == _FAKE_PNG
-    assert calls == ["PNGf", "TIFF", "sips"]
+    assert calls == ["ONGf", "TIFF", "sips"]
 
 
 def test_reader_timeout_is_swallowed(monkeypatch) -> None:

@@ -32,7 +32,7 @@ from vibe.core.tools.mcp import (
     list_tools_http,
     list_tools_stdio,
 )
-from vibe.core.tools.mcp.tools import _OpenArgs
+from vibe.core.tools.mcp.tools import MCPTool, _OpenArgs
 
 
 class TestRemoteTool:
@@ -798,6 +798,7 @@ class TestMCPRegistry:
 
         assert tools is not None
         proxy_cls = next(iter(tools.values()))
+        assert issubclass(proxy_cls, MCPTool)
         assert proxy_cls._pool is registry.pool
 
     @pytest.mark.asyncio

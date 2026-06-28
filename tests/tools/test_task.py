@@ -157,6 +157,7 @@ class TestTaskToolModelRouting:
     async def test_unknown_model_alias_rejected(
         self, task_tool: Task, ctx: InvokeContext
     ) -> None:
+        assert ctx.agent_manager is not None
         args = TaskArgs(task="review", agent="explore", model="not-a-real-model")
         with pytest.raises(ToolError) as exc_info:
             await collect_result(task_tool.run(args, ctx))
@@ -169,6 +170,7 @@ class TestTaskToolModelRouting:
     async def test_valid_model_threaded_into_in_process_loop(
         self, task_tool: Task, ctx: InvokeContext
     ) -> None:
+        assert ctx.agent_manager is not None
         valid_alias = ctx.agent_manager.config.active_model
 
         async def mock_act(task: str):
@@ -199,6 +201,8 @@ class TestTaskToolModelRouting:
         # When the caller omits a model, the subagent must inherit the parent's
         # resolved active_model. Otherwise a fresh VibeConfig.load() falls back to
         # the hardcoded mistral default and dies with "Missing MISTRAL_API_KEY".
+        assert ctx.agent_manager is not None
+
         async def mock_act(task: str):
             yield AssistantEvent(content="ok")
 
@@ -228,6 +232,7 @@ class TestTaskToolModelRouting:
         self, task_tool: Task, ctx: InvokeContext
     ) -> None:
         ctx.active_model = "parent-running-model"
+        assert ctx.agent_manager is not None
 
         async def mock_act(task: str):
             yield AssistantEvent(content="ok")
@@ -256,6 +261,7 @@ class TestTaskToolModelRouting:
     async def test_valid_model_threaded_into_isolated_spawn(
         self, task_tool: Task, ctx: InvokeContext
     ) -> None:
+        assert ctx.agent_manager is not None
         valid_alias = ctx.agent_manager.config.active_model
 
         class _FakeIsolatedResult:
@@ -292,6 +298,7 @@ class TestTaskToolModelRouting:
         async def fake_run(*a, **kw):
             return _FakeIsolatedResult()
 
+        assert ctx.agent_manager is not None
         args = TaskArgs(task="review", agent="worker")
         with (
             patch(

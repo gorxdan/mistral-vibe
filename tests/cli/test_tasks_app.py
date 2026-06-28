@@ -9,10 +9,11 @@ widget to verify rendering and message emission.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from textual.containers import VerticalScroll
+from textual.widgets import OptionList
 
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.cli.textual_ui.widgets.tasks_app import (
@@ -21,6 +22,9 @@ from vibe.cli.textual_ui.widgets.tasks_app import (
     _fmt_seconds,
 )
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory, TaskEntry
+
+if TYPE_CHECKING:
+    from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
 
 # ---------------------------------------------------------------------------
 # Fakes (kept local so this test module is self-contained)
@@ -67,7 +71,7 @@ class _FakeWorkflowRunner:
 
 def _registry(runner: _FakeWorkflowRunner) -> BackgroundRegistry:
     reg = BackgroundRegistry()
-    reg.attach_workflow_runner(lambda: runner)
+    reg.attach_workflow_runner(lambda: cast("WorkflowRunner", runner))
     return reg
 
 
@@ -126,7 +130,9 @@ async def test_list_view_renders_registry_entries():
 
     class _Harness(App):
         def compose(self) -> ComposeResult:
-            yield Container(TasksApp(registry=reg, workflow_runner=runner))
+            yield Container(
+                TasksApp(registry=reg, workflow_runner=cast("WorkflowRunner", runner))
+            )
 
         async def key_escape(self) -> None:  # avoid quit-on-escape noise
             pass
@@ -134,9 +140,9 @@ async def test_list_view_renders_registry_entries():
     app = _Harness()
     async with app.run_test() as pilot:
         await pilot.pause()
-        option_list = app.query_one("#tasks-list")
+        option_list = app.query_one("#tasks-list", OptionList)
         # One workflow row present.
-        ids = [o.id for o in option_list._options]
+        ids = [o.id for o in option_list.options]
         assert "wf-1" in ids
         await app.action_quit()
 
@@ -152,7 +158,9 @@ async def test_category_filter_hides_other_categories():
 
     class _Harness(App):
         def compose(self) -> ComposeResult:
-            yield Container(TasksApp(registry=reg, workflow_runner=runner))
+            yield Container(
+                TasksApp(registry=reg, workflow_runner=cast("WorkflowRunner", runner))
+            )
 
         async def key_escape(self) -> None:
             pass
@@ -188,7 +196,9 @@ async def test_stop_action_emits_task_stop_requested():
 
     class _Harness(App):
         def compose(self) -> ComposeResult:
-            yield Container(TasksApp(registry=reg, workflow_runner=runner))
+            yield Container(
+                TasksApp(registry=reg, workflow_runner=cast("WorkflowRunner", runner))
+            )
 
         async def key_escape(self) -> None:
             pass
@@ -231,7 +241,9 @@ async def test_drill_down_shows_workflow_detail():
 
     class _Harness(App):
         def compose(self) -> ComposeResult:
-            yield Container(TasksApp(registry=reg, workflow_runner=runner))
+            yield Container(
+                TasksApp(registry=reg, workflow_runner=cast("WorkflowRunner", runner))
+            )
 
         async def key_escape(self) -> None:
             pass
@@ -285,7 +297,9 @@ async def test_workflow_detail_lists_agents_and_drill_down_shows_prompt_response
 
     class _Harness(App):
         def compose(self) -> ComposeResult:
-            yield Container(TasksApp(registry=reg, workflow_runner=runner))
+            yield Container(
+                TasksApp(registry=reg, workflow_runner=cast("WorkflowRunner", runner))
+            )
 
         async def key_escape(self) -> None:
             pass
@@ -299,8 +313,8 @@ async def test_workflow_detail_lists_agents_and_drill_down_shows_prompt_response
         await tasks._render_view()
         await pilot.pause()
         # The agent list is mounted beneath the summary.
-        agent_list = app.query_one("#tasks-agent-list")
-        assert len(agent_list._options) == 1
+        agent_list = app.query_one("#tasks-agent-list", OptionList)
+        assert len(agent_list.options) == 1
         # Drill into the agent (the event handler strips the 'agent:' prefix;
         # _open_agent_view takes the bare key).
         tasks._open_agent_view("wf-1/done-audit-0")
@@ -358,7 +372,9 @@ async def test_detail_view_poll_refresh_does_not_duplicate_widgets():
 
     class _Harness(App):
         def compose(self) -> ComposeResult:
-            yield Container(TasksApp(registry=reg, workflow_runner=runner))
+            yield Container(
+                TasksApp(registry=reg, workflow_runner=cast("WorkflowRunner", runner))
+            )
 
         async def key_escape(self) -> None:
             pass
@@ -414,7 +430,9 @@ async def test_live_agent_detail_shows_prompt_and_streaming_preview():
 
     class _Harness(App):
         def compose(self) -> ComposeResult:
-            yield Container(TasksApp(registry=reg, workflow_runner=runner))
+            yield Container(
+                TasksApp(registry=reg, workflow_runner=cast("WorkflowRunner", runner))
+            )
 
         async def key_escape(self) -> None:
             pass

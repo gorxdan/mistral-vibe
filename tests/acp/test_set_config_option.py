@@ -549,7 +549,7 @@ class TestACPSetConfigOptionMaxTokens:
         )
 
         assert response is not None
-        assert acp_session.agent_loop._max_tokens == 8192
+        assert acp_session.agent_loop._max_output_override == 8192
 
     @pytest.mark.asyncio
     async def test_set_config_option_max_tokens_invalid_string_returns_none(
@@ -563,14 +563,14 @@ class TestACPSetConfigOptionMaxTokens:
             (s for s in acp_agent_loop.sessions.values() if s.id == session_id), None
         )
         assert acp_session is not None
-        initial_max_tokens = acp_session.agent_loop._max_tokens
+        initial_max_tokens = acp_session.agent_loop._max_output_override
 
         response = await acp_agent_loop.set_config_option(
             session_id=session_id, config_id="max_tokens", value="abc"
         )
 
         assert response is None
-        assert acp_session.agent_loop._max_tokens == initial_max_tokens
+        assert acp_session.agent_loop._max_output_override == initial_max_tokens
 
     @pytest.mark.asyncio
     async def test_set_config_option_max_tokens_bool_returns_none(
@@ -584,11 +584,11 @@ class TestACPSetConfigOptionMaxTokens:
             (s for s in acp_agent_loop.sessions.values() if s.id == session_id), None
         )
         assert acp_session is not None
-        initial_max_tokens = acp_session.agent_loop._max_tokens
+        initial_max_tokens = acp_session.agent_loop._max_output_override
 
         response = await acp_agent_loop.set_config_option(
             session_id=session_id, config_id="max_tokens", value=True
         )
 
         assert response is None
-        assert acp_session.agent_loop._max_tokens == initial_max_tokens
+        assert acp_session.agent_loop._max_output_override == initial_max_tokens

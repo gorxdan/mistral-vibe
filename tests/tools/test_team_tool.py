@@ -6,12 +6,12 @@ from pathlib import Path
 import pytest
 
 from tests.mock.utils import collect_result
-from vibe.core.tools.base import BaseToolState, ToolError
-from vibe.core.tools.builtins.team import Team, TeamArgs, TeamToolConfig
+from vibe.core.tools.base import ToolError
+from vibe.core.tools.builtins.team import Team, TeamArgs, TeamState, TeamToolConfig
 
 
 def _make_tool() -> Team:
-    return Team(config_getter=lambda: TeamToolConfig(), state=BaseToolState())
+    return Team(config_getter=lambda: TeamToolConfig(), state=TeamState())
 
 
 def _set_teammate_env(tmp_path: Path, name: str = "alice") -> None:
@@ -65,13 +65,16 @@ async def test_teammate_claims_shared_task(tmp_path: Path) -> None:
     result = await collect_result(
         _make_tool().run(TeamArgs(action="claim_task", task_id="task-1"))
     )
+    assert result.task is not None
     assert result.task["assignee"] == "alice"
     assert result.task["status"] == "in_progress"
 
     # The claim is visible to the lead's store after a reload (the teammate
     # wrote it under the lock; the lead's in-memory cache is stale until then).
     lead_store.reload()
-    assert lead_store.get_task("task-1").assignee == "alice"
+    reloaded = lead_store.get_task("task-1")
+    assert reloaded is not None
+    assert reloaded.assignee == "alice"
 
 
 @pytest.mark.asyncio
@@ -89,6 +92,7 @@ async def test_teammate_send_and_read_message(tmp_path: Path) -> None:
     # Bob reads.
     os.environ["VIBE_TEAMMATE_NAME"] = "bob"
     result = await collect_result(_make_tool().run(TeamArgs(action="read_messages")))
+    assert result.messages is not None
     assert len(result.messages) == 1
     assert result.messages[0]["content"] == "hi bob"
     assert result.messages[0]["from_name"] == "alice"

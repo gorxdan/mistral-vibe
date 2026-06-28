@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+import functools
 
 from pydantic import BaseModel
 
@@ -24,6 +25,7 @@ class FakeTool(BaseTool[FakeToolArgs, FakeToolResult, BaseToolConfig, FakeToolSt
     _exception_to_raise: BaseException | None = None
 
     @classmethod
+    @functools.cache
     def get_name(cls) -> str:
         return "stub_tool"
 

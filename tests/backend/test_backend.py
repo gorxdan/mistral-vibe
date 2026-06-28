@@ -485,19 +485,13 @@ class TestBackend:
 
 class TestMistralRetry:
     @staticmethod
-    def _create_test_backend(
-        timeout: float = 720.0, retry_max_elapsed_time: float = 300.0
-    ) -> MistralBackend:
+    def _create_test_backend(timeout: float = 720.0) -> MistralBackend:
         provider = ProviderConfig(
             name="test_provider",
             api_base="https://api.mistral.ai/v1",
             api_key_env_var="API_KEY",
         )
-        return MistralBackend(
-            provider=provider,
-            timeout=timeout,
-            retry_max_elapsed_time=retry_max_elapsed_time,
-        )
+        return MistralBackend(provider=provider, timeout=timeout)
 
     @staticmethod
     def _build_fast_http_retry_config() -> RetryConfig:
@@ -524,12 +518,10 @@ class TestMistralRetry:
             assert "async_client" in call_kwargs
 
     def test_retry_budget_uses_explicit_config(self):
-        backend = self._create_test_backend(
-            timeout=7200.0, retry_max_elapsed_time=1234.0
-        )
+        backend = self._create_test_backend(timeout=7200.0)
 
         assert backend._timeout == 7200.0
-        assert backend._retry_config.backoff.max_elapsed_time == 1234000
+        assert backend._retry_config.backoff.max_elapsed_time == 300000
 
     def test_create_backend_passes_retry_budget(self):
         provider = ProviderConfig(
@@ -539,13 +531,11 @@ class TestMistralRetry:
             backend=Backend.MISTRAL,
         )
 
-        backend = create_backend(
-            provider=provider, timeout=7200.0, retry_max_elapsed_time=1234.0
-        )
+        backend = create_backend(provider=provider, timeout=7200.0)
 
         assert isinstance(backend, MistralBackend)
         assert backend._timeout == 7200.0
-        assert backend._retry_config.backoff.max_elapsed_time == 1234000
+        assert backend._retry_config.backoff.max_elapsed_time == 300000
 
     @pytest.mark.asyncio
     async def test_complete_retries_retryable_http_error(self):
@@ -899,7 +889,9 @@ async def test_client_bounds_network_timeouts_but_keeps_long_read() -> None:
     real_client = _httpx.AsyncClient
 
     def _spy(*args, **kwargs):
-        captured["timeout"] = kwargs.get("timeout")
+        timeout = kwargs.get("timeout")
+        assert isinstance(timeout, _httpx.Timeout)
+        captured["timeout"] = timeout
         return real_client(*args, **kwargs)
 
     with patch("vibe.core.llm.backend.generic.httpx.AsyncClient", side_effect=_spy):

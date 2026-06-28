@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from textual.binding import Binding
 
 from vibe.cli.textual_ui.widgets.workflow_save_app import WorkflowSaveApp, _default_name
 
@@ -48,7 +49,8 @@ class TestWorkflowSaveAppBindings:
     def _keys(self) -> list[str]:
         keys: list[str] = []
         for b in WorkflowSaveApp.BINDINGS:
-            keys.extend(b.key.split(","))
+            key = b.key if isinstance(b, Binding) else b[0]
+            keys.extend(key.split(","))
         return keys
 
     def test_has_enter_confirm(self) -> None:

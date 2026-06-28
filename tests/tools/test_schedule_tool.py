@@ -8,7 +8,12 @@ import pytest
 from vibe.core.loop import LoopManager
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
-from vibe.core.tools.builtins.schedule import Schedule, ScheduleArgs, ScheduleConfig
+from vibe.core.tools.builtins.schedule import (
+    Schedule,
+    ScheduleArgs,
+    ScheduleConfig,
+    ScheduleResult,
+)
 from vibe.core.tools.permissions import ToolPermission
 
 
@@ -27,11 +32,13 @@ def _tool() -> Schedule:
     return Schedule(config_getter=lambda: ScheduleConfig(), state=BaseToolState())
 
 
-async def _run(tool: Schedule, args: ScheduleArgs, scheduler: Any):
+async def _run(tool: Schedule, args: ScheduleArgs, scheduler: Any) -> ScheduleResult:
     ctx = InvokeContext(tool_call_id="c1", scheduler=scheduler)
-    out = None
+    out: ScheduleResult | None = None
     async for ev in tool.run(args, ctx):
+        assert isinstance(ev, ScheduleResult)
         out = ev
+    assert out is not None
     return out
 
 

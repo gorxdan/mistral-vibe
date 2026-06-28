@@ -51,8 +51,9 @@ async def _run_bash(
             _args: BaseModel,
             _tool_call_id: str,
             _rp: list[RequiredPermission] | None = None,
-        ) -> tuple[ApprovalResponse, str | None]:
-            return (approval, None)
+            _reason: str | None = None,
+        ) -> tuple[ApprovalResponse, str | None, dict[str, Any] | None]:
+            return (approval, None, None)
 
         agent.set_approval_callback(approval_callback)
 

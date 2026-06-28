@@ -105,7 +105,7 @@ async def test_max_tokens_is_passed_to_backend(vibe_config: VibeConfig):
     backend = FakeBackend([mock_llm_chunk(content="Response")])
     agent = build_test_agent_loop(config=vibe_config, backend=backend)
 
-    agent.set_max_tokens(8192)
+    agent._max_output_override = 8192
     [_ async for _ in agent.act("Hello")]
 
     assert backend.requests_max_tokens == [8192]
@@ -118,7 +118,7 @@ async def test_max_tokens_is_passed_to_streaming_backend(vibe_config: VibeConfig
         config=vibe_config, backend=backend, enable_streaming=True
     )
 
-    agent.set_max_tokens(8192)
+    agent._max_output_override = 8192
     [_ async for _ in agent.act("Hello")]
 
     assert backend.requests_max_tokens == [8192]

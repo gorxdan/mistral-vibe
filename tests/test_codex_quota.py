@@ -144,7 +144,7 @@ class TestFetchCodexQuota:
 
     @pytest.mark.asyncio
     @respx.mock
-    async def test_unparseable_body_returns_none(self, monkeypatch) -> None:
+    async def test_unparsable_body_returns_none(self, monkeypatch) -> None:
         url = "https://x/api/codex/usage"
         respx.get(url).mock(return_value=Response(200, text="not json"))
         monkeypatch.setattr(

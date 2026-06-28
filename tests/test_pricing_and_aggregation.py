@@ -70,32 +70,38 @@ class TestPricingTable:
 
 class TestComputeCost:
     def test_basic_no_cache(self):
+        pricing = lookup_pricing("glm-5.2")
+        assert pricing is not None
         cost = compute_cost(
             prompt_tokens=1_000_000,
             completion_tokens=500_000,
             cached_tokens=0,
-            pricing=lookup_pricing("glm-5.2"),
+            pricing=pricing,
         )
         # 1M * $1.4 + 500K * $4.4 = $1.4 + $2.2 = $3.60
         assert abs(cost - 3.60) < 0.001
 
     def test_cached_discount(self):
+        pricing = lookup_pricing("glm-5.2")
+        assert pricing is not None
         cost = compute_cost(
             prompt_tokens=1_000_000,
             completion_tokens=0,
             cached_tokens=800_000,
-            pricing=lookup_pricing("glm-5.2"),
+            pricing=pricing,
         )
         # 200K * $1.4 + 800K * $0.26 = $0.28 + $0.208 = $0.488
         assert abs(cost - 0.488) < 0.001
 
     def test_cached_clamped_to_prompt(self):
         # cached > prompt must not over-bill; clamp to prompt total.
+        pricing = lookup_pricing("glm-5.2")
+        assert pricing is not None
         cost = compute_cost(
             prompt_tokens=100_000,
             completion_tokens=0,
             cached_tokens=500_000,  # exceeds prompt
-            pricing=lookup_pricing("glm-5.2"),
+            pricing=pricing,
         )
         # All 100K at cached rate: 100K * $0.26 = $0.026
         assert abs(cost - 0.026) < 0.001
@@ -135,7 +141,9 @@ class TestHarnessSplit:
     def test_split_separates_harness_calls(self):
         now = 100_000.0
         records = [
-            _rec(provider="p", model="m", prompt=1000, completion=500, ts=now, cost=1.0),
+            _rec(
+                provider="p", model="m", prompt=1000, completion=500, ts=now, cost=1.0
+            ),
             _rec(
                 provider="p",
                 model="m",
@@ -189,7 +197,7 @@ class TestThirtyDayWindow:
     def test_30_day_includes_old_records(self):
         now = 100_000_000.0
         records = [
-            _rec(provider="p", model="m", prompt=10, completion=5, ts=now - 20 * 86400),
+            _rec(provider="p", model="m", prompt=10, completion=5, ts=now - 20 * 86400)
         ]
         summary = summarize(records, now=now)
         by_label = {w.label: w for w in summary.windows}

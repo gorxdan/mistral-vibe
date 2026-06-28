@@ -33,9 +33,7 @@ class MockAgentLoop:
 
 
 def make_factory(response_text: str = "ok") -> Any:
-    def factory(
-        prompt: str, *, agent: str, parent_context: Any | None = None
-    ) -> MockAgentLoop:
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
         return MockAgentLoop(response_text=response_text)
 
     return factory
@@ -46,7 +44,7 @@ async def test_cache_hit_skips_agent_run() -> None:
 
     def counting_factory(
         prompt: str, *, agent: str, parent_context: Any | None = None
-    ) -> MockAgentLoop:
+    ) -> Any:
         @dataclass
         class CountingLoop:
             response_text: str = "ok"
@@ -78,7 +76,7 @@ async def test_different_prompts_not_cached() -> None:
 
     def counting_factory(
         prompt: str, *, agent: str, parent_context: Any | None = None
-    ) -> MockAgentLoop:
+    ) -> Any:
         @dataclass
         class CountingLoop:
             response_text: str = "ok"
@@ -105,7 +103,7 @@ async def test_different_agents_not_cached() -> None:
 
     def counting_factory(
         prompt: str, *, agent: str, parent_context: Any | None = None
-    ) -> MockAgentLoop:
+    ) -> Any:
         @dataclass
         class CountingLoop:
             response_text: str = "ok"
@@ -146,7 +144,7 @@ async def test_restore_from_snapshot_populates_cache() -> None:
 
     def counting_factory(
         prompt: str, *, agent: str, parent_context: Any | None = None
-    ) -> MockAgentLoop:
+    ) -> Any:
         @dataclass
         class CountingLoop:
             response_text: str = "should not be called"
@@ -173,7 +171,7 @@ async def test_resume_replays_cached_and_runs_rest() -> None:
 
     def counting_factory(
         prompt: str, *, agent: str, parent_context: Any | None = None
-    ) -> MockAgentLoop:
+    ) -> Any:
         @dataclass
         class CountingLoop:
             stats: MockStats = field(default_factory=MockStats)

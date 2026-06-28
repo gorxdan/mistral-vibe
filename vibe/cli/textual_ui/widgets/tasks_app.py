@@ -63,12 +63,16 @@ def _fmt_tokens(n: int) -> str:
     return f"{n / _TOKEN_K:.1f}k" if n >= _TOKEN_K else str(n)
 
 
+_SECONDS_PER_HOUR = 3600
+_SECONDS_PER_MINUTE = 60
+
+
 def _fmt_seconds(s: float) -> str:
     s = int(s)
-    if s >= 3600:
-        return f"{s // 3600}h{(s % 3600) // 60}m"
-    if s >= 60:
-        return f"{s // 60}m{s % 60}s"
+    if s >= _SECONDS_PER_HOUR:
+        return f"{s // _SECONDS_PER_HOUR}h{(s % _SECONDS_PER_HOUR) // _SECONDS_PER_MINUTE}m"
+    if s >= _SECONDS_PER_MINUTE:
+        return f"{s // _SECONDS_PER_MINUTE}m{s % _SECONDS_PER_MINUTE}s"
     return f"{s}s"
 
 

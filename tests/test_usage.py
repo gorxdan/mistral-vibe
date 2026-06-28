@@ -50,7 +50,7 @@ class TestUsageRecorder:
         rec = UsageRecorder(path=tmp_path / "absent.jsonl")
         assert rec.read_all() == []
 
-    def test_read_skips_unparseable_lines(self, tmp_path):
+    def test_read_skips_unparsable_lines(self, tmp_path):
         path = tmp_path / "usage.jsonl"
         path.write_text("not json\n\n", encoding="utf-8")
         rec = UsageRecorder(path=path)

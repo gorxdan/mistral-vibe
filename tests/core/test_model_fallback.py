@@ -6,14 +6,14 @@ import pytest
 
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from vibe.core.config import ModelConfig, ProviderConfig
-from vibe.core.types import BaseEvent, RateLimitError
+from vibe.core.types import Backend, BaseEvent, RateLimitError
 
 _PROVIDER = ProviderConfig(
     name="local",
     api_base="http://127.0.0.1:8080/v1",
     api_key_env_var="",  # keyless → always "available"
     api_style="openai",
-    backend="generic",
+    backend=Backend.GENERIC,
 )
 
 

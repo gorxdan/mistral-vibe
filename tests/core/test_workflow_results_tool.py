@@ -9,6 +9,7 @@ from vibe.core.tools.base import ToolError
 from vibe.core.tools.builtins.workflow_results import (
     WorkflowResults,
     WorkflowResultsArgs,
+    WorkflowResultsResult,
 )
 from vibe.core.tools.permissions import ToolPermission
 from vibe.core.tracing import tool_span
@@ -58,8 +59,9 @@ async def test_workflow_results_callback_forwarded_into_tool_context() -> None:
 
     results = [e for e in events if isinstance(e, ToolResultEvent)]
     assert results, "tool produced a result event"
-    assert results[0].result is not None
-    assert results[0].result.return_value == {"recovered": True}
+    result = results[0].result
+    assert isinstance(result, WorkflowResultsResult)
+    assert result.return_value == {"recovered": True}
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from vibe.core.skills.manager import SkillManager
@@ -70,7 +71,7 @@ def test_skill_path_is_not_rendered_in_index() -> None:
         "fs": SkillInfo(
             name="fs",
             description="A filesystem skill.",
-            skill_path="/abs/path/SKILL.md",
+            skill_path=Path("/abs/path/SKILL.md"),
             prompt="body",
         )
     })

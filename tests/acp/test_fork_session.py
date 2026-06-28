@@ -187,7 +187,7 @@ class TestACPForkSession:
 
         forked = acp_agent_loop.sessions[response.session_id].agent_loop
         assert forked._max_turns == 42
-        assert forked._max_tokens == 8192
+        assert forked._max_output_override == 8192
         assert forked._max_price == 1.5
         assert forked._max_session_tokens == 100_000
 

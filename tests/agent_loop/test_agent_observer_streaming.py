@@ -391,11 +391,16 @@ async def test_act_handles_user_cancellation_during_streaming() -> None:
     agent.middleware_pipeline.add(middleware)
 
     async def _reject_callback(
-        _name: str, _args: BaseModel, _id: str, _rp: list | None = None
+        _name: str,
+        _args: BaseModel,
+        _id: str,
+        _rp: list | None = None,
+        _summary: str | None = None,
     ) -> tuple[ApprovalResponse, str | None, dict | None]:
         return (
             ApprovalResponse.NO,
             str(get_user_cancellation_message(CancellationReason.OPERATION_CANCELLED)),
+            None,
         )
 
     agent.set_approval_callback(_reject_callback)

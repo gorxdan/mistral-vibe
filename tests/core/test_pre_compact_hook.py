@@ -50,7 +50,7 @@ async def test_runner_noop_without_hooks_manager() -> None:
 
 @pytest.mark.asyncio
 async def test_runner_emits_hook_events_when_manager_present() -> None:
-    from vibe.core.hooks.models import HookEvent
+    from vibe.core.hooks.models import HookStartEvent
 
     loop = build_test_agent_loop()
     seen: dict[str, object] = {}
@@ -58,7 +58,7 @@ async def test_runner_emits_hook_events_when_manager_present() -> None:
     class _FakeManager:
         async def run(self, invocation):
             seen["invocation"] = invocation
-            yield HookEvent(hook_name="h", message="pre-compact fired")
+            yield HookStartEvent(hook_name="h")
 
     loop._hooks_manager = _FakeManager()  # type: ignore[assignment]
     events = [e async for e in loop._run_pre_compact_hooks("emergency", 5, 9)]

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from vibe.cli.textual_ui.app import VibeApp
 from vibe.core.types import AssistantEvent
+from vibe.core.workflows import AgentLoopFactory
 from vibe.core.workflows.models import (
     AgentResult,
     PhaseReport,
@@ -154,7 +155,9 @@ async def test_fenced_json_response_now_passes_schema() -> None:
             session_completion_tokens = 5
 
     rt = WorkflowRuntime(
-        agent_loop_factory=lambda prompt, *, agent, parent_context=None: _Loop()
+        agent_loop_factory=cast(
+            AgentLoopFactory, lambda prompt, *, agent, parent_context=None: _Loop()
+        )
     )
     parsed = await rt.spawn_agent("test", schema=schema)
     assert parsed == {"answer": "42"}
@@ -216,7 +219,9 @@ async def test_spawn_agent_strips_unknown_properties_from_agent_output() -> None
             session_completion_tokens = 5
 
     rt = WorkflowRuntime(
-        agent_loop_factory=lambda prompt, *, agent, parent_context=None: _Loop()
+        agent_loop_factory=cast(
+            AgentLoopFactory, lambda prompt, *, agent, parent_context=None: _Loop()
+        )
     )
     parsed = await rt.spawn_agent("test", schema=schema)
     assert parsed == {"answer": "42"}  # confidence dropped, schema-shape only
@@ -241,7 +246,9 @@ async def test_spawn_agent_strip_unknown_can_be_disabled() -> None:
             session_completion_tokens = 5
 
     rt = WorkflowRuntime(
-        agent_loop_factory=lambda prompt, *, agent, parent_context=None: _Loop()
+        agent_loop_factory=cast(
+            AgentLoopFactory, lambda prompt, *, agent, parent_context=None: _Loop()
+        )
     )
     parsed = await rt.spawn_agent("test", schema=schema, strip_unknown=False)
     assert parsed == {"answer": "42", "confidence": "high"}
@@ -271,7 +278,9 @@ async def test_schema_exhaustion_records_field_level_errors_on_agent_result() ->
             session_completion_tokens = 5
 
     rt = WorkflowRuntime(
-        agent_loop_factory=lambda prompt, *, agent, parent_context=None: _Loop(),
+        agent_loop_factory=cast(
+            AgentLoopFactory, lambda prompt, *, agent, parent_context=None: _Loop()
+        ),
         max_agents=10,
     )
     outcome = await rt.spawn_agent("test", schema=schema, label="finder")

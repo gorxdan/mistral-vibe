@@ -100,12 +100,13 @@ class _Loop:
         session_completion_tokens = 5
 
 
+def _loop_factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+    return _Loop()
+
+
 @pytest.mark.asyncio
 async def test_synthesis_helpers_callable_inside_workflow_script() -> None:
-    rt = WorkflowRuntime(
-        agent_loop_factory=lambda prompt, *, agent, parent_context=None: _Loop(),
-        max_agents=10,
-    )
+    rt = WorkflowRuntime(agent_loop_factory=_loop_factory, max_agents=10)
     script = """
 async def main():
     grouped = [["a", "a", "b"], ["b", "c"]]
@@ -124,10 +125,7 @@ async def main():
 
 @pytest.mark.asyncio
 async def test_snapshot_round_trips_return_value_for_finished_run() -> None:
-    rt = WorkflowRuntime(
-        agent_loop_factory=lambda prompt, *, agent, parent_context=None: _Loop(),
-        max_agents=10,
-    )
+    rt = WorkflowRuntime(agent_loop_factory=_loop_factory, max_agents=10)
     script = """
 async def main():
     return {"report": "all good", "counts": [1, 2, 3]}

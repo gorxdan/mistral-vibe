@@ -8,6 +8,7 @@ from textual import events
 from vibe.cli.autocompletion.base import CompletionResult, CompletionView
 from vibe.cli.autocompletion.path_completion import PathCompletionController
 from vibe.core.autocompletion.completers import PathCompleter
+from vibe.core.autocompletion.menu import MenuRow
 
 
 class StubView(CompletionView):
@@ -20,6 +21,9 @@ class StubView(CompletionView):
         self, suggestions: list[tuple[str, str]], selected_index: int
     ) -> None:
         self.suggestions.append((suggestions, selected_index))
+
+    def render_slash_menu(self, rows: list[MenuRow], selected_index: int) -> None:
+        pass
 
     def clear_completion_suggestions(self) -> None:
         self.clears += 1

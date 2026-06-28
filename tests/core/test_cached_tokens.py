@@ -1,24 +1,29 @@
 from __future__ import annotations
 
+from typing import Any
+
 from vibe.core.config import ProviderConfig
 from vibe.core.llm.backend.generic import OpenAIAdapter
+from vibe.core.types import Backend
 
 _PROVIDER = ProviderConfig(
     name="kimi",
     api_base="https://api.kimi.com/coding/v1",
     api_key_env_var="KIMI_API_KEY",
     api_style="openai",
-    backend="generic",
+    backend=Backend.GENERIC,
     reasoning_field_name="reasoning_content",
 )
 
 
-def _parse(usage: dict) -> int:
+def _parse(usage: dict[str, Any]) -> int:
     data = {
         "choices": [{"message": {"role": "assistant", "content": "hi"}}],
         "usage": usage,
     }
-    return OpenAIAdapter().parse_response(data, _PROVIDER).usage.cached_tokens
+    chunk = OpenAIAdapter().parse_response(data, _PROVIDER)
+    assert chunk.usage is not None
+    return chunk.usage.cached_tokens
 
 
 def test_cached_tokens_from_prompt_tokens_details() -> None:

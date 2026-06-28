@@ -38,7 +38,9 @@ _PRICING: dict[str, ModelPricing] = {
     "glm-4.5": ModelPricing(input_price=0.6, output_price=2.2, cached_input_price=0.11),
     # ── OpenAI (platform.openai.com/docs/pricing, Standard tier) ──
     "gpt-5.5": ModelPricing(input_price=5.0, output_price=30.0, cached_input_price=0.5),
-    "gpt-5.4": ModelPricing(input_price=2.5, output_price=15.0, cached_input_price=0.25),
+    "gpt-5.4": ModelPricing(
+        input_price=2.5, output_price=15.0, cached_input_price=0.25
+    ),
     "gpt-5.4-mini": ModelPricing(
         input_price=0.75, output_price=4.5, cached_input_price=0.075
     ),

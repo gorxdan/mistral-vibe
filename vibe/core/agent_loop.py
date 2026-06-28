@@ -447,7 +447,7 @@ def requires_init(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
-    def __init__(  # noqa: PLR0913, PLR0915
+    def __init__(  # noqa: PLR0913
         self,
         config: VibeConfig,
         *,

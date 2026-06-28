@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from typing import cast
+
 from pydantic import ValidationError
 import pytest
 
 from tests.mock.utils import collect_result
+from vibe.core.config import VibeConfig
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
 from vibe.core.tools.builtins.workflow_stop import (
     WorkflowStop,
@@ -102,11 +105,11 @@ def test_hidden_when_workflows_disabled() -> None:
     class _Cfg:
         disable_workflows = True
 
-    assert WorkflowStop.is_available(_Cfg()) is False
+    assert WorkflowStop.is_available(cast(VibeConfig, _Cfg())) is False
 
 
 def test_available_by_default() -> None:
     class _Cfg:
         disable_workflows = False
 
-    assert WorkflowStop.is_available(_Cfg()) is True
+    assert WorkflowStop.is_available(cast(VibeConfig, _Cfg())) is True

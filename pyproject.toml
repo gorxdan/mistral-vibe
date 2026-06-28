@@ -234,6 +234,12 @@ ignore = ["D203", "D205", "D213", "ANN401", "PLR6301"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN", "PLR"]
+# Pre-existing complexity in large prod functions/classes; suppressed rather
+# than refactored (hot paths, high-risk to restructure). Refactor candidates.
+"vibe/cli/cli.py" = ["PLR0915"]
+"vibe/core/agent_loop.py" = ["PLR0912", "PLR0914", "PLR0915"]
+"vibe/core/config/_settings.py" = ["PLR0904"]
+"vibe/core/workflows/runtime.py" = ["PLR0912", "PLR0914", "PLR0915", "PLR1702"]
 
 
 [tool.ruff.lint.flake8-tidy-imports]

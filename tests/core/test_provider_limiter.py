@@ -8,8 +8,18 @@ from vibe.core.config import ProviderConfig
 from vibe.core.llm.provider_limiter import provider_slot
 
 
-def _provider(name: str, **kw: object) -> ProviderConfig:
-    return ProviderConfig(name=name, api_base="https://x.test/v1", **kw)
+def _provider(
+    name: str,
+    *,
+    max_concurrent_requests: int | None = None,
+    requests_per_minute: float | None = None,
+) -> ProviderConfig:
+    return ProviderConfig(
+        name=name,
+        api_base="https://x.test/v1",
+        max_concurrent_requests=max_concurrent_requests,
+        requests_per_minute=requests_per_minute,
+    )
 
 
 @pytest.mark.asyncio

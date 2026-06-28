@@ -50,6 +50,7 @@ class TestInvokeContext:
             _args: BaseModel,
             _tool_call_id: str,
             _rp: list | None = None,
+            _explanation: str | None = None,
         ) -> tuple[ApprovalResponse, str | None, dict | None]:
             return ApprovalResponse.YES, None, None
 
@@ -83,6 +84,7 @@ class TestToolInvokeWithContext:
             _args: BaseModel,
             _tool_call_id: str,
             _rp: list | None = None,
+            _explanation: str | None = None,
         ) -> tuple[ApprovalResponse, str | None, dict | None]:
             return ApprovalResponse.YES, None, None
 

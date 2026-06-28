@@ -10,6 +10,7 @@ Tests cover:
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 from pydantic import ValidationError
@@ -32,6 +33,7 @@ from vibe.core.llm.backend.generic import GenericBackend
 from vibe.core.llm.backend.openai_responses import (
     OpenAIResponsesAdapter,
     _OpenAIResponsesStreamParser,
+    _ResponsesUsageData,
 )
 from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import (
@@ -78,7 +80,7 @@ def _make_backend(base_url: Url = OPENAI_BASE_URL) -> GenericBackend:
 
 
 def _prepare(adapter, provider, messages, **kwargs):
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         model_name="gpt-4o",
         messages=messages,
         temperature=0.2,
@@ -1589,7 +1591,7 @@ class TestGenericBackendIntegration:
             assert payload["prompt_cache_key"] == "sess-77"
 
 
-def _cached(usage: dict | None) -> int:
+def _cached(usage: _ResponsesUsageData | None) -> int:
     return _OpenAIResponsesStreamParser._usage_from_response(usage).cached_tokens
 
 

@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar, cast
 
-import pytest
 from pydantic import ValidationError
+import pytest
 
+from vibe.core.agents.manager import AgentManager
 from vibe.core.llm.exceptions import BackendError, PayloadSummary
 from vibe.core.types import (
     ApprovalResponse,
@@ -15,6 +16,7 @@ from vibe.core.types import (
     ReasoningEvent,
     UserMessageEvent,
 )
+from vibe.core.workflows.contract import ContractFailure
 from vibe.core.workflows.models import SchemaValidationFailure
 from vibe.core.workflows.runtime import (
     AgentCapExceeded,
@@ -193,6 +195,7 @@ async def test_spawn_agent_schema_retry_on_bad_json() -> None:
 
     rt = WorkflowRuntime(agent_loop_factory=factory, schema_retries=2)
     result = await rt.spawn_agent("test", schema=schema)
+    assert isinstance(result, dict)
     assert result["answer"] == "42"
     assert call_idx[0] == 2
 
@@ -749,9 +752,12 @@ async def test_run_reports_stopped_not_failed_on_cancellation() -> None:
             session_prompt_tokens = 10
             session_completion_tokens = 5
 
-    rt = WorkflowRuntime(
-        agent_loop_factory=lambda prompt, *, agent, parent_context=None: _BlockingLoop()
-    )
+    def _blocking_factory(
+        prompt: str, *, agent: str, parent_context: Any | None = None
+    ) -> Any:
+        return _BlockingLoop()
+
+    rt = WorkflowRuntime(agent_loop_factory=_blocking_factory)
     script = """
 async def main():
     return await agent("x")
@@ -771,7 +777,7 @@ async def test_awaiting_log_and_phase_is_not_a_trap() -> None:
     # injected wrappers are now awaitable noops.
     from vibe.core.workflows.runtime import WorkflowRuntime
 
-    async def _factory(prompt, *, agent, parent_context=None):
+    def _factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
         raise AssertionError("should not be reached")
 
     rt = WorkflowRuntime(agent_loop_factory=_factory)
@@ -1042,7 +1048,9 @@ async def test_parent_context_rejects_non_subagent_agent() -> None:
                 return _Profile(AgentType.SUBAGENT)
             raise ValueError(name)
 
-    ctx = InvokeContext(tool_call_id="wf-tool", agent_manager=_Manager())
+    ctx = InvokeContext(
+        tool_call_id="wf-tool", agent_manager=cast(AgentManager, _Manager())
+    )
     rt = WorkflowRuntime(parent_context=ctx, max_agents=10, budget_total=1_000_000)
     with pytest.raises(WorkflowError, match="Only subagents can be used"):
         await rt.spawn_agent("do anything", agent="auto-approve")
@@ -1096,7 +1104,7 @@ async def test_pipeline_stage_receives_prev_item_index(
     async def stage1(x: int) -> int:
         return x * 10
 
-    async def stage2(prev: int, item: int, idx: int) -> tuple:
+    async def stage2(prev: int, item: int, idx: int) -> int:
         seen.append((prev, item, idx))
         return prev
 
@@ -1531,8 +1539,14 @@ async def test_isolated_executor_passes_auto_approve_and_worktree_root_env(
     from pathlib import Path
 
     import vibe.core.worktree.ephemeral as eph
+    from vibe.core.worktree.ephemeral import EphemeralWorktree
 
-    fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt-env")})()
+    fake_wt = EphemeralWorktree(
+        path=Path("/tmp/iso-wt-env"),
+        branch="iso",
+        repo_root=Path("/tmp/repo"),
+        base_sha="0" * 40,
+    )
     monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
     monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
 
@@ -1584,7 +1598,9 @@ async def test_validate_workflow_profile_rejects_editor_without_isolation() -> N
                 return _Profile()
             raise ValueError(name)
 
-    ctx = InvokeContext(tool_call_id="wf-tool", agent_manager=_Manager())
+    ctx = InvokeContext(
+        tool_call_id="wf-tool", agent_manager=cast(AgentManager, _Manager())
+    )
     rt = WorkflowRuntime(parent_context=ctx, max_agents=10, budget_total=1_000_000)
     with pytest.raises(WorkflowError, match="isolation='worktree'"):
         await rt.spawn_agent("refactor foo", agent="editor")
@@ -2053,7 +2069,7 @@ class _FakeProfile:
 
 class _FakeConfig:
     active_model = "x"
-    models: list[Any] = []
+    models: ClassVar[list[Any]] = []
 
 
 class _FakeAgentManager:
@@ -2324,7 +2340,9 @@ async def test_cancel_agent_aborts_one_in_flight_without_killing_others() -> Non
         budget_total=1_000_000,
     )
 
-    async def spawn_one(prompt: str) -> str:
+    async def spawn_one(
+        prompt: str,
+    ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure:
         return await rt.spawn_agent(prompt, agent="explore", phase="work")
 
     # Launch two agents; both register as live and block on `proceed`.
@@ -2367,6 +2385,8 @@ async def test_worker_spawn_args_forbids_extra_fields() -> None:
     # silently allowing typos in the worker-spawn approval payload.
     _WorkerSpawnArgs.model_validate({"prompt": "p", "agent": "worker"})
     with pytest.raises(ValidationError):
-        _WorkerSpawnArgs.model_validate(
-            {"prompt": "p", "agent": "worker", "lable": "typo"}
-        )
+        _WorkerSpawnArgs.model_validate({
+            "prompt": "p",
+            "agent": "worker",
+            "label": "typo",
+        })

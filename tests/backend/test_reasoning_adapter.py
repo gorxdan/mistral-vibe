@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -33,7 +34,7 @@ def provider():
 
 
 def _prepare(adapter, provider, messages, **kwargs):
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         model_name="m",
         messages=messages,
         temperature=0,

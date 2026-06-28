@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tests.conftest import build_test_vibe_config
-from vibe.core.config import ContextShapingConfig
+from vibe.core.config import ContextShapingConfig, VibeConfig
 from vibe.core.config._settings import MicrocompactConfig, SnipConfig
 from vibe.core.middleware import (
     ConversationContext,
@@ -26,7 +26,7 @@ def _content(tokens: int) -> str:
     return "x" * (tokens * 4)  # approx_token_count ≈ len/4
 
 
-def _config(**shaping) -> object:
+def _config(**shaping) -> VibeConfig:
     shaping.setdefault("snip", SnipConfig(keep_recent_turns=1, min_message_tokens=50))
     shaping.setdefault("cache_prefix_guard_tokens", 50)
     cfg = build_test_vibe_config(context_shaping=ContextShapingConfig(**shaping))

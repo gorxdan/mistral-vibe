@@ -1,79 +1,45 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from acp.schema import AgentMessageChunk
 import pytest
 
-from tests.stubs.fake_client import FakeClient
-from vibe.acp.acp_agent_loop import VibeAcpAgentLoop
-from vibe.acp.session import AcpSessionLoop
-from vibe.cli.textual_ui.app import VibeApp
-from vibe.cli.textual_ui.widgets.messages import UserCommandMessage
 from vibe.core.config import MCPOAuth, MCPStreamableHttp
 from vibe.core.tools.mcp import MCPRegistry
 
 
-def _registry_with_uncached_oauth(alias: str) -> MCPRegistry:
+def _uncached_oauth_server(alias: str) -> MCPStreamableHttp:
+    return MCPStreamableHttp(
+        name=alias,
+        transport="streamable-http",
+        url="https://mcp.example.com/mcp",
+        auth=MCPOAuth(type="oauth", scopes=["read"]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_uncached_oauth_server_yields_no_tools_when_not_logged_in() -> None:
+    # An OAuth MCP server the user has not logged into yet surfaces "needs auth"
+    # by discovering no tools and staying uncached, so the next refresh after
+    # `/mcp login` re-runs discovery.
     registry = MCPRegistry()
-    registry.sync_active_servers([
-        MCPStreamableHttp(
-            name=alias,
-            transport="streamable-http",
-            url="https://mcp.example.com/mcp",
-            auth=MCPOAuth(type="oauth", scopes=["read"]),
-        )
-    ])
-    assert registry.needs_auth == set()
-    return registry
+    server = _uncached_oauth_server("sentry")
+
+    with patch("vibe.core.auth.is_logged_in", new=AsyncMock(return_value=False)):
+        tools = await registry.get_tools_async([server])
+
+    assert tools == {}
+    assert registry.count_loaded([server]) == 0
 
 
 @pytest.mark.asyncio
-async def test_tui_mcp_auth_notice_uses_status_for_uncached_oauth() -> None:
-    mount = AsyncMock()
-    app = cast(
-        VibeApp,
-        SimpleNamespace(
-            agent_loop=SimpleNamespace(
-                mcp_registry=_registry_with_uncached_oauth("sentry")
-            ),
-            _mount_and_scroll=mount,
-        ),
-    )
+async def test_discover_http_returns_none_for_unauthenticated_oauth() -> None:
+    # `_discover_http` returns None (retryable, not cached) rather than {} so a
+    # later `/mcp login` will re-discover the server's tools.
+    registry = MCPRegistry()
+    server = _uncached_oauth_server("sentry")
 
-    await VibeApp._show_mcp_auth_required_notice(app)
+    with patch("vibe.core.auth.is_logged_in", new=AsyncMock(return_value=False)):
+        result = await registry._discover_http(server)
 
-    mount.assert_awaited_once()
-    args = mount.await_args
-    assert args is not None
-    message = args.args[0]
-    assert isinstance(message, UserCommandMessage)
-    assert "sentry" in message._content
-
-
-@pytest.mark.asyncio
-async def test_acp_mcp_auth_notice_uses_status_for_uncached_oauth() -> None:
-    agent = VibeAcpAgentLoop()
-    client = FakeClient()
-    agent.on_connect(client)
-    session = cast(
-        AcpSessionLoop,
-        SimpleNamespace(
-            id="session-id",
-            agent_loop=SimpleNamespace(
-                mcp_registry=_registry_with_uncached_oauth("sentry")
-            ),
-        ),
-    )
-
-    await agent._notify_mcp_auth_required(session)
-
-    messages = [
-        notification.update
-        for notification in client._session_updates
-        if isinstance(notification.update, AgentMessageChunk)
-    ]
-    assert len(messages) == 1
-    assert "sentry" in messages[0].content.text
+    assert result is None

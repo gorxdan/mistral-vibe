@@ -3,11 +3,15 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from tests.mock.utils import collect_result
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory
+
+if TYPE_CHECKING:
+    from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
 from vibe.core.tools.builtins.background import (
     Background,
@@ -106,6 +110,7 @@ async def test_background_writes_output_to_log_file(tmp_path):
     # Give the shell a moment to write + flush + exit.
     await asyncio.sleep(0.3)
 
+    assert result.background_task_id is not None
     tail = registry.read_log_tail(result.background_task_id)
     assert "hello-from-bg" in tail
 
@@ -159,6 +164,7 @@ async def test_background_stop_reaps_process(tmp_path):
         bash.run(BashArgs(command="sleep 30", background=True), ctx=ctx)
     )
 
+    assert result.background_task_id is not None
     stopped = await registry.stop(result.background_task_id)
     assert stopped is True
     # Give the OS a moment to reflect the signal.
@@ -227,6 +233,7 @@ async def _spawn_marker_process(bash, ctx, marker: str) -> str:
 
 
 def registry_log_tail(ctx: InvokeContext, task_id: str) -> str:
+    assert ctx.background_registry is not None
     return ctx.background_registry.read_log_tail(task_id, lines=10)
 
 
@@ -419,7 +426,7 @@ async def test_family_scoping_pulls_in_workflow_children():
             ],
         )
     )
-    registry.attach_workflow_runner(lambda: wf)
+    registry.attach_workflow_runner(lambda: cast("WorkflowRunner", wf))
     tool = _background_tool()
 
     result = await collect_result(
@@ -452,7 +459,7 @@ async def test_family_scoping_isolates_sibling_workflows():
             live_agents=[_FakeLiveAgent(agent_id="explore")],
         )
     )
-    registry.attach_workflow_runner(lambda: wf)
+    registry.attach_workflow_runner(lambda: cast("WorkflowRunner", wf))
     tool = _background_tool()
 
     result = await collect_result(
@@ -537,7 +544,7 @@ async def test_scoped_workflow_list_tails_child_agent_transcript(tmp_path):
             ],
         )
     )
-    registry.attach_workflow_runner(lambda: wf)
+    registry.attach_workflow_runner(lambda: cast("WorkflowRunner", wf))
     tool = _background_tool()
 
     result = await collect_result(
@@ -575,7 +582,7 @@ async def test_scoped_agent_list_tails_single_agent(tmp_path):
             ],
         )
     )
-    registry.attach_workflow_runner(lambda: wf)
+    registry.attach_workflow_runner(lambda: cast("WorkflowRunner", wf))
     tool = _background_tool()
 
     result = await collect_result(
@@ -679,7 +686,10 @@ async def test_read_log_tail_trims_oversized_log_in_place(tmp_path, monkeypatch)
     log.write_bytes(b"x" * 10_000)
 
     await reg.register_process(
-        _DummyProc(1), command="chatty", cwd=tmp_path, log_path=log
+        cast("asyncio.subprocess.Process", _DummyProc(1)),
+        command="chatty",
+        cwd=tmp_path,
+        log_path=log,
     )
     # First read triggers the trim.
     reg.read_log_tail("proc-1", lines=5)
@@ -784,6 +794,7 @@ async def test_stop_reaps_grandchild_process_tree(tmp_path):
     assert grandchild_pid is not None, "grandchild never wrote its pid"
 
     # Stop the task — should kill the whole process group.
+    assert result.background_task_id is not None
     assert await registry.stop(result.background_task_id) is True
     await asyncio.sleep(0.5)
 
@@ -829,6 +840,7 @@ async def test_shutdown_reaps_real_running_process(tmp_path):
         bash.run(BashArgs(command="sleep 60", background=True), ctx=ctx)
     )
     pid = result.pid
+    assert pid is not None
     assert _pid_alive(pid)
 
     await registry.shutdown()
@@ -861,11 +873,24 @@ async def test_register_process_enforces_running_cap(monkeypatch, tmp_path):
             await asyncio.sleep(30)
             return 0
 
-    await reg.register_process(_P(), command="a", cwd=tmp_path, log_path=tmp_path / "1")
-    await reg.register_process(_P(), command="b", cwd=tmp_path, log_path=tmp_path / "2")
+    await reg.register_process(
+        cast("asyncio.subprocess.Process", _P()),
+        command="a",
+        cwd=tmp_path,
+        log_path=tmp_path / "1",
+    )
+    await reg.register_process(
+        cast("asyncio.subprocess.Process", _P()),
+        command="b",
+        cwd=tmp_path,
+        log_path=tmp_path / "2",
+    )
     with pytest.raises(RuntimeError, match="cap reached"):
         await reg.register_process(
-            _P(), command="c", cwd=tmp_path, log_path=tmp_path / "3"
+            cast("asyncio.subprocess.Process", _P()),
+            command="c",
+            cwd=tmp_path,
+            log_path=tmp_path / "3",
         )
 
 

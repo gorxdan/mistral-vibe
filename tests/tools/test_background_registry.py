@@ -4,11 +4,16 @@ import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory, _team_status
+
+if TYPE_CHECKING:
+    from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
+    from vibe.core.loop import LoopManager
+    from vibe.core.teams.manager import TeamManager
 
 # ---------------------------------------------------------------------------
 # Fakes — stand in for WorkflowRunner / TeamManager / LoopManager so the
@@ -149,9 +154,9 @@ def _registry_with_all() -> tuple[
     wf = _FakeWorkflowRunner()
     team = _FakeTeamManager()
     loop = _FakeLoopManager()
-    reg.attach_workflow_runner(lambda: wf)
-    reg.attach_team_manager(lambda: team)
-    reg.attach_loop_manager(lambda: loop)
+    reg.attach_workflow_runner(lambda: cast("WorkflowRunner", wf))
+    reg.attach_team_manager(lambda: cast("TeamManager", team))
+    reg.attach_loop_manager(lambda: cast("LoopManager", loop))
     return reg, wf, team, loop
 
 
@@ -375,7 +380,10 @@ async def test_register_process_returns_proc_id_and_lists_running():
     log = Path("/tmp/bg/proc-1.log")
 
     task_id = await reg.register_process(
-        proc, command="vite --port 5173", cwd=Path("/srv"), log_path=log
+        cast("asyncio.subprocess.Process", proc),
+        command="vite --port 5173",
+        cwd=Path("/srv"),
+        log_path=log,
     )
     assert task_id == "proc-1"
 
@@ -393,10 +401,16 @@ async def test_register_process_returns_proc_id_and_lists_running():
 async def test_register_process_ids_increment():
     reg = BackgroundRegistry()
     t1 = await reg.register_process(
-        _FakeProc(pid=1), command="a", cwd=Path("."), log_path=Path("/x")
+        cast("asyncio.subprocess.Process", _FakeProc(pid=1)),
+        command="a",
+        cwd=Path("."),
+        log_path=Path("/x"),
     )
     t2 = await reg.register_process(
-        _FakeProc(pid=2), command="b", cwd=Path("."), log_path=Path("/y")
+        cast("asyncio.subprocess.Process", _FakeProc(pid=2)),
+        command="b",
+        cwd=Path("."),
+        log_path=Path("/y"),
     )
     assert t1 == "proc-1"
     assert t2 == "proc-2"
@@ -407,7 +421,10 @@ async def test_stop_process_terminates_and_marks_stopped(_no_real_signals):
     reg = BackgroundRegistry()
     proc = _FakeProc(pid=42)
     task_id = await reg.register_process(
-        proc, command="sleep 30", cwd=Path("."), log_path=Path("/x")
+        cast("asyncio.subprocess.Process", proc),
+        command="sleep 30",
+        cwd=Path("."),
+        log_path=Path("/x"),
     )
 
     ok = await reg.stop(task_id)
@@ -423,7 +440,10 @@ async def test_stop_process_returns_false_if_already_finalized():
     reg = BackgroundRegistry()
     proc = _FakeProc(pid=42, returncode=0)  # already exited cleanly
     task_id = await reg.register_process(
-        proc, command="true", cwd=Path("."), log_path=Path("/x")
+        cast("asyncio.subprocess.Process", proc),
+        command="true",
+        cwd=Path("."),
+        log_path=Path("/x"),
     )
     # Let the finalizer flip the status to completed.
     await asyncio.sleep(0.01)
@@ -438,7 +458,10 @@ async def test_finalizer_flips_status_on_process_exit():
     reg = BackgroundRegistry()
     proc = _FakeProc(pid=7, returncode=None)
     await reg.register_process(
-        proc, command="serve", cwd=Path("."), log_path=Path("/x")
+        cast("asyncio.subprocess.Process", proc),
+        command="serve",
+        cwd=Path("."),
+        log_path=Path("/x"),
     )
     # Trigger the wait() that the finalizer is awaiting.
     await asyncio.sleep(0.02)
@@ -459,7 +482,10 @@ async def test_read_log_tail_returns_last_n_lines(tmp_path):
     log = tmp_path / "proc-1.log"
     log.write_text("line1\nline2\nline3\nline4\nline5\n")
     await reg.register_process(
-        _FakeProc(pid=1), command="c", cwd=tmp_path, log_path=log
+        cast("asyncio.subprocess.Process", _FakeProc(pid=1)),
+        command="c",
+        cwd=tmp_path,
+        log_path=log,
     )
 
     tail = reg.read_log_tail("proc-1", lines=2)
@@ -475,7 +501,7 @@ def test_read_log_tail_returns_empty_for_unknown_id():
 async def test_read_log_tail_returns_empty_for_missing_file(tmp_path):
     reg = BackgroundRegistry()
     await reg.register_process(
-        _FakeProc(pid=1),
+        cast("asyncio.subprocess.Process", _FakeProc(pid=1)),
         command="c",
         cwd=tmp_path,
         log_path=tmp_path / "never-written.log",
@@ -591,8 +617,18 @@ async def test_shutdown_terminates_running_processes(_no_real_signals):
     reg = BackgroundRegistry()
     p1 = _FakeProc(pid=1)
     p2 = _FakeProc(pid=2)
-    await reg.register_process(p1, command="a", cwd=Path("."), log_path=Path("/x"))
-    await reg.register_process(p2, command="b", cwd=Path("."), log_path=Path("/y"))
+    await reg.register_process(
+        cast("asyncio.subprocess.Process", p1),
+        command="a",
+        cwd=Path("."),
+        log_path=Path("/x"),
+    )
+    await reg.register_process(
+        cast("asyncio.subprocess.Process", p2),
+        command="b",
+        cwd=Path("."),
+        log_path=Path("/y"),
+    )
 
     await reg.shutdown()
 

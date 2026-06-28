@@ -81,7 +81,7 @@ class TestFromHeaders:
         snap = rate_limit_from_headers(
             "p", {"x-ratelimit-limit-tokens": "not-a-number"}, captured_at=1.0
         )
-        # Present-but-unparseable → None for that field; snapshot still built
+        # Present-but-unparsable → None for that field; snapshot still built
         # only if at least one field parsed. Here none did → None.
         assert snap is None
 

@@ -78,4 +78,3 @@ When pointing `searxng_url` at an instance you do not control (a public SearXNG)
 2. **JSON must be enabled.** Many public admins remove `json` from `search.formats` to deter automation; without it Chaton gets empty results or a `403`. Chaton can only patch `search.formats` on a container it manages, so a remote instance without JSON enabled will not work.
 
 For a self-hosted single-user instance bound to localhost, the limiter adds little (there is only one client, seen as `127.0.0.1`), so leaving it off is reasonable; the value of `searxng_disabled_engines` is reducing rate-limiting from *upstream* engines, which the limiter does not address.
-

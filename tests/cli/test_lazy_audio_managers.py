@@ -165,7 +165,8 @@ def test_tui_config_refresh_syncs_lazy_narrator(
     app = build_test_vibe_app(agent_loop=agent_loop, narrator_manager=narrator_manager)
     monkeypatch.setattr(VibeConfig, "load", staticmethod(lambda: refreshed_config))
 
-    app._refresh_config_from_disk()
+    app.agent_loop.refresh_config()
+    app._narrator_manager.sync()
 
     factory.assert_called_once()
     assert narrator.synced is False

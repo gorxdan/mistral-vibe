@@ -63,7 +63,7 @@ async def test_errors_without_context() -> None:
 
 
 def test_hidden_when_workflows_disabled() -> None:
-    class _Cfg:
-        disable_workflows = True
+    from tests.conftest import build_test_vibe_config
 
-    assert WorkflowStatus.is_available(_Cfg()) is False
+    cfg = build_test_vibe_config(disable_workflows=True)
+    assert WorkflowStatus.is_available(cfg) is False

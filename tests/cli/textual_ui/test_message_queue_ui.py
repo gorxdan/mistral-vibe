@@ -378,7 +378,9 @@ async def test_double_enter_assigns_distinct_incrementing_widget_indices(
             for w in vibe_app.query(UserMessage)
             if w.message_index is not None and not w.pending
         ]
-        indices = sorted(w.message_index for w in staged_widgets)
+        indices = sorted(
+            w.message_index for w in staged_widgets if w.message_index is not None
+        )
         assert len(indices) == 2, f"expected 2 staged widgets, got {len(indices)}"
         assert indices[1] == indices[0] + 1, (
             f"staged widget indices must be consecutive, got {indices}"

@@ -87,6 +87,7 @@ def test_single_tool_call_streamed_args_match_fold():
     ]
     _assert_same(msgs, "single tool call multi-delta args")
     built = _accumulate_messages(msgs)
+    assert built.tool_calls is not None
     assert built.tool_calls[0].function.arguments == '{"cmd":"ls -la"}'
 
 
@@ -118,6 +119,8 @@ def test_single_occurrence_none_arguments_stay_none():
     # deepcopy-on-first-encounter semantics of __add__.
     built = _accumulate_messages([*msgs, *one])
     folded = _fold_messages([*msgs, *one])
+    assert built.tool_calls is not None
+    assert folded.tool_calls is not None
     assert (
         built.tool_calls[0].function.arguments
         == folded.tool_calls[0].function.arguments

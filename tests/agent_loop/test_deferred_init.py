@@ -18,7 +18,7 @@ from vibe.core.agent_loop import AgentLoop
 from vibe.core.config import MCPStdio
 from vibe.core.telemetry.types import TerminalEmulator
 from vibe.core.tools.manager import ToolManager
-from vibe.core.tools.remote import RemoteTool
+from vibe.core.tools.mcp.tools import RemoteTool
 
 
 def _build_uninitiated_loop(**kwargs):

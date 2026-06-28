@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from vibe.cli.textual_ui.app import VibeApp
+from vibe.cli.textual_ui.widgets.messages import ErrorMessage, UserCommandMessage
 from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
 from vibe.core.workflows.models import WorkflowResult, WorkflowRun, WorkflowStatus
 from vibe.core.workflows.runtime import WorkflowRuntime
@@ -64,6 +65,7 @@ async def main():
     entry = runner.runs[0]
     assert entry.run_id == "wf-1"
 
+    assert entry.task is not None
     await entry.task
     assert entry.result is not None
     assert entry.result.run.status == WorkflowStatus.COMPLETED
@@ -151,6 +153,7 @@ async def test_on_complete_fires_at_most_once_per_entry() -> None:
     script = "async def main():\n    return {}\n"
     runner.launch(script, runtime=rt)
     entry = runner.runs[0]
+    assert entry.task is not None
     await entry.task
     assert fire_count["n"] == 1, "callback should fire exactly once on completion"
     assert entry.delivered is True
@@ -172,6 +175,7 @@ async def test_handle_command_list() -> None:
 
     runner = WorkflowRunner(mount=mount)
     widget = await runner.handle_command("")
+    assert isinstance(widget, UserCommandMessage)
     assert "No workflow runs" in widget._content
 
 
@@ -181,6 +185,7 @@ async def test_handle_command_stop_not_found() -> None:
 
     runner = WorkflowRunner(mount=mount)
     widget = await runner.handle_command("stop wf-99")
+    assert isinstance(widget, ErrorMessage)
     assert "not found" in widget._error or "Could not stop" in widget._error
 
 
@@ -190,6 +195,7 @@ async def test_handle_command_unknown() -> None:
 
     runner = WorkflowRunner(mount=mount)
     widget = await runner.handle_command("bogus")
+    assert isinstance(widget, ErrorMessage)
     assert "Unknown" in widget._error
 
 
@@ -235,6 +241,7 @@ async def main():
     runner.launch(script, runtime=rt)
     await asyncio.sleep(0.1)
     entry = runner.runs[0]
+    assert entry.task is not None
     await entry.task
     assert len(completed_results) == 1
     assert completed_results[0].return_value == {"done": True}
@@ -440,6 +447,7 @@ async def main():
     )
 
     widget = await runner.handle_command("resume wf-1")
+    assert isinstance(widget, UserCommandMessage)
     assert "Resumed workflow `wf-1`" in widget._content
     assert runner.runs, "resumed run must be tracked"
     new_entry = runner.runs[-1]
@@ -459,6 +467,7 @@ async def test_resume_without_snapshot_is_an_error() -> None:
         ),
     )
     widget = await runner.handle_command("resume wf-missing")
+    assert isinstance(widget, ErrorMessage)
     assert "No persisted snapshot" in widget._error
 
 
@@ -482,7 +491,10 @@ async def test_finished_runs_are_capped(monkeypatch: pytest.MonkeyPatch) -> None
         rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_concurrent=2)
         rid = runner.launch(script, runtime=rt)
         launched.append(rid)
-        await runner.find_run(rid).task  # finish before the next launch
+        found = runner.find_run(rid)  # finish before the next launch
+        assert found is not None
+        assert found.task is not None
+        await found.task
 
     ids = [r.run_id for r in runner.runs]
     assert launched == ["wf-1", "wf-2", "wf-3", "wf-4", "wf-5", "wf-6"]
