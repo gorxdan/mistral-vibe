@@ -589,16 +589,28 @@ class TestAsyncRun:
         )
 
     @pytest.mark.asyncio
-    async def test_async_run_rejected_for_read_only_profile(
+    async def test_async_run_backgrounds_read_only_in_process(
         self, task_tool: Task, ctx: InvokeContext
     ) -> None:
-        # explore is read-only and in-process; async_run is not meaningful.
-        args = TaskArgs(task="do something", agent="explore", async_run=True)
-        with pytest.raises(ToolError) as exc:
-            await collect_result(task_tool.run(args, ctx))
-        msg = str(exc.value)
-        assert "async_run=True requires an isolated" in msg
-        assert "launch_workflow" in msg
+        from vibe.core.tools.background import BackgroundRegistry
+        from vibe.core.tools.builtins.task import _InProcessResult
+
+        registry = BackgroundRegistry()
+        ctx_with_registry = replace(ctx, background_registry=registry)
+
+        async def fake_collect(_self, _args, _ctx):
+            return _InProcessResult(output="done", returncode=0)
+
+        args = TaskArgs(task="find X", agent="explore", async_run=True)
+        with patch.object(Task, "_run_in_process_collect", fake_collect):
+            result = await collect_result(task_tool.run(args, ctx_with_registry))
+
+        assert isinstance(result, TaskResult)
+        assert result.task_id is not None
+        assert result.task_id.startswith("asub-")
+        assert result.completed is False
+        labels = [t.label for t in registry.list_tasks()]
+        assert any(label.startswith("explore") for label in labels)
 
     @pytest.mark.asyncio
     async def test_async_run_returns_immediately_with_task_id(
