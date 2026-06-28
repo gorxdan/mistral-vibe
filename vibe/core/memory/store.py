@@ -423,7 +423,7 @@ class MemoryStore:
         Ages trashed files by the timestamp encoded in their filename (written by
         ``trash()``), not file mtime — ``os.replace`` preserves the source mtime,
         so mtime would report the memory's original write time rather than when
-        it was trashed. Files whose filename timestamp is unparseable are LEFT
+        it was trashed. Files whose filename timestamp is unparsable are LEFT
         (conservative: never delete what cannot be dated). After unlinking, the
         per-directory ledger is compacted to drop entries referencing removed
         files. ``max_age_days <= 0`` disables the sweep (no-op). Returns the
@@ -458,7 +458,7 @@ class MemoryStore:
     @staticmethod
     def _compact_ledger(trash_dir: Path, survivors: set[str]) -> None:
         # Drop ledger lines whose "file" no longer exists in this trash dir so
-        # the audit trail stays honest after a sweep. Unparseable lines are kept
+        # the audit trail stays honest after a sweep. Unparsable lines are kept
         # (never silently drop audit data); a missing or unreadable ledger is a
         # no-op. Atomic rewrite so a crash can't truncate the ledger.
         ledger = trash_dir / "ledger.jsonl"
@@ -479,7 +479,7 @@ class MemoryStore:
             try:
                 entry = json.loads(s)
             except (json.JSONDecodeError, ValueError):
-                kept.append(s)  # keep unparseable audit lines verbatim
+                kept.append(s)  # keep unparsable audit lines verbatim
                 continue
             fname = entry.get("file") if isinstance(entry, dict) else None
             if isinstance(fname, str) and fname not in survivors:

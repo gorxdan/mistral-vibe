@@ -90,7 +90,7 @@ def _window(raw: Any) -> CodexQuotaWindow | None:
 async def fetch_codex_quota(api_base: str) -> CodexQuotaSnapshot | None:
     """Fetch the Codex/ChatGPT plan usage snapshot, or None on any failure.
 
-    Returns None when: not signed in, network error, non-2xx, unparseable
+    Returns None when: not signed in, network error, non-2xx, unparsable
     body, or the whole fetch (including token refresh) exceeds the hard
     timeout. The /status card treats None as "section not shown" — the fetch
     is best-effort and must never block or crash the status render.

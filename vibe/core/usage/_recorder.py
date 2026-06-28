@@ -25,7 +25,7 @@ except ImportError:
 # the file stays bounded without a background sweeper.
 _RETENTION_DAYS = 30
 # Rewrite (compact) the file once it crosses this size, dropping records older
-# than the retention window and any unparseable tail lines.
+# than the retention window and any unparsable tail lines.
 _TRIM_BYTES = 2 * 1024 * 1024
 # Trim check cadence: avoid stat()ing the file on every write.
 _TRIM_CHECK_EVERY = 256
@@ -43,7 +43,7 @@ class UsageRecorder:
       * ``_maybe_trim_locked`` takes an exclusive (``LOCK_EX``) lock, blocking
         until all appenders drain, so its read→rewrite→replace sees a quiescent
         file and cannot drop records appended mid-compaction.
-    The read path tolerates a partially-written final line (skips unparseable
+    The read path tolerates a partially-written final line (skips unparsable
     lines). Cross-process locking requires ``fcntl`` (Linux/macOS); on builds
     without it the recorder is single-process safe only.
     """

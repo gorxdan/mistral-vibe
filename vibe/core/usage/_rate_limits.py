@@ -58,7 +58,7 @@ class RateLimitSnapshot(BaseModel):
 def parse_duration_seconds(value: str) -> float | None:
     """Parse OpenAI-style reset durations: '6s', '1m', '2h', '1h30m', '850ms'.
 
-    Returns None for unparseable input. 'ms' is matched before 'm' (minutes)
+    Returns None for unparsable input. 'ms' is matched before 'm' (minutes)
     so '850ms' doesn't read as 850 minutes.
     """
     s = value.strip().lower()
