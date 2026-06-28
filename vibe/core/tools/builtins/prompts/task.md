@@ -1,30 +1,19 @@
 Use `task` to delegate work to a subagent for independent execution.
 
-## When to Use This Tool
+## When to use
+Context offload (work that would bloat main context) | specialized work (match the subagent to the task) | parallel independent tasks | autonomous work needing no user back-and-forth.
 
-Use for: context offload (work that would bloat main context) | specialized work (match the subagent to the task: exploration, research, etc.) | parallel independent tasks | autonomous work needing no user back-and-forth.
-
-## Best Practices
-
-1. **Write clear, detailed task descriptions** - the subagent works autonomously, so give it enough context to succeed independently.
-2. **Choose the right subagent** - match it to the task type (see available subagents in system prompt).
-3. **Establish a local baseline first** - for an unfamiliar repository, map packages with `glob`, identify central symbols and callers with `lsp`, and read the entry points before delegating.
-4. **Prefer direct tools for coherent lookups** - if you know which file, symbol, or flow to inspect, use `read`/`lsp`/`grep` directly instead of spawning a subagent. File count alone does not make a task delegable.
-5. **Trust the subagent's judgment** - don't micromanage the approach.
+## Best practices
+- **Clear, detailed brief** — the subagent works autonomously and can't ask you questions; give it everything it needs to succeed.
+- **Right subagent** — match the profile to the task type (see available subagents in the system prompt).
+- **Baseline first** — for an unfamiliar repo, map packages with `glob`, find central symbols/callers with `lsp`, and read the entry points before delegating.
+- **Prefer direct tools** — if you know the file/symbol/flow, use `read`/`lsp`/`grep` yourself; file count alone doesn't make a task delegable.
+- **Don't micromanage** the subagent's approach.
 
 ## Capabilities & limits
+- Investigation profiles are **read-only**: `explore`/`research`/`planner`/`reviewer`/`debugger`/`security` read, search, and report — no writes. `reviewer`/`debugger`/`security` may run approval-gated `bash` (skipped in a headless run).
+- `worker` has the full tool set but is meant for `isolation='worktree'` workflows (auto-approved subprocess). In a plain `task` call its write/exec tools are approval-gated — don't rely on a `task`-spawned `worker` to mutate files; do edits yourself.
+- Subagents can't ask the user — each brief must be self-contained.
 
-- **The investigation profiles are read-only.** `explore`, `research`, `planner`, `reviewer`, `debugger`, and `security` cannot write or edit files — they read, search, and report back. `reviewer`, `debugger`, and `security` may run `bash` for targeted checks; `bash` stays approval-gated, so it only runs if an approval path is available and is skipped in a headless/non-interactive run.
-- **`worker` is the exception** — it has the full tool set (including writes), but it is meant for workflows with `isolation='worktree'`, where it runs as an auto-approved subprocess. In a plain `task` call a `worker`'s write/exec tools are approval-gated like any other, so don't rely on a `task`-spawned `worker` to actually mutate files — do edits yourself.
-- Subagents **cannot ask the user questions** — give each a self-contained brief with everything it needs.
-- Results are returned as text when the subagent completes.
-
-## Non-blocking delegation (`async_run=true`)
-
-For isolated (write-capable) subagents — `worker`, `editor`, `auto-approve`, or any profile with `bash`/`write_file`/`edit` — pass `async_run=true` to launch the subagent in its own git worktree subprocess and get a `task_id` back immediately instead of blocking until completion (same as the synchronous isolated path; only the parent's wait is removed).
-
-- `async_run=true` is rejected for read-only in-process profiles (e.g. `explore`) — they share the parent's event loop, so "async" would not unblock it. Use `launch_workflow` with `parallel()` for in-process fan-out instead.
-- The running task is visible via the `background` tool and cancellable with `background stop <task_id>`.
-- Completion surfaces at the top of the next parent turn as a `BackgroundTaskCompletedEvent` carrying the subagent's response.
-
-Use it for fan-out: 3+ independent write-capable delegations where the parent should keep working instead of waiting serially. For scripted fan-out with a budget cap and schema validation, prefer `launch_workflow`.
+## Background by default
+A `task` call returns a `task_id` immediately and runs in the background; its result is delivered at the top of a later turn (you're auto-resumed). The run shows in the Tasks pane and the `background` tool, and is cancellable with `background stop <task_id>`. Pass `async_run=false` to block and get the result inline this turn. For scripted parallel fan-out with a budget cap and schema validation, prefer `launch_workflow`.

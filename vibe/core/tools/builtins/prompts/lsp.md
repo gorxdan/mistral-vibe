@@ -1,8 +1,8 @@
 # LSP Tool
 
-Semantic code intelligence via a language server: `lsp` resolves what a symbol *is* (imports, overloads, generated code that a name-`grep` misses); `grep` finds literal text/regex; `glob` finds files by name.
+Semantic code intelligence: `lsp` resolves what a symbol *is* (imports, overloads, generated code a name-`grep` misses); `grep` finds literal text/regex; `glob` finds files by name.
 
-`pos` below = `file_path, line, character`. `line`/`character` are **1-based**; place the cursor at the *start* of the symbol (e.g. for `foo(bar)` where `foo` begins at column 5, pass `character=5`).
+`pos` = `file_path, line, character` — **1-based**, cursor at the symbol's *start* (for `foo(bar)` with `foo` at column 5, pass `character=5`).
 
 ## Operations
 
@@ -20,11 +20,10 @@ Semantic code intelligence via a language server: `lsp` resolves what a symbol *
 | `grep` | — | search for a literal string or regex |
 | `glob` | — | find files by name |
 
-## Architecture analysis workflow
-
-1. `glob` to map packages and entry points.
-2. `workspace_symbol`/`document_symbol` to identify central symbols.
-3. `find_references` or call hierarchy to verify dependency direction.
+## Architecture analysis
+1. `glob` → map packages and entry points.
+2. `workspace_symbol`/`document_symbol` → identify central symbols.
+3. `find_references` or call hierarchy → verify dependency direction.
 4. Read only the files needed to confirm that semantic map.
 
-If the tool reports no server for an extension, no language server is configured for that language — fall back to `grep`.
+No server for an extension → no language server is configured for that language; fall back to `grep`.
