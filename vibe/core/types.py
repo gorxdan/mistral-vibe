@@ -47,6 +47,7 @@ class Backend(StrEnum):
 
 
 class AgentStats(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     steps: int = 0
     session_prompt_tokens: int = 0
     session_completion_tokens: int = 0
@@ -183,12 +184,14 @@ StrToolChoice = Literal["auto", "none", "any", "required"]
 
 
 class AvailableFunction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     description: str
     parameters: dict[str, Any]
 
 
 class AvailableTool(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     type: Literal["function"] = "function"
     function: AvailableFunction
 
@@ -611,7 +614,7 @@ class LLMChunkAccumulator:
 
 
 class BaseEvent(BaseModel, ABC):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
 
 class UserMessageEvent(BaseEvent):

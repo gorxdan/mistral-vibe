@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal, TypedDict
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class AttachmentKind(StrEnum):
@@ -11,6 +11,7 @@ class AttachmentKind(StrEnum):
 
 
 class ClientMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     version: str
 
@@ -34,6 +35,7 @@ AgentEntrypoint = Literal["cli", "acp", "programmatic", "unknown"]
 
 
 class EntrypointMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     agent_entrypoint: AgentEntrypoint
     agent_version: str
     client_name: str
@@ -44,6 +46,7 @@ TelemetryCallType = Literal["main_call", "secondary_call"]
 
 
 class TelemetryBaseMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     agent_entrypoint: AgentEntrypoint | None = None
     agent_version: str | None = None
     client_name: str | None = None

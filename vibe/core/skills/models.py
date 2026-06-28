@@ -4,7 +4,7 @@ from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SkillSource(StrEnum):
@@ -26,6 +26,7 @@ REGISTRY_LATEST_ALIAS = "latest"
 
 
 class RegistryRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     skill_id: str
     # The concrete, materialized version currently on disk (for display/loading).
     version: int

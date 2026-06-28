@@ -4,19 +4,21 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from vibe.core.types import ToolCallEvent, ToolResultEvent
 
 
 class ToolCallDisplay(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     summary: str  # Brief description: "Writing file.txt", "Patching code.py"
     content: str | None = None  # Optional content preview
     suffix: str = ""  # e.g. "(scratchpad)"
 
 
 class ToolResultDisplay(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     success: bool
     message: str
     warnings: list[str] = Field(default_factory=list)

@@ -18,6 +18,7 @@ class ExperimentAttributes(BaseModel):
     the org's Settings → Attributes).
     """
 
+    model_config = ConfigDict(extra="forbid")
     userId: str
     entrypoint: AgentEntrypoint
     agent_version: str

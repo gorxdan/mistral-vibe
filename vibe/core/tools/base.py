@@ -121,6 +121,7 @@ class ToolError(Exception):
 
 
 class CancellableToolResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     cancelled: bool = Field(
         default=False,
         description="True if the user cancelled the tool without completing it.",
@@ -136,6 +137,7 @@ class ToolInfo(BaseModel):
         parameters: A dictionary of parameters required by the tool.
     """
 
+    model_config = ConfigDict(extra="forbid")
     name: str
     description: str
     parameters: dict[str, Any]

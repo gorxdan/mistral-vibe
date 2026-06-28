@@ -134,6 +134,7 @@ class MemoryMetadata(BaseModel):
 class MemoryEntry(BaseModel):
     """A parsed memory: frontmatter metadata + full markdown body."""
 
+    model_config = ConfigDict(extra="forbid")
     metadata: MemoryMetadata
     body: str = ""
 

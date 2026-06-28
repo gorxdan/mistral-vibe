@@ -41,6 +41,7 @@ class ErrorDetail(BaseModel):
 
 
 class PayloadSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     model: str
     message_count: int
     approx_chars: int

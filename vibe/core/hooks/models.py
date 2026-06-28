@@ -81,11 +81,13 @@ class HookConfig(BaseModel):
 
 
 class HookConfigIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     file: Path
     message: str
 
 
 class HookConfigResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     hooks: list[HookConfig]
     issues: list[HookConfigIssue]
 
@@ -96,6 +98,7 @@ class HookConfigResult(BaseModel):
 class HookSessionContext(BaseModel):
     """Shared session fields passed to every hook invocation."""
 
+    model_config = ConfigDict(extra="forbid")
     session_id: str
     transcript_path: str
     cwd: str
@@ -303,6 +306,7 @@ def build_invocation(
 
 
 class HookExecutionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     hook_name: str
     exit_code: int | None
     stdout: str
@@ -344,6 +348,7 @@ class HookUserMessage(BaseModel):
     message.
     """
 
+    model_config = ConfigDict(extra="forbid")
     content: str
 
 
@@ -352,6 +357,7 @@ class HookPromptBlock(BaseModel):
     reason surfaced to the user. No LLM turn runs.
     """
 
+    model_config = ConfigDict(extra="forbid")
     hook_name: str
     content: str
 
@@ -361,6 +367,7 @@ class HookToolDenial(BaseModel):
     the LLM.
     """
 
+    model_config = ConfigDict(extra="forbid")
     hook_name: str
     content: str
 
@@ -371,6 +378,7 @@ class HookToolInputRewrite(BaseModel):
     chain and synthesizes a denial.
     """
 
+    model_config = ConfigDict(extra="forbid")
     hook_name: str
     tool_input: dict[str, Any]
 
@@ -379,6 +387,8 @@ class HookTextReplacement(BaseModel):
     """after_tool: ``text`` is the cumulative LLM-bound output after the
     handler applied its replacement or append.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     text: str
 

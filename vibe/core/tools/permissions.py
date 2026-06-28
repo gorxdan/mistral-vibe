@@ -4,7 +4,7 @@ import asyncio
 from enum import StrEnum, auto
 import fnmatch
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.tools.base import ToolPermission
 
@@ -17,6 +17,7 @@ class PermissionScope(StrEnum):
 
 
 class RequiredPermission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     scope: PermissionScope
     invocation_pattern: str
     session_pattern: str
@@ -24,12 +25,14 @@ class RequiredPermission(BaseModel):
 
 
 class PermissionContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     permission: ToolPermission
     required_permissions: list[RequiredPermission] = Field(default_factory=list)
     reason: str | None = None
 
 
 class ApprovedRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     tool_name: str
     scope: PermissionScope
     session_pattern: str

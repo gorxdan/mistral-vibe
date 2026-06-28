@@ -44,6 +44,7 @@ class PluginManifest(BaseModel):
 
 
 class PluginLoadResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     plugins: list[str] = Field(default_factory=list)
     agent_paths: list[Path] = Field(default_factory=list)
     skill_paths: list[Path] = Field(default_factory=list)

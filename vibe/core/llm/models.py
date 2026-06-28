@@ -8,14 +8,14 @@ from vibe.core.tools.base import BaseTool
 
 
 class ParsedToolCall(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     tool_name: str
     raw_args: dict[str, Any]
     call_id: str = ""
 
 
 class ResolvedToolCall(BaseModel):
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
     tool_name: str
     tool_class: type[BaseTool]
     validated_args: BaseModel
@@ -27,18 +27,18 @@ class ResolvedToolCall(BaseModel):
 
 
 class FailedToolCall(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     tool_name: str
     call_id: str
     error: str
 
 
 class ParsedMessage(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     tool_calls: list[ParsedToolCall]
 
 
 class ResolvedMessage(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
     tool_calls: list[ResolvedToolCall]
     failed_calls: list[FailedToolCall] = Field(default_factory=list)
