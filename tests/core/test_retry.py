@@ -28,13 +28,29 @@ def _make_request(url: str = "https://example.com") -> httpx.Request:
 
 
 class TestIsRetryableHttpError:
-    @pytest.mark.parametrize("code", [408, 409, 425, 429, 500, 502, 503, 504, 529])
+    @pytest.mark.parametrize("code", [408, 409, 425, 500, 502, 503, 504, 529])
     def test_retryable_codes(self, code: int) -> None:
         assert _is_retryable_http_error(_make_http_status_error(code)) is True
 
     @pytest.mark.parametrize("code", [400, 401, 403, 404, 422])
     def test_non_retryable_codes(self, code: int) -> None:
         assert _is_retryable_http_error(_make_http_status_error(code)) is False
+
+    def test_bare_429_is_not_retryable(self) -> None:
+        # A rate limit without Retry-After is not blind-retried: re-firing at an
+        # already-limited endpoint amplifies load and delays failover.
+        assert _is_retryable_http_error(_make_http_status_error(429)) is False
+
+    def test_429_with_retry_after_is_retryable(self) -> None:
+        response = httpx.Response(
+            status_code=429,
+            headers={"retry-after": "1"},
+            request=httpx.Request("GET", "https://example.com"),
+        )
+        exc = httpx.HTTPStatusError(
+            message="Error 429", request=response.request, response=response
+        )
+        assert _is_retryable_http_error(exc) is True
 
     @pytest.mark.parametrize(
         "exc",
@@ -128,6 +144,7 @@ class TestRetryLogsResponseBody:
                 response = httpx.Response(
                     429,
                     text='{"error":"quota depleted"}',
+                    headers={"retry-after": "0"},
                     request=httpx.Request("POST", "https://example.com"),
                 )
                 raise httpx.HTTPStatusError(

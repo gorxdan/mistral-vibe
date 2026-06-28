@@ -168,7 +168,13 @@ async def test_auto_compact_observer_does_not_see_summary_request() -> None:
         [mock_llm_chunk(content="<summary>")],
         [mock_llm_chunk(content="<final>")],
     ])
-    cfg = build_test_vibe_config(models=make_test_models(auto_compact_threshold=1))
+    # Disable the always-on config-reference section: it lists the `/compact`
+    # slash command in the system prompt, which the observer legitimately sees
+    # and would trip the "no compaction content leaked" check below.
+    cfg = build_test_vibe_config(
+        models=make_test_models(auto_compact_threshold=1),
+        include_config_reference=False,
+    )
     agent = build_test_agent_loop(
         config=cfg, message_observer=observer, backend=backend
     )

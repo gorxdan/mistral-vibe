@@ -9,9 +9,15 @@ from vibe.core.config._settings import TomlFileSettingsSource
 class _FakeMgr:
     """Minimal stand-in for HarnessFilesManager."""
 
-    def __init__(self, config_file: Path | None, user_config_file: Path) -> None:
-        self.config_file = config_file
+    def __init__(
+        self,
+        user_config_file: Path,
+        sources: tuple[str, ...] = ("user",),
+        project_config_files_with_roots: list[tuple[Path, Path]] | None = None,
+    ) -> None:
         self.user_config_file = user_config_file
+        self.sources = sources
+        self.project_config_files_with_roots = project_config_files_with_roots or []
 
     trusted_workdir: Path | None = None
 
@@ -50,7 +56,11 @@ def test_load_toml_merges_project_over_user(tmp_path: Path) -> None:
         '[tools.web_search]\nsearxng_url = "http://localhost:8080"\n'
     )
 
-    mgr = _FakeMgr(config_file=project_file, user_config_file=user_file)
+    mgr = _FakeMgr(
+        user_config_file=user_file,
+        sources=("user", "project"),
+        project_config_files_with_roots=[(project_file, tmp_path)],
+    )
     with patch(
         "vibe.core.config._settings.get_harness_files_manager", return_value=mgr
     ):
@@ -68,7 +78,7 @@ def test_load_toml_no_merge_when_project_is_user_file(tmp_path: Path) -> None:
     """When config_file IS the user file, no self-merge happens."""
     user_file = tmp_path / "user.toml"
     user_file.write_text('active_model = "glm"\n')
-    mgr = _FakeMgr(config_file=user_file, user_config_file=user_file)
+    mgr = _FakeMgr(user_config_file=user_file)
     with patch(
         "vibe.core.config._settings.get_harness_files_manager", return_value=mgr
     ):

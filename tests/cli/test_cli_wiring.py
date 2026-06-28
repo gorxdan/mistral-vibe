@@ -332,7 +332,9 @@ def _patch_interactive_shell(
 def test_run_cli_setup_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_mod, "bootstrap_config_files", lambda: None)
     called: list[bool] = []
-    monkeypatch.setattr(cli_mod, "run_onboarding", lambda **_k: called.append(True))
+    monkeypatch.setattr(
+        "vibe.setup.onboarding.run_onboarding", lambda **_k: called.append(True)
+    )
     with pytest.raises(SystemExit) as info:
         cli_mod.run_cli(_make_args(setup=True, prompt=None))
     assert info.value.code == 0

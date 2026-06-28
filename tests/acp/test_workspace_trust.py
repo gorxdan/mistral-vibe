@@ -25,8 +25,16 @@ async def _wait_for_background_tasks(
     acp_agent_loop: VibeAcpAgentLoop, session_id: str
 ) -> None:
     session = acp_agent_loop.sessions[session_id]
-    while session._tasks:
-        await asyncio.gather(*list(session._tasks))
+    while True:
+        pending = [
+            t
+            for t in session._tasks
+            if not t.done()
+            and t.get_coro().__qualname__ != "ScheduleDriver.poll_forever"
+        ]
+        if not pending:
+            return
+        await asyncio.gather(*pending)
 
 
 @pytest.fixture

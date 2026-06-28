@@ -19,6 +19,7 @@ from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
+from vibe.core.middleware import ConversationContext, MiddlewareResult, ResetReason
 from vibe.core.telemetry.types import EntrypointMetadata
 from vibe.core.tools.base import BaseToolConfig, ToolPermission
 from vibe.core.types import (
@@ -100,12 +101,34 @@ async def test_passes_x_affinity_header_when_asking_an_answer_streaming(
     assert headers["x-affinity"] == agent.session_id
 
 
+class _SetMaxOutputMiddleware:
+    """Set the per-turn output-budget override the way the real escalation does.
+
+    The conversation loop resets ``_max_output_override`` to None at the start of
+    every user turn (escalation state is turn-scoped), then the real
+    ``ResponseTooLongError`` retry sets it mid-turn. A before-turn middleware runs
+    at that same point — after the reset, before the LLM call — so it lets the
+    test inject a fixed budget that actually reaches the backend.
+    """
+
+    def __init__(self, agent, max_tokens: int) -> None:
+        self._agent = agent
+        self._max_tokens = max_tokens
+
+    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
+        self._agent._max_output_override = self._max_tokens
+        return MiddlewareResult()
+
+    def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_max_tokens_is_passed_to_backend(vibe_config: VibeConfig):
     backend = FakeBackend([mock_llm_chunk(content="Response")])
     agent = build_test_agent_loop(config=vibe_config, backend=backend)
 
-    agent._max_output_override = 8192
+    agent.middleware_pipeline.add(_SetMaxOutputMiddleware(agent, 8192))
     [_ async for _ in agent.act("Hello")]
 
     assert backend.requests_max_tokens == [8192]
@@ -118,7 +141,7 @@ async def test_max_tokens_is_passed_to_streaming_backend(vibe_config: VibeConfig
         config=vibe_config, backend=backend, enable_streaming=True
     )
 
-    agent._max_output_override = 8192
+    agent.middleware_pipeline.add(_SetMaxOutputMiddleware(agent, 8192))
     [_ async for _ in agent.act("Hello")]
 
     assert backend.requests_max_tokens == [8192]

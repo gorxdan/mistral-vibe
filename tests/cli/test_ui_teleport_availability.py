@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,7 +11,6 @@ from tests.conftest import build_test_vibe_app, build_test_vibe_config
 from tests.constants import OPENAI_BASE_URL
 from vibe.cli.plan_offer.ports.whoami_gateway import WhoAmIPlanType, WhoAmIResponse
 from vibe.cli.textual_ui.widgets.chat_input import ChatInputContainer
-from vibe.cli.textual_ui.widgets.messages import ErrorMessage
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.types import Backend
@@ -48,10 +47,6 @@ def _teleport_failed_events(
         for event in telemetry_events
         if event["event_name"] == "vibe.teleport_failed"
     ]
-
-
-def _error_messages(app) -> list[str]:
-    return [error._error for error in app.query(ErrorMessage)]
 
 
 @pytest.mark.asyncio
@@ -125,9 +120,7 @@ async def test_teleport_command_without_history_sends_early_failure_telemetry(
 
 
 @pytest.mark.asyncio
-async def test_teleport_command_visible_but_errors_when_key_not_eligible(
-    telemetry_events: list[dict[str, Any]],
-) -> None:
+async def test_teleport_command_hidden_when_key_not_eligible() -> None:
     app = build_test_vibe_app(
         config=_vibe_code_enabled_config(),
         plan_offer_gateway=_chat_plan_gateway(prompt_switching_to_pro_plan=True),
@@ -136,38 +129,21 @@ async def test_teleport_command_visible_but_errors_when_key_not_eligible(
     async with app.run_test() as pilot:
         await _wait_until(
             pilot.pause,
-            lambda: app.commands.get_command_name("/teleport") == "teleport",
+            lambda: (
+                app._plan_info is not None
+                and app._plan_info.prompt_switching_to_pro_plan
+            ),
         )
 
-        assert "/teleport" in app.commands.get_help_text()
+        assert app.commands.get_command_name("/teleport") is None
+        assert "/teleport" not in app.commands.get_help_text()
         input_widget = app.query_one(ChatInputContainer).input_widget
         assert input_widget is not None
-        assert "&" in input_widget.mode_characters
-
-        await app.on_chat_input_container_submitted(
-            ChatInputContainer.Submitted("/teleport")
-        )
-        await _wait_until(
-            pilot.pause,
-            lambda: any("Vibe Pro API key" in error for error in _error_messages(app)),
-        )
-
-    assert _teleport_failed_events(telemetry_events) == [
-        {
-            "event_name": "vibe.teleport_failed",
-            "properties": {
-                "stage": "ineligible",
-                "error_class": "TeleportIneligibleError",
-                "push_required": False,
-                "nb_session_messages": 0,
-                "session_id": app.agent_loop.session_id,
-            },
-        }
-    ]
+        assert "&" not in input_widget.mode_characters
 
 
 @pytest.mark.asyncio
-async def test_teleport_command_errors_instead_of_user_text_when_not_eligible() -> None:
+async def test_teleport_command_not_intercepted_when_not_eligible() -> None:
     app = build_test_vibe_app(
         config=_vibe_code_enabled_config(),
         plan_offer_gateway=_chat_plan_gateway(prompt_switching_to_pro_plan=True),
@@ -176,9 +152,15 @@ async def test_teleport_command_errors_instead_of_user_text_when_not_eligible() 
     async with app.run_test() as pilot:
         await _wait_until(
             pilot.pause,
-            lambda: app.commands.get_command_name("/teleport") == "teleport",
+            lambda: (
+                app._plan_info is not None
+                and app._plan_info.prompt_switching_to_pro_plan
+            ),
         )
 
+        assert app.commands.get_command_name("/teleport") is None
+        handle_teleport = AsyncMock()
+        app._handle_teleport_command = handle_teleport
         app._handle_user_message = AsyncMock()
 
         await app.on_chat_input_container_submitted(
@@ -186,14 +168,15 @@ async def test_teleport_command_errors_instead_of_user_text_when_not_eligible() 
         )
         await _wait_until(
             pilot.pause,
-            lambda: any("Vibe Pro API key" in error for error in _error_messages(app)),
+            lambda: cast("AsyncMock", app._handle_user_message).await_count > 0,
         )
 
-        app._handle_user_message.assert_not_awaited()
+        handle_teleport.assert_not_awaited()
+        app._handle_user_message.assert_awaited_with("/teleport")
 
 
 @pytest.mark.asyncio
-async def test_ampersand_teleport_shortcut_errors_when_not_eligible() -> None:
+async def test_ampersand_teleport_shortcut_inert_when_not_eligible() -> None:
     app = build_test_vibe_app(
         config=_vibe_code_enabled_config(),
         plan_offer_gateway=_chat_plan_gateway(prompt_switching_to_pro_plan=True),
@@ -202,9 +185,18 @@ async def test_ampersand_teleport_shortcut_errors_when_not_eligible() -> None:
     async with app.run_test() as pilot:
         await _wait_until(
             pilot.pause,
-            lambda: app.commands.get_command_name("/teleport") == "teleport",
+            lambda: (
+                app._plan_info is not None
+                and app._plan_info.prompt_switching_to_pro_plan
+            ),
         )
 
+        input_widget = app.query_one(ChatInputContainer).input_widget
+        assert input_widget is not None
+        assert "&" not in input_widget.mode_characters
+
+        handle_teleport = AsyncMock()
+        app._handle_teleport_command = handle_teleport
         app._handle_user_message = AsyncMock()
 
         await app.on_chat_input_container_submitted(
@@ -212,14 +204,15 @@ async def test_ampersand_teleport_shortcut_errors_when_not_eligible() -> None:
         )
         await _wait_until(
             pilot.pause,
-            lambda: any("Vibe Pro API key" in error for error in _error_messages(app)),
+            lambda: cast("AsyncMock", app._handle_user_message).await_count > 0,
         )
 
-        app._handle_user_message.assert_not_awaited()
+        handle_teleport.assert_not_awaited()
+        app._handle_user_message.assert_awaited_with("&continue")
 
 
 @pytest.mark.asyncio
-async def test_teleport_command_errors_after_switching_to_non_mistral_model(
+async def test_teleport_command_hidden_after_switching_to_non_mistral_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "mock-openai-key")
@@ -282,17 +275,10 @@ async def test_teleport_command_errors_after_switching_to_non_mistral_model(
             await app._reload_config()
 
         await _wait_until(pilot.pause, lambda: not app.config.is_active_model_mistral())
-        assert app.commands.get_command_name("/teleport") == "teleport"
+        await _wait_until(
+            pilot.pause, lambda: app.commands.get_command_name("/teleport") is None
+        )
+        assert "/teleport" not in app.commands.get_help_text()
         input_widget = app.query_one(ChatInputContainer).input_widget
         assert input_widget is not None
-        assert "&" in input_widget.mode_characters
-
-        await app.on_chat_input_container_submitted(
-            ChatInputContainer.Submitted("/teleport")
-        )
-        await _wait_until(
-            pilot.pause,
-            lambda: any(
-                "active Mistral model" in error for error in _error_messages(app)
-            ),
-        )
+        assert "&" not in input_widget.mode_characters

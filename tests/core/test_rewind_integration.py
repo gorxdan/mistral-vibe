@@ -53,13 +53,21 @@ def _bash_tool_call(command: str, *, call_id: str = "call_1") -> ToolCall:
     )
 
 
+def _read_tool_call(file_path: str, *, call_id: str = "call_1") -> ToolCall:
+    args = json.dumps({"file_path": file_path})
+    return ToolCall(
+        id=call_id, index=0, function=FunctionCall(name="read", arguments=args)
+    )
+
+
 def _make_agent_loop(backend: FakeBackend):
     config = build_test_vibe_config(
-        enabled_tools=["write_file", "edit", "bash"],
+        enabled_tools=["write_file", "edit", "bash", "read"],
         tools={
             "write_file": {"permission": "always"},
             "edit": {"permission": "always"},
             "bash": {"permission": "always"},
+            "read": {"permission": "always"},
         },
     )
     return build_test_agent_loop(
@@ -99,16 +107,34 @@ class TestRewindIntegration:
     async def test_edit_rewind_restores_previous_version(
         self, tmp_working_directory: Path
     ) -> None:
-        """Edit a pre-existing file with edit, rewind restores original."""
+        """Edit a pre-existing file with edit, rewind restores original.
+
+        The edit tool refuses to modify a file not read in this session, so the
+        agent reads it (turn 1) before editing (turn 2). Rewinding to the edit
+        turn restores the pre-edit content.
+        """
         target = tmp_working_directory / "config.yaml"
         target.write_text("key: original\n", encoding="utf-8")
 
         backend = FakeBackend([
+            # Turn 1: read the file so the edit tool will accept it
+            [
+                mock_llm_chunk(
+                    content="Reading config.", tool_calls=[_read_tool_call(str(target))]
+                )
+            ],
+            [mock_llm_chunk(content="Read.")],
+            # Turn 2: edit it
             [
                 mock_llm_chunk(
                     content="Updating config.",
                     tool_calls=[
-                        _edit_tool_call(str(target), "key: original", "key: modified")
+                        _edit_tool_call(
+                            str(target),
+                            "key: original",
+                            "key: modified",
+                            call_id="call_2",
+                        )
                     ],
                 )
             ],
@@ -116,12 +142,13 @@ class TestRewindIntegration:
         ])
         agent_loop = _make_agent_loop(backend)
 
+        await _act_and_collect(agent_loop, "read config")
         await _act_and_collect(agent_loop, "update config")
         assert target.read_text() == "key: modified\n"
 
         rm = agent_loop.rewind_manager
         rewindable = rm.get_rewindable_messages()
-        await rm.rewind_to_message(rewindable[0][0], restore_files=True)
+        await rm.rewind_to_message(rewindable[1][0], restore_files=True)
 
         assert target.read_text() == "key: original\n"
 

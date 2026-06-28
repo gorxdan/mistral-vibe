@@ -14,6 +14,7 @@ import inspect
 import os
 from pathlib import Path
 import re
+import shutil
 import threading
 from threading import Thread
 import time
@@ -182,10 +183,19 @@ from vibe.core.utils import (
     is_user_cancellation_event,
 )
 
+
+def _git_executable_present() -> bool:
+    # GitPython is imported lazily (perf), so teleport availability can no longer
+    # piggyback on an eager `import git` failing. Detect the executable cheaply,
+    # honoring GIT_PYTHON_GIT_EXECUTABLE the same way GitPython would, without
+    # paying the GitPython import cost on the startup path.
+    return shutil.which(os.environ.get("GIT_PYTHON_GIT_EXECUTABLE", "git")) is not None
+
+
 try:
     from vibe.core.teleport.teleport import TeleportService as _TeleportService
 
-    _TELEPORT_AVAILABLE = True
+    _TELEPORT_AVAILABLE = _git_executable_present()
 except ImportError:
     _TELEPORT_AVAILABLE = False
     _TeleportService = None
@@ -1185,6 +1195,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def set_max_turns(self, max_turns: int) -> None:
         self._max_turns = max_turns
         self._setup_middleware()
+
+    def set_max_tokens(self, max_tokens: int) -> None:
+        self._max_output_override = max_tokens
 
     def _setup_middleware(self) -> None:
         """Configure middleware pipeline for this conversation."""
@@ -3876,12 +3889,16 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         forked = AgentLoop(
             config=self.base_config.model_copy(deep=True),
             agent_name=self.agent_profile.name,
+            max_turns=self._max_turns,
+            max_price=self._max_price,
+            max_session_tokens=self._max_session_tokens,
             enable_streaming=self.enable_streaming,
             entrypoint_metadata=self.entrypoint_metadata,
             terminal_emulator=self.terminal_emulator,
             defer_heavy_init=True,
             hook_config_result=self._hook_config_result,
         )
+        forked._max_output_override = self._max_output_override
         forked.session_id = generate_session_id(suffix=extract_suffix(self.session_id))
         forked.parent_session_id = self.session_id
         # A forked session gets its OWN fresh background registry — not the

@@ -48,6 +48,7 @@ def test_run_programmatic_preload_streaming_is_batched(
             include_model_info=False,
             include_commit_signature=False,
             include_humanizer_guidance=False,
+            include_config_reference=False,
             caveman_thinking=False,
         )
 
@@ -124,6 +125,7 @@ def test_run_programmatic_ignores_system_messages_in_previous(
             include_model_info=False,
             include_commit_signature=False,
             include_humanizer_guidance=False,
+            include_config_reference=False,
             caveman_thinking=False,
         )
 

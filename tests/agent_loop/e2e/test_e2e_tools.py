@@ -65,11 +65,24 @@ async def test_edit_tool_replaces_text(mistral_api: MistralAPI) -> None:
     target = Path.cwd() / "note.txt"
     target.write_text("hello world\n")
 
-    await _run_tool(
-        mistral_api,
-        "edit",
-        {"file_path": str(target), "old_string": "hello", "new_string": "goodbye"},
+    # Edit guards against blind writes: the file must be read in-session before
+    # it can be edited. Drive a read first, then the edit, in one session.
+    mistral_api.reply(
+        _tool_call("read", {"file_path": str(target)}),
+        _tool_call(
+            "edit",
+            {"file_path": str(target), "old_string": "hello", "new_string": "goodbye"},
+        ),
+        mistral_completion("done"),
     )
+    agent = build_e2e_agent_loop(
+        config=build_test_vibe_config(enabled_tools=["read", "edit"])
+    )
+    events: list[BaseEvent] = [event async for event in agent.act("go")]
+    edit_result = next(
+        e for e in events if isinstance(e, ToolResultEvent) and e.tool_name == "edit"
+    )
+    assert edit_result.error is None
 
     assert target.read_text() == "goodbye world\n"
 

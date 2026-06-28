@@ -134,10 +134,11 @@ def test_linkify_urls_in_text_keeps_balanced_parens_in_url() -> None:
 
 
 def test_linkify_urls_in_text_escapes_and_keeps_plain_when_no_url() -> None:
-    # Brackets must be escaped so raw tool text can't break the markup.
+    # Brackets must be escaped so raw tool text can't break the markup;
+    # escape_markup escapes both '[' and ']' (textual's parser is strict).
     assert (
         linkify_urls_in_text("Searched '[a]' (2 sources)")
-        == "Searched '\\[a]' (2 sources)"
+        == "Searched '\\[a\\]' (2 sources)"
     )
 
 
@@ -233,4 +234,6 @@ async def test_tool_call_message_set_result_text_escapes_when_linkify_off() -> N
 
     assert "@click=open_url" not in rendered
     assert "https://example.com" in rendered
-    assert "[exit 0]" in rendered
+    # escape_markup escapes both brackets, so the close bracket renders as the
+    # literal "\]" — what matters is the "[exit 0" run is not consumed as markup.
+    assert "[exit 0\\]" in rendered

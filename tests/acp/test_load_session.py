@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from acp import RequestError
 from acp.schema import (
     AgentMessageChunk,
     AgentThoughtChunk,
+    ClientCapabilities,
     ToolCallProgress,
     ToolCallStart,
     UserMessageChunk,
@@ -15,7 +17,11 @@ import pytest
 from tests.conftest import build_test_vibe_config
 from tests.stubs.fake_backend import FakeBackend
 from tests.stubs.fake_client import FakeClient
-from vibe.acp.acp_agent_loop import VibeAcpAgentLoop
+from vibe.acp.acp_agent_loop import (
+    TRUST_REQUEST_METHOD,
+    WORKSPACE_TRUST_CAPABILITY,
+    VibeAcpAgentLoop,
+)
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import ModelConfig, SessionLoggingConfig
@@ -98,6 +104,7 @@ class TestLoadSession:
             BuiltinAgentName.AUTO_APPROVE,
             BuiltinAgentName.PLAN,
             BuiltinAgentName.ACCEPT_EDITS,
+            BuiltinAgentName.COORDINATOR,
         }
 
         assert response.config_options is not None
@@ -105,7 +112,7 @@ class TestLoadSession:
         assert response.config_options[0].id == "mode"
         assert response.config_options[0].category == "mode"
         assert response.config_options[0].current_value == BuiltinAgentName.DEFAULT
-        assert len(response.config_options[0].options) == 5
+        assert len(response.config_options[0].options) == 6
         mode_option_values = {opt.value for opt in response.config_options[0].options}
         assert mode_option_values == {
             BuiltinAgentName.DEFAULT,
@@ -113,6 +120,7 @@ class TestLoadSession:
             BuiltinAgentName.AUTO_APPROVE,
             BuiltinAgentName.PLAN,
             BuiltinAgentName.ACCEPT_EDITS,
+            BuiltinAgentName.COORDINATOR,
         }
         assert response.config_options[1].id == "model"
         assert response.config_options[1].category == "model"
@@ -139,24 +147,26 @@ class TestLoadSession:
         session_id = "test-sess-trust"
         create_test_session(temp_session_dir, session_id, str(tmp_working_directory))
 
+        acp_agent.client_capabilities = ClientCapabilities(
+            field_meta={WORKSPACE_TRUST_CAPABILITY: True}
+        )
+        request_trust = AsyncMock(return_value={"decision": "decline"})
+        acp_agent.client.ext_method = request_trust
+
         response = await acp_agent.load_session(
             cwd=str(tmp_working_directory), mcp_servers=[], session_id=session_id
         )
 
         assert response is not None
-        payload = response.model_dump(mode="json", by_alias=True)
-        assert payload.get("_meta") == {
-            "workspace_trust": {
-                "status": "untrusted",
-                "details": {
-                    "cwd": str(tmp_working_directory.resolve()),
-                    "repoRoot": None,
-                    "ignoredFiles": ["AGENTS.md"],
-                    "availableDecisions": ["trust_cwd", "decline"],
-                },
-            }
-        }
-        assert trusted_folders_manager.is_trusted(tmp_working_directory) is None
+        request_trust.assert_awaited_once()
+        assert request_trust.await_args is not None
+        method, params = request_trust.await_args.args
+        assert method == TRUST_REQUEST_METHOD
+        assert params["cwd"] == str(tmp_working_directory.resolve())
+        assert params["repoRoot"] is None
+        assert params["detectedFiles"] == ["AGENTS.md"]
+        assert params["availableDecisions"] == ["trust_cwd", "trust_session", "decline"]
+        assert trusted_folders_manager.is_trusted(tmp_working_directory) is False
         await acp_agent.sessions[session_id].agent_loop.wait_until_ready()
         system_prompt = acp_agent.sessions[session_id].agent_loop.messages[0].content
         assert system_prompt is not None

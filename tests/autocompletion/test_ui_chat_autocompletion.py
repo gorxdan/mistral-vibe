@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 from textual.widgets import Markdown
 
 from vibe.cli.textual_ui.app import VibeApp
 from vibe.cli.textual_ui.widgets.chat_input.completion_popup import (
     CompletionPopup,
     _CompletionItem,
-    _CompletionRow,
 )
 from vibe.cli.textual_ui.widgets.chat_input.container import ChatInputContainer
 
@@ -56,14 +56,18 @@ async def test_pressing_tab_completes_command_and_hides_popup_when_exact_match(
 
 
 def ensure_selected_command(popup: CompletionPopup, expected_alias: str) -> None:
-    selected_rows = [
-        row
-        for row in popup.query(_CompletionRow)
-        if row.has_class("completion-selected")
-    ]
-    assert len(selected_rows) == 1
-    command = selected_rows[0].query_one(".completion-command", _CompletionItem)
-    assert str(command.render()).strip() == expected_alias
+    # The slash menu renders each row as a single `_CompletionItem` and marks the
+    # selected one by styling its label span "reverse" (see CompletionPopup._render_row).
+    selected_labels: list[str] = []
+    for item in popup.query(_CompletionItem):
+        rendered = item.render()
+        assert isinstance(rendered, Text)
+        for span in getattr(rendered, "spans", []):
+            if getattr(span.style, "reverse", False):
+                selected_labels.append(rendered.plain[span.start : span.end].strip())
+                break
+    assert len(selected_labels) == 1
+    assert selected_labels[0] == expected_alias
 
 
 @pytest.mark.asyncio

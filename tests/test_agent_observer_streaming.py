@@ -63,6 +63,7 @@ def make_config(
         include_model_info=False,
         include_commit_signature=False,
         include_humanizer_guidance=False,
+        include_config_reference=False,
         caveman_thinking=False,
         enabled_tools=enabled_tools or [],
         tools=tools or {},
@@ -520,7 +521,10 @@ async def test_context_too_long_streaming(observer_capture) -> None:
         [_ async for _ in agent.act("Trigger context too long while streaming")]
 
     assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
-    assert agent.session_logger.save_interaction.await_count == 1
+    # Self-heal on context overflow: reactive shaping can't recover this minimal
+    # history, so emergency compaction runs (two saves) before the error re-raises
+    # and the finally-block save fires.
+    assert agent.session_logger.save_interaction.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -540,7 +544,10 @@ async def test_context_too_long_non_streaming(observer_capture) -> None:
         [_ async for _ in agent.act("Trigger context too long without streaming")]
 
     assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
-    assert agent.session_logger.save_interaction.await_count == 1
+    # Self-heal on context overflow: reactive shaping can't recover this minimal
+    # history, so emergency compaction runs (two saves) before the error re-raises
+    # and the finally-block save fires.
+    assert agent.session_logger.save_interaction.await_count == 3
 
 
 class _NonRetryableError(Exception):

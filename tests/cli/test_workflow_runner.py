@@ -132,7 +132,12 @@ async def main():
     assert stopped is True
 
     entry = runner.runs[0]
-    assert entry.error == "Cancelled"
+    # run() now returns a STOPPED WorkflowResult on cancel instead of raising,
+    # so the cancellation is reflected in the result status (error stays None
+    # unless a CancelledError escapes during setup).
+    assert entry.result is not None
+    assert entry.result.run.status == WorkflowStatus.STOPPED
+    assert entry.status == WorkflowStatus.STOPPED
 
 
 async def test_on_complete_fires_at_most_once_per_entry() -> None:

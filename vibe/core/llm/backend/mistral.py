@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-import os
 import types
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
@@ -33,6 +32,7 @@ from mistralai.client.models import (
 from mistralai.client.utils.retries import BackoffStrategy, RetryConfig
 import orjson
 
+from vibe.core.config import resolve_api_key
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
 from vibe.core.llm.exceptions import BackendErrorBuilder
 from vibe.core.llm.types import CompletionRequest
@@ -203,7 +203,7 @@ class MistralBackend:
         self._provider = provider
         self._mapper = MistralMapper()
         self._api_key = (
-            os.getenv(self._provider.api_key_env_var)
+            resolve_api_key(self._provider.api_key_env_var)
             if self._provider.api_key_env_var
             else None
         )

@@ -2384,9 +2384,11 @@ async def test_worker_spawn_args_forbids_extra_fields() -> None:
     # Regression guard: model_config was briefly a raw dict with no extra=,
     # silently allowing typos in the worker-spawn approval payload.
     _WorkerSpawnArgs.model_validate({"prompt": "p", "agent": "worker"})
+    # label is now a real optional field; an unknown key must still be rejected.
+    _WorkerSpawnArgs.model_validate({"prompt": "p", "agent": "worker", "label": "ok"})
     with pytest.raises(ValidationError):
         _WorkerSpawnArgs.model_validate({
             "prompt": "p",
             "agent": "worker",
-            "label": "typo",
+            "lbel": "typo",
         })

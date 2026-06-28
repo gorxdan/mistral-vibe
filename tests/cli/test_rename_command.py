@@ -170,7 +170,7 @@ async def test_resume_picker_finds_sessions_under_worktree_isolation(
         worktree_manager._active = None
 
     assert captured_picker is not None
-    assert f"local:{logger.session_id}" in captured_picker._latest_messages
+    assert logger.session_id in captured_picker._latest_messages
 
 
 @pytest.mark.asyncio

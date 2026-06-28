@@ -136,6 +136,7 @@ def test_system_prompt_honors_user_config_when_manager_uninitialized() -> None:
         include_model_info=False,
         include_commit_signature=False,
         include_humanizer_guidance=False,
+        include_config_reference=False,
         caveman_thinking=False,
     )
     manager = ExperimentManager(client=_StubClient(None))
@@ -156,6 +157,7 @@ async def test_system_prompt_honors_user_config_when_no_remote_assignment() -> N
         include_model_info=False,
         include_commit_signature=False,
         include_humanizer_guidance=False,
+        include_config_reference=False,
         caveman_thinking=False,
     )
     response = EvalResponse.model_validate({
@@ -184,6 +186,7 @@ async def test_user_config_overrides_assigned_experiment_variant() -> None:
         include_model_info=False,
         include_commit_signature=False,
         include_humanizer_guidance=False,
+        include_config_reference=False,
         caveman_thinking=False,
     )
     response = EvalResponse.model_validate({

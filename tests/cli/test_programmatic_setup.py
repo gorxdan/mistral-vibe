@@ -10,6 +10,7 @@ from tests.conftest import build_test_vibe_config
 from vibe.cli import cli as cli_mod, entrypoint as entrypoint_mod
 from vibe.core.config import MissingAPIKeyError
 from vibe.core.trusted_folders import trusted_folders_manager
+from vibe.setup import onboarding as onboarding_mod
 
 
 def _make_args(**overrides: object) -> argparse.Namespace:
@@ -53,7 +54,7 @@ def test_programmatic_mode_does_not_run_onboarding_on_missing_api_key(
     def fail_onboarding(*_args: object, **_kwargs: object) -> None:
         sentinel["called"] = True
 
-    monkeypatch.setattr(cli_mod, "run_onboarding", fail_onboarding)
+    monkeypatch.setattr(onboarding_mod, "run_onboarding", fail_onboarding)
 
     with pytest.raises(SystemExit) as exc_info:
         cli_mod.load_config_or_exit(interactive=False)
@@ -81,7 +82,7 @@ def test_interactive_mode_still_runs_onboarding_on_missing_api_key(
 
     onboarding_called: list[bool] = []
     monkeypatch.setattr(
-        cli_mod, "run_onboarding", lambda *a, **k: onboarding_called.append(True)
+        onboarding_mod, "run_onboarding", lambda *a, **k: onboarding_called.append(True)
     )
 
     result = cli_mod.load_config_or_exit(interactive=True)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config._settings import (
@@ -42,6 +42,7 @@ from vibe.core.config._settings import (
     TTSModelConfig,
     TTSProviderConfig,
     WorktreeConfig,
+    resolve_theme_name,
 )
 from vibe.core.config.schema import (
     ConfigSchema,
@@ -339,3 +340,20 @@ class VibeConfigSchema(ConfigSchema):
     memory: Annotated[MemoryConfig, WithReplaceMerge()] = Field(
         default_factory=MemoryConfig
     )
+
+    @field_validator("theme", mode="before")
+    @classmethod
+    def _resolve_theme(cls, value: Any) -> str:
+        return resolve_theme_name(value)
+
+    @model_validator(mode="after")
+    def _validate_model_uniqueness(self) -> VibeConfigSchema:
+        seen_aliases: set[str] = set()
+        for model in self.models:
+            if model.alias in seen_aliases:
+                raise ValueError(
+                    f"Duplicate alias '{model.alias}' in models; "
+                    "model aliases must be unique."
+                )
+            seen_aliases.add(model.alias)
+        return self

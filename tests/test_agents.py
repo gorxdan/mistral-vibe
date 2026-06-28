@@ -751,8 +751,8 @@ class TestAgentLoopInitialization:
         config = build_test_vibe_config(
             include_project_context=False, include_prompt_detail=False
         )
-        assert config.system_prompt_id == "cli", (
-            "Base config should use default 'cli' prompt"
+        assert config.system_prompt_id == "tests", (
+            "Base config should use the lightweight test prompt default"
         )
 
         agent_loop = build_test_agent_loop(

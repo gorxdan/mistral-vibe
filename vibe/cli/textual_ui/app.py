@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import signal
 import time
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
@@ -33,11 +33,7 @@ from textual.widgets import Static
 from vibe import __version__ as CORE_VERSION
 from vibe.cli.clipboard import copy_selection_to_clipboard, copy_text_to_clipboard
 from vibe.cli.commands import CommandAvailabilityContext, CommandRegistry
-from vibe.cli.narrator_manager import (
-    NarratorManager,
-    NarratorManagerPort,
-    NarratorState,
-)
+from vibe.cli.narrator_manager import NarratorManagerPort, NarratorState
 from vibe.cli.plan_offer.adapters.http_whoami_gateway import HttpWhoAmIGateway
 from vibe.cli.plan_offer.decide_plan_offer import (
     PlanInfo,
@@ -155,7 +151,7 @@ from vibe.cli.update_notifier import (
     mark_version_as_seen,
     should_show_whats_new,
 )
-from vibe.cli.voice_manager import VoiceManager, VoiceManagerPort
+from vibe.cli.voice_manager import VoiceManagerPort
 from vibe.cli.voice_manager.voice_manager_port import TranscribeState
 from vibe.cli.vscode_extension_promo import (
     FileSystemVscodeExtensionPromoRepository,
@@ -165,8 +161,6 @@ from vibe.cli.vscode_extension_promo import (
 )
 from vibe.core.agent_loop import AgentLoop, TeleportError
 from vibe.core.agents import AgentProfile
-from vibe.core.audio_player.audio_player import AudioPlayer
-from vibe.core.audio_recorder import AudioRecorder
 from vibe.core.autocompletion.path_prompt import (
     PathPromptPayload,
     PathResource,
@@ -258,6 +252,10 @@ from vibe.core.utils import (
 )
 from vibe.core.workflows.manager import WorkflowManager
 from vibe.core.workflows.runtime import WorkflowError, WorkflowRuntime
+
+if TYPE_CHECKING:
+    from vibe.cli.narrator_manager import NarratorManager
+    from vibe.cli.voice_manager import VoiceManager
 
 _VSCODE_FAMILY_TERMINALS = {Terminal.VSCODE, Terminal.VSCODE_INSIDERS, Terminal.CURSOR}
 
@@ -4299,6 +4297,9 @@ class VibeApp(App):  # noqa: PLR0904
             logger.warning("SearXNG teardown failed", exc_info=exc)
 
     def _make_default_voice_manager(self) -> VoiceManager:
+        from vibe.cli.voice_manager import VoiceManager
+        from vibe.core.audio_recorder import AudioRecorder
+
         try:
             model = self.config.get_active_transcribe_model()
             provider = self.config.get_transcribe_provider_for_model(model)
@@ -5377,6 +5378,9 @@ class VibeApp(App):  # noqa: PLR0904
         self.refresh(layout=True)
 
     def _make_default_narrator_manager(self) -> NarratorManager:
+        from vibe.cli.narrator_manager import NarratorManager
+        from vibe.core.audio_player.audio_player import AudioPlayer
+
         return NarratorManager(
             config_getter=lambda: self.config,
             audio_player=AudioPlayer(),

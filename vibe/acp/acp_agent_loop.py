@@ -69,6 +69,7 @@ from acp.schema import (
     Usage,
     UsageUpdate,
 )
+from keyring.errors import KeyringError
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from vibe import VIBE_ROOT, __version__
@@ -158,6 +159,7 @@ from vibe.core.tools.permissions import RequiredPermission
 from vibe.core.trusted_folders import (
     WorkspaceTrustDecision,
     WorkspaceTrustPrompt,
+    WorkspaceTrustStatus,
     apply_workspace_trust_decision,
     available_workspace_trust_decisions,
     maybe_build_workspace_trust_prompt,
@@ -216,6 +218,11 @@ NON_INTERACTIVE_DISABLED_TOOLS = [
 INITIAL_AVAILABLE_COMMANDS_DELAY_SECONDS = 0.1
 WORKSPACE_TRUST_CAPABILITY = "workspace-trust"
 TRUST_REQUEST_METHOD = "trust/request"
+TRUST_GRANT_DECISIONS = {
+    WorkspaceTrustDecision.TRUST_REPO,
+    WorkspaceTrustDecision.TRUST_CWD,
+    WorkspaceTrustDecision.TRUST_SESSION,
+}
 
 
 def _merge_non_interactive_disabled_tools(config: VibeConfig) -> None:
@@ -271,6 +278,40 @@ class WorkspaceTrustResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: WorkspaceTrustDecision | Literal["cancelled"]
+
+
+class WorkspaceTrustDetails(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    cwd: str
+    repo_root: str | None = Field(default=None, alias="repoRoot")
+    ignored_files: list[str] = Field(alias="ignoredFiles")
+    available_decisions: list[WorkspaceTrustDecision] = Field(
+        alias="availableDecisions"
+    )
+
+
+class WorkspaceTrustStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    cwd: str | None = None
+
+
+class WorkspaceTrustDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    cwd: str | None = None
+    decision: WorkspaceTrustDecision
+    session_id: str | None = Field(
+        default=None, validation_alias=AliasChoices("session_id", "sessionId")
+    )
+
+
+class WorkspaceTrustStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    trust_status: WorkspaceTrustStatus = Field(alias="trust_status")
+    details: WorkspaceTrustDetails | None = None
 
 
 class AuthStatusResponse(BaseModel):
@@ -832,6 +873,113 @@ class VibeAcpAgentLoop(AcpAgent):
             raise InvalidRequestError(str(exc)) from exc
         return response.decision
 
+    def _workspace_trust_details(
+        self, cwd: Path
+    ) -> tuple[WorkspaceTrustStatus, WorkspaceTrustDetails | None]:
+        status = trusted_folders_manager.trust_status(cwd)
+        if status is not WorkspaceTrustStatus.UNTRUSTED:
+            return status, None
+
+        prompt = maybe_build_workspace_trust_prompt(
+            cwd, include_explicitly_untrusted=True
+        )
+        if prompt is None:
+            return status, None
+
+        return status, self._build_workspace_trust_details(prompt)
+
+    def _build_workspace_trust_details(
+        self, prompt: WorkspaceTrustPrompt
+    ) -> WorkspaceTrustDetails:
+        return WorkspaceTrustDetails(
+            cwd=str(prompt.cwd.resolve()),
+            repoRoot=str(prompt.repo_root.resolve()) if prompt.repo_root else None,
+            ignoredFiles=self._workspace_trust_ignored_files(prompt),
+            availableDecisions=available_workspace_trust_decisions(prompt),
+        )
+
+    def _workspace_trust_ignored_files(self, prompt: WorkspaceTrustPrompt) -> list[str]:
+        found = set(prompt.repo_detected_files)
+        if prompt.repo_root is None:
+            found.update(prompt.detected_files)
+            return sorted(found)
+
+        try:
+            cwd_relative = prompt.cwd.resolve().relative_to(prompt.repo_root.resolve())
+        except ValueError:
+            found.update(prompt.detected_files)
+            return sorted(found)
+
+        cwd_prefix = "" if cwd_relative == Path(".") else cwd_relative.as_posix()
+        for file in prompt.detected_files:
+            found.add(file if not cwd_prefix else f"{cwd_prefix}/{file}")
+        return sorted(found)
+
+    def _workspace_trust_response(self, cwd: Path) -> WorkspaceTrustStatusResponse:
+        status, details = self._workspace_trust_details(cwd)
+        return WorkspaceTrustStatusResponse(trust_status=status, details=details)
+
+    def _workspace_trust_prompt_for_decision(
+        self, cwd: Path, decision: WorkspaceTrustDecision
+    ) -> WorkspaceTrustPrompt:
+        prompt = maybe_build_workspace_trust_prompt(
+            cwd, include_explicitly_untrusted=True
+        )
+        if prompt is None:
+            raise InvalidRequestError("No workspace trust decision is available.")
+
+        if decision not in available_workspace_trust_decisions(prompt):
+            raise InvalidRequestError(f"Unsupported trust decision: {decision}")
+
+        return prompt
+
+    async def _handle_workspace_trust_status(self, params: dict) -> dict[str, Any]:
+        try:
+            request = WorkspaceTrustStatusRequest.model_validate(params)
+        except ValidationError as exc:
+            raise InvalidRequestError(
+                f"Invalid ACP workspace trust status request: {exc}"
+            ) from exc
+
+        cwd = Path(request.cwd).expanduser().resolve() if request.cwd else Path.cwd()
+        return self._workspace_trust_response(cwd).model_dump(
+            mode="json", by_alias=True
+        )
+
+    async def _handle_workspace_trust_decision(self, params: dict) -> dict[str, Any]:
+        try:
+            request = WorkspaceTrustDecisionRequest.model_validate(params)
+        except ValidationError as exc:
+            raise InvalidRequestError(
+                f"Invalid ACP workspace trust decision request: {exc}"
+            ) from exc
+
+        cwd = Path(request.cwd).expanduser().resolve() if request.cwd else Path.cwd()
+        session = self.sessions.get(request.session_id) if request.session_id else None
+        if request.session_id is not None and session is None:
+            raise SessionNotFoundError(request.session_id)
+
+        prompt = self._workspace_trust_prompt_for_decision(cwd, request.decision)
+
+        try:
+            apply_workspace_trust_decision(prompt, request.decision)
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+
+        if session is not None and request.decision in TRUST_GRANT_DECISIONS:
+            session.spawn(self._reload_session_after_trust(cwd, session))
+
+        return self._workspace_trust_response(cwd).model_dump(
+            mode="json", by_alias=True
+        )
+
+    async def _reload_session_after_trust(
+        self, cwd: Path, session: AcpSessionLoop
+    ) -> None:
+        os.chdir(cwd)
+        await self._reload_session_config(session)
+        await session.command_registry.notify_changed()
+
     async def _register_additional_directories(
         self, additional_directories: list[str] | None
     ) -> None:
@@ -1065,19 +1213,23 @@ class VibeAcpAgentLoop(AcpAgent):
 
         session.spawn(_send())
 
-    async def _replay_tool_calls(self, session_id: str, msg: LLMMessage) -> None:
+    async def _replay_tool_calls(self, session_id: str, msg: LLMMessage) -> set[str]:
         if not msg.tool_calls:
-            return
+            return set()
+        emitted_call_ids: set[str] = set()
         for tool_call in msg.tool_calls:
             if tool_call.id and tool_call.function.name:
                 update = create_tool_call_replay(
                     tool_call.id, tool_call.function.name, tool_call.function.arguments
                 )
+                emitted_call_ids.add(tool_call.id)
                 await self.client.session_update(session_id=session_id, update=update)
+        return emitted_call_ids
 
     async def _replay_conversation_history(
         self, session_id: str, messages: list[LLMMessage]
     ) -> None:
+        replayed_call_ids: set[str] = set()
         for msg in messages:
             if msg.role == Role.USER:
                 update = create_user_message_replay(msg)
@@ -1092,9 +1244,11 @@ class VibeAcpAgentLoop(AcpAgent):
                     await self.client.session_update(
                         session_id=session_id, update=text_update
                     )
-                await self._replay_tool_calls(session_id, msg)
+                replayed_call_ids |= await self._replay_tool_calls(session_id, msg)
 
             elif msg.role == Role.TOOL:
+                if msg.tool_call_id not in replayed_call_ids:
+                    continue
                 if result_update := create_tool_result_replay(msg):
                     await self.client.session_update(
                         session_id=session_id, update=result_update
@@ -1131,6 +1285,7 @@ class VibeAcpAgentLoop(AcpAgent):
                 )
             )
 
+        commands.sort(key=lambda command: command.name)
         await self.client.session_update(
             session_id=session.id, update=update_available_commands(commands)
         )
@@ -1279,6 +1434,14 @@ class VibeAcpAgentLoop(AcpAgent):
                     success = False
                 else:
                     session.agent_loop.set_max_turns(max_turns)
+                    success = True
+            case "max_tokens" if isinstance(value, str):
+                try:
+                    max_tokens = int(value)
+                except ValueError:
+                    success = False
+                else:
+                    session.agent_loop.set_max_tokens(max_tokens)
                     success = True
             case _:
                 success = False
@@ -1547,7 +1710,7 @@ class VibeAcpAgentLoop(AcpAgent):
                             session_id=session.id,
                         )
 
-                    session_update = tool_call_session_update(event)
+                    session_update = tool_call_session_update(event, status="pending")
                     if session_update:
                         yield session_update
 
@@ -1883,7 +2046,7 @@ class VibeAcpAgentLoop(AcpAgent):
                 process_env_value = self._process_env_value_before_dotenv_load(provider)
                 if process_env_value:
                     os.environ[auth_state.env_key] = process_env_value
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, KeyringError) as exc:
             raise InternalError(f"Failed to sign out: {exc}") from exc
 
         return {}
@@ -1901,6 +2064,12 @@ class VibeAcpAgentLoop(AcpAgent):
 
         if method == "session/delete":
             return await self._handle_session_delete(params)
+
+        if method == "trust/status":
+            return await self._handle_workspace_trust_status(params)
+
+        if method == "trust/decision":
+            return await self._handle_workspace_trust_decision(params)
 
         raise NotImplementedMethodError(method)
 
@@ -1965,20 +2134,25 @@ class VibeAcpAgentLoop(AcpAgent):
         self, session: AcpSessionLoop, text_prompt: str, message_id: str
     ) -> PromptResponse:
         lines = ["### Available Commands", ""]
-        for cmd in session.command_registry.commands.values():
+        for cmd in sorted(
+            session.command_registry.commands.values(), key=lambda command: command.name
+        ):
             hint = f" `<{cmd.input_hint}>`" if cmd.input_hint else ""
             lines.append(f"- `/{cmd.name}`{hint}: {cmd.description}")
 
         builtin_names = set(session.command_registry.commands)
-        invocable = {
-            n: s
-            for n, s in session.agent_loop.skill_manager.available_skills.items()
-            if s.user_invocable and n not in builtin_names
-        }
+        invocable = sorted(
+            (
+                skill
+                for skill in session.agent_loop.skill_manager.available_skills.values()
+                if skill.user_invocable and skill.name not in builtin_names
+            ),
+            key=lambda skill: skill.name,
+        )
         if invocable:
             lines.extend(["", "### Available Skills", ""])
-            for name, info in invocable.items():
-                lines.append(f"- `/{name}`: {info.description}")
+            for skill in invocable:
+                lines.append(f"- `/{skill.name}`: {skill.description}")
 
         return await self._command_reply(session, "\n".join(lines), message_id)
 

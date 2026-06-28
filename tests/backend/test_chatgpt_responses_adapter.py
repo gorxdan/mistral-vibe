@@ -60,10 +60,12 @@ def _provider() -> ProviderConfig:
     )
 
 
-def _prepare(messages, *, thinking="high", tools=None) -> dict:
+def _prepare(
+    messages, *, thinking="high", tools=None, model_name="gpt-5.1-codex"
+) -> dict:
     adapter = ChatGPTResponsesAdapter()
     params = RequestParams(
-        model_name="gpt-5.1-codex",
+        model_name=model_name,
         messages=messages,
         temperature=0.2,
         tools=tools,
@@ -102,7 +104,13 @@ def test_encrypted_reasoning_included_when_thinking_on() -> None:
 
 
 def test_no_include_when_thinking_off() -> None:
-    payload = _prepare([LLMMessage(role=Role.USER, content="hi")], thinking="off")
+    # Codex models floor effort to 'low' even with thinking off (they 400 on
+    # effort 'none'), so encrypted reasoning is still requested for them. Use a
+    # platform model where thinking off maps to effort 'none' to exercise the
+    # no-include branch.
+    payload = _prepare(
+        [LLMMessage(role=Role.USER, content="hi")], thinking="off", model_name="gpt-5.5"
+    )
     assert "include" not in payload
 
 

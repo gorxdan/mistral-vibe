@@ -1034,6 +1034,7 @@ class TestPersistLoops:
                 "prompt": "ping",
                 "next_fire_at": 12345.0,
                 "created_at": 12000.0,
+                "recurring": True,
             }
         ]
 

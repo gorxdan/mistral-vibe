@@ -74,7 +74,10 @@ def load_dotenv_values(
     for key, value in env_vars.items():
         if not value:
             continue
-        environ.update({key: value})
+        if environ.get(key):
+            # An explicit non-empty process/shell value wins over the .env file.
+            continue
+        environ[key] = value
 
 
 class MissingAPIKeyError(RuntimeError):
@@ -1322,7 +1325,7 @@ class VibeConfig(BaseSettings):
 
     @property
     def vibe_code_api_key(self) -> str:
-        return os.getenv(self.vibe_code_api_key_env_var, "")
+        return resolve_api_key(self.vibe_code_api_key_env_var) or ""
 
     @property
     def otel_span_exporter_config(self) -> OtelSpanExporterConfig | None:
@@ -1509,7 +1512,7 @@ class VibeConfig(BaseSettings):
         try:
             provider = self.get_active_provider()
             api_key_env = provider.api_key_env_var
-            if api_key_env and not os.getenv(api_key_env):
+            if api_key_env and not resolve_api_key(api_key_env):
                 raise MissingAPIKeyError(api_key_env, provider.name)
         except ValueError:
             pass

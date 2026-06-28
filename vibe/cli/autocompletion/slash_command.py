@@ -120,6 +120,10 @@ class SlashCommandController:
             return False
 
         start, end = replacement_range
-        self._view.replace_completion_range(start, end, row.text)
+        # Suppress the post-replace text-change feedback: the completed command
+        # (e.g. "/config") still matches the live filter, so without this the
+        # menu the reset() below hides would immediately re-open on the next
+        # text-changed event. suppress_update keeps the hide intent intact.
+        self._view.replace_completion_range(start, end, row.text, suppress_update=True)
         self.reset()
         return True

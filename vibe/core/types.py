@@ -813,15 +813,23 @@ class MessageList(Sequence[LLMMessage]):
         """
         self._data[index] = msg
 
-    def update_system_prompt(self, new: str) -> None:
-        """Update the system prompt in place.
+    def update_system_prompt(self, new: str, *, notify: bool = False) -> None:
+        """Replace the system prompt, or insert it if none exists yet.
 
-        Called from a background thread during deferred init.  A single
-        list-item assignment is atomic under CPython's GIL, and the
-        ``@requires_init`` decorator ensures no ``act()`` call reads the
-        prompt concurrently, so no additional lock is needed here.
+        Called from a background thread during deferred init.  Under deferred
+        init the prompt can land after messages were already appended, so
+        insert at the front rather than clobber slot 0.  A single list-item
+        assignment is atomic under CPython's GIL, and the ``@requires_init``
+        decorator ensures no ``act()`` call reads the prompt concurrently, so
+        no additional lock is needed here.
         """
-        self._data[0] = LLMMessage(role=Role.SYSTEM, content=new)
+        msg = LLMMessage(role=Role.SYSTEM, content=new)
+        if self._data and self._data[0].role == Role.SYSTEM:
+            self._data[0] = msg
+        else:
+            self._data.insert(0, msg)
+        if notify:
+            self._notify(msg)
 
     @contextmanager
     def silent(self) -> Iterator[None]:

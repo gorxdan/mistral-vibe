@@ -51,6 +51,6 @@ def test_update_system_prompt_notifies_only_when_requested() -> None:
     messages.update_system_prompt("silent")
     assert observed == []
 
-    messages.update_system_prompt("loud")
+    messages.update_system_prompt("loud", notify=True)
     assert len(observed) == 1
     assert observed[0].content == "loud"
