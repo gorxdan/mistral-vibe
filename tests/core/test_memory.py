@@ -2079,6 +2079,91 @@ def test_session_id_defaults_empty_for_legacy_memories(tmp_path) -> None:
     assert got.metadata.session_id == ""
 
 
+# session_id preservation across updates — the contract the commit message
+# asserts ("both update paths omit it so origin is preserved") but that had no
+# test coverage. Each test reproduces one production update idiom verbatim and
+# asserts the originating session_id survives. A refactor to fresh
+# MemoryMetadata(...) construction (the CREATE pattern) would silently blank it;
+# these tests fail in that case.
+def test_session_id_preserved_on_auto_extract_update(tmp_path) -> None:
+    # Mirrors agent_loop._extract_memories "update" branch (model_copy of the
+    # target with updated/description/tags/type — session_id NOT in the dict, so
+    # model_copy carries it forward).
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="m", title="M", session_id="orig-session", updated="2026-06-01"
+            ),
+            body="body",
+        )
+    )
+    target = store.get("m")
+    assert target is not None
+    meta = target.metadata.model_copy(
+        update={"updated": "2026-06-27", "description": "edited"}
+    )
+    store.upsert(MemoryEntry(metadata=meta, body="body +merged"))
+    reloaded = store.get("m")
+    assert reloaded is not None
+    assert reloaded.metadata.session_id == "orig-session"
+
+
+def test_session_id_preserved_on_manage_memory_update(tmp_path) -> None:
+    # Mirrors ManageMemory "update" (manage_memory.py:243) — two model_copy
+    # passes, neither lists session_id.
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="m", title="M", session_id="orig-session", updated="2026-06-01"
+            ),
+            body="body",
+        )
+    )
+    existing = store.get("m")
+    assert existing is not None
+    meta = existing.metadata.model_copy(update={"title": "Renamed"})
+    meta = meta.model_copy(update={"updated": "2026-06-27"})
+    store.upsert(MemoryEntry(metadata=meta, body=existing.body))
+    reloaded = store.get("m")
+    assert reloaded is not None
+    assert reloaded.metadata.session_id == "orig-session"
+
+
+def test_session_id_preserved_on_consolidation_merge(tmp_path) -> None:
+    # apply_merge (store.py:345) copies the SURVIVOR's metadata; the survivor's
+    # session_id must persist on the reconciled entry.
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="keep",
+                title="Keep",
+                session_id="survivor-session",
+                updated="2026-06-01",
+            ),
+            body="keep-body",
+        )
+    )
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="drop",
+                title="Drop",
+                session_id="dropped-session",
+                updated="2026-06-01",
+            ),
+            body="drop-body",
+        )
+    )
+    trashed = store.apply_merge("keep", ["drop"], "merged body", "2026-06-27")
+    assert trashed == 1
+    survivor = store.get("keep")
+    assert survivor is not None
+    assert survivor.metadata.session_id == "survivor-session"
+
+
 # --------------------------------------------------------------------------- #
 # index_markdown truncation footer (C5)                                        #
 # --------------------------------------------------------------------------- #
