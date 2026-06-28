@@ -26,7 +26,7 @@ class TestDegenerateResponseReason:
         # streaming/non-streaming paths' own ``usage is None`` guard raises
         # before this runs, so this is the defensive backstop trigger.
         chunk = LLMChunk(
-            message=LLMMessage(role=Role.assistant, content=""), usage=None
+            message=LLMMessage(role=Role.ASSISTANT, content=""), usage=None
         )
         assert _degenerate_response_reason(chunk) is not None
 

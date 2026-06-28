@@ -95,10 +95,10 @@ async def test_act_flushes_batched_messages_with_injection_middleware(
 
     assert len(observed) == 4
     assert [r for r, _ in observed] == [
-        Role.system,
-        Role.user,
-        Role.user,
-        Role.assistant,
+        Role.SYSTEM,
+        Role.USER,
+        Role.USER,
+        Role.ASSISTANT,
     ]
     assert observed[0][1] == "You are Chaton, a super useful programming assistant."
     assert observed[1][1] == "How can you help?"
@@ -123,7 +123,7 @@ async def test_stop_action_flushes_user_msg_before_returning(observer_capture) -
 
     assert len(observed) == 2
     # user's message should have been flushed before returning
-    assert [r for r, _ in observed] == [Role.system, Role.user]
+    assert [r for r, _ in observed] == [Role.SYSTEM, Role.USER]
     assert observed[0][1] == "You are Chaton, a super useful programming assistant."
     assert observed[1][1] == "Greet."
 
@@ -141,7 +141,7 @@ async def test_act_emits_user_and_assistant_msgs(observer_capture) -> None:
         pass
 
     assert len(observed) == 3
-    assert [r for r, _ in observed] == [Role.system, Role.user, Role.assistant]
+    assert [r for r, _ in observed] == [Role.SYSTEM, Role.USER, Role.ASSISTANT]
     assert observed[1][1] == "Ping?"
     assert observed[2][1] == "Pong!"
 
@@ -174,7 +174,7 @@ async def test_act_streams_chunks_in_order() -> None:
         " and",
         " end",
     ]
-    assert agent.messages[-1].role == Role.assistant
+    assert agent.messages[-1].role == Role.ASSISTANT
     assert agent.messages[-1].content == "Hello from Vibe! More and end"
 
 
@@ -295,7 +295,7 @@ async def test_act_handles_tool_call_chunk_with_content() -> None:
     assert " complete" in assistant_contents
 
     assert any(
-        m.role == Role.assistant and m.content == "Preparing todo request complete"
+        m.role == Role.ASSISTANT and m.content == "Preparing todo request complete"
         for m in agent.messages
     )
 
@@ -348,7 +348,7 @@ async def test_act_merges_streamed_tool_call_arguments() -> None:
     assert events[4].error is None
     assert events[4].skipped is False
     assistant_with_calls = next(
-        m for m in agent.messages if m.role == Role.assistant and m.tool_calls
+        m for m in agent.messages if m.role == Role.ASSISTANT and m.tool_calls
     )
     reconstructed_calls = assistant_with_calls.tool_calls or []
     assert len(reconstructed_calls) == 1
@@ -435,7 +435,7 @@ async def test_act_flushes_and_logs_when_streaming_errors(observer_capture) -> N
     with pytest.raises(RuntimeError, match="boom in streaming"):
         [_ async for _ in agent.act("Trigger stream failure")]
 
-    assert [role for role, _ in observed] == [Role.system, Role.user]
+    assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
     assert agent.session_logger.save_interaction.await_count == 1
 
 
@@ -470,7 +470,7 @@ async def test_rate_limit(observer_capture) -> None:
     with pytest.raises(RateLimitError):
         [_ async for _ in agent.act("Trigger rate limit failure while streaming")]
 
-    assert [role for role, _ in observed] == [Role.system, Role.user]
+    assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
     assert agent.session_logger.save_interaction.await_count == 1
 
 
@@ -511,7 +511,7 @@ async def test_context_too_long_streaming(observer_capture) -> None:
     with pytest.raises(ContextTooLongError):
         [_ async for _ in agent.act("Trigger context too long while streaming")]
 
-    assert [role for role, _ in observed] == [Role.system, Role.user]
+    assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
     assert agent.session_logger.save_interaction.await_count == 1
 
 
@@ -531,7 +531,7 @@ async def test_context_too_long_non_streaming(observer_capture) -> None:
     with pytest.raises(ContextTooLongError):
         [_ async for _ in agent.act("Trigger context too long without streaming")]
 
-    assert [role for role, _ in observed] == [Role.system, Role.user]
+    assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
     assert agent.session_logger.save_interaction.await_count == 1
 
 
@@ -557,7 +557,7 @@ async def test_non_retryable_passes_through_streaming(observer_capture) -> None:
     with pytest.raises(_NonRetryableError, match="auth failed"):
         [_ async for _ in agent.act("Trigger non-retryable failure while streaming")]
 
-    assert [role for role, _ in observed] == [Role.system, Role.user]
+    assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
     assert agent.session_logger.save_interaction.await_count == 1
 
 
@@ -576,7 +576,7 @@ async def test_non_retryable_passes_through_non_streaming(observer_capture) -> N
     with pytest.raises(_NonRetryableError, match="auth failed"):
         [_ async for _ in agent.act("Trigger non-retryable failure without streaming")]
 
-    assert [role for role, _ in observed] == [Role.system, Role.user]
+    assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
     assert agent.session_logger.save_interaction.await_count == 1
 
 
@@ -608,7 +608,7 @@ async def test_non_retryable_via_cause_chain_streaming(observer_capture) -> None
     with pytest.raises(RuntimeError, match="Activity task failed"):
         [_ async for _ in agent.act("Trigger non-retryable via cause chain")]
 
-    assert [role for role, _ in observed] == [Role.system, Role.user]
+    assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
     assert agent.session_logger.save_interaction.await_count == 1
 
 
@@ -630,7 +630,7 @@ async def test_non_retryable_via_cause_chain_non_streaming(observer_capture) -> 
     with pytest.raises(RuntimeError, match="Activity task failed"):
         [_ async for _ in agent.act("Trigger non-retryable via cause chain")]
 
-    assert [role for role, _ in observed] == [Role.system, Role.user]
+    assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
     assert agent.session_logger.save_interaction.await_count == 1
 
 
@@ -744,7 +744,7 @@ async def test_interleaved_reasoning_content_preserves_order() -> None:
         ("AssistantEvent", "Answer 3"),
     ]
 
-    assistant_msg = next(m for m in agent.messages if m.role == Role.assistant)
+    assistant_msg = next(m for m in agent.messages if m.role == Role.ASSISTANT)
     assert assistant_msg.reasoning_content == "Think 1Think 2Think 3"
     assert assistant_msg.content == "Answer 1 Answer 2 Answer 3"
 
@@ -826,5 +826,5 @@ async def test_streaming_assistant_event_message_id_matches_stored_message() -> 
     assert len(message_ids) == 1
 
     # The stored LLMMessage must carry that same message_id
-    stored_msg = next(m for m in agent.messages if m.role == Role.assistant)
+    stored_msg = next(m for m in agent.messages if m.role == Role.ASSISTANT)
     assert stored_msg.message_id == assistant_events[0].message_id

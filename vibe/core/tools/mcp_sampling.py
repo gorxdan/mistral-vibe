@@ -47,7 +47,7 @@ class MCPSamplingHandler:
 
             if params.systemPrompt:
                 messages.insert(
-                    0, LLMMessage(role=Role.system, content=params.systemPrompt)
+                    0, LLMMessage(role=Role.SYSTEM, content=params.systemPrompt)
                 )
 
             result = await self._backend_getter().complete(
@@ -88,15 +88,15 @@ def _map_sampling_messages(messages: list[Any]) -> list[LLMMessage]:
     for msg in messages:
         match msg.role:
             case "user":
-                role = Role.user
+                role = Role.USER
             case "assistant":
-                role = Role.assistant
+                role = Role.ASSISTANT
             case _:
                 logger.error(
                     "MCP sampling: unexpected message role, treating as assistant",
                     extra={"role": getattr(msg, "role", None)},
                 )
-                role = Role.assistant
+                role = Role.ASSISTANT
         content = _extract_text_content(msg.content)
         result.append(LLMMessage(role=role, content=content))
     return result

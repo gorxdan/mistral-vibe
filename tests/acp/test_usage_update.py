@@ -21,7 +21,7 @@ from vibe.core.types import LLMChunk, LLMMessage, LLMUsage, Role
 def _make_backend(prompt_tokens: int = 100, completion_tokens: int = 50) -> FakeBackend:
     return FakeBackend(
         LLMChunk(
-            message=LLMMessage(role=Role.assistant, content="Hi"),
+            message=LLMMessage(role=Role.ASSISTANT, content="Hi"),
             usage=LLMUsage(
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
             ),

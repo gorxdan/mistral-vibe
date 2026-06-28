@@ -375,10 +375,10 @@ class TestTaskToolExecution:
     ) -> None:
         """Test that task tool successfully runs a subagent and returns its response."""
         mock_messages = [
-            LLMMessage(role=Role.system, content="system"),
-            LLMMessage(role=Role.user, content="task"),
-            LLMMessage(role=Role.assistant, content="response 1"),
-            LLMMessage(role=Role.assistant, content="response 2"),
+            LLMMessage(role=Role.SYSTEM, content="system"),
+            LLMMessage(role=Role.USER, content="task"),
+            LLMMessage(role=Role.ASSISTANT, content="response 1"),
+            LLMMessage(role=Role.ASSISTANT, content="response 2"),
         ]
 
         async def mock_act(task: str):
@@ -410,8 +410,8 @@ class TestTaskToolExecution:
     ) -> None:
         """Test that task tool reports incomplete when stopped by middleware."""
         mock_messages = [
-            LLMMessage(role=Role.system, content="system"),
-            LLMMessage(role=Role.assistant, content="partial"),
+            LLMMessage(role=Role.SYSTEM, content="system"),
+            LLMMessage(role=Role.ASSISTANT, content="partial"),
         ]
 
         async def mock_act(task: str):
@@ -435,7 +435,7 @@ class TestTaskToolExecution:
         self, task_tool: Task, ctx: InvokeContext
     ) -> None:
         """Test that task tool gracefully handles exceptions from subagent."""
-        mock_messages = [LLMMessage(role=Role.system, content="system")]
+        mock_messages = [LLMMessage(role=Role.SYSTEM, content="system")]
 
         async def mock_act(task: str):
             yield AssistantEvent(content="Starting...")

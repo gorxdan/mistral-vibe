@@ -407,7 +407,7 @@ class TestAgentManagerCycling:
     def backend(self) -> FakeBackend:
         return FakeBackend([
             LLMChunk(
-                message=LLMMessage(role=Role.assistant, content="Test response"),
+                message=LLMMessage(role=Role.ASSISTANT, content="Test response"),
                 usage=LLMUsage(prompt_tokens=10, completion_tokens=5),
             )
         ])
@@ -475,7 +475,7 @@ class TestAgentSwitchAgent:
     def backend(self) -> FakeBackend:
         return FakeBackend([
             LLMChunk(
-                message=LLMMessage(role=Role.assistant, content="Test response"),
+                message=LLMMessage(role=Role.ASSISTANT, content="Test response"),
                 usage=LLMUsage(prompt_tokens=10, completion_tokens=5),
             )
         ])
@@ -523,8 +523,8 @@ class TestAgentSwitchAgent:
         agent = build_test_agent_loop(
             config=base_config, agent_name=BuiltinAgentName.DEFAULT, backend=backend
         )
-        user_msg = LLMMessage(role=Role.user, content="Hello")
-        assistant_msg = LLMMessage(role=Role.assistant, content="Hi there")
+        user_msg = LLMMessage(role=Role.USER, content="Hello")
+        assistant_msg = LLMMessage(role=Role.ASSISTANT, content="Hi there")
         agent.messages.append(user_msg)
         agent.messages.append(assistant_msg)
 
@@ -590,7 +590,7 @@ class TestPlanAgentToolRestriction:
     ) -> None:
         backend = FakeBackend([
             LLMChunk(
-                message=LLMMessage(role=Role.assistant, content="ok"),
+                message=LLMMessage(role=Role.ASSISTANT, content="ok"),
                 usage=LLMUsage(prompt_tokens=10, completion_tokens=5),
             )
         ])
@@ -770,7 +770,7 @@ class TestAgentLoopInitialization:
         )
 
         system_message = agent_loop.messages[0]
-        assert system_message.role == Role.system
+        assert system_message.role == Role.SYSTEM
         assert system_message.content is not None
         assert custom_prompt_content in system_message.content, (
             f"System message should contain custom prompt content. "

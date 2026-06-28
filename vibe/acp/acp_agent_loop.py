@@ -1079,11 +1079,11 @@ class VibeAcpAgentLoop(AcpAgent):
         self, session_id: str, messages: list[LLMMessage]
     ) -> None:
         for msg in messages:
-            if msg.role == Role.user:
+            if msg.role == Role.USER:
                 update = create_user_message_replay(msg)
                 await self.client.session_update(session_id=session_id, update=update)
 
-            elif msg.role == Role.assistant:
+            elif msg.role == Role.ASSISTANT:
                 if reasoning_update := create_reasoning_replay(msg):
                     await self.client.session_update(
                         session_id=session_id, update=reasoning_update
@@ -1094,7 +1094,7 @@ class VibeAcpAgentLoop(AcpAgent):
                     )
                 await self._replay_tool_calls(session_id, msg)
 
-            elif msg.role == Role.tool:
+            elif msg.role == Role.TOOL:
                 if result_update := create_tool_result_replay(msg):
                     await self.client.session_update(
                         session_id=session_id, update=result_update
@@ -1178,7 +1178,7 @@ class VibeAcpAgentLoop(AcpAgent):
         await agent_loop.hydrate_experiments_from_session()
 
         non_system_messages = [
-            msg for msg in loaded_messages if msg.role != Role.system
+            msg for msg in loaded_messages if msg.role != Role.SYSTEM
         ]
         if non_system_messages:
             agent_loop.messages.extend(non_system_messages)
@@ -1417,7 +1417,7 @@ class VibeAcpAgentLoop(AcpAgent):
     def _build_end_turn_meta(self, session: AcpSessionLoop) -> dict[str, Any] | None:
         agent_loop = session.agent_loop
         user_message_count = (
-            sum(m.role == Role.user and not m.injected for m in agent_loop.messages) + 1
+            sum(m.role == Role.USER and not m.injected for m in agent_loop.messages) + 1
         )  # +1 for the message just sent
         if not should_show_feedback(
             telemetry_active=agent_loop.telemetry_client.is_active(),

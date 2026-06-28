@@ -41,8 +41,8 @@ def provider():
 class TestMapperPrepareMessages:
     def test_system_extracted(self, mapper):
         messages = [
-            LLMMessage(role=Role.system, content="You are helpful."),
-            LLMMessage(role=Role.user, content="Hi"),
+            LLMMessage(role=Role.SYSTEM, content="You are helpful."),
+            LLMMessage(role=Role.USER, content="Hi"),
         ]
         system, converted = mapper.prepare_messages(messages)
         assert system == "You are helpful."
@@ -50,12 +50,12 @@ class TestMapperPrepareMessages:
         assert converted[0]["role"] == "user"
 
     def test_user_message(self, mapper):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         _, converted = mapper.prepare_messages(messages)
         assert converted[0]["content"] == [{"type": "text", "text": "Hello"}]
 
     def test_assistant_text(self, mapper):
-        messages = [LLMMessage(role=Role.assistant, content="Sure")]
+        messages = [LLMMessage(role=Role.ASSISTANT, content="Sure")]
         _, converted = mapper.prepare_messages(messages)
         assert converted[0]["role"] == "assistant"
         content = converted[0]["content"]
@@ -64,7 +64,7 @@ class TestMapperPrepareMessages:
     def test_assistant_with_reasoning_content_and_signature(self, mapper):
         messages = [
             LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="Answer",
                 reasoning_content="hmm",
                 reasoning_signature="sig",
@@ -78,7 +78,7 @@ class TestMapperPrepareMessages:
     def test_assistant_with_reasoning_content(self, mapper):
         messages = [
             LLMMessage(
-                role=Role.assistant, content="Answer", reasoning_content="thinking..."
+                role=Role.ASSISTANT, content="Answer", reasoning_content="thinking..."
             )
         ]
         _, converted = mapper.prepare_messages(messages)
@@ -88,7 +88,7 @@ class TestMapperPrepareMessages:
     def test_assistant_with_tool_calls(self, mapper):
         messages = [
             LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="Let me search.",
                 tool_calls=[
                     ToolCall(
@@ -107,8 +107,8 @@ class TestMapperPrepareMessages:
 
     def test_tool_result_appended_to_user(self, mapper):
         messages = [
-            LLMMessage(role=Role.user, content="Do it"),
-            LLMMessage(role=Role.tool, content="result", tool_call_id="tc_1"),
+            LLMMessage(role=Role.USER, content="Do it"),
+            LLMMessage(role=Role.TOOL, content="result", tool_call_id="tc_1"),
         ]
         _, converted = mapper.prepare_messages(messages)
         # tool_result is merged into the preceding user message
@@ -118,7 +118,7 @@ class TestMapperPrepareMessages:
         assert any(b.get("type") == "tool_result" for b in blocks)
 
     def test_tool_result_new_user_when_no_prior(self, mapper):
-        messages = [LLMMessage(role=Role.tool, content="result", tool_call_id="tc_1")]
+        messages = [LLMMessage(role=Role.TOOL, content="result", tool_call_id="tc_1")]
         _, converted = mapper.prepare_messages(messages)
         assert converted[0]["role"] == "user"
         assert converted[0]["content"][0]["type"] == "tool_result"
@@ -233,7 +233,7 @@ class TestMapperParseResponse:
 
 class TestAdapterPrepareRequest:
     def test_basic(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-sonnet-4-20250514",
@@ -256,7 +256,7 @@ class TestAdapterPrepareRequest:
         assert req.headers["anthropic-version"] == "2023-06-01"
 
     def test_beta_features(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-sonnet-4-20250514",
@@ -275,7 +275,7 @@ class TestAdapterPrepareRequest:
         assert "fine-grained-tool-streaming-2025-05-14" in req.headers["anthropic-beta"]
 
     def test_api_key_header(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-sonnet-4-20250514",
@@ -293,7 +293,7 @@ class TestAdapterPrepareRequest:
         assert req.headers["x-api-key"] == "sk-test-key"
 
     def test_streaming(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-sonnet-4-20250514",
@@ -310,7 +310,7 @@ class TestAdapterPrepareRequest:
         assert json.loads(req.body)["stream"] is True
 
     def test_default_max_tokens(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-sonnet-4-20250514",
@@ -327,7 +327,7 @@ class TestAdapterPrepareRequest:
         assert json.loads(req.body)["max_tokens"] == AnthropicAdapter.DEFAULT_MAX_TOKENS
 
     def test_with_thinking(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-sonnet-4-20250514",
@@ -350,8 +350,8 @@ class TestAdapterPrepareRequest:
 
     def test_system_cached(self, adapter, provider):
         messages = [
-            LLMMessage(role=Role.system, content="Be helpful."),
-            LLMMessage(role=Role.user, content="Hello"),
+            LLMMessage(role=Role.SYSTEM, content="Be helpful."),
+            LLMMessage(role=Role.USER, content="Hello"),
         ]
         req = adapter.prepare_request(
             RequestParams(
@@ -370,7 +370,7 @@ class TestAdapterPrepareRequest:
         assert payload["system"][0]["cache_control"] == {"type": "ephemeral"}
 
     def test_with_tools(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         tools = [
             AvailableTool(
                 function=AvailableFunction(
@@ -399,7 +399,7 @@ class TestAdapterPrepareRequest:
 
     @pytest.mark.parametrize("level", ["low", "medium", "high", "max"])
     def test_thinking_levels(self, adapter, provider, level):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-sonnet-4-20250514",
@@ -422,14 +422,14 @@ class TestAdapterPrepareRequest:
 
     def test_history_forced_thinking(self, adapter, provider):
         messages = [
-            LLMMessage(role=Role.user, content="Hello"),
+            LLMMessage(role=Role.USER, content="Hello"),
             LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="Answer",
                 reasoning_content="thinking...",
                 reasoning_signature="sig",
             ),
-            LLMMessage(role=Role.user, content="Follow up"),
+            LLMMessage(role=Role.USER, content="Follow up"),
         ]
         req = adapter.prepare_request(
             RequestParams(
@@ -555,7 +555,7 @@ class TestAdapterParseResponse:
     def test_streaming_unknown_returns_empty(self, adapter, provider):
         data = {"type": "ping"}
         chunk = adapter.parse_response(data, provider)
-        assert chunk.message.role == Role.assistant
+        assert chunk.message.role == Role.ASSISTANT
         assert chunk.message.content is None
 
     def test_cache_control_last_user_message(self, adapter):

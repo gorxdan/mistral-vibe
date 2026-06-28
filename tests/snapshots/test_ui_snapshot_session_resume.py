@@ -11,9 +11,9 @@ class SnapshotTestAppWithResumedSession(BaseSnapshotTestApp):
     def __init__(self) -> None:
         super().__init__()
         # Simulate a previous session with messages
-        user_msg = LLMMessage(role=Role.user, content="Hello, how are you?")
+        user_msg = LLMMessage(role=Role.USER, content="Hello, how are you?")
         assistant_msg = LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content="I'm doing well, thank you! Let me read that file for you.",
             tool_calls=[
                 ToolCall(
@@ -26,7 +26,7 @@ class SnapshotTestAppWithResumedSession(BaseSnapshotTestApp):
             ],
         )
         tool_result_msg = LLMMessage(
-            role=Role.tool,
+            role=Role.TOOL,
             content="File content: This is a test file with some content.",
             name="read",
             tool_call_id="tool_call_1",

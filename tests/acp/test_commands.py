@@ -333,7 +333,7 @@ class TestHandleTeleport:
         session_id = await _new_session_and_clear(acp_agent_loop)
         session = acp_agent_loop.sessions[session_id]
         session.agent_loop.messages.append(
-            LLMMessage(role=Role.user, content="continue this task")
+            LLMMessage(role=Role.USER, content="continue this task")
         )
         service = FakeTeleportService()
         _set_teleport_service(session.agent_loop, service)
@@ -397,7 +397,7 @@ class TestHandleTeleport:
         session_id = await _new_session_and_clear(acp_agent_loop)
         session = acp_agent_loop.sessions[session_id]
         session.agent_loop.messages.append(
-            LLMMessage(role=Role.user, content="ship it")
+            LLMMessage(role=Role.USER, content="ship it")
         )
         service = FakeTeleportService()
         _set_teleport_service(session.agent_loop, service)
@@ -487,7 +487,7 @@ class TestHandleTeleport:
         session_id = await _new_session_and_clear(acp_agent_loop)
         session = acp_agent_loop.sessions[session_id]
         session.agent_loop.messages.append(
-            LLMMessage(role=Role.user, content="ship it")
+            LLMMessage(role=Role.USER, content="ship it")
         )
         _set_teleport_service(session.agent_loop, FakeTeleportService())
 

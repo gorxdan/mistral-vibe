@@ -45,10 +45,10 @@ def _history() -> list[LLMMessage]:
     # system + real user + big assistant(tool_calls) + big tool result + big
     # assistant text + recent. Total ~1300 tokens of local estimate.
     return [
-        LLMMessage(role=Role.system, content="system prompt"),
-        LLMMessage(role=Role.user, content="please do the thing"),
+        LLMMessage(role=Role.SYSTEM, content="system prompt"),
+        LLMMessage(role=Role.USER, content="please do the thing"),
         LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content=_content(350),
             tool_calls=[
                 ToolCall(
@@ -58,9 +58,9 @@ def _history() -> list[LLMMessage]:
                 )
             ],
         ),
-        LLMMessage(role=Role.tool, content=_content(400), tool_call_id="call_1"),
-        LLMMessage(role=Role.assistant, content=_content(350)),
-        LLMMessage(role=Role.assistant, content="recent reply"),
+        LLMMessage(role=Role.TOOL, content=_content(400), tool_call_id="call_1"),
+        LLMMessage(role=Role.ASSISTANT, content=_content(350)),
+        LLMMessage(role=Role.ASSISTANT, content="recent reply"),
     ]
 
 
@@ -108,10 +108,10 @@ async def test_snip_is_idempotent() -> None:
 @pytest.mark.asyncio
 async def test_snip_never_touches_real_user_message() -> None:
     msgs = [
-        LLMMessage(role=Role.system, content="sys"),
-        LLMMessage(role=Role.user, content=_content(500)),  # big REAL user msg
-        LLMMessage(role=Role.assistant, content=_content(500)),
-        LLMMessage(role=Role.assistant, content="recent"),
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.USER, content=_content(500)),  # big REAL user msg
+        LLMMessage(role=Role.ASSISTANT, content=_content(500)),
+        LLMMessage(role=Role.ASSISTANT, content="recent"),
     ]
     ctx = _ctx(msgs, _config())
     await SnipMiddleware().before_turn(ctx)
@@ -145,9 +145,9 @@ async def test_threshold_zero_is_noop() -> None:
 async def test_below_watermark_is_noop() -> None:
     cfg = _config()
     small = [
-        LLMMessage(role=Role.system, content="sys"),
-        LLMMessage(role=Role.assistant, content=_content(50)),
-        LLMMessage(role=Role.assistant, content="recent"),
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.ASSISTANT, content=_content(50)),
+        LLMMessage(role=Role.ASSISTANT, content="recent"),
     ]
     ctx = _ctx(list(small), cfg)
     await SnipMiddleware().before_turn(ctx)

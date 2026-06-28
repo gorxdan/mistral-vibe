@@ -19,7 +19,7 @@ from vibe.core.types import LLMChunk, LLMMessage, LLMUsage, Role, SessionMetadat
 def backend() -> FakeBackend:
     return FakeBackend(
         LLMChunk(
-            message=LLMMessage(role=Role.assistant, content="Hi"),
+            message=LLMMessage(role=Role.ASSISTANT, content="Hi"),
             usage=LLMUsage(prompt_tokens=1, completion_tokens=1),
         )
     )
@@ -156,8 +156,8 @@ class TestAcpHooksLoading:
             backend,
             tmp_path,
             loaded_messages=[
-                LLMMessage(role=Role.system, content="system"),
-                LLMMessage(role=Role.user, content="hello"),
+                LLMMessage(role=Role.SYSTEM, content="system"),
+                LLMMessage(role=Role.USER, content="hello"),
             ],
         )
 

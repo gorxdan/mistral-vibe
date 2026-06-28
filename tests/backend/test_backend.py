@@ -90,7 +90,7 @@ class TestBackend:
                 model = ModelConfig(
                     name="model_name", provider="provider_name", alias="model_alias"
                 )
-                messages = [LLMMessage(role=Role.user, content="Just say hi")]
+                messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
                 result = await backend.complete(
                     model=model,
@@ -163,7 +163,7 @@ class TestBackend:
                 )
 
                 messages = [
-                    LLMMessage(role=Role.user, content="List files in current dir")
+                    LLMMessage(role=Role.USER, content="List files in current dir")
                 ]
 
                 results: list[LLMChunk] = []
@@ -248,7 +248,7 @@ class TestBackend:
             results: list[LLMChunk] = []
             async for result in backend.complete_streaming(
                 model=model,
-                messages=[LLMMessage(role=Role.user, content="hi")],
+                messages=[LLMMessage(role=Role.USER, content="hi")],
                 temperature=0.2,
                 tools=None,
                 max_tokens=None,
@@ -304,7 +304,7 @@ class TestBackend:
             model = ModelConfig(
                 name="model_name", provider="provider_name", alias="model_alias"
             )
-            messages = [LLMMessage(role=Role.user, content="Just say hi")]
+            messages = [LLMMessage(role=Role.USER, content="Just say hi")]
             with pytest.raises(BackendError) as e:
                 async for _ in backend.complete_streaming(
                     model=model,
@@ -352,7 +352,7 @@ class TestBackend:
             model = ModelConfig(
                 name="model_name", provider=provider_name, alias="model_alias"
             )
-            messages = [LLMMessage(role=Role.user, content="hi")]
+            messages = [LLMMessage(role=Role.USER, content="hi")]
 
             async for _ in backend.complete_streaming(
                 model=model,
@@ -413,7 +413,7 @@ class TestBackend:
             model = ModelConfig(
                 name="model_name", provider="provider_name", alias="model_alias"
             )
-            messages = [LLMMessage(role=Role.user, content="Just say hi")]
+            messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
             await backend.complete(
                 model=model,
@@ -453,7 +453,7 @@ class TestBackend:
             model = ModelConfig(
                 name="model_name", provider="provider_name", alias="model_alias"
             )
-            messages = [LLMMessage(role=Role.user, content="Just say hi")]
+            messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
             async for _ in backend.complete_streaming(
                 model=model,
@@ -549,7 +549,7 @@ class TestMistralRetry:
             model = ModelConfig(
                 name="model_name", provider="test_provider", alias="model_alias"
             )
-            messages = [LLMMessage(role=Role.user, content="Just say hi")]
+            messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
             result = await backend.complete(
                 model=model,
@@ -585,7 +585,7 @@ class TestMistralMapperPrepareMessage:
         only a ThinkChunk — no trailing empty TextChunk.
         """
         msg = LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content=None,
             reasoning_content="Let me think step by step.",
         )
@@ -598,7 +598,7 @@ class TestMistralMapperPrepareMessage:
     def test_reasoning_with_empty_string_content(self, mapper: MistralMapper) -> None:
         """content='' (empty string) should also not produce a trailing TextChunk."""
         msg = LLMMessage(
-            role=Role.assistant, content="", reasoning_content="Thinking..."
+            role=Role.ASSISTANT, content="", reasoning_content="Thinking..."
         )
         result = mapper.prepare_message(msg)
         content = result.content
@@ -611,7 +611,7 @@ class TestMistralMapperPrepareMessage:
         should be present.
         """
         msg = LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content="Here is the answer.",
             reasoning_content="Let me reason.",
         )
@@ -626,7 +626,7 @@ class TestMistralMapperPrepareMessage:
     def test_reasoning_with_tool_calls_no_text(self, mapper: MistralMapper) -> None:
         """Reasoning + tool_calls but no text content — only ThinkChunk."""
         msg = LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content=None,
             reasoning_content="I should run a command.",
             tool_calls=[
@@ -650,7 +650,7 @@ class TestMistralMapperPrepareMessage:
 
     def test_no_reasoning_plain_string(self, mapper: MistralMapper) -> None:
         """Without reasoning_content, content is a plain string."""
-        msg = LLMMessage(role=Role.assistant, content="Hello!")
+        msg = LLMMessage(role=Role.ASSISTANT, content="Hello!")
         result = mapper.prepare_message(msg)
         assert result.content == "Hello!"
 
@@ -690,7 +690,7 @@ class TestMistralBackendReasoningEffort:
             alias="mistral-small",
             thinking=thinking,
         )
-        messages = [LLMMessage(role=Role.user, content="hi")]
+        messages = [LLMMessage(role=Role.USER, content="hi")]
 
         with patch.object(backend, "_get_client") as mock_get_client:
             mock_client = MagicMock()
@@ -728,9 +728,9 @@ class TestMistralBackendReasoningEffort:
             thinking="off",
         )
         messages = [
-            LLMMessage(role=Role.user, content="Hi"),
+            LLMMessage(role=Role.USER, content="Hi"),
             LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="Answer",
                 reasoning_content="Hidden reasoning",
             ),
@@ -765,7 +765,7 @@ class TestMistralBackendReasoningEffort:
 
 
 class TestBuildHttpErrorBodyReading:
-    _MESSAGES: ClassVar[list[LLMMessage]] = [LLMMessage(role=Role.user, content="hi")]
+    _MESSAGES: ClassVar[list[LLMMessage]] = [LLMMessage(role=Role.USER, content="hi")]
     _COMMON_KWARGS: ClassVar[dict] = dict(
         provider="test",
         endpoint="https://api.test.com",

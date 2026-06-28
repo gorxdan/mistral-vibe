@@ -126,9 +126,9 @@ async def test_act_attaches_images_to_user_message(
 
 def _seed_history_image(agent, png_attachment: ImageAttachment) -> None:
     agent.messages.append(
-        LLMMessage(role=Role.user, content="earlier", images=[png_attachment])
+        LLMMessage(role=Role.USER, content="earlier", images=[png_attachment])
     )
-    agent.messages.append(LLMMessage(role=Role.assistant, content="seen"))
+    agent.messages.append(LLMMessage(role=Role.ASSISTANT, content="seen"))
 
 
 @pytest.mark.asyncio
@@ -192,7 +192,7 @@ def test_count_history_images_unsupported_by_active_model(
     assert agent.count_history_images_unsupported_by_active_model() == 1
 
     agent.messages.append(
-        LLMMessage(role=Role.user, content="more", images=[png_attachment])
+        LLMMessage(role=Role.USER, content="more", images=[png_attachment])
     )
     assert agent.count_history_images_unsupported_by_active_model() == 2
 

@@ -120,8 +120,8 @@ class TurnSummaryTracker(TurnSummaryPort):
             extraction_text = "\n\n".join(sections)
 
             summary_messages = [
-                LLMMessage(role=Role.system, content=prompt_text),
-                LLMMessage(role=Role.user, content=extraction_text),
+                LLMMessage(role=Role.SYSTEM, content=prompt_text),
+                LLMMessage(role=Role.USER, content=extraction_text),
             ]
 
             result = await self._backend.complete(

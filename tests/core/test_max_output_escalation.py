@@ -147,7 +147,7 @@ async def test_chat_passes_override_to_backend_but_not_compaction() -> None:
         async def complete(self, *, max_tokens: int | None = None, **kw: object):
             seen.append(max_tokens)
             return LLMChunk(
-                message=LLMMessage(role=Role.assistant, content="ok"),
+                message=LLMMessage(role=Role.ASSISTANT, content="ok"),
                 usage=LLMUsage(prompt_tokens=1, completion_tokens=1),
             )
 

@@ -183,8 +183,8 @@ class SafetyJudge:
                 f"{transcript}"
             )
         messages = [
-            LLMMessage(role=Role.system, content=_system_prompt_for(tool_name)),
-            LLMMessage(role=Role.user, content=user_content),
+            LLMMessage(role=Role.SYSTEM, content=_system_prompt_for(tool_name)),
+            LLMMessage(role=Role.USER, content=user_content),
         ]
         temperature = (
             self._config.temperature

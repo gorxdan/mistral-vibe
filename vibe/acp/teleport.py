@@ -214,7 +214,7 @@ async def handle_teleport_command(
         (
             msg
             for msg in reversed(session.agent_loop.messages)
-            if msg.role == Role.user and not msg.injected
+            if msg.role == Role.USER and not msg.injected
         ),
         None,
     )

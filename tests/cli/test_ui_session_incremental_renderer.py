@@ -67,7 +67,7 @@ async def test_ui_session_incremental_loader_shows_tail_and_load_more(
 ) -> None:
     agent_loop = build_test_agent_loop(config=vibe_config, enable_streaming=False)
     agent_loop.messages.extend([
-        LLMMessage(role=Role.user, content=f"msg-{idx}") for idx in range(66)
+        LLMMessage(role=Role.USER, content=f"msg-{idx}") for idx in range(66)
     ])
 
     app = VibeApp(agent_loop=agent_loop, plan_offer_gateway=_pro_plan_gateway())
@@ -93,7 +93,7 @@ async def test_ui_session_incremental_loader_load_more_shows_remaining_count(
     total_messages = 31
     agent_loop = build_test_agent_loop(config=vibe_config, enable_streaming=False)
     agent_loop.messages.extend([
-        LLMMessage(role=Role.user, content=f"msg-{idx}")
+        LLMMessage(role=Role.USER, content=f"msg-{idx}")
         for idx in range(total_messages)
     ])
 
@@ -125,7 +125,7 @@ async def test_ui_session_incremental_loader_load_more_batches_until_done(
 ) -> None:
     agent_loop = build_test_agent_loop(config=vibe_config, enable_streaming=False)
     agent_loop.messages.extend([
-        LLMMessage(role=Role.user, content=f"msg-{idx}") for idx in range(31)
+        LLMMessage(role=Role.USER, content=f"msg-{idx}") for idx in range(31)
     ])
 
     app = VibeApp(agent_loop=agent_loop, plan_offer_gateway=_pro_plan_gateway())
@@ -160,7 +160,7 @@ async def test_ui_session_incremental_loader_keeps_top_alignment_when_not_scroll
 ) -> None:
     agent_loop = build_test_agent_loop(config=vibe_config, enable_streaming=False)
     agent_loop.messages.extend([
-        LLMMessage(role=Role.user, content=f"msg-{idx}")
+        LLMMessage(role=Role.USER, content=f"msg-{idx}")
         for idx in range(HISTORY_RESUME_TAIL_MESSAGES + 1)
     ])
 

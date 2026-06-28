@@ -45,7 +45,7 @@ class TestTeleportAgentLoopTelemetry:
                 yield TeleportStartingWorkflowEvent()
                 yield TeleportCompleteEvent(url="https://chat.example.com/123")
 
-        agent_loop.messages.append(LLMMessage(role=Role.user, content="hello"))
+        agent_loop.messages.append(LLMMessage(role=Role.USER, content="hello"))
         _set_teleport_service(agent_loop, FakeTeleportService())
 
         gen = agent_loop.teleport_to_vibe_code(None)
@@ -92,7 +92,7 @@ class TestTeleportAgentLoopTelemetry:
                     telemetry_details={"http_status_code": 502},
                 )
 
-        agent_loop.messages.append(LLMMessage(role=Role.user, content="hello"))
+        agent_loop.messages.append(LLMMessage(role=Role.USER, content="hello"))
         _set_teleport_service(agent_loop, FakeTeleportService())
 
         gen = agent_loop.teleport_to_vibe_code(None)
@@ -135,7 +135,7 @@ class TestTeleportAgentLoopTelemetry:
                         "Teleport cancelled: changes not pushed."
                     )
 
-        agent_loop.messages.append(LLMMessage(role=Role.user, content="hello"))
+        agent_loop.messages.append(LLMMessage(role=Role.USER, content="hello"))
         _set_teleport_service(agent_loop, FakeTeleportService())
 
         gen = agent_loop.teleport_to_vibe_code(None)
@@ -171,7 +171,7 @@ class TestTeleportAgentLoopTelemetry:
                 yield TeleportCheckingGitEvent()
                 raise asyncio.CancelledError
 
-        agent_loop.messages.append(LLMMessage(role=Role.user, content="hello"))
+        agent_loop.messages.append(LLMMessage(role=Role.USER, content="hello"))
         _set_teleport_service(agent_loop, FakeTeleportService())
 
         gen = agent_loop.teleport_to_vibe_code(None)
@@ -206,7 +206,7 @@ class TestTeleportAgentLoopTelemetry:
                 yield TeleportCheckingGitEvent()
                 yield TeleportPushRequiredEvent()
 
-        agent_loop.messages.append(LLMMessage(role=Role.user, content="hello"))
+        agent_loop.messages.append(LLMMessage(role=Role.USER, content="hello"))
         _set_teleport_service(agent_loop, FakeTeleportService())
 
         gen = agent_loop.teleport_to_vibe_code(None)

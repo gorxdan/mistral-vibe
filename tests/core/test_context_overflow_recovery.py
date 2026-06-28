@@ -82,7 +82,7 @@ async def test_try_reactive_shaping_compresses_old_history() -> None:
     loop = build_test_agent_loop(config=cfg)
     # Enough large messages that some fall outside the protected prefix/suffix.
     for _ in range(4):
-        loop.messages.append(LLMMessage(role=Role.assistant, content="x" * 4000))
+        loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="x" * 4000))
 
     result = await loop._try_reactive_shaping()
 

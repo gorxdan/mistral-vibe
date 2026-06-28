@@ -205,7 +205,7 @@ async def test_streaming_honors_fallback_model_override() -> None:
     loop = build_test_agent_loop(config=config, backend=backend)
     backup = next(m for m in loop.config.models if m.alias == "backup")
     loop._fallback_model_override = backup
-    loop.messages.append(LLMMessage(role=Role.user, content="hi", message_id="u1"))
+    loop.messages.append(LLMMessage(role=Role.USER, content="hi", message_id="u1"))
 
     _ = [chunk async for chunk in loop._chat_streaming()]
 

@@ -52,7 +52,7 @@ def _serialized_messages(messages: list[LLMMessage]) -> list[dict[str, object]]:
 
 def test_assistant_tool_call_message_keeps_content_key() -> None:
     msg = LLMMessage(
-        role=Role.assistant,
+        role=Role.ASSISTANT,
         content=None,
         tool_calls=[
             ToolCall(
@@ -69,8 +69,8 @@ def test_assistant_tool_call_message_keeps_content_key() -> None:
 
 def test_normal_message_content_is_preserved() -> None:
     out = _serialized_messages([
-        LLMMessage(role=Role.system, content="sys"),
-        LLMMessage(role=Role.user, content="hi"),
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.USER, content="hi"),
     ])
     assert [m["content"] for m in out] == ["sys", "hi"]
 
@@ -81,12 +81,12 @@ def test_every_message_has_a_content_key() -> None:
     # trigger is a reasoning-only assistant turn (thinking models) whose content
     # is None. content must never be absent for any role.
     msgs = [
-        LLMMessage(role=Role.system, content=None),
-        LLMMessage(role=Role.user, content="q"),
+        LLMMessage(role=Role.SYSTEM, content=None),
+        LLMMessage(role=Role.USER, content="q"),
         # reasoning-only assistant turn: no content, no tool_calls -> the bug.
-        LLMMessage(role=Role.assistant, content=None, reasoning_content="hmm"),
-        LLMMessage(role=Role.assistant, content=None, tool_calls=[ToolCall(id="c")]),
-        LLMMessage(role=Role.tool, content="result", tool_call_id="c"),
+        LLMMessage(role=Role.ASSISTANT, content=None, reasoning_content="hmm"),
+        LLMMessage(role=Role.ASSISTANT, content=None, tool_calls=[ToolCall(id="c")]),
+        LLMMessage(role=Role.TOOL, content="result", tool_call_id="c"),
     ]
     out = _serialized_messages(msgs)
     assert [m.get("content") for m in out] == ["", "q", "", "", "result"]

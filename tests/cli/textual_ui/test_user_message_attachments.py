@@ -117,7 +117,7 @@ async def test_attachment_link_shortens_home_absolute_alias() -> None:
 
 def test_resumed_user_message_with_images_renders_footer(tmp_path: Path) -> None:
     att = _att(tmp_path / "shot.png", "shot.png")
-    msg = LLMMessage(role=Role.user, content="look at @shot.png", images=[att])
+    msg = LLMMessage(role=Role.USER, content="look at @shot.png", images=[att])
 
     widgets = build_history_widgets(
         [msg],
@@ -134,7 +134,7 @@ def test_resumed_user_message_with_images_renders_footer(tmp_path: Path) -> None
 
 def test_resumed_user_message_with_images_only_still_mounts(tmp_path: Path) -> None:
     att = _att(tmp_path / "shot.png", "shot.png")
-    msg = LLMMessage(role=Role.user, content="", images=[att])
+    msg = LLMMessage(role=Role.USER, content="", images=[att])
 
     widgets = build_history_widgets(
         [msg],

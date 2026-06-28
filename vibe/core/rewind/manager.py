@@ -88,7 +88,7 @@ class RewindManager:
         return [
             (i, msg.content or "")
             for i, msg in enumerate(self._messages)
-            if msg.role == Role.user and msg.content and not msg.injected
+            if msg.role == Role.USER and msg.content and not msg.injected
         ]
 
     async def rewind_to_message(
@@ -109,7 +109,7 @@ class RewindManager:
             raise RewindError(f"Invalid message index: {message_index}")
 
         user_msg = messages[message_index]
-        if user_msg.role != Role.user:
+        if user_msg.role != Role.USER:
             raise RewindError(f"Message at index {message_index} is not a user message")
 
         message_content = user_msg.content or ""

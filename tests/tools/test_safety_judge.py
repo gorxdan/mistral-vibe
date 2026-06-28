@@ -558,14 +558,14 @@ async def test_transcript_window_extracts_recent_user_assistant_turns() -> None:
 
     # Inject context + a real user request + an assistant reply + tool noise.
     loop.messages.append(
-        LLMMessage(role=Role.user, content="env context", injected=True)
+        LLMMessage(role=Role.USER, content="env context", injected=True)
     )
     loop.messages.append(
-        LLMMessage(role=Role.user, content="please delete the build dir")
+        LLMMessage(role=Role.USER, content="please delete the build dir")
     )
-    loop.messages.append(LLMMessage(role=Role.assistant, content="on it"))
+    loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="on it"))
     loop.messages.append(
-        LLMMessage(role=Role.tool, content="big tool result", tool_call_id="x")
+        LLMMessage(role=Role.TOOL, content="big tool result", tool_call_id="x")
     )
 
     args = BashArgs(command="rm -rf build")

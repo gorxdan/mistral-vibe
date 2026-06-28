@@ -124,7 +124,7 @@ class OpenAIAdapter(APIAdapter):
     def _user_with_images_to_parts(
         self, msg_dict: dict[str, Any], source: LLMMessage
     ) -> dict[str, Any]:
-        if source.role != Role.user or not source.images:
+        if source.role != Role.USER or not source.images:
             return msg_dict
         parts: list[dict[str, Any]] = []
         text = msg_dict.get("content")
@@ -210,7 +210,7 @@ class OpenAIAdapter(APIAdapter):
     ) -> LLMChunk:
         message = self._parse_message(data, provider.reasoning_field_name)
         if message is None:
-            message = LLMMessage(role=Role.assistant, content="")
+            message = LLMMessage(role=Role.ASSISTANT, content="")
 
         usage_data = data.get("usage") or {}
         details = usage_data.get("prompt_tokens_details") or {}

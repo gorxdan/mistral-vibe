@@ -154,7 +154,7 @@ class SessionLogger:
     def _fallback_title_from_messages(self, messages: Sequence[LLMMessage]) -> str:
         first_user_message = None
         for message in messages:
-            if message.role == Role.user:
+            if message.role == Role.USER:
                 first_user_message = message
                 break
 
@@ -277,7 +277,7 @@ class SessionLogger:
         session_dir, session_metadata = session_info
         metadata_path = session_dir / METADATA_FILENAME
 
-        if not any(msg.role != Role.system for msg in messages):
+        if not any(msg.role != Role.SYSTEM for msg in messages):
             return
 
         # If the session directory does not exist, create it
@@ -302,7 +302,7 @@ class SessionLogger:
             ) from e
 
         try:
-            non_system_messages = [m for m in messages if m.role != Role.system]
+            non_system_messages = [m for m in messages if m.role != Role.SYSTEM]
             # Append new messages
             new_messages = non_system_messages[old_total_messages:]
 
@@ -330,7 +330,7 @@ class SessionLogger:
             title = self._resolve_title(messages)
             system_prompt = (
                 messages[0].model_dump()
-                if len(messages) > 0 and messages[0].role == Role.system
+                if len(messages) > 0 and messages[0].role == Role.SYSTEM
                 else None
             )
             total_messages = len(non_system_messages)

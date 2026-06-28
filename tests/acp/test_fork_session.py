@@ -59,12 +59,12 @@ class TestACPForkSession:
         source_messages = [
             message.model_dump(mode="json", exclude_none=True)
             for message in source_session.agent_loop.messages
-            if message.role != Role.system
+            if message.role != Role.SYSTEM
         ]
         forked_messages = [
             message.model_dump(mode="json", exclude_none=True)
             for message in forked_session.agent_loop.messages
-            if message.role != Role.system
+            if message.role != Role.SYSTEM
         ]
         assert forked_messages == source_messages
 
@@ -77,12 +77,12 @@ class TestACPForkSession:
         )
         source_session = acp_agent_loop.sessions[session_response.session_id]
         source_session.agent_loop.messages.extend([
-            LLMMessage(role=Role.user, content="First", message_id="user-1"),
+            LLMMessage(role=Role.USER, content="First", message_id="user-1"),
             LLMMessage(
-                role=Role.assistant, content="First answer", message_id="assistant-1"
+                role=Role.ASSISTANT, content="First answer", message_id="assistant-1"
             ),
             LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="",
                 message_id="assistant-2",
                 tool_calls=[
@@ -95,10 +95,10 @@ class TestACPForkSession:
                     )
                 ],
             ),
-            LLMMessage(role=Role.tool, content="contents", tool_call_id="call-1"),
-            LLMMessage(role=Role.user, content="Second", message_id="user-2"),
+            LLMMessage(role=Role.TOOL, content="contents", tool_call_id="call-1"),
+            LLMMessage(role=Role.USER, content="Second", message_id="user-2"),
             LLMMessage(
-                role=Role.assistant, content="Second answer", message_id="assistant-3"
+                role=Role.ASSISTANT, content="Second answer", message_id="assistant-3"
             ),
         ])
 
@@ -113,12 +113,12 @@ class TestACPForkSession:
         assert [
             (message.role, message.content, message.message_id, message.tool_call_id)
             for message in forked_session.agent_loop.messages
-            if message.role != Role.system
+            if message.role != Role.SYSTEM
         ] == [
-            (Role.user, "First", "user-1", None),
-            (Role.assistant, "First answer", "assistant-1", None),
-            (Role.assistant, "", "assistant-2", None),
-            (Role.tool, "contents", None, "call-1"),
+            (Role.USER, "First", "user-1", None),
+            (Role.ASSISTANT, "First answer", "assistant-1", None),
+            (Role.ASSISTANT, "", "assistant-2", None),
+            (Role.TOOL, "contents", None, "call-1"),
         ]
 
     @pytest.mark.asyncio
@@ -130,9 +130,9 @@ class TestACPForkSession:
         )
         source_session = acp_agent_loop.sessions[session_response.session_id]
         source_session.agent_loop.messages.extend([
-            LLMMessage(role=Role.user, content="First", message_id="user-1"),
+            LLMMessage(role=Role.USER, content="First", message_id="user-1"),
             LLMMessage(
-                role=Role.assistant, content="First answer", message_id="assistant-1"
+                role=Role.ASSISTANT, content="First answer", message_id="assistant-1"
             ),
         ])
 

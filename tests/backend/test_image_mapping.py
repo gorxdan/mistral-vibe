@@ -31,7 +31,7 @@ def image_attachment(tmp_path: Path) -> ImageAttachment:
 
 
 def _user_message(image: ImageAttachment) -> LLMMessage:
-    return LLMMessage(role=Role.user, content="describe this", images=[image])
+    return LLMMessage(role=Role.USER, content="describe this", images=[image])
 
 
 class _FakeProvider:
@@ -134,7 +134,7 @@ def test_reasoning_adapter_emits_image_url_part(
 
 
 def test_text_only_user_message_keeps_string_content() -> None:
-    text_msg = LLMMessage(role=Role.user, content="hi")
+    text_msg = LLMMessage(role=Role.USER, content="hi")
 
     mistral_prepared = MistralMapper().prepare_message(text_msg)
     assert mistral_prepared.model_dump()["content"] == "hi"

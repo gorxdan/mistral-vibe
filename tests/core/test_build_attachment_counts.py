@@ -8,7 +8,7 @@ from vibe.core.types import FileImageSource, ImageAttachment, LLMMessage, Role
 
 
 def _msg(images: list[ImageAttachment] | None) -> LLMMessage:
-    return LLMMessage(role=Role.user, content="hi", images=images)
+    return LLMMessage(role=Role.USER, content="hi", images=images)
 
 
 def _image() -> ImageAttachment:

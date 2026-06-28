@@ -513,14 +513,14 @@ class Task(
                             )
 
             turns_used = sum(
-                msg.role == Role.assistant for msg in subagent_loop.messages
+                msg.role == Role.ASSISTANT for msg in subagent_loop.messages
             )
 
         except Exception as e:
             completed = False
             accumulated_response.append(f"\n[Subagent error: {e}]")
             turns_used = sum(
-                msg.role == Role.assistant for msg in subagent_loop.messages
+                msg.role == Role.ASSISTANT for msg in subagent_loop.messages
             )
         finally:
             with suppress(Exception):

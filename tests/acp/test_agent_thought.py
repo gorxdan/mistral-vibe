@@ -21,7 +21,7 @@ def _create_backend_with_reasoning(
     return FakeBackend(
         LLMChunk(
             message=LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content=content,
                 reasoning_content=reasoning_content,
             ),

@@ -22,7 +22,7 @@ from vibe.core.types import (
 
 def _assistant_call(name: str, arguments: str, index: int = 0) -> LLMMessage:
     return LLMMessage(
-        role=Role.assistant,
+        role=Role.ASSISTANT,
         tool_calls=[
             ToolCall(index=index, function=FunctionCall(name=name, arguments=arguments))
         ],
@@ -30,7 +30,7 @@ def _assistant_call(name: str, arguments: str, index: int = 0) -> LLMMessage:
 
 
 def _tool_result() -> LLMMessage:
-    return LLMMessage(role=Role.tool, content="ok")
+    return LLMMessage(role=Role.TOOL, content="ok")
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ class TestTrailingFingerprints:
             _assistant_call("read", '{"path": "a.py"}'),
             _tool_result(),
             _assistant_call("grep", '{"pattern": "x"}'),
-            LLMMessage(role=Role.assistant, content="thinking"),
+            LLMMessage(role=Role.ASSISTANT, content="thinking"),
         ])
         fps = _trailing_tool_call_fingerprints(messages, limit=10)
         assert fps == [("read", '{"path": "a.py"}'), ("grep", '{"pattern": "x"}')]

@@ -149,7 +149,7 @@ async def test_ui_sends_manual_command_output_to_next_agent_turn() -> None:
         await _wait_for_bash_output_message(vibe_app, pilot)
 
         injected_message = vibe_app.agent_loop.messages[-1]
-        assert injected_message.role == Role.user
+        assert injected_message.role == Role.USER
         assert injected_message.injected is True
         assert injected_message.content is not None
         assert "Manual `!` command result from the user." in injected_message.content
@@ -163,7 +163,7 @@ async def test_ui_sends_manual_command_output_to_next_agent_turn() -> None:
 
         assert len(backend.requests_messages) == 1
         user_messages = [
-            msg for msg in backend.requests_messages[0] if msg.role == Role.user
+            msg for msg in backend.requests_messages[0] if msg.role == Role.USER
         ]
         assert len(user_messages) >= 2
         assert user_messages[-2].content == injected_message.content

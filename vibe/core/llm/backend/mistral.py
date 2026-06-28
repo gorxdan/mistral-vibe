@@ -63,9 +63,9 @@ class MistralMapper:
         self, msg: LLMMessage, *, include_reasoning_content: bool = True
     ) -> ChatCompletionRequestMessage:
         match msg.role:
-            case Role.system:
+            case Role.SYSTEM:
                 return SystemMessage(role="system", content=msg.content or "")
-            case Role.user:
+            case Role.USER:
                 if msg.images:
                     user_parts: list[ContentChunk] = []
                     if msg.content:
@@ -78,7 +78,7 @@ class MistralMapper:
                     )
                     return UserMessage(role="user", content=user_parts)
                 return UserMessage(role="user", content=msg.content)
-            case Role.assistant:
+            case Role.ASSISTANT:
                 content: AssistantMessageContent
                 if include_reasoning_content and msg.reasoning_content:
                     chunks: list[ContentChunk] = [
@@ -111,7 +111,7 @@ class MistralMapper:
                         for tc in msg.tool_calls or []
                     ],
                 )
-            case Role.tool:
+            case Role.TOOL:
                 return ToolMessage(
                     role="tool",
                     content=msg.content,
@@ -334,7 +334,7 @@ class MistralBackend:
             )
             return LLMChunk(
                 message=LLMMessage(
-                    role=Role.assistant,
+                    role=Role.ASSISTANT,
                     content=parsed.content,
                     reasoning_content=parsed.reasoning_content,
                     tool_calls=self._mapper.parse_tool_calls(message.tool_calls)
@@ -421,7 +421,7 @@ class MistralBackend:
                 )
                 yield LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant,
+                        role=Role.ASSISTANT,
                         content=parsed.content,
                         reasoning_content=parsed.reasoning_content,
                         tool_calls=self._mapper.parse_tool_calls(

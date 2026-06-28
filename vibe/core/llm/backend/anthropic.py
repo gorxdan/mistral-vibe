@@ -44,9 +44,9 @@ class AnthropicMapper:
 
         for msg in messages:
             match msg.role:
-                case Role.system:
+                case Role.SYSTEM:
                     system_prompt = msg.content or ""
-                case Role.user:
+                case Role.USER:
                     user_content: list[dict[str, Any]] = []
                     if msg.content:
                         user_content.append({"type": "text", "text": msg.content})
@@ -63,9 +63,9 @@ class AnthropicMapper:
                             for att in msg.images
                         )
                     converted.append({"role": "user", "content": user_content or ""})
-                case Role.assistant:
+                case Role.ASSISTANT:
                     converted.append(self._convert_assistant_message(msg))
-                case Role.tool:
+                case Role.TOOL:
                     self._append_tool_result(converted, msg)
 
         return system_prompt, converted
@@ -197,7 +197,7 @@ class AnthropicMapper:
 
         return LLMChunk(
             message=LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="".join(text_parts) or None,
                 reasoning_content="".join(thinking_parts) or None,
                 reasoning_signature="".join(signature_parts) or None,
@@ -230,7 +230,7 @@ class AnthropicMapper:
             case "tool_use":
                 chunk = LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant,
+                        role=Role.ASSISTANT,
                         tool_calls=[
                             ToolCall(
                                 id=block.get("id"),
@@ -246,7 +246,7 @@ class AnthropicMapper:
             case "thinking":
                 chunk = LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant, reasoning_content=block.get("thinking", "")
+                        role=Role.ASSISTANT, reasoning_content=block.get("thinking", "")
                     )
                 )
                 return chunk, idx
@@ -263,26 +263,26 @@ class AnthropicMapper:
             case "text_delta":
                 chunk = LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant, content=delta.get("text", "")
+                        role=Role.ASSISTANT, content=delta.get("text", "")
                     )
                 )
             case "thinking_delta":
                 chunk = LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant, reasoning_content=delta.get("thinking", "")
+                        role=Role.ASSISTANT, reasoning_content=delta.get("thinking", "")
                     )
                 )
             case "signature_delta":
                 chunk = LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant,
+                        role=Role.ASSISTANT,
                         reasoning_signature=delta.get("signature", ""),
                     )
                 )
             case "input_json_delta":
                 chunk = LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant,
+                        role=Role.ASSISTANT,
                         tool_calls=[
                             ToolCall(
                                 index=idx,
@@ -304,7 +304,7 @@ class AnthropicMapper:
         if not usage_data:
             return None, current_index
         chunk = LLMChunk(
-            message=LLMMessage(role=Role.assistant),
+            message=LLMMessage(role=Role.ASSISTANT),
             usage=LLMUsage(
                 prompt_tokens=0, completion_tokens=usage_data.get("output_tokens", 0)
             ),
@@ -325,7 +325,7 @@ class AnthropicMapper:
             + usage_data.get("cache_read_input_tokens", 0)
         )
         chunk = LLMChunk(
-            message=LLMMessage(role=Role.assistant),
+            message=LLMMessage(role=Role.ASSISTANT),
             usage=LLMUsage(
                 prompt_tokens=total_input_tokens,
                 completion_tokens=0,
@@ -509,7 +509,7 @@ class AnthropicAdapter(APIAdapter):
 
     def _parse_streaming_event(self, data: dict[str, Any]) -> LLMChunk:
         event_type = data.get("type", "")
-        empty_chunk = LLMChunk(message=LLMMessage(role=Role.assistant, content=None))
+        empty_chunk = LLMChunk(message=LLMMessage(role=Role.ASSISTANT, content=None))
 
         if event_type == "message_start":
             self._current_index = 0
@@ -535,14 +535,14 @@ class AnthropicAdapter(APIAdapter):
         message = data.get("message", {})
         usage_data = message.get("usage", {})
         if not usage_data:
-            return LLMChunk(message=LLMMessage(role=Role.assistant, content=None))
+            return LLMChunk(message=LLMMessage(role=Role.ASSISTANT, content=None))
         total_input_tokens = (
             usage_data.get("input_tokens", 0)
             + usage_data.get("cache_creation_input_tokens", 0)
             + usage_data.get("cache_read_input_tokens", 0)
         )
         return LLMChunk(
-            message=LLMMessage(role=Role.assistant, content=None),
+            message=LLMMessage(role=Role.ASSISTANT, content=None),
             usage=LLMUsage(
                 prompt_tokens=total_input_tokens,
                 completion_tokens=0,
@@ -558,7 +558,7 @@ class AnthropicAdapter(APIAdapter):
         if block_type == "thinking":
             return LLMChunk(
                 message=LLMMessage(
-                    role=Role.assistant,
+                    role=Role.ASSISTANT,
                     reasoning_content=content_block.get("thinking", ""),
                 )
             )
@@ -567,7 +567,7 @@ class AnthropicAdapter(APIAdapter):
         if block_type == "tool_use":
             return LLMChunk(
                 message=LLMMessage(
-                    role=Role.assistant,
+                    role=Role.ASSISTANT,
                     tool_calls=[
                         ToolCall(
                             index=index,
@@ -590,26 +590,26 @@ class AnthropicAdapter(APIAdapter):
             case "text_delta":
                 return LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant, content=delta.get("text", "")
+                        role=Role.ASSISTANT, content=delta.get("text", "")
                     )
                 )
             case "thinking_delta":
                 return LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant, reasoning_content=delta.get("thinking", "")
+                        role=Role.ASSISTANT, reasoning_content=delta.get("thinking", "")
                     )
                 )
             case "signature_delta":
                 return LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant,
+                        role=Role.ASSISTANT,
                         reasoning_signature=delta.get("signature", ""),
                     )
                 )
             case "input_json_delta":
                 return LLMChunk(
                     message=LLMMessage(
-                        role=Role.assistant,
+                        role=Role.ASSISTANT,
                         tool_calls=[
                             ToolCall(
                                 index=index,
@@ -621,10 +621,10 @@ class AnthropicAdapter(APIAdapter):
                     )
                 )
             case _:
-                return LLMChunk(message=LLMMessage(role=Role.assistant, content=None))
+                return LLMChunk(message=LLMMessage(role=Role.ASSISTANT, content=None))
 
     def _parse_content_block_stop(self, _data: dict[str, Any]) -> LLMChunk:
-        return LLMChunk(message=LLMMessage(role=Role.assistant, content=None))
+        return LLMChunk(message=LLMMessage(role=Role.ASSISTANT, content=None))
 
     def _parse_message_delta(self, data: dict[str, Any]) -> LLMChunk:
         delta = data.get("delta", {})
@@ -637,7 +637,7 @@ class AnthropicAdapter(APIAdapter):
             else None
         )
         return LLMChunk(
-            message=LLMMessage(role=Role.assistant, content=None),
+            message=LLMMessage(role=Role.ASSISTANT, content=None),
             usage=usage,
             stop=_parse_stop_info(delta.get("stop_reason"), delta.get("stop_details")),
         )

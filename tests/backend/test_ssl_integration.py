@@ -72,7 +72,7 @@ async def test_generic_backend_streaming_uses_ssl_cert_file(
             chunks = [
                 chunk
                 async for chunk in backend.complete_streaming(
-                    model=model, messages=[LLMMessage(role=Role.user, content="Greet")]
+                    model=model, messages=[LLMMessage(role=Role.USER, content="Greet")]
                 )
             ]
     finally:

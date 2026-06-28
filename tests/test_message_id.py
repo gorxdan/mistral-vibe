@@ -14,27 +14,27 @@ from vibe.core.types import (
 
 class TestLLMMessageId:
     def test_user_message_gets_message_id(self) -> None:
-        msg = LLMMessage(role=Role.user, content="Hello")
+        msg = LLMMessage(role=Role.USER, content="Hello")
         assert msg.message_id is not None
         UUID(msg.message_id)  # Validates it's a valid UUID
 
     def test_assistant_message_gets_message_id(self) -> None:
-        msg = LLMMessage(role=Role.assistant, content="Hi there")
+        msg = LLMMessage(role=Role.ASSISTANT, content="Hi there")
         assert msg.message_id is not None
         UUID(msg.message_id)
 
     def test_system_message_gets_message_id(self) -> None:
-        msg = LLMMessage(role=Role.system, content="You are helpful")
+        msg = LLMMessage(role=Role.SYSTEM, content="You are helpful")
         assert msg.message_id is not None
         UUID(msg.message_id)
 
     def test_tool_message_does_not_get_message_id(self) -> None:
-        msg = LLMMessage(role=Role.tool, content="result", tool_call_id="tc_123")
+        msg = LLMMessage(role=Role.TOOL, content="result", tool_call_id="tc_123")
         assert msg.message_id is None
 
     def test_each_message_gets_unique_id(self) -> None:
-        msg1 = LLMMessage(role=Role.user, content="First")
-        msg2 = LLMMessage(role=Role.user, content="Second")
+        msg1 = LLMMessage(role=Role.USER, content="First")
+        msg2 = LLMMessage(role=Role.USER, content="Second")
         assert msg1.message_id != msg2.message_id
 
     def test_message_id_preserved_from_dict(self) -> None:
@@ -67,8 +67,8 @@ class TestLLMMessageId:
 
 class TestLLMMessageAccumulation:
     def test_message_id_preserved_on_add(self) -> None:
-        msg1 = LLMMessage(role=Role.assistant, content="Hello")
-        msg2 = LLMMessage(role=Role.assistant, content=" world")
+        msg1 = LLMMessage(role=Role.ASSISTANT, content="Hello")
+        msg2 = LLMMessage(role=Role.ASSISTANT, content=" world")
 
         result = msg1 + msg2
 
@@ -76,9 +76,9 @@ class TestLLMMessageAccumulation:
         assert result.content == "Hello world"
 
     def test_message_id_preserved_after_multiple_adds(self) -> None:
-        msg1 = LLMMessage(role=Role.assistant, content="A")
-        msg2 = LLMMessage(role=Role.assistant, content="B")
-        msg3 = LLMMessage(role=Role.assistant, content="C")
+        msg1 = LLMMessage(role=Role.ASSISTANT, content="A")
+        msg2 = LLMMessage(role=Role.ASSISTANT, content="B")
+        msg3 = LLMMessage(role=Role.ASSISTANT, content="C")
 
         result = msg1 + msg2 + msg3
 
@@ -120,7 +120,7 @@ class TestEventMessageId:
 
 class TestMessageIdExcludedFromAPI:
     def test_message_id_excluded_with_exclude_param(self) -> None:
-        msg = LLMMessage(role=Role.user, content="Hello")
+        msg = LLMMessage(role=Role.USER, content="Hello")
         dumped = msg.model_dump(exclude_none=True, exclude={"message_id"})
 
         assert "message_id" not in dumped
@@ -128,7 +128,7 @@ class TestMessageIdExcludedFromAPI:
         assert dumped["content"] == "Hello"
 
     def test_message_id_included_in_normal_dump(self) -> None:
-        msg = LLMMessage(role=Role.user, content="Hello")
+        msg = LLMMessage(role=Role.USER, content="Hello")
         dumped = msg.model_dump(exclude_none=True)
 
         assert "message_id" in dumped
@@ -137,7 +137,7 @@ class TestMessageIdExcludedFromAPI:
 
 class TestMessageIdInLogs:
     def test_message_id_in_json_dump(self) -> None:
-        msg = LLMMessage(role=Role.assistant, content="Response")
+        msg = LLMMessage(role=Role.ASSISTANT, content="Response")
         dumped = msg.model_dump(exclude_none=True)
 
         json_str = json.dumps(dumped)
@@ -147,7 +147,7 @@ class TestMessageIdInLogs:
         assert loaded["message_id"] == msg.message_id
 
     def test_message_id_roundtrip(self) -> None:
-        original = LLMMessage(role=Role.user, content="Test")
+        original = LLMMessage(role=Role.USER, content="Test")
         original_id = original.message_id
 
         dumped = original.model_dump(exclude_none=True)
@@ -156,7 +156,7 @@ class TestMessageIdInLogs:
         assert restored.message_id == original_id
 
     def test_tool_message_id_none_in_json(self) -> None:
-        msg = LLMMessage(role=Role.tool, content="result", tool_call_id="tc_1")
+        msg = LLMMessage(role=Role.TOOL, content="result", tool_call_id="tc_1")
         dumped = msg.model_dump(exclude_none=True)
 
         assert "message_id" not in dumped

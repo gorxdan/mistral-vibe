@@ -305,7 +305,7 @@ async def test_mcp_sampling_handler_sends_secondary_call_telemetry_metadata():
     assert sampling_metadata["session_id"] == agent.session_id
     assert sampling_metadata["parent_session_id"] == "parent-session-456"
     assert sampling_metadata["message_id"] == next(
-        message.message_id for message in agent.messages if message.role == Role.user
+        message.message_id for message in agent.messages if message.role == Role.USER
     )
     assert sampling_metadata["call_type"] == "secondary_call"
     assert sampling_metadata["call_source"] == "vibe_code"
@@ -455,7 +455,7 @@ async def test_provider_extra_headers_are_forwarded() -> None:
 
 def _refusal_chunk() -> LLMChunk:
     return LLMChunk(
-        message=LLMMessage(role=Role.assistant, content=""),
+        message=LLMMessage(role=Role.ASSISTANT, content=""),
         usage=LLMUsage(prompt_tokens=10, completion_tokens=2),
         stop=StopInfo(reason="refusal"),
     )
@@ -485,7 +485,7 @@ async def test_refusal_stop_reason_raises_refusal_error_streaming(
 
 def _refusal_chunk_with_details() -> LLMChunk:
     return LLMChunk(
-        message=LLMMessage(role=Role.assistant, content=""),
+        message=LLMMessage(role=Role.ASSISTANT, content=""),
         usage=LLMUsage(prompt_tokens=10, completion_tokens=2),
         stop=StopInfo(
             reason="refusal",

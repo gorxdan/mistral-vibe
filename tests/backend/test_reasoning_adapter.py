@@ -53,7 +53,7 @@ class TestReasoningEffort:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             thinking=level,
         )
         assert payload["reasoning_effort"] == level
@@ -62,7 +62,7 @@ class TestReasoningEffort:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             thinking="off",
         )
         assert "reasoning_effort" not in payload
@@ -73,7 +73,7 @@ class TestReasoningEffort:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             thinking="max",
         )
         assert payload["reasoning_effort"] == "xhigh"
@@ -82,9 +82,9 @@ class TestReasoningEffort:
 class TestThinkingBlocksConversion:
     def test_assistant_with_reasoning_to_content_blocks(self, adapter, provider):
         messages = [
-            LLMMessage(role=Role.user, content="Hi"),
+            LLMMessage(role=Role.USER, content="Hi"),
             LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="Answer",
                 reasoning_content="Let me think...",
             ),
@@ -101,17 +101,17 @@ class TestThinkingBlocksConversion:
 
     def test_assistant_without_reasoning_is_plain_string(self, adapter, provider):
         messages = [
-            LLMMessage(role=Role.user, content="Hi"),
-            LLMMessage(role=Role.assistant, content="Hello"),
+            LLMMessage(role=Role.USER, content="Hi"),
+            LLMMessage(role=Role.ASSISTANT, content="Hello"),
         ]
         payload = _prepare(adapter, provider, messages)
         assert payload["messages"][1]["content"] == "Hello"
 
     def test_assistant_with_reasoning_and_tool_calls(self, adapter, provider):
         messages = [
-            LLMMessage(role=Role.user, content="Hi"),
+            LLMMessage(role=Role.USER, content="Hi"),
             LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="Let me search.",
                 reasoning_content="I should look this up.",
                 tool_calls=[
@@ -141,7 +141,7 @@ class TestThinkingBlocksConversion:
             )
         ]
         payload = _prepare(
-            adapter, provider, [LLMMessage(role=Role.user, content="Hi")], tools=tools
+            adapter, provider, [LLMMessage(role=Role.USER, content="Hi")], tools=tools
         )
         assert len(payload["tools"]) == 1
         assert payload["tools"][0]["function"]["name"] == "search"

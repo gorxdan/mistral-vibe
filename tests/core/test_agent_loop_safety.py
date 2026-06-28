@@ -200,7 +200,7 @@ async def test_chat_wraps_unknown_backend_error_as_runtime_error() -> None:
 async def test_chat_missing_usage_surfaces_as_api_error() -> None:
     class _NoUsageBackend(FakeBackend):
         async def complete(self, **_kwargs: Any) -> LLMChunk:
-            return LLMChunk(message=LLMMessage(role=Role.assistant, content="hi"))
+            return LLMChunk(message=LLMMessage(role=Role.ASSISTANT, content="hi"))
 
     loop = _loop_with_backend(_NoUsageBackend())
     with pytest.raises(RuntimeError, match="Usage data missing"):
@@ -240,7 +240,7 @@ async def test_malformed_tool_args_emits_failed_result_without_invoking() -> Non
     assert any(e.tool_call_id == "bad-1" and e.error for e in results)
     assert loop.stats.tool_calls_failed >= 1
     # A tool-role response must be appended so the next turn does not 400.
-    assert any(m.role == Role.tool and m.tool_call_id == "bad-1" for m in loop.messages)
+    assert any(m.role == Role.TOOL and m.tool_call_id == "bad-1" for m in loop.messages)
 
 
 # --------------------------------------------------------------------------- #

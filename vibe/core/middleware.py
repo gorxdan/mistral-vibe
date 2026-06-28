@@ -185,7 +185,7 @@ class ContextShaperMiddleware:
     def _is_real_user_message(msg: LLMMessage) -> bool:
         from vibe.core.types import Role
 
-        return msg.role == Role.user and not msg.injected
+        return msg.role == Role.USER and not msg.injected
 
 
 class SnipMiddleware(ContextShaperMiddleware):
@@ -395,11 +395,11 @@ class ToolResultBudgetMiddleware:
         start = 0
         n = len(messages)
         while start < n:
-            if messages[start].role != Role.tool:
+            if messages[start].role != Role.TOOL:
                 start += 1
                 continue
             end = start + 1
-            while end < n and messages[end].role == Role.tool:
+            while end < n and messages[end].role == Role.TOOL:
                 end += 1
             yield start, end
             start = end
@@ -498,7 +498,7 @@ def _trailing_tool_call_fingerprints(
     """
     fingerprints: list[tuple[str, str]] = []
     for msg in messages:
-        if msg.role != Role.assistant or not msg.tool_calls:
+        if msg.role != Role.ASSISTANT or not msg.tool_calls:
             continue
         for tc in msg.tool_calls:
             name = tc.function.name or ""

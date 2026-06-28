@@ -13,9 +13,9 @@ from vibe.core.types import LLMMessage, Role
 def _loop(mode: Literal["system", "late"]) -> AgentLoop:
     config = build_test_vibe_config(memory=MemoryConfig(inject_mode=mode))
     loop = build_test_agent_loop(config=config)
-    loop.messages.append(LLMMessage(role=Role.user, content="first question"))
-    loop.messages.append(LLMMessage(role=Role.assistant, content="an answer"))
-    loop.messages.append(LLMMessage(role=Role.user, content="latest question"))
+    loop.messages.append(LLMMessage(role=Role.USER, content="first question"))
+    loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="an answer"))
+    loop.messages.append(LLMMessage(role=Role.USER, content="latest question"))
     return loop
 
 
@@ -47,7 +47,7 @@ def test_late_mode_keeps_system_stable_and_injects_ephemerally():
     sent = _sent(loop)
     assert len(sent) == len(loop.messages) + 1
     mem_idx = next(i for i, m in enumerate(sent) if "RECALL-BODY" in (m.content or ""))
-    assert sent[mem_idx].role == Role.user
+    assert sent[mem_idx].role == Role.USER
     assert sent[mem_idx + 1].content == "latest question"
 
 

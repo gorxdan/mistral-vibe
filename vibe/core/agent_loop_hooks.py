@@ -181,7 +181,7 @@ class AgentLoopHooksMixin:
         async for ev in self._hooks_manager.run(invocation):
             if isinstance(ev, HookUserMessage):
                 continuation = LLMMessage(
-                    role=Role.user, content=ev.content, injected=True
+                    role=Role.USER, content=ev.content, injected=True
                 )
             elif isinstance(ev, HookEvent):
                 events.append(ev)
@@ -570,7 +570,7 @@ class AgentLoopHooksMixin:
         async for hook_event in self._run_post_agent_turn_hooks():
             if isinstance(hook_event, HookUserMessage):
                 retry_msg = LLMMessage(
-                    role=Role.user, content=hook_event.content, injected=True
+                    role=Role.USER, content=hook_event.content, injected=True
                 )
             else:
                 events.append(hook_event)

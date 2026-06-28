@@ -115,7 +115,7 @@ class TestMistralMapperParseContent:
 class TestMistralMapperPrepareMessage:
     def test_prepare_assistant_message_without_reasoning(self):
         mapper = MistralMapper()
-        msg = LLMMessage(role=Role.assistant, content="Hello!")
+        msg = LLMMessage(role=Role.ASSISTANT, content="Hello!")
 
         result = mapper.prepare_message(msg)
 
@@ -125,7 +125,7 @@ class TestMistralMapperPrepareMessage:
     def test_prepare_assistant_message_with_reasoning_creates_chunks(self):
         mapper = MistralMapper()
         msg = LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content="The answer is 42.",
             reasoning_content="Let me calculate...",
         )
@@ -152,7 +152,7 @@ class TestMistralMapperPrepareMessage:
     def test_prepare_assistant_message_with_reasoning_and_none_content(self):
         mapper = MistralMapper()
         msg = LLMMessage(
-            role=Role.assistant, content=None, reasoning_content="Just thinking..."
+            role=Role.ASSISTANT, content=None, reasoning_content="Just thinking..."
         )
 
         result = mapper.prepare_message(msg)
@@ -202,7 +202,7 @@ class TestGenericBackendReasoningContent:
             )
             backend = GenericBackend(provider=provider)
             model = ModelConfig(name="test-model", provider="test", alias="test")
-            messages = [LLMMessage(role=Role.user, content="What is the answer?")]
+            messages = [LLMMessage(role=Role.USER, content="What is the answer?")]
 
             result = await backend.complete(
                 model=model,
@@ -240,7 +240,7 @@ class TestGenericBackendReasoningContent:
             )
             backend = GenericBackend(provider=provider)
             model = ModelConfig(name="test-model", provider="test", alias="test")
-            messages = [LLMMessage(role=Role.user, content="Stream please")]
+            messages = [LLMMessage(role=Role.USER, content="Stream please")]
 
             results = []
             async for chunk in backend.complete_streaming(
@@ -307,7 +307,7 @@ class TestAgentLoopStreamingReasoningEvents:
 
         [_ async for _ in agent.act("Think and answer")]
 
-        assistant_msg = next(m for m in agent.messages if m.role == Role.assistant)
+        assistant_msg = next(m for m in agent.messages if m.role == Role.ASSISTANT)
         assert assistant_msg.reasoning_content == "First thought. Second thought."
         assert assistant_msg.content == "Final answer."
 
@@ -329,7 +329,7 @@ class TestAgentLoopStreamingReasoningEvents:
         assistant_events = [e for e in events if isinstance(e, AssistantEvent)]
         assert len(assistant_events) == 2
 
-        assistant_msg = next(m for m in agent.messages if m.role == Role.assistant)
+        assistant_msg = next(m for m in agent.messages if m.role == Role.ASSISTANT)
         assert assistant_msg.reasoning_content is None
         assert assistant_msg.content == "Hello world!"
 
@@ -348,7 +348,7 @@ class TestLLMMessageReasoningContent:
 
     def test_llm_message_model_dump_includes_reasoning_content(self):
         msg = LLMMessage(
-            role=Role.assistant, content="Answer", reasoning_content="Thinking..."
+            role=Role.ASSISTANT, content="Answer", reasoning_content="Thinking..."
         )
 
         dumped = msg.model_dump(exclude_none=True)
@@ -357,7 +357,7 @@ class TestLLMMessageReasoningContent:
 
     def test_llm_message_model_dump_includes_reasoning_state(self):
         msg = LLMMessage(
-            role=Role.assistant, content="Answer", reasoning_state=["enc:abc"]
+            role=Role.ASSISTANT, content="Answer", reasoning_state=["enc:abc"]
         )
 
         dumped = msg.model_dump(exclude_none=True)
@@ -365,7 +365,7 @@ class TestLLMMessageReasoningContent:
         assert dumped["reasoning_state"] == ["enc:abc"]
 
     def test_llm_message_model_dump_excludes_none_reasoning_content(self):
-        msg = LLMMessage(role=Role.assistant, content="Answer")
+        msg = LLMMessage(role=Role.ASSISTANT, content="Answer")
 
         dumped = msg.model_dump(exclude_none=True)
 
@@ -437,7 +437,7 @@ class TestReasoningFieldNameConversion:
             model_name="test-model",
             messages=[
             LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content="Answer",
             reasoning_content="Thinking...",
             reasoning_state=["enc:abc"],
@@ -492,7 +492,7 @@ class TestReasoningFieldNameConversion:
             )
             backend = GenericBackend(provider=provider)
             model = ModelConfig(name="test-model", provider="test", alias="test")
-            messages = [LLMMessage(role=Role.user, content="What is the answer?")]
+            messages = [LLMMessage(role=Role.USER, content="What is the answer?")]
 
             result = await backend.complete(
                 model=model,
@@ -533,7 +533,7 @@ class TestReasoningFieldNameConversion:
             )
             backend = GenericBackend(provider=provider)
             model = ModelConfig(name="test-model", provider="test", alias="test")
-            messages = [LLMMessage(role=Role.user, content="Stream please")]
+            messages = [LLMMessage(role=Role.USER, content="Stream please")]
 
             results = []
             async for chunk in backend.complete_streaming(

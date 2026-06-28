@@ -347,10 +347,10 @@ class TestReloadPreservesMessages:
         await agent.reload_with_initial_messages()
 
         assert len(agent.messages) == 3
-        assert agent.messages[0].role == Role.system
-        assert agent.messages[1].role == Role.user
+        assert agent.messages[0].role == Role.SYSTEM
+        assert agent.messages[1].role == Role.USER
         assert agent.messages[1].content == old_user_content
-        assert agent.messages[2].role == Role.assistant
+        assert agent.messages[2].role == Role.ASSISTANT
         assert agent.messages[2].content == old_assistant_content
 
     @pytest.mark.asyncio
@@ -381,7 +381,7 @@ class TestReloadPreservesMessages:
         await agent.reload_with_initial_messages()
 
         assert len(agent.messages) == 1
-        assert agent.messages[0].role == Role.system
+        assert agent.messages[0].role == Role.SYSTEM
 
     @pytest.mark.asyncio
     async def test_reload_does_not_reemit_to_observer(self, observer_capture) -> None:
@@ -533,7 +533,7 @@ class TestAutoCompactIntegration:
         assert final.content == "<final>"
 
         roles = [r for r, _ in observed]
-        assert roles == [Role.system, Role.user, Role.assistant]
+        assert roles == [Role.SYSTEM, Role.USER, Role.ASSISTANT]
         assert observed[1][1] == "Hello"
 
 
@@ -603,7 +603,7 @@ class TestClearHistoryFullReset:
         await agent.clear_history()
 
         assert len(agent.messages) == 1
-        assert agent.messages[0].role == Role.system
+        assert agent.messages[0].role == Role.SYSTEM
 
     @pytest.mark.asyncio
     async def test_clear_history_resets_session_id(self) -> None:
@@ -654,8 +654,8 @@ class TestClearHistoryObserverBugfix:
             pass
 
         roles = [msg.role for msg in observed]
-        assert Role.user in roles
-        assert Role.assistant in roles
+        assert Role.USER in roles
+        assert Role.ASSISTANT in roles
 
 
 class TestStatsEdgeCases:

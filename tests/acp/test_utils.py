@@ -140,7 +140,7 @@ class TestBuildPermissionOptions:
 class TestCreateUserMessageReplay:
     def test_replays_plain_text_without_field_meta(self) -> None:
         replay = create_user_message_replay(
-            LLMMessage(role=Role.user, content="Hello", message_id="msg-1")
+            LLMMessage(role=Role.USER, content="Hello", message_id="msg-1")
         )
 
         assert replay.content.text == "Hello"
@@ -168,7 +168,7 @@ class TestCreateToolCallReplay:
 class TestCreateToolResultReplay:
     def test_carries_kind_and_tool_name_meta(self) -> None:
         msg = LLMMessage(
-            role=Role.tool, tool_call_id="call_1", name="bash", content="exit 0"
+            role=Role.TOOL, tool_call_id="call_1", name="bash", content="exit 0"
         )
 
         update = create_tool_result_replay(msg)
@@ -179,7 +179,7 @@ class TestCreateToolResultReplay:
         assert update.field_meta == {"tool_name": "bash"}
 
     def test_returns_none_without_tool_call_id(self) -> None:
-        msg = LLMMessage(role=Role.tool, name="bash", content="exit 0")
+        msg = LLMMessage(role=Role.TOOL, name="bash", content="exit 0")
 
         assert create_tool_result_replay(msg) is None
 

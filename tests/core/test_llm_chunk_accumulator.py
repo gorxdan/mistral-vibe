@@ -24,7 +24,7 @@ from vibe.core.types import (
     ToolCall,
 )
 
-_ASSISTANT = {"role": Role.assistant, "message_id": "m1"}
+_ASSISTANT = {"role": Role.ASSISTANT, "message_id": "m1"}
 
 
 def _tc(index, name=None, args=None, call_id="call_0"):
@@ -125,8 +125,8 @@ def test_single_occurrence_none_arguments_stay_none():
     "messages",
     [
         [
-            LLMMessage(role=Role.assistant, message_id="m1", content="a"),
-            LLMMessage(role=Role.user, message_id="m2", content="b"),
+            LLMMessage(role=Role.ASSISTANT, message_id="m1", content="a"),
+            LLMMessage(role=Role.USER, message_id="m2", content="b"),
         ],
         [
             LLMMessage(**_ASSISTANT, tool_calls=[_tc(None, name="x")]),

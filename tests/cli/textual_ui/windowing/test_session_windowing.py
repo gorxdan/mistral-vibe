@@ -5,7 +5,7 @@ from vibe.core.types import LLMMessage, Role
 
 
 def _msg(
-    role: Role = Role.user, *, content: str = "x", injected: bool = False
+    role: Role = Role.USER, *, content: str = "x", injected: bool = False
 ) -> LLMMessage:
     return LLMMessage(role=role, content=content, injected=injected)
 

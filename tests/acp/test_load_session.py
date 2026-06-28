@@ -205,7 +205,7 @@ class TestLoadSession:
 
         session = acp_agent.sessions[session_id]
 
-        non_system = [m for m in session.agent_loop.messages if m.role != Role.system]
+        non_system = [m for m in session.agent_loop.messages if m.role != Role.SYSTEM]
         assert len(non_system) == 4
 
     @pytest.mark.asyncio

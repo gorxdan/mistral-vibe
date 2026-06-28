@@ -72,7 +72,7 @@ def test_plan_file_path_str_generated_once() -> None:
 
 
 def _msg(content: str = "hi") -> LLMMessage:
-    return LLMMessage(role=Role.assistant, content=content)
+    return LLMMessage(role=Role.ASSISTANT, content=content)
 
 
 def test_text_formatter_handles_assistant_and_teleport_events() -> None:

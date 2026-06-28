@@ -72,7 +72,7 @@ def parse_previous_user_messages(content: str) -> list[str]:
 def _is_compaction_context_message(message: LLMMessage) -> bool:
     content = message.content or ""
     return (
-        message.role == Role.user
+        message.role == Role.USER
         and message.injected
         and _PREVIOUS_USER_MESSAGES_OPEN in content
         and _PREVIOUS_USER_MESSAGES_CLOSE in content
@@ -96,7 +96,7 @@ def collect_prior_user_messages(
     candidates: list[str] = []
     for message in messages:
         content = message.content or ""
-        if not content or message.role != Role.user:
+        if not content or message.role != Role.USER:
             continue
 
         if _is_compaction_context_message(message):
@@ -118,12 +118,12 @@ def collect_prior_user_messages(
             break
         cost = approx_token_count(content)
         if cost <= remaining:
-            selected.append(LLMMessage(role=Role.user, content=content, injected=True))
+            selected.append(LLMMessage(role=Role.USER, content=content, injected=True))
             remaining -= cost
         else:
             truncated = truncate_middle_to_tokens(content, remaining)
             selected.append(
-                LLMMessage(role=Role.user, content=truncated, injected=True)
+                LLMMessage(role=Role.USER, content=truncated, injected=True)
             )
             remaining = 0
 
@@ -145,7 +145,7 @@ def collect_leading_injected_context(messages: list[LLMMessage]) -> list[LLMMess
     compaction-context message, so mid-conversation middleware injections and
     stale summaries are never carried forward.
     """
-    if not messages or messages[0].role != Role.system:
+    if not messages or messages[0].role != Role.SYSTEM:
         return []
     leading: list[LLMMessage] = []
     for msg in messages[1:]:
@@ -178,7 +178,7 @@ def build_extractive_summary(
         "summary was unavailable for this compaction):"
     ]
     for msg in messages:
-        if msg.role == Role.assistant:
+        if msg.role == Role.ASSISTANT:
             content = msg.content or ""
             intent = (
                 "[content previously elided]"
@@ -189,7 +189,7 @@ def build_extractive_summary(
                 lines.append(f"- assistant: {intent}")
             for tc in msg.tool_calls or ():
                 lines.append(f"  - called tool: {tc.function.name}")
-        elif msg.role == Role.tool:
+        elif msg.role == Role.TOOL:
             content = msg.content or ""
             status = (
                 "[result previously compressed]"

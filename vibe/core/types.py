@@ -226,10 +226,10 @@ Content = Annotated[str, BeforeValidator(_content_before)]
 
 
 class Role(StrEnum):
-    system = auto()
-    user = auto()
-    assistant = auto()
-    tool = auto()
+    SYSTEM = auto()
+    USER = auto()
+    ASSISTANT = auto()
+    TOOL = auto()
 
 
 class ApprovalResponse(StrEnum):
@@ -502,7 +502,7 @@ class LLMMessageAccumulator:
                 tc.function.arguments = (tc.function.arguments or "") + "".join(extra)
 
         return LLMMessage(
-            role=self._role or Role.assistant,
+            role=self._role or Role.ASSISTANT,
             content=content,
             images=self._images,
             reasoning_content=reasoning_content,
@@ -812,7 +812,7 @@ class MessageList(Sequence[LLMMessage]):
         ``@requires_init`` decorator ensures no ``act()`` call reads the
         prompt concurrently, so no additional lock is needed here.
         """
-        self._data[0] = LLMMessage(role=Role.system, content=new)
+        self._data[0] = LLMMessage(role=Role.SYSTEM, content=new)
 
     @contextmanager
     def silent(self) -> Iterator[None]:

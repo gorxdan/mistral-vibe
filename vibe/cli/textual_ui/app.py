@@ -2256,7 +2256,7 @@ class VibeApp(App):  # noqa: PLR0904
     async def _handle_teleport_command(
         self, value: str | None = None, show_message: bool = True
     ) -> None:
-        has_history = any(msg.role != Role.system for msg in self.agent_loop.messages)
+        has_history = any(msg.role != Role.SYSTEM for msg in self.agent_loop.messages)
         if not value:
             if show_message:
                 await self._mount_and_scroll(SlashCommandMessage("teleport"))
@@ -2822,7 +2822,7 @@ class VibeApp(App):  # noqa: PLR0904
             self._chat_input_container.set_custom_border(None)
 
         non_system_messages = [
-            msg for msg in loaded_messages if msg.role != Role.system
+            msg for msg in loaded_messages if msg.role != Role.SYSTEM
         ]
 
         self.agent_loop.session_id = session.session_id
@@ -2832,7 +2832,7 @@ class VibeApp(App):  # noqa: PLR0904
         )
         await self.agent_loop.hydrate_experiments_from_session()
         current_system_messages = [
-            msg for msg in self.agent_loop.messages if msg.role == Role.system
+            msg for msg in self.agent_loop.messages if msg.role == Role.SYSTEM
         ]
         self.agent_loop.messages.reset(current_system_messages + non_system_messages)
         self._refresh_profile_widgets()

@@ -29,7 +29,7 @@ def _make_agent_loop(
     loop.telemetry_client.is_active.return_value = telemetry_active
     loop.cache_store = FileSystemVibeCodeCacheStore(cache_path)
     messages = [
-        LLMMessage(role=Role.user, content=f"msg {i}")
+        LLMMessage(role=Role.USER, content=f"msg {i}")
         for i in range(user_message_count)
     ]
     loop.messages = messages
@@ -109,9 +109,9 @@ class TestShouldShow:
     def test_skips_injected_messages_in_count(self, tmp_path: Path) -> None:
         loop = _make_agent_loop(tmp_path / "cache.toml", user_message_count=0)
         loop.messages = [
-            LLMMessage(role=Role.user, content="real"),
-            LLMMessage(role=Role.user, content="injected", injected=True),
-            LLMMessage(role=Role.assistant, content="reply"),
+            LLMMessage(role=Role.USER, content="real"),
+            LLMMessage(role=Role.USER, content="injected", injected=True),
+            LLMMessage(role=Role.ASSISTANT, content="reply"),
         ]
         manager = FeedbackBarManager()
         with (

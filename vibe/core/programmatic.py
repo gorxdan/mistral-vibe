@@ -166,7 +166,7 @@ def run_programmatic(  # noqa: PLR0913, PLR0915, PLR0917
         try:
             if previous_messages:
                 non_system_messages = [
-                    msg for msg in previous_messages if not (msg.role == Role.system)
+                    msg for msg in previous_messages if not (msg.role == Role.SYSTEM)
                 ]
                 agent_loop.messages.extend(non_system_messages)
                 logger.info(

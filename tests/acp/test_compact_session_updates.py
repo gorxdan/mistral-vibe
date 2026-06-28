@@ -103,7 +103,7 @@ class TestCompactEventHandling:
         session = acp_agent_loop.sessions[session_response.session_id]
         await session.agent_loop.wait_until_ready()
         # Need >1 message so /compact does not early-return.
-        session.agent_loop.messages.append(LLMMessage(role=Role.user, content="hello"))
+        session.agent_loop.messages.append(LLMMessage(role=Role.USER, content="hello"))
 
         with patch.object(
             session.agent_loop,

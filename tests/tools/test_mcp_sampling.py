@@ -76,7 +76,7 @@ class TestMapSamplingMessages:
         ]
         result = _map_sampling_messages(msgs)
         assert len(result) == 1
-        assert result[0].role == Role.user
+        assert result[0].role == Role.USER
         assert result[0].content == "hi"
 
     def test_maps_assistant_message(self) -> None:
@@ -86,7 +86,7 @@ class TestMapSamplingMessages:
             )
         ]
         result = _map_sampling_messages(msgs)
-        assert result[0].role == Role.assistant
+        assert result[0].role == Role.ASSISTANT
         assert result[0].content == "hello"
 
     def test_maps_multiple_messages(self) -> None:
@@ -98,8 +98,8 @@ class TestMapSamplingMessages:
         ]
         result = _map_sampling_messages(msgs)
         assert len(result) == 2
-        assert result[0].role == Role.user
-        assert result[1].role == Role.assistant
+        assert result[0].role == Role.USER
+        assert result[1].role == Role.ASSISTANT
 
 
 class TestMCPSamplingHandler:
@@ -134,9 +134,9 @@ class TestMCPSamplingHandler:
         await handler(MagicMock(), _make_params(system_prompt="Be helpful"))
 
         sent_messages: list[LLMMessage] = backend.requests_messages[0]
-        assert sent_messages[0].role == Role.system
+        assert sent_messages[0].role == Role.SYSTEM
         assert sent_messages[0].content == "Be helpful"
-        assert sent_messages[1].role == Role.user
+        assert sent_messages[1].role == Role.USER
 
     @pytest.mark.asyncio
     async def test_calls_backend_with_messages(self) -> None:
@@ -153,7 +153,7 @@ class TestMCPSamplingHandler:
         assert len(backend.requests_messages) == 1
         sent = backend.requests_messages[0]
         assert len(sent) == 1
-        assert sent[0].role == Role.user
+        assert sent[0].role == Role.USER
         assert sent[0].content == "Hello"
 
     @pytest.mark.asyncio

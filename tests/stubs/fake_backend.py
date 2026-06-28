@@ -116,7 +116,7 @@ class FakeBackend:
 
         if self._streams:
             stream = self._streams.pop(0)
-            chunk_agg = LLMChunk(message=LLMMessage(role=Role.assistant))
+            chunk_agg = LLMChunk(message=LLMMessage(role=Role.ASSISTANT))
             for chunk in stream:
                 chunk_agg += chunk
             return chunk_agg

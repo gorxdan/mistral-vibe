@@ -25,7 +25,7 @@ def _is_uuid(value: str) -> bool:
 
 def _make_response_chunk(content: str = "Hi") -> LLMChunk:
     return LLMChunk(
-        message=LLMMessage(role=Role.assistant, content=content),
+        message=LLMMessage(role=Role.ASSISTANT, content=content),
         usage=LLMUsage(prompt_tokens=1, completion_tokens=1),
     )
 

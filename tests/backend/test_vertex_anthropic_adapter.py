@@ -77,7 +77,7 @@ class TestBuildVertexEndpoint:
 
 class TestPrepareRequest:
     def test_basic_request(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-3-5-sonnet",
@@ -104,7 +104,7 @@ class TestPrepareRequest:
         assert req.base_url == c.VERTEX_BASE_URL
 
     def test_streaming_request(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-3-5-sonnet",
@@ -125,7 +125,7 @@ class TestPrepareRequest:
 
     def test_no_beta_features_for_vertex(self, adapter, provider):
         """Vertex AI doesn't support the same beta features as direct Anthropic API."""
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-3-5-sonnet",
@@ -144,7 +144,7 @@ class TestPrepareRequest:
         assert req.headers.get("anthropic-beta", "") == ""
 
     def test_with_extended_thinking(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-3-5-sonnet",
@@ -167,7 +167,7 @@ class TestPrepareRequest:
         assert "temperature" not in payload
 
     def test_with_tools(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         tools = [
             AvailableTool(
                 function=AvailableFunction(
@@ -206,7 +206,7 @@ class TestPrepareRequest:
             adapter.prepare_request(
                 RequestParams(
                 model_name="claude-3-5-sonnet",
-                messages=[LLMMessage(role=Role.user, content="Hello")],
+                messages=[LLMMessage(role=Role.USER, content="Hello")],
                 temperature=0.5,
                 tools=None,
                 max_tokens=1024,
@@ -228,7 +228,7 @@ class TestPrepareRequest:
             adapter.prepare_request(
                 RequestParams(
                 model_name="claude-3-5-sonnet",
-                messages=[LLMMessage(role=Role.user, content="Hello")],
+                messages=[LLMMessage(role=Role.USER, content="Hello")],
                 temperature=0.5,
                 tools=None,
                 max_tokens=1024,
@@ -240,7 +240,7 @@ class TestPrepareRequest:
             )
 
     def test_default_max_tokens(self, adapter, provider):
-        messages = [LLMMessage(role=Role.user, content="Hello")]
+        messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
             model_name="claude-3-5-sonnet",
@@ -362,7 +362,7 @@ class TestStreamingEvents:
     def test_message_start_without_usage(self, adapter, provider):
         data = {"type": "message_start", "message": {}}
         chunk = adapter.parse_response(data, provider)
-        assert chunk.message.role == Role.assistant
+        assert chunk.message.role == Role.ASSISTANT
 
     def test_content_block_start_tool_use(self, adapter, provider):
         data = {
@@ -440,12 +440,12 @@ class TestStreamingEvents:
     def test_message_delta_without_usage(self, adapter, provider):
         data = {"type": "message_delta", "usage": {}}
         chunk = adapter.parse_response(data, provider)
-        assert chunk.message.role == Role.assistant
+        assert chunk.message.role == Role.ASSISTANT
 
     def test_unknown_event_returns_empty_chunk(self, adapter, provider):
         data = {"type": "ping"}
         chunk = adapter.parse_response(data, provider)
-        assert chunk.message.role == Role.assistant
+        assert chunk.message.role == Role.ASSISTANT
         assert chunk.message.content is None
 
     def test_signature_delta(self, adapter, provider):

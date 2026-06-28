@@ -241,7 +241,7 @@ def load_session(
 def _resume_previous_session(
     agent_loop: AgentLoop, loaded_messages: list[LLMMessage], session_path: Path
 ) -> None:
-    non_system_messages = [msg for msg in loaded_messages if msg.role != Role.system]
+    non_system_messages = [msg for msg in loaded_messages if msg.role != Role.SYSTEM]
     agent_loop.messages.extend(non_system_messages)
 
     _, metadata = SessionLoader.load_session(session_path)

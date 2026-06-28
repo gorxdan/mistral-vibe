@@ -45,7 +45,7 @@ class FeedbackBarManager:
 
     def should_show(self, agent_loop: _FeedbackSource) -> bool:
         user_message_count = (
-            sum(m.role == Role.user and not m.injected for m in agent_loop.messages)
+            sum(m.role == Role.USER and not m.injected for m in agent_loop.messages)
             + 1  # +1 for the message the user just sent
         )
         return should_show_feedback(

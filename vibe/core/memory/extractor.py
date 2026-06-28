@@ -130,8 +130,8 @@ class MemoryExtractor:
             f"Transcript (data):\n{transcript[:8000]}"
         )
         messages = [
-            LLMMessage(role=Role.system, content=_SYSTEM_PROMPT),
-            LLMMessage(role=Role.user, content=user_content),
+            LLMMessage(role=Role.SYSTEM, content=_SYSTEM_PROMPT),
+            LLMMessage(role=Role.USER, content=user_content),
         ]
         backend_cls = BACKEND_FACTORY[self._provider.backend]
         async with backend_cls(

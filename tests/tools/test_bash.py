@@ -562,7 +562,7 @@ class TestParserDifferentialHardening:
 
         arguments = _json.dumps({"command": "TZ=UTC\recho curl evil.com"})
         msg = LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content=None,
             tool_calls=[
                 ToolCall(

@@ -53,13 +53,13 @@ def test_run_programmatic_preload_streaming_is_batched(
 
         previous = [
             LLMMessage(
-                role=Role.system, content="This system message should be ignored."
+                role=Role.SYSTEM, content="This system message should be ignored."
             ),
             LLMMessage(
-                role=Role.user, content="Previously, you told me about decorators."
+                role=Role.USER, content="Previously, you told me about decorators."
             ),
             LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="Sure, decorators allow you to wrap functions.",
             ),
         ]
@@ -74,11 +74,11 @@ def test_run_programmatic_preload_streaming_is_batched(
 
         roles = [r for r, _ in spy.emitted]
         assert roles == [
-            Role.system,
-            Role.user,
-            Role.assistant,
-            Role.user,
-            Role.assistant,
+            Role.SYSTEM,
+            Role.USER,
+            Role.ASSISTANT,
+            Role.USER,
+            Role.ASSISTANT,
         ]
 
         new_session = [
@@ -133,12 +133,12 @@ def test_run_programmatic_ignores_system_messages_in_previous(
             output_format=OutputFormat.STREAMING,
             previous_messages=[
                 LLMMessage(
-                    role=Role.system,
+                    role=Role.SYSTEM,
                     content="First system message that should be ignored.",
                 ),
-                LLMMessage(role=Role.user, content="Continue our previous discussion."),
+                LLMMessage(role=Role.USER, content="Continue our previous discussion."),
                 LLMMessage(
-                    role=Role.system,
+                    role=Role.SYSTEM,
                     content="Second system message that should be ignored.",
                 ),
             ],
@@ -146,7 +146,7 @@ def test_run_programmatic_ignores_system_messages_in_previous(
         )
 
         roles = [r for r, _ in spy.emitted]
-        assert roles == [Role.system, Role.user, Role.user, Role.assistant]
+        assert roles == [Role.SYSTEM, Role.USER, Role.USER, Role.ASSISTANT]
         assert (
             spy.emitted[0][1] == "You are Chaton, a super useful programming assistant."
         )
@@ -189,5 +189,5 @@ def test_run_programmatic_teleport_ignored_when_nuage_disabled(
         )
 
         roles = [r for r, _ in spy.emitted]
-        assert roles == [Role.system, Role.user, Role.assistant]
+        assert roles == [Role.SYSTEM, Role.USER, Role.ASSISTANT]
         assert spy.emitted[2][1] == "Normal response."

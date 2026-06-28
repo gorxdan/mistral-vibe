@@ -125,7 +125,7 @@ class _ToolCallFakeBackend(_InfiniteFakeBackend):
 
     def _next(self, messages) -> LLMChunk:
         last_role = messages[-1].role if messages else None
-        return self._chunk() if last_role == Role.tool else self._tool_chunk()
+        return self._chunk() if last_role == Role.TOOL else self._tool_chunk()
 
     async def complete(self, **kwargs) -> LLMChunk:  # type: ignore[override]
         self._requests_messages.append(list(kwargs["messages"]))
@@ -187,7 +187,7 @@ class _FanOutFakeBackend(_InfiniteFakeBackend):
 
     def _next(self, messages) -> LLMChunk:
         last_role = messages[-1].role if messages else None
-        return self._chunk() if last_role == Role.tool else self._fan_out_chunk()
+        return self._chunk() if last_role == Role.TOOL else self._fan_out_chunk()
 
     async def complete(self, **kwargs) -> LLMChunk:  # type: ignore[override]
         self._requests_messages.append(list(kwargs["messages"]))

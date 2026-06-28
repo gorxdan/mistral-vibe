@@ -151,7 +151,7 @@ async def test_auto_compact_observer_sees_user_msg_not_summary() -> None:
     [_ async for _ in agent.act("Hello")]
 
     roles = [r for r, _ in observed]
-    assert roles == [Role.system, Role.user, Role.assistant]
+    assert roles == [Role.SYSTEM, Role.USER, Role.ASSISTANT]
     assert observed[1][1] == "Hello"
     assert observed[2][1] == "<final>"
 
@@ -194,8 +194,8 @@ async def test_compact_replaces_messages_with_context() -> None:
     [_ async for _ in agent.act("Hello")]
 
     # After compact + final response: system, compaction context, final.
-    assert agent.messages[0].role == Role.system
-    assert agent.messages[-1].role == Role.assistant
+    assert agent.messages[0].role == Role.SYSTEM
+    assert agent.messages[-1].role == Role.ASSISTANT
     assert agent.messages[-1].content == "<final>"
 
 
@@ -257,7 +257,7 @@ async def test_compact_appends_extra_instructions_to_prompt() -> None:
     backend = FakeBackend([[mock_llm_chunk(content="<summary>")]])
     cfg = build_test_vibe_config(models=make_test_models(auto_compact_threshold=999))
     agent = build_test_agent_loop(config=cfg, backend=backend)
-    agent.messages.append(LLMMessage(role=Role.user, content="Hello"))
+    agent.messages.append(LLMMessage(role=Role.USER, content="Hello"))
     agent.stats.context_tokens = 100
 
     await agent.compact(extra_instructions="focus on auth")
@@ -281,7 +281,7 @@ async def test_compact_uses_configured_compaction_prompt(
         compaction_prompt_id="theorem_compact",
     )
     agent = build_test_agent_loop(config=cfg, backend=backend)
-    agent.messages.append(LLMMessage(role=Role.user, content="Hello"))
+    agent.messages.append(LLMMessage(role=Role.USER, content="Hello"))
     agent.stats.context_tokens = 100
 
     await agent.compact()
@@ -295,7 +295,7 @@ async def test_compact_without_extra_instructions_has_no_additional_section() ->
     backend = FakeBackend([[mock_llm_chunk(content="<summary>")]])
     cfg = build_test_vibe_config(models=make_test_models(auto_compact_threshold=999))
     agent = build_test_agent_loop(config=cfg, backend=backend)
-    agent.messages.append(LLMMessage(role=Role.user, content="Hello"))
+    agent.messages.append(LLMMessage(role=Role.USER, content="Hello"))
     agent.stats.context_tokens = 100
 
     await agent.compact()
@@ -327,7 +327,7 @@ async def test_compact_raises_on_tool_call_when_flag_enabled() -> None:
         raise_on_compaction_failure=True,
     )
     agent = build_test_agent_loop(config=cfg, backend=backend)
-    agent.messages.append(LLMMessage(role=Role.user, content="Hello"))
+    agent.messages.append(LLMMessage(role=Role.USER, content="Hello"))
     agent.stats.context_tokens = 100
 
     with pytest.raises(CompactionFailedError) as exc_info:
@@ -344,7 +344,7 @@ async def test_compact_raises_on_empty_summary_when_flag_enabled() -> None:
         raise_on_compaction_failure=True,
     )
     agent = build_test_agent_loop(config=cfg, backend=backend)
-    agent.messages.append(LLMMessage(role=Role.user, content="Hello"))
+    agent.messages.append(LLMMessage(role=Role.USER, content="Hello"))
     agent.stats.context_tokens = 100
 
     with pytest.raises(CompactionFailedError) as exc_info:
@@ -360,7 +360,7 @@ async def test_compact_falls_back_when_flag_disabled() -> None:
     backend = FakeBackend([[mock_llm_chunk(content="")]])
     cfg = build_test_vibe_config(models=make_test_models(auto_compact_threshold=999))
     agent = build_test_agent_loop(config=cfg, backend=backend)
-    agent.messages.append(LLMMessage(role=Role.user, content="Hello"))
+    agent.messages.append(LLMMessage(role=Role.USER, content="Hello"))
     agent.stats.context_tokens = 100
 
     summary = await agent.compact()
@@ -382,7 +382,7 @@ async def test_compact_falls_back_on_llm_error() -> None:
     agent = build_test_agent_loop(config=cfg, backend=backend)
     agent.messages.append(
         LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content="I will read the file.",
             tool_calls=[
                 ToolCall(
@@ -394,7 +394,7 @@ async def test_compact_falls_back_on_llm_error() -> None:
         )
     )
     agent.messages.append(
-        LLMMessage(role=Role.tool, content="file contents here", tool_call_id="c1")
+        LLMMessage(role=Role.TOOL, content="file contents here", tool_call_id="c1")
     )
     agent.stats.context_tokens = 100
 
@@ -415,19 +415,19 @@ async def test_compact_message_shape_preserves_prior_user_messages() -> None:
     agent = build_test_agent_loop(config=cfg, backend=backend)
     system_message_before = agent.messages[0]
 
-    agent.messages.append(LLMMessage(role=Role.user, content="first real ask"))
+    agent.messages.append(LLMMessage(role=Role.USER, content="first real ask"))
     agent.messages.append(
-        LLMMessage(role=Role.user, content="middleware ping", injected=True)
+        LLMMessage(role=Role.USER, content="middleware ping", injected=True)
     )
-    agent.messages.append(LLMMessage(role=Role.assistant, content="ack"))
+    agent.messages.append(LLMMessage(role=Role.ASSISTANT, content="ack"))
     agent.messages.append(
         LLMMessage(
-            role=Role.user,
+            role=Role.USER,
             content=f"{summary_prefix}\nprior summary blob",
             injected=True,
         )
     )
-    agent.messages.append(LLMMessage(role=Role.user, content="follow-up ask"))
+    agent.messages.append(LLMMessage(role=Role.USER, content="follow-up ask"))
     agent.stats.context_tokens = 100
 
     await agent.compact()
@@ -435,7 +435,7 @@ async def test_compact_message_shape_preserves_prior_user_messages() -> None:
     final = list(agent.messages)
     assert len(final) == 2  # [system, compaction_context]
     assert final[0] is system_message_before
-    assert final[1].role == Role.user
+    assert final[1].role == Role.USER
     assert final[1].injected is True
     assert parse_previous_user_messages(final[1].content or "") == [
         "first real ask",
@@ -462,11 +462,11 @@ async def test_compact_preserves_user_messages_across_repeated_compactions() -> 
     cfg = build_test_vibe_config(models=make_test_models(auto_compact_threshold=999))
     agent = build_test_agent_loop(config=cfg, backend=backend)
 
-    agent.messages.append(LLMMessage(role=Role.user, content="first ask"))
+    agent.messages.append(LLMMessage(role=Role.USER, content="first ask"))
     agent.stats.context_tokens = 100
     await agent.compact()
 
-    agent.messages.append(LLMMessage(role=Role.user, content="second ask"))
+    agent.messages.append(LLMMessage(role=Role.USER, content="second ask"))
     agent.stats.context_tokens = 100
     await agent.compact()
 

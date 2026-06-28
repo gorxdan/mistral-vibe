@@ -35,7 +35,7 @@ class TestACPContent:
 
         assert response.stop_reason == "end_turn"
         user_message = next(
-            (msg for msg in backend._requests_messages[0] if msg.role == Role.user),
+            (msg for msg in backend._requests_messages[0] if msg.role == Role.USER),
             None,
         )
         assert user_message is not None, "User message not found in backend requests"
@@ -66,7 +66,7 @@ class TestACPContent:
 
         assert response.stop_reason == "end_turn"
         user_message = next(
-            (msg for msg in backend._requests_messages[0] if msg.role == Role.user),
+            (msg for msg in backend._requests_messages[0] if msg.role == Role.USER),
             None,
         )
         assert user_message is not None, "User message not found in backend requests"
@@ -103,7 +103,7 @@ class TestACPContent:
 
         assert response.stop_reason == "end_turn"
         user_message = next(
-            (msg for msg in backend._requests_messages[0] if msg.role == Role.user),
+            (msg for msg in backend._requests_messages[0] if msg.role == Role.USER),
             None,
         )
         assert user_message is not None, "User message not found in backend requests"
@@ -139,7 +139,7 @@ class TestACPContent:
 
         assert response.stop_reason == "end_turn"
         user_message = next(
-            (msg for msg in backend._requests_messages[0] if msg.role == Role.user),
+            (msg for msg in backend._requests_messages[0] if msg.role == Role.USER),
             None,
         )
         assert user_message is not None, "User message not found in backend requests"

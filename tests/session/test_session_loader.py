@@ -51,9 +51,9 @@ def create_test_session():
         messages_file = session_folder / "messages.jsonl"
         if messages is None:
             messages = [
-                LLMMessage(role=Role.system, content="System prompt"),
-                LLMMessage(role=Role.user, content="Hello"),
-                LLMMessage(role=Role.assistant, content="Hi there!"),
+                LLMMessage(role=Role.SYSTEM, content="System prompt"),
+                LLMMessage(role=Role.USER, content="Hello"),
+                LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
             ]
 
         with messages_file.open("w", encoding=encoding) as f:
@@ -670,9 +670,9 @@ class TestSessionLoaderLoadSession:
 
         # Create valid messages file using the same format as create_test_session
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="Hello"),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
 
         messages_file = session_folder / "messages.jsonl"
@@ -689,9 +689,9 @@ class TestSessionLoaderLoadSession:
 
         assert len(loaded_messages) == 2
         assert loaded_messages[0].content == "Hello"
-        assert loaded_messages[0].role == Role.user
+        assert loaded_messages[0].role == Role.USER
         assert loaded_messages[1].content == "Hi there!"
-        assert loaded_messages[1].role == Role.assistant
+        assert loaded_messages[1].role == Role.ASSISTANT
 
         assert metadata == {}
 
@@ -755,15 +755,15 @@ class TestSessionLoaderEdgeCases:
 
         # Create messages with complex structure
         complex_messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
             LLMMessage(
-                role=Role.user,
+                role=Role.USER,
                 content="Complex message",
                 reasoning_content="Some reasoning",
                 tool_calls=[ToolCall(id="call1", index=1, type="function")],
             ),
             LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="Response",
                 tool_calls=[ToolCall(id="call2", index=2, type="function")],
             ),
@@ -787,11 +787,11 @@ class TestSessionLoaderEdgeCases:
 
         # Verify complex messages are loaded correctly
         assert len(messages) == 2
-        assert messages[0].role == Role.user
+        assert messages[0].role == Role.USER
         assert messages[0].content == "Complex message"
         assert messages[0].reasoning_content == "Some reasoning"
         assert len(messages[0].tool_calls or []) == 1
-        assert messages[1].role == Role.assistant
+        assert messages[1].role == Role.ASSISTANT
         assert len(messages[1].tool_calls or []) == 1
         assert messages[1].content == "Response"
 
@@ -804,9 +804,9 @@ class TestSessionLoaderEdgeCases:
         session_folder.mkdir()
 
         messages_with_system = [
-            LLMMessage(role=Role.system, content="System prompt from messages"),
-            LLMMessage(role=Role.user, content="Hello"),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt from messages"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
 
         messages_file = session_folder / "messages.jsonl"
@@ -828,9 +828,9 @@ class TestSessionLoaderEdgeCases:
 
         # Verify that system prompt from messages.jsonl is ignored
         assert len(messages) == 2
-        assert messages[0].role == Role.user
+        assert messages[0].role == Role.USER
         assert messages[0].content == "Hello"
-        assert messages[1].role == Role.assistant
+        assert messages[1].role == Role.ASSISTANT
         assert messages[1].content == "Hi there!"
 
 
@@ -1030,11 +1030,11 @@ class TestSessionLoaderGetFirstUserMessage:
         """Test that get_first_user_message returns the first user message."""
         session_dir = Path(session_config.save_dir)
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="First user message"),
-            LLMMessage(role=Role.assistant, content="First response"),
-            LLMMessage(role=Role.user, content="Second user message"),
-            LLMMessage(role=Role.assistant, content="Second response"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="First user message"),
+            LLMMessage(role=Role.ASSISTANT, content="First response"),
+            LLMMessage(role=Role.USER, content="Second user message"),
+            LLMMessage(role=Role.ASSISTANT, content="Second response"),
         ]
         create_test_session(session_dir, "test-sess", messages=messages)
 
@@ -1056,8 +1056,8 @@ class TestSessionLoaderGetFirstUserMessage:
         """Test fallback when session has no user messages."""
         session_dir = Path(session_config.save_dir)
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.assistant, content="Assistant only"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.ASSISTANT, content="Assistant only"),
         ]
         create_test_session(session_dir, "no-user0", messages=messages)
 
@@ -1071,8 +1071,8 @@ class TestSessionLoaderGetFirstUserMessage:
         """Test that newlines in messages are replaced with spaces."""
         session_dir = Path(session_config.save_dir)
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="Line one\nLine two\nLine three"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Line one\nLine two\nLine three"),
         ]
         create_test_session(session_dir, "newline0", messages=messages)
 
@@ -1087,8 +1087,8 @@ class TestSessionLoaderGetFirstUserMessage:
         """Test handling of empty user message content."""
         session_dir = Path(session_config.save_dir)
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content=""),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content=""),
         ]
         create_test_session(session_dir, "empty-ms", messages=messages)
 
@@ -1102,8 +1102,8 @@ class TestSessionLoaderGetFirstUserMessage:
         """Test handling of whitespace-only user message."""
         session_dir = Path(session_config.save_dir)
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="   \n\t  "),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="   \n\t  "),
         ]
         create_test_session(session_dir, "whitespc", messages=messages)
 
@@ -1139,9 +1139,9 @@ class TestSessionLoaderGetFirstUserMessage:
         """Test that only user messages are considered, not assistant/system."""
         session_dir = Path(session_config.save_dir)
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="User question"),
-            LLMMessage(role=Role.assistant, content="Assistant response"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="User question"),
+            LLMMessage(role=Role.ASSISTANT, content="Assistant response"),
         ]
         create_test_session(session_dir, "skip-non", messages=messages)
 

@@ -137,7 +137,7 @@ class APIToolFormatHandler:
         self, tool_call: ResolvedToolCall, result_text: str
     ) -> LLMMessage:
         return LLMMessage(
-            role=Role.tool,
+            role=Role.TOOL,
             tool_call_id=tool_call.call_id,
             name=tool_call.tool_name,
             content=result_text,
@@ -147,7 +147,7 @@ class APIToolFormatHandler:
         self, failed: FailedToolCall, error_content: str
     ) -> LLMMessage:
         return LLMMessage(
-            role=Role.tool,
+            role=Role.TOOL,
             tool_call_id=failed.call_id,
             name=failed.tool_name,
             content=error_content,

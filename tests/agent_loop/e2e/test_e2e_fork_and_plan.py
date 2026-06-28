@@ -26,11 +26,11 @@ EXIT_PLAN_TOOL_CALL = [
 
 
 def _user_message_ids(agent: Any) -> list[str]:
-    return [m.message_id for m in agent.messages if m.role == Role.user]
+    return [m.message_id for m in agent.messages if m.role == Role.USER]
 
 
 def _assistant_message_id(agent: Any) -> str:
-    return next(m.message_id for m in agent.messages if m.role == Role.assistant)
+    return next(m.message_id for m in agent.messages if m.role == Role.ASSISTANT)
 
 
 @pytest.mark.asyncio
@@ -42,8 +42,8 @@ async def test_fork_copies_all_non_system_messages(mistral_api: MistralAPI) -> N
 
     forked = await agent.fork()
 
-    non_system = [m for m in forked.messages if m.role != Role.system]
-    assert [m.role for m in non_system] == [Role.user, Role.assistant]
+    non_system = [m for m in forked.messages if m.role != Role.SYSTEM]
+    assert [m.role for m in non_system] == [Role.USER, Role.ASSISTANT]
     assert forked.parent_session_id == agent.session_id
     assert forked.session_id != agent.session_id
 
@@ -61,7 +61,7 @@ async def test_fork_from_message_id_truncates_at_next_user_turn(
     first_user_id = _user_message_ids(agent)[0]
     forked = await agent.fork(first_user_id)
 
-    contents = [m.content for m in forked.messages if m.role != Role.system]
+    contents = [m.content for m in forked.messages if m.role != Role.SYSTEM]
     assert contents == ["Turn one", "First"]
 
 

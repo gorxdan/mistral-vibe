@@ -123,7 +123,7 @@ async def test_large_bang_command_output_is_capped_in_history() -> None:
             await pilot.pause(0.05)
 
         injected = app.agent_loop.messages[-1]
-        assert injected.role == Role.user
+        assert injected.role == Role.USER
         assert injected.injected is True
         assert injected.content is not None
         assert "[truncated]" in injected.content

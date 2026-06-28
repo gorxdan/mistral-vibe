@@ -191,13 +191,13 @@ class _OpenAIResponsesStreamParser:
     @staticmethod
     def _empty_chunk() -> LLMChunk:
         return LLMChunk(
-            message=LLMMessage(role=Role.assistant, content=""), usage=_EMPTY_USAGE
+            message=LLMMessage(role=Role.ASSISTANT, content=""), usage=_EMPTY_USAGE
         )
 
     @staticmethod
     def _assistant_text_chunk(text: str) -> LLMChunk:
         return LLMChunk(
-            message=LLMMessage(role=Role.assistant, content=text), usage=_EMPTY_USAGE
+            message=LLMMessage(role=Role.ASSISTANT, content=text), usage=_EMPTY_USAGE
         )
 
     @staticmethod
@@ -208,7 +208,7 @@ class _OpenAIResponsesStreamParser:
             raise ValueError("Tool call chunk missing index")
         return LLMChunk(
             message=LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="",
                 tool_calls=[
                     ToolCall(
@@ -225,7 +225,7 @@ class _OpenAIResponsesStreamParser:
     def _reasoning_chunk(reasoning_content: str) -> LLMChunk:
         return LLMChunk(
             message=LLMMessage(
-                role=Role.assistant, content="", reasoning_content=reasoning_content
+                role=Role.ASSISTANT, content="", reasoning_content=reasoning_content
             ),
             usage=_EMPTY_USAGE,
         )
@@ -394,7 +394,7 @@ class _OpenAIResponsesStreamParser:
         output = response_obj.get("output") or []
         return LLMChunk(
             message=LLMMessage(
-                role=Role.assistant,
+                role=Role.ASSISTANT,
                 content="",
                 reasoning_state=self._reasoning_state_from_output(output),
             ),
@@ -515,10 +515,10 @@ class OpenAIResponsesAdapter(APIAdapter):
 
         for msg in messages:
             match msg.role:
-                case Role.system:
+                case Role.SYSTEM:
                     input_items.append({"role": "system", "content": msg.content or ""})
 
-                case Role.user:
+                case Role.USER:
                     if msg.images:
                         parts: list[dict[str, Any]] = []
                         if msg.content:
@@ -534,7 +534,7 @@ class OpenAIResponsesAdapter(APIAdapter):
                             "content": msg.content or "",
                         })
 
-                case Role.assistant:
+                case Role.ASSISTANT:
                     for encrypted_content in msg.reasoning_state or []:
                         # `summary` is required by the /responses schema even when
                         # empty; omitting it 400s on replayed reasoning items.
@@ -555,7 +555,7 @@ class OpenAIResponsesAdapter(APIAdapter):
                             "arguments": tc.function.arguments or "",
                         })
 
-                case Role.tool:
+                case Role.TOOL:
                     input_items.append({
                         "type": "function_call_output",
                         "call_id": msg.tool_call_id or "",
@@ -737,7 +737,7 @@ class OpenAIResponsesAdapter(APIAdapter):
                     )
 
         return LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content="".join(text_parts),
             reasoning_content="".join(reasoning_parts) or None,
             reasoning_state=self._stream_parser._reasoning_state_from_output(output),
@@ -790,7 +790,7 @@ class ChatGPTResponsesAdapter(OpenAIResponsesAdapter):
         system_parts: list[str] = []
         rest: list[LLMMessage] = []
         for msg in messages:
-            if msg.role == Role.system:
+            if msg.role == Role.SYSTEM:
                 if msg.content:
                     system_parts.append(msg.content)
             else:

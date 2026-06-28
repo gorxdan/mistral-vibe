@@ -105,7 +105,7 @@ async def test_single_tool_call_executes_under_auto_approve(
     assert isinstance(events[4], AssistantEvent)
     assert events[4].content == "I retrieved 0 todos."
     # check conversation history
-    tool_msgs = [m for m in agent_loop.messages if m.role == Role.tool]
+    tool_msgs = [m for m in agent_loop.messages if m.role == Role.TOOL]
     assert len(tool_msgs) == 1
     assert tool_msgs[-1].tool_call_id == mocked_tool_call_id
     assert "total_count" in (tool_msgs[-1].content or "")
@@ -284,7 +284,7 @@ async def test_tool_call_skipped_when_permission_is_never(
     assert events[3].skip_reason is not None
     assert "permanently disabled" in events[3].skip_reason.lower()
     tool_msgs = [
-        m for m in agent_loop.messages if m.role == Role.tool and m.name == "todo"
+        m for m in agent_loop.messages if m.role == Role.TOOL and m.name == "todo"
     ]
     assert len(tool_msgs) == 1
     assert tool_msgs[0].name == "todo"
@@ -655,20 +655,20 @@ async def test_fill_missing_tool_responses_inserts_placeholders() -> None:
         make_todo_tool_call("tc2", index=1),
     ]
     assistant_msg = LLMMessage(
-        role=Role.assistant, content="Calling tools...", tool_calls=tool_calls_messages
+        role=Role.ASSISTANT, content="Calling tools...", tool_calls=tool_calls_messages
     )
     agent_loop.messages.reset([
         agent_loop.messages[0],
         assistant_msg,
         # only one tool responded: the second is missing
         LLMMessage(
-            role=Role.tool, tool_call_id="tc1", name="todo", content="Retrieved 0 todos"
+            role=Role.TOOL, tool_call_id="tc1", name="todo", content="Retrieved 0 todos"
         ),
     ])
 
     await act_and_collect_events(agent_loop, "Proceed")
 
-    tool_msgs = [m for m in agent_loop.messages if m.role == Role.tool]
+    tool_msgs = [m for m in agent_loop.messages if m.role == Role.TOOL]
     assert any(m.tool_call_id == "tc2" for m in tool_msgs)
     # find placeholder message for tc2
     placeholder = next(m for m in tool_msgs if m.tool_call_id == "tc2")
@@ -696,12 +696,12 @@ async def test_fill_missing_tool_responses_multi_turn_keeps_ordering() -> None:
     )
 
     earlier_assistant = LLMMessage(
-        role=Role.assistant,
+        role=Role.ASSISTANT,
         content="Calling tools...",
         tool_calls=[make_todo_tool_call("tc1", index=0), make_todo_tool_call("tc2", index=1)],
     )
     later_assistant = LLMMessage(
-        role=Role.assistant,
+        role=Role.ASSISTANT,
         content="Later turn.",
         tool_calls=[make_todo_tool_call("tc3", index=0)],
     )
@@ -709,12 +709,12 @@ async def test_fill_missing_tool_responses_multi_turn_keeps_ordering() -> None:
         agent_loop.messages[0],          # [0] user/system seed
         earlier_assistant,                # [1] assistant(tc1, tc2)
         LLMMessage(                       # [2] tool resp for tc1 only (tc2 missing)
-            role=Role.tool, tool_call_id="tc1", name="todo", content="Retrieved 0 todos"
+            role=Role.TOOL, tool_call_id="tc1", name="todo", content="Retrieved 0 todos"
         ),
-        LLMMessage(role=Role.user, content="Next turn"),  # [3] user
+        LLMMessage(role=Role.USER, content="Next turn"),  # [3] user
         later_assistant,                  # [4] assistant(tc3)
         LLMMessage(                       # [5] tool resp for tc3
-            role=Role.tool, tool_call_id="tc3", name="todo", content="Retrieved 0 todos"
+            role=Role.TOOL, tool_call_id="tc3", name="todo", content="Retrieved 0 todos"
         ),
     ])
 
@@ -729,12 +729,12 @@ async def test_fill_missing_tool_responses_multi_turn_keeps_ordering() -> None:
     tc2_idx = tc2_positions[0]
 
     # The message before tc2 is the tc1 tool response (its sibling), not user/assistant.
-    assert messages[tc2_idx - 1].role == Role.tool
+    assert messages[tc2_idx - 1].role == Role.TOOL
     assert messages[tc2_idx - 1].tool_call_id == "tc1"
 
     # The user message that ends the earlier turn sits AFTER tc2, not before it.
     user_positions = [
-        idx for idx, m in enumerate(messages) if m.role == Role.user and idx > 0
+        idx for idx, m in enumerate(messages) if m.role == Role.USER and idx > 0
     ]
     later_user_idx = user_positions[-1]
     assert tc2_idx < later_user_idx, "tc2 placeholder leaked past the intervening user message"
@@ -789,7 +789,7 @@ async def test_parallel_tool_calls_produce_correct_events(
     assert isinstance(events[-1], AssistantEvent)
     assert events[-1].content == "Both done."
     # Verify conversation history has both tool responses
-    tool_msgs = [m for m in agent_loop.messages if m.role == Role.tool]
+    tool_msgs = [m for m in agent_loop.messages if m.role == Role.TOOL]
     assert {m.tool_call_id for m in tool_msgs} == {"call_p1", "call_p2"}
     assert agent_loop.stats.tool_calls_succeeded == 2
 
@@ -968,7 +968,7 @@ async def test_parallel_three_tools_all_succeed(telemetry_events: list[dict]) ->
         assert tool_result.error is None
         assert tool_result.result is not None
     assert agent_loop.stats.tool_calls_succeeded == 3
-    tool_msgs = [m for m in agent_loop.messages if m.role == Role.tool]
+    tool_msgs = [m for m in agent_loop.messages if m.role == Role.TOOL]
     assert len(tool_msgs) == 3
 
     tool_finished = [
@@ -1103,7 +1103,7 @@ async def test_parallel_conversation_history_has_all_tool_messages() -> None:
 
     await act_and_collect_events(agent_loop, "Go")
 
-    tool_msgs = [m for m in agent_loop.messages if m.role == Role.tool]
+    tool_msgs = [m for m in agent_loop.messages if m.role == Role.TOOL]
     assert {m.tool_call_id for m in tool_msgs} == {
         "call_h0",
         "call_h1",
@@ -1127,19 +1127,19 @@ async def test_pending_injected_message_continues_loop_after_tool_result() -> No
         events.append(event)
         if isinstance(event, ToolResultEvent):
             agent_loop._pending_injected_messages.append(
-                LLMMessage(role=Role.user, content="updated context", injected=True)
+                LLMMessage(role=Role.USER, content="updated context", injected=True)
             )
 
     assistant_events = [e for e in events if isinstance(e, AssistantEvent)]
     assert len(assistant_events) == 2
 
     injected_msgs = [
-        m for m in agent_loop.messages if m.role == Role.user and m.injected
+        m for m in agent_loop.messages if m.role == Role.USER and m.injected
     ]
     assert any("updated context" in (m.content or "") for m in injected_msgs)
 
     last_assistant = next(
-        m for m in reversed(agent_loop.messages) if m.role == Role.assistant
+        m for m in reversed(agent_loop.messages) if m.role == Role.ASSISTANT
     )
     assert "Acting on the injected guidance" in (last_assistant.content or "")
 
@@ -1169,16 +1169,16 @@ async def test_stage_injected_message_folds_into_running_turn() -> None:
 
     messages = agent_loop.messages
 
-    tool_result_idx = next(i for i, m in enumerate(messages) if m.role == Role.tool)
+    tool_result_idx = next(i for i, m in enumerate(messages) if m.role == Role.TOOL)
     staged_idx = next(
         i
         for i, m in enumerate(messages)
-        if m.role == Role.user and m.injected and "be terse" in (m.content or "")
+        if m.role == Role.USER and m.injected and "be terse" in (m.content or "")
     )
     final_assistant_idx = next(
         i
         for i, m in enumerate(messages)
-        if m.role == Role.assistant and "staged note" in (m.content or "")
+        if m.role == Role.ASSISTANT and "staged note" in (m.content or "")
     )
 
     # The staged message was folded in between the tool result and the next

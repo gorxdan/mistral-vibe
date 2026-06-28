@@ -752,7 +752,7 @@ def _assistant_with_tool_call(name: str) -> Any:
     from vibe.core.types import FunctionCall, LLMMessage, Role, ToolCall
 
     return LLMMessage(
-        role=Role.assistant,
+        role=Role.ASSISTANT,
         content="ok",
         tool_calls=[ToolCall(function=FunctionCall(name=name))],
     )
@@ -763,9 +763,9 @@ def test_mem_wrote_memory_since_detects_manage_memory() -> None:
     from vibe.core.types import LLMMessage, Role
 
     base = len(loop.messages)
-    loop.messages.append(LLMMessage(role=Role.user, content="hi"))
+    loop.messages.append(LLMMessage(role=Role.USER, content="hi"))
     loop.messages.append(_assistant_with_tool_call("manage_memory"))
-    loop.messages.append(LLMMessage(role=Role.user, content="bye"))
+    loop.messages.append(LLMMessage(role=Role.USER, content="bye"))
     assert loop._mem_wrote_memory_since(base, len(loop.messages)) is True
 
 
@@ -774,7 +774,7 @@ def test_mem_wrote_memory_since_false_for_other_tools() -> None:
     from vibe.core.types import LLMMessage, Role
 
     base = len(loop.messages)
-    loop.messages.append(LLMMessage(role=Role.user, content="hi"))
+    loop.messages.append(LLMMessage(role=Role.USER, content="hi"))
     loop.messages.append(_assistant_with_tool_call("read"))
     assert loop._mem_wrote_memory_since(base, len(loop.messages)) is False
 
@@ -794,8 +794,8 @@ def _loop_with_auto_extract(effort_mode: str):
         memory=MemoryConfig(auto_extract=True, auto_extract_min_messages=1),
     )
     loop = build_test_agent_loop(config=config)
-    loop.messages.append(LLMMessage(role=Role.user, content="hi"))
-    loop.messages.append(LLMMessage(role=Role.assistant, content="done"))
+    loop.messages.append(LLMMessage(role=Role.USER, content="hi"))
+    loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="done"))
     return loop
 
 

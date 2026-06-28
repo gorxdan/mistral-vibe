@@ -121,7 +121,7 @@ class TestPrepareRequest:
 
     def test_simple_message(self, adapter, provider):
         payload = _prepare(
-            adapter, provider, [LLMMessage(role=Role.user, content="Hello")]
+            adapter, provider, [LLMMessage(role=Role.USER, content="Hello")]
         )
         assert payload["model"] == "gpt-4o"
         assert payload["input"] == [{"role": "user", "content": "Hello"}]
@@ -132,21 +132,21 @@ class TestPrepareRequest:
         # OpenAI's prefix cache misses without a routing key; the Responses path
         # pins each conversation to one partition (same derivation as generic).
         msgs = [
-            LLMMessage(role=Role.system, content="You are vibe."),
-            LLMMessage(role=Role.user, content="fix the bug"),
+            LLMMessage(role=Role.SYSTEM, content="You are vibe."),
+            LLMMessage(role=Role.USER, content="fix the bug"),
         ]
         key = _prepare(adapter, provider, msgs)["prompt_cache_key"]
         assert key.startswith("vibe-")
         # Stable as the conversation grows (prefix unchanged).
         grown = msgs + [
-            LLMMessage(role=Role.assistant, content="ok"),
-            LLMMessage(role=Role.user, content="more"),
+            LLMMessage(role=Role.ASSISTANT, content="ok"),
+            LLMMessage(role=Role.USER, content="more"),
         ]
         assert _prepare(adapter, provider, grown)["prompt_cache_key"] == key
         # Distinct per conversation.
         other = [
-            LLMMessage(role=Role.system, content="You are vibe."),
-            LLMMessage(role=Role.user, content="a different opener"),
+            LLMMessage(role=Role.SYSTEM, content="You are vibe."),
+            LLMMessage(role=Role.USER, content="a different opener"),
         ]
         assert _prepare(adapter, provider, other)["prompt_cache_key"] != key
 
@@ -155,8 +155,8 @@ class TestPrepareRequest:
         # prompt_cache_key verbatim (mirrors codex's thread_id and the thread-id
         # header), so routing and the body key agree.
         msgs = [
-            LLMMessage(role=Role.system, content="You are vibe."),
-            LLMMessage(role=Role.user, content="fix the bug"),
+            LLMMessage(role=Role.SYSTEM, content="You are vibe."),
+            LLMMessage(role=Role.USER, content="fix the bug"),
         ]
         payload = _prepare(adapter, provider, msgs, cache_session_id="sess-xyz-789")
         assert payload["prompt_cache_key"] == "sess-xyz-789"
@@ -167,7 +167,7 @@ class TestPrepareRequest:
     def test_encrypted_reasoning_requested_only_when_reasoning_on(
         self, adapter, provider
     ):
-        msgs = [LLMMessage(role=Role.user, content="hi")]
+        msgs = [LLMMessage(role=Role.USER, content="hi")]
         on = _prepare(adapter, provider, msgs, thinking="high")
         assert on.get("include") == ["reasoning.encrypted_content"]
         off = _prepare(adapter, provider, msgs, thinking="off")
@@ -178,8 +178,8 @@ class TestPrepareRequest:
             adapter,
             provider,
             [
-                LLMMessage(role=Role.system, content="You are helpful."),
-                LLMMessage(role=Role.user, content="Hi"),
+                LLMMessage(role=Role.SYSTEM, content="You are helpful."),
+                LLMMessage(role=Role.USER, content="Hi"),
             ],
         )
         assert "instructions" not in payload
@@ -193,8 +193,8 @@ class TestPrepareRequest:
             adapter,
             provider,
             [
-                LLMMessage(role=Role.user, content="Hi"),
-                LLMMessage(role=Role.user, content="Again"),
+                LLMMessage(role=Role.USER, content="Hi"),
+                LLMMessage(role=Role.USER, content="Again"),
             ],
         )
         assert payload["input"] == [
@@ -207,9 +207,9 @@ class TestPrepareRequest:
             adapter,
             provider,
             [
-                LLMMessage(role=Role.system, content="Rule 1."),
-                LLMMessage(role=Role.system, content="Rule 2."),
-                LLMMessage(role=Role.user, content="Hi"),
+                LLMMessage(role=Role.SYSTEM, content="Rule 1."),
+                LLMMessage(role=Role.SYSTEM, content="Rule 2."),
+                LLMMessage(role=Role.USER, content="Hi"),
             ],
         )
         assert "instructions" not in payload
@@ -224,9 +224,9 @@ class TestPrepareRequest:
             adapter,
             provider,
             [
-                LLMMessage(role=Role.user, content="Hi"),
+                LLMMessage(role=Role.USER, content="Hi"),
                 LLMMessage(
-                    role=Role.tool, content='{"result": 42}', tool_call_id="call_123"
+                    role=Role.TOOL, content='{"result": 42}', tool_call_id="call_123"
                 ),
             ],
         )
@@ -240,9 +240,9 @@ class TestPrepareRequest:
             adapter,
             provider,
             [
-                LLMMessage(role=Role.user, content="What's the weather?"),
+                LLMMessage(role=Role.USER, content="What's the weather?"),
                 LLMMessage(
-                    role=Role.assistant,
+                    role=Role.ASSISTANT,
                     content="",
                     tool_calls=[
                         ToolCall(
@@ -254,7 +254,7 @@ class TestPrepareRequest:
                     ],
                 ),
                 LLMMessage(
-                    role=Role.tool, content='{"temp": 20}', tool_call_id="call_abc"
+                    role=Role.TOOL, content='{"temp": 20}', tool_call_id="call_abc"
                 ),
             ],
         )
@@ -278,7 +278,7 @@ class TestPrepareRequest:
             provider,
             [
                 LLMMessage(
-                    role=Role.assistant,
+                    role=Role.ASSISTANT,
                     content="Answer",
                     reasoning_state=["enc:abc", "enc:def"],
                 )
@@ -309,7 +309,7 @@ class TestPrepareRequest:
             )
         ]
         payload = _prepare(
-            adapter, provider, [LLMMessage(role=Role.user, content="Hi")], tools=tools
+            adapter, provider, [LLMMessage(role=Role.USER, content="Hi")], tools=tools
         )
         assert len(payload["tools"]) == 1
         tool = payload["tools"][0]
@@ -323,7 +323,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             max_tokens=100,
         )
         assert payload["max_output_tokens"] == 100
@@ -333,7 +333,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             model_name="gpt-4o",
             temperature=0.7,
         )
@@ -343,7 +343,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             model_name="gpt-5.4",
             temperature=0.7,
         )
@@ -353,14 +353,14 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             enable_streaming=True,
         )
         assert payload["stream"] is True
 
     def test_no_stream_by_default(self, adapter, provider):
         payload = _prepare(
-            adapter, provider, [LLMMessage(role=Role.user, content="Hi")]
+            adapter, provider, [LLMMessage(role=Role.USER, content="Hi")]
         )
         assert "stream" not in payload
 
@@ -375,7 +375,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             tools=[tool],
             tool_choice="auto",
         )
@@ -385,7 +385,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             tool_choice="auto",
         )
         assert "tool_choice" not in payload
@@ -401,7 +401,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             tools=[tool],
             tool_choice=tool,
         )
@@ -423,7 +423,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             thinking=thinking,
         )
         assert payload["reasoning"] == {"effort": expected_effort}
@@ -443,7 +443,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             model_name="gpt-5.3-codex-spark",
             thinking=thinking,
         )
@@ -454,8 +454,8 @@ class TestPrepareRequest:
             adapter,
             provider,
             [
-                LLMMessage(role=Role.user, content="Hi"),
-                LLMMessage(role=Role.system, content="Later system prompt"),
+                LLMMessage(role=Role.USER, content="Hi"),
+                LLMMessage(role=Role.SYSTEM, content="Later system prompt"),
             ],
         )
         assert payload["input"] == [
@@ -472,7 +472,7 @@ class TestPrepareRequest:
 
     def test_response_format_omitted_when_none(self, adapter, provider):
         payload = _prepare(
-            adapter, provider, [LLMMessage(role=Role.user, content="Hi")]
+            adapter, provider, [LLMMessage(role=Role.USER, content="Hi")]
         )
         assert "text" not in payload
 
@@ -494,7 +494,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             response_format=response_format,
         )
         fmt = payload["text"]["format"]
@@ -537,7 +537,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             response_format=response_format,
         )
         wire_schema = payload["text"]["format"]["schema"]
@@ -561,7 +561,7 @@ class TestPrepareRequest:
         _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             response_format=response_format,
         )
         # The original schema dict must be unmodified — our own lenient
@@ -580,7 +580,7 @@ class TestPrepareRequest:
         payload = _prepare(
             adapter,
             provider,
-            [LLMMessage(role=Role.user, content="Hi")],
+            [LLMMessage(role=Role.USER, content="Hi")],
             response_format=flat,
         )
         assert payload["text"]["format"] == flat
@@ -602,7 +602,7 @@ class TestParseNonStreamingResponse:
         }
         chunk = adapter.parse_response(data, provider)
         assert chunk.message.content == "Hello!"
-        assert chunk.message.role == Role.assistant
+        assert chunk.message.role == Role.ASSISTANT
         assert chunk.usage.prompt_tokens == 10
         assert chunk.usage.completion_tokens == 5
 
@@ -1419,7 +1419,7 @@ class TestGenericBackendIntegration:
             )
             backend = _make_backend(base_url)
             model = _make_model()
-            messages = [LLMMessage(role=Role.user, content="Just say hi")]
+            messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
             result = await backend.complete(
                 model=model,
@@ -1455,7 +1455,7 @@ class TestGenericBackendIntegration:
             )
             backend = _make_backend(base_url)
             model = _make_model()
-            messages = [LLMMessage(role=Role.user, content="Just say hi")]
+            messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
             results: list[LLMChunk] = []
             async for result in backend.complete_streaming(
@@ -1489,7 +1489,7 @@ class TestGenericBackendIntegration:
             )
             backend = _make_backend(base_url)
             model = _make_model()
-            messages = [LLMMessage(role=Role.user, content="hi")]
+            messages = [LLMMessage(role=Role.USER, content="hi")]
 
             async for _ in backend.complete_streaming(
                 model=model,
@@ -1533,7 +1533,7 @@ class TestGenericBackendIntegration:
             sink: dict[str, str] = {}
             async for _ in backend.complete_streaming(
                 model=_make_model(),
-                messages=[LLMMessage(role=Role.user, content="hi")],
+                messages=[LLMMessage(role=Role.USER, content="hi")],
                 temperature=0.2,
                 tools=None,
                 max_tokens=None,
@@ -1564,7 +1564,7 @@ class TestGenericBackendIntegration:
             backend = _make_backend(base_url)
             async for _ in backend.complete_streaming(
                 model=_make_model(),
-                messages=[LLMMessage(role=Role.user, content="hi")],
+                messages=[LLMMessage(role=Role.USER, content="hi")],
                 temperature=0.2,
                 tools=None,
                 max_tokens=None,

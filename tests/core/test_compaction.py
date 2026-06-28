@@ -13,7 +13,7 @@ _PREFIX = "Another language model started to solve this problem"
 
 
 def _user(content: str, *, injected: bool = False) -> LLMMessage:
-    return LLMMessage(role=Role.user, content=content, injected=injected)
+    return LLMMessage(role=Role.USER, content=content, injected=injected)
 
 
 def test_empty_messages() -> None:
@@ -22,14 +22,14 @@ def test_empty_messages() -> None:
 
 def test_only_non_user_messages() -> None:
     messages = [
-        LLMMessage(role=Role.system, content="sys"),
-        LLMMessage(role=Role.assistant, content="hi"),
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.ASSISTANT, content="hi"),
     ]
     assert collect_prior_user_messages(messages, _PREFIX) == []
 
 
 def test_single_user_message_preserved() -> None:
-    messages = [LLMMessage(role=Role.system, content="sys"), _user("first question")]
+    messages = [LLMMessage(role=Role.SYSTEM, content="sys"), _user("first question")]
     out = collect_prior_user_messages(messages, _PREFIX)
     assert [m.content for m in out] == ["first question"]
 
@@ -83,7 +83,7 @@ def test_compaction_context_merges_previous_and_new_user_messages() -> None:
         "summary one",
     )
     messages = [
-        LLMMessage(role=Role.system, content="sys"),
+        LLMMessage(role=Role.SYSTEM, content="sys"),
         _user(context, injected=True),
         _user("third ask"),
         _user("middleware reminder", injected=True),
@@ -142,21 +142,21 @@ def test_fresh_message_ids() -> None:
 
 def test_only_assistant_and_system_around_users() -> None:
     messages = [
-        LLMMessage(role=Role.system, content="sys"),
+        LLMMessage(role=Role.SYSTEM, content="sys"),
         _user("u1"),
-        LLMMessage(role=Role.assistant, content="a1"),
+        LLMMessage(role=Role.ASSISTANT, content="a1"),
         _user("u2"),
-        LLMMessage(role=Role.assistant, content="a2"),
+        LLMMessage(role=Role.ASSISTANT, content="a2"),
     ]
     out = collect_prior_user_messages(messages, _PREFIX)
     assert [m.content for m in out] == ["u1", "u2"]
-    assert all(m.role == Role.user for m in out)
+    assert all(m.role == Role.USER for m in out)
 
 
 def test_extractive_summary_captures_assistant_intent_and_tools() -> None:
     messages = [
         LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content="I will read the config file.",
             tool_calls=[
                 ToolCall(
@@ -167,7 +167,7 @@ def test_extractive_summary_captures_assistant_intent_and_tools() -> None:
             ],
         ),
         LLMMessage(
-            role=Role.tool, content="port: 8080", tool_call_id="c1", name="read"
+            role=Role.TOOL, content="port: 8080", tool_call_id="c1", name="read"
         ),
     ]
     summary = build_extractive_summary(messages)
@@ -179,9 +179,9 @@ def test_extractive_summary_captures_assistant_intent_and_tools() -> None:
 
 def test_extractive_summary_marks_elided_content() -> None:
     messages = [
-        LLMMessage(role=Role.assistant, content="<vibe_snipped> 300 tokens elided"),
+        LLMMessage(role=Role.ASSISTANT, content="<vibe_snipped> 300 tokens elided"),
         LLMMessage(
-            role=Role.tool, content="<vibe_microcompacted> [...]", tool_call_id="c1"
+            role=Role.TOOL, content="<vibe_microcompacted> [...]", tool_call_id="c1"
         ),
     ]
     summary = build_extractive_summary(messages)
@@ -190,14 +190,14 @@ def test_extractive_summary_marks_elided_content() -> None:
 
 
 def test_extractive_summary_respects_token_budget() -> None:
-    messages = [LLMMessage(role=Role.assistant, content="line " + "z" * 10_000)]
+    messages = [LLMMessage(role=Role.ASSISTANT, content="line " + "z" * 10_000)]
     summary = build_extractive_summary(messages, max_tokens=10)
     assert "[... truncated ...]" in summary
 
 
 class TestCollectLeadingInjectedContext:
     def _sys(self) -> LLMMessage:
-        return LLMMessage(role=Role.system, content="sys")
+        return LLMMessage(role=Role.SYSTEM, content="sys")
 
     def test_returns_leading_injected_after_system(self) -> None:
         messages = [
@@ -228,7 +228,7 @@ class TestCollectLeadingInjectedContext:
         messages = [
             self._sys(),
             _user("env", injected=True),
-            LLMMessage(role=Role.user, content=prior_summary, injected=True),
+            LLMMessage(role=Role.USER, content=prior_summary, injected=True),
             _user("after compact"),
         ]
         out = collect_leading_injected_context(messages)

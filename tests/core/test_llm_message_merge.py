@@ -26,7 +26,7 @@ def image_b(tmp_path: Path) -> ImageAttachment:
 
 
 def _msg(content: str, images: list[ImageAttachment] | None = None) -> LLMMessage:
-    return LLMMessage(role=Role.assistant, content=content, images=images)
+    return LLMMessage(role=Role.ASSISTANT, content=content, images=images)
 
 
 def test_merge_prefers_self_images_when_present(

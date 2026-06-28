@@ -237,8 +237,8 @@ class TestACPSetModel:
         assert acp_session is not None
         await acp_session.agent_loop.wait_until_ready()
 
-        user_msg = LLMMessage(role=Role.user, content="Hello")
-        assistant_msg = LLMMessage(role=Role.assistant, content="Hi there!")
+        user_msg = LLMMessage(role=Role.USER, content="Hello")
+        assistant_msg = LLMMessage(role=Role.ASSISTANT, content="Hi there!")
         acp_session.agent_loop.messages.append(user_msg)
         acp_session.agent_loop.messages.append(assistant_msg)
 
@@ -250,7 +250,7 @@ class TestACPSetModel:
 
         assert response is not None
         assert len(acp_session.agent_loop.messages) == 3
-        assert acp_session.agent_loop.messages[0].role == Role.system
+        assert acp_session.agent_loop.messages[0].role == Role.SYSTEM
         assert acp_session.agent_loop.messages[1].content == "Hello"
         assert acp_session.agent_loop.messages[2].content == "Hi there!"
 

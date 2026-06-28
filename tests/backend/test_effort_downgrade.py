@@ -102,7 +102,7 @@ async def test_streaming_retries_with_downgraded_effort():
             chunk
             async for chunk in backend.complete_streaming(
                 model=model,
-                messages=[LLMMessage(role=Role.user, content="hi")],
+                messages=[LLMMessage(role=Role.USER, content="hi")],
                 temperature=0.2,
                 tools=None,
                 max_tokens=None,

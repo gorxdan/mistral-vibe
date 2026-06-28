@@ -36,9 +36,9 @@ async def test_ui_displays_messages_when_resuming_session(
     agent_loop = build_test_agent_loop(config=vibe_config)
 
     # Simulate a previous session with messages
-    user_msg = LLMMessage(role=Role.user, content="Hello, how are you?")
+    user_msg = LLMMessage(role=Role.USER, content="Hello, how are you?")
     assistant_msg = LLMMessage(
-        role=Role.assistant,
+        role=Role.ASSISTANT,
         content="I'm doing well, thank you!",
         tool_calls=[
             ToolCall(
@@ -51,7 +51,7 @@ async def test_ui_displays_messages_when_resuming_session(
         ],
     )
     tool_result_msg = LLMMessage(
-        role=Role.tool,
+        role=Role.TOOL,
         content="File content here",
         name="read",
         tool_call_id="tool_call_1",
@@ -95,7 +95,7 @@ async def test_ui_does_not_display_messages_when_only_system_messages_exist(
     agent_loop = build_test_agent_loop(config=vibe_config)
 
     # Only system messages
-    system_msg = LLMMessage(role=Role.system, content="System prompt")
+    system_msg = LLMMessage(role=Role.SYSTEM, content="System prompt")
     agent_loop.messages.append(system_msg)
 
     app = build_test_vibe_app(agent_loop=agent_loop)
@@ -120,10 +120,10 @@ async def test_ui_displays_multiple_user_assistant_turns(
 
     # Multiple conversation turns
     messages = [
-        LLMMessage(role=Role.user, content="First question"),
-        LLMMessage(role=Role.assistant, content="First answer"),
-        LLMMessage(role=Role.user, content="Second question"),
-        LLMMessage(role=Role.assistant, content="Second answer"),
+        LLMMessage(role=Role.USER, content="First question"),
+        LLMMessage(role=Role.ASSISTANT, content="First answer"),
+        LLMMessage(role=Role.USER, content="Second question"),
+        LLMMessage(role=Role.ASSISTANT, content="Second answer"),
     ]
 
     agent_loop.messages.extend(messages)
@@ -156,8 +156,8 @@ async def test_ui_displays_messages_when_resuming_in_dangerous_directory(
 
     agent_loop = build_test_agent_loop(config=vibe_config)
     agent_loop.messages.extend([
-        LLMMessage(role=Role.user, content="Hello from a previous run"),
-        LLMMessage(role=Role.assistant, content="Welcome back!"),
+        LLMMessage(role=Role.USER, content="Hello from a previous run"),
+        LLMMessage(role=Role.ASSISTANT, content="Welcome back!"),
     ])
 
     app = build_test_vibe_app(agent_loop=agent_loop)
@@ -183,8 +183,8 @@ async def test_ui_rebuilds_history_when_whats_new_is_shown(
     config = build_test_vibe_config(enable_update_checks=True)
     agent_loop = build_test_agent_loop(config=config)
     agent_loop.messages.extend([
-        LLMMessage(role=Role.user, content="Hello from the previous session."),
-        LLMMessage(role=Role.assistant, content="Welcome back!"),
+        LLMMessage(role=Role.USER, content="Hello from the previous session."),
+        LLMMessage(role=Role.ASSISTANT, content="Welcome back!"),
     ])
     update_cache = UpdateCache(
         latest_version="1.0.0",

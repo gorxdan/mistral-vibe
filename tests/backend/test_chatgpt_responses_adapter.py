@@ -78,8 +78,8 @@ def _prepare(messages, *, thinking="high", tools=None) -> dict:
 
 def test_system_message_hoisted_to_instructions() -> None:
     payload = _prepare([
-        LLMMessage(role=Role.system, content="You are helpful."),
-        LLMMessage(role=Role.user, content="hi"),
+        LLMMessage(role=Role.SYSTEM, content="You are helpful."),
+        LLMMessage(role=Role.USER, content="hi"),
     ])
     assert payload["instructions"] == "You are helpful."
     # System must not also appear in input items.
@@ -89,19 +89,19 @@ def test_system_message_hoisted_to_instructions() -> None:
 
 
 def test_instructions_falls_back_when_no_system() -> None:
-    payload = _prepare([LLMMessage(role=Role.user, content="hi")])
+    payload = _prepare([LLMMessage(role=Role.USER, content="hi")])
     assert payload["instructions"]  # non-empty (backend rejects empty)
 
 
 def test_encrypted_reasoning_included_when_thinking_on() -> None:
-    payload = _prepare([LLMMessage(role=Role.user, content="hi")], thinking="high")
+    payload = _prepare([LLMMessage(role=Role.USER, content="hi")], thinking="high")
     assert payload["include"] == ["reasoning.encrypted_content"]
     assert payload["reasoning"]["summary"] == "auto"
     assert payload["store"] is False
 
 
 def test_no_include_when_thinking_off() -> None:
-    payload = _prepare([LLMMessage(role=Role.user, content="hi")], thinking="off")
+    payload = _prepare([LLMMessage(role=Role.USER, content="hi")], thinking="off")
     assert "include" not in payload
 
 
@@ -111,14 +111,14 @@ def test_tool_choice_defaults_to_auto() -> None:
             name="run", description="run", parameters={"type": "object"}
         )
     )
-    payload = _prepare([LLMMessage(role=Role.user, content="hi")], tools=[tool])
+    payload = _prepare([LLMMessage(role=Role.USER, content="hi")], tools=[tool])
     assert payload["tool_choice"] == "auto"
 
 
 def _params(*, max_tokens: int | None) -> RequestParams:
     return RequestParams(
         model_name="gpt-5.1-codex",
-        messages=[LLMMessage(role=Role.user, content="hi")],
+        messages=[LLMMessage(role=Role.USER, content="hi")],
         temperature=0.2,
         tools=None,
         max_tokens=max_tokens,
@@ -182,8 +182,8 @@ async def test_backend_injects_oauth_bearer_and_account_header() -> None:
     chunk = await backend.complete(
         model=model,
         messages=[
-            LLMMessage(role=Role.system, content="sys"),
-            LLMMessage(role=Role.user, content="hi"),
+            LLMMessage(role=Role.SYSTEM, content="sys"),
+            LLMMessage(role=Role.USER, content="hi"),
         ],
     )
 
@@ -207,5 +207,5 @@ async def test_backend_raises_when_not_signed_in() -> None:
     )
     with pytest.raises(oauth.OpenAINotAuthenticatedError):
         await backend.complete(
-            model=model, messages=[LLMMessage(role=Role.user, content="hi")]
+            model=model, messages=[LLMMessage(role=Role.USER, content="hi")]
         )

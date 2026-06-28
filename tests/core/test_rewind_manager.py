@@ -11,10 +11,10 @@ from vibe.core.types import LLMMessage, MessageList, Role
 
 def _make_messages(*contents: str) -> MessageList:
     """Create a MessageList with a system message followed by user/assistant pairs."""
-    msgs = MessageList([LLMMessage(role=Role.system, content="system")])
+    msgs = MessageList([LLMMessage(role=Role.SYSTEM, content="system")])
     for content in contents:
-        msgs.append(LLMMessage(role=Role.user, content=content))
-        msgs.append(LLMMessage(role=Role.assistant, content=f"reply to {content}"))
+        msgs.append(LLMMessage(role=Role.USER, content=content))
+        msgs.append(LLMMessage(role=Role.ASSISTANT, content=f"reply to {content}"))
     return msgs
 
 
@@ -135,10 +135,10 @@ class TestRewind:
         messages = _make_messages("hello")
         # Insert an injected middleware message between turns
         messages.append(
-            LLMMessage(role=Role.user, content="plan mode reminder", injected=True)
+            LLMMessage(role=Role.USER, content="plan mode reminder", injected=True)
         )
-        messages.append(LLMMessage(role=Role.user, content="world"))
-        messages.append(LLMMessage(role=Role.assistant, content="reply to world"))
+        messages.append(LLMMessage(role=Role.USER, content="world"))
+        messages.append(LLMMessage(role=Role.ASSISTANT, content="reply to world"))
         mgr, _, _ = _make_manager(messages)
 
         result = mgr.get_rewindable_messages()
@@ -184,7 +184,7 @@ class TestRewind:
 
         assert len(mgr.checkpoints) == 1
 
-        messages.reset([LLMMessage(role=Role.system, content="system")])
+        messages.reset([LLMMessage(role=Role.SYSTEM, content="system")])
 
         assert len(mgr.checkpoints) == 0
 
@@ -247,7 +247,7 @@ class _Turn:
         *before* the user message is added to the message list.
         """
         self._mgr.create_checkpoint()
-        self._messages.append(LLMMessage(role=Role.user, content=user_msg))
+        self._messages.append(LLMMessage(role=Role.USER, content=user_msg))
 
     def tool_write(self, path: Path, content: str) -> None:
         """Simulate a tool writing to a file (snapshot → write)."""
@@ -262,14 +262,14 @@ class _Turn:
 
     def end(self, assistant_reply: str = "ok") -> None:
         """End the turn: append assistant reply."""
-        self._messages.append(LLMMessage(role=Role.assistant, content=assistant_reply))
+        self._messages.append(LLMMessage(role=Role.ASSISTANT, content=assistant_reply))
 
 
 @pytest.mark.asyncio
 class TestRewindScenarios:
     @staticmethod
     def _setup() -> tuple[RewindManager, MessageList, _Turn]:
-        messages = MessageList([LLMMessage(role=Role.system, content="system")])
+        messages = MessageList([LLMMessage(role=Role.SYSTEM, content="system")])
         mgr, _, _ = _make_manager(messages)
         return mgr, messages, _Turn(mgr, messages)
 

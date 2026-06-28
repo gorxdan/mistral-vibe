@@ -28,9 +28,9 @@ class ReasoningAdapter(APIAdapter):
 
     def _convert_message(self, msg: LLMMessage) -> dict[str, Any]:
         match msg.role:
-            case Role.system:
+            case Role.SYSTEM:
                 return {"role": "system", "content": msg.content or ""}
-            case Role.user:
+            case Role.USER:
                 if msg.images:
                     parts: list[dict[str, Any]] = []
                     if msg.content:
@@ -41,9 +41,9 @@ class ReasoningAdapter(APIAdapter):
                     )
                     return {"role": "user", "content": parts}
                 return {"role": "user", "content": msg.content or ""}
-            case Role.assistant:
+            case Role.ASSISTANT:
                 return self._convert_assistant_message(msg)
-            case Role.tool:
+            case Role.TOOL:
                 result: dict[str, Any] = {
                     "role": "tool",
                     "content": msg.content or "",
@@ -218,7 +218,7 @@ class ReasoningAdapter(APIAdapter):
             text_content, reasoning_content = self._parse_content_blocks(content)
 
         return LLMMessage(
-            role=Role.assistant,
+            role=Role.ASSISTANT,
             content=text_content,
             reasoning_content=reasoning_content,
             tool_calls=self._parse_tool_calls(msg_dict.get("tool_calls")),
@@ -237,7 +237,7 @@ class ReasoningAdapter(APIAdapter):
                 message = self._parse_message_dict(choice["delta"])
 
         if message is None:
-            message = LLMMessage(role=Role.assistant, content="")
+            message = LLMMessage(role=Role.ASSISTANT, content="")
 
         usage_data = data.get("usage") or {}
         usage = LLMUsage(

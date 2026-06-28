@@ -13,9 +13,9 @@ def _call(*messages: LLMMessage) -> LLMMessage | None:
 
 
 def test_returns_last_user_message() -> None:
-    m1 = LLMMessage(role=Role.user, content="first")
-    m2 = LLMMessage(role=Role.assistant, content="reply")
-    m3 = LLMMessage(role=Role.user, content="second")
+    m1 = LLMMessage(role=Role.USER, content="first")
+    m2 = LLMMessage(role=Role.ASSISTANT, content="reply")
+    m3 = LLMMessage(role=Role.USER, content="second")
     result = _call(m1, m2, m3)
     assert result is m3
 
@@ -23,8 +23,8 @@ def test_returns_last_user_message() -> None:
 def test_returns_none_when_no_user_messages() -> None:
     assert (
         _call(
-            LLMMessage(role=Role.system, content="system prompt"),
-            LLMMessage(role=Role.assistant, content="hello"),
+            LLMMessage(role=Role.SYSTEM, content="system prompt"),
+            LLMMessage(role=Role.ASSISTANT, content="hello"),
         )
         is None
     )
@@ -35,11 +35,11 @@ def test_returns_none_for_empty_messages() -> None:
 
 
 def test_skips_injected_user_messages() -> None:
-    real = LLMMessage(role=Role.user, content="real")
-    injected = LLMMessage(role=Role.user, content="reminder", injected=True)
+    real = LLMMessage(role=Role.USER, content="real")
+    injected = LLMMessage(role=Role.USER, content="reminder", injected=True)
     assert _call(real, injected) is real
 
 
 def test_returns_user_message_with_empty_content() -> None:
-    empty = LLMMessage(role=Role.user, content="")
+    empty = LLMMessage(role=Role.USER, content="")
     assert _call(empty) is empty

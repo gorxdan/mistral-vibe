@@ -323,9 +323,9 @@ class TestSessionLoggerSaveInteraction:
 
         # Create test messages
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="Hello"),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
 
         # Create test stats
@@ -372,9 +372,9 @@ class TestSessionLoggerSaveInteraction:
         logger = SessionLogger(session_config, session_id)
 
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="Hello"),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
 
         stats = AgentStats(
@@ -422,9 +422,9 @@ class TestSessionLoggerSaveInteraction:
 
         # First save - create initial session
         initial_messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="Hello"),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
 
         stats = AgentStats(
@@ -441,8 +441,8 @@ class TestSessionLoggerSaveInteraction:
 
         # Second save - add more messages
         new_messages = [
-            LLMMessage(role=Role.user, content="How are you?"),
-            LLMMessage(role=Role.assistant, content="I'm fine, thanks!"),
+            LLMMessage(role=Role.USER, content="How are you?"),
+            LLMMessage(role=Role.ASSISTANT, content="I'm fine, thanks!"),
         ]
 
         all_messages = initial_messages + new_messages
@@ -486,9 +486,9 @@ class TestSessionLoggerSaveInteraction:
         logger = SessionLogger(session_config, session_id)
 
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="Hello"),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
         stats = AgentStats(
             steps=1, session_prompt_tokens=10, session_completion_tokens=20
@@ -544,8 +544,8 @@ class TestSessionLoggerSaveInteraction:
 
         # Create messages with no user messages (only system and assistant)
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
 
         stats = AgentStats(
@@ -592,9 +592,9 @@ class TestSessionLoggerSaveInteraction:
         # Create a long user message (more than 50 characters)
         long_message = "This is a very long user message that exceeds fifty characters and should be truncated"
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content=long_message),
-            LLMMessage(role=Role.assistant, content="Response"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content=long_message),
+            LLMMessage(role=Role.ASSISTANT, content="Response"),
         ]
 
         stats = AgentStats(
@@ -637,11 +637,11 @@ class TestSessionLoggerSaveInteraction:
         logger.set_initial_auto_title("Pretty @foo.py title")
 
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
             LLMMessage(
-                role=Role.user, content="path: file:///abs/foo.py\ncontent: ..."
+                role=Role.USER, content="path: file:///abs/foo.py\ncontent: ..."
             ),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
         stats = AgentStats(
             steps=1, session_prompt_tokens=10, session_completion_tokens=20
@@ -678,9 +678,9 @@ class TestSessionLoggerSaveInteraction:
         logger.set_title("Manual title")
 
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="Hello"),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
         stats = AgentStats(
             steps=1, session_prompt_tokens=10, session_completion_tokens=20
@@ -718,9 +718,9 @@ class TestSessionLoggerSaveInteraction:
         logger = SessionLogger(session_config, "test-session-123")
 
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="Hello"),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
 
         cleanup_spy = MagicMock()
@@ -999,9 +999,9 @@ class TestPersistLoops:
         logger = SessionLogger(session_config, "test-session-loops")
         await logger.save_interaction(
             messages=[
-                LLMMessage(role=Role.system, content="System prompt"),
-                LLMMessage(role=Role.user, content="Hello"),
-                LLMMessage(role=Role.assistant, content="Hi there!"),
+                LLMMessage(role=Role.SYSTEM, content="System prompt"),
+                LLMMessage(role=Role.USER, content="Hello"),
+                LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
             ],
             stats=AgentStats(steps=1),
             base_config=mock_vibe_config,
@@ -1078,9 +1078,9 @@ class TestPersistLoops:
     ) -> None:
         logger = SessionLogger(session_config, "loops-vs-save")
         messages = [
-            LLMMessage(role=Role.system, content="System prompt"),
-            LLMMessage(role=Role.user, content="Hello"),
-            LLMMessage(role=Role.assistant, content="Hi there!"),
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
         ]
         await logger.save_interaction(
             messages=messages,
@@ -1104,7 +1104,7 @@ class TestPersistLoops:
 
         # A subsequent save (e.g. user sends another message) must not
         # overwrite the on-disk loops with the stale in-memory value.
-        more_messages = [*messages, LLMMessage(role=Role.user, content="Again")]
+        more_messages = [*messages, LLMMessage(role=Role.USER, content="Again")]
         await logger.save_interaction(
             messages=more_messages,
             stats=AgentStats(steps=2),
@@ -1158,8 +1158,8 @@ class TestPersistExperiments:
         logger = SessionLogger(session_config, "exp-session")
         await logger.save_interaction(
             messages=[
-                LLMMessage(role=Role.system, content="System prompt"),
-                LLMMessage(role=Role.user, content="Hello"),
+                LLMMessage(role=Role.SYSTEM, content="System prompt"),
+                LLMMessage(role=Role.USER, content="Hello"),
             ],
             stats=AgentStats(steps=1),
             base_config=mock_vibe_config,
@@ -1189,8 +1189,8 @@ class TestPersistExperiments:
         logger = SessionLogger(session_config, "exp-none")
         await logger.save_interaction(
             messages=[
-                LLMMessage(role=Role.system, content="x"),
-                LLMMessage(role=Role.user, content="y"),
+                LLMMessage(role=Role.SYSTEM, content="x"),
+                LLMMessage(role=Role.USER, content="y"),
             ],
             stats=AgentStats(steps=1),
             base_config=mock_vibe_config,
@@ -1251,9 +1251,9 @@ class TestPersistExperiments:
 
         await logger.save_interaction(
             messages=[
-                LLMMessage(role=Role.system, content="System prompt"),
-                LLMMessage(role=Role.user, content="Hello"),
-                LLMMessage(role=Role.assistant, content="Hi"),
+                LLMMessage(role=Role.SYSTEM, content="System prompt"),
+                LLMMessage(role=Role.USER, content="Hello"),
+                LLMMessage(role=Role.ASSISTANT, content="Hi"),
             ],
             stats=AgentStats(steps=1),
             base_config=mock_vibe_config,

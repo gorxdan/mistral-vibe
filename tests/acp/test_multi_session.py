@@ -88,12 +88,12 @@ class TestMultiSessionCore:
         await asyncio.gather(run_session1(), run_session2())
 
         user_message1 = next(
-            (msg for msg in session1.agent_loop.messages if msg.role == Role.user), None
+            (msg for msg in session1.agent_loop.messages if msg.role == Role.USER), None
         )
         assert user_message1 is not None
         assert user_message1.content == "Prompt for session 1"
         user_message2 = next(
-            (msg for msg in session2.agent_loop.messages if msg.role == Role.user), None
+            (msg for msg in session2.agent_loop.messages if msg.role == Role.USER), None
         )
         assert user_message2 is not None
         assert user_message2.content == "Prompt for session 2"
@@ -102,11 +102,11 @@ class TestMultiSessionCore:
         # assert that both sessions received distinct responses from the
         # expected set rather than pinning a specific assignment.
         assistant_message1 = next(
-            (msg for msg in session1.agent_loop.messages if msg.role == Role.assistant),
+            (msg for msg in session1.agent_loop.messages if msg.role == Role.ASSISTANT),
             None,
         )
         assistant_message2 = next(
-            (msg for msg in session2.agent_loop.messages if msg.role == Role.assistant),
+            (msg for msg in session2.agent_loop.messages if msg.role == Role.ASSISTANT),
             None,
         )
         assert assistant_message1 is not None

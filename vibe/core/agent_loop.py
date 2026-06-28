@@ -548,7 +548,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             scratchpad_dir=self.scratchpad_dir,
             headless=self._headless,
         )
-        system_message = LLMMessage(role=Role.system, content=system_prompt)
+        system_message = LLMMessage(role=Role.SYSTEM, content=system_prompt)
         self.messages = MessageList(initial=[system_message], observer=message_observer)
 
         self.stats = AgentStats()
@@ -993,7 +993,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if as_message:
             self.messages.append(
                 LLMMessage(
-                    role=Role.user,
+                    role=Role.USER,
                     content=content,
                     message_id=client_message_id or str(uuid4()),
                     images=images or None,
@@ -1002,7 +1002,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         else:
             self.messages.append(
                 LLMMessage(
-                    role=Role.user,
+                    role=Role.USER,
                     content=content,
                     injected=True,
                     images=images or None,
@@ -1028,7 +1028,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         """
         self._pending_injected_messages.append(
             LLMMessage(
-                role=Role.user,
+                role=Role.USER,
                 content=content,
                 injected=True,
                 images=images or None,
@@ -1071,7 +1071,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 # a session preamble.
                 for ctx_text in ss_injected:
                     self.messages.append(
-                        LLMMessage(role=Role.user, content=ctx_text, injected=True)
+                        LLMMessage(role=Role.USER, content=ctx_text, injected=True)
                     )
             agent_provider: str | None = None
             if active_model is not None:
@@ -1177,7 +1177,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             (
                 m
                 for m in reversed(self.messages)
-                if m.role == Role.user and not m.injected
+                if m.role == Role.USER and not m.injected
             ),
             None,
         )
@@ -1255,7 +1255,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             case MiddlewareAction.INJECT_MESSAGE:
                 if result.message:
                     injected_message = LLMMessage(
-                        role=Role.user, content=result.message, injected=True
+                        role=Role.USER, content=result.message, injected=True
                     )
                     self.messages.append(injected_message)
 
@@ -1770,7 +1770,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
     def _mem_wrote_memory_since(self, start: int, end: int) -> bool:
         for msg in self.messages[start:end]:
-            if msg.role != Role.assistant:
+            if msg.role != Role.ASSISTANT:
                 continue
             for tc in msg.tool_calls or []:
                 if (tc.function.name or "") == "manage_memory":
@@ -1791,7 +1791,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _transcript_text(self, start: int, end: int) -> str:
         lines: list[str] = []
         for msg in self.messages[start:end]:
-            if msg.role not in {Role.user, Role.assistant}:
+            if msg.role not in {Role.USER, Role.ASSISTANT}:
                 continue
             content = msg.content
             if not content:
@@ -2295,7 +2295,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         await self._check_agents_md_changed()
 
         user_message = LLMMessage(
-            role=Role.user,
+            role=Role.USER,
             content=user_msg,
             message_id=client_message_id,
             images=images or None,
@@ -2329,7 +2329,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 f"reason: {block_reason}"
             )
             blocked = LLMMessage(
-                role=Role.assistant, content=f"Prompt blocked by hook: {block_reason}"
+                role=Role.ASSISTANT, content=f"Prompt blocked by hook: {block_reason}"
             )
             self.messages.append(blocked)
             yield AssistantEvent(
@@ -2343,7 +2343,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return
         for ctx_text in injected_ctx:
             self.messages.append(
-                LLMMessage(role=Role.user, content=ctx_text, injected=True)
+                LLMMessage(role=Role.USER, content=ctx_text, injected=True)
             )
 
         if self.config.memory.prefetch:
@@ -2479,7 +2479,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 self._is_user_prompt_call = False
 
                 last_message = self.messages[-1]
-                should_break_loop = last_message.role != Role.tool
+                should_break_loop = last_message.role != Role.TOOL
 
                 if self._drain_pending_injections():
                     should_break_loop = False
@@ -2541,7 +2541,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return None
 
         msg = LLMMessage(
-            role=Role.user,
+            role=Role.USER,
             content=(
                 f"<{VIBE_WARNING_TAG}>The user has manually updated the plan file. "
                 f"Here is the updated version -- use this as the source of truth "
@@ -2585,7 +2585,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 f"{'completed' if rec.completed else 'failed'}]\n{summary}"
             )
             self.messages.append(
-                LLMMessage(role=Role.user, content=message, injected=True)
+                LLMMessage(role=Role.USER, content=message, injected=True)
             )
             yield BackgroundTaskCompletedEvent(
                 task_id=rec.task_id,
@@ -3236,9 +3236,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             content = (msg.content or "").strip()
             if not content:
                 continue
-            if msg.role == Role.user and not msg.injected:
+            if msg.role == Role.USER and not msg.injected:
                 turns.append(f"user: {content}")
-            elif msg.role == Role.assistant:
+            elif msg.role == Role.ASSISTANT:
                 turns.append(f"assistant: {content}")
         if not turns:
             return ""
@@ -3458,10 +3458,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         section = self._late_memory_section
         if self.config.memory.inject_mode != "late" or not section:
             return self.messages
-        mem_msg = LLMMessage(role=Role.user, content=self._wrap_memories(section))
+        mem_msg = LLMMessage(role=Role.USER, content=self._wrap_memories(section))
         msgs = list(self.messages)
         insert_at = next(
-            (i for i in range(len(msgs) - 1, -1, -1) if msgs[i].role == Role.user),
+            (i for i in range(len(msgs) - 1, -1, -1) if msgs[i].role == Role.USER),
             len(msgs),
         )
         msgs.insert(insert_at, mem_msg)
@@ -3773,7 +3773,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 self.messages.insert(
                     insertion_point,
                     LLMMessage(
-                        role=Role.tool,
+                        role=Role.TOOL,
                         tool_call_id=tc.id or "",
                         name=(tc.function.name or "") if tc.function else "",
                         content=str(
@@ -3792,7 +3792,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return
         self._files_read_reconstructed = True
         for msg in self.messages:
-            if msg.role != Role.assistant or not msg.tool_calls:
+            if msg.role != Role.ASSISTANT or not msg.tool_calls:
                 continue
             for tc in msg.tool_calls:
                 if tc.function.name not in {"read", "write_file"}:
@@ -3900,7 +3900,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return forked
 
     def _messages_for_fork(self, message_id: str | None) -> list[LLMMessage]:
-        source_messages = [m for m in self.messages if m.role != Role.system]
+        source_messages = [m for m in self.messages if m.role != Role.SYSTEM]
         if message_id is None:
             return [m.model_copy(deep=True) for m in source_messages]
 
@@ -3911,7 +3911,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if anchor_index is None:
             raise ValueError(f"Cannot fork from unknown message_id: {message_id}")
 
-        if source_messages[anchor_index].role != Role.user:
+        if source_messages[anchor_index].role != Role.USER:
             raise ValueError("Fork from message_id is only supported for user messages")
 
         next_turn_index = next(
@@ -3920,7 +3920,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 for i, m in enumerate(
                     source_messages[anchor_index + 1 :], start=anchor_index + 1
                 )
-                if m.role == Role.user
+                if m.role == Role.USER
             ),
             len(source_messages),
         )
@@ -3981,7 +3981,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             try:
                 with self.messages.silent():
                     self.messages.append(
-                        LLMMessage(role=Role.user, content=summary_request)
+                        LLMMessage(role=Role.USER, content=summary_request)
                     )
                     summary_result = await self._chat(
                         model_override=self.config.get_compaction_model()
@@ -4019,7 +4019,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 prior_user_messages, summary_content
             )
             compaction_context_message = LLMMessage(
-                role=Role.user, content=compaction_context, injected=True
+                role=Role.USER, content=compaction_context, injected=True
             )
             self.messages.reset([
                 system_message,
