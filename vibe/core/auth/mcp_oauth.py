@@ -485,10 +485,8 @@ async def perform_oauth_login(
             auth=provider, timeout=_LOGIN_TIMEOUT_SECONDS, verify=build_ssl_context()
         ) as client:
             await client.get(server.url)
-    except OAuthTokenError as exc:
+    except (OAuthTokenError, OAuthFlowError) as exc:
         raise MCPOAuthLoginFailed(server_alias=server.name, reason=str(exc)) from exc
-    except OAuthFlowError:
-        raise
     await Fingerprint.compute(server).save(server.name)
 
 
