@@ -2,23 +2,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.cells import cell_len
 from rich.text import Text
 
-from vibe.core.types import AgentStats
-from vibe.core.usage import (
-    CodexCredits,
-    CodexMonthlyLimit,
-    CodexQuotaSnapshot,
-    CodexQuotaWindow,
-    DailyBucket,
-    HarnessSplit,
-    ProviderBreakdown,
-    RateLimitSnapshot,
-    UsageSummary,
-    WindowRollup,
-)
+if TYPE_CHECKING:
+    from vibe.core.types import AgentStats
+    from vibe.core.usage import (
+        CodexCredits,
+        CodexMonthlyLimit,
+        CodexQuotaSnapshot,
+        CodexQuotaWindow,
+        DailyBucket,
+        HarnessSplit,
+        ProviderBreakdown,
+        RateLimitSnapshot,
+        UsageSummary,
+        WindowRollup,
+    )
 
 _BAR_SEGMENTS = 20
 _BAR_FILLED = "█"

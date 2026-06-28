@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
+import sys
 
 from vibe.cli.textual_ui.widgets._status_render import (
     StatusCardData,
@@ -60,6 +62,27 @@ def _records() -> list[UsageRecord]:
             session_id="sess-0",
         ),
     ]
+
+
+def test_status_render_import_does_not_require_type_only_usage_exports():
+    from vibe.core import usage
+
+    module_name = "vibe.cli.textual_ui.widgets._status_render"
+    cached_module = sys.modules.pop(module_name, None)
+    daily_bucket = usage.DailyBucket
+    harness_split = usage.HarnessSplit
+    del usage.DailyBucket
+    del usage.HarnessSplit
+    try:
+        imported = importlib.import_module(module_name)
+    finally:
+        usage.DailyBucket = daily_bucket
+        usage.HarnessSplit = harness_split
+        sys.modules.pop(module_name, None)
+        if cached_module is not None:
+            sys.modules[module_name] = cached_module
+
+    assert imported.StatusCardData.__name__ == "StatusCardData"
 
 
 def test_format_tokens_compact():
