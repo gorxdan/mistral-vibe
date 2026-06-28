@@ -528,12 +528,17 @@ class LLMUsage(BaseModel):
     # Lets cache effectiveness be measured for OpenAI-compatible providers that
     # auto-cache (e.g. Kimi, GLM) without Vibe managing cache breakpoints.
     cached_tokens: int = 0
+    # Reasoning tokens (subset of completion_tokens for o-series / GLM / Kimi
+    # thinking models). Surfaced from completion_tokens_details.reasoning_tokens
+    # (OpenAI shape) so totals reflect the API's actual billed usage.
+    reasoning_tokens: int = 0
 
     def __add__(self, other: LLMUsage) -> LLMUsage:
         return LLMUsage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
             cached_tokens=self.cached_tokens + other.cached_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
         )
 
 

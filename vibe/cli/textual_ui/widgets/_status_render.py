@@ -12,6 +12,8 @@ from vibe.core.usage import (
     CodexMonthlyLimit,
     CodexQuotaSnapshot,
     CodexQuotaWindow,
+    DailyBucket,
+    HarnessSplit,
     ProviderBreakdown,
     RateLimitSnapshot,
     UsageSummary,
@@ -236,6 +238,53 @@ def _windows_section(windows: list[WindowRollup]) -> list[Text]:
     return lines
 
 
+def _harness_section(split: HarnessSplit) -> list[Text]:
+    if split.harness_tokens == 0 and split.user_tokens == 0:
+        return []
+    lines: list[Text] = [Text("  ── User vs harness ──", style="dim"), Text()]
+    if split.user_tokens > 0:
+        val = Text()
+        val.append(f"{format_tokens_compact(split.user_tokens)} tokens")
+        val.append(f" · {_cost_or_unknown(split.user_cost, True)}", style="dim")
+        lines.append(_label_line("You", val))
+    if split.harness_tokens > 0:
+        val = Text()
+        val.append(f"{format_tokens_compact(split.harness_tokens)} tokens")
+        val.append(f" · {_cost_or_unknown(split.harness_cost, True)}", style="dim")
+        lines.append(_label_line("Harness", val))
+    return lines
+
+
+def _sparkline_section(daily: list[DailyBucket]) -> list[Text]:
+    """14-day token-volume bar. Only shown when there's any activity."""
+    active = [d for d in daily if d.total_tokens > 0]
+    if not active:
+        return []
+    max_tokens = max(d.total_tokens for d in daily) or 1
+    lines: list[Text] = [Text("  ── Last 14 days ──", style="dim"), Text()]
+    row = Text("  ")
+    for d in daily:
+        if d.total_tokens == 0:
+            row.append("·", style="dim")
+        else:
+            ratio = d.total_tokens / max_tokens
+            bars = "▁▂▃▄▅▆▇█"
+            idx = min(len(bars) - 1, max(0, round(ratio * (len(bars) - 1))))
+            row.append(bars[idx])
+    lines.append(row)
+    first_day = active[0].total_tokens
+    peak = active[-1].total_tokens
+    lines.append(
+        Text(
+            f"  peak {format_tokens_compact(max_tokens)} · "
+            f"latest {format_tokens_compact(peak)} · "
+            f"earliest {format_tokens_compact(first_day)}",
+            style="dim",
+        )
+    )
+    return lines
+
+
 def _format_reset(seconds: float | None) -> str | None:
     if seconds is None or seconds <= 0:
         return None
@@ -398,6 +447,14 @@ def render_status_card(data: StatusCardData) -> Text:
         lines.append(Text())
     if data.rate_limits:
         lines.extend(_limits_section(data.rate_limits))
+        lines.append(Text())
+    harness = _harness_section(data.summary.harness)
+    if harness:
+        lines.extend(harness)
+        lines.append(Text())
+    sparkline = _sparkline_section(data.summary.daily)
+    if sparkline:
+        lines.extend(sparkline)
         lines.append(Text())
     if data.summary.windows:
         lines.extend(_windows_section(data.summary.windows))

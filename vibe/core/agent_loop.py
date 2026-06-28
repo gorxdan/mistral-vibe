@@ -166,7 +166,9 @@ from vibe.core.types import (
 from vibe.core.usage import (
     RateLimitStore,
     UsageRecord,
+    compute_cost,
     get_usage_recorder,
+    lookup_pricing,
     rate_limit_from_headers,
 )
 from vibe.core.utils import (
@@ -3478,7 +3480,11 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return active_model, self.config.get_provider_for_model(active_model)
 
     async def _chat(
-        self, max_tokens: int | None = None, model_override: ModelConfig | None = None
+        self,
+        max_tokens: int | None = None,
+        model_override: ModelConfig | None = None,
+        *,
+        harness: bool = False,
     ) -> LLMChunk:
         # Apply the output-escalation override only to main-turn calls: callers
         # that set model_override (e.g. compaction summary) must not inherit it.
@@ -3536,6 +3542,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     time_seconds=end_time - start_time,
                     provider=provider,
                     model=active_model,
+                    harness=harness,
                 )
                 set_usage(_span, result.usage)
 
@@ -3668,6 +3675,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         *,
         provider: ProviderConfig,
         model: ModelConfig,
+        harness: bool = False,
     ) -> None:
         self.stats.last_turn_duration = time_seconds
         self.stats.last_turn_prompt_tokens = usage.prompt_tokens
@@ -3681,12 +3689,22 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self.stats.tokens_per_second = usage.completion_tokens / time_seconds
 
         # Persist the call for cross-session usage windows (/status). Best-effort:
-        # a recorder failure never affects the turn. Cost follows AgentStats'
-        # worst-case convention (no caching discount).
-        cost = (
-            usage.prompt_tokens * model.input_price
-            + usage.completion_tokens * model.output_price
-        ) / 1_000_000
+        # a recorder failure never affects the turn. Cost is derived from the
+        # built-in pricing table (verified prices) with a fallback to the
+        # model's configured prices; both-zero → cost_usd=0 (card shows —).
+        pricing = lookup_pricing(model.name)
+        if pricing is not None:
+            cost = compute_cost(
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                cached_tokens=usage.cached_tokens,
+                pricing=pricing,
+            )
+        else:
+            cost = (
+                usage.prompt_tokens * model.input_price
+                + usage.completion_tokens * model.output_price
+            ) / 1_000_000
         self._usage_recorder.record(
             UsageRecord.from_usage(
                 timestamp=time.time(),
@@ -3696,6 +3714,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 cost_usd=cost,
                 duration_s=time_seconds,
                 session_id=self.session_id,
+                harness=harness,
             )
         )
 
@@ -3966,7 +3985,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         LLMMessage(role=Role.USER, content=summary_request)
                     )
                     summary_result = await self._chat(
-                        model_override=self.config.get_compaction_model()
+                        model_override=self.config.get_compaction_model(),
+                        harness=True,
                     )
 
                 if summary_result.usage is None:

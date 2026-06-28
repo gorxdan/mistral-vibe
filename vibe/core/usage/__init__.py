@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from vibe.core.usage._aggregator import (
+    DailyBucket,
+    HarnessSplit,
     ModelBreakdown,
     ProviderBreakdown,
     UsageSummary,
@@ -15,6 +17,7 @@ from vibe.core.usage._codex_quota import (
     CodexQuotaWindow,
     fetch_codex_quota,
 )
+from vibe.core.usage._pricing import ModelPricing, compute_cost, lookup_pricing
 from vibe.core.usage._rate_limits import (
     RateLimitSnapshot,
     RateLimitStore,
@@ -33,7 +36,10 @@ __all__ = [
     "CodexMonthlyLimit",
     "CodexQuotaSnapshot",
     "CodexQuotaWindow",
+    "DailyBucket",
+    "HarnessSplit",
     "ModelBreakdown",
+    "ModelPricing",
     "ProviderBreakdown",
     "RateLimitSnapshot",
     "RateLimitStore",
@@ -41,8 +47,10 @@ __all__ = [
     "UsageRecorder",
     "UsageSummary",
     "WindowRollup",
+    "compute_cost",
     "fetch_codex_quota",
     "get_usage_recorder",
+    "lookup_pricing",
     "parse_duration_seconds",
     "rate_limit_from_headers",
     "reset_usage_recorder_for_tests",

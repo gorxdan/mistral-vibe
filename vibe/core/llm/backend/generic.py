@@ -213,12 +213,17 @@ class OpenAIAdapter(APIAdapter):
             message = LLMMessage(role=Role.ASSISTANT, content="")
 
         usage_data = data.get("usage") or {}
-        details = usage_data.get("prompt_tokens_details") or {}
-        cached = details.get("cached_tokens") or usage_data.get("cached_tokens") or 0
+        prompt_details = usage_data.get("prompt_tokens_details") or {}
+        cached = (
+            prompt_details.get("cached_tokens") or usage_data.get("cached_tokens") or 0
+        )
+        completion_details = usage_data.get("completion_tokens_details") or {}
+        reasoning = completion_details.get("reasoning_tokens") or 0
         usage = LLMUsage(
             prompt_tokens=usage_data.get("prompt_tokens", 0),
             completion_tokens=usage_data.get("completion_tokens", 0),
             cached_tokens=cached,
+            reasoning_tokens=reasoning,
         )
 
         return LLMChunk(message=message, usage=usage)

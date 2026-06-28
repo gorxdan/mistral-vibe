@@ -17,6 +17,7 @@ class ModelBreakdown:
     prompt_tokens: int
     completion_tokens: int
     cached_tokens: int
+    reasoning_tokens: int
     cost_usd: float
     calls: int
 
@@ -32,6 +33,7 @@ class ProviderBreakdown:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    reasoning_tokens: int = 0
     cost_usd: float = 0.0
     calls: int = 0
 
@@ -47,6 +49,7 @@ class WindowRollup:
     prompt_tokens: int
     completion_tokens: int
     cached_tokens: int
+    reasoning_tokens: int
     cost_usd: float
     calls: int
     sessions: int
@@ -57,9 +60,35 @@ class WindowRollup:
 
 
 @dataclass(frozen=True)
+class DailyBucket:
+    """One day's token volume for the sparkline. ``day`` is days since epoch."""
+
+    day: int
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+@dataclass(frozen=True)
+class HarnessSplit:
+    """User-driven vs harness-internal spend."""
+
+    user_tokens: int
+    user_cost: float
+    harness_tokens: int
+    harness_cost: float
+
+
+@dataclass(frozen=True)
 class UsageSummary:
     providers: list[ProviderBreakdown]
     windows: list[WindowRollup]
+    daily: list[DailyBucket]
+    harness: HarnessSplit
     grand_total_tokens: int
     grand_total_cost: float
 
@@ -69,35 +98,40 @@ def _breakdown(records: list[UsageRecord]) -> list[ProviderBreakdown]:
     p_prompt: dict[str, int] = defaultdict(int)
     p_comp: dict[str, int] = defaultdict(int)
     p_cache: dict[str, int] = defaultdict(int)
+    p_reason: dict[str, int] = defaultdict(int)
     p_cost: dict[str, float] = defaultdict(float)
     p_calls: dict[str, int] = defaultdict(int)
 
-    for r in records:
-        key = (r.provider, r.model)
-        prev = by_pm.get(key)
+    def _merge(prev: ModelBreakdown | None, r: UsageRecord) -> ModelBreakdown:
         if prev is None:
-            by_pm[key] = ModelBreakdown(
+            return ModelBreakdown(
                 provider=r.provider,
                 model=r.model,
                 prompt_tokens=r.prompt_tokens,
                 completion_tokens=r.completion_tokens,
                 cached_tokens=r.cached_tokens,
+                reasoning_tokens=r.reasoning_tokens,
                 cost_usd=r.cost_usd,
                 calls=1,
             )
-        else:
-            by_pm[key] = ModelBreakdown(
-                provider=r.provider,
-                model=r.model,
-                prompt_tokens=prev.prompt_tokens + r.prompt_tokens,
-                completion_tokens=prev.completion_tokens + r.completion_tokens,
-                cached_tokens=prev.cached_tokens + r.cached_tokens,
-                cost_usd=prev.cost_usd + r.cost_usd,
-                calls=prev.calls + 1,
-            )
+        return ModelBreakdown(
+            provider=r.provider,
+            model=r.model,
+            prompt_tokens=prev.prompt_tokens + r.prompt_tokens,
+            completion_tokens=prev.completion_tokens + r.completion_tokens,
+            cached_tokens=prev.cached_tokens + r.cached_tokens,
+            reasoning_tokens=prev.reasoning_tokens + r.reasoning_tokens,
+            cost_usd=prev.cost_usd + r.cost_usd,
+            calls=prev.calls + 1,
+        )
+
+    for r in records:
+        key = (r.provider, r.model)
+        by_pm[key] = _merge(by_pm.get(key), r)
         p_prompt[r.provider] += r.prompt_tokens
         p_comp[r.provider] += r.completion_tokens
         p_cache[r.provider] += r.cached_tokens
+        p_reason[r.provider] += r.reasoning_tokens
         p_cost[r.provider] += r.cost_usd
         p_calls[r.provider] += 1
 
@@ -115,6 +149,7 @@ def _breakdown(records: list[UsageRecord]) -> list[ProviderBreakdown]:
             prompt_tokens=p_prompt[p],
             completion_tokens=p_comp[p],
             cached_tokens=p_cache[p],
+            reasoning_tokens=p_reason[p],
             cost_usd=p_cost[p],
             calls=p_calls[p],
         )
@@ -136,9 +171,49 @@ def _window(
         prompt_tokens=sum(r.prompt_tokens for r in recs),
         completion_tokens=sum(r.completion_tokens for r in recs),
         cached_tokens=sum(r.cached_tokens for r in recs),
+        reasoning_tokens=sum(r.reasoning_tokens for r in recs),
         cost_usd=sum(r.cost_usd for r in recs),
         calls=len(recs),
         sessions=len(sessions),
+    )
+
+
+def _daily(records: list[UsageRecord], days: int, now: float) -> list[DailyBucket]:
+    """Per-day buckets for the last ``days`` days, oldest-first."""
+    today = int(now // _DAY)
+    start_day = today - days + 1
+    buckets: dict[int, DailyBucket] = {
+        d: DailyBucket(day=d, prompt_tokens=0, completion_tokens=0, cost_usd=0.0)
+        for d in range(start_day, today + 1)
+    }
+    for r in records:
+        day = int(r.timestamp // _DAY)
+        b = buckets.get(day)
+        if b is None:
+            continue
+        buckets[day] = DailyBucket(
+            day=day,
+            prompt_tokens=b.prompt_tokens + r.prompt_tokens,
+            completion_tokens=b.completion_tokens + r.completion_tokens,
+            cost_usd=b.cost_usd + r.cost_usd,
+        )
+    return [buckets[d] for d in range(start_day, today + 1)]
+
+
+def _harness_split(records: list[UsageRecord]) -> HarnessSplit:
+    user_t = user_c = harness_t = harness_c = 0
+    for r in records:
+        if r.harness:
+            harness_t += r.prompt_tokens + r.completion_tokens
+            harness_c += r.cost_usd
+        else:
+            user_t += r.prompt_tokens + r.completion_tokens
+            user_c += r.cost_usd
+    return HarnessSplit(
+        user_tokens=user_t,
+        user_cost=user_c,
+        harness_tokens=harness_t,
+        harness_cost=harness_c,
     )
 
 
@@ -156,10 +231,13 @@ def summarize(records: list[UsageRecord], *, now: float | None = None) -> UsageS
         _window(records, "Last hour", _HOUR, now),
         _window(records, "Last 24h", _DAY, now),
         _window(records, "Last 7 days", 7 * _DAY, now),
+        _window(records, "Last 30 days", 30 * _DAY, now),
     ]
     return UsageSummary(
         providers=providers,
         windows=windows,
+        daily=_daily(records, days=14, now=now),
+        harness=_harness_split(records),
         grand_total_tokens=sum(p.total_tokens for p in providers),
         grand_total_cost=sum(p.cost_usd for p in providers),
     )

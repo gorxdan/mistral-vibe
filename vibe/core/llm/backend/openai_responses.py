@@ -35,10 +35,15 @@ class _ResponsesInputTokensDetails(TypedDict, total=False):
     cached_tokens: int
 
 
+class _ResponsesOutputTokensDetails(TypedDict, total=False):
+    reasoning_tokens: int
+
+
 class _ResponsesUsageData(TypedDict, total=False):
     input_tokens: int
     output_tokens: int
     input_tokens_details: _ResponsesInputTokensDetails
+    output_tokens_details: _ResponsesOutputTokensDetails
 
 
 class _ResponsesFunctionCallItem(TypedDict, total=False):
@@ -156,11 +161,13 @@ class _OpenAIResponsesStreamParser:
     @staticmethod
     def _usage_from_response(usage_data: _ResponsesUsageData | None) -> LLMUsage:
         usage = usage_data or {}
-        details = usage.get("input_tokens_details") or {}
+        input_details = usage.get("input_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or {}
         return LLMUsage(
             prompt_tokens=usage.get("input_tokens", 0),
             completion_tokens=usage.get("output_tokens", 0),
-            cached_tokens=details.get("cached_tokens", 0),
+            cached_tokens=input_details.get("cached_tokens", 0),
+            reasoning_tokens=output_details.get("reasoning_tokens", 0),
         )
 
     @staticmethod
