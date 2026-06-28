@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 import functools
+from http import HTTPStatus
 import logging
 import random
 
@@ -21,7 +22,14 @@ _RETRYABLE_REQUEST_ERRORS: tuple[type[httpx.RequestError], ...] = (
 
 def _is_retryable_http_error(e: Exception) -> bool:
     if isinstance(e, httpx.HTTPStatusError):
-        return e.response.status_code in {408, 409, 425, 429, 500, 502, 503, 504, 529}
+        code = e.response.status_code
+        if code == HTTPStatus.TOO_MANY_REQUESTS:
+            # Don't blind-retry a rate limit: re-firing at an already limited
+            # endpoint amplifies load and delays failover to another model.
+            # Retry only when the server gave an explicit Retry-After (honor its
+            # window); otherwise raise so the caller fails over immediately.
+            return _retry_after_seconds(e) is not None
+        return code in {408, 409, 425, 500, 502, 503, 504, 529}
     if isinstance(e, _RETRYABLE_REQUEST_ERRORS):
         return True
     return False

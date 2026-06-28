@@ -148,9 +148,20 @@ def _http_status_error(
 
 
 def test_is_retryable_http_error_status_codes() -> None:
-    for code in (408, 429, 500, 502, 503, 504):
+    for code in (408, 409, 425, 500, 502, 503, 504, 529):
         assert _is_retryable_http_error(_http_status_error(code)) is True
     assert _is_retryable_http_error(_http_status_error(400)) is False
+
+
+def test_rate_limit_retryable_only_with_retry_after() -> None:
+    # A bare 429 must NOT be retried: blind re-fire at an already rate-limited
+    # endpoint amplifies load and delays failover. With an explicit Retry-After
+    # the server told us when, so honor it.
+    assert _is_retryable_http_error(_http_status_error(429)) is False
+    assert (
+        _is_retryable_http_error(_http_status_error(429, headers={"retry-after": "5"}))
+        is True
+    )
 
 
 def test_is_retryable_http_error_request_errors() -> None:
