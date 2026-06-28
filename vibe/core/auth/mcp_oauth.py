@@ -24,7 +24,7 @@ from vibe.core.config import MCPHttp, MCPOAuth, MCPStreamableHttp
 from vibe.core.logger import logger
 from vibe.core.utils.http import build_ssl_context
 
-_SERVICE: Final = "vibe"
+_SERVICE: Final = "ai.mistral.vibe"
 _USERNAME_PREFIX: Final = "mcp-oauth"
 _CLIENT_NAME: Final = "Chaton"
 _LOGIN_TIMEOUT_SECONDS: Final = 300.0
