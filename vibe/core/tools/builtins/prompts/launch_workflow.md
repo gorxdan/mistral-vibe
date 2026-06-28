@@ -166,6 +166,6 @@ is stuck or runaway (before `workflow_stop`), not as routine progress checks.
 
 ## Limitations
 
-- Up to 16 concurrent agents, 1000 total per run (lower both with `max_concurrency=`)
+- Up to __MAX_CONCURRENT_AGENTS__ concurrent agents, __MAX_TOTAL_AGENTS__ total per run (lower both with `max_concurrency=`)
 - The workflow runs in the background; the result is auto-delivered on completion (see above) — do not poll.
 - `/workflows` (TUI) lets the human watch progress or stop a run. From a model turn, stop a runaway or misbehaving run with the `workflow_stop` tool (`run_id` for one run, or `all` for every active run).
