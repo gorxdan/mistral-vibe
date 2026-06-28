@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from rich.cells import cell_len
@@ -7,6 +8,10 @@ from rich.text import Text
 
 from vibe.core.types import AgentStats
 from vibe.core.usage import (
+    CodexCredits,
+    CodexMonthlyLimit,
+    CodexQuotaSnapshot,
+    CodexQuotaWindow,
     ProviderBreakdown,
     RateLimitSnapshot,
     UsageSummary,
@@ -26,8 +31,31 @@ _DECIMAL_BOUND_2 = 10.0
 _DECIMAL_BOUND_1 = 100.0
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
+_HOURS_PER_WEEK = 24 * 7
+_MINS_PER_HOUR = 60
+_FIVE_HOURS = 5
+_FLOAT_EQ_EPSILON = 1e-9
 _MODEL_COL = 24
 _TOKENS_COL = 7
+
+
+@dataclass(frozen=True)
+class StatusCardData:
+    """Bundle of inputs to ``render_status_card`` — keeps arg count under the
+    linter cap and makes the call site readable as the card grows.
+    """
+
+    stats: AgentStats
+    summary: UsageSummary
+    version: str
+    model_name: str
+    provider_name: str
+    workdir: Path
+    session_id: str
+    context_window: int | None = None
+    rate_limits: dict[str, RateLimitSnapshot] | None = None
+    codex_quota: CodexQuotaSnapshot | None = None
+    width: int = _CARD_WIDTH
 
 
 def format_tokens_compact(value: int) -> str:
@@ -231,38 +259,124 @@ def _limits_section(snapshots: dict[str, RateLimitSnapshot]) -> list[Text]:
     return lines
 
 
-def render_status_card(
-    *,
-    stats: AgentStats,
-    summary: UsageSummary,
-    version: str,
-    model_name: str,
-    provider_name: str,
-    workdir: Path,
-    session_id: str,
-    context_window: int | None = None,
-    rate_limits: dict[str, RateLimitSnapshot] | None = None,
-    width: int = _CARD_WIDTH,
-) -> Text:
+def _format_reset_at(resets_at: int | None) -> str | None:
+    """Format a unix-seconds reset timestamp as a local HH:MM (or +Md)."""
+    if resets_at is None or resets_at <= 0:
+        return None
+    import time
+
+    delta = resets_at - time.time()
+    if delta <= 0:
+        return "resets soon"
+    if delta < _SECONDS_PER_HOUR:
+        return f"resets in {int(delta / _SECONDS_PER_MINUTE)}m"
+    if delta < 24 * _SECONDS_PER_HOUR:
+        return f"resets in {delta / _SECONDS_PER_HOUR:.1f}h"
+    days = int(delta / (24 * _SECONDS_PER_HOUR))
+    return f"resets in {days}d"
+
+
+def _window_label(window: CodexQuotaWindow) -> str:
+    """5h / weekly / etc. — derived from window_minutes when present."""
+    if window.window_minutes is None:
+        return "Limit"
+    mins = window.window_minutes
+    hours = mins / _MINS_PER_HOUR
+    # Folded to one return per branch via early assignments to keep return-count
+    # under the linter cap; special-cases below override the default.
+    label: str
+    if mins <= _MINS_PER_HOUR:
+        label = f"{mins}m limit"
+    elif abs(hours - _HOURS_PER_WEEK) < 1:
+        label = "Weekly limit"
+    elif hours.is_integer():
+        whole = int(hours)
+        label = "5h limit" if whole == _FIVE_HOURS else f"{whole}h limit"
+    elif abs(hours % 24) < _FLOAT_EQ_EPSILON:
+        label = f"{int(hours // 24)}d limit"
+    else:
+        label = f"{mins}m limit"
+    return label
+
+
+def _codex_quota_section(quota: CodexQuotaSnapshot) -> list[Text]:
+    lines: list[Text] = [Text("  ── Codex quota (ChatGPT plan) ──", style="dim"), Text()]
+    if quota.primary is not None:
+        w = quota.primary
+        val = Text()
+        val.append(_progress_bar(w.percent_left / 100.0) + " ")
+        val.append(f"{w.percent_left:.0f}% left")
+        reset = _format_reset_at(w.resets_at)
+        if reset:
+            val.append(f" · {reset}", style="dim")
+        lines.append(_label_line(_window_label(w), val))
+    if quota.secondary is not None:
+        w = quota.secondary
+        val = Text()
+        val.append(_progress_bar(w.percent_left / 100.0) + " ")
+        val.append(f"{w.percent_left:.0f}% left")
+        reset = _format_reset_at(w.resets_at)
+        if reset:
+            val.append(f" · {reset}", style="dim")
+        lines.append(_label_line(_window_label(w), val))
+    if quota.credits is not None:
+        _append_credits_line(lines, quota.credits)
+    if quota.monthly_limit is not None:
+        _append_monthly_line(lines, quota.monthly_limit)
+    return lines
+
+
+def _append_credits_line(lines: list[Text], credits: CodexCredits) -> None:
+    if not credits.has_credits:
+        return
+    val = Text()
+    if credits.unlimited:
+        val.append("Unlimited")
+    elif credits.balance:
+        val.append(f"{credits.balance} credits")
+    else:
+        return
+    lines.append(_label_line("Credits", val))
+
+
+def _append_monthly_line(lines: list[Text], monthly: CodexMonthlyLimit) -> None:
+    val = Text()
+    val.append(_progress_bar(monthly.percent_left / 100.0) + " ")
+    val.append(f"{monthly.percent_left:.0f}% left ")
+    val.append(f"({monthly.used}/{monthly.limit})", style="dim")
+    reset = _format_reset_at(monthly.resets_at)
+    if reset:
+        val.append(f" · {reset}", style="dim")
+    lines.append(_label_line("Monthly limit", val))
+
+
+def render_status_card(data: StatusCardData) -> Text:
     """Build the full status card as a Rich ``Text`` (box-drawing included).
 
     Pure function: same inputs → identical output, so it snapshots cleanly.
     """
-    lines: list[Text] = [_header(version), Text()]
-    lines.extend(_config_section(model_name, provider_name, workdir, session_id))
+    lines: list[Text] = [_header(data.version), Text()]
+    lines.extend(
+        _config_section(
+            data.model_name, data.provider_name, data.workdir, data.session_id
+        )
+    )
     lines.append(Text())
-    lines.extend(_session_section(stats, context_window))
+    lines.extend(_session_section(data.stats, data.context_window))
     lines.append(Text())
 
-    if summary.providers:
-        lines.extend(_provider_section(summary.providers))
+    if data.summary.providers:
+        lines.extend(_provider_section(data.summary.providers))
         lines.append(Text())
-    if rate_limits:
-        lines.extend(_limits_section(rate_limits))
+    if data.codex_quota is not None:
+        lines.extend(_codex_quota_section(data.codex_quota))
         lines.append(Text())
-    if summary.windows:
-        lines.extend(_windows_section(summary.windows))
-    return _box(lines, width)
+    if data.rate_limits:
+        lines.extend(_limits_section(data.rate_limits))
+        lines.append(Text())
+    if data.summary.windows:
+        lines.extend(_windows_section(data.summary.windows))
+    return _box(lines, data.width)
 
 
 def _box(lines: list[Text], width: int) -> Text:

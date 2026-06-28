@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from vibe.cli.textual_ui.widgets._status_render import (
+    StatusCardData,
     format_cost,
     format_tokens_compact,
     render_status_card,
@@ -78,14 +79,16 @@ def test_format_cost():
 def test_render_status_card_snapshot():
     summary = summarize(_records(), now=1_000_000.0)
     text = render_status_card(
-        stats=_stats(),
-        summary=summary,
-        version="0.1.1",
-        model_name="mistral-large",
-        provider_name="mistral",
-        workdir=Path("/home/dan/work/my-project"),
-        session_id="sess-1",
-        context_window=131072,
+        StatusCardData(
+            stats=_stats(),
+            summary=summary,
+            version="0.1.1",
+            model_name="mistral-large",
+            provider_name="mistral",
+            workdir=Path("/home/dan/work/my-project"),
+            session_id="sess-1",
+            context_window=131072,
+        )
     )
     plain = text.plain
     # Structural assertions (content), not exact whitespace.

@@ -8,6 +8,13 @@ from vibe.core.usage._aggregator import (
     session_records,
     summarize,
 )
+from vibe.core.usage._codex_quota import (
+    CodexCredits,
+    CodexMonthlyLimit,
+    CodexQuotaSnapshot,
+    CodexQuotaWindow,
+    fetch_codex_quota,
+)
 from vibe.core.usage._rate_limits import (
     RateLimitSnapshot,
     RateLimitStore,
@@ -22,6 +29,10 @@ from vibe.core.usage._recorder import (
 from vibe.core.usage.models import UsageRecord
 
 __all__ = [
+    "CodexCredits",
+    "CodexMonthlyLimit",
+    "CodexQuotaSnapshot",
+    "CodexQuotaWindow",
     "ModelBreakdown",
     "ProviderBreakdown",
     "RateLimitSnapshot",
@@ -30,6 +41,7 @@ __all__ = [
     "UsageRecorder",
     "UsageSummary",
     "WindowRollup",
+    "fetch_codex_quota",
     "get_usage_recorder",
     "parse_duration_seconds",
     "rate_limit_from_headers",

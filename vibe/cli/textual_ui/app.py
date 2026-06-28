@@ -2562,8 +2562,13 @@ class VibeApp(App):  # noqa: PLR0904
         await self._switch_from_input(MCPAddApp())
 
     async def _show_status(self, **kwargs: Any) -> None:
+        from vibe.cli.textual_ui.widgets._status_render import StatusCardData
         from vibe.cli.textual_ui.widgets.status_card import StatusCard
-        from vibe.core.usage import get_usage_recorder, summarize
+        from vibe.core.usage import (
+            fetch_codex_quota,
+            get_usage_recorder,
+            summarize,
+        )
 
         stats = self.agent_loop.stats
         try:
@@ -2581,17 +2586,35 @@ class VibeApp(App):  # noqa: PLR0904
         records = get_usage_recorder().read_all()
         summary = summarize(records)
 
+        # Best-effort Codex/ChatGPT plan quota fetch. Only the openai-chatgpt
+        # provider exposes this; skip (silently) for everyone else. A failed
+        # or slow fetch never blocks the status render — fetch returns None.
+        codex_quota = None
+        chatgpt_provider = next(
+            (
+                p
+                for p in self.config.providers
+                if getattr(p, "api_style", "") == "openai-chatgpt"
+            ),
+            None,
+        )
+        if chatgpt_provider is not None:
+            codex_quota = await fetch_codex_quota(chatgpt_provider.api_base)
+
         await self._mount_and_scroll(
             StatusCard(
-                stats=stats,
-                summary=summary,
-                version=CORE_VERSION,
-                model_name=model_name,
-                provider_name=provider_name,
-                workdir=Path(self.config.displayed_workdir or Path.cwd()),
-                session_id=self.agent_loop.session_id,
-                context_window=context_window,
-                rate_limits=self.agent_loop._rate_limit_store.all(),
+                StatusCardData(
+                    stats=stats,
+                    summary=summary,
+                    version=CORE_VERSION,
+                    model_name=model_name,
+                    provider_name=provider_name,
+                    workdir=Path(self.config.displayed_workdir or Path.cwd()),
+                    session_id=self.agent_loop.session_id,
+                    context_window=context_window,
+                    rate_limits=self.agent_loop._rate_limit_store.all(),
+                    codex_quota=codex_quota,
+                )
             )
         )
 
