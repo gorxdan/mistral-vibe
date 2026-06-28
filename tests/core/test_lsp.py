@@ -6,6 +6,7 @@ from typing import Any, cast
 
 import pytest
 
+from tests.conftest import build_test_vibe_config
 from vibe.core.config import VibeConfig
 from vibe.core.lsp._jsonrpc import JsonRpcConnection
 from vibe.core.lsp._manager import LSPManager
@@ -494,6 +495,45 @@ def test_available_presets_excludes_pathed_but_broken_preset(monkeypatch) -> Non
     keys = {p.key for p in available_presets()}
     assert "rust" not in keys
     assert "pyright" in keys
+
+
+def test_preset_matches_root_requires_manifest_marker(tmp_path) -> None:
+    from vibe.core.lsp._defaults import _GOPLS, _PYRIGHT, preset_matches_root
+
+    assert preset_matches_root(_PYRIGHT, tmp_path) is False
+    (tmp_path / "pyproject.toml").write_text("")
+    assert preset_matches_root(_PYRIGHT, tmp_path) is True
+    assert preset_matches_root(_GOPLS, tmp_path) is False
+    (tmp_path / "go.mod").write_text("")
+    assert preset_matches_root(_GOPLS, tmp_path) is True
+
+
+def test_build_server_configs_filters_to_project_languages(
+    monkeypatch, tmp_path
+) -> None:
+    from vibe.core.lsp import _config_bridge
+    from vibe.core.lsp._config_bridge import build_server_configs
+    from vibe.core.lsp._defaults import _GOPLS, _PYRIGHT, _RUST_ANALYZER
+
+    monkeypatch.setattr(
+        _config_bridge, "available_presets", lambda: [_PYRIGHT, _RUST_ANALYZER, _GOPLS]
+    )
+    (tmp_path / "pyproject.toml").write_text("")
+    config = build_test_vibe_config(lsp_auto_discover=True)
+    names = {s.name for s in build_server_configs(config, root_path=tmp_path)}
+    assert names == {"pyright"}
+
+
+def test_build_server_configs_auto_discover_false_skips_presets(
+    monkeypatch, tmp_path
+) -> None:
+    from vibe.core.lsp import _config_bridge
+    from vibe.core.lsp._config_bridge import build_server_configs
+    from vibe.core.lsp._defaults import _PYRIGHT
+
+    monkeypatch.setattr(_config_bridge, "available_presets", lambda: [_PYRIGHT])
+    config = build_test_vibe_config(lsp_auto_discover=False)
+    assert build_server_configs(config, root_path=tmp_path) == []
 
 
 @pytest.mark.asyncio

@@ -439,6 +439,17 @@ languages = { ".rs" = "rust" }
 `root_uri`, `manifest_markers` (list), `startup_timeout_sec` (default 20.0), and
 `request_timeout_sec` (default 10.0). See `vibe/core/config/_settings.py` (LSPServer).
 
+Auto-discovery (default `lsp_auto_discover = true`): when LSP is installed,
+Chaton probes the builtin preset list (pyright, typescript-language-server,
+rust-analyzer, gopls, clangd), keeps those whose binary is on `PATH`, and
+filters them by project manifest markers — so a Python-only repo spawns only
+pyright, a Rust workspace spawns only rust-analyzer, etc. Each preset's
+`manifest_markers` (e.g. `Cargo.toml`, `go.mod`, `pyproject.toml`,
+`package.json`) gate inclusion; a marker present at the session root opts the
+preset in. Set `lsp_auto_discover = false` to disable preset discovery entirely
+and use only explicitly-declared `[[lsp_servers]]` entries (MCP-style explicit
+config).
+
 `/lsp` shows configured-server status (state + extensions + last error).
 
 ### Connectors

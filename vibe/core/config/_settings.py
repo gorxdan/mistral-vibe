@@ -1165,6 +1165,14 @@ class VibeConfig(BaseSettings):
             "install it with /lspstall before configuring servers."
         ),
     )
+    lsp_auto_discover: bool = Field(
+        default=True,
+        description=(
+            "When True (default), auto-discover installed language servers and "
+            "filter by project manifest markers. When False, only explicitly-"
+            "declared lsp_servers entries are used."
+        ),
+    )
     enable_connectors: bool = Field(
         default=True,
         description=(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import shutil
 import subprocess
 
@@ -31,6 +32,14 @@ _PYRIGHT = ServerPreset(
         command="pyright-langserver",
         languages={".py": "python"},
         args=["--stdio"],
+        manifest_markers=(
+            "pyproject.toml",
+            "setup.py",
+            "setup.cfg",
+            "requirements.txt",
+            "Pipfile",
+            "uv.lock",
+        ),
     ),
     install_hint="npm install -g pyright  (or: pip install pyright)",
     detection_command=("pyright", "--version"),
@@ -49,6 +58,7 @@ _TSLANGUAGE = ServerPreset(
             ".jsx": "javascriptreact",
         },
         args=["--stdio"],
+        manifest_markers=("package.json", "tsconfig.json", "deno.json"),
     ),
     install_hint="npm install -g typescript-language-server typescript",
     detection_command=("typescript-language-server", "--version"),
@@ -176,6 +186,19 @@ def available_presets() -> list[ServerPreset]:
                 probe.preset.detection_command,
             )
     return usable
+
+
+def preset_matches_root(preset: ServerPreset, root_path: Path) -> bool:
+    """Whether ``preset`` is relevant to the project at ``root_path``.
+
+    A preset is relevant when any of its ``manifest_markers`` exists at the
+    project root. Presets without markers (none in the builtin set today) are
+    always relevant so a future marker-less server isn't silently dropped.
+    """
+    markers = preset.server.manifest_markers
+    if not markers:
+        return True
+    return any((root_path / marker).exists() for marker in markers)
 
 
 def broken_presets() -> list[PresetProbe]:

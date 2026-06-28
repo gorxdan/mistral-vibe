@@ -62,7 +62,7 @@ def setup_lsp_for_config(
             current_lsp_generation(),
         )
         return get_lsp_manager()
-    manager = LSPManager(source=ConfigServerSource(config_getter))
+    manager = LSPManager(source=ConfigServerSource(config_getter, root_path=root_path))
     manager.set_root(root_path)
     manager.initialize()
     init_lsp_manager(manager)

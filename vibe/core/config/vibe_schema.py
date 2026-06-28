@@ -138,6 +138,15 @@ class VibeConfigSchema(ConfigSchema):
         default_factory=list,
         description="Language Server Protocol server configurations.",
     )
+    lsp_auto_discover: Annotated[bool, WithReplaceMerge()] = Field(
+        default=True,
+        description=(
+            "When True (default), auto-discover installed language servers from "
+            "the builtin preset list, filtered by project manifest markers so "
+            "only servers matching the project's languages are spawned. When "
+            "False, only explicitly-declared [[lsp_servers]] entries are used."
+        ),
+    )
 
     # Agents
     agent_paths: Annotated[list[Path], WithConcatMerge()] = Field(
