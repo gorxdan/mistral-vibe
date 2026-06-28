@@ -110,14 +110,31 @@ class MemoryStore:
             return None
         return MemoryEntry(metadata=meta, body=body.strip())
 
-    def index(self, limit: int = 200) -> list[str]:
-        entries = sorted(
+    def _sorted_entries(self) -> list[MemoryEntry]:
+        return sorted(
             self._entries().values(), key=lambda e: e.metadata.updated, reverse=True
         )
-        return [e.index_line() for e in entries[:limit]]
+
+    def index(self, limit: int = 200) -> list[str]:
+        return [e.index_line() for e in self._sorted_entries()[:limit]]
 
     def index_markdown(self, limit: int = 200) -> str:
-        return "\n".join(self.index(limit))
+        # The selector consumes index() (clean list); this markdown form is the
+        # always-on display the model reads. When the corpus exceeds the cap,
+        # silently dropping the tail makes those memories recall-invisible with
+        # no signal — surface a footer so the model knows to raise the cap or
+        # grep the store rather than assume the index is exhaustive.
+        entries = self._sorted_entries()
+        shown = entries[:limit]
+        lines = [e.index_line() for e in shown]
+        hidden = len(entries) - len(shown)
+        if hidden > 0:
+            noun = "memory" if hidden == 1 else "memories"
+            lines.append(
+                f"... and {hidden} more {noun} not shown "
+                "(raise memory.max_entries_scanned to surface them)"
+            )
+        return "\n".join(lines)
 
     def ids(self) -> list[str]:
         return list(self._entries().keys())
@@ -405,6 +422,103 @@ class MemoryStore:
             f.write(line)
             f.flush()
             os.fsync(f.fileno())
+
+    def sweep_trash(self, max_age_days: int) -> int:
+        """Delete trash entries older than ``max_age_days`` and compact the ledger.
+
+        Ages trashed files by the timestamp encoded in their filename (written by
+        ``trash()``), not file mtime — ``os.replace`` preserves the source mtime,
+        so mtime would report the memory's original write time rather than when
+        it was trashed. Files whose filename timestamp is unparseable are LEFT
+        (conservative: never delete what cannot be dated). After unlinking, the
+        per-directory ledger is compacted to drop entries referencing removed
+        files. ``max_age_days <= 0`` disables the sweep (no-op). Returns the
+        count of files removed.
+        """
+        if max_age_days <= 0:
+            return 0
+        now = datetime.datetime.now()
+        cutoff = now - datetime.timedelta(days=max_age_days)
+        removed = 0
+        for d in self._search_dirs():
+            trash_dir = d / ".trash"
+            if not trash_dir.is_dir():
+                continue
+            survivors: set[str] = set()
+            for f in trash_dir.glob("*.md"):
+                trashed_at = _parse_trash_ts(f.name)
+                if trashed_at is None:
+                    survivors.add(f.name)  # undated — leave it
+                    continue
+                if trashed_at < cutoff:
+                    with contextlib.suppress(OSError):
+                        f.unlink()
+                    removed += 1
+                else:
+                    survivors.add(f.name)
+            self._compact_ledger(trash_dir, survivors)
+        if removed:
+            self._cache = None
+        return removed
+
+    @staticmethod
+    def _compact_ledger(trash_dir: Path, survivors: set[str]) -> None:
+        # Drop ledger lines whose "file" no longer exists in this trash dir so
+        # the audit trail stays honest after a sweep. Unparseable lines are kept
+        # (never silently drop audit data); a missing or unreadable ledger is a
+        # no-op. Atomic rewrite so a crash can't truncate the ledger.
+        ledger = trash_dir / "ledger.jsonl"
+        if not ledger.exists():
+            return
+        from vibe.core.utils.io import read_safe
+
+        try:
+            text = read_safe(ledger).text
+        except OSError:
+            return
+        kept: list[str] = []
+        dropped_any = False
+        for line in text.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            try:
+                entry = json.loads(s)
+            except (json.JSONDecodeError, ValueError):
+                kept.append(s)  # keep unparseable audit lines verbatim
+                continue
+            fname = entry.get("file") if isinstance(entry, dict) else None
+            if isinstance(fname, str) and fname not in survivors:
+                dropped_any = True
+                continue
+            kept.append(s)
+        if dropped_any:
+            content = ("\n".join(kept) + "\n") if kept else ""
+            MemoryStore._atomic_write(ledger, content)
+
+
+# Trash filename timestamp format (see MemoryStore.trash): the trashed copy is
+# named "{id}-{YYYYMMDDTHHMMSS}-{hex}.md", and sweep_trash ages files by THIS ts
+# rather than file mtime — os.replace preserves the source mtime (the memory's
+# original write time), so mtime would misreport the trash time as much older.
+_TRASH_TS_FORMAT = "%Y%m%dT%H%M%S"
+# trash() names files "{id}-{ts}-{hex}" — exactly three tail parts after
+# rsplit("-", 2). Guards _parse_trash_ts before it indexes into the parts.
+_TRASH_NAME_PARTS = 3
+
+
+def _parse_trash_ts(filename: str) -> datetime.datetime | None:
+    # Filename shape from trash(): "{id}-{YYYYMMDDTHHMMSS}-{hex}.md". The id is a
+    # slug that may itself contain hyphens, so split from the RIGHT: the trailing
+    # hex suffix, then the 15-char timestamp, with everything before being the id.
+    stem = filename[:-3] if filename.endswith(".md") else filename
+    parts = stem.rsplit("-", 2)
+    if len(parts) != _TRASH_NAME_PARTS:
+        return None
+    try:
+        return datetime.datetime.strptime(parts[1], _TRASH_TS_FORMAT)
+    except ValueError:
+        return None
 
 
 def _project_identity(workdir: Path) -> Path:

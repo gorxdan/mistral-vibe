@@ -384,6 +384,13 @@ class MemoryConfig(BaseSettings):
     consolidate_interval_days: int = 7  # min gap between consolidation runs
     consolidate_max_actions: int = 5  # cap on merges+deletes applied per run
     consolidate_timeout: float = 45.0
+    # Trash retention: how long deleted/merged memory files stay recoverable in
+    # the per-directory .trash/ tree before a session-start sweep unlinks them.
+    # Aged by the timestamp encoded in the trash filename. 0 disables sweeping
+    # (trash accumulates indefinitely, the historical behavior). The sweep runs
+    # once per session when the memory store is first built; the ledger is
+    # compacted to drop entries whose files are gone.
+    trash_max_age_days: int = 30
 
 
 class SandboxConfig(BaseModel):

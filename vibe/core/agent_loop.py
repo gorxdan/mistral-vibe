@@ -588,6 +588,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._mem_prefetch_task: asyncio.Task[list[str]] | None = None
         # Consolidation task (see _maybe_schedule_consolidation).
         self._mem_consolidate_task: asyncio.Task[None] | None = None
+        # One-shot guard so the trash sweep runs at most once per session, on
+        # first memory-store construction (see _get_memory_store).
+        self._memory_trash_swept: bool = False
         self.user_input_callback: UserInputCallback | None = None
         # Asked when a turn is rate-limited and no automatic fallback is
         # available, to let the user pick a model to switch to (the rate-limit
@@ -1401,6 +1404,22 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self._memory_store = MemoryStore(
                 user_dir=VIBE_HOME.path / "memory", project_dirs=project_dirs
             )
+        # Bound the .trash/ tree once per session: a stale trash entry older
+        # than the configured TTL is unlinked and the ledger compacted. Runs
+        # synchronously on first store access (handful of stat+unlink calls);
+        # never lets a sweep failure break the store.
+        if not self._memory_trash_swept:
+            self._memory_trash_swept = True
+            knob = self.config.memory.trash_max_age_days
+            if knob > 0:
+                try:
+                    removed = self._memory_store.sweep_trash(knob)
+                    if removed:
+                        logger.info(
+                            "memory trash sweep removed %d stale entries", removed
+                        )
+                except Exception as e:
+                    logger.warning("memory trash sweep failed (%s)", e)
         return self._memory_store
 
     def _resolve_memory_selector(self) -> MemorySelector | None:
@@ -1801,6 +1820,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     created=created,
                     updated=today,
                     source="auto",
+                    session_id=self.session_id,
                 )
                 if project_scope:
                     project_memory_dir(create=True)

@@ -215,6 +215,7 @@ class ManageMemory(
                     created=today,
                     updated=today,
                     source="tool",
+                    session_id=(ctx.session_id if ctx is not None else "") or "",
                 ),
                 body=args.body or "",
             )

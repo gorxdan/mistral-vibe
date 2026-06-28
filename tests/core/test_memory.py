@@ -2044,3 +2044,183 @@ def test_merge_memory_body_survives_frontmatter_reparse(tmp_path) -> None:
     assert "--- not a boundary ---" in reloaded.body
     # Frontmatter stayed clean: no injected keys from the body.
     assert reloaded.metadata.scope == "user"
+
+
+# --------------------------------------------------------------------------- #
+# session_id provenance (C2)                                                   #
+# --------------------------------------------------------------------------- #
+
+
+def test_session_id_persists_in_frontmatter(tmp_path) -> None:
+    # session_id is a plain string field; a value set at write must round-trip
+    # through the YAML frontmatter so a surfaced memory can be traced to its
+    # originating session.
+    store = MemoryStore(user_dir=tmp_path)
+    entry = MemoryEntry(
+        metadata=MemoryMetadata(
+            id="prov", title="Provenance", session_id="sess-abc-123"
+        ),
+        body="body",
+    )
+    store.upsert(entry)
+    reloaded = store.get("prov")
+    assert reloaded is not None
+    assert reloaded.metadata.session_id == "sess-abc-123"
+
+
+def test_session_id_defaults_empty_for_legacy_memories(tmp_path) -> None:
+    # A frontmatter file with no session_id must load with "" so legacy/ manual
+    # memories do not fail discovery (backward compatibility).
+    legacy = tmp_path / "old.md"
+    legacy.write_text("---\nid: old\ntitle: Old\n---\nbody\n", encoding="utf-8")
+    store = MemoryStore(user_dir=tmp_path)
+    got = store.get("old")
+    assert got is not None
+    assert got.metadata.session_id == ""
+
+
+# --------------------------------------------------------------------------- #
+# index_markdown truncation footer (C5)                                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_index_markdown_appends_footer_when_truncated(tmp_path) -> None:
+    # When the corpus exceeds the limit, the tail is recall-invisible to the
+    # selector — surface a footer so the model knows the index is not exhaustive
+    # rather than silently dropping entries.
+    store = MemoryStore(user_dir=tmp_path)
+    for i in range(5):
+        store.upsert(_entry(f"m{i}"))
+    md = store.index_markdown(limit=3)
+    assert "... and 2 more memories not shown" in md
+    # The shown entries are still present alongside the footer.
+    assert "[m0]" in md and "[m2]" in md
+    # Truncated entries are NOT listed (beyond the cap).
+    assert "[m3]" not in md and "[m4]" not in md
+
+
+def test_index_markdown_no_footer_when_under_limit(tmp_path) -> None:
+    # No footer noise when everything fits — the common case must stay clean.
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("a"))
+    store.upsert(_entry("b"))
+    md = store.index_markdown(limit=200)
+    assert "not shown" not in md
+
+
+def test_index_markdown_footer_singular_one_hidden(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("a"))
+    store.upsert(_entry("b"))
+    md = store.index_markdown(limit=1)
+    assert "1 more memory not shown" in md  # singular
+
+
+def test_index_list_stays_clean_without_footer(tmp_path) -> None:
+    # The selector consumes index() (the list form); it must NOT carry the
+    # prose footer line — only index_markdown (the model display) does.
+    store = MemoryStore(user_dir=tmp_path)
+    for i in range(5):
+        store.upsert(_entry(f"m{i}"))
+    lines = store.index(limit=3)
+    assert len(lines) == 3
+    assert not any("not shown" in ln for ln in lines)
+
+
+# --------------------------------------------------------------------------- #
+# trash sweep + ledger compaction (C3)                                         #
+# --------------------------------------------------------------------------- #
+
+
+def test_sweep_trash_disabled_is_noop(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("a"))
+    store.trash("a", reason="delete")
+    assert store.sweep_trash(0) == 0  # knob <= 0 disables
+    assert len(list((tmp_path / ".trash").glob("*.md"))) == 1
+
+
+def test_sweep_trash_keeps_recent_deletes_old(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("recent"))
+    store.upsert(_entry("old"))
+    store.trash("recent", reason="delete")
+    store.trash("old", reason="delete")
+    trash_dir = tmp_path / ".trash"
+    # Backdate the "old" entry's filename timestamp to 60 days ago so it crosses
+    # a 30-day cutoff; the "recent" entry (trashed seconds ago) must survive.
+    from datetime import timedelta
+
+    backdated = (_dt.datetime.now() - timedelta(days=60)).strftime("%Y%m%dT%H%M%S")
+    for f in trash_dir.glob("old-*.md"):
+        parts = f.name.rsplit("-", 2)
+        renamed = trash_dir / f"{parts[0]}-{backdated}-{parts[2]}"
+        f.rename(renamed)
+    removed = store.sweep_trash(30)
+    assert removed == 1
+    remaining = {f.name for f in trash_dir.glob("*.md")}
+    assert any(n.startswith("recent-") for n in remaining)
+    assert not any(n.startswith("old-") for n in remaining)
+
+
+def test_sweep_trash_leaves_undated_files(tmp_path) -> None:
+    # A trash file whose name does not match the {id}-{ts}-{hex} shape cannot be
+    # aged safely; sweep must leave it rather than guess (conservative).
+    store = MemoryStore(user_dir=tmp_path)
+    trash_dir = tmp_path / ".trash"
+    trash_dir.mkdir(parents=True)
+    (trash_dir / "weird-name.md").write_text("x", encoding="utf-8")
+    assert store.sweep_trash(1) == 0
+    assert (trash_dir / "weird-name.md").exists()
+
+
+def test_sweep_trash_compacts_ledger(tmp_path) -> None:
+    # After sweep unlinks stale files, ledger lines referencing them must be
+    # dropped so the audit trail reflects reality; survivor lines stay.
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("keep"))
+    store.upsert(_entry("gone"))
+    store.trash("keep", reason="delete")
+    store.trash("gone", reason="delete")
+    trash_dir = tmp_path / ".trash"
+    ledger = trash_dir / "ledger.jsonl"
+    assert ledger.exists()
+
+    from datetime import timedelta
+
+    backdated = (_dt.datetime.now() - timedelta(days=60)).strftime("%Y%m%dT%H%M%S")
+    gone_file: Path | None = None
+    for f in trash_dir.glob("gone-*.md"):
+        parts = f.name.rsplit("-", 2)
+        gone_file = trash_dir / f"{parts[0]}-{backdated}-{parts[2]}"
+        f.rename(gone_file)
+    store.sweep_trash(30)
+    # The "gone" file is unlinked...
+    assert gone_file is not None and not gone_file.exists()
+    # ...and its ledger line is gone, while "keep"'s line survives.
+    lines = [ln for ln in ledger.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    payloads = [json.loads(ln) for ln in lines]
+    ids = {p.get("id") for p in payloads}
+    assert "gone" not in ids
+    assert "keep" in ids
+
+
+def test_sweep_trash_preserves_unparseable_ledger_lines(tmp_path) -> None:
+    # A corrupt ledger line must not be silently dropped by compaction — keep it
+    # verbatim so the audit data is never lost to a parse quirk.
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("victim"))
+    store.trash("victim", reason="delete")
+    trash_dir = tmp_path / ".trash"
+    ledger = trash_dir / "ledger.jsonl"
+    with ledger.open("a", encoding="utf-8") as f:
+        f.write("this is not json\n")
+    from datetime import timedelta
+
+    backdated = (_dt.datetime.now() - timedelta(days=60)).strftime("%Y%m%dT%H%M%S")
+    for f in trash_dir.glob("victim-*.md"):
+        parts = f.name.rsplit("-", 2)
+        f.rename(trash_dir / f"{parts[0]}-{backdated}-{parts[2]}")
+    store.sweep_trash(30)
+    text = ledger.read_text(encoding="utf-8")
+    assert "this is not json" in text

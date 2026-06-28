@@ -95,6 +95,10 @@ class MemoryMetadata(BaseModel):
     created: str = ""
     updated: str = ""
     source: Literal["tool", "auto", "manual"] = "manual"
+    # Originating session id for auditability — lets a surfaced memory be traced
+    # back to the session/turn that produced it (auto-extracted memories
+    # especially). Empty for legacy/manual memories; never used for recall.
+    session_id: str = ""
 
     @field_validator("type", mode="before")
     @classmethod
