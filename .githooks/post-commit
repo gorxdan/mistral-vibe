@@ -8,16 +8,13 @@
 # to fire automatically on every commit.
 #
 # Guards (this repo has multiple agents committing concurrently):
-#   - flock-serialized, non-blocking: `uv tool install --force` mutates a shared
-#     tool venv; concurrent runs would race. If a reinstall is already in flight,
-#     this commit's hook skips (the in-flight one covers the current tree, and
-#     the next commit will catch anything that landed mid-install). Hooks never
-#     block the commit.
+#   - detached: the slow `uv tool install --force` runs in a background session
+#     (setsid), so the commit returns immediately and never blocks the agent.
+#   - flock-serialized, non-blocking: the tool venv is shared; if a reinstall is
+#     already in flight this run skips (the in-flight one covers the tree).
 #   - source-guarded: only reinstalls when `chaton` is installed FROM this repo
-#     (per the uv receipt), so a PyPI install or a different fork is never
-#     clobbered. Matches the vibe skill's rule against `uv tool upgrade chaton`.
-#   - non-fatal: a post-commit hook's exit code is ignored by git anyway; we log
-#     failures to a cache file and print one short line to stderr at most.
+#     (per the uv receipt); a PyPI install or different fork is never clobbered.
+#   - non-fatal: failures are logged to the cache file; git ignores the exit code.
 
 set -uo pipefail
 
@@ -25,30 +22,23 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 
 LOCK_DIR="${HOME}/.cache/chaton-reinstall"
 mkdir -p "$LOCK_DIR" 2>/dev/null || exit 0
-LOCK="$LOCK_DIR/reinstall.lock"
-LOG="$LOCK_DIR/reinstall.log"
-RECEIPT="${HOME}/.local/share/uv/tools/chaton/uv-receipt.toml"
+export CHATON_REINSTALL_LOCK="$LOCK_DIR/reinstall.lock"
+export CHATON_REINSTALL_LOG="$LOCK_DIR/reinstall.log"
+export CHATON_REINSTALL_REPO="$REPO_ROOT"
+export CHATON_REINSTALL_RECEIPT="${HOME}/.local/share/uv/tools/chaton/uv-receipt.toml"
 
-(
-    # Non-blocking: skip if another reinstall is already running.
-    flock -n 200 || exit 0
-
-    # Source guard: only act if the global chaton tool is installed from THIS repo.
-    if [[ ! -f "$RECEIPT" ]]; then
-        exit 0 # chaton not installed as a uv tool; nothing to update
-    fi
-    if ! grep -q "directory = \"$REPO_ROOT\"" "$RECEIPT" 2>/dev/null; then
-        exit 0 # installed from elsewhere (PyPI / different path); don't clobber
-    fi
-
-    # Reinstall from the current working-tree state (the committed change plus
-    # any other in-tree edits = "latest"). --force overwrites the global
-    # entry points (chaton, chaton-acp).
-    if uv tool install --force "$REPO_ROOT" >>"$LOG" 2>&1; then
-        echo "[post-commit] chaton reinstalled to latest" >&2
+setsid bash -c '
+    exec 9>"$CHATON_REINSTALL_LOCK"
+    flock -n 9 || exit 0
+    [[ -f "$CHATON_REINSTALL_RECEIPT" ]] || exit 0
+    grep -q "directory = \"$CHATON_REINSTALL_REPO\"" "$CHATON_REINSTALL_RECEIPT" 2>/dev/null || exit 0
+    if uv tool install --force "$CHATON_REINSTALL_REPO" >>"$CHATON_REINSTALL_LOG" 2>&1; then
+        echo "[post-commit] chaton reinstalled to latest" >>"$CHATON_REINSTALL_LOG"
     else
-        echo "[post-commit] chaton reinstall failed (see $LOG)" >&2
+        echo "[post-commit] chaton reinstall failed" >>"$CHATON_REINSTALL_LOG"
     fi
-) 200>"$LOCK"
+' </dev/null >/dev/null 2>&1 &
+disown 2>/dev/null || true
 
+echo "[post-commit] chaton reinstall started in background" >&2
 exit 0
