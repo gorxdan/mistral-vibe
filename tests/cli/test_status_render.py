@@ -175,3 +175,96 @@ def test_render_status_card_snapshot():
     # Bordered top and bottom.
     assert plain.startswith("╭")
     assert plain.rstrip().endswith("╯")
+
+
+def test_long_model_name_does_not_break_border():
+    # Regression: 'mistral-vibe-cli-latest' overflowed the fixed-width card,
+    # pushing the right border out of alignment. Every rendered line must now
+    # have identical cell width regardless of input.
+    from rich.cells import cell_len
+
+    summary = summarize(
+        [
+            UsageRecord.from_usage(
+                timestamp=1_000_000.0,
+                provider="mistral",
+                model="mistral-vibe-cli-latest",
+                usage=LLMUsage(prompt_tokens=40, completion_tokens=20),
+                cost_usd=0.0002,
+                duration_s=1.0,
+                session_id="s1",
+            )
+        ],
+        now=1_000_000.0,
+    )
+    text = render_status_card(
+        StatusCardData(
+            stats=AgentStats(),
+            summary=summary,
+            version="0.1.1",
+            model_name="mistral-vibe-cli-latest",
+            provider_name="mistral",
+            workdir=Path("/home/dan/p"),
+            session_id="s1",
+        )
+    )
+    lines = text.plain.split("\n")
+    widths = {cell_len(line) for line in lines}
+    assert len(widths) == 1, f"jagged border — widths {sorted(widths)}"
+    assert "mistral-vibe-cli-latest" in text.plain
+
+
+def test_activity_heatmap_renders():
+    # The 14-day activity heatmap must appear when there's daily activity.
+    summary = summarize(_records(), now=1_000_000.0)
+    text = render_status_card(
+        StatusCardData(
+            stats=_stats(),
+            summary=summary,
+            version="0.1.1",
+            model_name="mistral-large",
+            provider_name="mistral",
+            workdir=Path("/home/dan/p"),
+            session_id="s1",
+        )
+    )
+    plain = text.plain
+    assert "Activity (last 14 days)" in plain
+    assert "less" in plain and "more" in plain  # legend
+    assert "peak" in plain and "latest" in plain and "earliest" in plain
+
+
+def test_excessively_long_model_name_is_truncated():
+    # Even a pathologically long name can't break the border — the card grows
+    # to a cap then cell-clips the overflow.
+    from rich.cells import cell_len
+
+    huge = "x" * 200
+    summary = summarize(
+        [
+            UsageRecord.from_usage(
+                timestamp=1_000_000.0,
+                provider="prov",
+                model=huge,
+                usage=LLMUsage(prompt_tokens=10, completion_tokens=5),
+                cost_usd=0.0,
+                duration_s=1.0,
+                session_id="s1",
+            )
+        ],
+        now=1_000_000.0,
+    )
+    text = render_status_card(
+        StatusCardData(
+            stats=AgentStats(),
+            summary=summary,
+            version="0.1.1",
+            model_name=huge,
+            provider_name="prov",
+            workdir=Path("/home/dan/p"),
+            session_id="s1",
+        )
+    )
+    lines = text.plain.split("\n")
+    widths = {cell_len(line) for line in lines}
+    assert len(widths) == 1, f"jagged border — widths {sorted(widths)}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,6 +42,18 @@ _FIVE_HOURS = 5
 _FLOAT_EQ_EPSILON = 1e-9
 _MODEL_COL = 24
 _TOKENS_COL = 7
+_PCT_COL = 4
+# Card grows to fit long model names up to a hard cap; every line is then
+# cell-clipped to the inner width, so the border can never be pushed out.
+_MIN_CARD_WIDTH = _CARD_WIDTH
+_MAX_CARD_WIDTH = 84
+_MODEL_COL_MIN = _MODEL_COL
+# Non-name tail of a provider row: tokens + sep + bar + sep + pct + sep + cost.
+_PROVIDER_TAIL = _TOKENS_COL + 1 + (_BAR_SEGMENTS + 2) + 1 + _PCT_COL + 1 + _TOKENS_COL
+# Activity heatmap palette: index 0 = no activity, 1 dark → 5 bright (green).
+_HEAT_STYLES = ("dim", "#0e4429", "#006d32", "#26a641", "#39d353", "#5ae57a")
+_HEAT_CELL = "██"
+_HEAT_EMPTY = "░░"
 
 
 @dataclass(frozen=True)
@@ -109,6 +122,56 @@ def _progress_bar(ratio: float) -> str:
     filled = min(round(ratio * _BAR_SEGMENTS), _BAR_SEGMENTS)
     empty = _BAR_SEGMENTS - filled
     return f"[{_BAR_FILLED * filled}{_BAR_EMPTY * empty}]"
+
+
+def _heat_index(ratio: float) -> int:
+    """Map a 0..1 ratio to a 1..5 palette index (1 dark, 5 bright)."""
+    if ratio <= 0.0:
+        return 1
+    return min(len(_HEAT_STYLES) - 1, max(1, math.ceil(ratio * 5)))
+
+
+def _share_bar(ratio: float) -> Text:
+    """Provider share bar — filled cells coloured by intensity (cohesive with
+    the activity heatmap), empty cells dim.
+    """
+    ratio = max(0.0, min(1.0, ratio))
+    filled = min(round(ratio * _BAR_SEGMENTS), _BAR_SEGMENTS)
+    out = Text("[")
+    if filled:
+        out.append(_BAR_FILLED * filled, style=_HEAT_STYLES[_heat_index(ratio)])
+    if _BAR_SEGMENTS - filled:
+        out.append(_BAR_EMPTY * (_BAR_SEGMENTS - filled), style="dim")
+    out.append("]")
+    return out
+
+
+def _fit_field(text: str, width: int) -> str:
+    """Left-justify ``text`` to exactly ``width`` cells, truncating with '…'."""
+    if cell_len(text) <= width:
+        return text.ljust(width)
+    if width <= 1:
+        return "…"[:width]
+    return text[: width - 1].rstrip() + "…"
+
+
+def _pick_model_col(providers: list[ProviderBreakdown]) -> int:
+    """First-column width (incl. 4-space indent) sized to the longest model
+    name, clamped so a provider row always fits the max card width.
+    """
+    widest = _MODEL_COL_MIN
+    for prov in providers:
+        for mb in prov.models:
+            w = cell_len(f"    {mb.model}")
+            widest = max(widest, w)
+    return min(widest, _MAX_CARD_WIDTH - 4 - _PROVIDER_TAIL)
+
+
+def _center(line: Text, inner_w: int) -> Text:
+    pad = max(0, (inner_w - cell_len(line.plain)) // 2)
+    out = Text(" " * pad)
+    out.append_text(line)
+    return out
 
 
 def _label_line(label: str, value: Text) -> Text:
@@ -196,7 +259,7 @@ def _session_section(stats: AgentStats, context_window: int | None) -> list[Text
     return lines
 
 
-def _provider_section(providers: list[ProviderBreakdown]) -> list[Text]:
+def _provider_section(providers: list[ProviderBreakdown], model_col: int) -> list[Text]:
     lines: list[Text] = [Text("  ── By provider (all-time) ──", style="dim"), Text()]
     for prov in providers:
         lines.append(Text(f"  {prov.provider}", style="bold"))
@@ -204,16 +267,17 @@ def _provider_section(providers: list[ProviderBreakdown]) -> list[Text]:
         for mb in prov.models:
             share = mb.total_tokens / prov_total
             row = Text()
-            row.append(f"    {mb.model}".ljust(_MODEL_COL))
+            row.append(_fit_field(f"    {mb.model}", model_col))
             row.append(format_tokens_compact(mb.total_tokens).rjust(_TOKENS_COL) + " ")
-            row.append(_progress_bar(share) + " ")
-            row.append(f"{share:.0%}".rjust(3) + " ", style="dim")
+            row.append_text(_share_bar(share))
+            row.append(" ")
+            row.append(f"{share:.0%}".rjust(_PCT_COL) + " ", style="dim")
             row.append(
                 _cost_or_unknown(mb.cost_usd, mb.total_tokens > 0).rjust(_TOKENS_COL)
             )
             lines.append(row)
         prov_row = Text()
-        prov_row.append("    ".ljust(_MODEL_COL), style="dim")
+        prov_row.append(_fit_field("    ", model_col), style="dim")
         prov_row.append(
             format_tokens_compact(prov.total_tokens).rjust(_TOKENS_COL) + " ",
             style="bold",
@@ -257,33 +321,46 @@ def _harness_section(split: HarnessSplit) -> list[Text]:
     return lines
 
 
-def _sparkline_section(daily: list[DailyBucket]) -> list[Text]:
-    """14-day token-volume bar. Only shown when there's any activity."""
-    active = [d for d in daily if d.total_tokens > 0]
-    if not active:
+def _heatmap_section(daily: list[DailyBucket], inner_w: int) -> list[Text]:
+    """14-day activity heatmap: a 7-column grid coloured by token volume.
+
+    Replaces the old single-row sparkline. Only shown when there's activity.
+    """
+    if not any(d.total_tokens > 0 for d in daily):
         return []
-    max_tokens = max(d.total_tokens for d in daily) or 1
-    lines: list[Text] = [Text("  ── Last 14 days ──", style="dim"), Text()]
-    row = Text("  ")
-    for d in daily:
-        if d.total_tokens == 0:
-            row.append("·", style="dim")
-        else:
-            ratio = d.total_tokens / max_tokens
-            bars = "▁▂▃▄▅▆▇█"
-            idx = min(len(bars) - 1, max(0, round(ratio * (len(bars) - 1))))
-            row.append(bars[idx])
-    lines.append(row)
-    first_day = active[0].total_tokens
-    peak = active[-1].total_tokens
-    lines.append(
-        Text(
-            f"  peak {format_tokens_compact(max_tokens)} · "
-            f"latest {format_tokens_compact(peak)} · "
-            f"earliest {format_tokens_compact(first_day)}",
-            style="dim",
-        )
+    cells = daily[-14:]
+    max_tokens = max((d.total_tokens for d in daily), default=0) or 1
+    lines: list[Text] = [Text("  ── Activity (last 14 days) ──", style="dim"), Text()]
+    per_row = 7
+    for start in range(0, len(cells), per_row):
+        chunk = cells[start : start + per_row]
+        row = Text()
+        for i, d in enumerate(chunk):
+            if d.total_tokens == 0:
+                row.append(_HEAT_EMPTY, style=_HEAT_STYLES[0])
+            else:
+                idx = _heat_index(d.total_tokens / max_tokens)
+                row.append(_HEAT_CELL, style=_HEAT_STYLES[idx])
+            if i < len(chunk) - 1:
+                row.append(" ")
+        lines.append(_center(row, inner_w))
+    lines.append(Text())
+    legend = Text()
+    legend.append("less ", style="dim")
+    for idx in range(1, len(_HEAT_STYLES)):
+        if idx > 1:
+            legend.append(" ")
+        legend.append(_HEAT_CELL, style=_HEAT_STYLES[idx])
+    legend.append(" more", style="dim")
+    lines.append(_center(legend, inner_w))
+    active = [d for d in daily if d.total_tokens > 0]
+    stats = Text(
+        f"peak {format_tokens_compact(max_tokens)} · "
+        f"latest {format_tokens_compact(daily[-1].total_tokens)} · "
+        f"earliest {format_tokens_compact(active[0].total_tokens)}",
+        style="dim",
     )
+    lines.append(_center(stats, inner_w))
     return lines
 
 
@@ -431,6 +508,14 @@ def render_status_card(data: StatusCardData) -> Text:
 
     Pure function: same inputs → identical output, so it snapshots cleanly.
     """
+    # Adapt the card width to fit long model names (clamped); every line is
+    # cell-clipped to the inner width afterwards, so the border is inviolable.
+    if data.summary.providers:
+        model_col = _pick_model_col(data.summary.providers)
+    else:
+        model_col = _MODEL_COL_MIN
+    width = min(_MAX_CARD_WIDTH, max(data.width, model_col + _PROVIDER_TAIL + 4))
+    inner_w = width - 4
     lines: list[Text] = [_header(data.version), Text()]
     lines.extend(
         _config_section(
@@ -442,7 +527,7 @@ def render_status_card(data: StatusCardData) -> Text:
     lines.append(Text())
 
     if data.summary.providers:
-        lines.extend(_provider_section(data.summary.providers))
+        lines.extend(_provider_section(data.summary.providers, model_col))
         lines.append(Text())
     if data.codex_quota is not None:
         lines.extend(_codex_quota_section(data.codex_quota))
@@ -454,17 +539,21 @@ def render_status_card(data: StatusCardData) -> Text:
     if harness:
         lines.extend(harness)
         lines.append(Text())
-    sparkline = _sparkline_section(data.summary.daily)
-    if sparkline:
-        lines.extend(sparkline)
+    heatmap = _heatmap_section(data.summary.daily, inner_w)
+    if heatmap:
+        lines.extend(heatmap)
         lines.append(Text())
     if data.summary.windows:
         lines.extend(_windows_section(data.summary.windows))
-    return _box(lines, data.width)
+    return _box(lines, width)
 
 
 def _box(lines: list[Text], width: int) -> Text:
-    """Wrap rendered lines in a rounded border, padding to ``width``."""
+    """Wrap rendered lines in a rounded border, padding to ``width``.
+
+    Every line is cell-clipped to the inner width before the right border is
+    drawn, so no input — however long — can push the border out of alignment.
+    """
     top = Text(f"╭{'─' * (width - 2)}╮", style="dim")
     bottom = Text(f"╰{'─' * (width - 2)}╯", style="dim")
     out = Text()
@@ -474,6 +563,9 @@ def _box(lines: list[Text], width: int) -> Text:
     for line in lines:
         # cell_len measures terminal cell width (CJK/emoji = 2), so the right
         # border stays aligned even when a model/dir name contains wide glyphs.
+        if cell_len(line.plain) > inner_w:
+            line = line.copy()
+            line.truncate(inner_w, overflow="ellipsis")
         pad = max(0, inner_w - cell_len(line.plain))
         bordered = Text()
         bordered.append("│ ", style="dim")
