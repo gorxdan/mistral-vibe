@@ -4,13 +4,19 @@ from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
 from rich.highlighter import ReprHighlighter
-from rich.markup import escape
 from rich.text import Text
 from textual.widgets import Static
 
 from vibe.core.logger import logger
 
 _SAFE_SCHEMES = {"http", "https"}
+
+
+def escape_markup(text: str) -> str:
+    # textual's markup parser raises on any unescaped '[', not just the
+    # '[a-z/#@]' starts that rich.markup.escape handles — escape every
+    # bracket (backslashes first so they aren't doubled by the bracket pass).
+    return text.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
 
 # Rich's repr highlighter tags URL spans with the style name "repr.url".
 # This is a stable public-ish style key (used by Rich's pretty printer) but
@@ -29,8 +35,8 @@ def link_markup(label: str, url: str) -> str:
     # a click to a local handler. Percent-encode so brackets/quotes/parens can't
     # break the markup or the @click action literal; action_open_url decodes it.
     if not _is_safe_url(url):
-        return escape(label)
-    return f"[@click=open_url('{quote(url, safe='')}')]{escape(label)}[/]"
+        return escape_markup(label)
+    return f"[@click=open_url('{quote(url, safe='')}')]{escape_markup(label)}[/]"
 
 
 def linkify_urls_in_text(text: str) -> str:
@@ -40,15 +46,15 @@ def linkify_urls_in_text(text: str) -> str:
         (s for s in rich.spans if s.style == _URL_STYLE), key=lambda s: s.start
     )
     if not spans:
-        return escape(text)
+        return escape_markup(text)
     parts: list[str] = []
     cursor = 0
     for span in spans:
-        parts.append(escape(text[cursor : span.start]))
+        parts.append(escape_markup(text[cursor : span.start]))
         url = text[span.start : span.end]
         parts.append(link_markup(url, url))
         cursor = span.end
-    parts.append(escape(text[cursor:]))
+    parts.append(escape_markup(text[cursor:]))
     return "".join(parts)
 
 

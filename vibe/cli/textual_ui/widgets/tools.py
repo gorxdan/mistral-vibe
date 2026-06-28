@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from rich.markup import escape
 from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -11,7 +10,11 @@ from vibe.cli.textual_ui.widgets.collapsible import (
     CollapsibleSection,
     lines_label,
 )
-from vibe.cli.textual_ui.widgets.links import LinkStatic, linkify_urls_in_text
+from vibe.cli.textual_ui.widgets.links import (
+    LinkStatic,
+    escape_markup,
+    linkify_urls_in_text,
+)
 from vibe.cli.textual_ui.widgets.messages import ExpandingBorder
 from vibe.cli.textual_ui.widgets.no_markup_static import (
     NoMarkupStatic,
@@ -90,7 +93,7 @@ class ToolCallMessage(StatusMessage):
         return ToolCallDisplay(summary=self._tool_name)
 
     def _format_text(self, content: str) -> str:
-        return escape(content)
+        return escape_markup(content)
 
     def update_event(self, event: ToolCallEvent) -> None:
         self._event = event
@@ -114,7 +117,7 @@ class ToolCallMessage(StatusMessage):
 
     def _set_text(self, text: str, suffix: str, *, linkify: bool = False) -> None:
         if self._text_widget:
-            content = linkify_urls_in_text(text) if linkify else escape(text)
+            content = linkify_urls_in_text(text) if linkify else escape_markup(text)
             self._text_widget.update(content)
         self._update_suffix(suffix)
 
