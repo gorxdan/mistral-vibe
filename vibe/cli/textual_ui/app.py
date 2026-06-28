@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 from dataclasses import dataclass
 from enum import StrEnum, auto
+import functools
 import gc
 import os
 from pathlib import Path
@@ -75,7 +76,6 @@ from vibe.cli.textual_ui.widgets.chat_input.text_area import ChatTextArea
 from vibe.cli.textual_ui.widgets.collapsible import CollapsibleSection
 from vibe.cli.textual_ui.widgets.compact import CompactMessage
 from vibe.cli.textual_ui.widgets.config_app import ConfigApp
-from vibe.cli.textual_ui.widgets.connector_auth_app import ConnectorAuthApp
 from vibe.cli.textual_ui.widgets.context_progress import ContextProgress, TokenState
 from vibe.cli.textual_ui.widgets.debug_console import DebugConsole
 from vibe.cli.textual_ui.widgets.effort_picker import EffortPickerApp
@@ -88,7 +88,6 @@ from vibe.cli.textual_ui.widgets.loading import (
     paused_timer,
 )
 from vibe.cli.textual_ui.widgets.mcp_add_app import MCPAddApp
-from vibe.cli.textual_ui.widgets.mcp_app import MCPApp, MCPSourceKind
 from vibe.cli.textual_ui.widgets.messages import (
     VSCODE_EXTENSION_PROMO_WHATS_NEW_SUFFIX,
     AssistantMessage,
@@ -159,7 +158,6 @@ from vibe.cli.vscode_extension_promo import (
     VscodeExtensionPromoState,
     should_show_promo,
 )
-from vibe.core.agent_loop import AgentLoop, TeleportError
 from vibe.core.agents import AgentProfile
 from vibe.core.autocompletion.path_prompt import (
     PathPromptPayload,
@@ -255,7 +253,10 @@ from vibe.core.workflows.runtime import WorkflowError, WorkflowRuntime
 
 if TYPE_CHECKING:
     from vibe.cli.narrator_manager import NarratorManager
+    from vibe.cli.textual_ui.widgets.connector_auth_app import ConnectorAuthApp
+    from vibe.cli.textual_ui.widgets.mcp_app import MCPApp
     from vibe.cli.voice_manager import VoiceManager
+    from vibe.core.agent_loop import AgentLoop
 
 _VSCODE_FAMILY_TERMINALS = {Terminal.VSCODE, Terminal.VSCODE_INSIDERS, Terminal.CURSOR}
 
@@ -917,6 +918,8 @@ class VibeApp(App):  # noqa: PLR0904
                 await self._remove_loading_widget()
             self._refresh_banner()
             try:
+                from vibe.cli.textual_ui.widgets.mcp_app import MCPApp
+
                 self.query_one(MCPApp).refresh_index()
             except Exception:
                 pass
@@ -1495,6 +1498,8 @@ class VibeApp(App):  # noqa: PLR0904
         await self._switch_to_input_app()
 
     async def on_mcpapp_mcptoggled(self, message: MCPApp.MCPToggled) -> None:
+        from vibe.cli.textual_ui.widgets.mcp_app import MCPApp, MCPSourceKind
+
         persist_mcp_toggle(
             self.agent_loop.config,
             name=message.name,
@@ -1509,6 +1514,8 @@ class VibeApp(App):  # noqa: PLR0904
     async def on_mcpapp_connector_auth_requested(
         self, message: MCPApp.ConnectorAuthRequested
     ) -> None:
+        from vibe.cli.textual_ui.widgets.connector_auth_app import ConnectorAuthApp
+
         await self._switch_to_input_app()
         await self._switch_from_input(
             ConnectorAuthApp(
@@ -2334,6 +2341,8 @@ class VibeApp(App):  # noqa: PLR0904
         teleport_msg = TeleportMessage()
         await self._mount_and_scroll(teleport_msg)
 
+        from vibe.core.agent_loop import TeleportError
+
         try:
             gen = self.agent_loop.teleport_to_vibe_code(prompt)
             async for event in gen:
@@ -2521,6 +2530,8 @@ class VibeApp(App):  # noqa: PLR0904
             )
             return
         await self._mount_and_scroll(UserCommandMessage("MCP servers opened..."))
+        from vibe.cli.textual_ui.widgets.mcp_app import MCPApp
+
         await self._switch_from_input(
             MCPApp(
                 mcp_servers=mcp_servers,
@@ -4343,7 +4354,7 @@ class VibeApp(App):  # noqa: PLR0904
 
             self._feedback_bar.hide()
 
-            self._current_bottom_app = self._BOTTOM_APP_BY_WIDGET.get(
+            self._current_bottom_app = self._bottom_app_by_widget().get(
                 type(widget), BottomApp.Input
             )
             await bottom_container.mount(widget)
@@ -4505,32 +4516,36 @@ class VibeApp(App):  # noqa: PLR0904
             if self._chat_widget.is_at_bottom:
                 self.call_after_refresh(self._chat_widget.anchor)
 
-    _BOTTOM_APP_WIDGET: ClassVar[dict[BottomApp, type[Widget]]] = {
-        BottomApp.Input: ChatInputContainer,
-        BottomApp.Config: ConfigApp,
-        BottomApp.ModelPicker: ModelPickerApp,
-        BottomApp.ProviderLogin: ProviderLoginApp,
-        BottomApp.ThemePicker: ThemePickerApp,
-        BottomApp.ThinkingPicker: ThinkingPickerApp,
-        BottomApp.EffortPicker: EffortPickerApp,
-        BottomApp.ProxySetup: ProxySetupApp,
-        BottomApp.Approval: ApprovalApp,
-        BottomApp.Question: QuestionApp,
-        BottomApp.SessionPicker: SessionPickerApp,
-        BottomApp.MCP: MCPApp,
-        BottomApp.MCPAdd: MCPAddApp,
-        BottomApp.ConnectorAuth: ConnectorAuthApp,
-        BottomApp.Rewind: RewindApp,
-        BottomApp.Voice: VoiceApp,
-        BottomApp.Tasks: TasksApp,
-    }
-    # Reverse of _BOTTOM_APP_WIDGET: the active panel is derived from the mounted
-    # widget's class via this single map instead of the fragile "<X>App" naming
-    # convention, so a widget whose name breaks that convention (e.g. MCPAddApp)
-    # no longer raises KeyError.
-    _BOTTOM_APP_BY_WIDGET: ClassVar[dict[type[Widget], BottomApp]] = {
-        cls: app for app, cls in _BOTTOM_APP_WIDGET.items()
-    }
+    @classmethod
+    @functools.cache
+    def _bottom_app_widget(cls) -> dict[BottomApp, type[Widget]]:
+        from vibe.cli.textual_ui.widgets.connector_auth_app import ConnectorAuthApp
+        from vibe.cli.textual_ui.widgets.mcp_app import MCPApp
+
+        return {
+            BottomApp.Input: ChatInputContainer,
+            BottomApp.Config: ConfigApp,
+            BottomApp.ModelPicker: ModelPickerApp,
+            BottomApp.ProviderLogin: ProviderLoginApp,
+            BottomApp.ThemePicker: ThemePickerApp,
+            BottomApp.ThinkingPicker: ThinkingPickerApp,
+            BottomApp.EffortPicker: EffortPickerApp,
+            BottomApp.ProxySetup: ProxySetupApp,
+            BottomApp.Approval: ApprovalApp,
+            BottomApp.Question: QuestionApp,
+            BottomApp.SessionPicker: SessionPickerApp,
+            BottomApp.MCP: MCPApp,
+            BottomApp.MCPAdd: MCPAddApp,
+            BottomApp.ConnectorAuth: ConnectorAuthApp,
+            BottomApp.Rewind: RewindApp,
+            BottomApp.Voice: VoiceApp,
+            BottomApp.Tasks: TasksApp,
+        }
+
+    @classmethod
+    @functools.cache
+    def _bottom_app_by_widget(cls) -> dict[type[Widget], BottomApp]:
+        return {cls_obj: app for app, cls_obj in cls._bottom_app_widget().items()}
 
     def _close_bottom_panel(
         self, source: str, action: Callable[[], None], *, clear_timestamp: bool = True
@@ -4558,7 +4573,7 @@ class VibeApp(App):  # noqa: PLR0904
             if app == BottomApp.Input:
                 self.query_one(ChatInputContainer).focus_input()
             else:
-                widget_cls = self._BOTTOM_APP_WIDGET.get(app)
+                widget_cls = self._bottom_app_widget().get(app)
                 if widget_cls is not None:
                     self.query_one(widget_cls).focus()
 
@@ -4851,6 +4866,9 @@ class VibeApp(App):  # noqa: PLR0904
         self._close_bottom_panel(widget_type.__name__, _close)
 
     def _try_interrupt_bottom_app_escape(self) -> bool:
+        from vibe.cli.textual_ui.widgets.connector_auth_app import ConnectorAuthApp
+        from vibe.cli.textual_ui.widgets.mcp_app import MCPApp
+
         app = self._current_bottom_app
         handlers: dict[BottomApp, Callable[[], None]] = {
             BottomApp.Config: self._handle_config_app_escape,

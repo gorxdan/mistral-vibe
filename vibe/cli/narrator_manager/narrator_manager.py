@@ -16,7 +16,7 @@ from vibe.cli.turn_summary import (
 )
 from vibe.core.audio_player.audio_player_port import AudioFormat
 from vibe.core.logger import logger
-from vibe.core.tts.factory import make_tts_client
+from vibe.core.tts import make_tts_client
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -9,12 +9,6 @@ import httpx
 from vibe.core.logger import logger
 from vibe.core.tools.base import BaseTool
 from vibe.core.tools.mcp.pool import MCPSessionPool
-from vibe.core.tools.mcp.tools import (
-    create_mcp_http_proxy_tool_class,
-    create_mcp_stdio_proxy_tool_class,
-    list_tools_http,
-    list_tools_stdio,
-)
 from vibe.core.utils import run_sync
 
 if TYPE_CHECKING:
@@ -108,6 +102,11 @@ class MCPRegistry:
     async def _discover_http(
         self, srv: MCPHttp | MCPStreamableHttp
     ) -> dict[str, type[BaseTool]] | None:
+        from vibe.core.tools.mcp.tools import (
+            create_mcp_http_proxy_tool_class,
+            list_tools_http,
+        )
+
         url = (srv.url or "").strip()
         if not url:
             logger.warning("MCP server '%s' missing url for http transport", srv.name)
@@ -168,6 +167,11 @@ class MCPRegistry:
         return tools
 
     async def _discover_stdio(self, srv: MCPStdio) -> dict[str, type[BaseTool]] | None:
+        from vibe.core.tools.mcp.tools import (
+            create_mcp_stdio_proxy_tool_class,
+            list_tools_stdio,
+        )
+
         cmd = srv.argv()
         if not cmd:
             logger.warning("MCP stdio server '%s' has invalid/empty command", srv.name)

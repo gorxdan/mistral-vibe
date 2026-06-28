@@ -16,13 +16,20 @@ from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.logger import logger
 from vibe.core.paths import DEFAULT_TOOL_DIR
 from vibe.core.tools.base import BaseTool, BaseToolConfig, ToolPermission
-from vibe.core.tools.connectors import ConnectorRegistry
 from vibe.core.tools.mcp import MCPRegistry
-from vibe.core.tools.mcp.tools import MCPTool
 from vibe.core.utils import name_matches, run_sync
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
+    from vibe.core.tools.connectors import ConnectorRegistry
+    from vibe.core.tools.mcp.tools import MCPTool
+
+
+@functools.cache
+def _mcp_tool_base() -> type[MCPTool]:
+    from vibe.core.tools.mcp.tools import MCPTool
+
+    return MCPTool
 
 
 def _try_canonical_module_name(path: Path) -> str | None:
@@ -282,7 +289,7 @@ class ToolManager:
         disabled_sources: set[tuple[str, bool]],
         per_source_disabled: dict[tuple[str, bool], set[str]],
     ) -> bool:
-        if not issubclass(tool_cls, MCPTool):
+        if not issubclass(tool_cls, _mcp_tool_base()):
             return False
         server_name = tool_cls.get_server_name()
         if server_name is None:
@@ -329,7 +336,7 @@ class ToolManager:
         stale_keys = [
             name
             for name, cls in self._all_tools.items()
-            if issubclass(cls, MCPTool) and cls.is_connector()
+            if issubclass(cls, _mcp_tool_base()) and cls.is_connector()
         ]
         for key in stale_keys:
             self._all_tools.pop(key, None)
@@ -340,7 +347,7 @@ class ToolManager:
         stale_keys = [
             name
             for name, cls in self._all_tools.items()
-            if issubclass(cls, MCPTool) and not cls.is_connector()
+            if issubclass(cls, _mcp_tool_base()) and not cls.is_connector()
         ]
         for key in stale_keys:
             self._all_tools.pop(key, None)

@@ -7,6 +7,7 @@ import contextlib
 import copy
 import datetime as _dt
 from enum import StrEnum, auto
+import functools
 from functools import wraps
 import hashlib
 from http import HTTPStatus
@@ -45,7 +46,7 @@ from vibe.core.experiments.session import (
 )
 from vibe.core.hooks.manager import HooksManager
 from vibe.core.hooks.models import HookConfigResult, HookEvent
-from vibe.core.llm.backend.factory import BACKEND_FACTORY
+from vibe.core.llm.backend.factory import create_backend
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.llm.format import APIToolFormatHandler
 from vibe.core.llm.models import FailedToolCall, ResolvedMessage, ResolvedToolCall
@@ -104,7 +105,6 @@ from vibe.core.tools.base import (
     ToolPermission,
     ToolPermissionError,
 )
-from vibe.core.tools.connectors import ConnectorRegistry
 from vibe.core.tools.manager import ToolManager
 from vibe.core.tools.mcp import MCPRegistry
 from vibe.core.tools.mcp_sampling import MCPSamplingHandler
@@ -114,7 +114,6 @@ from vibe.core.tools.permissions import (
     PermissionStore,
     RequiredPermission,
 )
-from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
 from vibe.core.tools.tool_result_store import ToolResultStore
 from vibe.core.tracing import (
     agent_span,
@@ -192,13 +191,17 @@ def _git_executable_present() -> bool:
     return shutil.which(os.environ.get("GIT_PYTHON_GIT_EXECUTABLE", "git")) is not None
 
 
-try:
-    from vibe.core.teleport.teleport import TeleportService as _TeleportService
+_TELEPORT_AVAILABLE = _git_executable_present()
 
-    _TELEPORT_AVAILABLE = _git_executable_present()
-except ImportError:
-    _TELEPORT_AVAILABLE = False
-    _TeleportService = None
+
+@functools.cache
+def _teleport_service_cls() -> type[TeleportService] | None:
+    try:
+        from vibe.core.teleport.teleport import TeleportService
+    except ImportError:
+        return None
+    return TeleportService
+
 
 if TYPE_CHECKING:
     from vibe.core.config import MemoryConfig
@@ -211,6 +214,8 @@ if TYPE_CHECKING:
     from vibe.core.teleport.teleport import TeleportService
     from vibe.core.teleport.types import TeleportPushResponseEvent, TeleportYieldEvent
     from vibe.core.tools.background import BackgroundRegistry
+    from vibe.core.tools.connectors import ConnectorRegistry
+    from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
 
 # Central cap on a single tool result's size before it enters the conversation.
 # Tools may self-limit, but read/MCP/connector tools can return arbitrarily large
@@ -961,6 +966,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             return None
 
         server_url = get_server_url_from_api_base(provider.api_base)
+        from vibe.core.tools.connectors import ConnectorRegistry
+
         return ConnectorRegistry(api_key=api_key, server_url=server_url)
 
     @requires_init
@@ -980,7 +987,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _select_backend(self) -> BackendLike:
         provider = self.config.get_active_provider()
         timeout = self.config.api_timeout
-        return BACKEND_FACTORY[provider.backend](provider=provider, timeout=timeout)
+        return create_backend(provider=provider, timeout=timeout)
 
     async def _save_messages(self) -> None:
         await self.session_logger.save_interaction(
@@ -1126,11 +1133,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 "Teleport requires git to be installed. "
                 "Please install git and try again."
             )
+        service_cls = _teleport_service_cls()
+        if service_cls is None:
+            raise TeleportError("_TeleportService is unexpectedly None")
 
         if self._teleport_service is None:
-            if _TeleportService is None:
-                raise TeleportError("_TeleportService is unexpectedly None")
-            self._teleport_service = _TeleportService(
+            self._teleport_service = service_cls(
                 session_logger=self.session_logger,
                 vibe_code_sessions_base_url=self.config.vibe_code_sessions_base_url,
                 vibe_code_api_key=self.config.vibe_code_api_key,
@@ -2136,6 +2144,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 "an independent judge model is recommended.",
                 judge_model.alias,
             )
+        from vibe.core.tools.safety_judge import SafetyJudge
+
         return SafetyJudge(
             model=judge_model,
             provider=provider,
@@ -2176,7 +2186,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._tried_fallback_aliases.add(model.alias)
         provider = self.config.get_provider_for_model(model)
         self._fallback_model_override = model
-        self.backend = BACKEND_FACTORY[provider.backend](
+        self.backend = create_backend(
             provider=provider, timeout=self.config.api_timeout
         )
         return model

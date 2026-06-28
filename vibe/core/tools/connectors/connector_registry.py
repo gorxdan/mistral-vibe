@@ -12,7 +12,6 @@ import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
-from mistralai.client import Mistral
 import orjson
 
 from vibe.core.logger import logger
@@ -25,20 +24,31 @@ from vibe.core.tools.base import (
     InvokeContext,
     ToolError,
 )
-from vibe.core.tools.mcp.tools import (
-    MCPTool,
-    MCPToolResult,
-    RemoteTool,
-    _OpenArgs,
-    call_tool_http,
-)
 from vibe.core.tools.ui import ToolResultDisplay
 from vibe.core.types import ToolStreamEvent
 from vibe.core.utils import run_sync
 from vibe.core.utils.http import build_ssl_context
 
 if TYPE_CHECKING:
+    from vibe.core.tools.mcp.tools import MCPToolResult, RemoteTool, _OpenArgs
     from vibe.core.types import ToolResultEvent
+
+
+def __getattr__(name: str) -> Any:
+    if name in {
+        "MCPTool",
+        "MCPToolResult",
+        "RemoteTool",
+        "_OpenArgs",
+        "call_tool_http",
+    }:
+        from vibe.core.tools.mcp import tools as _tools
+
+        value = getattr(_tools, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 _BOOTSTRAP_TIMEOUT = 30.0
 _BOOTSTRAP_CACHE_TTL_SECONDS = 10 * 60
@@ -70,6 +80,8 @@ def _normalize_name(name: str) -> str:
 
 def _connector_tool_to_remote(tool: dict[str, Any]) -> RemoteTool | None:
     """Convert a bootstrap tool dict to a RemoteTool."""
+    from vibe.core.tools.mcp.tools import RemoteTool
+
     name = tool.get("name")
     if not name:
         return None
@@ -254,6 +266,12 @@ def create_connector_proxy_tool_class(
     api_key: str,
     server_url: str | None = None,
 ) -> type[BaseTool[_OpenArgs, MCPToolResult, BaseToolConfig, BaseToolState]]:
+    from vibe.core.tools.mcp.tools import MCPTool, MCPToolResult, _OpenArgs
+
+    globals()["MCPTool"] = MCPTool
+    globals()["MCPToolResult"] = MCPToolResult
+    globals()["_OpenArgs"] = _OpenArgs
+
     alias = connector_alias
     published_name = f"connector_{alias}_{remote.name}"
     base_url = server_url or _DEFAULT_BASE_URL
@@ -291,6 +309,8 @@ def create_connector_proxy_tool_class(
         async def run(
             self, args: _OpenArgs, ctx: InvokeContext | None = None
         ) -> AsyncGenerator[ToolStreamEvent | MCPToolResult, None]:
+            from vibe.core.tools.mcp.tools import call_tool_http
+
             url = f"{self._base_url}/v1/connectors-gateway/{self._connector_id}/mcp"
             headers = {"Authorization": f"Bearer {self._api_key}"}
             payload = args.model_dump(exclude_none=True)
@@ -306,6 +326,8 @@ def create_connector_proxy_tool_class(
 
         @classmethod
         def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
+            from vibe.core.tools.mcp.tools import MCPToolResult
+
             if not isinstance(event.result, MCPToolResult):
                 return ToolResultDisplay(
                     success=False,
@@ -633,6 +655,8 @@ class ConnectorRegistry:
                 verify=build_ssl_context(), follow_redirects=True
             )
             try:
+                from mistralai.client import Mistral
+
                 sdk_client = Mistral(
                     api_key=self._api_key,
                     server_url=self._server_url,

@@ -17,13 +17,13 @@ from textual.worker import Worker
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.core.config import ConnectorConfig, MCPHttp, MCPStreamableHttp, VibeConfig
 from vibe.core.tools.connectors import ConnectorAuthAction, ConnectorRegistry
-from vibe.core.tools.mcp.tools import MCPTool
 from vibe.core.tools.mcp_settings import updated_tool_list
 from vibe.core.utils import run_sync
 
 if TYPE_CHECKING:
     from vibe.core.config import MCPServer
     from vibe.core.tools.manager import ToolManager
+    from vibe.core.tools.mcp.tools import MCPTool
 
 
 class MCPSourceKind(StrEnum):
@@ -42,6 +42,8 @@ def collect_mcp_tool_index(
     tool_manager: ToolManager,
     connector_names: Sequence[str] = (),
 ) -> MCPToolIndex:
+    from vibe.core.tools.mcp.tools import MCPTool
+
     registered = tool_manager.registered_tools
     available = tool_manager.available_tools
     configured_servers = {server.name for server in mcp_servers}

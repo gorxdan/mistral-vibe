@@ -8,14 +8,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, final
 import unicodedata
 
 import httpx
-from mistralai.client import Mistral
-from mistralai.client.errors import SDKError
-from mistralai.client.models import (
-    ConversationResponse,
-    MessageOutputEntry,
-    TextChunk,
-    ToolReferenceChunk,
-)
 from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.config import DEFAULT_MISTRAL_API_ENV_KEY, VibeConfig
@@ -52,7 +44,45 @@ from vibe.core.types import ToolStreamEvent
 from vibe.core.utils.http import build_ssl_context, get_server_url_from_api_base
 
 if TYPE_CHECKING:
+    from mistralai.client import Mistral
+    from mistralai.client.errors import SDKError
+    from mistralai.client.models import ConversationResponse
+
     from vibe.core.types import ToolCallEvent, ToolResultEvent
+
+
+def __getattr__(name: str) -> object:
+    if name in {"Mistral", "SDKError"}:
+        import importlib
+
+        mod = importlib.import_module(
+            "mistralai.client.errors" if name == "SDKError" else "mistralai.client"
+        )
+        value = getattr(mod, name)
+        globals()[name] = value
+        return value
+    if name in {
+        "ConversationResponse",
+        "MessageOutputEntry",
+        "TextChunk",
+        "ToolReferenceChunk",
+    }:
+        from mistralai.client import models as _models
+
+        value = getattr(_models, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _resolve_mistral_clients() -> None:
+    if "Mistral" not in globals():
+        from mistralai.client import Mistral
+        from mistralai.client.errors import SDKError
+
+        globals()["Mistral"] = Mistral
+        globals()["SDKError"] = SDKError
+
 
 _DOWN_CHOICE_START = "Start SearXNG"
 _DOWN_CHOICE_MISTRAL_ONCE = "Use Mistral this time"
@@ -251,6 +281,7 @@ class WebSearch(
     async def run(
         self, args: WebSearchArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | WebSearchResult, None]:
+        _resolve_mistral_clients()
         async with _acquire_search_slot():
             config = self._resolve_config(ctx)
             settings = self._searxng_settings()
@@ -319,6 +350,12 @@ class WebSearch(
     def _parse_response(
         self, response: ConversationResponse, query: str
     ) -> WebSearchResult:
+        from mistralai.client.models import (
+            MessageOutputEntry,
+            TextChunk,
+            ToolReferenceChunk,
+        )
+
         text_parts: list[str] = []
         sources: dict[str, WebSearchSource] = {}
 

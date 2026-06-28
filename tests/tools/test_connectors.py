@@ -347,7 +347,7 @@ class TestConnectorProxyToolRun:
         )
 
         with patch(
-            "vibe.core.tools.connectors.connector_registry.call_tool_http",
+            "vibe.core.tools.mcp.tools.call_tool_http",
             new_callable=AsyncMock,
             return_value=expected,
         ) as mock_call:
@@ -380,7 +380,7 @@ class TestConnectorProxyToolRun:
         expected = MCPToolResult(ok=True, server="s", tool="ping", text="pong")
 
         with patch(
-            "vibe.core.tools.connectors.connector_registry.call_tool_http",
+            "vibe.core.tools.mcp.tools.call_tool_http",
             new_callable=AsyncMock,
             return_value=expected,
         ) as mock_call:
@@ -396,7 +396,7 @@ class TestConnectorProxyToolRun:
 
         with (
             patch(
-                "vibe.core.tools.connectors.connector_registry.call_tool_http",
+                "vibe.core.tools.mcp.tools.call_tool_http",
                 new_callable=AsyncMock,
                 side_effect=httpx.ReadTimeout("timed out"),
             ),
@@ -411,7 +411,7 @@ class TestConnectorProxyToolRun:
 
         with (
             patch(
-                "vibe.core.tools.connectors.connector_registry.call_tool_http",
+                "vibe.core.tools.mcp.tools.call_tool_http",
                 new_callable=AsyncMock,
                 side_effect=httpx.ConnectError("refused"),
             ),

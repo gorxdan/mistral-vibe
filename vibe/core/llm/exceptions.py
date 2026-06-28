@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from http import HTTPStatus
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
-from mistralai.client.errors import SDKError
 import orjson
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from vibe.core.types import AvailableTool, LLMMessage, StrToolChoice
+
+if TYPE_CHECKING:
+    from mistralai.client.errors import SDKError
 
 type HttpError = SDKError | httpx.HTTPStatusError
 
@@ -187,6 +189,8 @@ class BackendErrorBuilder:
         has_tools: bool,
         tool_choice: StrToolChoice | AvailableTool | None,
     ) -> BackendError:
+        from mistralai.client.errors import SDKError
+
         response = error.raw_response if isinstance(error, SDKError) else error.response
         body_text = cls._read_response_body(response, error)
 
