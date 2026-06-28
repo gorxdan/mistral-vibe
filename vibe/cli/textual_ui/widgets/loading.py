@@ -57,6 +57,7 @@ class LoadingWidget(SpinnerMixin, Static):
         "Vibing",
         "Sending good vibes",
         "Petting le chat",
+        "Oh lawd he coming..",
     ]
 
     EASTER_EGGS_HALLOWEEN: ClassVar[list[str]] = [
