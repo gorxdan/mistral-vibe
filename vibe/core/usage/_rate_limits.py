@@ -148,6 +148,11 @@ class RateLimitStore:
         if snapshot.is_empty():
             return
         with self._lock:
+            # Keep newest by captured_at so an async call that completes late
+            # can't overwrite a fresher snapshot with stale headers.
+            existing = self._by_provider.get(snapshot.provider)
+            if existing is not None and existing.captured_at > snapshot.captured_at:
+                return
             self._by_provider[snapshot.provider] = snapshot
 
     def latest(self, provider: str) -> RateLimitSnapshot | None:

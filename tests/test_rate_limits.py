@@ -124,6 +124,20 @@ class TestRateLimitStore:
         assert latest.remaining_tokens == 40000
         assert latest.captured_at == 2.0
 
+    def test_stale_snapshot_does_not_overwrite_fresher(self):
+        # An async call completing late must not clobber a newer snapshot.
+        store = RateLimitStore()
+        store.update(
+            RateLimitSnapshot(provider="zai", captured_at=10.0, remaining_tokens=50000)
+        )
+        store.update(
+            RateLimitSnapshot(provider="zai", captured_at=5.0, remaining_tokens=10000)
+        )
+        latest = store.latest("zai")
+        assert latest is not None
+        assert latest.captured_at == 10.0
+        assert latest.remaining_tokens == 50000
+
     def test_empty_snapshot_not_stored(self):
         store = RateLimitStore()
         store.update(RateLimitSnapshot(provider="p", captured_at=1.0))

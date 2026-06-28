@@ -64,8 +64,9 @@ def test_codex_routing_no_sink_for_non_codex_provider() -> None:
     loop = build_test_agent_loop()
     loop._codex_turn_state = "turn-1"
     headers, sink = loop._codex_routing(_plain_provider())
-    # Non-codex providers neither capture nor replay the codex token.
-    assert sink is None
+    # Non-codex providers never replay the codex token, but the sink is still
+    # allocated so x-ratelimit-* headers can be captured for /status limits.
+    assert sink is not None
     assert "x-codex-turn-state" not in headers
 
 
