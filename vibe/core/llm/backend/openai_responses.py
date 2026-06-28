@@ -483,9 +483,12 @@ class OpenAIResponsesAdapter(APIAdapter):
         return model_name.startswith(supported_prefixes)
 
     @staticmethod
-    def _map_reasoning_effort(thinking: str) -> str:
+    def _map_reasoning_effort(thinking: str, model_name: str = "") -> str:
         if thinking == "off":
-            return "none"
+            # codex-tuned models (e.g. gpt-5.3-codex-spark) reject effort 'none'
+            # with a 400 — their minimum is 'low'. Platform/mini models (gpt-5.5,
+            # gpt-5.4-mini) accept 'none' for genuinely no reasoning.
+            return "low" if "codex" in model_name.lower() else "none"
         if thinking == "max":
             return "xhigh"
         return thinking
@@ -606,7 +609,7 @@ class OpenAIResponsesAdapter(APIAdapter):
         if self._is_temperature_supported(model_name):
             payload["temperature"] = temperature
 
-        effort = self._map_reasoning_effort(thinking)
+        effort = self._map_reasoning_effort(thinking, model_name)
         payload["reasoning"] = {"effort": effort}
         # Request encrypted reasoning so it can be echoed back across turns
         # (via reasoning_state in _convert_messages) instead of re-reasoned —

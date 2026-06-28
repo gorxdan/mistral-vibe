@@ -428,6 +428,27 @@ class TestPrepareRequest:
         )
         assert payload["reasoning"] == {"effort": expected_effort}
 
+    @pytest.mark.parametrize(
+        ("thinking", "expected_effort"),
+        [
+            ("off", "low"),  # codex models reject 'none' -> clamp to minimum 'low'
+            ("low", "low"),
+            ("high", "high"),
+            ("max", "xhigh"),
+        ],
+    )
+    def test_codex_model_never_gets_none_effort(
+        self, adapter, provider, thinking, expected_effort
+    ):
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.user, content="Hi")],
+            model_name="gpt-5.3-codex-spark",
+            thinking=thinking,
+        )
+        assert payload["reasoning"] == {"effort": expected_effort}
+
     def test_non_leading_system_message_is_preserved(self, adapter, provider):
         payload = _prepare(
             adapter,

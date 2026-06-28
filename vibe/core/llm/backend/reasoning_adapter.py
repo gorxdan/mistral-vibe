@@ -104,7 +104,10 @@ class ReasoningAdapter(APIAdapter):
         }
 
         if thinking != "off":
-            payload["reasoning_effort"] = thinking
+            # "max" is our internal top level; chat-completions `reasoning_effort`
+            # tops out at "high" ("xhigh" is Responses/codex-only), so translate
+            # it rather than send the invalid literal "max".
+            payload["reasoning_effort"] = "high" if thinking == "max" else thinking
 
         if tools:
             payload["tools"] = [tool.model_dump(exclude_none=True) for tool in tools]
