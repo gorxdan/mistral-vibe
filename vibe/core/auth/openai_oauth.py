@@ -66,8 +66,7 @@ OPENAI_ORIGINATOR: Final = os.getenv("CHATON_CODEX_ORIGINATOR", "codex_cli_rs")
 OPENAI_CODEX_VERSION: Final = os.getenv("CHATON_CODEX_VERSION", "0.142.0")
 
 
-class OpenAIOAuthError(RuntimeError):
-    """Base error for the ChatGPT-subscription credential flow."""
+class OpenAIOAuthError(RuntimeError): ...
 
 
 class OpenAINotAuthenticatedError(OpenAIOAuthError):
@@ -88,7 +87,6 @@ class OpenAIRefreshError(OpenAIOAuthError):
 
 
 def token_store_path() -> Path:
-    """Location of the ChatGPT OAuth token store (``$VIBE_HOME/auth/openai.json``)."""
     return VIBE_HOME.path / "auth" / "openai.json"
 
 

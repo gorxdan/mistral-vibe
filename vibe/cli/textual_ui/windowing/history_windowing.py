@@ -28,7 +28,6 @@ class HistoryResumePlan:
 
 
 def should_resume_history(messages_children: list[Widget]) -> bool:
-    """Check if there are no visible history widgets in the messages"""
     return visible_history_widgets_count(messages_children) == 0
 
 

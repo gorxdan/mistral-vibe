@@ -145,7 +145,6 @@ class TeamManager:
         dependencies: list[str] | None = None,
         task_id: str | None = None,
     ) -> Task:
-        """Create a task and fire the TASK_CREATED lifecycle hook."""
         task = await asyncio.to_thread(
             self.task_store.add_task,
             description,
@@ -163,7 +162,6 @@ class TeamManager:
     async def complete_team_task(
         self, task_id: str, result: str | None = None
     ) -> Task | None:
-        """Mark a task complete and fire the TASK_COMPLETED lifecycle hook."""
         task = await asyncio.to_thread(
             self.task_store.complete_task, task_id, result=result
         )

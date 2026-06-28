@@ -566,6 +566,5 @@ def build_non_interactive_provider(
 
 
 async def clear_stored_credentials(alias: str) -> None:
-    """Delete the stored OAuth tokens, client info, and fingerprint for *alias*."""
     for kind in ("tokens", "client_info", "fingerprint"):
         await _kr_delete(_kr_username(alias, kind))
