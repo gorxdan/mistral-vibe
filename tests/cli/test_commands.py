@@ -8,6 +8,7 @@ class TestCommandRegistry:
         registry = CommandRegistry()
         assert registry.get_command_name("/help") == "help"
         assert registry.get_command_name("/config") == "config"
+        assert registry.get_command_name("/login") == "login"
         assert registry.get_command_name("/model") == "model"
         assert registry.get_command_name("/connectors") == "mcp"
         assert registry.get_command_name("/clear") == "clear"
@@ -119,6 +120,14 @@ class TestCommandRegistry:
         registry = CommandRegistry()
         result = registry.parse_command("/mcp filesystem")
         assert result == ("mcp", registry.commands["mcp"], "filesystem")
+
+    def test_login_command_registration(self) -> None:
+        registry = CommandRegistry()
+        result = registry.parse_command("/login zai")
+        assert result is not None
+        _, cmd, cmd_args = result
+        assert cmd.handler == "_show_provider_login"
+        assert cmd_args == "zai"
 
     def test_parse_command_maps_connector_alias_to_mcp(self) -> None:
         registry = CommandRegistry()

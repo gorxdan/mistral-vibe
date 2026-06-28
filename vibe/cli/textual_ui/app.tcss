@@ -1025,7 +1025,7 @@ StatusMessage {
 
 }
 
-#config-app, #voice-app, #mcp-app, #connectorauth-app, #mcpoauth-app {
+#config-app, #voice-app, #mcp-app, #connectorauth-app, #mcpoauth-app, #providerlogin-app {
     width: 100%;
     height: auto;
     background: transparent;
@@ -1034,7 +1034,7 @@ StatusMessage {
     margin: 0;
 }
 
-#config-content, #voice-content, #mcp-content, #connectorauth-content, #mcpoauth-content {
+#config-content, #voice-content, #mcp-content, #connectorauth-content, #mcpoauth-content, #providerlogin-content {
     width: 100%;
     height: auto;
 }
@@ -1045,18 +1045,26 @@ StatusMessage {
     color: $primary;
 }
 
-#config-options, #mcp-options, #connectorauth-options, #mcpoauth-options {
+#config-options, #mcp-options, #connectorauth-options, #mcpoauth-options, #providerlogin-options {
     width: 100%;
     max-height: 50vh;
     border: none;
 }
 
-#config-options:focus, #mcp-options:focus, #connectorauth-options:focus, #mcpoauth-options:focus {
+#config-options:focus, #mcp-options:focus, #connectorauth-options:focus, #mcpoauth-options:focus, #providerlogin-options:focus {
     border: none;
 }
 
-#connectorauth-detail, #mcpoauth-detail {
+#connectorauth-detail, #mcpoauth-detail, #providerlogin-detail {
     margin: 1 0;
+}
+
+.providerlogin-input {
+    width: 100%;
+    height: auto;
+    border: none;
+    border-left: wide $foreground-muted;
+    padding: 0 0 0 1;
 }
 
 .settings-help {

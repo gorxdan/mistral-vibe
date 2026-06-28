@@ -7,6 +7,7 @@ import sys
 
 from vibe.cli.constants import CLIPBOARD_IMAGE_PASTE_SUPPORTED_SYSTEM
 from vibe.cli.plan_offer.decide_plan_offer import PlanInfo
+from vibe.cli.plan_offer.ports.whoami_gateway import WhoAmIPlanType
 from vibe.core.logger import logger
 
 ALT_KEY = "⌥" if sys.platform == "darwin" else "Alt"
@@ -44,9 +45,19 @@ class CommandRegistry:
         self,
         excluded_commands: list[str] | None = None,
         availability_context: CommandAvailabilityContext | None = None,
+        *,
+        vibe_code_enabled: bool | None = None,
     ) -> None:
         if excluded_commands is None:
             excluded_commands = []
+        if availability_context is None and vibe_code_enabled is not None:
+            availability_context = CommandAvailabilityContext(
+                vibe_code_enabled=vibe_code_enabled,
+                is_active_model_mistral=vibe_code_enabled,
+                plan_info=PlanInfo(WhoAmIPlanType.CHAT, "INDIVIDUAL")
+                if vibe_code_enabled
+                else None,
+            )
         self._disabled_commands = set(excluded_commands)
         self._availability_context = CommandAvailabilityContext()
         self._commands: dict[str, Command] = {}
@@ -69,6 +80,14 @@ class CommandRegistry:
                 aliases=frozenset(["/model"]),
                 description="Select active model",
                 handler="_show_model",
+            ),
+            "login": Command(
+                aliases=frozenset(["/login"]),
+                description=(
+                    "Sign in to a model provider. Use `/login <provider>` "
+                    "for a specific provider"
+                ),
+                handler="_show_provider_login",
             ),
             "thinking": Command(
                 aliases=frozenset(["/thinking"]),
@@ -155,7 +174,8 @@ class CommandRegistry:
                 description=(
                     "Display available MCP servers and connectors. "
                     "Pass a name to list its tools. "
-                    "Subcommands: /mcp login|logout <name>, /mcp refresh, /mcp add"
+                    "Subcommands: /mcp status, /mcp login <alias>, "
+                    "/mcp logout <alias>, /mcp refresh, /mcp add"
                 ),
                 handler="_show_mcp",
             ),
@@ -356,7 +376,10 @@ class CommandRegistry:
             "",
         ]
 
-        for cmd in self.commands.values():
+        def sort_key(command: Command) -> str:
+            return sorted(command.aliases)[0].removeprefix("/")
+
+        for cmd in sorted(self.commands.values(), key=sort_key):
             aliases = ", ".join(f"`{alias}`" for alias in sorted(cmd.aliases))
             lines.append(f"- {aliases}: {cmd.description}")
         return "\n".join(lines)

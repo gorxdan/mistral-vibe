@@ -116,6 +116,7 @@ from vibe.cli.textual_ui.widgets.no_markup_static import (
     NonSelectableStatic,
 )
 from vibe.cli.textual_ui.widgets.path_display import PathDisplay
+from vibe.cli.textual_ui.widgets.provider_login_app import ProviderLoginApp
 from vibe.cli.textual_ui.widgets.proxy_setup_app import ProxySetupApp
 from vibe.cli.textual_ui.widgets.question_app import QuestionApp
 from vibe.cli.textual_ui.widgets.rewind_app import RewindApp
@@ -279,6 +280,7 @@ class BottomApp(StrEnum):
     MCP = auto()
     MCPAdd = auto()
     ModelPicker = auto()
+    ProviderLogin = auto()
     ProxySetup = auto()
     Question = auto()
     ThemePicker = auto()
@@ -1502,6 +1504,28 @@ class VibeApp(App):  # noqa: PLR0904
 
         await self._switch_to_input_app()
 
+    async def on_provider_login_app_provider_login_closed(
+        self, message: ProviderLoginApp.ProviderLoginClosed
+    ) -> None:
+        await self._switch_to_input_app()
+        if message.error:
+            await self._mount_and_scroll(
+                ErrorMessage(message.error, collapsed=self._tools_collapsed)
+            )
+            return
+        if not message.authenticated:
+            await self._mount_and_scroll(
+                UserCommandMessage("Provider login cancelled.")
+            )
+            return
+
+        self.agent_loop.refresh_config()
+        await self.agent_loop.refresh_system_prompt()
+        self._refresh_banner()
+        await self._mount_and_scroll(
+            UserCommandMessage(f"Logged in to {message.provider_name}.")
+        )
+
     async def on_compact_message_completed(
         self, message: CompactMessage.Completed
     ) -> None:
@@ -2533,6 +2557,23 @@ class VibeApp(App):  # noqa: PLR0904
             return
         await self._switch_to_model_picker_app()
 
+    async def _show_provider_login(self, cmd_args: str = "", **kwargs: Any) -> None:
+        if self._current_bottom_app == BottomApp.ProviderLogin:
+            return
+        args = cmd_args.strip().split()
+        if len(args) > 1:
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "Usage: /login [provider]", collapsed=self._tools_collapsed
+                )
+            )
+            return
+        provider_name = args[0] if args else None
+        await self._mount_and_scroll(UserCommandMessage("Provider login opened..."))
+        await self._switch_from_input(
+            ProviderLoginApp(config=self.config, provider_name=provider_name)
+        )
+
     async def _show_thinking(self, **kwargs: Any) -> None:
         """Switch to the thinking level picker in the bottom panel."""
         if self._current_bottom_app == BottomApp.ThinkingPicker:
@@ -3265,10 +3306,11 @@ class VibeApp(App):  # noqa: PLR0904
     async def _team_stop(
         self, parts: list[str], ErrorMessage: type, UserCommandMessage: type
     ) -> None:
+        _MIN_PARTS_FOR_STOP = 2
         if self._team_manager is None:
             await self._mount_and_scroll(UserCommandMessage("No team active."))
             return
-        if len(parts) < 2:
+        if len(parts) < _MIN_PARTS_FOR_STOP:
             await self._mount_and_scroll(ErrorMessage("Usage: /team stop <name|all>"))
             return
         target = parts[1]
@@ -3295,10 +3337,12 @@ class VibeApp(App):  # noqa: PLR0904
     async def _team_task(
         self, parts: list[str], ErrorMessage: type, UserCommandMessage: type
     ) -> None:
+        _MIN_PARTS_FOR_SUBCOMMAND = 2
+        _MIN_PARTS_FOR_REST = 3
         if self._team_manager is None:
             self._team_manager = self._build_team_manager()
-        sub = parts[1].lower() if len(parts) >= 2 else "list"
-        rest = parts[2] if len(parts) >= 3 else ""
+        sub = parts[1].lower() if len(parts) >= _MIN_PARTS_FOR_SUBCOMMAND else "list"
+        rest = parts[2] if len(parts) >= _MIN_PARTS_FOR_REST else ""
         if sub == "add":
             if not rest.strip():
                 await self._mount_and_scroll(
@@ -4328,6 +4372,7 @@ class VibeApp(App):  # noqa: PLR0904
         BottomApp.Input: ChatInputContainer,
         BottomApp.Config: ConfigApp,
         BottomApp.ModelPicker: ModelPickerApp,
+        BottomApp.ProviderLogin: ProviderLoginApp,
         BottomApp.ThemePicker: ThemePickerApp,
         BottomApp.ThinkingPicker: ThinkingPickerApp,
         BottomApp.EffortPicker: EffortPickerApp,
@@ -4664,6 +4709,7 @@ class VibeApp(App):  # noqa: PLR0904
             | type[MCPAddApp]
             | type[ProxySetupApp]
             | type[ConnectorAuthApp]
+            | type[ProviderLoginApp]
         ),
     ) -> None:
         def _close() -> None:
@@ -4687,6 +4733,9 @@ class VibeApp(App):  # noqa: PLR0904
             BottomApp.Approval: self._handle_approval_app_escape,
             BottomApp.Question: self._handle_question_app_escape,
             BottomApp.ModelPicker: self._handle_model_picker_app_escape,
+            BottomApp.ProviderLogin: lambda: self._handle_bottom_app_close_escape(
+                ProviderLoginApp
+            ),
             BottomApp.ThemePicker: self._handle_theme_picker_app_escape,
             BottomApp.ThinkingPicker: self._handle_thinking_picker_app_escape,
             BottomApp.SessionPicker: self._handle_session_picker_app_escape,
