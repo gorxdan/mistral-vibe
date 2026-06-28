@@ -43,13 +43,14 @@ _STATUS_COLORS: dict[str, str] = {
     "waiting": "cyan",
 }
 
-# Filter order for the header row + number-key bindings (1=All ... 5=Loops).
+# Filter order for the header row + number-key bindings (1=All ... 6=Subagents).
 _FILTERS: list[tuple[str, TaskCategory | None]] = [
     ("All", None),
     ("Processes", TaskCategory.PROCESS),
     ("Workflows", TaskCategory.WORKFLOW),
     ("Teams", TaskCategory.TEAM),
     ("Loops", TaskCategory.LOOP),
+    ("Subagents", TaskCategory.ASYNC_AGENT),
 ]
 
 
@@ -226,6 +227,7 @@ class TasksApp(Container):
         Binding("3", "filter_workflows", "Workflows", show=False),
         Binding("4", "filter_teams", "Teams", show=False),
         Binding("5", "filter_loops", "Loops", show=False),
+        Binding("6", "filter_subagents", "Subagents", show=False),
     ]
 
     class Closed(Message):
@@ -781,6 +783,9 @@ class TasksApp(Container):
 
     def action_filter_loops(self) -> None:
         self._set_filter(4)
+
+    def action_filter_subagents(self) -> None:
+        self._set_filter(5)
 
     # --- OptionList events ---
 
