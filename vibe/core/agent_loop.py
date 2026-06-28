@@ -1034,7 +1034,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._response_format = response_format
         try:
             try:
-                active_model = self.config.get_active_model()
+                active_model = self._effective_model()
                 model_name = active_model.name
             except ValueError:
                 active_model = None
