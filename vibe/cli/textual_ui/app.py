@@ -636,7 +636,7 @@ class VibeApp(App):  # noqa: PLR0904
     def _maybe_show_feedback_bar(self) -> None:
         if self._feedback_bar_manager.should_show(self.agent_loop):
             self._feedback_bar.show()
-            self._feedback_bar_manager.record_feedback_asked()
+            self._feedback_bar_manager.record_feedback_asked(self.agent_loop)
 
     def _start_queued_agent_turn(
         self,
@@ -1823,7 +1823,7 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(user_message)
         if self._feedback_bar_manager.should_show(self.agent_loop):
             self._feedback_bar.show()
-            self._feedback_bar_manager.record_feedback_asked()
+            self._feedback_bar_manager.record_feedback_asked(self.agent_loop)
 
         if not self._agent_running:
             await self._remove_loading_widget()
@@ -2627,7 +2627,7 @@ class VibeApp(App):  # noqa: PLR0904
             )
             if self._show_resume_picker:
                 self._show_resume_picker = False
-                await self._process_startup_prompt_when_available()
+                self._process_initial_prompt()
             return
 
         await self._switch_from_input(self._build_picker(local_sessions))
@@ -2654,7 +2654,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         if self._show_resume_picker:
             self._show_resume_picker = False
-            await self._process_startup_prompt_when_available()
+            self._process_initial_prompt()
 
     async def on_session_picker_app_session_delete_requested(
         self, event: SessionPickerApp.SessionDeleteRequested
@@ -3524,7 +3524,7 @@ class VibeApp(App):  # noqa: PLR0904
         phases from the result if the run completed/stopped/failed, else from
         the live runtime so results are also recoverable mid-run.
 
-        Per-agent response text is capped to 4KB by default so a large batch
+        Per-agent response text is capped to 4000 chars by default so a large batch
         doesn't flood the host's context; ``raw=True`` lifts the cap. Failed
         agents' raw responses are included so schema-validation failures and
         crashes are recoverable instead of silently swallowed.
