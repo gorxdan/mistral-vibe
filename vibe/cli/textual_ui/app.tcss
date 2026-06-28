@@ -1346,7 +1346,7 @@ ContextProgress {
     }
 }
 
-AgentProfileBadge,
+ModelStatusBadge,
 SubagentsBadge {
     width: auto;
     height: auto;
@@ -1355,23 +1355,11 @@ SubagentsBadge {
     margin: 0;
 }
 
-AgentProfileBadge {
+ModelStatusBadge {
     color: $text-muted;
 
     &:ansi {
         text-style: dim;
-    }
-
-    &.badge-safe {
-        color: $success;
-    }
-
-    &.badge-warning {
-        color: $warning;
-    }
-
-    &.badge-error {
-        color: $error;
     }
 }
 

@@ -54,7 +54,7 @@ from vibe.cli.textual_ui.notifications import (
 from vibe.cli.textual_ui.quit_manager import QuitManager
 from vibe.cli.textual_ui.scheduled_loop_runner import ScheduledLoopRunner
 from vibe.cli.textual_ui.session_exit import print_session_resume_message
-from vibe.cli.textual_ui.widgets.agent_badge import AgentProfileBadge
+from vibe.cli.textual_ui.widgets.agent_badge import ModelStatusBadge
 from vibe.cli.textual_ui.widgets.approval_app import ApprovalApp
 from vibe.cli.textual_ui.widgets.banner.banner import Banner
 from vibe.cli.textual_ui.widgets.chat_input import ChatInputContainer
@@ -757,7 +757,7 @@ class VibeApp(App):  # noqa: PLR0904
 
         with Horizontal(id="bottom-bar"):
             yield PathDisplay(self.config.displayed_workdir or Path.cwd())
-            yield AgentProfileBadge()
+            yield ModelStatusBadge()
             yield SubagentsBadge()
             yield NoMarkupStatic(id="spacer")
             yield ContextProgress()
@@ -1385,6 +1385,13 @@ class VibeApp(App):  # noqa: PLR0904
             and not self._pending_model_switch.done()
         ):
             self._pending_model_switch.set_result(message.alias)
+            subagent_model = str(self.config.subagent_model or message.alias)
+            try:
+                self.query_one(ModelStatusBadge).set_models(
+                    message.alias, subagent_model
+                )
+            except NoMatches:
+                pass
             return
         target = getattr(self, "_model_picker_target", "active")
         self._model_picker_target = "active"
@@ -2929,6 +2936,7 @@ class VibeApp(App):  # noqa: PLR0904
             await self.agent_loop.reload_with_initial_messages(base_config=base_config)
             await self._resolve_plan()
             self._narrator_manager.sync()
+            self._refresh_model_status_badge()
 
             setup_lsp_for_config(
                 base_config, lambda: self.agent_loop.base_config, Path.cwd()
@@ -4998,6 +5006,7 @@ class VibeApp(App):  # noqa: PLR0904
 
     def _refresh_profile_widgets(self) -> None:
         self._update_profile_widgets(self.agent_loop.agent_profile)
+        self._refresh_model_status_badge()
 
     def _on_profile_changed(self) -> None:
         self._refresh_profile_widgets()
@@ -5022,10 +5031,15 @@ class VibeApp(App):  # noqa: PLR0904
             self._chat_input_container.set_safety(profile.safety)
             self._chat_input_container.set_agent_name(profile.display_name.lower())
             self._chat_input_container.set_custom_border(None)
+
+    def _refresh_model_status_badge(self) -> None:
         try:
-            self.query_one(AgentProfileBadge).set_profile(
-                profile.display_name.lower(), profile.safety
-            )
+            active_model = self.agent_loop.effective_model().alias
+        except ValueError:
+            active_model = str(self.config.active_model or "")
+        subagent_model = str(self.config.subagent_model or active_model)
+        try:
+            self.query_one(ModelStatusBadge).set_models(active_model, subagent_model)
         except NoMatches:
             pass
 

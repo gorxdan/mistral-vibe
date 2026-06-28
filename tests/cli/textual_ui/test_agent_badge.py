@@ -2,69 +2,47 @@ from __future__ import annotations
 
 import pytest
 
-from tests.conftest import build_test_vibe_app
-from vibe.cli.textual_ui.widgets.agent_badge import AgentProfileBadge
-from vibe.core.agents import AgentSafety
+from tests.conftest import build_test_vibe_app, build_test_vibe_config
+from vibe.cli.textual_ui.widgets.agent_badge import ModelStatusBadge
+from vibe.core.config import ModelConfig
 
 
-def test_agent_profile_badge_renders_card_with_name() -> None:
-    widget = AgentProfileBadge()
+def test_model_status_badge_renders_model_and_subagent_model() -> None:
+    widget = ModelStatusBadge()
 
-    widget.set_profile("default", AgentSafety.NEUTRAL)
+    widget.set_models("gpt-5.5", "devstral-small")
 
-    assert str(widget.render()) == "⟦● default⟧"
-
-
-def test_agent_profile_badge_neutral_has_no_safety_class() -> None:
-    widget = AgentProfileBadge()
-
-    widget.set_profile("default", AgentSafety.NEUTRAL)
-
-    assert not widget.has_class("badge-safe")
-    assert not widget.has_class("badge-warning")
-    assert not widget.has_class("badge-error")
+    assert str(widget.render()) == "⟦MODEL gpt-5.5 / SUB MODEL devstral-small⟧"
 
 
-def test_agent_profile_badge_yolo_marks_error() -> None:
-    widget = AgentProfileBadge()
+def test_model_status_badge_hides_when_models_are_empty() -> None:
+    widget = ModelStatusBadge()
 
-    widget.set_profile("auto approve", AgentSafety.YOLO)
-
-    assert widget.has_class("badge-error")
-
-
-def test_agent_profile_badge_destructive_marks_warning() -> None:
-    widget = AgentProfileBadge()
-
-    widget.set_profile("accept edits", AgentSafety.DESTRUCTIVE)
-
-    assert widget.has_class("badge-warning")
-
-
-def test_agent_profile_badge_swap_clears_prior_safety_class() -> None:
-    widget = AgentProfileBadge()
-
-    widget.set_profile("auto approve", AgentSafety.YOLO)
-    widget.set_profile("plan", AgentSafety.SAFE)
-
-    assert widget.has_class("badge-safe")
-    assert not widget.has_class("badge-error")
-
-
-def test_agent_profile_badge_empty_name_hides_content() -> None:
-    widget = AgentProfileBadge()
-
-    widget.set_profile("", AgentSafety.NEUTRAL)
+    widget.set_models("", "")
 
     assert str(widget.render()) == ""
 
 
+def test_model_status_badge_uses_unknown_for_partial_values() -> None:
+    widget = ModelStatusBadge()
+
+    widget.set_models("gpt-5.5", "")
+
+    assert str(widget.render()) == "⟦MODEL gpt-5.5 / SUB MODEL unknown⟧"
+
+
 @pytest.mark.asyncio
-async def test_agent_profile_badge_shows_initial_profile_on_startup() -> None:
-    app = build_test_vibe_app()
+async def test_model_status_badge_shows_initial_models_on_startup() -> None:
+    models = [
+        ModelConfig(name="gpt-5.5", provider="mistral", alias="host"),
+        ModelConfig(name="devstral-small-latest", provider="mistral", alias="sub"),
+    ]
+    config = build_test_vibe_config(
+        models=models, active_model="host", subagent_model="sub"
+    )
+    app = build_test_vibe_app(config=config)
 
     async with app.run_test():
-        badge = app.query_one(AgentProfileBadge)
-        expected = app.agent_loop.agent_profile.display_name.lower()
+        badge = app.query_one(ModelStatusBadge)
 
-        assert str(badge.render()) == f"⟦● {expected}⟧"
+        assert str(badge.render()) == "⟦MODEL host / SUB MODEL sub⟧"
