@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -89,10 +90,25 @@ def _window(raw: Any) -> CodexQuotaWindow | None:
 async def fetch_codex_quota(api_base: str) -> CodexQuotaSnapshot | None:
     """Fetch the Codex/ChatGPT plan usage snapshot, or None on any failure.
 
-    Returns None when: not signed in, network error, non-2xx, or unparseable
-    body. The /status card treats None as "section not shown" — the fetch is
-    best-effort and must never block or crash the status render.
+    Returns None when: not signed in, network error, non-2xx, unparseable
+    body, or the whole fetch (including token refresh) exceeds the hard
+    timeout. The /status card treats None as "section not shown" — the fetch
+    is best-effort and must never block or crash the status render.
+
+    The hard ``_FETCH_TIMEOUT`` cap covers credential refresh too: without it
+    a hung ChatGPT auth backend (which has its own longer HTTP timeout) could
+    stall the user-invoked ``/status`` command well past the intended budget.
     """
+    try:
+        return await asyncio.wait_for(
+            _fetch_codex_quota(api_base), timeout=_FETCH_TIMEOUT
+        )
+    except TimeoutError:
+        logger.error("Codex quota fetch timed out after %ss", _FETCH_TIMEOUT)
+        return None
+
+
+async def _fetch_codex_quota(api_base: str) -> CodexQuotaSnapshot | None:
     try:
         creds = await resolve_chatgpt_credentials()
     except OpenAINotAuthenticatedError:
