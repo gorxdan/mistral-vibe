@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from http import HTTPStatus
 import io
 from pathlib import Path
+from typing import Any
 
-import httpx
 import pytest
 
+from vibe.core.cache_store import InMemoryVibeCodeCacheStore
 import vibe.core.feedback as feedback_mod
 from vibe.core.output_formatters import (
     JsonOutputFormatter,
@@ -132,13 +132,22 @@ def test_create_formatter_returns_correct_type() -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _feedback_cache(last_shown_at: Any = 0) -> InMemoryVibeCodeCacheStore:
+    store = InMemoryVibeCodeCacheStore()
+    store.write_section("user_feedback", {"last_shown_at": last_shown_at})
+    return store
+
+
 def test_should_show_feedback_requires_telemetry_active(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(feedback_mod, "FEEDBACK_PROBABILITY", 1.0)
     assert (
         feedback_mod.should_show_feedback(
-            telemetry_active=False, is_mistral_model=True, user_message_count=10
+            telemetry_active=False,
+            is_mistral_model=True,
+            user_message_count=10,
+            cache_store=_feedback_cache(),
         )
         is False
     )
@@ -150,7 +159,10 @@ def test_should_show_feedback_requires_mistral_model(
     monkeypatch.setattr(feedback_mod, "FEEDBACK_PROBABILITY", 1.0)
     assert (
         feedback_mod.should_show_feedback(
-            telemetry_active=True, is_mistral_model=False, user_message_count=10
+            telemetry_active=True,
+            is_mistral_model=False,
+            user_message_count=10,
+            cache_store=_feedback_cache(),
         )
         is False
     )
@@ -162,7 +174,10 @@ def test_should_show_feedback_requires_min_messages(
     monkeypatch.setattr(feedback_mod, "FEEDBACK_PROBABILITY", 1.0)
     assert (
         feedback_mod.should_show_feedback(
-            telemetry_active=True, is_mistral_model=True, user_message_count=2
+            telemetry_active=True,
+            is_mistral_model=True,
+            user_message_count=2,
+            cache_store=_feedback_cache(),
         )
         is False
     )
@@ -172,13 +187,12 @@ def test_should_show_feedback_passes_when_all_conditions_met(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(feedback_mod, "FEEDBACK_PROBABILITY", 1.0)
-    monkeypatch.setattr(
-        "vibe.core.feedback.read_cache",
-        lambda _p: {"user_feedback": {"last_shown_at": 0}},
-    )
     assert (
         feedback_mod.should_show_feedback(
-            telemetry_active=True, is_mistral_model=True, user_message_count=5
+            telemetry_active=True,
+            is_mistral_model=True,
+            user_message_count=5,
+            cache_store=_feedback_cache(),
         )
         is True
     )
@@ -188,13 +202,12 @@ def test_should_show_feedback_rejects_non_int_last_shown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(feedback_mod, "FEEDBACK_PROBABILITY", 1.0)
-    monkeypatch.setattr(
-        "vibe.core.feedback.read_cache",
-        lambda _p: {"user_feedback": {"last_shown_at": "not-int"}},
-    )
     assert (
         feedback_mod.should_show_feedback(
-            telemetry_active=True, is_mistral_model=True, user_message_count=5
+            telemetry_active=True,
+            is_mistral_model=True,
+            user_message_count=5,
+            cache_store=_feedback_cache("not-int"),
         )
         is False
     )

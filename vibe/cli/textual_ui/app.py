@@ -2050,11 +2050,24 @@ class VibeApp(App):  # noqa: PLR0904
         self, current_model: str, candidates: list[str]
     ) -> None:
         display_names = {m.alias: m.name for m in self.config.available_models}
+        providers = {m.alias: m.provider for m in self.config.available_models}
+        provider_order = {
+            provider.name: index for index, provider in enumerate(self.config.providers)
+        }
+        candidate_index = {alias: index for index, alias in enumerate(candidates)}
+        ordered_candidates = sorted(
+            candidates,
+            key=lambda alias: (
+                provider_order.get(providers.get(alias, ""), len(provider_order)),
+                candidate_index[alias],
+            ),
+        )
         await self._switch_from_input(
             ModelPickerApp(
-                model_aliases=candidates,
+                model_aliases=ordered_candidates,
                 current_model=current_model,
                 display_names=display_names,
+                providers=providers,
             )
         )
 
@@ -4286,6 +4299,20 @@ class VibeApp(App):  # noqa: PLR0904
         display_names.update({
             alias: dm.model.name for alias, dm in self._discovered_models.items()
         })
+        providers = {m.alias: m.provider for m in self.config.available_models}
+        providers.update({
+            alias: dm.provider.name for alias, dm in self._discovered_models.items()
+        })
+        provider_order = {
+            provider.name: index for index, provider in enumerate(self.config.providers)
+        }
+        model_index = {alias: index for index, alias in enumerate(model_aliases)}
+        model_aliases.sort(
+            key=lambda alias: (
+                provider_order.get(providers.get(alias, ""), len(provider_order)),
+                model_index[alias],
+            )
+        )
         if target == "judge":
             current_model = str(self.config.safety_judge.model or "")
         elif target == "subagent":
@@ -4298,6 +4325,7 @@ class VibeApp(App):  # noqa: PLR0904
                 current_model=current_model,
                 display_names=display_names,
                 footer_hint=_SUBAGENT_MODEL_HINT if target == "subagent" else None,
+                providers=providers,
             )
         )
 

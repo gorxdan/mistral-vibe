@@ -26,6 +26,12 @@ def _build_option_text(label: str, alias: str, is_current: bool) -> Text:
     return text
 
 
+def _build_provider_text(provider: str) -> Text:
+    text = Text(no_wrap=True)
+    text.append(f"  Provider: {provider}", style="dim bold")
+    return text
+
+
 class ModelPickerApp(Container):
     """Model picker bottom app for selecting the active model."""
 
@@ -50,6 +56,7 @@ class ModelPickerApp(Container):
         *,
         display_names: dict[str, str] | None = None,
         footer_hint: str | None = None,
+        providers: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(id="modelpicker-app", **kwargs)
@@ -59,19 +66,26 @@ class ModelPickerApp(Container):
         # the alias itself (so the widget stays usable with bare alias lists).
         self._display_names = display_names or {}
         self._footer_hint = footer_hint
+        self._providers = providers or {}
 
     def compose(self) -> ComposeResult:
-        options = [
-            Option(
-                _build_option_text(
-                    self._display_names.get(alias, alias),
-                    alias,
-                    alias == self._current_model,
-                ),
-                id=alias,
+        options: list[Option] = []
+        last_provider: str | None = None
+        for alias in self._model_aliases:
+            provider = self._providers.get(alias, "Other")
+            if self._providers and provider != last_provider:
+                options.append(Option(_build_provider_text(provider), disabled=True))
+                last_provider = provider
+            options.append(
+                Option(
+                    _build_option_text(
+                        self._display_names.get(alias, alias),
+                        alias,
+                        alias == self._current_model,
+                    ),
+                    id=alias,
+                )
             )
-            for alias in self._model_aliases
-        ]
         with Vertical(id="modelpicker-content"):
             yield NoMarkupStatic("Select Model", classes="modelpicker-title")
             yield OptionList(*options, id="modelpicker-options")
@@ -83,11 +97,15 @@ class ModelPickerApp(Container):
 
     def on_mount(self) -> None:
         option_list = self.query_one(OptionList)
-        # Pre-select the current model
-        for i, alias in enumerate(self._model_aliases):
-            if alias == self._current_model:
-                option_list.highlighted = i
+        selected_index: int | None = None
+        for i, option in enumerate(option_list.options):
+            if option.id == self._current_model:
+                selected_index = i
                 break
+            if selected_index is None and not option.disabled:
+                selected_index = i
+        if selected_index is not None:
+            option_list.highlighted = selected_index
         option_list.focus()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:

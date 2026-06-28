@@ -4,13 +4,14 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from textual.widgets import OptionList
 
 from tests.conftest import build_test_vibe_app, build_test_vibe_config
 from vibe.cli.textual_ui.app import BottomApp
 from vibe.cli.textual_ui.widgets.config_app import ConfigApp
 from vibe.cli.textual_ui.widgets.model_picker import ModelPickerApp, _build_option_text
 from vibe.cli.textual_ui.widgets.thinking_picker import ThinkingPickerApp
-from vibe.core.config._settings import THINKING_LEVELS, ModelConfig
+from vibe.core.config._settings import THINKING_LEVELS, ModelConfig, ProviderConfig
 
 
 def _make_config_with_models():
@@ -20,6 +21,42 @@ def _make_config_with_models():
         ModelConfig(name="model-c", provider="mistral", alias="gamma"),
     ]
     return build_test_vibe_config(models=models, active_model="alpha")
+
+
+def _make_config_with_mixed_provider_models():
+    providers = [
+        ProviderConfig(name="mistral", api_base="https://mistral.example/v1"),
+        ProviderConfig(name="llamacpp", api_base="http://127.0.0.1:8080/v1"),
+        ProviderConfig(name="openai-chatgpt", api_base="https://chatgpt.example/codex"),
+    ]
+    models = [
+        ModelConfig(name="model-c", provider="openai-chatgpt", alias="gamma"),
+        ModelConfig(name="model-a", provider="mistral", alias="alpha"),
+        ModelConfig(name="local-model", provider="llamacpp", alias="local"),
+        ModelConfig(name="model-b", provider="mistral", alias="beta"),
+    ]
+    return build_test_vibe_config(
+        providers=providers, models=models, active_model="alpha"
+    )
+
+
+def _selectable_option_ids(picker: ModelPickerApp) -> list[str]:
+    option_list = picker.query_one(OptionList)
+    ids: list[str] = []
+    for option in option_list.options:
+        if option.disabled or option.id is None:
+            continue
+        ids.append(option.id)
+    return ids
+
+
+def _disabled_option_labels(picker: ModelPickerApp) -> list[str]:
+    option_list = picker.query_one(OptionList)
+    labels: list[str] = []
+    for option in option_list.options:
+        if option.disabled:
+            labels.append(str(option.prompt).strip())
+    return labels
 
 
 # --- /config command ---
@@ -134,6 +171,7 @@ async def test_model_picker_shows_all_models() -> None:
 
             picker = app.query_one(ModelPickerApp)
             assert picker._model_aliases == ["alpha", "beta", "gamma"]
+            assert _selectable_option_ids(picker) == ["alpha", "beta", "gamma"]
             assert picker._current_model == "alpha"
 
 
@@ -154,6 +192,40 @@ async def test_model_picker_maps_aliases_to_api_names() -> None:
                 "beta": "model-b",
                 "gamma": "model-c",
             }
+
+
+@pytest.mark.asyncio
+async def test_model_picker_groups_models_by_provider() -> None:
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_mixed_provider_models())
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            await app._show_model()
+            await pilot.pause(0.2)
+
+            picker = app.query_one(ModelPickerApp)
+            assert _disabled_option_labels(picker) == [
+                "Provider: mistral",
+                "Provider: llamacpp",
+                "Provider: openai-chatgpt",
+            ]
+            assert _selectable_option_ids(picker) == ["alpha", "beta", "local", "gamma"]
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_model_picker_groups_candidates_by_provider() -> None:
+    app = build_test_vibe_app(config=_make_config_with_mixed_provider_models())
+    async with app.run_test() as pilot:
+        await pilot.pause(0.1)
+        await app._switch_to_rate_limit_picker_app("alpha", ["alpha", "local", "beta"])
+        await pilot.pause(0.2)
+
+        picker = app.query_one(ModelPickerApp)
+        assert _disabled_option_labels(picker) == [
+            "Provider: mistral",
+            "Provider: llamacpp",
+        ]
+        assert _selectable_option_ids(picker) == ["alpha", "beta", "local"]
 
 
 def test_build_option_text_shows_api_name_with_alias() -> None:
