@@ -22,7 +22,7 @@ See docs/design/tasks.md for the full design.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
 import os
@@ -269,6 +269,7 @@ class BackgroundRegistry:
         self._team_manager_ref: Callable[[], TeamManager | None] = lambda: None
         self._loop_manager_ref: Callable[[], LoopManager | None] = lambda: None
         self._tui_bash_ref: Callable[[], asyncio.Task | None] = lambda: None
+        self._completion_callback: Callable[[], Coroutine[Any, Any, None]] | None = None
 
     # --- adapter wiring ---------------------------------------------------
 
@@ -284,6 +285,21 @@ class BackgroundRegistry:
     def attach_tui_bash(self, ref: Callable[[], asyncio.Task | None]) -> None:
         """Surface the TUI's foreground `!cmd` slot (v2 hook; unused in v1)."""
         self._tui_bash_ref = ref
+
+    def attach_completion_callback(
+        self, callback: Callable[[], Coroutine[Any, Any, None]] | None
+    ) -> None:
+        # Wake hook: fired fire-and-forget when an async subagent finishes so an
+        # idle host auto-continues instead of stalling until the user types.
+        self._completion_callback = callback
+
+    def _notify_completion(self) -> None:
+        if self._completion_callback is None:
+            return
+        try:
+            asyncio.create_task(self._completion_callback())
+        except RuntimeError:
+            pass
 
     # --- process ownership ------------------------------------------------
 
@@ -425,6 +441,7 @@ class BackgroundRegistry:
             rec.completed = False
             rec.error = str(exc) or exc.__class__.__name__
             self._async_completions.append(rec)
+            self._notify_completion()
             return
         # The TaskTool's background wrapper returns an IsolatedResult-like
         # object (see run_isolated_agent). Read its fields defensively.
@@ -437,6 +454,7 @@ class BackgroundRegistry:
         else:
             rec.status = "failed"
         self._async_completions.append(rec)
+        self._notify_completion()
 
     def pop_async_completions(self) -> list[_AsyncAgentRec]:
         """Drain and return the async-subagent completions queued since the

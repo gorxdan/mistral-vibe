@@ -333,6 +333,11 @@ PRUNE_LOW_MARK = 1000
 PRUNE_HIGH_MARK = 1500
 DOUBLE_ESC_DELAY = 0.2
 _SUBAGENTS_BADGE_REFRESH_S = 1.0
+_MAX_AUTO_CONTINUES = 100
+_AUTO_CONTINUE_PROMPT = (
+    "A background subagent finished; its result is above. Continue the task, "
+    "or stop if nothing remains."
+)
 
 _DEFAULT_TYPING_DEBOUNCE_MS = 1000
 _TYPING_DEBOUNCE_ENV_VAR = "VIBE_TYPING_GRACE_PERIOD_MS"
@@ -490,6 +495,8 @@ class VibeApp(App):  # noqa: PLR0904
         self._agent_running = False
         self._interrupt_requested = False
         self._agent_task: asyncio.Task | None = None
+        self._auto_continue_active = False
+        self._consecutive_auto_continues = 0
         self._bash_task: asyncio.Task | None = None
         self._update_notifier = update_notifier
         self._update_cache_repository = update_cache_repository
@@ -590,6 +597,9 @@ class VibeApp(App):  # noqa: PLR0904
         self._background_registry.attach_team_manager(lambda: self._team_manager)
         self._background_registry.attach_loop_manager(lambda: self._loop_runner.manager)
         self.agent_loop.background_registry = self._background_registry
+        self._background_registry.attach_completion_callback(
+            self._on_async_completion_wake
+        )
         self._configure_startup_options(startup)
 
     def _configure_startup_options(self, startup: StartupOptions | None) -> None:
@@ -667,6 +677,19 @@ class VibeApp(App):  # noqa: PLR0904
         if agent_task is None:
             return
         await agent_task
+
+    async def _on_async_completion_wake(self) -> None:
+        # A background subagent finished: if idle (and the user isn't driving),
+        # auto-continue one turn to drain it. Capped to avoid an unattended loop.
+        if self._is_busy() or self._auto_continue_active:
+            return
+        if self._input_queue.paused or bool(self._input_queue):
+            return
+        if self._consecutive_auto_continues >= _MAX_AUTO_CONTINUES:
+            return
+        self._auto_continue_active = True
+        self._consecutive_auto_continues += 1
+        self._start_queued_agent_turn(_AUTO_CONTINUE_PROMPT)
 
     def _start_queued_bash(
         self, command: str, *, existing_widget: BashOutputMessage | None = None
@@ -1857,6 +1880,7 @@ class VibeApp(App):  # noqa: PLR0904
     async def _handle_user_message(
         self, message: str, *, title_source: str | None = None
     ) -> None:
+        self._consecutive_auto_continues = 0
         prompt_payload = build_path_prompt_payload(message, base_dir=Path.cwd())
         images = await self._prepare_images_or_abort(prompt_payload)
         if images is None:
@@ -2185,6 +2209,7 @@ class VibeApp(App):  # noqa: PLR0904
         finally:
             self._narrator_manager.on_turn_end()
             self._agent_running = False
+            self._auto_continue_active = False
             self._interrupt_requested = False
             self._agent_task = None
             if self._loading_widget:

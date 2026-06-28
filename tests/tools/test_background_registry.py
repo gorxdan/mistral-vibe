@@ -688,6 +688,25 @@ async def test_async_agent_completion_queued_and_drained():
 
 
 @pytest.mark.asyncio
+async def test_async_completion_fires_wake_callback():
+    reg = BackgroundRegistry()
+    woke = asyncio.Event()
+
+    async def cb() -> None:
+        woke.set()
+
+    reg.attach_completion_callback(cb)
+
+    async def quick() -> _FakeIsolatedResult:
+        await asyncio.sleep(0)
+        return _FakeIsolatedResult(output="x")
+
+    reg.register_async_agent("worker", asyncio.create_task(quick()))
+    await asyncio.wait_for(woke.wait(), timeout=1.0)
+    assert woke.is_set()
+
+
+@pytest.mark.asyncio
 async def test_async_agent_failure_queued_with_error():
     reg = BackgroundRegistry()
 
