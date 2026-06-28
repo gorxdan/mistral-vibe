@@ -42,7 +42,7 @@ from vibe.core.llm.backend.factory import BACKEND_FACTORY, create_backend
 from vibe.core.llm.backend.generic import GenericBackend
 from vibe.core.llm.backend.mistral import MistralBackend, MistralMapper
 from vibe.core.llm.exceptions import BackendError, BackendErrorBuilder
-from vibe.core.llm.types import BackendLike
+from vibe.core.llm.types import BackendLike, CompletionRequest
 from vibe.core.types import Backend, FunctionCall, LLMChunk, LLMMessage, Role, ToolCall
 from vibe.core.utils import get_user_agent
 
@@ -93,13 +93,15 @@ class TestBackend:
                 messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
                 result = await backend.complete(
-                    model=model,
-                    messages=messages,
-                    temperature=0.2,
-                    tools=None,
-                    max_tokens=None,
-                    tool_choice=None,
-                    extra_headers=None,
+                    CompletionRequest(
+                        model=model,
+                        messages=messages,
+                        temperature=0.2,
+                        tools=None,
+                        max_tokens=None,
+                        tool_choice=None,
+                        extra_headers=None,
+                    )
                 )
 
                 assert result.message.content == result_data["message"]
@@ -168,13 +170,15 @@ class TestBackend:
 
                 results: list[LLMChunk] = []
                 async for result in backend.complete_streaming(
-                    model=model,
-                    messages=messages,
-                    temperature=0.2,
-                    tools=None,
-                    max_tokens=None,
-                    tool_choice=None,
-                    extra_headers=None,
+                    CompletionRequest(
+                        model=model,
+                        messages=messages,
+                        temperature=0.2,
+                        tools=None,
+                        max_tokens=None,
+                        tool_choice=None,
+                        extra_headers=None,
+                    )
                 ):
                     results.append(result)
 
@@ -247,13 +251,15 @@ class TestBackend:
 
             results: list[LLMChunk] = []
             async for result in backend.complete_streaming(
-                model=model,
-                messages=[LLMMessage(role=Role.USER, content="hi")],
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=[LLMMessage(role=Role.USER, content="hi")],
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             ):
                 results.append(result)
 
@@ -307,13 +313,15 @@ class TestBackend:
             messages = [LLMMessage(role=Role.USER, content="Just say hi")]
             with pytest.raises(BackendError) as e:
                 async for _ in backend.complete_streaming(
-                    model=model,
-                    messages=messages,
-                    temperature=0.2,
-                    tools=None,
-                    max_tokens=None,
-                    tool_choice=None,
-                    extra_headers=None,
+                    CompletionRequest(
+                        model=model,
+                        messages=messages,
+                        temperature=0.2,
+                        tools=None,
+                        max_tokens=None,
+                        tool_choice=None,
+                        extra_headers=None,
+                    )
                 ):
                     pass
             assert e.value.status == response.status_code
@@ -355,13 +363,15 @@ class TestBackend:
             messages = [LLMMessage(role=Role.USER, content="hi")]
 
             async for _ in backend.complete_streaming(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             ):
                 pass
 
@@ -416,13 +426,15 @@ class TestBackend:
             messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
             await backend.complete(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers={"user-agent": user_agent},
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers={"user-agent": user_agent},
+                )
             )
 
             assert mock_api.calls.last.request.headers["user-agent"] == user_agent
@@ -456,13 +468,15 @@ class TestBackend:
             messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
             async for _ in backend.complete_streaming(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers={"user-agent": user_agent},
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers={"user-agent": user_agent},
+                )
             ):
                 pass
 
@@ -552,13 +566,15 @@ class TestMistralRetry:
             messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
             result = await backend.complete(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             )
 
             assert result.message.content == "Some content"
@@ -704,13 +720,15 @@ class TestMistralBackendReasoningEffort:
             mock_get_client.return_value = mock_client
 
             await backend.complete(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             )
 
             call_kwargs = mock_client.chat.complete_async.call_args.kwargs
@@ -748,13 +766,15 @@ class TestMistralBackendReasoningEffort:
             mock_get_client.return_value = mock_client
 
             await backend.complete(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             )
 
             call_kwargs = mock_client.chat.complete_async.call_args.kwargs

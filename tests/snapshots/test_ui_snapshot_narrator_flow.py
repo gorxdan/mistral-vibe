@@ -42,9 +42,9 @@ class GatedBackend(FakeBackend):
     def release(self) -> None:
         self._gate.set()
 
-    async def complete(self, **kwargs: Any) -> LLMChunk:
+    async def complete(self, *args: Any, **kwargs: Any) -> LLMChunk:
         await self._gate.wait()
-        return await super().complete(**kwargs)
+        return await super().complete(*args, **kwargs)
 
 
 class GatedTTSClient(FakeTTSClient):

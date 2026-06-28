@@ -48,6 +48,7 @@ from tests.conftest import (
 )
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
+from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import FunctionCall, LLMChunk, Role, ToolCall
 
 _RUN = os.environ.get("VIBE_MEM_PROFILE")
@@ -81,18 +82,20 @@ class _InfiniteFakeBackend(FakeBackend):
     def _chunk(self) -> LLMChunk:
         return mock_llm_chunk(content=self._reply)
 
-    async def complete(self, **kwargs) -> LLMChunk:  # type: ignore[override]
-        self._requests_messages.append(list(kwargs["messages"]))
-        self._requests_extra_headers.append(kwargs.get("extra_headers"))
-        self._requests_metadata.append(kwargs.get("metadata"))
+    async def complete(  # type: ignore[override]
+        self, request: CompletionRequest, *, response_headers_sink=None
+    ) -> LLMChunk:
+        self._requests_messages.append(list(request.messages))
+        self._requests_extra_headers.append(request.extra_headers)
+        self._requests_metadata.append(request.metadata)
         return self._chunk()
 
     async def complete_streaming(  # type: ignore[override]
-        self, **kwargs
+        self, request: CompletionRequest, *, response_headers_sink=None
     ) -> AsyncGenerator[LLMChunk]:
-        self._requests_messages.append(list(kwargs["messages"]))
-        self._requests_extra_headers.append(kwargs.get("extra_headers"))
-        self._requests_metadata.append(kwargs.get("metadata"))
+        self._requests_messages.append(list(request.messages))
+        self._requests_extra_headers.append(request.extra_headers)
+        self._requests_metadata.append(request.metadata)
         yield self._chunk()
 
 
@@ -127,19 +130,21 @@ class _ToolCallFakeBackend(_InfiniteFakeBackend):
         last_role = messages[-1].role if messages else None
         return self._chunk() if last_role == Role.TOOL else self._tool_chunk()
 
-    async def complete(self, **kwargs) -> LLMChunk:  # type: ignore[override]
-        self._requests_messages.append(list(kwargs["messages"]))
-        self._requests_extra_headers.append(kwargs.get("extra_headers"))
-        self._requests_metadata.append(kwargs.get("metadata"))
-        return self._next(kwargs["messages"])
+    async def complete(  # type: ignore[override]
+        self, request: CompletionRequest, *, response_headers_sink=None
+    ) -> LLMChunk:
+        self._requests_messages.append(list(request.messages))
+        self._requests_extra_headers.append(request.extra_headers)
+        self._requests_metadata.append(request.metadata)
+        return self._next(request.messages)
 
     async def complete_streaming(  # type: ignore[override]
-        self, **kwargs
+        self, request: CompletionRequest, *, response_headers_sink=None
     ) -> AsyncGenerator[LLMChunk]:
-        self._requests_messages.append(list(kwargs["messages"]))
-        self._requests_extra_headers.append(kwargs.get("extra_headers"))
-        self._requests_metadata.append(kwargs.get("metadata"))
-        yield self._next(kwargs["messages"])
+        self._requests_messages.append(list(request.messages))
+        self._requests_extra_headers.append(request.extra_headers)
+        self._requests_metadata.append(request.metadata)
+        yield self._next(request.messages)
 
 
 class _FanOutFakeBackend(_InfiniteFakeBackend):
@@ -189,19 +194,21 @@ class _FanOutFakeBackend(_InfiniteFakeBackend):
         last_role = messages[-1].role if messages else None
         return self._chunk() if last_role == Role.TOOL else self._fan_out_chunk()
 
-    async def complete(self, **kwargs) -> LLMChunk:  # type: ignore[override]
-        self._requests_messages.append(list(kwargs["messages"]))
-        self._requests_extra_headers.append(kwargs.get("extra_headers"))
-        self._requests_metadata.append(kwargs.get("metadata"))
-        return self._next(kwargs["messages"])
+    async def complete(  # type: ignore[override]
+        self, request: CompletionRequest, *, response_headers_sink=None
+    ) -> LLMChunk:
+        self._requests_messages.append(list(request.messages))
+        self._requests_extra_headers.append(request.extra_headers)
+        self._requests_metadata.append(request.metadata)
+        return self._next(request.messages)
 
     async def complete_streaming(  # type: ignore[override]
-        self, **kwargs
+        self, request: CompletionRequest, *, response_headers_sink=None
     ) -> AsyncGenerator[LLMChunk]:
-        self._requests_messages.append(list(kwargs["messages"]))
-        self._requests_extra_headers.append(kwargs.get("extra_headers"))
-        self._requests_metadata.append(kwargs.get("metadata"))
-        yield self._next(kwargs["messages"])
+        self._requests_messages.append(list(request.messages))
+        self._requests_extra_headers.append(request.extra_headers)
+        self._requests_metadata.append(request.metadata)
+        yield self._next(request.messages)
 
 
 def _fmt(snapshot_diff) -> str:

@@ -4,7 +4,7 @@ from collections.abc import Callable
 from logging import getLogger
 from typing import TYPE_CHECKING, Any
 
-from vibe.core.llm.types import BackendLike
+from vibe.core.llm.types import BackendLike, CompletionRequest
 from vibe.core.types import LLMMessage, Role
 
 if TYPE_CHECKING:
@@ -51,22 +51,26 @@ class MCPSamplingHandler:
                 )
 
             result = await self._backend_getter().complete(
-                model=model,
-                messages=messages,
-                temperature=params.temperature
-                if params.temperature is not None
-                else model.temperature,
-                tools=None,
-                max_tokens=params.maxTokens,
-                tool_choice=None,
-                extra_headers=(
-                    None
-                    if self._extra_headers_getter is None
-                    else self._extra_headers_getter()
-                ),
-                metadata=(
-                    None if self._metadata_getter is None else self._metadata_getter()
-                ),
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=params.temperature
+                    if params.temperature is not None
+                    else model.temperature,
+                    tools=None,
+                    max_tokens=params.maxTokens,
+                    tool_choice=None,
+                    extra_headers=(
+                        None
+                        if self._extra_headers_getter is None
+                        else self._extra_headers_getter()
+                    ),
+                    metadata=(
+                        None
+                        if self._metadata_getter is None
+                        else self._metadata_getter()
+                    ),
+                )
             )
 
             content_text = result.message.content or ""

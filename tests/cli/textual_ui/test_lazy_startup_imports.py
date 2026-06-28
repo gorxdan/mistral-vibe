@@ -114,7 +114,7 @@ from vibe.core.config.harness_files import (
 
 
 class Backend:
-    async def complete(self, **kwargs):
+    async def complete(self, *args, **kwargs):
         raise AssertionError
 
     async def __aexit__(self, *args):

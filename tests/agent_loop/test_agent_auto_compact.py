@@ -204,9 +204,11 @@ class _ModelTrackingBackend(FakeBackend):
         super().__init__(*args, **kwargs)
         self.requested_models: list[ModelConfig] = []
 
-    async def complete(self, *, model, **kwargs):
-        self.requested_models.append(model)
-        return await super().complete(model=model, **kwargs)
+    async def complete(self, request, *, response_headers_sink=None):
+        self.requested_models.append(request.model)
+        return await super().complete(
+            request, response_headers_sink=response_headers_sink
+        )
 
 
 @pytest.mark.asyncio

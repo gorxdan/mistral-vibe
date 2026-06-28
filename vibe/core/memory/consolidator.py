@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
+from vibe.core.llm.types import CompletionRequest
 from vibe.core.logger import logger
 from vibe.core.types import LLMMessage, Role
 
@@ -227,15 +228,17 @@ class MemoryConsolidator:
             provider=self._provider, timeout=self._timeout
         ) as backend:
             result = await backend.complete(
-                model=self._model,
-                messages=messages,
-                temperature=self._model.temperature,
-                tools=None,
-                tool_choice=None,
-                max_tokens=2048,
-                extra_headers=self._extra_headers,
-                response_format={"type": "json_object"},
-                extra_body=self._extra_body,
+                CompletionRequest(
+                    model=self._model,
+                    messages=messages,
+                    temperature=self._model.temperature,
+                    tools=None,
+                    tool_choice=None,
+                    max_tokens=2048,
+                    extra_headers=self._extra_headers,
+                    response_format={"type": "json_object"},
+                    extra_body=self._extra_body,
+                )
             )
         return result.message.content
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator
 import os
 import types
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
@@ -35,6 +35,7 @@ import orjson
 
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
 from vibe.core.llm.exceptions import BackendErrorBuilder
+from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import (
     AvailableTool,
     Content,
@@ -50,7 +51,7 @@ from vibe.core.utils import get_server_url_from_api_base
 from vibe.core.utils.http import build_ssl_context
 
 if TYPE_CHECKING:
-    from vibe.core.config import ModelConfig, ProviderConfig
+    from vibe.core.config import ProviderConfig
 
 
 class ParsedContent(NamedTuple):
@@ -281,24 +282,24 @@ class MistralBackend:
             self._client = self._create_mistral_client()
         return self._client
 
-    async def complete(  # noqa: PLR0913
+    async def complete(
         self,
+        request: CompletionRequest,
         *,
-        model: ModelConfig,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        extra_headers: dict[str, str] | None,
-        metadata: dict[str, str] | None = None,
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
         response_headers_sink: dict[str, str] | None = None,
     ) -> LLMChunk:
+        model = request.model
+        messages = request.messages
+        temperature = request.temperature
+        tools = request.tools
+        max_tokens = request.max_tokens
+        tool_choice = request.tool_choice
+        extra_headers = request.extra_headers
+        metadata = request.metadata
+        response_format = request.response_format
         # extra_body / response_headers_sink are generic-backend features (codex
         # sticky-routing); accepted here for a uniform interface and ignored.
-        del extra_body, response_headers_sink
+        del response_headers_sink
         try:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
             if reasoning_effort is not None:
@@ -370,22 +371,22 @@ class MistralBackend:
                 tool_choice=tool_choice,
             ) from e
 
-    async def complete_streaming(  # noqa: PLR0913
+    async def complete_streaming(
         self,
+        request: CompletionRequest,
         *,
-        model: ModelConfig,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        extra_headers: dict[str, str] | None,
-        metadata: dict[str, str] | None = None,
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
         response_headers_sink: dict[str, str] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
-        del extra_body, response_headers_sink  # generic-backend only; ignored here
+        model = request.model
+        messages = request.messages
+        temperature = request.temperature
+        tools = request.tools
+        max_tokens = request.max_tokens
+        tool_choice = request.tool_choice
+        extra_headers = request.extra_headers
+        metadata = request.metadata
+        response_format = request.response_format
+        del response_headers_sink  # generic-backend only; ignored here
         try:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
             if reasoning_effort is not None:

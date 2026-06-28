@@ -33,6 +33,7 @@ from vibe.core.llm.backend.openai_responses import (
     OpenAIResponsesAdapter,
     _OpenAIResponsesStreamParser,
 )
+from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import (
     AvailableFunction,
     AvailableTool,
@@ -1422,13 +1423,15 @@ class TestGenericBackendIntegration:
             messages = [LLMMessage(role=Role.USER, content="Just say hi")]
 
             result = await backend.complete(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             )
 
             _assert_chunk_matches(result, result_data)
@@ -1459,13 +1462,15 @@ class TestGenericBackendIntegration:
 
             results: list[LLMChunk] = []
             async for result in backend.complete_streaming(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             ):
                 results.append(result)
 
@@ -1492,13 +1497,15 @@ class TestGenericBackendIntegration:
             messages = [LLMMessage(role=Role.USER, content="hi")]
 
             async for _ in backend.complete_streaming(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             ):
                 pass
 
@@ -1532,13 +1539,15 @@ class TestGenericBackendIntegration:
             backend = _make_backend(base_url)
             sink: dict[str, str] = {}
             async for _ in backend.complete_streaming(
-                model=_make_model(),
-                messages=[LLMMessage(role=Role.USER, content="hi")],
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=_make_model(),
+                    messages=[LLMMessage(role=Role.USER, content="hi")],
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                ),
                 response_headers_sink=sink,
             ):
                 pass
@@ -1563,14 +1572,16 @@ class TestGenericBackendIntegration:
             )
             backend = _make_backend(base_url)
             async for _ in backend.complete_streaming(
-                model=_make_model(),
-                messages=[LLMMessage(role=Role.USER, content="hi")],
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
-                metadata={"session_id": "sess-77"},
+                CompletionRequest(
+                    model=_make_model(),
+                    messages=[LLMMessage(role=Role.USER, content="hi")],
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                    metadata={"session_id": "sess-77"},
+                )
             ):
                 pass
 

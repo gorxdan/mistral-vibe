@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator
 from http import HTTPStatus
 import os
 import re
@@ -24,6 +24,7 @@ from vibe.core.llm.backend.openai_responses import (
 from vibe.core.llm.backend.reasoning_adapter import ReasoningAdapter
 from vibe.core.llm.exceptions import BackendErrorBuilder
 from vibe.core.llm.provider_limiter import provider_slot
+from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import (
     AvailableTool,
     LLMChunk,
@@ -38,7 +39,7 @@ from vibe.core.utils.http import build_ssl_context
 from vibe.core.utils.sse import iter_sse_lines
 
 if TYPE_CHECKING:
-    from vibe.core.config import ModelConfig, ProviderConfig
+    from vibe.core.config import ProviderConfig
 
 
 class OpenAIAdapter(APIAdapter):
@@ -400,21 +401,13 @@ class GenericBackend:
             return None
         return _patch_reasoning_effort(body, effort) if effort else None
 
-    async def complete(  # noqa: PLR0913
+    async def complete(
         self,
+        request: CompletionRequest,
         *,
-        model: ModelConfig,
-        messages: Sequence[LLMMessage],
-        temperature: float = 0.2,
-        tools: list[AvailableTool] | None = None,
-        max_tokens: int | None = None,
-        tool_choice: StrToolChoice | AvailableTool | None = None,
-        extra_headers: dict[str, str] | None = None,
-        metadata: dict[str, str] | None = None,
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
         response_headers_sink: dict[str, str] | None = None,
     ) -> LLMChunk:
+        model = request.model
         # The ChatGPT-subscription backend (codex) rejects non-streaming
         # requests with "Stream must be set to true", so route through the
         # streaming path and aggregate the chunks into a single LLMChunk.
@@ -423,17 +416,7 @@ class GenericBackend:
             # per chunk re-concatenates the whole message every delta (O(n^2)).
             accumulator = LLMChunkAccumulator()
             async for chunk in self.complete_streaming(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                tools=tools,
-                max_tokens=max_tokens,
-                tool_choice=tool_choice,
-                extra_headers=extra_headers,
-                metadata=metadata,
-                response_format=response_format,
-                extra_body=extra_body,
-                response_headers_sink=response_headers_sink,
+                request, response_headers_sink=response_headers_sink
             ):
                 accumulator.add(chunk)
             aggregated = accumulator.build()
@@ -443,44 +426,42 @@ class GenericBackend:
                     endpoint=self._provider.api_base,
                     error=httpx.RequestError("empty stream from ChatGPT backend"),
                     model=model.name,
-                    messages=messages,
-                    temperature=temperature,
-                    has_tools=bool(tools),
-                    tool_choice=tool_choice,
+                    messages=request.messages,
+                    temperature=request.temperature,
+                    has_tools=bool(request.tools),
+                    tool_choice=request.tool_choice,
                 )
             return aggregated
 
         api_key, auth_headers = await self._resolve_auth()
 
-        api_style = getattr(self._provider, "api_style", "openai")
-        adapter = _get_adapter(api_style)
+        adapter = _get_adapter(getattr(self._provider, "api_style", "openai"))
 
         req = adapter.prepare_request(
             RequestParams(
                 model_name=model.name,
-                messages=messages,
-                temperature=temperature,
-                tools=tools,
-                max_tokens=max_tokens,
-                tool_choice=tool_choice,
+                messages=request.messages,
+                temperature=request.temperature,
+                tools=request.tools,
+                max_tokens=request.max_tokens,
+                tool_choice=request.tool_choice,
                 enable_streaming=False,
                 provider=self._provider,
                 api_key=api_key,
                 thinking=model.thinking,
-                response_format=response_format,
-                extra_body=extra_body,
-                cache_session_id=(metadata or {}).get("session_id"),
+                response_format=request.response_format,
+                extra_body=request.extra_body,
+                cache_session_id=(request.metadata or {}).get("session_id"),
             )
         )
 
         headers = req.headers
         if auth_headers:
             headers.update(auth_headers)
-        if extra_headers:
-            headers.update(extra_headers)
+        if request.extra_headers:
+            headers.update(request.extra_headers)
 
-        base = req.base_url or self._provider.api_base
-        url = f"{base}{req.endpoint}"
+        url = f"{req.base_url or self._provider.api_base}{req.endpoint}"
 
         try:
             res_data, resp_headers = await self._make_request(url, req.body, headers)
@@ -501,10 +482,10 @@ class GenericBackend:
                 endpoint=url,
                 error=e,
                 model=model.name,
-                messages=messages,
-                temperature=temperature,
-                has_tools=bool(tools),
-                tool_choice=tool_choice,
+                messages=request.messages,
+                temperature=request.temperature,
+                has_tools=bool(request.tools),
+                tool_choice=request.tool_choice,
             ) from e
         except httpx.RequestError as e:
             raise BackendErrorBuilder.build_request_error(
@@ -512,58 +493,48 @@ class GenericBackend:
                 endpoint=url,
                 error=e,
                 model=model.name,
-                messages=messages,
-                temperature=temperature,
-                has_tools=bool(tools),
-                tool_choice=tool_choice,
+                messages=request.messages,
+                temperature=request.temperature,
+                has_tools=bool(request.tools),
+                tool_choice=request.tool_choice,
             ) from e
 
-    async def complete_streaming(  # noqa: PLR0913
+    async def complete_streaming(
         self,
+        request: CompletionRequest,
         *,
-        model: ModelConfig,
-        messages: Sequence[LLMMessage],
-        temperature: float = 0.2,
-        tools: list[AvailableTool] | None = None,
-        max_tokens: int | None = None,
-        tool_choice: StrToolChoice | AvailableTool | None = None,
-        extra_headers: dict[str, str] | None = None,
-        metadata: dict[str, str] | None = None,
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
         response_headers_sink: dict[str, str] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
+        model = request.model
         api_key, auth_headers = await self._resolve_auth()
 
-        api_style = getattr(self._provider, "api_style", "openai")
-        adapter = _get_adapter(api_style)
+        adapter = _get_adapter(getattr(self._provider, "api_style", "openai"))
 
         req = adapter.prepare_request(
             RequestParams(
                 model_name=model.name,
-                messages=messages,
-                temperature=temperature,
-                tools=tools,
-                max_tokens=max_tokens,
-                tool_choice=tool_choice,
+                messages=request.messages,
+                temperature=request.temperature,
+                tools=request.tools,
+                max_tokens=request.max_tokens,
+                tool_choice=request.tool_choice,
                 enable_streaming=True,
                 provider=self._provider,
                 api_key=api_key,
                 thinking=model.thinking,
-                response_format=response_format,
-                extra_body=extra_body,
-                cache_session_id=(metadata or {}).get("session_id"),
+                response_format=request.response_format,
+                extra_body=request.extra_body,
+                cache_session_id=(request.metadata or {}).get("session_id"),
             )
         )
 
         headers = req.headers
         if auth_headers:
             headers.update(auth_headers)
-        if extra_headers:
-            headers.update(extra_headers)
+        if request.extra_headers:
+            headers.update(request.extra_headers)
 
-        base = req.base_url or self._provider.api_base
-        url = f"{base}{req.endpoint}"
+        url = f"{req.base_url or self._provider.api_base}{req.endpoint}"
 
         try:
             async for res_data in self._make_streaming_request(
@@ -588,10 +559,10 @@ class GenericBackend:
                 endpoint=url,
                 error=e,
                 model=model.name,
-                messages=messages,
-                temperature=temperature,
-                has_tools=bool(tools),
-                tool_choice=tool_choice,
+                messages=request.messages,
+                temperature=request.temperature,
+                has_tools=bool(request.tools),
+                tool_choice=request.tool_choice,
             ) from e
         except httpx.RequestError as e:
             raise BackendErrorBuilder.build_request_error(
@@ -599,10 +570,10 @@ class GenericBackend:
                 endpoint=url,
                 error=e,
                 model=model.name,
-                messages=messages,
-                temperature=temperature,
-                has_tools=bool(tools),
-                tool_choice=tool_choice,
+                messages=request.messages,
+                temperature=request.temperature,
+                has_tools=bool(request.tools),
+                tool_choice=request.tool_choice,
             ) from e
 
     class HTTPResponse(NamedTuple):

@@ -7,7 +7,7 @@ from typing import Any
 from vibe.cli.turn_summary.models import TurnSummaryData, TurnSummaryResult
 from vibe.cli.turn_summary.turn_summary_port import TurnSummaryPort
 from vibe.core.config import ModelConfig
-from vibe.core.llm.types import BackendLike
+from vibe.core.llm.types import BackendLike, CompletionRequest
 from vibe.core.logger import logger
 from vibe.core.prompts import UtilityPrompt
 from vibe.core.telemetry.build_metadata import build_request_metadata
@@ -125,14 +125,16 @@ class TurnSummaryTracker(TurnSummaryPort):
             ]
 
             result = await self._backend.complete(
-                model=self._model,
-                messages=summary_messages,
-                temperature=0.0,
-                tools=None,
-                tool_choice=None,
-                max_tokens=self._max_tokens,
-                extra_headers={},
-                metadata=self._build_metadata(data),
+                CompletionRequest(
+                    model=self._model,
+                    messages=summary_messages,
+                    temperature=0.0,
+                    tools=None,
+                    tool_choice=None,
+                    max_tokens=self._max_tokens,
+                    extra_headers={},
+                    metadata=self._build_metadata(data),
+                )
             )
 
             summary = result.message.content or ""

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Iterable, Sequence
+from collections.abc import AsyncGenerator, Iterable
 import types
-from typing import Any, cast
+from typing import cast
 
 from tests.mock.utils import mock_llm_chunk
 from vibe.core.config import ModelConfig
-from vibe.core.types import AvailableTool, LLMChunk, LLMMessage, Role, StrToolChoice
+from vibe.core.llm.types import CompletionRequest
+from vibe.core.types import LLMChunk, LLMMessage, Role
 
 
 class FakeBackend:
@@ -92,27 +93,18 @@ class FakeBackend:
 
     async def complete(
         self,
+        request: CompletionRequest,
         *,
-        model: ModelConfig,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        extra_headers: dict[str, str] | None,
-        metadata: dict[str, str] | None = None,
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
         response_headers_sink: dict[str, str] | None = None,
     ) -> LLMChunk:
         if self._exception_to_raise:
             raise self._exception_to_raise
 
-        self._requests_messages.append(list(messages))
-        self._requests_models.append(model)
-        self._requests_extra_headers.append(extra_headers)
-        self._requests_metadata.append(metadata)
-        self._requests_max_tokens.append(max_tokens)
+        self._requests_messages.append(list(request.messages))
+        self._requests_models.append(request.model)
+        self._requests_extra_headers.append(request.extra_headers)
+        self._requests_metadata.append(request.metadata)
+        self._requests_max_tokens.append(request.max_tokens)
 
         if self._streams:
             stream = self._streams.pop(0)
@@ -125,27 +117,18 @@ class FakeBackend:
 
     async def complete_streaming(
         self,
+        request: CompletionRequest,
         *,
-        model: ModelConfig,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        extra_headers: dict[str, str] | None,
-        metadata: dict[str, str] | None = None,
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
         response_headers_sink: dict[str, str] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         if self._exception_to_raise:
             raise self._exception_to_raise
 
-        self._requests_messages.append(list(messages))
-        self._requests_models.append(model)
-        self._requests_extra_headers.append(extra_headers)
-        self._requests_metadata.append(metadata)
-        self._requests_max_tokens.append(max_tokens)
+        self._requests_messages.append(list(request.messages))
+        self._requests_models.append(request.model)
+        self._requests_extra_headers.append(request.extra_headers)
+        self._requests_metadata.append(request.metadata)
+        self._requests_max_tokens.append(request.max_tokens)
 
         if self._streams:
             stream = list(self._streams.pop(0))

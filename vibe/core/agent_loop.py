@@ -48,7 +48,7 @@ from vibe.core.llm.backend.factory import BACKEND_FACTORY
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.llm.format import APIToolFormatHandler
 from vibe.core.llm.models import FailedToolCall, ResolvedMessage, ResolvedToolCall
-from vibe.core.llm.types import BackendLike
+from vibe.core.llm.types import BackendLike, CompletionRequest
 from vibe.core.logger import logger
 from vibe.core.lsp._integration import drain_diagnostics_into
 from vibe.core.middleware import (
@@ -3520,15 +3520,17 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 start_time = time.perf_counter()
                 extra_headers, turn_state_sink = self._codex_routing(provider)
                 result = await self.backend.complete(
-                    model=active_model,
-                    messages=self._messages_for_backend(active_model),
-                    temperature=active_model.temperature,
-                    tools=available_tools,
-                    tool_choice=tool_choice,
-                    extra_headers=extra_headers,
-                    max_tokens=max_tokens,
-                    metadata=backend_metadata.model_dump(exclude_none=True),
-                    response_format=self._response_format,
+                    CompletionRequest(
+                        model=active_model,
+                        messages=self._messages_for_backend(active_model),
+                        temperature=active_model.temperature,
+                        tools=available_tools,
+                        tool_choice=tool_choice,
+                        extra_headers=extra_headers,
+                        max_tokens=max_tokens,
+                        metadata=backend_metadata.model_dump(exclude_none=True),
+                        response_format=self._response_format,
+                    ),
                     response_headers_sink=turn_state_sink,
                 )
                 end_time = time.perf_counter()
@@ -3602,15 +3604,17 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     chunk_acc = LLMChunkAccumulator()
                     extra_headers, turn_state_sink = self._codex_routing(provider)
                     async for chunk in self.backend.complete_streaming(
-                        model=active_model,
-                        messages=self._messages_for_backend(active_model),
-                        temperature=active_model.temperature,
-                        tools=available_tools,
-                        tool_choice=tool_choice,
-                        extra_headers=extra_headers,
-                        max_tokens=max_tokens,
-                        metadata=backend_metadata.model_dump(exclude_none=True),
-                        response_format=self._response_format,
+                        CompletionRequest(
+                            model=active_model,
+                            messages=self._messages_for_backend(active_model),
+                            temperature=active_model.temperature,
+                            tools=available_tools,
+                            tool_choice=tool_choice,
+                            extra_headers=extra_headers,
+                            max_tokens=max_tokens,
+                            metadata=backend_metadata.model_dump(exclude_none=True),
+                            response_format=self._response_format,
+                        ),
                         response_headers_sink=turn_state_sink,
                     ):
                         if chunk.correlation_id:

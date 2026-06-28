@@ -16,6 +16,7 @@ import pytest
 from tests.e2e.mock_server import StreamingMockServer
 from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.llm.backend.generic import GenericBackend
+from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import Backend, LLMMessage, Role
 from vibe.core.utils import build_ssl_context, configure_ssl_context
 
@@ -72,7 +73,10 @@ async def test_generic_backend_streaming_uses_ssl_cert_file(
             chunks = [
                 chunk
                 async for chunk in backend.complete_streaming(
-                    model=model, messages=[LLMMessage(role=Role.USER, content="Greet")]
+                    CompletionRequest(
+                        model=model,
+                        messages=[LLMMessage(role=Role.USER, content="Greet")],
+                    )
                 )
             ]
     finally:

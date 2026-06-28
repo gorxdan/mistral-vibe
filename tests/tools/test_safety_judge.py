@@ -242,7 +242,7 @@ async def test_safety_judge_fails_closed_on_backend_error(monkeypatch) -> None:
         async def __aexit__(self, *exc: Any) -> None:
             return None
 
-        async def complete(self, **kwargs: Any) -> Any:
+        async def complete(self, *args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("backend exploded")
 
     fake_provider = type(

@@ -17,6 +17,7 @@ from vibe.core.llm.backend.generic import (
     _nearest_supported_effort,
     _patch_reasoning_effort,
 )
+from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import LLMMessage, Role
 
 _XHIGH_REJECTED = (
@@ -103,13 +104,15 @@ async def test_streaming_retries_with_downgraded_effort():
         out = [
             chunk
             async for chunk in backend.complete_streaming(
-                model=model,
-                messages=[LLMMessage(role=Role.USER, content="hi")],
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=[LLMMessage(role=Role.USER, content="hi")],
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             )
         ]
 

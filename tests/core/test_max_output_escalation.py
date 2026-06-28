@@ -144,8 +144,8 @@ async def test_chat_passes_override_to_backend_but_not_compaction() -> None:
         async def __aexit__(self, *a: object) -> None:
             return None
 
-        async def complete(self, *, max_tokens: int | None = None, **kw: object):
-            seen.append(max_tokens)
+        async def complete(self, request, *, response_headers_sink=None):
+            seen.append(request.max_tokens)
             return LLMChunk(
                 message=LLMMessage(role=Role.ASSISTANT, content="ok"),
                 usage=LLMUsage(prompt_tokens=1, completion_tokens=1),

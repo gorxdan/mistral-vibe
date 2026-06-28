@@ -23,6 +23,7 @@ from vibe.core.llm.backend.openai_responses import (
     ChatGPTResponsesAdapter,
     OpenAIResponsesAdapter,
 )
+from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import AvailableFunction, AvailableTool, LLMMessage, Role
 
 CHATGPT_BASE = "https://chatgpt.test/backend-api/codex"
@@ -180,11 +181,13 @@ async def test_backend_injects_oauth_bearer_and_account_header() -> None:
         thinking="high",
     )
     chunk = await backend.complete(
-        model=model,
-        messages=[
-            LLMMessage(role=Role.SYSTEM, content="sys"),
-            LLMMessage(role=Role.USER, content="hi"),
-        ],
+        CompletionRequest(
+            model=model,
+            messages=[
+                LLMMessage(role=Role.SYSTEM, content="sys"),
+                LLMMessage(role=Role.USER, content="hi"),
+            ],
+        )
     )
 
     assert chunk.message.content == "hello"
@@ -207,5 +210,7 @@ async def test_backend_raises_when_not_signed_in() -> None:
     )
     with pytest.raises(oauth.OpenAINotAuthenticatedError):
         await backend.complete(
-            model=model, messages=[LLMMessage(role=Role.USER, content="hi")]
+            CompletionRequest(
+                model=model, messages=[LLMMessage(role=Role.USER, content="hi")]
+            )
         )

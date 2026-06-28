@@ -141,7 +141,7 @@ class _RaisingBackend(FakeBackend):
         super().__init__()
         self._exc = exc
 
-    async def complete(self, **_kwargs: Any) -> LLMChunk:
+    async def complete(self, *_args: Any, **_kwargs: Any) -> LLMChunk:
         raise self._exc
 
 
@@ -199,7 +199,7 @@ async def test_chat_wraps_unknown_backend_error_as_runtime_error() -> None:
 @pytest.mark.asyncio
 async def test_chat_missing_usage_surfaces_as_api_error() -> None:
     class _NoUsageBackend(FakeBackend):
-        async def complete(self, **_kwargs: Any) -> LLMChunk:
+        async def complete(self, *_args: Any, **_kwargs: Any) -> LLMChunk:
             return LLMChunk(message=LLMMessage(role=Role.ASSISTANT, content="hi"))
 
     loop = _loop_with_backend(_NoUsageBackend())

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
+from dataclasses import dataclass
 import types
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -8,6 +9,20 @@ from vibe.core.types import AvailableTool, LLMChunk, LLMMessage, StrToolChoice
 
 if TYPE_CHECKING:
     from vibe.core.config import ModelConfig
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CompletionRequest:
+    model: ModelConfig
+    messages: Sequence[LLMMessage]
+    temperature: float = 0.2
+    tools: list[AvailableTool] | None = None
+    max_tokens: int | None = None
+    tool_choice: StrToolChoice | AvailableTool | None = None
+    extra_headers: dict[str, str] | None = None
+    metadata: dict[str, str] | None = None
+    response_format: dict[str, Any] | None = None
+    extra_body: dict[str, Any] | None = None
 
 
 class BackendLike(Protocol):
@@ -25,19 +40,10 @@ class BackendLike(Protocol):
         exc_tb: types.TracebackType | None,
     ) -> None: ...
 
-    async def complete(  # noqa: PLR0913
+    async def complete(
         self,
+        request: CompletionRequest,
         *,
-        model: ModelConfig,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        extra_headers: dict[str, str] | None,
-        metadata: dict[str, str] | None = None,
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
         response_headers_sink: dict[str, str] | None = None,
     ) -> LLMChunk:
         """Complete a chat conversation using the specified model and provider.
@@ -64,19 +70,10 @@ class BackendLike(Protocol):
     # Note: actual implementation should be an async function,
     # but we can't make this one async, as it would lead to wrong type inference
     # https://stackoverflow.com/a/68911014
-    def complete_streaming(  # noqa: PLR0913
+    def complete_streaming(
         self,
+        request: CompletionRequest,
         *,
-        model: ModelConfig,
-        messages: Sequence[LLMMessage],
-        temperature: float,
-        tools: list[AvailableTool] | None,
-        max_tokens: int | None,
-        tool_choice: StrToolChoice | AvailableTool | None,
-        extra_headers: dict[str, str] | None,
-        metadata: dict[str, str] | None = None,
-        response_format: dict[str, Any] | None = None,
-        extra_body: dict[str, Any] | None = None,
         response_headers_sink: dict[str, str] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         """Equivalent of the complete method, but yields LLMEvent objects

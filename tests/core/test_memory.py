@@ -161,7 +161,7 @@ async def test_selector_fails_to_empty_on_backend_error(monkeypatch) -> None:
         async def __aexit__(self, *e: Any) -> None:
             return None
 
-        async def complete(self, **k: Any) -> Any:
+        async def complete(self, *a: Any, **k: Any) -> Any:
             raise RuntimeError("down")
 
     monkeypatch.setattr("vibe.core.memory.selector.BACKEND_FACTORY", {"generic": _Boom})
@@ -722,7 +722,7 @@ async def test_extractor_fails_to_empty_on_backend_error(monkeypatch) -> None:
         async def __aexit__(self, *e: Any) -> None:
             return None
 
-        async def complete(self, **k: Any) -> Any:
+        async def complete(self, *a: Any, **k: Any) -> Any:
             raise RuntimeError("down")
 
     monkeypatch.setattr(
@@ -1595,7 +1595,7 @@ async def test_consolidator_fails_to_empty_on_backend_error(monkeypatch) -> None
         async def __aexit__(self, *e: Any) -> None:
             return None
 
-        async def complete(self, **k: Any) -> Any:
+        async def complete(self, *a: Any, **k: Any) -> Any:
             raise RuntimeError("down")
 
     monkeypatch.setattr(

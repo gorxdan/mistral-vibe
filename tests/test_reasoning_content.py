@@ -22,6 +22,7 @@ from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.generic import GenericBackend, OpenAIAdapter
 from vibe.core.llm.backend.mistral import MistralBackend, MistralMapper, ParsedContent
 from vibe.core.llm.format import APIToolFormatHandler
+from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import AssistantEvent, LLMMessage, ReasoningEvent, Role
 
 
@@ -205,13 +206,15 @@ class TestGenericBackendReasoningContent:
             messages = [LLMMessage(role=Role.USER, content="What is the answer?")]
 
             result = await backend.complete(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             )
 
             assert result.message.content == "The answer is 42."
@@ -244,13 +247,15 @@ class TestGenericBackendReasoningContent:
 
             results = []
             async for chunk in backend.complete_streaming(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             ):
                 results.append(chunk)
 
@@ -494,13 +499,15 @@ class TestReasoningFieldNameConversion:
             messages = [LLMMessage(role=Role.USER, content="What is the answer?")]
 
             result = await backend.complete(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             )
 
             assert result.message.content == "The answer is 42."
@@ -536,13 +543,15 @@ class TestReasoningFieldNameConversion:
 
             results = []
             async for chunk in backend.complete_streaming(
-                model=model,
-                messages=messages,
-                temperature=0.2,
-                tools=None,
-                max_tokens=None,
-                tool_choice=None,
-                extra_headers=None,
+                CompletionRequest(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
             ):
                 results.append(chunk)
 
