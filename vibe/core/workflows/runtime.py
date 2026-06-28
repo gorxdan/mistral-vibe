@@ -1396,10 +1396,14 @@ class WorkflowRuntime:
         # pin one, so the per-agent config doesn't re-derive the hardcoded
         # mistral default (which fails without MISTRAL_API_KEY). This was killing
         # workflow fan-out agents whose parent ran on glm/zai/fugu.
-        inherited_model = model or (
-            ctx.agent_manager.config.active_model
-            if ctx and ctx.agent_manager
-            else None
+        inherited_model = (
+            model
+            or (ctx.active_model if ctx else None)
+            or (
+                ctx.agent_manager.config.active_model
+                if ctx and ctx.agent_manager
+                else None
+            )
         )
         overrides: dict[str, Any] = {}
         if inherited_model:

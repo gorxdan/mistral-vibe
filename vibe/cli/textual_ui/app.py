@@ -4,7 +4,7 @@ import asyncio
 import codecs
 import collections
 from collections.abc import AsyncGenerator, Callable
-from contextlib import aclosing, suppress
+from contextlib import aclosing
 from dataclasses import dataclass
 from enum import StrEnum, auto
 import gc
@@ -3467,6 +3467,7 @@ class VibeApp(App):  # noqa: PLR0904
         return InvokeContext(
             tool_call_id=tool_call_id,
             agent_manager=loop.agent_manager,
+            active_model=loop._effective_model().alias,
             session_dir=loop.session_logger.session_dir,
             entrypoint_metadata=loop.entrypoint_metadata,
             approval_callback=loop.approval_callback,

@@ -2897,6 +2897,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     tool_call_id=tool_call.call_id,
                     scheduler=self.scheduler,
                     agent_manager=self.agent_manager,
+                    active_model=self._effective_model().alias,
                     session_dir=self.session_logger.session_dir,
                     entrypoint_metadata=self.entrypoint_metadata,
                     approval_callback=_timed(self.approval_callback),
