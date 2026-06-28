@@ -38,6 +38,12 @@ class Command:
     handler: str
     exits: bool = False
     is_available: CommandAvailability | None = None
+    # True for commands that only read state, open a picker, or manage background
+    # tasks — never mutating the conversation history a running turn depends on.
+    # Such commands stay reachable while the agent is busy; everything else is
+    # rejected as "cannot be queued" until the turn finishes. Defaults False so
+    # new commands stay gated until explicitly reviewed.
+    safe_while_busy: bool = False
 
 
 class CommandRegistry:
@@ -70,16 +76,19 @@ class CommandRegistry:
                 aliases=frozenset(["/help"]),
                 description="Show help message",
                 handler="_show_help",
+                safe_while_busy=True,
             ),
             "config": Command(
                 aliases=frozenset(["/config"]),
                 description="Edit config settings",
                 handler="_show_config",
+                safe_while_busy=True,
             ),
             "model": Command(
                 aliases=frozenset(["/model"]),
                 description="Select active model",
                 handler="_show_model",
+                safe_while_busy=True,
             ),
             "login": Command(
                 aliases=frozenset(["/login"]),
@@ -93,11 +102,13 @@ class CommandRegistry:
                 aliases=frozenset(["/thinking"]),
                 description="Select thinking level",
                 handler="_show_thinking",
+                safe_while_busy=True,
             ),
             "effort": Command(
                 aliases=frozenset(["/effort"]),
                 description="Select effort mode (normal or le chaton)",
                 handler="_show_effort",
+                safe_while_busy=True,
             ),
             "reload": Command(
                 aliases=frozenset(["/reload"]),
@@ -113,6 +124,7 @@ class CommandRegistry:
                 aliases=frozenset(["/copy"]),
                 description="Copy the last agent message to the clipboard",
                 handler="_copy_last_agent_message",
+                safe_while_busy=True,
             ),
             "paste-image": Command(
                 aliases=frozenset(["/paste-image"]),
@@ -126,11 +138,13 @@ class CommandRegistry:
                 aliases=frozenset(["/log"]),
                 description="Show path to current interaction log file",
                 handler="_show_log_path",
+                safe_while_busy=True,
             ),
             "debug": Command(
                 aliases=frozenset(["/debug"]),
                 description="Toggle debug console",
                 handler="action_toggle_debug_console",
+                safe_while_busy=True,
             ),
             "compact": Command(
                 aliases=frozenset(["/compact"]),
@@ -147,6 +161,7 @@ class CommandRegistry:
                 aliases=frozenset(["/status"]),
                 description="Display agent statistics",
                 handler="_show_status",
+                safe_while_busy=True,
             ),
             "teleport": Command(
                 aliases=frozenset(["/teleport"]),
@@ -178,11 +193,13 @@ class CommandRegistry:
                     "/mcp logout <alias>, /mcp refresh, /mcp add"
                 ),
                 handler="_show_mcp",
+                safe_while_busy=True,
             ),
             "voice": Command(
                 aliases=frozenset(["/voice"]),
                 description="Configure voice settings",
                 handler="_show_voice_settings",
+                safe_while_busy=True,
             ),
             "leanstall": Command(
                 aliases=frozenset(["/leanstall"]),
@@ -208,6 +225,7 @@ class CommandRegistry:
                 aliases=frozenset(["/lsp"]),
                 description="Show LSP feature and server status",
                 handler="_show_lsp_status",
+                safe_while_busy=True,
             ),
             "rewind": Command(
                 aliases=frozenset(["/rewind"]),
@@ -221,6 +239,7 @@ class CommandRegistry:
                     "Use `/loop <interval> <prompt>`, `/loop list`, or `/loop cancel <id|all>`"
                 ),
                 handler="_loop_command",
+                safe_while_busy=True,
             ),
             "workflows": Command(
                 aliases=frozenset(["/workflows"]),
@@ -229,6 +248,7 @@ class CommandRegistry:
                     "Use /tasks (or ctrl+w) to open the pane."
                 ),
                 handler="_tasks_command",
+                safe_while_busy=True,
             ),
             "tasks": Command(
                 aliases=frozenset(["/tasks"]),
@@ -237,6 +257,7 @@ class CommandRegistry:
                     "Use `/tasks`, `/tasks stop <id|all>`, or `/tasks list`."
                 ),
                 handler="_tasks_command",
+                safe_while_busy=True,
             ),
             "team": Command(
                 aliases=frozenset(["/team"]),
@@ -246,6 +267,7 @@ class CommandRegistry:
                     "or `/team stop <name|all>`"
                 ),
                 handler="_team_command",
+                safe_while_busy=True,
             ),
             "worktree": Command(
                 aliases=frozenset(["/worktree"]),
@@ -259,11 +281,13 @@ class CommandRegistry:
                 aliases=frozenset(["/data-retention"]),
                 description="Show data retention information",
                 handler="_show_data_retention",
+                safe_while_busy=True,
             ),
             "theme": Command(
                 aliases=frozenset(["/theme"]),
                 description="Select theme",
                 handler="_show_theme",
+                safe_while_busy=True,
             ),
         }
 

@@ -404,13 +404,13 @@ _SUBAGENT_MODEL_HINT = (
     "per-spawn model is set. Empty inherits the host session's model."
 )
 
-# Slash commands that act only on *background* state — never the foreground
-# agent turn — stay reachable while the agent is busy or the queue is paused.
-# `/tasks` in particular exists to monitor and manage processes, workflows,
-# teams, and loops that, by design, execute concurrently with a busy agent;
-# rejecting it as "cannot be queued" defeats its purpose. These run
-# immediately instead of being rejected.
-_BUSY_ALLOWED_COMMANDS = frozenset({"tasks", "workflows"})
+# Slash commands declared `safe_while_busy=True` (see Command in commands.py)
+# stay reachable while the agent is busy or the queue is paused. These are
+# monitors, settings pickers, and background-state managers that never mutate
+# the conversation history a running turn depends on — `/status`, `/model`,
+# `/tasks`, `/mcp`, etc. run immediately instead of being rejected as "cannot
+# be queued". History/session-mutating commands (`/clear`, `/compact`,
+# `/rewind`, `/resume`, `/exit`, ...) stay gated.
 
 
 @dataclass(frozen=True, slots=True)
@@ -1093,14 +1093,16 @@ class VibeApp(App):  # noqa: PLR0904
     def _is_busy_allowed_command(self, value: str) -> bool:
         """Whether `value` is a slash command allowed to run while busy/paused.
 
-        Only background-state commands (see `_BUSY_ALLOWED_COMMANDS`) qualify;
-        the canonical command name is resolved through the registry so aliases
-        and arguments (e.g. `/workflows list`) are matched correctly.
+        A command qualifies when it is declared `safe_while_busy` — it only
+        reads state, opens a picker, or manages background tasks, never mutating
+        the conversation history the running turn depends on. The canonical
+        command is resolved through the registry so aliases and arguments
+        (e.g. `/workflows list`) are matched correctly.
         """
         if not value.startswith("/"):
             return False
         resolved = self.commands.parse_command(value)
-        return resolved is not None and resolved[0] in _BUSY_ALLOWED_COMMANDS
+        return resolved is not None and resolved[1].safe_while_busy
 
     async def on_approval_app_approval_granted(
         self, message: ApprovalApp.ApprovalGranted

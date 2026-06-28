@@ -72,15 +72,30 @@ async def test_bash_submitted_during_running_bash_is_queued(vibe_app: VibeApp) -
 
 @pytest.mark.asyncio
 async def test_slash_command_rejected_with_warning_when_busy(vibe_app: VibeApp) -> None:
+    # /clear mutates conversation history a running turn depends on, so it stays
+    # gated and is rejected as "cannot be queued" while busy.
     async with vibe_app.run_test() as pilot:
         chat_input = vibe_app.query_one(ChatInputContainer)
-        chat_input.value = "!sleep 0.3"
+        chat_input.value = "!sleep 2"
         await pilot.press("enter")
 
-        await _wait_until(pilot, lambda: vibe_app._bash_task is not None, timeout=1.0)
+        assert await _wait_until(
+            pilot, lambda: vibe_app._bash_task is not None, timeout=1.0
+        )
+        assert vibe_app._is_busy()
 
-        chat_input.value = "/help"
+        # Set the value and park the cursor at the end so the slash-completion
+        # menu filters to /clear (mirrors typing it); otherwise the menu shows
+        # every command and enter would submit the first row, not /clear.
+        chat_input.value = "/clear"
+        widget = chat_input.input_widget
+        assert widget is not None
+        widget.set_cursor_offset(len("/clear"))
+        chat_input._completion_manager.on_text_changed(
+            widget.get_full_text(), widget._get_full_cursor_offset()
+        )
         await pilot.press("enter")
+        await pilot.pause(0.1)
 
         assert not list(vibe_app.query(WarningMessage))
         assert any(
@@ -88,7 +103,13 @@ async def test_slash_command_rejected_with_warning_when_busy(vibe_app: VibeApp) 
             for notification in vibe_app._notifications
         )
         assert len(vibe_app._input_queue) == 0
-        assert chat_input.value.startswith("/help")
+        assert chat_input.value.startswith("/clear")
+
+        await pilot.press("ctrl+c")
+        await pilot.press("escape")
+        assert await _wait_until(
+            pilot, lambda: vibe_app._bash_task is None, timeout=3.0
+        )
 
 
 @pytest.mark.asyncio
@@ -141,14 +162,47 @@ async def test_workflows_subcommand_runs_inline_while_busy(vibe_app: VibeApp) ->
 async def test_non_allowlisted_slash_still_rejected_while_busy(
     vibe_app: VibeApp,
 ) -> None:
-    # The allowlist is narrow: a normal slash command (e.g. /help) is still
-    # rejected while busy, unchanged from prior behavior.
+    # The safe_while_busy flag is narrow: a history-mutating slash command
+    # (/clear) is still rejected while busy, unchanged from prior behavior.
     async with vibe_app.run_test() as pilot:
         chat_input = vibe_app.query_one(ChatInputContainer)
-        chat_input.value = "!sleep 0.3"
+        chat_input.value = "!sleep 2"
         await pilot.press("enter")
 
-        await _wait_until(pilot, lambda: vibe_app._bash_task is not None, timeout=1.0)
+        assert await _wait_until(
+            pilot, lambda: vibe_app._bash_task is not None, timeout=1.0
+        )
+        assert vibe_app._is_busy()
+
+        await vibe_app.on_chat_input_container_submitted(
+            ChatInputContainer.Submitted("/clear")
+        )
+        await pilot.pause(0.05)
+
+        assert vibe_app._current_bottom_app == BottomApp.Input
+        assert any("cannot be queued" in n.message for n in vibe_app._notifications)
+
+        await pilot.press("ctrl+c")
+        await pilot.press("escape")
+        assert await _wait_until(
+            pilot, lambda: vibe_app._bash_task is None, timeout=3.0
+        )
+
+
+@pytest.mark.asyncio
+async def test_readonly_slash_runs_inline_while_busy(vibe_app: VibeApp) -> None:
+    # Read-only / monitor commands declared safe_while_busy (e.g. /help, which
+    # only prints help text) bypass the rejection and run immediately while the
+    # agent is busy — the expanded allowlist beyond /tasks.
+    async with vibe_app.run_test() as pilot:
+        chat_input = vibe_app.query_one(ChatInputContainer)
+        chat_input.value = "!sleep 2"
+        await pilot.press("enter")
+
+        assert await _wait_until(
+            pilot, lambda: vibe_app._bash_task is not None, timeout=1.0
+        )
+        assert vibe_app._is_busy()
 
         await vibe_app.on_chat_input_container_submitted(
             ChatInputContainer.Submitted("/help")
@@ -156,7 +210,14 @@ async def test_non_allowlisted_slash_still_rejected_while_busy(
         await pilot.pause(0.05)
 
         assert vibe_app._current_bottom_app == BottomApp.Input
-        assert any("cannot be queued" in n.message for n in vibe_app._notifications)
+        assert len(vibe_app._input_queue) == 0
+        assert not any("cannot be queued" in n.message for n in vibe_app._notifications)
+
+        await pilot.press("ctrl+c")
+        await pilot.press("escape")
+        assert await _wait_until(
+            pilot, lambda: vibe_app._bash_task is None, timeout=3.0
+        )
 
 
 @pytest.mark.asyncio
