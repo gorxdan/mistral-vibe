@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+import contextlib
 import os
 from pathlib import Path
 import sys
@@ -20,6 +21,42 @@ from vibe.setup.trusted_folders.trust_folder_dialog import (
     TrustDialogQuitException,
     ask_trust_folder,
 )
+
+_SPLASH_GRADIENT = (
+    "#ff6b00",
+    "#ff7b00",
+    "#ff8c00",
+    "#ff9d00",
+    "#ffae00",
+    "#ffbf00",
+    "#ffae00",
+    "#ff9d00",
+    "#ff8c00",
+    "#ff7b00",
+)
+
+_SPLASH_MASCOT = "  /\\_/\\\n ( o.o )\n  > ^ <"
+
+
+def _gradient_banner(text: str) -> str:
+    return "".join(
+        f"[bold {_SPLASH_GRADIENT[i % len(_SPLASH_GRADIENT)]}]{c}[/]"
+        for i, c in enumerate(text)
+    )
+
+
+@contextlib.contextmanager
+def _interactive_splash(enabled: bool) -> Iterator[None]:
+    if not enabled or not sys.stdout.isatty():
+        yield
+        return
+    from rich.console import Console
+
+    console = Console()
+    console.print(_gradient_banner("Chaton"), style=None, highlight=False)
+    console.print(f"[dim]{_SPLASH_MASCOT}[/]")
+    with console.status("[dim]Loading harness…[/]", spinner="dots"):
+        yield
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -289,17 +326,19 @@ def main() -> None:
 
     init_harness_files_manager("user", "project", additional_dirs=additional_dirs)
 
-    from vibe.cli.cli import run_cli
+    interactive = args.prompt is None and not args.check_upgrade
+    with _interactive_splash(interactive):
+        from vibe.cli.cli import run_cli
 
-    resolve_trusted_folder: Callable[[], None] | None = None
-    if args.prompt is None and not args.check_upgrade:
+        resolve_trusted_folder: Callable[[], None] | None = None
+        if interactive:
 
-        def _resolve_trusted_folder() -> None:
-            check_and_resolve_trusted_folder(cwd)
+            def _resolve_trusted_folder() -> None:
+                check_and_resolve_trusted_folder(cwd)
 
-        resolve_trusted_folder = _resolve_trusted_folder
+            resolve_trusted_folder = _resolve_trusted_folder
 
-    run_cli(args, resolve_trusted_folder=resolve_trusted_folder)
+        run_cli(args, resolve_trusted_folder=resolve_trusted_folder)
 
 
 if __name__ == "__main__":
