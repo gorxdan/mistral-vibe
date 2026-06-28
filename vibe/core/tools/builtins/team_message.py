@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.teams.models import Message, MessageKind
 from vibe.core.tools.base import (
@@ -77,6 +77,7 @@ def _format_message(msg: Message) -> str:
 
 
 class TeamMessageArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: str = Field(
         description=(
             "One of: send_message, read_messages, unread_messages. The lead "
@@ -107,6 +108,7 @@ class TeamMessageArgs(BaseModel):
 
 
 class TeamMessageResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: str
     message: str
     messages: list[dict[str, Any]] | None = None

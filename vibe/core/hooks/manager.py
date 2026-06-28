@@ -57,6 +57,7 @@ _HANDLERS: dict[HookType, HookHandler] = {
     HookType.NOTIFICATION: _TEAM_LIFECYCLE_HANDLER,
 }
 
+
 class HooksManager:
     """Orchestrates hook subprocesses and dispatches their results to the
     per-type :class:`HookHandler`. The manager treats invocations as

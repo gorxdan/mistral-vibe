@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import ClassVar, cast
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -19,6 +19,7 @@ from vibe.core.types import ToolResultEvent
 
 
 class Choice(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     label: str = Field(description="Short label for the choice (1-5 words)")
     description: str = Field(
         default="", description="Optional explanation of this choice"
@@ -26,6 +27,7 @@ class Choice(BaseModel):
 
 
 class Question(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     question: str = Field(description="The question text")
     header: str = Field(
         default="",
@@ -53,6 +55,7 @@ class Question(BaseModel):
 
 
 class AskUserQuestionArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     questions: list[Question] = Field(
         description="Questions to ask (1-4). Displayed as tabs if multiple.",
         min_length=1,
@@ -65,6 +68,7 @@ class AskUserQuestionArgs(BaseModel):
 
 
 class Answer(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     question: str = Field(description="The original question")
     answer: str = Field(description="The user's answer")
     is_other: bool = Field(

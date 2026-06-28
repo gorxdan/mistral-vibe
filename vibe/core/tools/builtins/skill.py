@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -21,10 +21,12 @@ _MAX_LISTED_FILES = 10
 
 
 class SkillArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str = Field(description="The name of the skill to load from available_skills")
 
 
 class SkillResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str = Field(description="The name of the loaded skill")
     content: str = Field(description="The full skill content block")
     skill_dir: str | None = Field(

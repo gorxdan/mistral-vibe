@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 
 class WorkflowStopArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     run_id: str | None = Field(
         default=None,
         description=(
@@ -39,6 +40,7 @@ class WorkflowStopArgs(BaseModel):
 
 
 class WorkflowStopResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     stopped: bool = Field(description="True if at least one run was stopped.")
     stopped_run_ids: list[str] = Field(
         default_factory=list, description="The run ids that were stopped."

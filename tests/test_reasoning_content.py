@@ -434,22 +434,21 @@ class TestReasoningFieldNameConversion:
 
         request = adapter.prepare_request(
             RequestParams(
-            model_name="test-model",
-            messages=[
-            LLMMessage(
-            role=Role.ASSISTANT,
-            content="Answer",
-            reasoning_content="Thinking...",
-            reasoning_state=["enc:abc"],
-            )
-            ],
-            temperature=0.2,
-            tools=None,
-            max_tokens=None,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="test-model",
+                messages=[
+                    LLMMessage(
+                        role=Role.ASSISTANT,
+                        content="Answer",
+                        reasoning_content="Thinking...",
+                        reasoning_state=["enc:abc"],
+                    )
+                ],
+                temperature=0.2,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
 

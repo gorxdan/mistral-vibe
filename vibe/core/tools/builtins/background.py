@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.tools.background import TaskCategory, TaskEntry
 from vibe.core.tools.base import (
@@ -35,6 +35,7 @@ _DEFAULT_SCOPED_TAIL = 20
 
 
 class BackgroundArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: str = Field(
         description=(
             "list: enumerate running background tasks (processes, workflows, "
@@ -65,6 +66,7 @@ class BackgroundArgs(BaseModel):
 
 
 class BackgroundResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     response: str = Field(description="The list of tasks, or the stop outcome.")
     stopped: bool = Field(
         default=False, description="For action='stop': whether the task was stopped."

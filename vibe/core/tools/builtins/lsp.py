@@ -7,7 +7,7 @@ from pathlib import Path
 import time
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.logger import logger
 from vibe.core.lsp import LSPNotConnectedError, get_lsp_manager
@@ -68,6 +68,7 @@ class LspOperation(StrEnum):
 
 
 class LspArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     operation: LspOperation = Field(
         description=(
             "LSP operation to perform. Position-based operations "
@@ -102,6 +103,7 @@ class LspArgs(BaseModel):
 
 
 class LspResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     operation: str
     summary: str = Field(description="Short human/machine-readable result text.")
     locations: list[dict[str, Any]] = Field(default_factory=list)

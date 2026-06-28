@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.loop import (
     MIN_INTERVAL_SECONDS,
@@ -23,6 +23,7 @@ from vibe.core.types import ToolStreamEvent
 
 
 class ScheduleArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: Literal["create", "list", "cancel"]
     interval: str | None = Field(
         default=None,
@@ -42,6 +43,7 @@ class ScheduleArgs(BaseModel):
 
 
 class ScheduleResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: str
     id: str | None = None
     message: str

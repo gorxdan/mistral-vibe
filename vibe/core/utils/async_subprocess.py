@@ -62,6 +62,7 @@ async def kill_async_subprocess(
     finally:
         _close_transport(proc)
 
+
 def _close_transport(proc: asyncio.subprocess.Process) -> None:
     """Close the subprocess transport to prevent 'Event loop is closed' errors.
 

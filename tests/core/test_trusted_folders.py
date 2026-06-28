@@ -69,7 +69,9 @@ class TestTrustedFoldersManager:
         manager = TrustedFoldersManager()
         # Force the temp-file write to fail by making the path's parent
         # non-writable is fragile across platforms; instead patch os.replace.
-        with patch("vibe.core.trusted_folders.os.replace", side_effect=OSError("denied")):
+        with patch(
+            "vibe.core.trusted_folders.os.replace", side_effect=OSError("denied")
+        ):
             with caplog.at_level(logging.ERROR, logger="vibe"):
                 manager.add_trusted(tmp_path)
 

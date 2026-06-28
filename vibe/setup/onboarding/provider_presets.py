@@ -59,7 +59,10 @@ PRESETS: list[ProviderPreset] = [
         requires_api_key=True,
         help_url=ZAI_HELP_URL,
         provider=ProviderConfig(
-            name="zai", api_base=ZAI_API_BASE, api_key_env_var="ZAI_API_KEY", discover_models=True
+            name="zai",
+            api_base=ZAI_API_BASE,
+            api_key_env_var="ZAI_API_KEY",
+            discover_models=True,
         ),
         model=ModelConfig(
             name="glm-5.2",

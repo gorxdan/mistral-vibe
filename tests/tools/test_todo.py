@@ -12,11 +12,17 @@ from vibe.core.tools.builtins.todo import (
 
 
 def _todo(i: int, content: str, status: TodoStatus = TodoStatus.COMPLETED) -> TodoItem:
-    return TodoItem(id=str(i), content=content, status=status, priority=TodoPriority.MEDIUM)
+    return TodoItem(
+        id=str(i), content=content, status=status, priority=TodoPriority.MEDIUM
+    )
 
 
 def test_nudge_fires_on_three_completed_todos_without_verify_item() -> None:
-    todos = [_todo(1, "Add config flag"), _todo(2, "Add profile"), _todo(3, "Wire prompt")]
+    todos = [
+        _todo(1, "Add config flag"),
+        _todo(2, "Add profile"),
+        _todo(3, "Wire prompt"),
+    ]
     assert _should_nudge(todos, verification_enabled=True) is True
 
 
@@ -44,13 +50,21 @@ def test_nudge_suppressed_when_not_all_completed() -> None:
 
 
 def test_nudge_suppressed_when_verification_subsystem_disabled() -> None:
-    todos = [_todo(1, "Add config flag"), _todo(2, "Add profile"), _todo(3, "Wire prompt")]
+    todos = [
+        _todo(1, "Add config flag"),
+        _todo(2, "Add profile"),
+        _todo(3, "Wire prompt"),
+    ]
     assert _should_nudge(todos, verification_enabled=False) is False
 
 
 def test_write_todos_appends_nudge_message_and_flag() -> None:
     tool = Todo(config_getter=lambda: TodoConfig(), state=TodoState())
-    todos = [_todo(1, "Add config flag"), _todo(2, "Add profile"), _todo(3, "Wire prompt")]
+    todos = [
+        _todo(1, "Add config flag"),
+        _todo(2, "Add profile"),
+        _todo(3, "Wire prompt"),
+    ]
 
     result = tool._write_todos(todos, verification_enabled=True)
 
@@ -61,7 +75,11 @@ def test_write_todos_appends_nudge_message_and_flag() -> None:
 
 def test_write_todos_no_nudge_when_verification_disabled() -> None:
     tool = Todo(config_getter=lambda: TodoConfig(), state=TodoState())
-    todos = [_todo(1, "Add config flag"), _todo(2, "Add profile"), _todo(3, "Wire prompt")]
+    todos = [
+        _todo(1, "Add config flag"),
+        _todo(2, "Add profile"),
+        _todo(3, "Wire prompt"),
+    ]
 
     result = tool._write_todos(todos, verification_enabled=False)
 

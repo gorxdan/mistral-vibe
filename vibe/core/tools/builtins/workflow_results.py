@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 
 class WorkflowResultsArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     run_id: str = Field(
         description=(
             "Workflow run id (e.g. 'wf-1'). Required — there is no 'all runs' "
@@ -46,6 +47,7 @@ class WorkflowResultsArgs(BaseModel):
 
 
 class WorkflowResultsResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     run_id: str
     status: str = Field(
         description=(

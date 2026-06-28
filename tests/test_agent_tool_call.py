@@ -702,7 +702,10 @@ async def test_fill_missing_tool_responses_multi_turn_keeps_ordering() -> None:
     earlier_assistant = LLMMessage(
         role=Role.ASSISTANT,
         content="Calling tools...",
-        tool_calls=[make_todo_tool_call("tc1", index=0), make_todo_tool_call("tc2", index=1)],
+        tool_calls=[
+            make_todo_tool_call("tc1", index=0),
+            make_todo_tool_call("tc2", index=1),
+        ],
     )
     later_assistant = LLMMessage(
         role=Role.ASSISTANT,
@@ -710,14 +713,14 @@ async def test_fill_missing_tool_responses_multi_turn_keeps_ordering() -> None:
         tool_calls=[make_todo_tool_call("tc3", index=0)],
     )
     agent_loop.messages.reset([
-        agent_loop.messages[0],          # [0] user/system seed
-        earlier_assistant,                # [1] assistant(tc1, tc2)
-        LLMMessage(                       # [2] tool resp for tc1 only (tc2 missing)
+        agent_loop.messages[0],  # [0] user/system seed
+        earlier_assistant,  # [1] assistant(tc1, tc2)
+        LLMMessage(  # [2] tool resp for tc1 only (tc2 missing)
             role=Role.TOOL, tool_call_id="tc1", name="todo", content="Retrieved 0 todos"
         ),
         LLMMessage(role=Role.USER, content="Next turn"),  # [3] user
-        later_assistant,                  # [4] assistant(tc3)
-        LLMMessage(                       # [5] tool resp for tc3
+        later_assistant,  # [4] assistant(tc3)
+        LLMMessage(  # [5] tool resp for tc3
             role=Role.TOOL, tool_call_id="tc3", name="todo", content="Retrieved 0 todos"
         ),
     ])
@@ -741,7 +744,9 @@ async def test_fill_missing_tool_responses_multi_turn_keeps_ordering() -> None:
         idx for idx, m in enumerate(messages) if m.role == Role.USER and idx > 0
     ]
     later_user_idx = user_positions[-1]
-    assert tc2_idx < later_user_idx, "tc2 placeholder leaked past the intervening user message"
+    assert tc2_idx < later_user_idx, (
+        "tc2 placeholder leaked past the intervening user message"
+    )
 
     # The later turn's tc3 response still directly follows its own assistant.
     tc3_positions = [idx for idx, m in enumerate(messages) if m.tool_call_id == "tc3"]

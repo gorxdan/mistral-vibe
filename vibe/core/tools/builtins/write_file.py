@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import ClassVar, final
 
 import anyio
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.lsp._integration import notify_file_changed
@@ -26,11 +26,13 @@ from vibe.core.types import ToolResultEvent, ToolStreamEvent
 
 
 class WriteFileArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     path: str
     content: str
 
 
 class WriteFileResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     path: str
     bytes_written: int
     content: str

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, final
 
 from humanize import naturalsize
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.config.harness_files import get_harness_files_manager
@@ -44,6 +44,7 @@ def _warning(message: str) -> str:
 
 
 class ReadArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     file_path: str = Field(description="The absolute path to the file to read.")
     offset: int | None = Field(
         default=None,
@@ -64,6 +65,7 @@ class ReadArgs(BaseModel):
 
 
 class ReadResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     file_path: str
     content: str
     num_lines: int

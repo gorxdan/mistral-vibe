@@ -157,6 +157,7 @@ class AgentStats(BaseModel):
 
 
 class SessionInfo(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     session_id: str
     start_time: str
     message_count: int
@@ -165,6 +166,7 @@ class SessionInfo(BaseModel):
 
 
 class SessionMetadata(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     session_id: str
     parent_session_id: str | None = None
     start_time: str
@@ -197,11 +199,13 @@ class AvailableTool(BaseModel):
 
 
 class FunctionCall(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str | None = None
     arguments: str | None = None
 
 
 class ToolCall(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     id: str | None = None
     index: int | None = None
     function: FunctionCall = Field(default_factory=FunctionCall)
@@ -517,7 +521,7 @@ class LLMMessageAccumulator:
 
 
 class LLMUsage(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
     prompt_tokens: int = 0
     completion_tokens: int = 0
     # Prompt tokens served from the provider's cache (subset of prompt_tokens).
@@ -549,7 +553,7 @@ class StopInfo(BaseModel):
 
 
 class LLMChunk(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
     message: LLMMessage
     usage: LLMUsage | None = None
     correlation_id: str | None = None

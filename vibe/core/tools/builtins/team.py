@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -38,6 +38,7 @@ def _team_dir() -> Path | None:
 
 
 class TeamArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: str = Field(
         description=(
             "One of: list_tasks, available_tasks, claim_task, complete_task, "
@@ -58,6 +59,7 @@ class TeamArgs(BaseModel):
 
 
 class TeamResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: str
     message: str
     tasks: list[dict] | None = None

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import fnmatch
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.agents.models import (
@@ -58,6 +58,7 @@ class _InProcessResult:
 
 
 class TaskArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     task: str = Field(description="The task to delegate to the subagent")
     agent: str = Field(
         default="explore",
@@ -89,6 +90,7 @@ class TaskArgs(BaseModel):
 
 
 class TaskResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     response: str = Field(description="The accumulated response from the subagent")
     turns_used: int | None = Field(
         default=None,

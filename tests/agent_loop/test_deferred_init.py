@@ -171,6 +171,7 @@ class TestIntegrateMcpIdempotency:
         # so a future call with servers would still run discovery.
         assert not manager._mcp_integrated
 
+
 class TestRefreshRemoteTools:
     @pytest.mark.asyncio
     async def test_refresh_rediscovers_mcp_and_connector_tools(self) -> None:

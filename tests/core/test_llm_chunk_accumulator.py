@@ -109,7 +109,10 @@ def test_tool_name_arriving_late_matches_fold():
 
 
 def test_single_occurrence_none_arguments_stay_none():
-    msgs = [LLMMessage(**_ASSISTANT, content="x"), LLMMessage(**_ASSISTANT, content="y")]
+    msgs = [
+        LLMMessage(**_ASSISTANT, content="x"),
+        LLMMessage(**_ASSISTANT, content="y"),
+    ]
     one = [LLMMessage(**_ASSISTANT, tool_calls=[_tc(0, name="x", args=None)])]
     # A tool call seen once keeps its (possibly None) arguments, matching the
     # deepcopy-on-first-encounter semantics of __add__.

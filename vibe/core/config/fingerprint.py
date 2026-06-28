@@ -41,7 +41,5 @@ def file_fingerprint(path: Path) -> str:
 
 def create_dict_fingerprint(source: dict[str, Any]) -> str:
     """Return an opaque token representing the current state of a dict."""
-    payload = orjson.dumps(
-        to_jsonable_python(source), option=orjson.OPT_SORT_KEYS
-    )
+    payload = orjson.dumps(to_jsonable_python(source), option=orjson.OPT_SORT_KEYS)
     return hashlib.sha256(payload).hexdigest()

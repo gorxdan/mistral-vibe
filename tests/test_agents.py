@@ -236,10 +236,7 @@ class TestAgentApplyToConfig:
     def test_apply_to_config_does_not_raise_on_missing_api_key(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        base = VibeConfig(
-            include_project_context=False,
-            include_prompt_detail=False,
-        )
+        base = VibeConfig(include_project_context=False, include_prompt_detail=False)
         monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
 
         result = BUILTIN_AGENTS[BuiltinAgentName.LEAN].apply_to_config(base)
@@ -249,10 +246,7 @@ class TestAgentApplyToConfig:
     def test_authoritative_validate_still_raises_on_missing_api_key(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        base = VibeConfig(
-            include_project_context=False,
-            include_prompt_detail=False,
-        )
+        base = VibeConfig(include_project_context=False, include_prompt_detail=False)
         derived = BUILTIN_AGENTS[BuiltinAgentName.LEAN].apply_to_config(base)
         monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
 

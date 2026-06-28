@@ -51,9 +51,7 @@ def _write_nudge_state(cache_path: Path, **updates: Any) -> None:
     write_cache(cache_path, _CACHE_SECTION, updates)
 
 
-def _matching_preset(
-    file_path: str | Path, config: VibeConfig
-) -> ServerPreset | None:
+def _matching_preset(file_path: str | Path, config: VibeConfig) -> ServerPreset | None:
     """Preset matching ``file_path`` if a nudge could help, else None.
 
     None when LSP is already installed, the file has no extension, or no

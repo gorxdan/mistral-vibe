@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import ClassVar, final
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.lsp._integration import notify_file_changed
@@ -32,6 +32,7 @@ from vibe.core.utils.text import locate_edit_matches, snippet_start_line
 
 
 class EditArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     file_path: str = Field(description="The absolute path to the file to modify")
     old_string: str = Field(description="The text to replace")
     new_string: str = Field(
@@ -44,6 +45,7 @@ class EditArgs(BaseModel):
 
 
 class EditResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     file: str
     message: str
     old_string: str

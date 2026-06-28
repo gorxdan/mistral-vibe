@@ -80,15 +80,14 @@ class TestPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-3-5-sonnet",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="claude-3-5-sonnet",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
 
@@ -107,15 +106,14 @@ class TestPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-3-5-sonnet",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=True,
-            provider=provider,
-        
+                model_name="claude-3-5-sonnet",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=True,
+                provider=provider,
             )
         )
 
@@ -128,15 +126,14 @@ class TestPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-3-5-sonnet",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="claude-3-5-sonnet",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
 
@@ -147,16 +144,15 @@ class TestPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-3-5-sonnet",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-            thinking="medium",
-        
+                model_name="claude-3-5-sonnet",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
+                thinking="medium",
             )
         )
 
@@ -179,15 +175,14 @@ class TestPrepareRequest:
         ]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-3-5-sonnet",
-            messages=messages,
-            temperature=0.5,
-            tools=tools,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="claude-3-5-sonnet",
+                messages=messages,
+                temperature=0.5,
+                tools=tools,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
 
@@ -205,15 +200,14 @@ class TestPrepareRequest:
         with pytest.raises(ValueError, match="project_id"):
             adapter.prepare_request(
                 RequestParams(
-                model_name="claude-3-5-sonnet",
-                messages=[LLMMessage(role=Role.USER, content="Hello")],
-                temperature=0.5,
-                tools=None,
-                max_tokens=1024,
-                tool_choice=None,
-                enable_streaming=False,
-                provider=provider,
-            
+                    model_name="claude-3-5-sonnet",
+                    messages=[LLMMessage(role=Role.USER, content="Hello")],
+                    temperature=0.5,
+                    tools=None,
+                    max_tokens=1024,
+                    tool_choice=None,
+                    enable_streaming=False,
+                    provider=provider,
                 )
             )
 
@@ -227,15 +221,14 @@ class TestPrepareRequest:
         with pytest.raises(ValueError, match="region"):
             adapter.prepare_request(
                 RequestParams(
-                model_name="claude-3-5-sonnet",
-                messages=[LLMMessage(role=Role.USER, content="Hello")],
-                temperature=0.5,
-                tools=None,
-                max_tokens=1024,
-                tool_choice=None,
-                enable_streaming=False,
-                provider=provider,
-            
+                    model_name="claude-3-5-sonnet",
+                    messages=[LLMMessage(role=Role.USER, content="Hello")],
+                    temperature=0.5,
+                    tools=None,
+                    max_tokens=1024,
+                    tool_choice=None,
+                    enable_streaming=False,
+                    provider=provider,
                 )
             )
 
@@ -243,15 +236,14 @@ class TestPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-3-5-sonnet",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=None,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="claude-3-5-sonnet",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
 

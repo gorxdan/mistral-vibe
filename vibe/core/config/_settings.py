@@ -240,6 +240,7 @@ class ExperimentsConfig(BaseSettings):
 
 
 class SessionLoggingConfig(BaseSettings):
+    model_config = SettingsConfigDict(extra="ignore")
     save_dir: str = ""
     session_prefix: str = "session"
     enabled: bool = True
@@ -501,6 +502,7 @@ class ProviderCacheConfig(BaseModel):
 
 
 class ProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     api_base: str
     api_key_env_var: str = ""
@@ -560,6 +562,7 @@ class TranscribeClient(StrEnum):
 
 
 class TranscribeProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     api_base: str = "wss://api.mistral.ai"
     api_key_env_var: str = ""
@@ -567,6 +570,7 @@ class TranscribeProviderConfig(BaseModel):
 
 
 class _MCPBase(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str = Field(description="Short alias used to prefix tool names")
     prompt: str | None = Field(
         default=None, description="Optional usage hint appended to tool descriptions"
@@ -702,6 +706,7 @@ def _promote_legacy_auth(data: Any) -> Any:
 
 
 class _MCPHttpFields(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     url: str = Field(description="Base URL of the MCP HTTP server")
     auth: MCPAuth = Field(default_factory=MCPStaticAuth)
 
@@ -750,6 +755,7 @@ MCPServer = Annotated[
 
 
 class LSPServer(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     """Configuration for a single Language Server Protocol server.
 
     A server owns one or more file extensions; the LSP manager routes a file
@@ -839,6 +845,7 @@ class LSPServer(BaseModel):
 
 
 class ConnectorConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str = Field(description="Normalized connector alias to match against.")
     disabled: bool = Field(
         default=False,
@@ -871,6 +878,7 @@ DEFAULT_API_TIMEOUT = 720.0
 
 
 class ModelConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     provider: str
     alias: str
@@ -886,6 +894,7 @@ class ModelConfig(BaseModel):
 
 
 class TranscribeModelConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     provider: str
     alias: str
@@ -902,6 +911,7 @@ class TTSClient(StrEnum):
 
 
 class TTSProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     api_base: str = "https://api.mistral.ai"
     api_key_env_var: str = ""
@@ -914,6 +924,7 @@ SpeechOutputFormat = Literal["pcm", "wav", "mp3", "flac", "opus"]
 
 
 class TTSModelConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     provider: str
     alias: str

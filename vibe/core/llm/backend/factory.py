@@ -14,10 +14,6 @@ if TYPE_CHECKING:
 BACKEND_FACTORY = {Backend.MISTRAL: MistralBackend, Backend.GENERIC: GenericBackend}
 
 
-def create_backend(
-    *,
-    provider: ProviderConfig,
-    timeout: float = 720.0,
-) -> BackendLike:
+def create_backend(*, provider: ProviderConfig, timeout: float = 720.0) -> BackendLike:
     factory = BACKEND_FACTORY[provider.backend]
     return factory(provider=provider, timeout=timeout)

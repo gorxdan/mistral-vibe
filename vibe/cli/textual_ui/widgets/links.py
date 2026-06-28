@@ -18,6 +18,7 @@ def escape_markup(text: str) -> str:
     # bracket (backslashes first so they aren't doubled by the bracket pass).
     return text.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
 
+
 # Rich's repr highlighter tags URL spans with the style name "repr.url".
 # This is a stable public-ish style key (used by Rich's pretty printer) but
 # we depend on it implicitly — if Rich renames it, linkify silently no-ops.

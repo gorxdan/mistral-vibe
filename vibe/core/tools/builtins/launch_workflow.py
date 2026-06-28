@@ -4,7 +4,7 @@ import ast
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -71,6 +71,7 @@ def _looks_like_path(script: str) -> bool:
 
 
 class LaunchWorkflowArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     script: str = Field(
         description="The workflow script source code (Python with async def main())"
     )
@@ -80,6 +81,7 @@ class LaunchWorkflowArgs(BaseModel):
 
 
 class LaunchWorkflowResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     run_id: str = Field(description="The ID of the launched workflow run")
     launched: bool = Field(description="Whether the workflow was successfully launched")
     delivery: str = Field(

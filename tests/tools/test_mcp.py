@@ -480,11 +480,7 @@ class TestCreateMCPHttpProxyToolClass:
             "inputSchema": {
                 "$defs": {
                     "Kind": {"$ref": "#/$defs/BaseKind"},
-                    "BaseKind": {
-                        "type": "string",
-                        "enum": ["a", "b"],
-                        "minLength": 1,
-                    },
+                    "BaseKind": {"type": "string", "enum": ["a", "b"], "minLength": 1},
                 },
                 "type": "object",
                 "properties": {"kind": {"$ref": "#/$defs/Kind"}},

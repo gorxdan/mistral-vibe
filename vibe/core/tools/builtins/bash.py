@@ -10,7 +10,7 @@ import shlex
 import time
 from typing import ClassVar, Literal, final
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from tree_sitter import Language, Node, Parser
 import tree_sitter_bash as tsbash
 
@@ -406,6 +406,7 @@ class BashToolConfig(BaseToolConfig):
 
 
 class BashArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     command: str
     timeout: int | None = Field(
         default=None, description="Override the default command timeout."
@@ -423,6 +424,7 @@ class BashArgs(BaseModel):
 
 
 class BashResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     command: str
     stdout: str
     stderr: str

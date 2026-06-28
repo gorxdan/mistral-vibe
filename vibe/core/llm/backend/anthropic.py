@@ -177,7 +177,9 @@ class AnthropicMapper:
                         index=idx,
                         function=FunctionCall(
                             name=block.get("name"),
-                            arguments=orjson.dumps(block.get("input", {})).decode("utf-8"),
+                            arguments=orjson.dumps(block.get("input", {})).decode(
+                                "utf-8"
+                            ),
                         ),
                     )
                 )

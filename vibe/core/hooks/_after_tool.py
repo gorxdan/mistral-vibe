@@ -23,6 +23,7 @@ def _as_after(invocation: HookInvocation) -> AfterToolInvocation:
         )
     return invocation
 
+
 class AfterToolHandler(HookHandler):
     """Deny → replace ``tool_output_text`` with ``reason`` (then append
     ``additional_context`` if present). Plain ``additional_context`` →

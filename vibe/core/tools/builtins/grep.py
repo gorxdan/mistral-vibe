@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.paths import VIBE_HOME
 from vibe.core.tools.base import (
@@ -91,6 +91,7 @@ class GrepToolConfig(BaseToolConfig):
 
 
 class GrepArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     pattern: str
     path: str = "."
     output_mode: GrepOutputMode = Field(
@@ -141,6 +142,7 @@ class GrepArgs(BaseModel):
 
 
 class GrepMatch(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     path: str
     line: int | None = None
 
@@ -178,6 +180,7 @@ class GrepMatch(BaseModel):
 
 
 class GrepResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     matches: str
     match_count: int
     was_truncated: bool = Field(

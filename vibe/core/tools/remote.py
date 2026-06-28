@@ -13,6 +13,7 @@ class _OpenArgs(BaseModel):
 
 
 class MCPToolResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     ok: bool = True
     server: str
     tool: str
@@ -42,7 +43,7 @@ class MCPTool(
 
 
 class RemoteTool(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
     name: str
     description: str | None = None

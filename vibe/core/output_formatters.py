@@ -54,9 +54,7 @@ class JsonOutputFormatter(OutputFormatter):
     def finalize(self) -> str | None:
         messages_data = [msg.model_dump(mode="json") for msg in self._messages]
         self.stream.write(
-            orjson.dumps(
-                messages_data, option=orjson.OPT_INDENT_2
-            ).decode("utf-8")
+            orjson.dumps(messages_data, option=orjson.OPT_INDENT_2).decode("utf-8")
         )
         self.stream.write("\n")
         self.stream.flush()

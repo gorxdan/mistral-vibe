@@ -236,15 +236,14 @@ class TestAdapterPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-sonnet-4-20250514",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
 
@@ -259,15 +258,14 @@ class TestAdapterPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-sonnet-4-20250514",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
         assert "prompt-caching-2024-07-31" in req.headers["anthropic-beta"]
@@ -278,16 +276,15 @@ class TestAdapterPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-sonnet-4-20250514",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-            api_key="sk-test-key",
-        
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
+                api_key="sk-test-key",
             )
         )
         assert req.headers["x-api-key"] == "sk-test-key"
@@ -296,15 +293,14 @@ class TestAdapterPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-sonnet-4-20250514",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=True,
-            provider=provider,
-        
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=True,
+                provider=provider,
             )
         )
         assert json.loads(req.body)["stream"] is True
@@ -313,15 +309,14 @@ class TestAdapterPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-sonnet-4-20250514",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=None,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
         assert json.loads(req.body)["max_tokens"] == AnthropicAdapter.DEFAULT_MAX_TOKENS
@@ -330,16 +325,15 @@ class TestAdapterPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-sonnet-4-20250514",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-            thinking="medium",
-        
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
+                thinking="medium",
             )
         )
         payload = json.loads(req.body)
@@ -355,15 +349,14 @@ class TestAdapterPrepareRequest:
         ]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-sonnet-4-20250514",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
         payload = json.loads(req.body)
@@ -382,15 +375,14 @@ class TestAdapterPrepareRequest:
         ]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-sonnet-4-20250514",
-            messages=messages,
-            temperature=0.5,
-            tools=tools,
-            max_tokens=1024,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=tools,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
         payload = json.loads(req.body)
@@ -402,16 +394,15 @@ class TestAdapterPrepareRequest:
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-sonnet-4-20250514",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=None,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-            thinking=level,
-        
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
+                thinking=level,
             )
         )
         payload = json.loads(req.body)
@@ -433,15 +424,14 @@ class TestAdapterPrepareRequest:
         ]
         req = adapter.prepare_request(
             RequestParams(
-            model_name="claude-sonnet-4-20250514",
-            messages=messages,
-            temperature=0.5,
-            tools=None,
-            max_tokens=None,
-            tool_choice=None,
-            enable_streaming=False,
-            provider=provider,
-        
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
             )
         )
         payload = json.loads(req.body)

@@ -1449,9 +1449,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         """Parse x-ratelimit-* headers from a response into the rate-limit store."""
         if not sink:
             return
-        snapshot = rate_limit_from_headers(
-            provider.name, sink, captured_at=time.time()
-        )
+        snapshot = rate_limit_from_headers(provider.name, sink, captured_at=time.time())
         if snapshot is not None:
             self._rate_limit_store.update(snapshot)
 

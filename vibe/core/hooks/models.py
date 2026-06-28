@@ -43,6 +43,7 @@ _DEFAULT_HOOK_TIMEOUT = 60.0
 
 
 class HookConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     type: HookType
     command: str
@@ -204,15 +205,26 @@ HookInvocation = (
 
 def _build_before_tool(base: dict[str, Any], f: dict[str, Any]) -> BeforeToolInvocation:
     if f.get("tool_name") is None or f.get("tool_call_id") is None:
-        raise ValueError("tool_name and tool_call_id are required for before_tool hooks")
+        raise ValueError(
+            "tool_name and tool_call_id are required for before_tool hooks"
+        )
     return BeforeToolInvocation(
-        **base, tool_name=f["tool_name"], tool_call_id=f["tool_call_id"], tool_input=f.get("tool_input") or {}
+        **base,
+        tool_name=f["tool_name"],
+        tool_call_id=f["tool_call_id"],
+        tool_input=f.get("tool_input") or {},
     )
 
 
 def _build_after_tool(base: dict[str, Any], f: dict[str, Any]) -> AfterToolInvocation:
-    if f.get("tool_name") is None or f.get("tool_call_id") is None or f.get("tool_status") is None:
-        raise ValueError("tool_name, tool_call_id, and tool_status are required for after_tool hooks")
+    if (
+        f.get("tool_name") is None
+        or f.get("tool_call_id") is None
+        or f.get("tool_status") is None
+    ):
+        raise ValueError(
+            "tool_name, tool_call_id, and tool_status are required for after_tool hooks"
+        )
     return AfterToolInvocation(
         **base,
         tool_name=f["tool_name"],
@@ -226,43 +238,79 @@ def _build_after_tool(base: dict[str, Any], f: dict[str, Any]) -> AfterToolInvoc
     )
 
 
-def _build_teammate_idle(base: dict[str, Any], f: dict[str, Any]) -> TeammateIdleInvocation:
+def _build_teammate_idle(
+    base: dict[str, Any], f: dict[str, Any]
+) -> TeammateIdleInvocation:
     if f.get("teammate_name") is None:
         raise ValueError("teammate_name is required for teammate_idle hooks")
-    return TeammateIdleInvocation(**base, teammate_name=f["teammate_name"], teammate_session_id=f.get("teammate_session_id"))
+    return TeammateIdleInvocation(
+        **base,
+        teammate_name=f["teammate_name"],
+        teammate_session_id=f.get("teammate_session_id"),
+    )
 
 
-def _build_task_created(base: dict[str, Any], f: dict[str, Any]) -> TaskCreatedInvocation:
+def _build_task_created(
+    base: dict[str, Any], f: dict[str, Any]
+) -> TaskCreatedInvocation:
     if f.get("task_id") is None or f.get("task_description") is None:
-        raise ValueError("task_id and task_description are required for task_created hooks")
-    return TaskCreatedInvocation(**base, task_id=f["task_id"], task_description=f["task_description"], assignee=f.get("assignee"))
+        raise ValueError(
+            "task_id and task_description are required for task_created hooks"
+        )
+    return TaskCreatedInvocation(
+        **base,
+        task_id=f["task_id"],
+        task_description=f["task_description"],
+        assignee=f.get("assignee"),
+    )
 
 
-def _build_task_completed(base: dict[str, Any], f: dict[str, Any]) -> TaskCompletedInvocation:
+def _build_task_completed(
+    base: dict[str, Any], f: dict[str, Any]
+) -> TaskCompletedInvocation:
     if f.get("task_id") is None or f.get("teammate_name") is None:
-        raise ValueError("task_id and teammate_name are required for task_completed hooks")
-    return TaskCompletedInvocation(**base, task_id=f["task_id"], teammate_name=f["teammate_name"], result=f.get("result"))
+        raise ValueError(
+            "task_id and teammate_name are required for task_completed hooks"
+        )
+    return TaskCompletedInvocation(
+        **base,
+        task_id=f["task_id"],
+        teammate_name=f["teammate_name"],
+        result=f.get("result"),
+    )
 
 
 def _build_pre_compact(base: dict[str, Any], f: dict[str, Any]) -> PreCompactInvocation:
     if f.get("trigger") is None:
         raise ValueError("trigger is required for pre_compact hooks")
     return PreCompactInvocation(
-        **base, trigger=f["trigger"], current_context_tokens=f.get("current_context_tokens") or 0, threshold=f.get("threshold") or 0
+        **base,
+        trigger=f["trigger"],
+        current_context_tokens=f.get("current_context_tokens") or 0,
+        threshold=f.get("threshold") or 0,
     )
 
 
-def _build_user_prompt_submit(base: dict[str, Any], f: dict[str, Any]) -> UserPromptSubmitInvocation:
+def _build_user_prompt_submit(
+    base: dict[str, Any], f: dict[str, Any]
+) -> UserPromptSubmitInvocation:
     if f.get("prompt") is None:
         raise ValueError("prompt is required for user_prompt_submit hooks")
-    return UserPromptSubmitInvocation(**base, prompt=f["prompt"], message_id=f.get("message_id"), has_images=f.get("has_images", False))
+    return UserPromptSubmitInvocation(
+        **base,
+        prompt=f["prompt"],
+        message_id=f.get("message_id"),
+        has_images=f.get("has_images", False),
+    )
 
 
 def _build_stop(base: dict[str, Any], f: dict[str, Any]) -> StopInvocation:
     return StopInvocation(**base, stop_hook_active=f.get("stop_hook_active", False))
 
 
-def _build_session_start(base: dict[str, Any], f: dict[str, Any]) -> SessionStartInvocation:
+def _build_session_start(
+    base: dict[str, Any], f: dict[str, Any]
+) -> SessionStartInvocation:
     return SessionStartInvocation(**base, source=f.get("source") or "startup")
 
 
@@ -270,13 +318,22 @@ def _build_session_end(base: dict[str, Any], f: dict[str, Any]) -> SessionEndInv
     return SessionEndInvocation(**base, reason=f.get("reason") or "exit")
 
 
-def _build_notification(base: dict[str, Any], f: dict[str, Any]) -> NotificationInvocation:
+def _build_notification(
+    base: dict[str, Any], f: dict[str, Any]
+) -> NotificationInvocation:
     if f.get("notification_type") is None:
         raise ValueError("notification_type is required for notification hooks")
-    return NotificationInvocation(**base, notification_type=f["notification_type"], message=f.get("message", ""), tool_name=f.get("tool_name"))
+    return NotificationInvocation(
+        **base,
+        notification_type=f["notification_type"],
+        message=f.get("message", ""),
+        tool_name=f.get("tool_name"),
+    )
 
 
-_INVOCATION_BUILDERS: dict[HookType, Callable[[dict[str, Any], dict[str, Any]], HookInvocation]] = {
+_INVOCATION_BUILDERS: dict[
+    HookType, Callable[[dict[str, Any], dict[str, Any]], HookInvocation]
+] = {
     HookType.POST_AGENT_TURN: lambda base, f: PostAgentTurnInvocation(**base),
     HookType.BEFORE_TOOL: _build_before_tool,
     HookType.AFTER_TOOL: _build_after_tool,
@@ -293,9 +350,7 @@ _INVOCATION_BUILDERS: dict[HookType, Callable[[dict[str, Any], dict[str, Any]], 
 
 
 def build_invocation(
-    hook_type: HookType,
-    ctx: HookSessionContext,
-    **fields: Any,
+    hook_type: HookType, ctx: HookSessionContext, **fields: Any
 ) -> HookInvocation:
     """Build the right HookInvocation subclass for *hook_type*."""
     base = ctx.model_dump()

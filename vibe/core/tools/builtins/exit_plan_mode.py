@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import ClassVar, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.tools.base import (
@@ -24,10 +24,12 @@ from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 
 
 class ExitPlanModeArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     pass
 
 
 class ExitPlanModeResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     switched: bool
     message: str
 

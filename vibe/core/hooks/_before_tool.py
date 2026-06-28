@@ -24,6 +24,7 @@ def _as_before(invocation: HookInvocation) -> BeforeToolInvocation:
         )
     return invocation
 
+
 class BeforeToolHandler(HookHandler):
     """Deny → ``HookToolDenial``; ``tool_input`` rewrite → one
     ``HookToolInputRewrite`` per rewriting hook (validated by the agent

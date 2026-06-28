@@ -36,7 +36,7 @@ class RegistryRef(BaseModel):
 
 
 class SkillMetadata(BaseModel):
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     name: str = Field(
         ...,
@@ -114,7 +114,7 @@ class SkillInfo(BaseModel):
     scope: SkillScope = SkillScope.GLOBAL
     registry: RegistryRef | None = None
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
 
     @property
     def skill_dir(self) -> Path | None:

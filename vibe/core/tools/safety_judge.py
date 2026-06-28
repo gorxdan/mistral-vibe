@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 
 import orjson
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from vibe.core.config import ModelConfig, ProviderConfig, SafetyJudgeConfig
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
@@ -98,6 +98,7 @@ def _system_prompt_for(tool_name: str) -> str:
 
 
 class JudgeVerdict(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     safe: bool
     reason: str
     # True only for the synthesized fail-closed verdict (timeout/backend error).

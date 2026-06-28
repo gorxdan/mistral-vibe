@@ -59,7 +59,10 @@ class TestPatchReasoningEffort:
         assert orjson.loads(out)["reasoning_effort"] == "high"
 
     def test_noop_when_already_target(self):
-        assert _patch_reasoning_effort(orjson.dumps({"reasoning_effort": "high"}), "high") is None
+        assert (
+            _patch_reasoning_effort(orjson.dumps({"reasoning_effort": "high"}), "high")
+            is None
+        )
 
     def test_noop_when_no_effort_field(self):
         assert _patch_reasoning_effort(orjson.dumps({"model": "x"}), "high") is None
@@ -87,8 +90,7 @@ async def test_streaming_retries_with_downgraded_effort():
         route = mock_api.post(OPENAI_RESPONSES_PATH).mock(
             side_effect=[
                 httpx.Response(
-                    400,
-                    content=orjson.dumps({"error": {"message": _XHIGH_REJECTED}}),
+                    400, content=orjson.dumps({"error": {"message": _XHIGH_REJECTED}})
                 ),
                 httpx.Response(
                     200,

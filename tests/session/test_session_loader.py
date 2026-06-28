@@ -1309,10 +1309,7 @@ class TestWorkingDirectoryResolution:
         assert not _same_working_directory(str(real), str(tmp_path / "other"))
 
     def test_list_sessions_matches_across_symlink(
-        self,
-        session_config: SessionLoggingConfig,
-        create_test_session,
-        tmp_path: Path,
+        self, session_config: SessionLoggingConfig, create_test_session, tmp_path: Path
     ) -> None:
         real = tmp_path / "checkout"
         real.mkdir()

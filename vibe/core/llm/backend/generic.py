@@ -282,7 +282,8 @@ def _nearest_supported_effort(error_text: str) -> str | None:
         return None
     ri = _EFFORT_ORDER.index(rejected)
     return min(
-        supported, key=lambda s: (abs(_EFFORT_ORDER.index(s) - ri), _EFFORT_ORDER.index(s))
+        supported,
+        key=lambda s: (abs(_EFFORT_ORDER.index(s) - ri), _EFFORT_ORDER.index(s)),
     )
 
 
@@ -576,7 +577,10 @@ class GenericBackend:
             # one-shot resend with the nearest supported effort is safe.
             if (retry_body := self._retry_body_for_effort(e, req.body)) is not None:
                 async for res_data in self._make_streaming_request(
-                    url, retry_body, headers, response_headers_sink=response_headers_sink
+                    url,
+                    retry_body,
+                    headers,
+                    response_headers_sink=response_headers_sink,
                 ):
                     yield adapter.parse_response(res_data, self._provider)
                 return

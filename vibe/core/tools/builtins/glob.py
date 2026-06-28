@@ -10,7 +10,7 @@ import re
 import shutil
 from typing import TYPE_CHECKING, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.autocompletion.file_indexer.ignore_rules import IgnoreRules
 from vibe.core.tools.base import (
@@ -84,6 +84,7 @@ class GlobToolConfig(BaseToolConfig):
 
 
 class GlobArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     pattern: str = Field(description="Glob pattern, e.g. '**/*.py' or 'src/**/*.ts'.")
     path: str = Field(default=".", description="Root directory to search from.")
     max_results: int | None = Field(
@@ -101,6 +102,7 @@ class GlobArgs(BaseModel):
 
 
 class GlobResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     paths: list[str]
     match_count: int
     was_truncated: bool = Field(

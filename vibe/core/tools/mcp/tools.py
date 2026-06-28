@@ -120,6 +120,7 @@ class _OpenArgs(BaseModel):
 
 
 class MCPToolResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     ok: bool = True
     server: str
     tool: str
@@ -181,7 +182,9 @@ class RemoteToolAnnotations(BaseModel):
     it mutates state and should force an approval prompt.
     """
 
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    model_config = ConfigDict(
+        from_attributes=True, populate_by_name=True, extra="ignore"
+    )
 
     title: str | None = None
     read_only_hint: bool | None = Field(default=None, validation_alias="readOnlyHint")
@@ -195,7 +198,7 @@ class RemoteToolAnnotations(BaseModel):
 
 
 class RemoteTool(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
     name: str
     description: str | None = None
@@ -233,12 +236,12 @@ class RemoteTool(BaseModel):
 
 
 class _MCPContentBlock(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
     text: str | None = None
 
 
 class _MCPResultIn(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
     structuredContent: dict[str, Any] | None = None
     content: list[_MCPContentBlock] | None = None

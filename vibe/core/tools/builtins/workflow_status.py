@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 
 class WorkflowStatusArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     run_id: str | None = Field(
         default=None,
         description=(
@@ -32,6 +33,7 @@ class WorkflowStatusArgs(BaseModel):
 
 
 class WorkflowStatusResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     runs: list[dict[str, Any]] = Field(
         default_factory=list,
         description="One status dict per matching run, newest-relevant first.",

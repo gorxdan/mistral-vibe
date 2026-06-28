@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, final
 from urllib.parse import urljoin, urlparse
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -113,6 +113,7 @@ def _make_converter_class() -> type:
 
 
 class WebFetchArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     url: str = Field(description="URL to fetch (http/https)")
     timeout: int | None = Field(
         default=None, description="Timeout in seconds (max 120)"
@@ -120,6 +121,7 @@ class WebFetchArgs(BaseModel):
 
 
 class WebFetchResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     url: str
     content: str
     content_type: str

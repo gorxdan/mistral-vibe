@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator
 from enum import StrEnum, auto
 from typing import ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.tools.base import (
     BaseTool,
@@ -32,6 +32,7 @@ class TodoPriority(StrEnum):
 
 
 class TodoItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     id: str
     content: str
     status: TodoStatus = TodoStatus.PENDING
@@ -39,6 +40,7 @@ class TodoItem(BaseModel):
 
 
 class TodoArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: str = Field(description="Either 'read' or 'write'")
     todos: list[TodoItem] | None = Field(
         default=None, description="Complete list of todos when writing."
@@ -46,6 +48,7 @@ class TodoArgs(BaseModel):
 
 
 class TodoResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     message: str
     todos: list[TodoItem]
     total_count: int

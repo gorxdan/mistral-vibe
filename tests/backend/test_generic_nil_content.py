@@ -36,15 +36,14 @@ def _provider() -> ProviderConfig:
 def _serialized_messages(messages: list[LLMMessage]) -> list[dict[str, object]]:
     req = OpenAIAdapter().prepare_request(
         RequestParams(
-        model_name="m",
-        messages=messages,
-        temperature=0.2,
-        tools=None,
-        max_tokens=None,
-        tool_choice=None,
-        enable_streaming=False,
-        provider=_provider(),
-    
+            model_name="m",
+            messages=messages,
+            temperature=0.2,
+            tools=None,
+            max_tokens=None,
+            tool_choice=None,
+            enable_streaming=False,
+            provider=_provider(),
         )
     )
     return json.loads(req.body)["messages"]

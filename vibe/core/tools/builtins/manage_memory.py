@@ -5,7 +5,7 @@ import datetime as _dt
 from pathlib import Path
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from vibe.core.config import VibeConfig
 from vibe.core.memory.models import (
@@ -105,6 +105,7 @@ def _default_add_scope(
 
 
 class ManageMemoryArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: Literal["add", "update", "list", "delete"]
     id: str | None = None
     title: str | None = None
@@ -134,6 +135,7 @@ class ManageMemoryArgs(BaseModel):
 
 
 class ManageMemoryResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     action: str
     id: str | None = None
     message: str

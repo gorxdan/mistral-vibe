@@ -16,7 +16,7 @@ from mistralai.client.models import (
     TextChunk,
     ToolReferenceChunk,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.config import DEFAULT_MISTRAL_API_ENV_KEY, VibeConfig
 from vibe.core.search import (
@@ -111,15 +111,18 @@ def _format_unresponsive_engines(unresponsive: list[Any]) -> str:
 
 
 class WebSearchSource(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     title: str
     url: str
 
 
 class WebSearchArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     query: str = Field(min_length=1)
 
 
 class WebSearchResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     query: str
     answer: str
     sources: list[WebSearchSource] = Field(default_factory=list)

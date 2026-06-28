@@ -110,15 +110,13 @@ async def test_read_renders_permission_request(tmp_path: Path) -> None:
         "lead",
         "approve rm -rf",
         kind=MessageKind.PERMISSION_REQUEST,
-        payload={
-            "request_id": "req-9",
-            "tool": "bash",
-            "description": "rm -rf /tmp/x",
-        },
+        payload={"request_id": "req-9", "tool": "bash", "description": "rm -rf /tmp/x"},
     )
 
     result = await collect_result(
-        _make_tool().run(TeamMessageArgs(action="read_messages"), ctx=_ctx(str(tmp_path)))
+        _make_tool().run(
+            TeamMessageArgs(action="read_messages"), ctx=_ctx(str(tmp_path))
+        )
     )
     assert "[PERMISSION_REQUEST id=req-9" in result.message
     assert "tool=bash" in result.message
