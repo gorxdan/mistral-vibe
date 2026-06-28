@@ -8,7 +8,7 @@ from vibe.core.types import LLMUsage
 class UsageRecord(BaseModel):
     """One persisted LLM call, the atom the status usage windows aggregate over."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     timestamp: float
     provider: str

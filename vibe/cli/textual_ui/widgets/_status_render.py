@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from rich.cells import cell_len
 from rich.text import Text
 
 from vibe.core.types import AgentStats
@@ -217,10 +218,9 @@ def _box(lines: list[Text], width: int) -> Text:
     out.append("\n")
     inner_w = width - 4
     for line in lines:
-        # Rich Text styling carries no display width; pad to inner width using
-        # the plain (unstyled) character count so the right border lines up.
-        plain = line.plain
-        pad = max(0, inner_w - len(plain))
+        # cell_len measures terminal cell width (CJK/emoji = 2), so the right
+        # border stays aligned even when a model/dir name contains wide glyphs.
+        pad = max(0, inner_w - cell_len(line.plain))
         bordered = Text()
         bordered.append("│ ", style="dim")
         bordered.append_text(line)
