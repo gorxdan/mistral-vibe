@@ -36,29 +36,35 @@ def _rec(
 
 class TestPricingTable:
     def test_direct_hit(self):
-        p = lookup_pricing("gpt-4o")
+        p = lookup_pricing("glm-5.2")
         assert p is not None
-        assert p.input_price == 2.5
-        assert p.output_price == 10.0
-        assert p.cached_input_price == 1.25
+        assert p.input_price == 1.4
+        assert p.output_price == 4.4
+        assert p.cached_input_price == 0.26
 
     def test_case_insensitive(self):
-        assert lookup_pricing("GPT-4O") is not None
+        assert lookup_pricing("GLM-5.2") is not None
         assert lookup_pricing("Mistral-Large") is not None
 
     def test_dated_version_prefix(self):
-        # gpt-4o-2024-08-06 → gpt-4o pricing
-        p = lookup_pricing("gpt-4o-2024-08-06")
+        # gpt-5.4-2026-01-01 → gpt-5.4 pricing
+        p = lookup_pricing("gpt-5.4-2026-01-01")
         assert p is not None
         assert p.input_price == 2.5
 
     def test_provider_prefix_stripped(self):
-        p = lookup_pricing("openai/gpt-4o")
+        p = lookup_pricing("zai/glm-5.2")
         assert p is not None
-        assert p.input_price == 2.5
+        assert p.input_price == 1.4
+
+    def test_mini_not_shadowed_by_parent(self):
+        # gpt-5.4-mini must resolve to its own (cheaper) tier, not gpt-5.4.
+        p = lookup_pricing("gpt-5.4-mini")
+        assert p is not None
+        assert p.input_price == 0.75
+        assert p.input_price != 2.5  # not shadowed by gpt-5.4
 
     def test_unknown_returns_none(self):
-        assert lookup_pricing("glm-5.2") is None
         assert lookup_pricing("totally-fake-model") is None
 
 
@@ -68,20 +74,31 @@ class TestComputeCost:
             prompt_tokens=1_000_000,
             completion_tokens=500_000,
             cached_tokens=0,
-            pricing=lookup_pricing("gpt-4o"),
+            pricing=lookup_pricing("glm-5.2"),
         )
-        # 1M * $2.5 + 500K * $10 = $2.5 + $5.0 = $7.50
-        assert abs(cost - 7.50) < 0.001
+        # 1M * $1.4 + 500K * $4.4 = $1.4 + $2.2 = $3.60
+        assert abs(cost - 3.60) < 0.001
 
     def test_cached_discount(self):
         cost = compute_cost(
             prompt_tokens=1_000_000,
             completion_tokens=0,
             cached_tokens=800_000,
-            pricing=lookup_pricing("gpt-4o"),
+            pricing=lookup_pricing("glm-5.2"),
         )
-        # 200K * $2.5 + 800K * $1.25 (50% off) = $0.5 + $1.0 = $1.50
-        assert abs(cost - 1.50) < 0.001
+        # 200K * $1.4 + 800K * $0.26 = $0.28 + $0.208 = $0.488
+        assert abs(cost - 0.488) < 0.001
+
+    def test_cached_clamped_to_prompt(self):
+        # cached > prompt must not over-bill; clamp to prompt total.
+        cost = compute_cost(
+            prompt_tokens=100_000,
+            completion_tokens=0,
+            cached_tokens=500_000,  # exceeds prompt
+            pricing=lookup_pricing("glm-5.2"),
+        )
+        # All 100K at cached rate: 100K * $0.26 = $0.026
+        assert abs(cost - 0.026) < 0.001
 
     def test_no_cached_price_uses_input(self):
         from vibe.core.usage import ModelPricing

@@ -3689,22 +3689,25 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self.stats.tokens_per_second = usage.completion_tokens / time_seconds
 
         # Persist the call for cross-session usage windows (/status). Best-effort:
-        # a recorder failure never affects the turn. Cost is derived from the
-        # built-in pricing table (verified prices) with a fallback to the
-        # model's configured prices; both-zero → cost_usd=0 (card shows —).
-        pricing = lookup_pricing(model.name)
-        if pricing is not None:
-            cost = compute_cost(
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
-                cached_tokens=usage.cached_tokens,
-                pricing=pricing,
-            )
-        else:
+        # a recorder failure never affects the turn. Cost precedence: a user's
+        # explicit per-model config prices win; otherwise the built-in pricing
+        # table supplies verified rates; both absent → cost_usd=0 (card shows —).
+        if model.input_price > 0 or model.output_price > 0:
             cost = (
                 usage.prompt_tokens * model.input_price
                 + usage.completion_tokens * model.output_price
             ) / 1_000_000
+        else:
+            pricing = lookup_pricing(model.name)
+            if pricing is not None:
+                cost = compute_cost(
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    cached_tokens=usage.cached_tokens,
+                    pricing=pricing,
+                )
+            else:
+                cost = 0.0
         self._usage_recorder.record(
             UsageRecord.from_usage(
                 timestamp=time.time(),
