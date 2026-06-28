@@ -57,9 +57,7 @@ class InvokeContext:
     # (e.g. headless), in which case the tool reports scheduling unavailable.
     scheduler: Scheduler | None = field(default=None)
     agent_manager: AgentManager | None = field(default=None)
-    # The parent session's effective (running) model alias, including a runtime
-    # failover override, so a spawned subagent inherits the model actually in use
-    # rather than re-deriving the configured/default model.
+    # Parent's effective model alias (incl. failover override) for subagent inheritance.
     active_model: str | None = field(default=None)
     user_input_callback: UserInputCallback | None = field(default=None)
     sampling_callback: MCPSamplingHandler | None = field(default=None)

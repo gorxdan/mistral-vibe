@@ -24,10 +24,8 @@ def _is_retryable_http_error(e: Exception) -> bool:
     if isinstance(e, httpx.HTTPStatusError):
         code = e.response.status_code
         if code == HTTPStatus.TOO_MANY_REQUESTS:
-            # Don't blind-retry a rate limit: re-firing at an already limited
-            # endpoint amplifies load and delays failover to another model.
-            # Retry only when the server gave an explicit Retry-After (honor its
-            # window); otherwise raise so the caller fails over immediately.
+            # Blind-retrying a rate limit amplifies load and delays failover;
+            # retry only on an explicit Retry-After, else raise to fail over.
             return _retry_after_seconds(e) is not None
         return code in {408, 409, 425, 500, 502, 503, 504, 529}
     if isinstance(e, _RETRYABLE_REQUEST_ERRORS):

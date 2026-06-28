@@ -225,8 +225,6 @@ class TestTaskToolModelRouting:
     async def test_omitted_model_prefers_parent_effective_model(
         self, task_tool: Task, ctx: InvokeContext
     ) -> None:
-        # ctx.active_model carries the parent's effective (running) model, incl. a
-        # runtime failover override; it must win over the configured active_model.
         ctx.active_model = "parent-running-model"
 
         async def mock_act(task: str):

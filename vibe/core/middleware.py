@@ -35,9 +35,7 @@ class ConversationContext:
     messages: MessageList
     stats: AgentStats
     config: VibeConfig
-    # The model actually serving this turn — the failover override when one is
-    # active, else None to fall back to the configured active model. Context
-    # budgeting must size to this, not the configured primary.
+    # Model serving this turn (failover override); budget sizes to this, not config.
     active_model: ModelConfig | None = None
 
 

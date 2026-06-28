@@ -95,9 +95,6 @@ async def test_act_raises_when_model_lacks_vision(
 async def test_act_image_check_uses_failover_override_not_config(
     png_attachment: ImageAttachment,
 ) -> None:
-    # Configured primary supports images, but the active failover override does
-    # not. The turn runs on the override, so the capability check must use the
-    # effective model, not config.active_model.
     config = _config_with_both_models()
     backend = FakeBackend([mock_llm_chunk(content="ok")])
     agent = build_test_agent_loop(config=config, backend=backend)

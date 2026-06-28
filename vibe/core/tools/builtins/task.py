@@ -324,8 +324,7 @@ class Task(
                     label=args.agent,
                     max_turns=DEFAULT_ISOLATED_MAX_TURNS,
                     deliver=True,
-                    # Inherit the parent's effective (running) model so the isolated
-                    # subprocess doesn't re-derive the hardcoded default (no API key).
+                    # Inherit the parent's effective model (not the configured default).
                     model=args.model
                     or ctx.active_model
                     or (

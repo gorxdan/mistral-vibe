@@ -870,9 +870,6 @@ class TestBuildHttpErrorBodyReading:
 
 @pytest.mark.asyncio
 async def test_client_bounds_network_timeouts_but_keeps_long_read() -> None:
-    # Network ops (connect/write/pool) must fail fast so failover engages on a
-    # dead/unreachable endpoint; generation read stays patient so slow reasoning
-    # is not killed.
     import httpx as _httpx
 
     provider = ProviderConfig(

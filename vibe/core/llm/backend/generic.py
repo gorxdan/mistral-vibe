@@ -243,10 +243,8 @@ def _get_adapter(api_style: str) -> APIAdapter:
     return _ADAPTERS[api_style]
 
 
-# Network-op timeouts kept short so a dead/unreachable endpoint fails fast and
-# failover can engage, instead of inheriting the long generation timeout (which
-# blanket-applied would let an unreachable host hang for minutes). `read` stays
-# at the full generation timeout so slow reasoning streams are not killed.
+# Bound connect/write/pool so a dead endpoint fails fast (failover can engage);
+# `read` keeps the full generation timeout so slow reasoning isn't killed.
 _CONNECT_TIMEOUT = 15.0
 _NETWORK_OP_TIMEOUT = 60.0
 
