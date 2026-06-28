@@ -223,10 +223,10 @@ class RemoteTool(BaseModel):
         if callable(dump):
             try:
                 v = dump()
-            except Exception:
+            except Exception as e:
                 raise ValueError(
                     "inputSchema must be a dict or have a valid model_dump method"
-                )
+                ) from e
         if not isinstance(v, dict):
             raise ValueError("inputSchema must be a dict")
         return v

@@ -95,12 +95,12 @@ class VoiceManager:
 
         try:
             self._audio_recorder.start(mode, sample_rate=model.sample_rate)
-        except AlreadyRecordingError:
-            raise RecordingStartError("Recording is already in progress")
-        except AudioBackendUnavailableError:
-            raise RecordingStartError("Audio backend is unavailable")
-        except NoAudioInputDeviceError:
-            raise RecordingStartError("No audio input device found")
+        except AlreadyRecordingError as e:
+            raise RecordingStartError("Recording is already in progress") from e
+        except AudioBackendUnavailableError as e:
+            raise RecordingStartError("Audio backend is unavailable") from e
+        except NoAudioInputDeviceError as e:
+            raise RecordingStartError("No audio input device found") from e
 
         self._tracking.reset()
         self._set_state(TranscribeState.RECORDING)

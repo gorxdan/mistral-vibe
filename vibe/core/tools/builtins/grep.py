@@ -445,11 +445,11 @@ class Grep(
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     proc.communicate(), timeout=self.config.default_timeout
                 )
-            except TimeoutError:
+            except TimeoutError as e:
                 await kill_async_subprocess(proc, kill_process_group=False)
                 raise ToolError(
                     f"Search timed out after {self.config.default_timeout}s"
-                )
+                ) from e
 
             stdout = (
                 decode_safe(stdout_bytes, from_subprocess=True).text

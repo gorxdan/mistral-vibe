@@ -316,8 +316,8 @@ class WebFetch(
 
         try:
             response = await self._do_fetch(url, timeout, headers, pinned_ip)
-        except httpx.TimeoutException:
-            raise ToolError(f"Request timed out after {timeout} seconds")
+        except httpx.TimeoutException as e:
+            raise ToolError(f"Request timed out after {timeout} seconds") from e
         except httpx.RequestError as e:
             raise ToolError(f"Failed to fetch URL: {e}") from e
 
