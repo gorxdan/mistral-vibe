@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from vibe import __version__
+from vibe.core.loop import MAX_LOOPS_PER_SESSION, MIN_INTERVAL_SECONDS
 from vibe.core.skills.builtins.capsules import SkillDocCapsule
 from vibe.core.workflows.runtime import DEFAULT_MAX_CONCURRENT
 
@@ -875,7 +876,7 @@ Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
   session; remote sessions and the active session cannot be deleted here.
 - `/rewind` - Rewind to a previous message
 - `/loop <interval> <prompt>` - Schedule a recurring prompt (e.g. `/loop 30s ping`).
-  Intervals: `Ns/Nm/Nh/Nd`, minimum 30s, max 50 loops/session.
+  Intervals: `Ns/Nm/Nh/Nd`, minimum __MIN_INTERVAL_S__s, max __MAX_LOOPS__ loops/session.
   - `/loop` (or `/loop list` / `/loop ls`) - List current scheduled loops.
   - `/loop cancel <id|all>` (aliases `rm`, `stop`, `delete`) - Cancel a loop.
   - Loops fire only when the agent is idle and the input bar is focused. At
@@ -1380,11 +1381,13 @@ VIBE_DOC_CAPSULE = SkillDocCapsule(
         "commands, flags, hooks, workflows, ~/.vibe — the source of truth."
     ),
     user_invocable=False,
-    # Substitute the runtime's concurrent-agent cap from the single source of
-    # truth (vibe.core.workflows.runtime) so this doc never holds a stale copy.
+    # Substitute the runtime's caps from the single source of truth so this doc
+    # never holds a stale copy (the concurrent-agent cap lives in
+    # vibe.core.workflows.runtime; the schedule limits in vibe.core.loop).
     # __VIBE_VERSION__ is left intact for render_agent_prompt() to fill later.
-    prompt_template=_PROMPT_TEMPLATE.replace(
-        "__MAX_CONCURRENT_AGENTS__", str(DEFAULT_MAX_CONCURRENT)
-    ),
+    prompt_template=_PROMPT_TEMPLATE
+    .replace("__MAX_CONCURRENT_AGENTS__", str(DEFAULT_MAX_CONCURRENT))
+    .replace("__MIN_INTERVAL_S__", str(MIN_INTERVAL_SECONDS))
+    .replace("__MAX_LOOPS__", str(MAX_LOOPS_PER_SESSION)),
 )
 SKILL = VIBE_DOC_CAPSULE.to_skill_info(__version__)

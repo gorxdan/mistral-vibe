@@ -39,8 +39,8 @@ class WorkflowResultsArgs(BaseModel):
         default=False,
         description=(
             "Include the full response text for each agent. Default (false) "
-            "truncates each agent's response to 4KB so a large run doesn't "
-            "flood context. Pass true when you need the complete output."
+            "truncates each agent's response to 4000 chars so a large run "
+            "doesn't flood context. Pass true when you need the complete output."
         ),
     )
 

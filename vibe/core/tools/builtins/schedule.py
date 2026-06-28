@@ -5,7 +5,12 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
-from vibe.core.loop import LoopError, format_duration, parse_interval
+from vibe.core.loop import (
+    MIN_INTERVAL_SECONDS,
+    LoopError,
+    format_duration,
+    parse_interval,
+)
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -55,7 +60,7 @@ class Schedule(BaseTool[ScheduleArgs, ScheduleResult, ScheduleConfig, BaseToolSt
         "harness fires the turn at the interval — you never sleep or block. Use "
         "this for 'check again in 5m', to revisit a long-running workflow later "
         "(instead of polling workflow_status), or any wait — NOT `sleep`. Min "
-        "interval 30s."
+        f"interval {MIN_INTERVAL_SECONDS}s."
     )
 
     async def run(

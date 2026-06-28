@@ -30,7 +30,7 @@ delivery or when you need the structured `return_value`.
 
 - `run_id` (required) — e.g. `wf-1`. No "all runs" form.
 - `phase` (optional) — filter to one named phase.
-- `raw` (default false) — truncate each agent response to 4KB and the
+- `raw` (default false) — truncate each agent response to 4000 chars and the
   `return_value` to ~16KB. Pass `raw=true` for full, untruncated outputs.
 
 ## Result Shape
