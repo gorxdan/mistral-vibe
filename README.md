@@ -2,8 +2,8 @@
 
 [![Latest Tag](https://img.shields.io/github/v/tag/gorxdan/mistral-vibe?label=version&sort=date)](https://github.com/gorxdan/mistral-vibe/tags)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/release/python-3120/)
-[![CI Status](https://github.com/dan-campos/chaton/actions/workflows/ci.yml/badge.svg)](https://github.com/dan-campos/chaton/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/dan-campos/chaton)](https://github.com/dan-campos/chaton/blob/main/LICENSE)
+[![CI Status](https://github.com/gorxdan/mistral-vibe/actions/workflows/ci.yml/badge.svg)](https://github.com/gorxdan/mistral-vibe/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/gorxdan/mistral-vibe)](https://github.com/gorxdan/mistral-vibe/blob/main/LICENSE)
 
 ```
 ██████████████████░░
