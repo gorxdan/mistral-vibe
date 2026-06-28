@@ -780,12 +780,27 @@ vibe --no-worktree                  # Force worktree isolation OFF for this invo
 ```
 
 Worktree isolation is **on by default** for the interactive CLI and `vibe -p`:
-writes land on a throwaway branch that fast-forward merges back into the
-original HEAD on clean exit. If the original tree is dirty or HEAD moved
-(another agent committed), the merge is held and the branch stays for a manual
-`git merge`. Set `worktree.mode = "off"` in config to disable persistently, or
-`"auto-by-entrypoint"` for the legacy programmatic-only split. ACP is not
-isolated (multi-session-per-process; tracked as a follow-up).
+writes land on a throwaway branch that is merged back into the original HEAD on
+clean exit — rebased onto the latest HEAD first (so concurrent sessions don't
+strand it), then fast-forwarded, including when the original tree was dirty at
+start. The branch is kept for recovery only if it genuinely conflicts with
+another session's changes; land it with `vibe worktree merge <branch>` (or
+discard with `vibe worktree discard <branch>`). Set `worktree.mode = "off"` in
+config to disable persistently, or `"auto-by-entrypoint"` for the legacy
+programmatic-only split. ACP is not isolated (multi-session-per-process; tracked
+as a follow-up).
+
+The `vibe worktree` subcommand manages stranded branches outside the TUI
+(dispatched before the main parser, so it works on a fresh checkout):
+
+- `vibe worktree list` — show worktrees and any `vibe/*` branches holding
+  unmerged work from prior sessions (also printed as a startup notice when
+  stranded work exists).
+- `vibe worktree merge <branch>` — land a branch into HEAD. Rebases onto HEAD
+  first, then fast-forwards; aborts cleanly (keeping the branch) on a real
+  conflict.
+- `vibe worktree discard <branch>` — delete a branch that is no longer wanted
+  (forces deletion of unmerged work; prompts unless `--force`).
 
 ## Built-in Agents
 
@@ -850,6 +865,20 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
   verify step.
 
 Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
+
+### Async subagents (background delegation)
+
+The `task` tool accepts `async_run=true` (default) to delegate work to a
+subagent in the background and return immediately with a `task_id` of the form
+`asub-N`, instead of blocking the turn for the result. The result is delivered
+to the host automatically when the subagent finishes. Use it for fan-out —
+spawn what you need, then keep working or end the turn; the completion surfaces
+at the top of a later turn. Isolated (write-capable) async subagents stream
+their stdout to a log file under the scratchpad; in-process ones stream their
+partial response. Either way the Tasks pane and the `background` tool show the
+agent, model, elapsed time, turns used, worktree/branch, the prompt, and a live
+log tail / streaming response while the subagent runs — so a long-running
+background agent is observable, not a blind `asub-N` row.
 
 ## Built-in Slash Commands
 
@@ -1155,9 +1184,10 @@ the detail — so one failed agent degrades the batch instead of crashing the ru
 ### Task Manager (background processes, workflows, teams, loops)
 
 `/tasks` (or `/workflows`, or `ctrl+w`) opens the Tasks pane — a unified monitor
-for everything running in the background. It aggregates five categories into one
+for everything running in the background. It aggregates six categories into one
 list with a category filter: bash processes spawned with `background=true`,
-workflow runs, in-flight workflow agents, teammates, and scheduled loops. Keys:
+workflow runs, in-flight workflow agents, async subagents (`task(async_run=true)`,
+ids `asub-N`), teammates, and scheduled loops. Keys:
 
 | Key | Action |
 |---|---|
@@ -1172,7 +1202,7 @@ workflow runs, in-flight workflow agents, teammates, and scheduled loops. Keys:
 
 The task-id grammar routes stop/pause to the right owner: `proc-N` (bash
 process), `wf-N` (workflow run), `wf-N/live-AGENT` (in-flight agent),
-`team:NAME` (teammate), `loop-LOOPID` (scheduled loop).
+`asub-N` (async subagent), `team:NAME` (teammate), `loop-LOOPID` (scheduled loop).
 
 ### Backgrounding processes
 

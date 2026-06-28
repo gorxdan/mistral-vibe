@@ -54,7 +54,7 @@ def _print_usage() -> None:
     print(
         "usage: vibe worktree {list | merge <branch> | discard <branch>}\n"
         "  list              show worktree branches holding unmerged work\n"
-        "  merge <branch>    fast-forward-merge a worktree branch into HEAD\n"
+        "  merge <branch>    rebase-then-fast-forward a worktree branch into HEAD\n"
         "  discard <branch>  delete a worktree branch and its directory "
         "(-f to skip the unmerged-work prompt)",
         file=sys.stderr,
