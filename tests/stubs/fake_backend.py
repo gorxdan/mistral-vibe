@@ -103,6 +103,7 @@ class FakeBackend:
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_headers_sink: dict[str, str] | None = None,
     ) -> LLMChunk:
         if self._exception_to_raise:
             raise self._exception_to_raise
@@ -135,6 +136,7 @@ class FakeBackend:
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_headers_sink: dict[str, str] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         if self._exception_to_raise:
             raise self._exception_to_raise

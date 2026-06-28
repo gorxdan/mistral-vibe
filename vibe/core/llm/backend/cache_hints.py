@@ -23,12 +23,18 @@ _EPHEMERAL = {"type": "ephemeral"}
 
 
 def build_cache_hint(
-    provider: ProviderConfig, converted_messages: list[dict[str, Any]]
+    provider: ProviderConfig,
+    converted_messages: list[dict[str, Any]],
+    *,
+    session_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Return a request-body fragment to merge, or None for no hint.
 
     For ``anthropic-compat`` the messages are tagged in place (the caller
     serializes this exact list) and an empty fragment is returned.
+
+    ``session_id`` is the stable per-conversation routing pin; when given it is
+    preferred over the content-hash fallback for OpenAI providers.
     """
     cache = getattr(provider, "cache", None)
     if cache is None or cache.mode != "explicit" or cache.style == "off":
@@ -36,7 +42,9 @@ def build_cache_hint(
 
     if cache.style == "passthrough":
         fragment = copy.deepcopy(cache.extra_body)
-        key = cache.cache_key or _auto_openai_cache_key(provider, converted_messages)
+        key = cache.cache_key or _auto_openai_cache_key(
+            provider, converted_messages, session_id
+        )
         if key:
             fragment.setdefault("prompt_cache_key", key)
         return fragment
@@ -58,7 +66,9 @@ def _is_openai_provider(provider: ProviderConfig) -> bool:
 
 
 def _auto_openai_cache_key(
-    provider: ProviderConfig, converted_messages: list[dict[str, Any]]
+    provider: ProviderConfig,
+    converted_messages: list[dict[str, Any]],
+    session_id: str | None = None,
 ) -> str | None:
     """Stable per-conversation ``prompt_cache_key`` for OpenAI.
 
@@ -68,14 +78,16 @@ def _auto_openai_cache_key(
     Other generic providers (GLM/zai, DeepSeek, Groq, Together) cache reliably
     without it, so this is OpenAI-only to avoid perturbing their working path.
 
-    Key on the stable prefix — the system prompt plus the first user turn:
-    identical across every turn of a conversation (the prefix doesn't change as
-    history grows), and distinct across conversations so concurrent sessions
-    spread over partitions instead of contending on one machine's cache.
+    Prefer the conversation's ``session_id`` (codex keys on its thread_id, a
+    per-session UUID): unique per conversation so concurrent sessions spread
+    over partitions instead of colliding, and immune to prefix rewrites. Only
+    when no session id is threaded through (one-shot callers: memory, summary)
+    fall back to a content hash of the stable prefix (system + first user turn),
+    which is identical across a conversation's turns and distinct across openings.
     """
     if not _is_openai_provider(provider):
         return None
-    return prefix_cache_key(converted_messages)
+    return session_id or prefix_cache_key(converted_messages)
 
 
 def prefix_cache_key(messages: list[dict[str, Any]]) -> str | None:

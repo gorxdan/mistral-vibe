@@ -31,6 +31,10 @@ class RequestParams:
     thinking: str = "off"
     response_format: dict[str, Any] | None = None
     extra_body: dict[str, Any] | None = None
+    # Stable per-conversation id used as the OpenAI ``prompt_cache_key`` routing
+    # pin (mirrors codex's thread_id). When absent, the OpenAI paths fall back to
+    # a content hash of the prefix. Non-OpenAI providers ignore it.
+    cache_session_id: str | None = None
 
 
 class APIAdapter(Protocol):

@@ -520,6 +520,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         self.session_id = generate_session_id()
         self.parent_session_id: str | None = None
+        # codex (openai-chatgpt) sticky-routing token: captured from the
+        # `x-codex-turn-state` response header and replayed on subsequent
+        # requests within the same turn so they pin to one backend partition and
+        # keep the prompt cache warm. Reset at each user turn (codex forbids
+        # replaying it across turns). See _chat_streaming / _get_extra_headers.
+        self._codex_turn_state: str | None = None
         self.scratchpad_dir = (
             init_scratchpad(self.session_id) if not is_subagent else None
         )
@@ -1389,7 +1395,40 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if not any(k.lower() == "user-agent" for k in headers):
             headers["user-agent"] = get_user_agent(provider.backend)
         headers["x-affinity"] = self.session_id
+        # The codex backend pins cache routing on per-conversation identity
+        # headers (it does not route on the body prompt_cache_key alone). Send
+        # the session id as both, matching codex and the body prompt_cache_key.
+        # Scoped to openai-chatgpt so other providers are untouched. The volatile
+        # x-codex-turn-state token is added per-call by the chat methods, not here.
+        if getattr(provider, "api_style", "") == "openai-chatgpt":
+            headers["session-id"] = self.session_id
+            headers["thread-id"] = self.session_id
         return headers
+
+    def _codex_routing(
+        self, provider: ProviderConfig
+    ) -> tuple[dict[str, str], dict[str, str] | None]:
+        """Per-call routing headers + a sink to capture the next turn-state token.
+
+        For the codex (openai-chatgpt) backend, replay the captured
+        ``x-codex-turn-state`` so the call sticks to the partition that already
+        holds the warm prefix. The token is reset at each user turn (main_call)
+        because codex forbids replaying a turn's token into the next turn.
+        Returns ``(headers, sink)``; ``sink`` is None for non-codex providers.
+        """
+        headers = self._get_extra_headers(provider)
+        if getattr(provider, "api_style", "") != "openai-chatgpt":
+            return headers, None
+        if self._is_user_prompt_call:
+            self._codex_turn_state = None
+        elif self._codex_turn_state:
+            headers["x-codex-turn-state"] = self._codex_turn_state
+        return headers, {}
+
+    def _capture_codex_turn_state(self, sink: dict[str, str] | None) -> None:
+        """Stash the codex sticky-routing token from a response for the next call."""
+        if sink and (ts := sink.get("x-codex-turn-state")):
+            self._codex_turn_state = ts
 
     def _get_memory_store(self) -> MemoryStore | None:
         if self._is_subagent or not self.config.memory.enabled:
@@ -3464,18 +3503,21 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 model=active_model.name, provider=provider.name
             ) as _span:
                 start_time = time.perf_counter()
+                extra_headers, turn_state_sink = self._codex_routing(provider)
                 result = await self.backend.complete(
                     model=active_model,
                     messages=self._messages_for_backend(active_model),
                     temperature=active_model.temperature,
                     tools=available_tools,
                     tool_choice=tool_choice,
-                    extra_headers=self._get_extra_headers(provider),
+                    extra_headers=extra_headers,
                     max_tokens=max_tokens,
                     metadata=backend_metadata.model_dump(exclude_none=True),
                     response_format=self._response_format,
+                    response_headers_sink=turn_state_sink,
                 )
                 end_time = time.perf_counter()
+                self._capture_codex_turn_state(turn_state_sink)
 
                 if result.usage is None:
                     raise AgentLoopLLMResponseError(
@@ -3538,16 +3580,18 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     # LLMChunk.__add__ per chunk (which re-concatenates the whole
                     # message every delta -> O(n^2) over a response).
                     chunk_acc = LLMChunkAccumulator()
+                    extra_headers, turn_state_sink = self._codex_routing(provider)
                     async for chunk in self.backend.complete_streaming(
                         model=active_model,
                         messages=self._messages_for_backend(active_model),
                         temperature=active_model.temperature,
                         tools=available_tools,
                         tool_choice=tool_choice,
-                        extra_headers=self._get_extra_headers(provider),
+                        extra_headers=extra_headers,
                         max_tokens=max_tokens,
                         metadata=backend_metadata.model_dump(exclude_none=True),
                         response_format=self._response_format,
+                        response_headers_sink=turn_state_sink,
                     ):
                         if chunk.correlation_id:
                             self.telemetry_client.last_correlation_id = (
@@ -3563,6 +3607,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         chunk_acc.add(processed_chunk)
                         yield processed_chunk
                     end_time = time.perf_counter()
+                    self._capture_codex_turn_state(turn_state_sink)
 
                     chunk_agg = chunk_acc.build()
                     if chunk_agg is None or chunk_agg.usage is None:

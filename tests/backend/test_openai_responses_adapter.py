@@ -150,6 +150,20 @@ class TestPrepareRequest:
         ]
         assert _prepare(adapter, provider, other)["prompt_cache_key"] != key
 
+    def test_prompt_cache_key_uses_session_id_when_present(self, adapter, provider):
+        # When the conversation's session id is threaded through it becomes the
+        # prompt_cache_key verbatim (mirrors codex's thread_id and the thread-id
+        # header), so routing and the body key agree.
+        msgs = [
+            LLMMessage(role=Role.system, content="You are vibe."),
+            LLMMessage(role=Role.user, content="fix the bug"),
+        ]
+        payload = _prepare(adapter, provider, msgs, cache_session_id="sess-xyz-789")
+        assert payload["prompt_cache_key"] == "sess-xyz-789"
+        # Same opening, different session id => a distinct partition pin.
+        other = _prepare(adapter, provider, msgs, cache_session_id="sess-aaa-000")
+        assert other["prompt_cache_key"] == "sess-aaa-000"
+
     def test_encrypted_reasoning_requested_only_when_reasoning_on(
         self, adapter, provider
     ):
@@ -1473,6 +1487,74 @@ class TestGenericBackendIntegration:
             assert payload["stream"] is True
             # Responses API does not use stream_options
             assert "stream_options" not in payload
+
+    @pytest.mark.asyncio
+    async def test_streaming_captures_codex_turn_state_into_sink(self):
+        # The codex sticky-routing token arrives on the response header; the
+        # backend surfaces it into the caller's sink so the next request can
+        # replay it and stay pinned to the warm partition.
+        base_url = OPENAI_BASE_URL
+        with respx.mock(base_url=base_url) as mock_api:
+            mock_api.post(OPENAI_RESPONSES_PATH).mock(
+                return_value=httpx.Response(
+                    status_code=200,
+                    stream=httpx.ByteStream(
+                        b'data: {"type":"response.completed","response":{"id":"r","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"}],"usage":{"input_tokens":10,"output_tokens":2}}}\n\n'
+                        b"data: [DONE]\n\n"
+                    ),
+                    headers={
+                        "Content-Type": "text/event-stream",
+                        "x-codex-turn-state": "turn-token-42",
+                    },
+                )
+            )
+            backend = _make_backend(base_url)
+            sink: dict[str, str] = {}
+            async for _ in backend.complete_streaming(
+                model=_make_model(),
+                messages=[LLMMessage(role=Role.user, content="hi")],
+                temperature=0.2,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                extra_headers=None,
+                response_headers_sink=sink,
+            ):
+                pass
+
+            assert sink.get("x-codex-turn-state") == "turn-token-42"
+
+    @pytest.mark.asyncio
+    async def test_streaming_uses_session_id_from_metadata_as_cache_key(self):
+        # The conversation's session id (carried in metadata) becomes the body
+        # prompt_cache_key verbatim, so it agrees with the thread-id header.
+        base_url = OPENAI_BASE_URL
+        with respx.mock(base_url=base_url) as mock_api:
+            route = mock_api.post(OPENAI_RESPONSES_PATH).mock(
+                return_value=httpx.Response(
+                    status_code=200,
+                    stream=httpx.ByteStream(
+                        b'data: {"type":"response.completed","response":{"id":"r","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}],"role":"assistant"}],"usage":{"input_tokens":10,"output_tokens":2}}}\n\n'
+                        b"data: [DONE]\n\n"
+                    ),
+                    headers={"Content-Type": "text/event-stream"},
+                )
+            )
+            backend = _make_backend(base_url)
+            async for _ in backend.complete_streaming(
+                model=_make_model(),
+                messages=[LLMMessage(role=Role.user, content="hi")],
+                temperature=0.2,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                extra_headers=None,
+                metadata={"session_id": "sess-77"},
+            ):
+                pass
+
+            payload = json.loads(route.calls.last.request.content)
+            assert payload["prompt_cache_key"] == "sess-77"
 
 
 def _cached(usage: dict | None) -> int:

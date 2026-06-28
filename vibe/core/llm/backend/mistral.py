@@ -281,7 +281,7 @@ class MistralBackend:
             self._client = self._create_mistral_client()
         return self._client
 
-    async def complete(
+    async def complete(  # noqa: PLR0913
         self,
         *,
         model: ModelConfig,
@@ -294,10 +294,11 @@ class MistralBackend:
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_headers_sink: dict[str, str] | None = None,
     ) -> LLMChunk:
-        # extra_body is honored only by the generic backend; accepted here for a
-        # uniform interface and ignored.
-        del extra_body
+        # extra_body / response_headers_sink are generic-backend features (codex
+        # sticky-routing); accepted here for a uniform interface and ignored.
+        del extra_body, response_headers_sink
         try:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
             if reasoning_effort is not None:
@@ -369,7 +370,7 @@ class MistralBackend:
                 tool_choice=tool_choice,
             ) from e
 
-    async def complete_streaming(
+    async def complete_streaming(  # noqa: PLR0913
         self,
         *,
         model: ModelConfig,
@@ -382,8 +383,9 @@ class MistralBackend:
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_headers_sink: dict[str, str] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
-        del extra_body  # generic-backend only; ignored here
+        del extra_body, response_headers_sink  # generic-backend only; ignored here
         try:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
             if reasoning_effort is not None:

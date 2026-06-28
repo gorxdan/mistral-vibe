@@ -25,7 +25,7 @@ class BackendLike(Protocol):
         exc_tb: types.TracebackType | None,
     ) -> None: ...
 
-    async def complete(
+    async def complete(  # noqa: PLR0913
         self,
         *,
         model: ModelConfig,
@@ -38,6 +38,7 @@ class BackendLike(Protocol):
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_headers_sink: dict[str, str] | None = None,
     ) -> LLMChunk:
         """Complete a chat conversation using the specified model and provider.
 
@@ -63,7 +64,7 @@ class BackendLike(Protocol):
     # Note: actual implementation should be an async function,
     # but we can't make this one async, as it would lead to wrong type inference
     # https://stackoverflow.com/a/68911014
-    def complete_streaming(
+    def complete_streaming(  # noqa: PLR0913
         self,
         *,
         model: ModelConfig,
@@ -76,6 +77,7 @@ class BackendLike(Protocol):
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_headers_sink: dict[str, str] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         """Equivalent of the complete method, but yields LLMEvent objects
         instead of a single LLMEvent.

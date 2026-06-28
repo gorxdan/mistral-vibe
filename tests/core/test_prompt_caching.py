@@ -71,6 +71,48 @@ def test_non_openai_provider_gets_no_auto_cache_key() -> None:
     assert "prompt_cache_key" not in hint
 
 
+def test_openai_prefers_session_id_over_content_hash() -> None:
+    # When the conversation's stable session id is threaded through, it is the
+    # routing pin (mirrors codex's thread_id) — not the content hash. This makes
+    # the key unique per conversation even when two sessions share an opening.
+    p = ProviderConfig(name="openai", api_base="https://api.openai.com/v1")
+    msgs = [
+        {"role": "system", "content": "You are vibe."},
+        {"role": "user", "content": "hello"},
+    ]
+    hint = build_cache_hint(p, msgs, session_id="sess-abc-123")
+    assert hint is not None
+    assert hint["prompt_cache_key"] == "sess-abc-123"
+    # Identical opening but a different session id => a different partition.
+    other = build_cache_hint(p, msgs, session_id="sess-def-456")
+    assert other is not None
+    assert other["prompt_cache_key"] == "sess-def-456"
+
+
+def test_non_openai_provider_ignores_session_id() -> None:
+    # The session-id pin is OpenAI-only; non-OpenAI providers stay key-less even
+    # when a session id is threaded through.
+    p = ProviderConfig(name="zai", api_base="https://api.z.ai/api/coding/paas/v4")
+    hint = build_cache_hint(
+        p,
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        session_id="sess-abc-123",
+    )
+    assert hint is not None
+    assert "prompt_cache_key" not in hint
+
+
+def test_openai_falls_back_to_content_hash_without_session_id() -> None:
+    # One-shot callers (memory, summary) thread no session id; the OpenAI path
+    # still pins, via a content hash of the stable prefix.
+    p = ProviderConfig(name="openai", api_base="https://api.openai.com/v1")
+    hint = build_cache_hint(
+        p, [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    )
+    assert hint is not None
+    assert hint["prompt_cache_key"].startswith("vibe-")
+
+
 def test_sakana_gets_stable_per_conversation_prompt_cache_key() -> None:
     # Sakana uses the OpenAI Responses wire format and needs the same partition
     # pinning that OpenAI does.

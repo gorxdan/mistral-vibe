@@ -584,6 +584,7 @@ class OpenAIResponsesAdapter(APIAdapter):
         thinking: str,
         enable_streaming: bool,
         response_format: dict[str, Any] | None = None,
+        cache_session_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model_name,
@@ -592,11 +593,14 @@ class OpenAIResponsesAdapter(APIAdapter):
         }
         # Pin the conversation to one cache partition (OpenAI's prefix auto-cache
         # load-balances across machines and misses without a routing key; Sakana
-        # shares the same need). Same key the generic path derives. Responses
-        # adapters cover OpenAI and Sakana, so no gating needed.
+        # shares the same need). Prefer the stable per-conversation session id
+        # (codex keys prompt_cache_key on its thread_id, and we send the same id
+        # as the thread-id header so routing and the body key agree); fall back
+        # to a content hash of the prefix for one-shot callers with no session.
+        # Responses adapters cover OpenAI and Sakana, so no gating needed.
         from vibe.core.llm.backend.cache_hints import prefix_cache_key
 
-        if cache_key := prefix_cache_key(input_items):
+        if cache_key := (cache_session_id or prefix_cache_key(input_items)):
             payload["prompt_cache_key"] = cache_key
 
         if self._is_temperature_supported(model_name):
@@ -668,6 +672,7 @@ class OpenAIResponsesAdapter(APIAdapter):
             thinking=thinking,
             enable_streaming=enable_streaming,
             response_format=response_format,
+            cache_session_id=params.cache_session_id,
         )
 
         headers = self.build_headers(api_key)

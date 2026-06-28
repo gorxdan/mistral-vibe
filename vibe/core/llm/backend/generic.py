@@ -149,7 +149,9 @@ class OpenAIAdapter(APIAdapter):
         # extra_body (caller wins).
         from vibe.core.llm.backend.cache_hints import build_cache_hint
 
-        hint = build_cache_hint(provider, converted_messages)
+        hint = build_cache_hint(
+            provider, converted_messages, session_id=params.cache_session_id
+        )
         if hint:
             merged = dict(extra_body or {})
             for key, value in hint.items():
@@ -327,7 +329,7 @@ class GenericBackend:
             self._owns_client = True
         return self._client
 
-    async def complete(
+    async def complete(  # noqa: PLR0913
         self,
         *,
         model: ModelConfig,
@@ -340,6 +342,7 @@ class GenericBackend:
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_headers_sink: dict[str, str] | None = None,
     ) -> LLMChunk:
         # The ChatGPT-subscription backend (codex) rejects non-streaming
         # requests with "Stream must be set to true", so route through the
@@ -359,6 +362,7 @@ class GenericBackend:
                 metadata=metadata,
                 response_format=response_format,
                 extra_body=extra_body,
+                response_headers_sink=response_headers_sink,
             ):
                 accumulator.add(chunk)
             aggregated = accumulator.build()
@@ -394,6 +398,7 @@ class GenericBackend:
                 thinking=model.thinking,
                 response_format=response_format,
                 extra_body=extra_body,
+                cache_session_id=(metadata or {}).get("session_id"),
             )
         )
 
@@ -407,7 +412,9 @@ class GenericBackend:
         url = f"{base}{req.endpoint}"
 
         try:
-            res_data, _ = await self._make_request(url, req.body, headers)
+            res_data, resp_headers = await self._make_request(url, req.body, headers)
+            if response_headers_sink is not None:
+                response_headers_sink.update(resp_headers)
             return adapter.parse_response(res_data, self._provider)
 
         except httpx.HTTPStatusError as e:
@@ -433,7 +440,7 @@ class GenericBackend:
                 tool_choice=tool_choice,
             ) from e
 
-    async def complete_streaming(
+    async def complete_streaming(  # noqa: PLR0913
         self,
         *,
         model: ModelConfig,
@@ -446,6 +453,7 @@ class GenericBackend:
         metadata: dict[str, str] | None = None,
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
+        response_headers_sink: dict[str, str] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         api_key, auth_headers = await self._resolve_auth()
 
@@ -466,6 +474,7 @@ class GenericBackend:
                 thinking=model.thinking,
                 response_format=response_format,
                 extra_body=extra_body,
+                cache_session_id=(metadata or {}).get("session_id"),
             )
         )
 
@@ -479,7 +488,9 @@ class GenericBackend:
         url = f"{base}{req.endpoint}"
 
         try:
-            async for res_data in self._make_streaming_request(url, req.body, headers):
+            async for res_data in self._make_streaming_request(
+                url, req.body, headers, response_headers_sink=response_headers_sink
+            ):
                 yield adapter.parse_response(res_data, self._provider)
 
         except httpx.HTTPStatusError as e:
@@ -524,7 +535,12 @@ class GenericBackend:
 
     @async_generator_retry(tries=3)
     async def _make_streaming_request(
-        self, url: str, data: bytes, headers: dict[str, str]
+        self,
+        url: str,
+        data: bytes,
+        headers: dict[str, str],
+        *,
+        response_headers_sink: dict[str, str] | None = None,
     ) -> AsyncGenerator[dict[str, Any]]:
         # Slot spans the whole stream — a live response stays in-flight until drained.
         async with provider_slot(self._provider):
@@ -535,6 +551,11 @@ class GenericBackend:
                 if not response.is_success:
                     await response.aread()
                 response.raise_for_status()
+                # Surface response headers (e.g. the codex `x-codex-turn-state`
+                # sticky-routing token) to the caller as soon as the stream opens,
+                # before any chunk — the caller replays it on the next request.
+                if response_headers_sink is not None:
+                    response_headers_sink.update(dict(response.headers))
                 async for line in iter_sse_lines(response):
                     if line.strip() == "":
                         continue
