@@ -529,20 +529,6 @@ class TasksApp(Container):
             )
         return text
 
-    @staticmethod
-    def _append_streaming_response(text: Text, d: dict[str, Any], status: str) -> None:
-        preview = d.get("response_preview") or ""
-        if preview:
-            text.append("\n\n--- Response (streaming) ---", style="bold")
-            text.append(f"\n{_truncate(preview, _AGENT_RESPONSE_SNIPPET)}")
-        elif status == "running":
-            text.append(
-                "\n\n(Streaming — response appears here as it is produced.)",
-                style="dim",
-            )
-        else:
-            text.append("\n\n(No response captured.)", style="dim")
-
     def _build_detail_text(self, entry: TaskEntry) -> Text:
         text = Text()
         text.append(f"{entry.task_id}", style="bold cyan")
@@ -593,28 +579,89 @@ class TasksApp(Container):
             if prompt:
                 text.append("\n\n--- Prompt ---", style="bold")
                 text.append(f"\n{_truncate(prompt, _AGENT_PROMPT_SNIPPET)}")
-            self._append_streaming_response(text, d, entry.status)
+            preview = d.get("response_preview") or ""
+            if preview:
+                text.append("\n\n--- Response (streaming) ---", style="bold")
+                text.append(f"\n{_truncate(preview, _AGENT_RESPONSE_SNIPPET)}")
+            elif entry.status == "running":
+                text.append(
+                    "\n\n(Streaming — response appears here as the agent produces it.)",
+                    style="dim",
+                )
+            else:
+                text.append("\n\n(No response captured.)", style="dim")
+        elif entry.category == TaskCategory.ASYNC_AGENT:
+            text.append_text(self._async_agent_detail(entry, d))
         elif entry.category == TaskCategory.TEAM:
             text.append(f"\nName: {d.get('name')}", style="white")
             text.append(f"\nType: {entry.label}", style="dim")
             text.append(f"\nPID: {d.get('pid')}", style="dim")
             text.append(f"\nStatus: {d.get('raw_status')}", style="dim")
         elif entry.category == TaskCategory.LOOP:
-            text.append(f"\nPrompt: {entry.label}", style="white")
+            text.append_text(self._loop_detail(d, entry))
+        return text
+
+    def _async_agent_detail(self, entry: TaskEntry, d: dict[str, Any]) -> Text:
+        """Detail body for an async subagent (task(async_run=true)).
+
+        In-process agents stream their partial response into ``response_so_far``;
+        isolated agents write a log file the registry tails live. Extracted from
+        ``_build_detail_text`` to keep that method under ruff's branch/statement
+        caps — the ASYNC_AGENT block is self-contained view logic.
+        """
+        text = Text()
+        text.append(f"\nAgent: {d.get('agent') or entry.label}", style="white")
+        text.append(f"\nElapsed: {_fmt_seconds(entry.elapsed)}", style="dim")
+        if d.get("model"):
+            text.append(f"\nModel: {d['model']}", style="dim")
+        turns = d.get("turns_used") or 0
+        if turns:
+            text.append(f"  Turns: {turns}", style="dim")
+        if d.get("worktree_path"):
+            text.append(f"\nWorktree: {d['worktree_path']}", style="dim")
+        if d.get("branch"):
+            text.append(f"  Branch: {d['branch']}", style="dim")
+        if d.get("error"):
+            text.append(f"\nError: {d['error']}", style="red")
+        prompt = d.get("prompt") or ""
+        if prompt:
+            text.append("\n\n--- Prompt ---", style="bold")
+            text.append(f"\n{_truncate(prompt, _AGENT_PROMPT_SNIPPET)}")
+        # Isolated agents: tail the live log file. In-process: show the
+        # streaming partial response the collector keeps current.
+        tail = self._registry.read_async_tail(entry.task_id, lines=40)
+        if tail:
+            label = (
+                "--- Output (live log) ---"
+                if d.get("log_path")
+                else "--- Response (streaming) ---"
+            )
+            text.append(f"\n\n{label}", style="bold")
+            text.append(f"\n{_truncate(tail, _AGENT_RESPONSE_SNIPPET)}")
+        elif entry.status == "running":
             text.append(
-                f"\nEvery {_fmt_seconds(d.get('interval_seconds', 0))}  "
-                f"{'recurring' if d.get('recurring') else 'one-shot'}  "
-                f"fires in {_fmt_seconds(d.get('remaining_seconds', 0))}",
+                "\n\n(Streaming — output appears here as the agent produces it.)",
                 style="dim",
             )
-        elif entry.category == TaskCategory.ASYNC_AGENT:
-            text.append(f"\nSubagent: {entry.label}", style="white")
-            if d.get("agent"):
-                text.append(f"\nProfile: {d['agent']}", style="dim")
-            text.append(f"\nElapsed: {_fmt_seconds(entry.elapsed)}", style="dim")
-            if d.get("error"):
-                text.append(f"\nError: {d['error']}", style="red")
-            self._append_streaming_response(text, d, entry.status)
+        elif rec_response := d.get("response_so_far") or "":
+            text.append("\n\n--- Response ---", style="bold")
+            text.append(f"\n{_truncate(rec_response, _AGENT_RESPONSE_SNIPPET)}")
+        else:
+            text.append("\n\n(No output captured.)", style="dim")
+        return text
+
+    def _loop_detail(self, d: dict[str, Any], entry: TaskEntry) -> Text:
+        """Detail body for a scheduled loop. Extracted from _build_detail_text
+        to keep that method under ruff's statement cap.
+        """
+        text = Text()
+        text.append(f"\nPrompt: {entry.label}", style="white")
+        text.append(
+            f"\nEvery {_fmt_seconds(d.get('interval_seconds', 0))}  "
+            f"{'recurring' if d.get('recurring') else 'one-shot'}  "
+            f"fires in {_fmt_seconds(d.get('remaining_seconds', 0))}",
+            style="dim",
+        )
         return text
 
     def _find_selected(self) -> TaskEntry | None:

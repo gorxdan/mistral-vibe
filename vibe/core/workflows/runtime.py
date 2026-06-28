@@ -13,7 +13,7 @@ import time
 from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar, cast
 
 import orjson
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.logger import logger
@@ -338,7 +338,7 @@ class _WorkerSpawnArgs(BaseModel):
     when the safety judge defers a worker spawn.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+    model_config = {"arbitrary_types_allowed": True}
 
     prompt: str
     agent: str
@@ -486,6 +486,7 @@ async def run_isolated_agent(
     deliver: bool = False,
     keep_worktree: bool = False,
     model: str | None = None,
+    log_path: Path | None = None,
 ) -> IsolatedResult:
     """Run *agent* as a ``vibe -p`` subprocess in a fresh git worktree.
 
@@ -502,6 +503,11 @@ async def run_isolated_agent(
 
     The requested *agent* profile is threaded into the subprocess cmd (the old
     workflow executor hardcoded ``auto-approve``).
+
+    ``log_path``, when set, redirects the subprocess stdout to that file (tailed
+    live by the background registry) instead of a PIPE. The final stdout is then
+    read back from the file as ``result.output``. Workflow callers leave it
+    unset, preserving the historical in-memory capture.
     """
     from vibe.core.worktree.ephemeral import create_ephemeral_worktree
 
@@ -513,14 +519,27 @@ async def run_isolated_agent(
         # wrap the spawn and reap on any exit path the caller does not cover.
         try:
             return await _spawn_isolated(
-                wt, prompt, agent, max_turns, deliver=False, stamp_wt=wt, model=model
+                wt,
+                prompt,
+                agent,
+                max_turns,
+                deliver=False,
+                stamp_wt=wt,
+                model=model,
+                log_path=log_path,
             )
         except BaseException:
             _reap_on_failure(wt)
             raise
     try:
         result = await _spawn_isolated(
-            wt, prompt, agent, max_turns, deliver=deliver, model=model
+            wt,
+            prompt,
+            agent,
+            max_turns,
+            deliver=deliver,
+            model=model,
+            log_path=log_path,
         )
         try:
             await asyncio.to_thread(
@@ -555,11 +574,16 @@ async def _spawn_isolated(
     deliver: bool,
     stamp_wt: Any = None,
     model: str | None = None,
+    log_path: Path | None = None,
 ) -> IsolatedResult:
     """Spawn the ``vibe -p`` subprocess in *wt*, return output + stats.
 
     ``stamp_wt`` (when set) is returned on ``result.wt`` so a ``keep_worktree``
     caller can verify against the live tree before reaping.
+
+    ``log_path`` redirects the child's stdout to a file (tailed live by the
+    background registry) instead of a PIPE; the final output is then read back
+    from that file. When unset, stdout is captured in memory as before.
 
     The subprocess reaping (process-group kill on cancel) is load-bearing
     against the EBUSY race — the caller must not remove the worktree while the
@@ -595,43 +619,81 @@ async def _spawn_isolated(
     # confines its file tools to this worktree (enforce_isolated_confine).
     env["VIBE_ISOLATED_AUTO_APPROVE"] = "1"
     env["VIBE_ISOLATED_WORKTREE_ROOT"] = str(wt.path)
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(wt.path),
-        # The child is a trusted `vibe` instance and needs the parent's
-        # credentials (e.g. the provider API key) to run; pass the env
-        # explicitly (same as teams). Isolation bounds files, not env/secrets.
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
-    )
+    # Redirect stdout to a file when a log_path is requested so the background
+    # registry can tail live progress. On open failure we fall back to a PIPE.
+    stdout_target, log_fh = _open_isolated_log(log_path)
     try:
-        stdout, stderr = await proc.communicate()
-    except asyncio.CancelledError:
-        # Reap the whole group AND wait before the caller removes the worktree —
-        # otherwise `git worktree remove` races a process that still owns it.
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(wt.path),
+            # The child is a trusted `vibe` instance and needs the parent's
+            # credentials (e.g. the provider API key) to run; pass the env
+            # explicitly (same as teams). Isolation bounds files, not env/secrets.
+            env=env,
+            stdout=stdout_target,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            stdout_pipe, stderr = await proc.communicate()
+        except asyncio.CancelledError:
+            # Reap the whole group AND wait before the caller removes the
+            # worktree — otherwise `git worktree remove` races a process that
+            # still owns it.
             try:
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except TimeoutError:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                await proc.wait()
-        except (ProcessLookupError, PermissionError):
-            pass
-        raise
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=3.0)
+                except TimeoutError:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    await proc.wait()
+            except (ProcessLookupError, PermissionError):
+                pass
+            raise
+    finally:
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except OSError:
+                pass
     stderr_text = (stderr or b"").decode("utf-8", "replace")
     if proc.returncode != 0:
         raise WorkflowError(
             f"isolated agent subprocess failed (rc={proc.returncode}): "
             f"{stderr_text[:300]}"
         )
-    output = (stdout or b"").decode("utf-8", "replace")
+    if log_path is not None and log_fh is not None:
+        # stdout went to the file; read it back as the result output (the child
+        # has exited and flushed by the time communicate() returns).
+        try:
+            output = log_path.read_bytes().decode("utf-8", "replace")
+        except OSError:
+            output = (stdout_pipe or b"").decode("utf-8", "replace")
+    else:
+        output = (stdout_pipe or b"").decode("utf-8", "replace")
     delivered = deliver and await asyncio.to_thread(deliver_ephemeral_worktree, wt)
     return IsolatedResult(
         output=output, stats=_parse_stats(stderr_text), delivered=delivered, wt=stamp_wt
     )
+
+
+def _open_isolated_log(log_path: Path | None) -> tuple[Any, Any]:
+    """Open a log file for isolated-subprocess stdout redirection.
+
+    Returns ``(stdout_target, log_fh)`` — ``stdout_target`` is the value to pass
+    as the child's ``stdout`` (an open file handle when redirection is active,
+    else ``asyncio.subprocess.PIPE``), and ``log_fh`` is the owning handle to
+    close after the child exits (None when no file was opened). On open failure
+    logs a warning and falls back to a PIPE so the spawn still works.
+    """
+    if log_path is None:
+        return asyncio.subprocess.PIPE, None
+    try:
+        fh = log_path.open("wb")
+    except OSError as exc:
+        logger.warning("isolated agent log open failed, falling back to pipe: %s", exc)
+        return asyncio.subprocess.PIPE, None
+    return fh, fh
 
 
 def _maybe_reap_isolated_worktree(

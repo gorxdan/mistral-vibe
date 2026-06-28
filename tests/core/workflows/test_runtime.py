@@ -1663,6 +1663,95 @@ async def test_default_isolated_executor_parses_stats(
     assert stats == {"prompt_tokens": 111, "completion_tokens": 22}
 
 
+async def test_run_isolated_agent_redirects_stdout_to_log_file_when_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # When log_path is set, the child's stdout must be a file handle (tailed live
+    # by the background registry) rather than a PIPE, and the final output is
+    # read back from that file. Verifies the redirect path used by async
+    # isolated subagents (task(async_run=true) + write-capable profile).
+    from pathlib import Path
+
+    import vibe.core.worktree.ephemeral as eph
+
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-log-wt")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
+    monkeypatch.setattr(eph, "deliver_ephemeral_worktree", lambda wt: True)
+
+    captured: dict[str, Any] = {}
+
+    class _P:
+        pid = 1
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"pipe-bytes-should-be-ignored", b"")
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _P:
+        captured.update(kwargs)
+        # Simulate the child writing its stdout to the redirected file handle.
+        # _open_isolated_log opened it with "wb" (truncate), so the pre-written
+        # fixture content is gone — the child's own writes are what survive.
+        stdout_fh = kwargs["stdout"]
+        stdout_fh.write(b"log-stdout-output\n")
+        stdout_fh.flush()
+        return _P()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    from vibe.core.workflows.runtime import run_isolated_agent
+
+    log_path = tmp_path / "asub-1.log"
+    log_path.touch()
+    result = await run_isolated_agent(
+        "do it", "worker", label="worker", max_turns=5, deliver=True, log_path=log_path
+    )
+    # stdout kwarg was the file handle, not a PIPE int.
+    stdout_kw = captured["stdout"]
+    assert not isinstance(stdout_kw, int)
+    assert hasattr(stdout_kw, "write")
+    # Output came from the log file, not the (ignored) PIPE bytes.
+    assert result.output == "log-stdout-output\n"
+
+
+async def test_run_isolated_agent_uses_pipe_when_log_path_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Without log_path, the historical in-memory PIPE capture is preserved.
+    from pathlib import Path
+
+    import vibe.core.worktree.ephemeral as eph
+
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-pipe-wt")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
+    monkeypatch.setattr(eph, "deliver_ephemeral_worktree", lambda wt: True)
+
+    captured: dict[str, Any] = {}
+
+    class _P:
+        pid = 1
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"pipe-output", b"")
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _P:
+        captured.update(kwargs)
+        return _P()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    from vibe.core.workflows.runtime import run_isolated_agent
+
+    result = await run_isolated_agent(
+        "do it", "worker", label="worker", max_turns=5, deliver=True
+    )
+    assert captured["stdout"] == asyncio.subprocess.PIPE
+    assert result.output == "pipe-output"
+
+
 async def test_isolated_agent_charges_real_tokens_when_stats_present() -> None:
     async def stub(
         prompt: str, agent: str, label: str | None, max_turns: int

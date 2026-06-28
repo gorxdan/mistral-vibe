@@ -145,11 +145,20 @@ class _AsyncAgentRec:
     status: str = "running"  # running | completed | failed | stopped
     finalizer: asyncio.Task[None] | None = None
     response: str = ""
-    response_so_far: str = ""
     completed: bool = False
     worktree_path: str | None = None
     branch: str | None = None
     error: str | None = None
+    # Observability fields. ``prompt``/``model`` are set at registration so the
+    # Tasks pane and `background` tool can show what the agent was asked to do
+    # without re-deriving it. ``response_so_far``/``turns_used`` are updated live
+    # by the in-process collector; ``log_path`` is the file the isolated
+    # subprocess streams to, tailed like a PROCESS log.
+    prompt: str = ""
+    model: str | None = None
+    response_so_far: str = ""
+    turns_used: int = 0
+    log_path: Path | None = None
 
 
 def _signal_proc_group(proc: asyncio.subprocess.Process, sig: int) -> None:
@@ -396,7 +405,14 @@ class BackgroundRegistry:
         return task_id
 
     def register_async_agent(
-        self, agent: str, task: asyncio.Task[Any], *, label: str | None = None
+        self,
+        agent: str,
+        task: asyncio.Task[Any],
+        *,
+        label: str | None = None,
+        prompt: str = "",
+        model: str | None = None,
+        log_path: Path | None = None,
     ) -> str:
         """Record an async subagent and start its completion-watcher.
 
@@ -404,6 +420,12 @@ class BackgroundRegistry:
         model. The asyncio.Task is NOT awaited here — the TaskTool returns
         immediately so the agent turn unblocks. On completion the result is
         queued for the parent agent loop via ``pop_async_completions``.
+
+        ``prompt``/``model``/``log_path`` are observability-only: stored on the
+        record so the Tasks pane and ``background`` tool can render what the
+        agent is doing. ``log_path`` is the file an isolated subprocess streams
+        its stdout to (tailed live like a PROCESS log); in-process agents have
+        none and are monitored via ``response_so_far`` updates instead.
         """
         running = sum(1 for r in self._async_agents.values() if r.status == "running")
         if running >= _MAX_RUNNING_PROCS:
@@ -418,12 +440,59 @@ class BackgroundRegistry:
             label=label or agent,
             task=task,
             started_at=time.monotonic(),
+            prompt=prompt,
+            model=model,
+            log_path=log_path,
         )
         rec.finalizer = asyncio.create_task(
             self._finalize_async_agent(rec), name=f"bgasub-{task_id}"
         )
         self._async_agents[task_id] = rec
         return task_id
+
+    def update_async_progress(
+        self,
+        task_id: str,
+        *,
+        response_so_far: str | None = None,
+        turns_used: int | None = None,
+    ) -> None:
+        """Live-update an in-process async subagent's progress on its record.
+
+        Called by the TaskTool's in-process collector as events stream so the
+        Tasks pane's 1s poll and the ``background`` tool see partial output
+        while the agent runs, not only after it finishes. No-op for unknown or
+        finalized ids — a stale update after completion must not clobber the
+        captured response. Same-event-loop writes only; no locking needed.
+        """
+        rec = self._async_agents.get(task_id)
+        if rec is None or rec.status != "running":
+            return
+        if response_so_far is not None:
+            rec.response_so_far = response_so_far
+        if turns_used is not None:
+            rec.turns_used = turns_used
+
+    def update_async_progress_by_task(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        response_so_far: str | None = None,
+        turns_used: int | None = None,
+    ) -> None:
+        """Update progress keyed by the running asyncio.Task instead of id.
+
+        The in-process collector is started before ``register_async_agent``
+        assigns its task_id, so it identifies itself via ``asyncio.current_task``
+        rather than threading the id through a closure. Linear scan over the
+        small in-process agent table; no-op when the task is not registered.
+        """
+        for rec in self._async_agents.values():
+            if rec.task is task:
+                self.update_async_progress(
+                    rec.task_id, response_so_far=response_so_far, turns_used=turns_used
+                )
+                return
 
     async def _finalize_async_agent(self, rec: _AsyncAgentRec) -> None:
         """Background awaiter: capture the IsolatedResult when the task ends.
@@ -467,11 +536,6 @@ class BackgroundRegistry:
         drained = self._async_completions[:]
         self._async_completions.clear()
         return drained
-
-    def update_async_response(self, task_id: str, text: str) -> None:
-        rec = self._async_agents.get(task_id)
-        if rec is not None:
-            rec.response_so_far = text
 
     def _reap_finalized(self) -> None:
         """Drop oldest finalized entries beyond the cap; never reap running."""
@@ -520,6 +584,25 @@ class BackgroundRegistry:
         except (FileNotFoundError, OSError):
             return ""
         text = data.decode("utf-8", errors="replace")
+        return "\n".join(text.splitlines()[-lines:])
+
+    def read_async_tail(self, task_id: str, *, lines: int = 50) -> str:
+        """Recent output from an async subagent (``asub-N``).
+
+        Isolated subagents stream their stdout to ``log_path`` — tail that file
+        the same way a PROCESS log is tailed, so live progress is visible while
+        the subprocess runs. In-process subagents have no file; return the tail
+        of their ``response_so_far`` (kept current by the collector). Returns ''
+        for unknown ids, missing logs, or agents that have produced nothing yet.
+        """
+        rec = self._async_agents.get(task_id)
+        if rec is None:
+            return ""
+        if rec.log_path is not None:
+            return self._tail_bytes(rec.log_path, lines)
+        text = rec.response_so_far or rec.response
+        if not text:
+            return ""
         return "\n".join(text.splitlines()[-lines:])
 
     def read_agent_log_tail(self, task_id: str, *, lines: int = 50) -> str:
@@ -635,11 +718,15 @@ class BackgroundRegistry:
                         elapsed=now - rec.started_at,
                         detail={
                             "agent": rec.agent,
-                            "response_preview": rec.response_so_far,
                             "completed": rec.completed,
                             "worktree_path": rec.worktree_path,
                             "branch": rec.branch,
                             "error": rec.error,
+                            "prompt": rec.prompt,
+                            "model": rec.model,
+                            "response_so_far": rec.response_so_far,
+                            "turns_used": rec.turns_used,
+                            "log_path": str(rec.log_path) if rec.log_path else None,
                         },
                     )
                 )

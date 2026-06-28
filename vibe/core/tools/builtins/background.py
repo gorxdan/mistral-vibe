@@ -87,6 +87,8 @@ def _tail_for(registry: Any, entry: TaskEntry, tail_lines: int | None) -> str | 
         return registry.read_log_tail(entry.task_id, lines=tail_lines)
     if entry.category == TaskCategory.AGENT:
         return registry.read_agent_log_tail(entry.task_id, lines=tail_lines)
+    if entry.category == TaskCategory.ASYNC_AGENT:
+        return registry.read_async_tail(entry.task_id, lines=tail_lines)
     return None
 
 

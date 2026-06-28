@@ -5,6 +5,8 @@ from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 import fnmatch
+from pathlib import Path
+import time
 from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -268,6 +270,20 @@ class Task(
             )
             return
 
+        # Stream the subprocess stdout to a log file so the Tasks pane and
+        # `background` tool can tail live progress. Mirrors the bash tool's bg
+        # log layout (scratchpad/bg/). None when there's nowhere to write — the
+        # runtime then captures stdout in memory as before (no live tail).
+        log_path = self._bg_log_path(ctx)
+        if log_path is not None:
+            log_path.touch()
+
+        effective_model = (
+            args.model
+            or _configured_subagent_model(ctx)
+            or ctx.active_model
+            or (ctx.agent_manager.config.active_model if ctx.agent_manager else None)
+        )
         bg_task = asyncio.create_task(
             run_isolated_agent(
                 task_text,
@@ -275,12 +291,18 @@ class Task(
                 label=args.agent,
                 max_turns=DEFAULT_ISOLATED_MAX_TURNS,
                 deliver=True,
-                model=args.model,
+                model=effective_model,
+                log_path=log_path,
             ),
             name=f"async-task-{args.agent}",
         )
         task_id = registry.register_async_agent(
-            args.agent, bg_task, label=self._subagent_label(args)
+            args.agent,
+            bg_task,
+            label=self._subagent_label(args),
+            prompt=args.task,
+            model=effective_model,
+            log_path=log_path,
         )
         yield ToolStreamEvent(
             tool_name=self.get_name(),
@@ -551,28 +573,32 @@ class Task(
         )
 
     async def _run_in_process_collect(
-        self,
-        args: TaskArgs,
-        ctx: InvokeContext,
-        task_id_holder: list[str] | None = None,
+        self, args: TaskArgs, ctx: InvokeContext
     ) -> _InProcessResult:
         # Background variant: drive to completion, return an IsolatedResult-shaped
-        # object (no parent yields — the parent turn already returned).
-        subagent_loop, task_text = self._build_subagent_loop(args, ctx)
+        # object (no parent yields — the parent turn already returned). Pushes
+        # live progress (partial response + turn count) to the registry so the
+        # Tasks pane and `background` tool reflect streaming activity.
         registry = ctx.background_registry
+        current_task = asyncio.current_task()
+        subagent_loop, task_text = self._build_subagent_loop(args, ctx)
         accumulated_response: list[str] = []
         completed = True
+        turns = 0
         try:
             async with aclosing(subagent_loop.act(task_text)) as events:
                 async for event in events:
                     if isinstance(event, AssistantEvent) and event.content:
                         accumulated_response.append(event.content)
-                        if registry is not None and task_id_holder:
-                            registry.update_async_response(
-                                task_id_holder[0], "".join(accumulated_response)
-                            )
+                        turns += 1
                         if event.stopped_by_middleware:
                             completed = False
+                        if registry is not None and current_task is not None:
+                            registry.update_async_progress_by_task(
+                                current_task,
+                                response_so_far="".join(accumulated_response),
+                                turns_used=turns,
+                            )
                     elif isinstance(event, ToolResultEvent) and event.skipped:
                         completed = False
         except Exception as e:
@@ -593,15 +619,22 @@ class Task(
             async for result in self._run_in_process(args, ctx):
                 yield result
             return
-        task_id_holder: list[str] = []
+        effective_model = (
+            args.model
+            or _configured_subagent_model(ctx)
+            or ctx.active_model
+            or (ctx.agent_manager.config.active_model if ctx.agent_manager else None)
+        )
         bg_task = asyncio.create_task(
-            self._run_in_process_collect(args, ctx, task_id_holder),
-            name=f"async-task-{args.agent}",
+            self._run_in_process_collect(args, ctx), name=f"async-task-{args.agent}"
         )
         task_id = registry.register_async_agent(
-            args.agent, bg_task, label=self._subagent_label(args)
+            args.agent,
+            bg_task,
+            label=self._subagent_label(args),
+            prompt=args.task,
+            model=effective_model,
         )
-        task_id_holder.append(task_id)
         yield ToolStreamEvent(
             tool_name=self.get_name(),
             message=f"Launched {args.agent} subagent in background: {task_id}",
@@ -616,3 +649,20 @@ class Task(
             completed=False,
             task_id=task_id,
         )
+
+    @staticmethod
+    def _bg_log_path(ctx: InvokeContext) -> Path | None:
+        """A unique log file path for an isolated subagent's stdout, or None.
+
+        Mirrors the bash tool's background-log layout (scratchpad/bg/, falling
+        back to the session dir) so the Tasks pane can tail live progress. The
+        caller is responsible for ``touch()`` before handing the path to the
+        subprocess. Returns None when neither dir is available — the runtime
+        then falls back to an in-memory PIPE capture.
+        """
+        root = ctx.scratchpad_dir or ctx.session_dir
+        if root is None:
+            return None
+        bg_dir = Path(str(root)) / "bg"
+        bg_dir.mkdir(parents=True, exist_ok=True)
+        return bg_dir / f"asub-{time.monotonic_ns()}.log"

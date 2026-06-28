@@ -707,22 +707,6 @@ async def test_async_completion_fires_wake_callback():
 
 
 @pytest.mark.asyncio
-async def test_update_async_response_streams_into_detail():
-    reg = BackgroundRegistry()
-
-    async def long() -> _FakeIsolatedResult:
-        await asyncio.sleep(0.3)
-        return _FakeIsolatedResult(output="final")
-
-    task = asyncio.create_task(long())
-    task_id = reg.register_async_agent("worker", task)
-    reg.update_async_response(task_id, "partial so far")
-    entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
-    assert entries[0].detail["response_preview"] == "partial so far"
-    await task
-
-
-@pytest.mark.asyncio
 async def test_async_agent_failure_queued_with_error():
     reg = BackgroundRegistry()
 
@@ -793,3 +777,148 @@ async def test_shutdown_cancels_running_async_agents():
     await reg.shutdown()
     entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
     assert all(e.status == "stopped" for e in entries)
+
+
+@pytest.mark.asyncio
+async def test_register_async_agent_stores_prompt_model_and_log_path(tmp_path):
+    """The observability kwargs are surfaced on the listed entry so the Tasks
+    pane and `background` tool can render what the agent was asked to do.
+    """
+    reg = BackgroundRegistry()
+    log_path = tmp_path / "bg" / "asub-1.log"
+
+    async def long_running() -> _FakeIsolatedResult:
+        await asyncio.sleep(10)
+        return _FakeIsolatedResult()
+
+    task = asyncio.create_task(long_running())
+    try:
+        task_id = reg.register_async_agent(
+            "reviewer",
+            task,
+            label="reviewer: audit commits",
+            prompt="Analyze latest commits in depth",
+            model="glm-5.2",
+            log_path=log_path,
+        )
+        entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
+        assert entries[0].task_id == task_id
+        assert entries[0].detail["prompt"] == "Analyze latest commits in depth"
+        assert entries[0].detail["model"] == "glm-5.2"
+        assert entries[0].detail["log_path"] == str(log_path)
+        assert entries[0].label == "reviewer: audit commits"
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_update_async_progress_records_streaming_state():
+    """In-process collector updates flow onto the listed entry while running."""
+    reg = BackgroundRegistry()
+
+    async def long_running() -> _FakeIsolatedResult:
+        await asyncio.sleep(10)
+        return _FakeIsolatedResult()
+
+    task = asyncio.create_task(long_running())
+    try:
+        task_id = reg.register_async_agent("explore", task, prompt="initial")
+        reg.update_async_progress(
+            task_id, response_so_far="partial output", turns_used=3
+        )
+        entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
+        assert entries[0].detail["response_so_far"] == "partial output"
+        assert entries[0].detail["turns_used"] == 3
+        # by-task lookup path (used by the in-process collector).
+        reg.update_async_progress_by_task(
+            task, response_so_far="more output", turns_used=4
+        )
+        entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
+        assert entries[0].detail["response_so_far"] == "more output"
+        assert entries[0].detail["turns_used"] == 4
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_update_async_progress_noop_for_unknown_or_finalized():
+    """A stale update after completion must not clobber captured state."""
+    reg = BackgroundRegistry()
+
+    async def quick() -> _FakeIsolatedResult:
+        await asyncio.sleep(0)
+        return _FakeIsolatedResult(output="final")
+
+    task = asyncio.create_task(quick())
+    task_id = reg.register_async_agent("explore", task)
+    await asyncio.sleep(0.05)
+    assert reg.list_tasks(category=TaskCategory.ASYNC_AGENT)[0].status == "completed"
+
+    reg.update_async_progress(task_id, response_so_far="stale", turns_used=99)
+    entry = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)[0]
+    assert entry.detail["response_so_far"] == ""
+    assert entry.detail["turns_used"] == 0
+
+    # Unknown id is a silent no-op.
+    reg.update_async_progress("asub-does-not-exist", response_so_far="x")
+
+
+@pytest.mark.asyncio
+async def test_read_async_tail_tails_isolated_log_file(tmp_path):
+    """Isolated subagents stream stdout to a log file; the registry tails it."""
+    reg = BackgroundRegistry()
+    log_path = tmp_path / "asub-1.log"
+    log_path.write_text("line one\nline two\nline three\n")
+
+    async def long_running() -> _FakeIsolatedResult:
+        await asyncio.sleep(10)
+        return _FakeIsolatedResult()
+
+    task = asyncio.create_task(long_running())
+    try:
+        reg.register_async_agent("worker", task, log_path=log_path)
+        tail = reg.read_async_tail("asub-1", lines=2)
+        assert tail == "line two\nline three"
+        # Unknown id -> empty.
+        assert reg.read_async_tail("asub-unknown") == ""
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_read_async_tail_returns_response_so_far_for_in_process():
+    """In-process subagents have no log file; the tail falls back to the
+    streaming partial response the collector keeps current.
+    """
+    reg = BackgroundRegistry()
+
+    async def long_running() -> _FakeIsolatedResult:
+        await asyncio.sleep(10)
+        return _FakeIsolatedResult()
+
+    task = asyncio.create_task(long_running())
+    try:
+        task_id = reg.register_async_agent("explore", task)
+        reg.update_async_progress(
+            task_id, response_so_far="turn one\nturn two\nfinal partial"
+        )
+        tail = reg.read_async_tail(task_id, lines=2)
+        assert tail == "turn two\nfinal partial"
+    finally:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
