@@ -2562,18 +2562,37 @@ class VibeApp(App):  # noqa: PLR0904
         await self._switch_from_input(MCPAddApp())
 
     async def _show_status(self, **kwargs: Any) -> None:
-        stats = self.agent_loop.stats
-        status_text = f"""## Agent Statistics
+        from vibe.cli.textual_ui.widgets.status_card import StatusCard
+        from vibe.core.usage import get_usage_recorder, summarize
 
-- **Steps**: {stats.steps:,}
-- **Session Prompt Tokens**: {stats.session_prompt_tokens:,}
-- **Session Completion Tokens**: {stats.session_completion_tokens:,}
-- **Session Total LLM Tokens**: {stats.session_total_llm_tokens:,}
-- **Cache Hit Ratio**: {stats.cache_hit_ratio:.0%} ({stats.session_cached_tokens:,} cached)
-- **Last Turn Tokens**: {stats.last_turn_total_tokens:,}
-- **Cost**: ${stats.session_cost:.4f}
-"""
-        await self._mount_and_scroll(UserCommandMessage(status_text))
+        stats = self.agent_loop.stats
+        try:
+            active_model = self.config.get_active_model()
+            model_name = active_model.name
+            context_window = active_model.max_output_tokens
+        except ValueError:
+            model_name = "<none>"
+            context_window = None
+        try:
+            provider_name = self.config.get_active_provider().name
+        except ValueError:
+            provider_name = "<none>"
+
+        records = get_usage_recorder().read_all()
+        summary = summarize(records)
+
+        await self._mount_and_scroll(
+            StatusCard(
+                stats=stats,
+                summary=summary,
+                version=CORE_VERSION,
+                model_name=model_name,
+                provider_name=provider_name,
+                workdir=Path(self.config.displayed_workdir or Path.cwd()),
+                session_id=self.agent_loop.session_id,
+                context_window=context_window,
+            )
+        )
 
     async def _show_config(self, **kwargs: Any) -> None:
         """Switch to the configuration app in the bottom panel."""

@@ -163,6 +163,7 @@ from vibe.core.types import (
     UserInputCallback,
     UserMessageEvent,
 )
+from vibe.core.usage import UsageRecord, get_usage_recorder
 from vibe.core.utils import (
     TOOL_ERROR_TAG,
     VIBE_STOP_EVENT_TAG,
@@ -611,6 +612,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self.stats.output_price_per_million = active_model.output_price
         except ValueError:
             pass
+
+        self._usage_recorder = get_usage_recorder()
 
         self._current_user_message_id: str | None = None
         self._is_user_prompt_call: bool = False
@@ -3524,7 +3527,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         "Usage data missing in non-streaming completion response"
                     )
                 self._update_stats(
-                    usage=result.usage, time_seconds=end_time - start_time
+                    usage=result.usage,
+                    time_seconds=end_time - start_time,
+                    provider=provider,
+                    model=active_model,
                 )
                 set_usage(_span, result.usage)
 
@@ -3623,7 +3629,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     if degenerate_reason is not None:
                         raise InvalidStreamError(degenerate_reason)
                     self._update_stats(
-                        usage=chunk_acc.usage, time_seconds=end_time - start_time
+                        usage=chunk_acc.usage,
+                        time_seconds=end_time - start_time,
+                        provider=provider,
+                        model=active_model,
                     )
                     set_usage(_span, chunk_acc.usage)
 
@@ -3646,7 +3655,14 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             except Exception as e:
                 _raise_for_backend_error(e, provider.name, active_model.name)
 
-    def _update_stats(self, usage: LLMUsage, time_seconds: float) -> None:
+    def _update_stats(
+        self,
+        usage: LLMUsage,
+        time_seconds: float,
+        *,
+        provider: ProviderConfig,
+        model: ModelConfig,
+    ) -> None:
         self.stats.last_turn_duration = time_seconds
         self.stats.last_turn_prompt_tokens = usage.prompt_tokens
         self.stats.last_turn_completion_tokens = usage.completion_tokens
@@ -3657,6 +3673,25 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self.stats.context_tokens = usage.prompt_tokens + usage.completion_tokens
         if time_seconds > 0 and usage.completion_tokens > 0:
             self.stats.tokens_per_second = usage.completion_tokens / time_seconds
+
+        # Persist the call for cross-session usage windows (/status). Best-effort:
+        # a recorder failure never affects the turn. Cost follows AgentStats'
+        # worst-case convention (no caching discount).
+        cost = (
+            usage.prompt_tokens * model.input_price
+            + usage.completion_tokens * model.output_price
+        ) / 1_000_000
+        self._usage_recorder.record(
+            UsageRecord.from_usage(
+                timestamp=time.time(),
+                provider=provider.name,
+                model=model.name,
+                usage=usage,
+                cost_usd=cost,
+                duration_s=time_seconds,
+                session_id=self.session_id,
+            )
+        )
 
     def _clean_message_history(self) -> None:
         ACCEPTABLE_HISTORY_SIZE = 2
