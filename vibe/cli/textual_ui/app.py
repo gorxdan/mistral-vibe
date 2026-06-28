@@ -636,7 +636,7 @@ class VibeApp(App):  # noqa: PLR0904
     def _maybe_show_feedback_bar(self) -> None:
         if self._feedback_bar_manager.should_show(self.agent_loop):
             self._feedback_bar.show()
-            self._feedback_bar_manager.record_feedback_asked()
+            self._feedback_bar_manager.record_feedback_asked(self.agent_loop)
 
     def _start_queued_agent_turn(
         self,
@@ -1823,7 +1823,7 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(user_message)
         if self._feedback_bar_manager.should_show(self.agent_loop):
             self._feedback_bar.show()
-            self._feedback_bar_manager.record_feedback_asked()
+            self._feedback_bar_manager.record_feedback_asked(self.agent_loop)
 
         if not self._agent_running:
             await self._remove_loading_widget()

@@ -326,7 +326,12 @@ class Task(
                     deliver=True,
                     # Inherit the parent model so the isolated subprocess doesn't
                     # re-derive the hardcoded mistral default (no API key).
-                    model=args.model or ctx.agent_manager.config.active_model,
+                    model=args.model
+                    or (
+                        ctx.agent_manager.config.active_model
+                        if ctx.agent_manager
+                        else None
+                    ),
                 )
                 response_text = result.output
                 worktree_path = result.worktree_path
@@ -443,7 +448,9 @@ class Task(
         # pick one. A fresh VibeConfig.load() otherwise falls back to the
         # hardcoded default (mistral), which fails when no MISTRAL_API_KEY is set
         # — the parent is running on some other provider (glm/zai/fugu/...).
-        inherited_model = args.model or ctx.agent_manager.config.active_model
+        inherited_model = args.model or (
+            ctx.agent_manager.config.active_model if ctx.agent_manager else None
+        )
         load_overrides: dict[str, str] = {}
         if inherited_model:
             load_overrides["active_model"] = inherited_model
