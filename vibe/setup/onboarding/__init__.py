@@ -15,6 +15,7 @@ from vibe.core.telemetry.types import EntrypointMetadata
 from vibe.core.types import Backend
 from vibe.setup.auth import BrowserSignInService, HttpBrowserSignInGateway
 from vibe.setup.auth.openai_sign_in import OpenAISignInService
+from vibe.setup.auth.zai_protocol_handler import ZaiProtocolHandlerInstallResult
 from vibe.setup.auth.zai_sign_in import ZaiSignInService
 from vibe.setup.onboarding.context import OnboardingContext
 from vibe.setup.onboarding.provider_presets import ProviderPreset
@@ -54,6 +55,8 @@ class OnboardingApp(App[str | None]):
         copy_sign_in_url: CopySignInUrl | None = None,
         openai_sign_in_service_factory: Callable[[], OpenAISignInService] | None = None,
         zai_sign_in_service_factory: Callable[[], ZaiSignInService] | None = None,
+        zai_protocol_handler_installer: Callable[[], ZaiProtocolHandlerInstallResult]
+        | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -78,6 +81,7 @@ class OnboardingApp(App[str | None]):
         self._zai_sign_in_service_factory = zai_sign_in_service_factory or (
             lambda: ZaiSignInService()
         )
+        self._zai_protocol_handler_installer = zai_protocol_handler_installer
         self._installed_dynamic_screens: set[str] = set()
 
     def on_mount(self) -> None:
@@ -155,6 +159,7 @@ class OnboardingApp(App[str | None]):
                 self._zai_sign_in_service_factory,
                 copy_sign_in_url=self._copy_sign_in_url,
                 entrypoint_metadata=self._entrypoint_metadata,
+                protocol_handler_installer=self._zai_protocol_handler_installer,
                 success_exit_delay=self._browser_sign_in_success_delay,
             ),
         )

@@ -128,6 +128,7 @@ def parse_arguments() -> argparse.Namespace:
         "setting. Also the flag the task tool threads into isolated subagents.",
     )
     parser.add_argument("--setup", action="store_true", help="Setup API key and exit")
+    parser.add_argument("--zai-callback", metavar="URI", help=argparse.SUPPRESS)
     parser.add_argument(
         "--check-upgrade",
         action="store_true",
@@ -191,6 +192,19 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _handle_zai_callback(uri: str) -> None:
+    from vibe.setup.auth.zai_callback import write_zai_callback
+    from vibe.setup.auth.zai_sign_in import ZaiSignInError
+
+    try:
+        write_zai_callback(uri)
+    except ZaiSignInError as err:
+        rprint(f"[red]Could not capture Z.ai callback: {err}[/]")
+        sys.exit(1)
+    rprint("[green]Z.ai callback captured. Return to Chaton setup.[/]")
+    sys.exit(0)
+
+
 def check_and_resolve_trusted_folder(cwd: Path) -> None:
     prompt = maybe_build_workspace_trust_prompt(cwd)
     if prompt is None:
@@ -216,6 +230,9 @@ def check_and_resolve_trusted_folder(cwd: Path) -> None:
 
 
 def main() -> None:
+    if sys.argv[1:2] and sys.argv[1].startswith("zcode://zai-auth/callback"):
+        _handle_zai_callback(sys.argv[1])
+
     # Pre-dispatch the `worktree` maintenance subcommand before the main parser,
     # whose positional `initial_prompt` would otherwise swallow it. Runs without
     # config/trust/harness setup — it only touches git.
@@ -225,6 +242,9 @@ def main() -> None:
         sys.exit(run_worktree_command(sys.argv[2:]))
 
     args = parse_arguments()
+
+    if (zai_callback := getattr(args, "zai_callback", None)) is not None:
+        _handle_zai_callback(zai_callback)
 
     if args.workdir:
         workdir = args.workdir.expanduser().resolve()

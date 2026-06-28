@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 import tomllib
@@ -45,7 +45,10 @@ from vibe.setup.auth import (
     BrowserSignInStatusChanged,
 )
 from vibe.setup.auth.api_key_persistence import persist_api_key
-from vibe.setup.auth.zai_sign_in import ZaiSignInError
+from vibe.setup.auth.openai_sign_in import OpenAISignInService
+from vibe.setup.auth.zai_callback import write_zai_callback
+from vibe.setup.auth.zai_protocol_handler import ZaiProtocolHandlerInstallResult
+from vibe.setup.auth.zai_sign_in import ZaiSignInError, ZaiSignInService
 import vibe.setup.onboarding as onboarding_module
 from vibe.setup.onboarding import OnboardingApp
 from vibe.setup.onboarding.context import OnboardingContext
@@ -1548,7 +1551,9 @@ _CHATGPT_PRESET_INDEX = 5
 @pytest.mark.asyncio
 async def test_provider_selection_chatgpt_sign_in_persists_config() -> None:
     app = OnboardingApp(
-        openai_sign_in_service_factory=lambda: _StubChatGPTSignIn(),
+        openai_sign_in_service_factory=lambda: cast(
+            OpenAISignInService, _StubChatGPTSignIn()
+        ),
         browser_sign_in_success_delay=0,
     )
 
@@ -1572,8 +1577,9 @@ async def test_provider_selection_chatgpt_sign_in_shows_error() -> None:
     from vibe.core.auth.openai_oauth import OpenAIOAuthError
 
     app = OnboardingApp(
-        openai_sign_in_service_factory=lambda: _StubChatGPTSignIn(
-            error=OpenAIOAuthError("sign-in blew up")
+        openai_sign_in_service_factory=lambda: cast(
+            OpenAISignInService,
+            _StubChatGPTSignIn(error=OpenAIOAuthError("sign-in blew up")),
         ),
         browser_sign_in_success_delay=0,
     )
@@ -1611,16 +1617,29 @@ class _StubZaiSignIn:
     """Stand-in for ZaiSignInService that skips the real browser/network."""
 
     def __init__(
-        self, *, api_key: str = "zai-id.zai-secret", error: Exception | None = None
+        self,
+        *,
+        api_key: str = "zai-id.zai-secret",
+        error: Exception | None = None,
+        require_paste: bool = False,
     ) -> None:
         self._api_key = api_key
         self._error = error
+        self._require_paste = require_paste
+        self.receive_code: Callable[[str], Awaitable[str]] | None = None
 
     async def authenticate(self, *, on_url: Callable[[str], None] | None = None) -> str:
+        url = "https://chat.z.ai/api/oauth/authorize?state=test"
         if on_url is not None:
-            on_url("https://chat.z.ai/api/oauth/authorize?state=test")
+            on_url(url)
         if self._error is not None:
             raise self._error
+        if self._require_paste:
+            if self.receive_code is None:
+                raise ZaiSignInError("receive_code missing")
+            pasted = await self.receive_code(url)
+            if "code=" not in pasted:
+                raise ZaiSignInError("pasted code missing")
         return self._api_key
 
 
@@ -1628,13 +1647,26 @@ class _StubZaiSignIn:
 _ZAI_PRESET_INDEX = 1
 
 
+def _noop_zai_protocol_handler_installer() -> ZaiProtocolHandlerInstallResult:
+    return ZaiProtocolHandlerInstallResult(status="unsupported")
+
+
 @pytest.mark.asyncio
 async def test_provider_selection_zai_login_persists_config_and_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    installer_calls: list[str] = []
+
+    def install_protocol_handler() -> ZaiProtocolHandlerInstallResult:
+        installer_calls.append("install")
+        return ZaiProtocolHandlerInstallResult(status="installed")
+
     app = OnboardingApp(
-        zai_sign_in_service_factory=lambda: _StubZaiSignIn(api_key="zai-id.zai-secret"),
+        zai_sign_in_service_factory=lambda: cast(
+            ZaiSignInService, _StubZaiSignIn(api_key="zai-id.zai-secret")
+        ),
+        zai_protocol_handler_installer=install_protocol_handler,
         browser_sign_in_success_delay=0,
     )
 
@@ -1649,6 +1681,7 @@ async def test_provider_selection_zai_login_persists_config_and_key(
         await _wait_for(lambda: app.return_value is not None, pilot, timeout=2.0)
 
     assert app.return_value == "completed"
+    assert installer_calls == ["install"]
     env_contents = _saved_env_contents()
     assert "ZAI_API_KEY" in env_contents
     assert "zai-id.zai-secret" in env_contents
@@ -1659,11 +1692,87 @@ async def test_provider_selection_zai_login_persists_config_and_key(
 
 
 @pytest.mark.asyncio
+async def test_provider_selection_zai_login_accepts_pasted_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    app = OnboardingApp(
+        zai_sign_in_service_factory=lambda: cast(
+            ZaiSignInService,
+            _StubZaiSignIn(api_key="zai-id.from-paste", require_paste=True),
+        ),
+        zai_protocol_handler_installer=_noop_zai_protocol_handler_installer,
+        browser_sign_in_success_delay=0,
+    )
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press(*(["down"] * _ZAI_PRESET_INDEX), "enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, AuthMethodScreen), pilot)
+        await pilot.press("enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, ZaiSignInScreen), pilot)
+        await _wait_for(
+            lambda: (
+                not pilot.app.screen.query_one(
+                    "#zai-sign-in-paste-input", Input
+                ).disabled
+            ),
+            pilot,
+        )
+        paste_input = pilot.app.screen.query_one("#zai-sign-in-paste-input", Input)
+        paste_input.value = "zcode://zai-auth/callback?code=abc&state=test"
+        paste_input.focus()
+        await pilot.press("enter")
+        await _wait_for(lambda: app.return_value is not None, pilot, timeout=2.0)
+
+    assert app.return_value == "completed"
+    assert "zai-id.from-paste" in _saved_env_contents()
+
+
+@pytest.mark.asyncio
+async def test_provider_selection_zai_login_accepts_hidden_protocol_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    app = OnboardingApp(
+        zai_sign_in_service_factory=lambda: cast(
+            ZaiSignInService,
+            _StubZaiSignIn(api_key="zai-id.from-protocol", require_paste=True),
+        ),
+        zai_protocol_handler_installer=_noop_zai_protocol_handler_installer,
+        browser_sign_in_success_delay=0,
+    )
+
+    async with app.run_test() as pilot:
+        await _pass_welcome_screen(pilot)
+        await _pass_theme_selection_screen(pilot)
+        await pilot.press(*(["down"] * _ZAI_PRESET_INDEX), "enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, AuthMethodScreen), pilot)
+        await pilot.press("enter")
+        await _wait_for(lambda: isinstance(pilot.app.screen, ZaiSignInScreen), pilot)
+        await _wait_for(
+            lambda: (
+                not pilot.app.screen.query_one(
+                    "#zai-sign-in-paste-input", Input
+                ).disabled
+            ),
+            pilot,
+        )
+        write_zai_callback("zcode://zai-auth/callback?code=abc&state=test")
+        await _wait_for(lambda: app.return_value is not None, pilot, timeout=2.0)
+
+    assert app.return_value == "completed"
+    assert "zai-id.from-protocol" in _saved_env_contents()
+
+
+@pytest.mark.asyncio
 async def test_provider_selection_zai_login_shows_error() -> None:
     app = OnboardingApp(
-        zai_sign_in_service_factory=lambda: _StubZaiSignIn(
-            error=ZaiSignInError("sign-in blew up")
+        zai_sign_in_service_factory=lambda: cast(
+            ZaiSignInService, _StubZaiSignIn(error=ZaiSignInError("sign-in blew up"))
         ),
+        zai_protocol_handler_installer=_noop_zai_protocol_handler_installer,
         browser_sign_in_success_delay=0,
     )
 

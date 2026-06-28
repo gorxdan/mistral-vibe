@@ -6,15 +6,22 @@ the flow ZCode (z.ai's desktop client) uses, then hand the resulting key to the
 normal API-key persistence path so the rest of the stack (env-var bearer against
 the coding endpoint) is unchanged.
 
-The flow, in order:
+ZCode 3.1.5 uses an OAuth authorization-code round-trip, but Z.ai only
+honors its registered ``zcode://`` custom scheme for the post-login redirect.
+Setup accepts that callback through a hidden protocol-handler entrypoint when
+registered with the desktop, and still supports manual paste as a fallback. The
+flow, in order:
 
-1. Generate a 32-byte hex ``poll_token`` client-side.
-2. ``POST zcode.z.ai/api/v1/oauth/cli/init`` (Bearer poll_token, body
-   ``{"provider": "zai"}``) -> ``{flow_id, authorize_url, expires_at,
-   poll_interval_sec}``.
-3. Open ``authorize_url`` in the browser; the user authorizes their z.ai account.
-4. Poll ``GET zcode.z.ai/api/v1/oauth/cli/poll/{flow_id}`` (Bearer poll_token)
-   until ``status == "ready"``; read ``zai.access_token``.
+1. Generate a 32-byte hex ``state``.
+2. Build ``https://chat.z.ai/api/oauth/authorize?redirect_uri=zcode://zai-auth/
+   callback&response_type=code&client_id=<zcode client id>&state=<state>`` and
+   open it in the browser; the user authorizes their z.ai account.
+3. Z.ai redirects to ``zcode://zai-auth/callback?code=<code>&state=<state>``.
+   If the hidden handler is registered, it captures the URL for setup. Otherwise
+   the user copies the URL (or the ``code``) and pastes it back.
+4. ``POST https://zcode.z.ai/api/v1/oauth/token`` (body
+   ``{provider, code, redirect_uri, state}``) -> ``{code:0, data:{token, zai:
+   {access_token}}}``. Read ``data.zai.access_token``.
 5. Exchange that access token for a coding-plan API key (the "biz" dance):
    ``api/auth/z/login`` -> ``getCustomerInfo`` (pick the default org/project) ->
    find-or-create an api key -> copy its secret. The usable key is
@@ -23,17 +30,17 @@ The flow, in order:
 All endpoints and request shapes are reverse-engineered from the ZCode bundle
 (the official z.ai npm packages are API-key configurators only and ship no OAuth
 client). They are undocumented and may change without notice; keep this isolated
-behind the opt-in zai login path.
+behind the opt-in zai login path. The earlier ``oauth/cli/init`` + ``poll``
+flow ZCode shipped was removed upstream and now returns HTTP 404.
 """
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 import secrets
 from typing import Any, Final
+from urllib.parse import ParseResult, parse_qs, urlencode, urlparse
 import webbrowser
 
 import httpx
@@ -41,10 +48,11 @@ import httpx
 from vibe.core.logger import logger
 from vibe.core.utils.http import build_ssl_context
 
-# --- ZCode OAuth constants (from the unpacked ZCode desktop bundle) -----------
-ZCODE_OAUTH_BASE: Final = "https://zcode.z.ai/api/v1"
-ZCODE_INIT_URL: Final = f"{ZCODE_OAUTH_BASE}/oauth/cli/init"
-ZCODE_POLL_URL: Final = f"{ZCODE_OAUTH_BASE}/oauth/cli/poll"
+# --- ZCode OAuth constants (from the unpacked ZCode 3.1.5 desktop bundle) -----
+ZAI_AUTHORIZE_URL: Final = "https://chat.z.ai/api/oauth/authorize"
+ZCODE_TOKEN_URL: Final = "https://zcode.z.ai/api/v1/oauth/token"
+ZAI_OAUTH_CLIENT_ID: Final = "client_P8X5CMWmlaRO9gyO-KSqtg"
+ZAI_OAUTH_REDIRECT_URI: Final = "zcode://zai-auth/callback"
 
 # --- z.ai "biz" key-provisioning constants -----------------------------------
 ZAI_BIZ_HOST: Final = "https://api.z.ai"
@@ -58,16 +66,16 @@ _DEFAULT_ORG_MARKER: Final = "默认机构"  # 默认机构
 _DEFAULT_PROJECT_MARKER: Final = "默认项目"  # 默认项目
 
 _HTTP_TIMEOUT: Final = 30.0
-_MIN_POLL_INTERVAL: Final = 1.0
-_HTTP_ERROR_STATUS: Final = 400
-# Poll statuses that mean the flow lapsed or was rejected rather than a transient.
-_POLL_LAPSED_STATUSES: Final = frozenset({400, 404, 408})
 # Envelope ``code``/``status`` values that signal success across the biz APIs.
 _OK_CODES: Final = frozenset({None, 0, 200, "0", "200"})
+_AUTHORIZE_URL_ERROR: Final = (
+    "That is the Z.ai sign-in page URL, not the callback URL. Finish the "
+    "browser sign-in, then paste the zcode:// callback URL that contains code=."
+)
 
 UrlCallback = Callable[[str], None]
-NowFn = Callable[[], datetime]
 BrowserOpener = Callable[[str], bool]
+CodeReceiver = Callable[[str], Awaitable[str]]
 
 
 class ZaiSignInError(RuntimeError):
@@ -75,12 +83,9 @@ class ZaiSignInError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class _InitResult:
-    flow_id: str
-    poll_token: str
-    authorize_url: str
-    expires_at: datetime
-    poll_interval: float
+class ZaiAuthorizationCallback:
+    code: str
+    state: str | None
 
 
 def _unwrap_envelope(payload: Any, *, context: str) -> Any:
@@ -100,30 +105,100 @@ def _unwrap_envelope(payload: Any, *, context: str) -> Any:
     return payload.get("data", payload)
 
 
-def _generate_poll_token() -> str:
-    """32 random bytes as 64 hex chars, matching ZCode's poll token."""
+def _generate_state() -> str:
+    """32 random bytes as 64 hex chars; opaque CSRF state for the OAuth round-trip."""
     return secrets.token_hex(32)
+
+
+def _build_authorize_url(redirect_uri: str, state: str) -> str:
+    query = urlencode({
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "client_id": ZAI_OAUTH_CLIENT_ID,
+        "state": state,
+    })
+    return f"{ZAI_AUTHORIZE_URL}?{query}"
+
+
+def extract_zai_authorization_code(
+    pasted: str, *, expected_state: str | None = None
+) -> str:
+    callback = parse_zai_authorization_callback(pasted)
+    if (
+        expected_state is not None
+        and callback.state is not None
+        and callback.state != expected_state
+    ):
+        raise ZaiSignInError(
+            "Authorization callback state did not match this sign-in attempt. "
+            "Please retry Z.ai sign-in."
+        )
+    return callback.code
+
+
+def parse_zai_authorization_callback(pasted: str) -> ZaiAuthorizationCallback:
+    text = pasted.strip()
+    if not text:
+        raise ZaiSignInError("No authorization code found in what you pasted.")
+
+    parsed = urlparse(text)
+    query = parsed.query
+    candidate = query if query else text
+    if "=" in candidate:
+        params = parse_qs(candidate)
+        code = (params.get("code") or params.get("authCode") or [""])[0]
+        if code:
+            state = (params.get("state") or [None])[0]
+            return ZaiAuthorizationCallback(code=code, state=state)
+        if _looks_like_authorize_url(parsed, params):
+            raise ZaiSignInError(_AUTHORIZE_URL_ERROR)
+        raise ZaiSignInError("No authorization code found in what you pasted.")
+    if parsed.scheme in {"http", "https", "zcode"}:
+        raise ZaiSignInError("No authorization code found in what you pasted.")
+    return ZaiAuthorizationCallback(code=text, state=None)
+
+
+def _extract_code(pasted: str) -> str:
+    return extract_zai_authorization_code(pasted)
+
+
+def _looks_like_authorize_url(
+    parsed: ParseResult, params: dict[str, list[str]]
+) -> bool:
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc == "chat.z.ai"
+        and "/oauth/authorize" in parsed.path
+    ) or {"response_type", "client_id", "redirect_uri"}.issubset(params)
 
 
 @dataclass
 class ZaiSignInService:
     """Drives the full Z.ai sign-in and returns a usable coding-plan API key."""
 
-    now: NowFn = field(default=lambda: datetime.now(UTC))
-    poll_interval_override: float | None = None
-    sleep: Callable[[float], Any] = field(default=asyncio.sleep)
     open_browser: BrowserOpener = field(default=webbrowser.open)
+    receive_code: CodeReceiver | None = field(default=None)
 
     async def authenticate(self, *, on_url: UrlCallback | None = None) -> str:
-        """Run init -> browser -> poll -> biz dance; return ``{apiKey}.{secret}``."""
+        """Run authorize -> browser -> paste -> token exchange -> biz dance."""
+        if self.receive_code is None:
+            raise ZaiSignInError(
+                "No authorization-code input configured for Z.ai sign-in."
+            )
         async with httpx.AsyncClient(
             timeout=_HTTP_TIMEOUT, verify=build_ssl_context()
         ) as client:
-            init = await self._init(client)
+            state = _generate_state()
+            authorize_url = _build_authorize_url(ZAI_OAUTH_REDIRECT_URI, state)
             if on_url is not None:
-                on_url(init.authorize_url)
-            self._open_browser(init.authorize_url)
-            access_token = await self._poll_until_ready(client, init)
+                on_url(authorize_url)
+            self._open_browser(authorize_url)
+            code = extract_zai_authorization_code(
+                await self.receive_code(authorize_url), expected_state=state
+            )
+            access_token = await self._exchange_token(
+                client, code, ZAI_OAUTH_REDIRECT_URI, state
+            )
             return await self._provision_api_key(client, access_token)
 
     def _open_browser(self, url: str) -> None:
@@ -132,88 +207,38 @@ class ZaiSignInService:
         except Exception:
             logger.debug("Failed to open browser for Z.ai sign-in", exc_info=True)
 
-    async def _init(self, client: httpx.AsyncClient) -> _InitResult:
-        poll_token = _generate_poll_token()
+    async def _exchange_token(
+        self, client: httpx.AsyncClient, code: str, redirect_uri: str, state: str
+    ) -> str:
         try:
             resp = await client.post(
-                ZCODE_INIT_URL,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {poll_token}",
+                ZCODE_TOKEN_URL,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "provider": "zai",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "state": state,
                 },
-                json={"provider": "zai"},
             )
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise ZaiSignInError(
-                f"Sign-in init failed: HTTP {exc.response.status_code}: "
-                f"{exc.response.text[:200]}"
-            ) from exc
         except httpx.RequestError as exc:
-            raise ZaiSignInError(f"Sign-in init failed: {exc}") from exc
-
-        data = _unwrap_envelope(resp.json(), context="Sign-in init")
+            raise ZaiSignInError(f"Sign-in token exchange failed: {exc}") from exc
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise ZaiSignInError(
+                f"Sign-in token exchange failed: HTTP {resp.status_code}"
+            ) from exc
+        data = _unwrap_envelope(payload, context="Sign-in token exchange")
         if not isinstance(data, dict):
-            raise ZaiSignInError("Sign-in init returned an unexpected shape.")
-        flow_id = data.get("flow_id")
-        authorize_url = data.get("authorize_url")
-        expires_at_raw = data.get("expires_at")
-        interval_raw = data.get("poll_interval_sec")
-        if not isinstance(flow_id, str) or not isinstance(authorize_url, str):
-            raise ZaiSignInError("Sign-in init returned no flow id or authorize URL.")
-        if not isinstance(expires_at_raw, (int, float)):
-            raise ZaiSignInError("Sign-in init returned no expiry.")
-        # The bundle treats poll_token from the response as authoritative when
-        # present, but the client-generated one is what authorizes the poll.
-        interval = (
-            self.poll_interval_override
-            if self.poll_interval_override is not None
-            else float(interval_raw)
-            if isinstance(interval_raw, (int, float))
-            else 3.0
-        )
-        return _InitResult(
-            flow_id=flow_id,
-            poll_token=poll_token,
-            authorize_url=authorize_url,
-            expires_at=datetime.fromtimestamp(float(expires_at_raw), tz=UTC),
-            poll_interval=max(_MIN_POLL_INTERVAL, interval),
-        )
-
-    async def _poll_until_ready(
-        self, client: httpx.AsyncClient, init: _InitResult
-    ) -> str:
-        url = f"{ZCODE_POLL_URL}/{init.flow_id}"
-        headers = {"Authorization": f"Bearer {init.poll_token}"}
-        while self.now() < init.expires_at:
-            await self.sleep(init.poll_interval)
-            try:
-                resp = await client.get(url, headers=headers)
-            except httpx.RequestError as exc:
-                raise ZaiSignInError(f"Sign-in poll failed: {exc}") from exc
-            # 400/404/408 mean the flow lapsed or was rejected; treat as failure.
-            if resp.status_code in _POLL_LAPSED_STATUSES:
-                raise ZaiSignInError("Sign-in was not completed. Please retry.")
-            if resp.status_code >= _HTTP_ERROR_STATUS:
-                raise ZaiSignInError(
-                    f"Sign-in poll failed: HTTP {resp.status_code}: {resp.text[:200]}"
-                )
-            data = _unwrap_envelope(resp.json(), context="Sign-in poll")
-            status = data.get("status") if isinstance(data, dict) else None
-            if status == "pending":
-                continue
-            if status == "failed":
-                raise ZaiSignInError("Authorization was denied. Please retry.")
-            if status == "ready":
-                zai = data.get("zai")
-                access_token = (
-                    zai.get("access_token") if isinstance(zai, dict) else None
-                ) or data.get("token")
-                if not isinstance(access_token, str) or not access_token:
-                    raise ZaiSignInError("Sign-in succeeded but returned no token.")
-                return access_token
-            raise ZaiSignInError(f"Sign-in returned an unknown state: {status!r}.")
-        raise ZaiSignInError("Sign-in timed out. Please retry.")
+            raise ZaiSignInError("Sign-in token exchange returned an unexpected shape.")
+        zai = data.get("zai")
+        access_token = (
+            zai.get("access_token") if isinstance(zai, dict) else None
+        ) or data.get("token")
+        if not isinstance(access_token, str) or not access_token:
+            raise ZaiSignInError("Sign-in succeeded but returned no Z.ai access token.")
+        return access_token
 
     async def _provision_api_key(
         self, client: httpx.AsyncClient, access_token: str
