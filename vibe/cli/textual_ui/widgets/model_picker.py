@@ -49,6 +49,7 @@ class ModelPickerApp(Container):
         current_model: str,
         *,
         display_names: dict[str, str] | None = None,
+        footer_hint: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(id="modelpicker-app", **kwargs)
@@ -57,6 +58,7 @@ class ModelPickerApp(Container):
         # alias -> API model name. Aliases without a mapping fall back to showing
         # the alias itself (so the widget stays usable with bare alias lists).
         self._display_names = display_names or {}
+        self._footer_hint = footer_hint
 
     def compose(self) -> ComposeResult:
         options = [
@@ -73,6 +75,8 @@ class ModelPickerApp(Container):
         with Vertical(id="modelpicker-content"):
             yield NoMarkupStatic("Select Model", classes="modelpicker-title")
             yield OptionList(*options, id="modelpicker-options")
+            if self._footer_hint:
+                yield NoMarkupStatic(self._footer_hint, classes="modelpicker-hint")
             yield NoMarkupStatic(
                 "↑↓ Navigate  Enter Select  Esc Cancel", classes="modelpicker-help"
             )

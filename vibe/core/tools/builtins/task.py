@@ -40,6 +40,12 @@ from vibe.core.types import (
 from vibe.core.workflows.runtime import DEFAULT_ISOLATED_MAX_TURNS, run_isolated_agent
 
 
+def _configured_subagent_model(ctx: InvokeContext) -> str | None:
+    if ctx.agent_manager and ctx.agent_manager.config.subagent_model:
+        return ctx.agent_manager.config.subagent_model
+    return None
+
+
 class TaskArgs(BaseModel):
     task: str = Field(description="The task to delegate to the subagent")
     agent: str = Field(
@@ -326,6 +332,7 @@ class Task(
                     deliver=True,
                     # Inherit the parent's effective model (not the configured default).
                     model=args.model
+                    or _configured_subagent_model(ctx)
                     or ctx.active_model
                     or (
                         ctx.agent_manager.config.active_model
@@ -450,6 +457,7 @@ class Task(
         # — the parent is running on some other provider (glm/zai/fugu/...).
         inherited_model = (
             args.model
+            or _configured_subagent_model(ctx)
             or ctx.active_model
             or (ctx.agent_manager.config.active_model if ctx.agent_manager else None)
         )

@@ -392,6 +392,10 @@ class StartupOptions:
 
 _REJECT_HINT_BUSY = "wait for the current job to finish."
 _REJECT_HINT_PAUSED = "clear the queue first or remove this input."
+_SUBAGENT_MODEL_HINT = (
+    "Subagent model — used by the task tool and workflow agents when no "
+    "per-spawn model is set. Empty inherits the host session's model."
+)
 
 # Slash commands that act only on *background* state — never the foreground
 # agent turn — stay reachable while the agent is busy or the queue is paused.
@@ -1237,6 +1241,17 @@ class VibeApp(App):  # noqa: PLR0904
         await self._switch_to_input_app()
         await self._switch_to_model_picker_app(target="judge")
 
+    async def on_config_app_open_subagent_model_picker(
+        self, _message: ConfigApp.OpenSubagentModelPicker
+    ) -> None:
+        config_app = self.query_one(ConfigApp)
+        changes = config_app._convert_changes_for_save()
+        if changes:
+            VibeConfig.save_updates(changes)
+            await self._reload_config()
+        await self._switch_to_input_app()
+        await self._switch_to_model_picker_app(target="subagent")
+
     async def on_config_app_open_thinking_picker(
         self, _message: ConfigApp.OpenThinkingPicker
     ) -> None:
@@ -1343,6 +1358,8 @@ class VibeApp(App):  # noqa: PLR0904
             updates = build_persisted_updates(self.config, discovered[message.alias])
         if target == "judge":
             updates["safety_judge"] = {"model": message.alias}
+        elif target == "subagent":
+            updates["subagent_model"] = message.alias
         else:
             updates["active_model"] = message.alias
         self._discovered_models = {}
@@ -4271,6 +4288,8 @@ class VibeApp(App):  # noqa: PLR0904
         })
         if target == "judge":
             current_model = str(self.config.safety_judge.model or "")
+        elif target == "subagent":
+            current_model = str(self.config.subagent_model or "")
         else:
             current_model = str(self.config.active_model)
         await self._switch_from_input(
@@ -4278,6 +4297,7 @@ class VibeApp(App):  # noqa: PLR0904
                 model_aliases=model_aliases,
                 current_model=current_model,
                 display_names=display_names,
+                footer_hint=_SUBAGENT_MODEL_HINT if target == "subagent" else None,
             )
         )
 

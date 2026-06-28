@@ -22,6 +22,7 @@ class ConfigOptionKind(StrEnum):
     ACTION_MODEL = auto()
     ACTION_THINKING = auto()
     ACTION_JUDGE_MODEL = auto()
+    ACTION_SUBAGENT_MODEL = auto()
 
     @staticmethod
     def toggle(key: str) -> str:
@@ -63,6 +64,9 @@ class ConfigApp(Container):
         pass
 
     class OpenJudgeModelPicker(Message):
+        pass
+
+    class OpenSubagentModelPicker(Message):
         pass
 
     def __init__(self, config: VibeConfig) -> None:
@@ -129,6 +133,16 @@ class ConfigApp(Container):
             text.append("(none — select one)", style="dim")
         return text
 
+    def _subagent_model_prompt(self) -> Text:
+        text = Text(no_wrap=True)
+        text.append("  Subagent model: ")
+        model = str(getattr(self.config, "subagent_model", "") or "")
+        if model:
+            text.append(model, style="bold")
+        else:
+            text.append("(inherit host)", style="dim")
+        return text
+
     def _toggle_prompt(self, key: str, label: str) -> Text:
         value = self._get_toggle_value(key)
         text = Text(no_wrap=True)
@@ -155,6 +169,11 @@ class ConfigApp(Container):
                         id=ConfigOptionKind.ACTION_JUDGE_MODEL,
                     )
                 )
+        options.append(
+            Option(
+                self._subagent_model_prompt(), id=ConfigOptionKind.ACTION_SUBAGENT_MODEL
+            )
+        )
 
         with Vertical(id="config-content"):
             yield NoMarkupStatic("Settings", classes="settings-title")
@@ -186,6 +205,9 @@ class ConfigApp(Container):
         option_list.replace_option_prompt(
             ConfigOptionKind.ACTION_JUDGE_MODEL, self._judge_model_prompt()
         )
+        option_list.replace_option_prompt(
+            ConfigOptionKind.ACTION_SUBAGENT_MODEL, self._subagent_model_prompt()
+        )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         option_id = event.option.id
@@ -202,6 +224,10 @@ class ConfigApp(Container):
 
         if option_id == ConfigOptionKind.ACTION_JUDGE_MODEL:
             self.post_message(self.OpenJudgeModelPicker())
+            return
+
+        if option_id == ConfigOptionKind.ACTION_SUBAGENT_MODEL:
+            self.post_message(self.OpenSubagentModelPicker())
             return
 
         if ConfigOptionKind.is_toggle(option_id):

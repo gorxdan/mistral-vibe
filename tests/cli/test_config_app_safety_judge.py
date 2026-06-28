@@ -39,3 +39,11 @@ def test_judge_model_prompt_shows_none_then_alias() -> None:
     prompt = _app(enabled=True, model="glm")._judge_model_prompt()
     assert isinstance(prompt, Text)
     assert "glm" in prompt.plain
+
+
+def test_subagent_model_prompt_shows_inherit_then_alias() -> None:
+    assert "inherit" in _app()._subagent_model_prompt().plain.lower()
+    config = build_test_vibe_config(subagent_model="glm")
+    prompt = ConfigApp(config)._subagent_model_prompt()
+    assert isinstance(prompt, Text)
+    assert "glm" in prompt.plain

@@ -1642,6 +1642,17 @@ NarratorStatus {
     }
 }
 
+.modelpicker-hint {
+    width: 100%;
+    height: auto;
+    color: $text-muted;
+    margin-top: 1;
+
+    &:ansi {
+        text-style: dim;
+    }
+}
+
 #thinkingpicker-app {
     width: 100%;
     height: auto;

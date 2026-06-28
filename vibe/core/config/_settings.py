@@ -1102,6 +1102,8 @@ class VibeConfig(BaseSettings):
     # Aliases of models to fall back to (in order) when the active model is rate
     # limited / overloaded. Empty = no failover (error surfaces as before).
     fallback_models: list[str] = Field(default_factory=list)
+    # Empty = inherit the host session's model.
+    subagent_model: str = ""
     max_output_escalation: MaxOutputEscalationConfig = Field(
         default_factory=MaxOutputEscalationConfig
     )
