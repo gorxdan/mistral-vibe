@@ -1,0 +1,50 @@
+name: Update Snapshots
+
+# Regenerate UI snapshots in CI's own environment and commit them back.
+# Textual SVG snapshots are render-environment specific; baselines generated on
+# a developer machine fail in CI. Run this (Actions tab -> Update Snapshots ->
+# Run workflow) whenever the snapshot job is red due to environment drift.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update-snapshots:
+    name: Update Snapshots
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Install uv with caching
+        uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --all-extras
+
+      - name: Regenerate snapshots
+        run: uv run pytest tests/snapshots --snapshot-update || true
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain tests/snapshots)" ]; then
+            git add tests/snapshots
+            git commit -m "test: regenerate UI snapshots in CI environment"
+            git push
+          else
+            echo "No snapshot changes."
+          fi
