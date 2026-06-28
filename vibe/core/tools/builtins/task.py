@@ -18,6 +18,7 @@ from vibe.core.agents.models import (
     profile_requires_isolation,
 )
 from vibe.core.config import SessionLoggingConfig, VibeConfig
+from vibe.core.logger import logger
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -502,6 +503,22 @@ class Task(
         if inherited_model:
             load_overrides["active_model"] = inherited_model
         base_config = VibeConfig.load(session_logging=session_logging, **load_overrides)
+        try:
+            resolved_provider = base_config.get_active_provider().name
+        except Exception as e:
+            resolved_provider = repr(e)
+        logger.warning(
+            "subagent model resolve: agent=%s args_model=%s subagent_model=%s"
+            " ctx_active=%s has_mgr=%s -> inherited=%s loaded_active=%s provider=%s",
+            args.agent,
+            args.model,
+            _configured_subagent_model(ctx),
+            ctx.active_model,
+            ctx.agent_manager is not None,
+            inherited_model,
+            base_config.active_model,
+            resolved_provider,
+        )
         # Subagents inherit the parent worktree; never call worktree_manager.enter().
         subagent_loop = AgentLoop(
             config=base_config,
