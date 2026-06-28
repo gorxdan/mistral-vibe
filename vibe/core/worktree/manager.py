@@ -19,6 +19,7 @@ import tempfile
 import time
 from typing import TYPE_CHECKING
 
+from filelock import FileLock, Timeout
 from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError
 
@@ -38,6 +39,11 @@ __all__ = [
     "worktree_enabled",
     "worktree_manager",
 ]
+
+# Serializes concurrent session-exit merges into the root repo (read-head ->
+# rebase -> ff), so a simultaneous exit never ff's against a moved HEAD.
+_MERGE_LOCK_NAME = "vibe-merge.lock"
+_MERGE_LOCK_TIMEOUT_S = 30.0
 
 
 class WorktreeError(RuntimeError):
@@ -743,40 +749,44 @@ class WorktreeManager:
         """
         try:
             root_repo = self._get_repo(handle.original_repo_root)
-            current_head = root_repo.head.commit.hexsha
-            if current_head != handle.create_head_sha:
-                # HEAD moved (a concurrent session merged): rebase the branch onto
-                # it so the ff below still applies, instead of stranding the work.
-                if not self._rebase_branch_onto(handle, current_head):
-                    return False
-            # Fingerprint the live tree's carried-relevant dirt (tracked +
-            # untracked-not-ignored). None == no such dirt -> a plain ff is safe
-            # (an untracked carry_ignored file like .env never blocks it, since
-            # the branch does not touch it).
-            now_fp = self._dirty_fingerprint(root_repo, handle.config.carry_ignored)
-            if now_fp is None:
-                root_repo.git.merge("--ff-only", handle.branch)
-                logger.info(
-                    "Auto-ff merged branch %s into %s",
-                    handle.branch,
-                    handle.original_repo_root,
-                )
-                return True
-
-            # Live tree carries relevant dirt: only safe to stash-merge-drop if
-            # it is exactly what we carried at enter (so the branch's WIP commit
-            # already reproduces it). Otherwise a concurrent writer added work the
-            # branch does not contain — hold the merge for manual handling.
-            if now_fp != handle.entry_dirty_fingerprint:
-                logger.info(
-                    "Auto-ff skipped: original tree dirty and changed since enter "
-                    "(concurrent edit?). Manual merge needed."
-                )
-                return False
-            return self._stash_ff_drop(root_repo, handle)
+            lock_path = Path(handle.original_repo_root) / ".git" / _MERGE_LOCK_NAME
+            with FileLock(str(lock_path), timeout=_MERGE_LOCK_TIMEOUT_S):
+                return self._merge_under_lock(root_repo, handle)
+        except Timeout:
+            logger.info(
+                "Auto-ff: merge lock busy; branch %s kept for retry.", handle.branch
+            )
+            return False
         except (GitCommandError, Exception) as exc:
             logger.info("Auto-ff failed, manual merge needed: %s", exc)
             return False
+
+    def _merge_under_lock(self, root_repo: Repo, handle: WorktreeHandle) -> bool:
+        current_head = root_repo.head.commit.hexsha
+        if current_head != handle.create_head_sha:
+            # HEAD moved (a concurrent session merged): rebase the branch onto it
+            # so the ff below still applies, instead of stranding the work.
+            if not self._rebase_branch_onto(handle, current_head):
+                return False
+        # None == no carried dirt -> a plain ff is safe (carry_ignored never blocks).
+        now_fp = self._dirty_fingerprint(root_repo, handle.config.carry_ignored)
+        if now_fp is None:
+            root_repo.git.merge("--ff-only", handle.branch)
+            logger.info(
+                "Auto-ff merged branch %s into %s",
+                handle.branch,
+                handle.original_repo_root,
+            )
+            return True
+        # Stash-ff-drop only when the live dirt matches what we carried at enter
+        # (the branch's WIP reproduces it); else a concurrent writer -> hold.
+        if now_fp != handle.entry_dirty_fingerprint:
+            logger.info(
+                "Auto-ff skipped: original tree dirty and changed since enter "
+                "(concurrent edit?). Manual merge needed."
+            )
+            return False
+        return self._stash_ff_drop(root_repo, handle)
 
     def _rebase_branch_onto(self, handle: WorktreeHandle, base_sha: str) -> bool:
         """Rebase the worktree branch onto *base_sha* so a later ``--ff-only``
@@ -787,9 +797,7 @@ class WorktreeManager:
         try:
             wt_repo.git.rebase(base_sha)
             logger.info(
-                "Rebased branch %s onto %s for merge-back.",
-                handle.branch,
-                base_sha[:8],
+                "Rebased branch %s onto %s for merge-back.", handle.branch, base_sha[:8]
             )
             return True
         except GitCommandError as exc:

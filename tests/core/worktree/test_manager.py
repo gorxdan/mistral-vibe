@@ -577,6 +577,30 @@ class TestAutoFf:
         assert "Worktree edits src" not in root_repo.git.log("--oneline")
         assert (temp_repo / "src.py").read_text() == "print('main change')\n"
 
+    def test_auto_ff_strands_gracefully_when_merge_lock_busy(
+        self, manager: WorktreeManager, temp_repo: Path, monkeypatch
+    ):
+        monkeypatch.setattr("vibe.core.worktree.manager._MERGE_LOCK_TIMEOUT_S", 0.2)
+        os.chdir(str(temp_repo))
+        config = WorktreeConfig(mode="on", merge="auto-ff", cleanup="keep")
+        handle = manager.enter("test", config)
+        assert handle is not None
+        wt_repo = Repo(str(handle.worktree_path))
+        (handle.worktree_path / "new.txt").write_text("content\n")
+        wt_repo.git.add("-A")
+        wt_repo.git.commit("-m", "Locked work")
+
+        from filelock import FileLock
+
+        # Another session holds the merge lock: this exit must strand gracefully.
+        lock_path = temp_repo / ".git" / "vibe-merge.lock"
+        with FileLock(str(lock_path)):
+            manager.exit(handle)
+
+        root_repo = Repo(str(temp_repo))
+        assert handle.branch in [b.name for b in root_repo.branches]
+        assert "Locked work" not in root_repo.git.log("--oneline")
+
     def test_auto_ff_lands_over_dirty_start(
         self, manager: WorktreeManager, temp_repo: Path
     ):
