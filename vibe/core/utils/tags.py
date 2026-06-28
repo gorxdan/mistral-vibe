@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from enum import Enum, auto
+from enum import StrEnum, auto
 import re
 
 from vibe.core.types import BaseEvent, ToolResultEvent
@@ -49,7 +49,7 @@ class TaggedText:
         return TaggedText(text, "")
 
 
-class CancellationReason(Enum):
+class CancellationReason(StrEnum):
     OPERATION_CANCELLED = auto()
     TOOL_INTERRUPTED = auto()
     TOOL_NO_RESPONSE = auto()

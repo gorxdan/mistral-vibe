@@ -7,7 +7,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from vibe.core.logger import logger
-from vibe.core.utils.io import read_safe
+from vibe.core.utils.io import read_safe, write_safe
 
 if TYPE_CHECKING:
     from vibe.core.config import SessionLoggingConfig
@@ -75,8 +75,7 @@ def record(config: SessionLoggingConfig, session_id: str | None) -> None:
         return
     path = _pointer_path(config, tty_key)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{session_id}\n", encoding="utf-8")
+        write_safe(path, f"{session_id}\n")
     except OSError as e:
         logger.debug("Failed to record last session pointer path=%s err=%s", path, e)
 

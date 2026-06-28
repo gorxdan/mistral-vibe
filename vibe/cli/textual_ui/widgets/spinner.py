@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC
 from collections.abc import Callable
-from enum import Enum, auto
+from enum import StrEnum, auto
 import random
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
@@ -69,7 +69,7 @@ class PulseSpinner(Spinner):
     )
 
 
-class SpinnerType(Enum):
+class SpinnerType(StrEnum):
     BRAILLE = auto()
     PULSE = auto()
     SNAKE = auto()

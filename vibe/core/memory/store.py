@@ -549,11 +549,13 @@ def _namespace_for(identity: Path, *, create: bool = False) -> Path:
     digest = hashlib.sha256(str(identity).encode("utf-8")).hexdigest()[:16]
     ns = VIBE_HOME.path / "memory" / "projects" / digest
     if create:
+        from vibe.core.utils.io import write_safe
+
         ns.mkdir(parents=True, exist_ok=True)
         origin = ns / ".origin"
         if not origin.exists():
             with contextlib.suppress(OSError):
-                origin.write_text(f"{identity}\n", encoding="utf-8")
+                write_safe(origin, f"{identity}\n")
     return ns
 
 

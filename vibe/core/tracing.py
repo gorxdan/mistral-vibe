@@ -17,6 +17,7 @@ from opentelemetry.trace import StatusCode
 from vibe import __version__
 
 if TYPE_CHECKING:
+    from opentelemetry.sdk._logs.export import LogRecordExportResult
     from opentelemetry.sdk.trace import ReadableSpan
 
     from vibe.core.config import VibeConfig
@@ -95,7 +96,7 @@ class _JsonlLogExporter:
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def export(self, batch: Sequence[Any]) -> object:
+    def export(self, batch: Sequence[Any]) -> LogRecordExportResult:
         from opentelemetry.sdk._logs.export import LogRecordExportResult
 
         try:
@@ -140,15 +141,14 @@ def _make_log_processor(path: Path) -> Any:
     from opentelemetry.sdk._logs.export import (
         BatchLogRecordProcessor,
         LogRecordExporter,
-        LogRecordExportResult,
     )
 
     class _LocalLogExporter(LogRecordExporter):
         def __init__(self) -> None:
             self._sink = _JsonlLogExporter(path)
 
-        def export(self, batch: Sequence[Any]) -> LogRecordExportResult:  # type: ignore[override]
-            return self._sink.export(batch)  # type: ignore[return-value]
+        def export(self, batch: Sequence[Any]) -> LogRecordExportResult:
+            return self._sink.export(batch)
 
         def shutdown(self) -> None:
             self._sink.shutdown()
