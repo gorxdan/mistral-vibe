@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from vibe.core.llm.exceptions import BackendError, PayloadSummary
 from vibe.core.types import (
@@ -15,7 +16,12 @@ from vibe.core.types import (
     UserMessageEvent,
 )
 from vibe.core.workflows.models import SchemaValidationFailure
-from vibe.core.workflows.runtime import AgentCapExceeded, WorkflowError, WorkflowRuntime
+from vibe.core.workflows.runtime import (
+    AgentCapExceeded,
+    WorkflowError,
+    WorkflowRuntime,
+    _WorkerSpawnArgs,
+)
 from vibe.core.workflows.schema import SchemaValidationError
 
 pytestmark = pytest.mark.asyncio
@@ -2354,3 +2360,13 @@ async def test_cancel_agent_unknown_or_finished_returns_false() -> None:
     # A completed agent isn't live anymore.
     await rt.spawn_agent("done", agent="explore")
     assert rt.cancel_agent("la-0") is False
+
+
+async def test_worker_spawn_args_forbids_extra_fields() -> None:
+    # Regression guard: model_config was briefly a raw dict with no extra=,
+    # silently allowing typos in the worker-spawn approval payload.
+    _WorkerSpawnArgs.model_validate({"prompt": "p", "agent": "worker"})
+    with pytest.raises(ValidationError):
+        _WorkerSpawnArgs.model_validate(
+            {"prompt": "p", "agent": "worker", "lable": "typo"}
+        )

@@ -13,7 +13,7 @@ import time
 from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar, cast
 
 import orjson
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.logger import logger
@@ -338,7 +338,10 @@ class _WorkerSpawnArgs(BaseModel):
     when the safety judge defers a worker spawn.
     """
 
-    model_config = {"arbitrary_types_allowed": True}
+    # Internal-only: built by our own code for the host approval callback, never
+    # round-tripped through LLM/provider/session/MCP JSON -> extra="forbid" per
+    # the per-family ConfigDict policy (constructed at a single kwargs site).
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
     prompt: str
     agent: str
