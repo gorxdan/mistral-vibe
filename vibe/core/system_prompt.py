@@ -675,11 +675,12 @@ def get_universal_system_prompt(
             f"delivered and reviewed, and report the branch name. Uncommitted "
             f"work still merges back via an anonymous `WIP` auto-save, but a "
             f"real commit message is far clearer for the user.\n\n"
-            f"On exit your branch is fast-forward merged back into the original "
-            f"HEAD automatically — including when the original tree was dirty at "
-            f"start, as long as that dirty state is unchanged. The merge is held "
-            f"(branch kept for a manual `git merge`) only if HEAD moved or a "
-            f"concurrent edit changed the original tree.\n\n"
+            f"On exit your branch is merged back into the original HEAD "
+            f"automatically — rebased onto the latest HEAD first (so concurrent "
+            f"sessions don't strand it), then fast-forwarded, including when the "
+            f"original tree was dirty at start. The branch is kept for recovery "
+            f"(`vibe worktree merge {wt.branch}`) only if it genuinely conflicts "
+            f"with another session's changes.\n\n"
             f"Original repo root: `{wt.original_repo_root}`"
         )
 

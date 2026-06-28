@@ -601,6 +601,22 @@ class TestAutoFf:
         assert handle.branch in [b.name for b in root_repo.branches]
         assert "Locked work" not in root_repo.git.log("--oneline")
 
+    def test_exit_reports_merge_success_in_plain_language(
+        self, manager: WorktreeManager, temp_repo: Path, capsys
+    ):
+        os.chdir(str(temp_repo))
+        config = WorktreeConfig(mode="on", merge="auto-ff", cleanup="remove")
+        handle = manager.enter("test", config)
+        assert handle is not None
+        wt_repo = Repo(str(handle.worktree_path))
+        (handle.worktree_path / "new.txt").write_text("x\n")
+        wt_repo.git.add("-A")
+        wt_repo.git.commit("-m", "work")
+
+        manager.exit(handle)
+
+        assert "merged into the original" in capsys.readouterr().out
+
     def test_auto_ff_lands_over_dirty_start(
         self, manager: WorktreeManager, temp_repo: Path
     ):

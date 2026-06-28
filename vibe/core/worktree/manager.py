@@ -356,11 +356,17 @@ class WorktreeManager:
                 )
 
         # 6. Print handoff.
-        if not merged:
+        if merged:
             print(
-                f"\nWorktree branch: {handle.branch}\n"
-                f"Worktree path: {handle.worktree_path}\n"
-                f"To merge: git merge {handle.branch}\n",
+                "\n✓ Your changes were merged into the original checkout.\n",
+                file=sys.stdout,
+            )
+        else:
+            print(
+                f"\nYour work is kept on branch {handle.branch} but couldn't merge "
+                "automatically (it conflicts with another session's changes).\n"
+                f"  Land it later: vibe worktree merge {handle.branch}\n"
+                f"  Or discard:    vibe worktree discard {handle.branch}\n",
                 file=sys.stdout,
             )
 
