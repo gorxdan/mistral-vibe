@@ -1049,7 +1049,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._response_format = response_format
         try:
             try:
-                active_model = self._effective_model()
+                active_model = self.effective_model()
                 model_name = active_model.name
             except ValueError:
                 active_model = None
@@ -1264,7 +1264,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     "old_tokens", self.stats.context_tokens
                 )
                 threshold = result.metadata.get(
-                    "threshold", self._effective_model().auto_compact_threshold
+                    "threshold", self.effective_model().auto_compact_threshold
                 )
                 async for ev in self._run_compaction(old_tokens, threshold):
                     yield ev
@@ -1346,7 +1346,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             new_session_id=self.session_id,
         )
 
-    def _effective_model(self) -> ModelConfig:
+    def effective_model(self) -> ModelConfig:
         return self._fallback_model_override or self.config.get_active_model()
 
     def _get_context(self) -> ConversationContext:
@@ -1354,7 +1354,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             messages=self.messages,
             stats=self.stats,
             config=self.config,
-            active_model=self._effective_model(),
+            active_model=self.effective_model(),
         )
 
     async def _try_reactive_shaping(self) -> bool:
@@ -1365,21 +1365,21 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         count (i.e. there was old history worth compressing). Mutates
         ``self.messages`` in place via the shapers.
         """
-        threshold = self._effective_model().auto_compact_threshold
+        threshold = self.effective_model().auto_compact_threshold
         if threshold <= 0:
             return False
         ctx = self._get_context()
         snip = SnipMiddleware()
         microcompact = MicrocompactMiddleware()
-        start = snip._estimated_tokens(ctx)
+        start = snip.estimated_tokens(ctx)
         for _ in range(12):  # bounded; microcompact does ~1 block/call
-            before = snip._estimated_tokens(ctx)
+            before = snip.estimated_tokens(ctx)
             await snip.before_turn(ctx)
             await microcompact.before_turn(ctx)
-            after = snip._estimated_tokens(ctx)
+            after = snip.estimated_tokens(ctx)
             if after >= before:  # no further progress
                 break
-        return snip._estimated_tokens(ctx) < start
+        return snip.estimated_tokens(ctx) < start
 
     def _build_backend_metadata(
         self, call_type: TelemetryCallType | None = None
@@ -2400,7 +2400,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         if await self._try_reactive_shaping():
                             continue
                     emergency_compacted = True
-                    threshold = self._effective_model().auto_compact_threshold
+                    threshold = self.effective_model().auto_compact_threshold
                     async for ev in self._run_compaction(
                         self.stats.context_tokens, threshold, trigger="emergency"
                     ):
@@ -2967,7 +2967,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     tool_call_id=tool_call.call_id,
                     scheduler=self.scheduler,
                     agent_manager=self.agent_manager,
-                    active_model=self._effective_model().alias,
+                    active_model=self.effective_model().alias,
                     session_dir=self.session_logger.session_dir,
                     entrypoint_metadata=self.entrypoint_metadata,
                     approval_callback=_timed(self.approval_callback),
@@ -3369,7 +3369,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
     def _tool_result_hard_cap(self) -> int:
         try:
-            threshold = self._effective_model().auto_compact_threshold
+            threshold = self.effective_model().auto_compact_threshold
         except Exception:
             return MAX_TOOL_RESULT_CHARS
         scaled = int(

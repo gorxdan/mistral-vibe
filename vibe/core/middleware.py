@@ -147,7 +147,7 @@ class ContextShaperMiddleware:
         ).auto_compact_threshold
 
     @staticmethod
-    def _estimated_tokens(context: ConversationContext) -> int:
+    def estimated_tokens(context: ConversationContext) -> int:
         from vibe.core.utils.tokens import approx_token_count
 
         local = sum(approx_token_count(m.content or "") for m in context.messages)
@@ -201,7 +201,7 @@ class SnipMiddleware(ContextShaperMiddleware):
         threshold = self._threshold(context)
         if not cfg.enabled or threshold <= 0:
             return MiddlewareResult()
-        est = self._estimated_tokens(context)
+        est = self.estimated_tokens(context)
         if est < cfg.high_watermark * threshold:
             return MiddlewareResult()
 
@@ -296,7 +296,7 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
         threshold = self._threshold(context)
         if not cfg.enabled or threshold <= 0:
             return MiddlewareResult()
-        est = self._estimated_tokens(context)
+        est = self.estimated_tokens(context)
         if est < cfg.high_watermark * threshold:
             return MiddlewareResult()
 

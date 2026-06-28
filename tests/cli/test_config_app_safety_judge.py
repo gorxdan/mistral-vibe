@@ -27,7 +27,7 @@ def test_convert_changes_expands_dotted_key_to_nested() -> None:
     app = _app(enabled=False)
     app.changes["safety_judge.enabled"] = "On"
     app.changes["autocopy_to_clipboard"] = "Off"
-    converted = app._convert_changes_for_save()
+    converted = app.convert_changes_for_save()
     assert converted == {
         "safety_judge": {"enabled": True},
         "autocopy_to_clipboard": False,

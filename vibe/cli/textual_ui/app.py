@@ -1263,7 +1263,7 @@ class VibeApp(App):  # noqa: PLR0904
         self, _message: ConfigApp.OpenModelPicker
     ) -> None:
         config_app = self.query_one(ConfigApp)
-        changes = config_app._convert_changes_for_save()
+        changes = config_app.convert_changes_for_save()
         if changes:
             VibeConfig.save_updates(changes)
             await self._reload_config()
@@ -1274,7 +1274,7 @@ class VibeApp(App):  # noqa: PLR0904
         self, _message: ConfigApp.OpenJudgeModelPicker
     ) -> None:
         config_app = self.query_one(ConfigApp)
-        changes = config_app._convert_changes_for_save()
+        changes = config_app.convert_changes_for_save()
         if changes:
             VibeConfig.save_updates(changes)
             await self._reload_config()
@@ -1285,7 +1285,7 @@ class VibeApp(App):  # noqa: PLR0904
         self, _message: ConfigApp.OpenSubagentModelPicker
     ) -> None:
         config_app = self.query_one(ConfigApp)
-        changes = config_app._convert_changes_for_save()
+        changes = config_app.convert_changes_for_save()
         if changes:
             VibeConfig.save_updates(changes)
             await self._reload_config()
@@ -1296,7 +1296,7 @@ class VibeApp(App):  # noqa: PLR0904
         self, _message: ConfigApp.OpenThinkingPicker
     ) -> None:
         config_app = self.query_one(ConfigApp)
-        changes = config_app._convert_changes_for_save()
+        changes = config_app.convert_changes_for_save()
         if changes:
             VibeConfig.save_updates(changes)
             await self._reload_config()
@@ -3619,7 +3619,7 @@ class VibeApp(App):  # noqa: PLR0904
         return InvokeContext(
             tool_call_id=tool_call_id,
             agent_manager=loop.agent_manager,
-            active_model=loop._effective_model().alias,
+            active_model=loop.effective_model().alias,
             session_dir=loop.session_logger.session_dir,
             entrypoint_metadata=loop.entrypoint_metadata,
             approval_callback=loop.approval_callback,

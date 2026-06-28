@@ -238,7 +238,7 @@ class ConfigApp(Container):
             self.post_message(self.SettingChanged(key=key, value=new_value))
             self._refresh_options()
 
-    def _convert_changes_for_save(self) -> dict[str, Any]:
+    def convert_changes_for_save(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in self.changes.items():
             val: str | bool = value == "On" if value in {"On", "Off"} else value
@@ -252,4 +252,4 @@ class ConfigApp(Container):
         return result
 
     def action_close(self) -> None:
-        self.post_message(self.ConfigClosed(changes=self._convert_changes_for_save()))
+        self.post_message(self.ConfigClosed(changes=self.convert_changes_for_save()))
