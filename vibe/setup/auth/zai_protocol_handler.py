@@ -9,7 +9,7 @@ import sys
 from typing import Literal
 
 from vibe.core.logger import logger
-from vibe.core.utils.io import read_safe
+from vibe.core.utils.io import read_safe, write_safe
 
 ZaiProtocolHandlerStatus = Literal[
     "installed",
@@ -114,7 +114,7 @@ def _write_desktop_file(chaton: str) -> Path:
     applications_dir = _applications_dir()
     applications_dir.mkdir(parents=True, exist_ok=True)
     desktop_path = applications_dir / _DESKTOP_FILE_NAME
-    desktop_path.write_text(_desktop_entry(chaton), encoding="utf-8")
+    write_safe(desktop_path, _desktop_entry(chaton))
     return desktop_path
 
 
@@ -160,8 +160,7 @@ def _ensure_mimeapps_entries() -> None:
     text = _upsert_mimeapps_entry(
         text, "Added Associations", _MIME_TYPE, _DESKTOP_FILE_NAME, list_value=True
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    write_safe(path, text)
 
 
 def _mimeapps_path() -> Path:

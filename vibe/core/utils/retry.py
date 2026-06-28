@@ -4,12 +4,11 @@ import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 import functools
 from http import HTTPStatus
-import logging
 import random
 
 import httpx
 
-logger = logging.getLogger("vibe")
+from vibe.core.logger import logger
 
 _RETRYABLE_REQUEST_ERRORS: tuple[type[httpx.RequestError], ...] = (
     httpx.TimeoutException,
@@ -24,8 +23,6 @@ def _is_retryable_http_error(e: Exception) -> bool:
     if isinstance(e, httpx.HTTPStatusError):
         code = e.response.status_code
         if code == HTTPStatus.TOO_MANY_REQUESTS:
-            # Blind-retrying a rate limit amplifies load and delays failover;
-            # retry only on an explicit Retry-After, else raise to fail over.
             return _retry_after_seconds(e) is not None
         return code in {408, 409, 425, 500, 502, 503, 504, 529}
     if isinstance(e, _RETRYABLE_REQUEST_ERRORS):

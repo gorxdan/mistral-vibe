@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 import time
 from typing import NamedTuple
 
@@ -128,6 +129,21 @@ def decode_safe(
 def read_safe(path: Path, *, raise_on_error: bool = False) -> ReadSafeResult:
     """Read ``path`` and decode with :func:`decode_safe`."""
     return decode_safe(path.read_bytes(), raise_on_error=raise_on_error)
+
+
+def write_safe(path: Path, content: str, *, encoding: str = "utf-8") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(content)
+        with contextlib.suppress(FileNotFoundError):
+            shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            Path(tmp).unlink()
+        raise
 
 
 async def read_safe_async(

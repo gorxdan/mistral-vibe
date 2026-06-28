@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 import time
 from typing import Final
 from urllib.parse import parse_qs, urlparse
 
 from vibe.core.paths import VIBE_HOME
-from vibe.core.utils.io import read_safe
+from vibe.core.utils.io import read_safe, write_safe
 from vibe.setup.auth.zai_sign_in import (
     ZaiSignInError,
     extract_zai_authorization_code,
@@ -37,9 +36,7 @@ def write_zai_callback(uri: str) -> Path:
         "state": callback.state,
         "created_at": time.time(),
     }
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp_path, path)
+    write_safe(path, json.dumps(payload, sort_keys=True) + "\n")
     return path
 
 

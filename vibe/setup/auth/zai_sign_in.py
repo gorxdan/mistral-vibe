@@ -1,39 +1,3 @@
-"""Interactive "Continue with Z.ai" browser sign-in for the GLM (zai) provider.
-
-Z.ai's account login is not a token used at inference time: it is a
-*bootstrapping* flow that provisions a durable coding-plan API key. We replicate
-the flow ZCode (z.ai's desktop client) uses, then hand the resulting key to the
-normal API-key persistence path so the rest of the stack (env-var bearer against
-the coding endpoint) is unchanged.
-
-ZCode 3.1.5 uses an OAuth authorization-code round-trip, but Z.ai only
-honors its registered ``zcode://`` custom scheme for the post-login redirect.
-Setup accepts that callback through a hidden protocol-handler entrypoint when
-registered with the desktop, and still supports manual paste as a fallback. The
-flow, in order:
-
-1. Generate a 32-byte hex ``state``.
-2. Build ``https://chat.z.ai/api/oauth/authorize?redirect_uri=zcode://zai-auth/
-   callback&response_type=code&client_id=<zcode client id>&state=<state>`` and
-   open it in the browser; the user authorizes their z.ai account.
-3. Z.ai redirects to ``zcode://zai-auth/callback?code=<code>&state=<state>``.
-   If the hidden handler is registered, it captures the URL for setup. Otherwise
-   the user copies the URL (or the ``code``) and pastes it back.
-4. ``POST https://zcode.z.ai/api/v1/oauth/token`` (body
-   ``{provider, code, redirect_uri, state}``) -> ``{code:0, data:{token, zai:
-   {access_token}}}``. Read ``data.zai.access_token``.
-5. Exchange that access token for a coding-plan API key (the "biz" dance):
-   ``api/auth/z/login`` -> ``getCustomerInfo`` (pick the default org/project) ->
-   find-or-create an api key -> copy its secret. The usable key is
-   ``{apiKey}.{secret}``.
-
-All endpoints and request shapes are reverse-engineered from the ZCode bundle
-(the official z.ai npm packages are API-key configurators only and ship no OAuth
-client). They are undocumented and may change without notice; keep this isolated
-behind the opt-in zai login path. The earlier ``oauth/cli/init`` + ``poll``
-flow ZCode shipped was removed upstream and now returns HTTP 404.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
@@ -48,25 +12,17 @@ import httpx
 from vibe.core.logger import logger
 from vibe.core.utils.http import build_ssl_context
 
-# --- ZCode OAuth constants (from the unpacked ZCode 3.1.5 desktop bundle) -----
 ZAI_AUTHORIZE_URL: Final = "https://chat.z.ai/api/oauth/authorize"
 ZCODE_TOKEN_URL: Final = "https://zcode.z.ai/api/v1/oauth/token"
 ZAI_OAUTH_CLIENT_ID: Final = "client_P8X5CMWmlaRO9gyO-KSqtg"
 ZAI_OAUTH_REDIRECT_URI: Final = "zcode://zai-auth/callback"
-
-# --- z.ai "biz" key-provisioning constants -----------------------------------
 ZAI_BIZ_HOST: Final = "https://api.z.ai"
 ZAI_LOGIN_URL: Final = f"{ZAI_BIZ_HOST}/api/auth/z/login"
-# Name of the api key we find-or-create. Distinct from ZCode's own "zcode-api-key"
-# so we never clobber a key the user provisioned through ZCode itself.
 ZAI_API_KEY_NAME: Final = "chaton-api-key"
-# The default org/project z.ai seeds every account with carry these (Chinese)
-# names; ZCode prefers them, falling back to the first entry otherwise.
-_DEFAULT_ORG_MARKER: Final = "默认机构"  # 默认机构
-_DEFAULT_PROJECT_MARKER: Final = "默认项目"  # 默认项目
+_DEFAULT_ORG_MARKER: Final = "默认机构"
+_DEFAULT_PROJECT_MARKER: Final = "默认项目"
 
 _HTTP_TIMEOUT: Final = 30.0
-# Envelope ``code``/``status`` values that signal success across the biz APIs.
 _OK_CODES: Final = frozenset({None, 0, 200, "0", "200"})
 _AUTHORIZE_URL_ERROR: Final = (
     "That is the Z.ai sign-in page URL, not the callback URL. Finish the "
@@ -79,7 +35,7 @@ CodeReceiver = Callable[[str], Awaitable[str]]
 
 
 class ZaiSignInError(RuntimeError):
-    """Raised when the interactive Z.ai sign-in cannot complete."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,13 +45,6 @@ class ZaiAuthorizationCallback:
 
 
 def _unwrap_envelope(payload: Any, *, context: str) -> Any:
-    """Validate and unwrap the z.ai ``{code, data, msg}`` response envelope.
-
-    Success is ``code == 0``. Some biz endpoints use ``status`` and/or HTTP-style
-    ``200`` instead, so those are accepted too. The unwrapped ``data`` may be a
-    dict (account info, a created key) or a list (the api-key listing); both are
-    returned as-is. Responses with no envelope are returned whole.
-    """
     if not isinstance(payload, dict):
         raise ZaiSignInError(f"{context}: unexpected response shape.")
     code = payload.get("code", payload.get("status"))
@@ -106,7 +55,6 @@ def _unwrap_envelope(payload: Any, *, context: str) -> Any:
 
 
 def _generate_state() -> str:
-    """32 random bytes as 64 hex chars; opaque CSRF state for the OAuth round-trip."""
     return secrets.token_hex(32)
 
 
@@ -174,13 +122,10 @@ def _looks_like_authorize_url(
 
 @dataclass
 class ZaiSignInService:
-    """Drives the full Z.ai sign-in and returns a usable coding-plan API key."""
-
     open_browser: BrowserOpener = field(default=webbrowser.open)
     receive_code: CodeReceiver | None = field(default=None)
 
     async def authenticate(self, *, on_url: UrlCallback | None = None) -> str:
-        """Run authorize -> browser -> paste -> token exchange -> biz dance."""
         if self.receive_code is None:
             raise ZaiSignInError(
                 "No authorization-code input configured for Z.ai sign-in."
@@ -243,7 +188,6 @@ class ZaiSignInService:
     async def _provision_api_key(
         self, client: httpx.AsyncClient, access_token: str
     ) -> str:
-        """Exchange the OAuth access token for a durable coding-plan API key."""
         biz_token = await self._biz_login(client, access_token)
         authorization = f"Bearer {biz_token}"
         org_id, project_id = await self._default_org_project(client, authorization)
@@ -380,7 +324,6 @@ class ZaiSignInService:
                 client, url, authorization, context="copy api key"
             )
         except ZaiSignInError:
-            # The id alone may already be a usable key; degrade gracefully.
             logger.debug("Copying z.ai api key secret failed", exc_info=True)
             return ""
         if not isinstance(data, dict):
@@ -392,7 +335,6 @@ class ZaiSignInService:
 def _pick(
     items: list[Any], marker: str, name_fields: tuple[str, ...]
 ) -> dict[str, Any]:
-    """Pick the entry whose name contains ``marker``, else the first dict entry."""
     dicts = [item for item in items if isinstance(item, dict)]
     for item in dicts:
         name = next((str(item.get(f, "")) for f in name_fields if item.get(f)), "")

@@ -75,8 +75,6 @@ TEST_NOW = datetime(2026, 3, 16, tzinfo=UTC)
 
 @pytest.fixture(autouse=True)
 def disable_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force the .env fallback so persist tests never touch the real OS keyring."""
-
     def _unavailable(service: str, username: str, password: str) -> None:
         raise KeyringError("keyring disabled in tests")
 
@@ -1530,8 +1528,6 @@ async def test_provider_selection_custom_routes_to_api_key_and_persists(
 
 
 class _StubChatGPTSignIn:
-    """Stand-in for OpenAISignInService that skips the real browser/network."""
-
     def __init__(self, *, error: Exception | None = None) -> None:
         self._error = error
 
@@ -1614,8 +1610,6 @@ async def test_provider_selection_chatgpt_sign_in_shows_error() -> None:
 
 
 class _StubZaiSignIn:
-    """Stand-in for ZaiSignInService that skips the real browser/network."""
-
     def __init__(
         self,
         *,

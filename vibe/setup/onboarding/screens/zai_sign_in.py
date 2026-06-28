@@ -46,15 +46,6 @@ COPY_URL_SUCCESS_MESSAGE = "Sign-in URL copied to clipboard"
 
 
 class ZaiSignInScreen(OnboardingScreen):
-    """Drives the "Continue with Z.ai" account login during onboarding.
-
-    Unlike the ChatGPT flow, the Z.ai login mints a durable coding-plan API key;
-    on success we persist it like a manually-pasted ``ZAI_API_KEY``.
-
-    Z.ai redirects to a ``zcode://`` custom scheme; setup accepts the hidden
-    handler callback when registered and keeps manual paste as the fallback.
-    """
-
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("r", "retry", "Retry", show=False),
         Binding("c", "copy_url", "Copy URL", show=False),

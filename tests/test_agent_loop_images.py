@@ -9,7 +9,7 @@ from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core.agent_loop import ImagesNotSupportedError
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
-from vibe.core.types import Backend, ImageAttachment, LLMMessage, Role
+from vibe.core.types import Backend, FileImageSource, ImageAttachment, LLMMessage, Role
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
@@ -68,7 +68,9 @@ def _config_with_both_models() -> VibeConfig:
 def png_attachment(tmp_path: Path) -> ImageAttachment:
     p = tmp_path / "x.png"
     p.write_bytes(PNG_BYTES)
-    return ImageAttachment(path=p, alias="x.png", mime_type="image/png")
+    return ImageAttachment(
+        source=FileImageSource(path=p), alias="x.png", mime_type="image/png"
+    )
 
 
 @pytest.mark.asyncio
@@ -84,9 +86,7 @@ async def test_act_raises_when_model_lacks_vision(
         async for _ in agent.act("look", images=[png_attachment]):
             pass
 
-    assert backend.requests_extra_headers == []  # no LLM call was made
-    # Capability check runs *before* checkpoint creation and history mutation,
-    # so a rejected turn leaves no trace in either.
+    assert backend.requests_extra_headers == []
     assert agent.rewind_manager.checkpoints == []
     assert len(agent.messages) == initial_message_count
 
@@ -106,7 +106,7 @@ async def test_act_image_check_uses_failover_override_not_config(
         async for _ in agent.act("look", images=[png_attachment]):
             pass
 
-    assert backend.requests_extra_headers == []  # no LLM call was made
+    assert backend.requests_extra_headers == []
 
 
 @pytest.mark.asyncio
