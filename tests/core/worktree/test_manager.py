@@ -519,7 +519,7 @@ class TestAutoFf:
         log = root_repo.git.log("--oneline", "-2")
         assert "Test commit" in log
 
-    def test_auto_ff_falls_back_when_head_moved(
+    def test_auto_ff_rebases_when_head_moved(
         self, manager: WorktreeManager, temp_repo: Path
     ):
         os.chdir(str(temp_repo))
@@ -527,23 +527,55 @@ class TestAutoFf:
         handle = manager.enter("test", config)
         assert handle is not None
 
-        # Advance main after create.
+        # A concurrent session advances main (disjoint file) after we branched.
         root_repo = Repo(str(temp_repo))
         (temp_repo / "other.txt").write_text("other\n")
         root_repo.git.add("-A")
         root_repo.git.commit("-m", "Advanced main")
 
-        # Make a commit in the worktree.
+        # We commit our own disjoint work in the worktree.
         wt_repo = Repo(str(handle.worktree_path))
         (handle.worktree_path / "new.txt").write_text("content\n")
         wt_repo.git.add("-A")
         wt_repo.git.commit("-m", "Worktree commit")
 
-        # Should fall back to manual — no crash, branch kept.
         manager.exit(handle)
+
+        # Rebased onto the advanced main and fast-forwarded -> BOTH land.
         assert manager.active is None
-        # Branch should still exist.
+        log = root_repo.git.log("--oneline")
+        assert "Worktree commit" in log
+        assert "Advanced main" in log
+        assert (temp_repo / "new.txt").read_text() == "content\n"
+        assert (temp_repo / "other.txt").read_text() == "other\n"
+
+    def test_auto_ff_held_on_rebase_conflict(
+        self, manager: WorktreeManager, temp_repo: Path
+    ):
+        os.chdir(str(temp_repo))
+        config = WorktreeConfig(mode="on", merge="auto-ff", cleanup="remove")
+        handle = manager.enter("test", config)
+        assert handle is not None
+
+        # Main advances by editing the SAME file the worktree edits -> rebase
+        # cannot apply cleanly.
+        root_repo = Repo(str(temp_repo))
+        (temp_repo / "src.py").write_text("print('main change')\n")
+        root_repo.git.add("-A")
+        root_repo.git.commit("-m", "Main edits src")
+
+        wt_repo = Repo(str(handle.worktree_path))
+        (handle.worktree_path / "src.py").write_text("print('worktree change')\n")
+        wt_repo.git.add("-A")
+        wt_repo.git.commit("-m", "Worktree edits src")
+
+        manager.exit(handle)
+
+        # Conflict -> rebase aborted, branch kept (stranded), main untouched.
+        assert manager.active is None
         assert handle.branch in [b.name for b in root_repo.branches]
+        assert "Worktree edits src" not in root_repo.git.log("--oneline")
+        assert (temp_repo / "src.py").read_text() == "print('main change')\n"
 
     def test_auto_ff_lands_over_dirty_start(
         self, manager: WorktreeManager, temp_repo: Path

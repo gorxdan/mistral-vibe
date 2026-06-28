@@ -745,12 +745,10 @@ class WorktreeManager:
             root_repo = self._get_repo(handle.original_repo_root)
             current_head = root_repo.head.commit.hexsha
             if current_head != handle.create_head_sha:
-                logger.info(
-                    "Auto-ff skipped: HEAD moved (%s != %s). Manual merge needed.",
-                    current_head[:8],
-                    handle.create_head_sha[:8],
-                )
-                return False
+                # HEAD moved (a concurrent session merged): rebase the branch onto
+                # it so the ff below still applies, instead of stranding the work.
+                if not self._rebase_branch_onto(handle, current_head):
+                    return False
             # Fingerprint the live tree's carried-relevant dirt (tracked +
             # untracked-not-ignored). None == no such dirt -> a plain ff is safe
             # (an untracked carry_ignored file like .env never blocks it, since
@@ -778,6 +776,33 @@ class WorktreeManager:
             return self._stash_ff_drop(root_repo, handle)
         except (GitCommandError, Exception) as exc:
             logger.info("Auto-ff failed, manual merge needed: %s", exc)
+            return False
+
+    def _rebase_branch_onto(self, handle: WorktreeHandle, base_sha: str) -> bool:
+        """Rebase the worktree branch onto *base_sha* so a later ``--ff-only``
+        applies. Returns False (after aborting the rebase) on conflict, leaving
+        the branch intact for resolution.
+        """
+        wt_repo = self._get_repo(handle.worktree_path)
+        try:
+            wt_repo.git.rebase(base_sha)
+            logger.info(
+                "Rebased branch %s onto %s for merge-back.",
+                handle.branch,
+                base_sha[:8],
+            )
+            return True
+        except GitCommandError as exc:
+            logger.info(
+                "Rebase of %s onto %s conflicted (%s); aborting, branch kept.",
+                handle.branch,
+                base_sha[:8],
+                exc,
+            )
+            try:
+                wt_repo.git.rebase("--abort")
+            except GitCommandError:
+                pass
             return False
 
     def _stash_ref_for_message(self, repo: Repo, message: str) -> str | None:
