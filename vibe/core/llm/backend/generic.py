@@ -243,6 +243,14 @@ def _get_adapter(api_style: str) -> APIAdapter:
     return _ADAPTERS[api_style]
 
 
+# Network-op timeouts kept short so a dead/unreachable endpoint fails fast and
+# failover can engage, instead of inheriting the long generation timeout (which
+# blanket-applied would let an unreachable host hang for minutes). `read` stays
+# at the full generation timeout so slow reasoning streams are not killed.
+_CONNECT_TIMEOUT = 15.0
+_NETWORK_OP_TIMEOUT = 60.0
+
+
 class GenericBackend:
     def __init__(
         self,
@@ -264,7 +272,12 @@ class GenericBackend:
     async def __aenter__(self) -> GenericBackend:
         if self._client is None:
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self._timeout),
+                timeout=httpx.Timeout(
+                    self._timeout,
+                    connect=_CONNECT_TIMEOUT,
+                    write=_NETWORK_OP_TIMEOUT,
+                    pool=_NETWORK_OP_TIMEOUT,
+                ),
                 limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
                 verify=build_ssl_context(),
             )
@@ -304,7 +317,12 @@ class GenericBackend:
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self._timeout),
+                timeout=httpx.Timeout(
+                    self._timeout,
+                    connect=_CONNECT_TIMEOUT,
+                    write=_NETWORK_OP_TIMEOUT,
+                    pool=_NETWORK_OP_TIMEOUT,
+                ),
                 limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
                 verify=build_ssl_context(),
             )

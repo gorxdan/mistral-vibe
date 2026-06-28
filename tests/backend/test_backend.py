@@ -866,3 +866,32 @@ class TestBuildHttpErrorBodyReading:
             error=http_err, **self._COMMON_KWARGS
         )
         assert "http error with details" in err.body_text
+
+
+@pytest.mark.asyncio
+async def test_client_bounds_network_timeouts_but_keeps_long_read() -> None:
+    # Network ops (connect/write/pool) must fail fast so failover engages on a
+    # dead/unreachable endpoint; generation read stays patient so slow reasoning
+    # is not killed.
+    import httpx as _httpx
+
+    provider = ProviderConfig(
+        name="p", api_base="https://example.test/v1", api_key_env_var="API_KEY"
+    )
+    captured: dict[str, _httpx.Timeout] = {}
+    real_client = _httpx.AsyncClient
+
+    def _spy(*args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return real_client(*args, **kwargs)
+
+    with patch("vibe.core.llm.backend.generic.httpx.AsyncClient", side_effect=_spy):
+        backend = GenericBackend(provider=provider, timeout=720.0)
+        async with backend:
+            pass
+
+    t = captured["timeout"]
+    assert t.connect is not None and t.connect <= 30
+    assert t.write is not None and t.write <= 60
+    assert t.pool is not None and t.pool <= 60
+    assert t.read == 720.0
