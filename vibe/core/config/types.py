@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from typing import Annotated, Any
@@ -49,3 +50,6 @@ class ConfigChangeEvent:
     before: dict[str, Any]
     after: dict[str, Any]
     reason: str
+
+
+type ConfigChangeCallback = Callable[[ConfigChangeEvent], None]
