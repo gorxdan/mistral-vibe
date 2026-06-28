@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum, auto
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 import webbrowser
 
 from rich.text import Text
@@ -18,7 +18,10 @@ from textual.worker import Worker
 from vibe.cli.clipboard import copy_text_to_clipboard
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.core.auth import MCPOAuthError
-from vibe.core.tools.mcp import MCPRegistry
+from vibe.core.auth.mcp_oauth import perform_oauth_login
+
+if TYPE_CHECKING:
+    from vibe.core.config import MCPHttp, MCPStreamableHttp
 
 _HELP = "R Retry  Backspace Back"
 _OPTION_PADDING = "  "
@@ -50,10 +53,10 @@ class MCPOAuthApp(Container):
             self.refreshed = refreshed
             self.server_name = server_name
 
-    def __init__(self, server_name: str, mcp_registry: MCPRegistry) -> None:
+    def __init__(self, server: MCPHttp | MCPStreamableHttp) -> None:
         super().__init__(id="mcpoauth-app")
-        self._server_name = server_name
-        self._mcp_registry = mcp_registry
+        self._server = server
+        self._server_name = server.name
         self._auth_url: str | None = None
         self._auth_url_visible = False
         self._status_message: str | None = None
@@ -111,7 +114,7 @@ class MCPOAuthApp(Container):
             self._on_auth_url_available(url)
 
         try:
-            await self._mcp_registry.login(self._server_name, on_url=on_url)
+            await perform_oauth_login(self._server, on_url=on_url)
         except (MCPOAuthError, ValueError) as exc:
             return _LoginResult(authenticated=False, error=str(exc))
         return _LoginResult(authenticated=True)
