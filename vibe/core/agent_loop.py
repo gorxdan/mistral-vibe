@@ -2146,6 +2146,32 @@ class AgentLoop(AgentLoopHooksMixin):
         logger.warning("%s", hint)
         return hint
 
+    def _apply_failover(
+        self,
+        exc: RateLimitError | ContentFilterError | ServerError,
+        fallback: ModelConfig | None,
+        *,
+        error_type: str,
+        unavailable_reason: str,
+        log_template: str,
+        log_prefix_args: Sequence[object] = (),
+    ) -> None:
+        # Finish a failover attempt. On success, log the switch and record a
+        # recovery trace; when no fallback resolved, attach an actionable hint
+        # to `exc` and re-raise so the reason reaches the user-visible error
+        # rather than only the log file. The caller resolves `fallback`
+        # (configured pool, plus the rate-limit callback/headless path for
+        # rate-limit errors) — the structural difference between the clauses.
+        # `log_template`'s trailing %r is always the fallback alias; the helper
+        # appends it after `log_prefix_args` so call sites stay closure-free.
+        if fallback is None:
+            exc.failover_hint = self._failover_unavailable_hint(unavailable_reason)
+            raise exc
+        logger.warning(log_template, *log_prefix_args, fallback.alias)
+        self._trace_recovery(
+            error_type=error_type, action="failover", fallback=fallback.alias
+        )
+
     @staticmethod
     def _wire_temperature(
         active_model: ModelConfig, provider: ProviderConfig
@@ -2348,54 +2374,32 @@ class AgentLoop(AgentLoopHooksMixin):
                             fallback = await self._prompt_model_switch_on_rate_limit(e)
                         else:
                             fallback = self._auto_fallback_headless()
-                    if fallback is None:
-                        e.failover_hint = self._failover_unavailable_hint(
-                            "Active model rate-limited"
-                        )
-                        raise
-                    logger.warning(
-                        "Active model rate-limited; switching to %r", fallback.alias
-                    )
-                    self._trace_recovery(
+                    self._apply_failover(
+                        e,
+                        fallback,
                         error_type="rate_limit",
-                        action="failover",
-                        fallback=fallback.alias,
+                        unavailable_reason="Active model rate-limited",
+                        log_template="Active model rate-limited; switching to %r",
                     )
                     continue
                 except ContentFilterError as e:
-                    fallback = self._switch_to_fallback_model()
-                    if fallback is None:
-                        e.failover_hint = self._failover_unavailable_hint(
-                            f"Request blocked by {e.provider!r} content filter"
-                        )
-                        raise
-                    logger.warning(
-                        "Request blocked by %r content filter; falling back to %r",
-                        e.provider,
-                        fallback.alias,
-                    )
-                    self._trace_recovery(
+                    self._apply_failover(
+                        e,
+                        self._switch_to_fallback_model(),
                         error_type="content_filter",
-                        action="failover",
-                        fallback=fallback.alias,
+                        unavailable_reason=f"Request blocked by {e.provider!r} content filter",
+                        log_template="Request blocked by %r content filter; falling back to %r",
+                        log_prefix_args=(e.provider,),
                     )
                     continue
                 except ServerError as e:
-                    fallback = self._switch_to_fallback_model()
-                    if fallback is None:
-                        e.failover_hint = self._failover_unavailable_hint(
-                            f"{e.provider!r} backend server error"
-                        )
-                        raise
-                    logger.warning(
-                        "%r backend server error; falling back to %r",
-                        e.provider,
-                        fallback.alias,
-                    )
-                    self._trace_recovery(
+                    self._apply_failover(
+                        e,
+                        self._switch_to_fallback_model(),
                         error_type="server_error",
-                        action="failover",
-                        fallback=fallback.alias,
+                        unavailable_reason=f"{e.provider!r} backend server error",
+                        log_template="%r backend server error; falling back to %r",
+                        log_prefix_args=(e.provider,),
                     )
                     continue
                 except ResponseTooLongError:
