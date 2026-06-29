@@ -5,13 +5,16 @@ from datetime import UTC, datetime, timedelta
 import getpass
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import tarfile
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Literal
 
 from anyio import NamedTemporaryFile, Path as AsyncPath
 import orjson
 
+from vibe.core.logger import logger
 from vibe.core.session.session_id import shorten_session_id
 from vibe.core.session.session_loader import (
     MESSAGES_FILENAME,
@@ -31,6 +34,52 @@ if TYPE_CHECKING:
 
 
 TMP_CLEANUP_INTERVAL = timedelta(seconds=5)
+# Cap dirs archived per startup so the (synchronous) tar never noticeably delays
+# session start; any backlog drains over the next few sessions.
+_ARCHIVE_MAX_PER_RUN = 25
+
+
+def archive_old_session_dirs(
+    save_dir: Path,
+    prefix: str,
+    archive_after_days: int,
+    keep: Path | None = None,
+    max_per_run: int = _ARCHIVE_MAX_PER_RUN,
+) -> None:
+    """Tar+gzip session dirs untouched > *archive_after_days* into save_dir/archive/.
+
+    Transcripts are valuable, so this never deletes data — it compresses a cold
+    dir into ``archive/<name>.tar.gz`` (extractable to resume) and removes the
+    now-redundant loose dir, which also speeds the live list/--continue scan. The
+    tarball is written to a temp name and atomically renamed before the dir is
+    removed, so a crash mid-archive never loses the dir. Best-effort; 0 disables.
+    """
+    if archive_after_days <= 0:
+        return
+    try:
+        cutoff = utc_now().timestamp() - archive_after_days * 86400
+        archive_dir = save_dir / "archive"
+        done = 0
+        for d in sorted(save_dir.glob(f"{prefix}_*"), key=lambda p: p.name):
+            if done >= max_per_run:
+                break
+            try:
+                if not d.is_dir() or d == keep or d.stat().st_mtime >= cutoff:
+                    continue
+                tarball = archive_dir / f"{d.name}.tar.gz"
+                if tarball.exists():
+                    continue
+                archive_dir.mkdir(parents=True, exist_ok=True)
+                tmp = tarball.with_name(tarball.name + ".tmp")
+                with tarfile.open(tmp, "w:gz") as tar:
+                    tar.add(d, arcname=d.name)
+                tmp.replace(tarball)  # atomic; tarball complete before dir removed
+                shutil.rmtree(d, ignore_errors=True)
+                done += 1
+            except OSError:
+                pass
+    except Exception:
+        logger.debug("session dir archive skipped", exc_info=True)
 
 
 class SessionLogger:
@@ -56,6 +105,12 @@ class SessionLogger:
 
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.session_dir = self.save_folder
+        archive_old_session_dirs(
+            self.save_dir,
+            self.session_prefix,
+            session_config.archive_after_days,
+            self.session_dir,
+        )
         self.session_metadata = self._initialize_session_metadata()
 
     @property

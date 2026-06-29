@@ -252,6 +252,11 @@ class SessionLoggingConfig(BaseSettings):
     save_dir: str = ""
     session_prefix: str = "session"
     enabled: bool = True
+    # Transcript dirs are resumable history; they accumulated forever and slowed
+    # the list/--continue scan. Rather than delete, tar+gzip dirs untouched this
+    # many days into save_dir/archive/ (data preserved, extractable). 0 keeps all
+    # dirs hot.
+    archive_after_days: int = 30
 
     @field_validator("save_dir", mode="before")
     @classmethod

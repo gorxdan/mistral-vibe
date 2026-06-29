@@ -1299,3 +1299,44 @@ async def test_persist_workflow_snapshots_merges_by_run_id(
     by_id = {s["run_id"]: s for s in logger.load_workflow_snapshots()}
     assert by_id["wf-1"]["x"] == 99
     assert set(by_id) == {"wf-1", "wf-2"}
+
+
+def test_archive_after_days_default_is_30() -> None:
+    assert SessionLoggingConfig().archive_after_days == 30
+
+
+def test_archive_old_session_dirs_compresses_not_deletes(tmp_path: Path) -> None:
+    import tarfile
+
+    from vibe.core.session.session_logger import archive_old_session_dirs
+
+    old = tmp_path / "session_20200101_000000_aaa"
+    old.mkdir()
+    (old / "meta.json").write_text('{"id": "aaa"}')
+    (old / "messages.jsonl").write_text("transcript")
+    os.utime(old, (1, 1))  # ancient dir mtime
+    recent = tmp_path / "session_20260629_120000_bbb"
+    recent.mkdir()
+    current = tmp_path / "session_now_ccc"
+    current.mkdir()
+    unrelated = tmp_path / "not-a-session"
+    unrelated.mkdir()
+    os.utime(unrelated, (1, 1))
+
+    archive_old_session_dirs(tmp_path, "session", archive_after_days=30, keep=current)
+
+    tarball = tmp_path / "archive" / "session_20200101_000000_aaa.tar.gz"
+    assert tarball.exists()  # archived, compressed
+    assert not old.exists()  # loose dir removed (data is in the tarball)
+    with tarfile.open(tarball) as t:
+        assert "session_20200101_000000_aaa/meta.json" in t.getnames()  # data preserved
+    assert recent.exists()  # recent -> kept hot
+    assert current.exists()  # active session -> never touched
+    assert unrelated.exists()  # non-session dir -> never matched
+
+    # archive_after_days <= 0 disables (keep everything hot).
+    old2 = tmp_path / "session_20200202_000000_ddd"
+    old2.mkdir()
+    os.utime(old2, (1, 1))
+    archive_old_session_dirs(tmp_path, "session", archive_after_days=0, keep=current)
+    assert old2.exists()
