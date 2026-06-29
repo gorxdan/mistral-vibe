@@ -36,6 +36,7 @@ from vibe.core.compaction import (
     collect_persisted_tool_outputs,
     collect_prior_user_messages,
     render_compaction_context,
+    truncate_compaction_context_for_backend,
 )
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.config.fingerprint import file_fingerprint
@@ -145,6 +146,7 @@ from vibe.core.types import (
     ContentFilterError,
     ContextTooLongError,
     ImageAttachment,
+    InjectedMessageKind,
     LLMChunk,
     LLMChunkAccumulator,
     LLMMessage,
@@ -185,6 +187,7 @@ from vibe.core.utils import (
     get_user_cancellation_message,
     is_user_cancellation_event,
 )
+from vibe.core.utils.tokens import truncate_middle_to_tokens
 
 
 def _git_executable_present() -> bool:
@@ -1007,6 +1010,7 @@ class AgentLoop(AgentLoopHooksMixin):
                     role=Role.USER,
                     content=content,
                     injected=True,
+                    injected_kind=InjectedMessageKind.USER_CONTEXT,
                     images=images or None,
                 )
             )
@@ -1024,6 +1028,7 @@ class AgentLoop(AgentLoopHooksMixin):
                 role=Role.USER,
                 content=content,
                 injected=True,
+                injected_kind=InjectedMessageKind.STAGED,
                 images=images or None,
                 message_id=client_message_id,
             )
@@ -1064,7 +1069,12 @@ class AgentLoop(AgentLoopHooksMixin):
                 # a session preamble.
                 for ctx_text in ss_injected:
                     self.messages.append(
-                        LLMMessage(role=Role.USER, content=ctx_text, injected=True)
+                        LLMMessage(
+                            role=Role.USER,
+                            content=ctx_text,
+                            injected=True,
+                            injected_kind=InjectedMessageKind.SESSION_START,
+                        )
                     )
             agent_provider: str | None = None
             if active_model is not None:
@@ -1251,7 +1261,10 @@ class AgentLoop(AgentLoopHooksMixin):
             case MiddlewareAction.INJECT_MESSAGE:
                 if result.message:
                     injected_message = LLMMessage(
-                        role=Role.USER, content=result.message, injected=True
+                        role=Role.USER,
+                        content=result.message,
+                        injected=True,
+                        injected_kind=InjectedMessageKind.MIDDLEWARE,
                     )
                     self.messages.append(injected_message)
 
@@ -2152,7 +2165,10 @@ class AgentLoop(AgentLoopHooksMixin):
     def _trace_recovery(self, *, error_type: str, action: str, **extra: Any) -> None:
         # Record a self-heal (failover / escalation / compaction) on the active
         # span, so a trace shows why a turn retried instead of just failing.
-        attrs: dict[str, Any] = {"error.type": error_type, "vibe.recovery.action": action}
+        attrs: dict[str, Any] = {
+            "error.type": error_type,
+            "vibe.recovery.action": action,
+        }
         for key, value in extra.items():
             if value is not None:
                 attrs[f"vibe.recovery.{key}"] = value
@@ -2241,7 +2257,12 @@ class AgentLoop(AgentLoopHooksMixin):
             return
         for ctx_text in injected_ctx:
             self.messages.append(
-                LLMMessage(role=Role.USER, content=ctx_text, injected=True)
+                LLMMessage(
+                    role=Role.USER,
+                    content=ctx_text,
+                    injected=True,
+                    injected_kind=InjectedMessageKind.USER_PROMPT_HOOK,
+                )
             )
 
         if self.config.memory.prefetch:
@@ -2306,8 +2327,7 @@ class AgentLoop(AgentLoopHooksMixin):
                         )
                         if await self._try_reactive_shaping():
                             self._trace_recovery(
-                                error_type="context_too_long",
-                                action="reactive_shaping",
+                                error_type="context_too_long", action="reactive_shaping"
                             )
                             continue
                     emergency_compacted = True
@@ -2317,8 +2337,7 @@ class AgentLoop(AgentLoopHooksMixin):
                     ):
                         yield ev
                     self._trace_recovery(
-                        error_type="context_too_long",
-                        action="emergency_compact",
+                        error_type="context_too_long", action="emergency_compact"
                     )
                     continue
                 except RateLimitError as e:
@@ -2462,6 +2481,7 @@ class AgentLoop(AgentLoopHooksMixin):
                 f"for implementation:\n\n{content}</{VIBE_WARNING_TAG}>"
             ),
             injected=True,
+            injected_kind=InjectedMessageKind.PLAN_UPDATE,
         )
         self._pending_injected_messages.append(msg)
 
@@ -2494,7 +2514,12 @@ class AgentLoop(AgentLoopHooksMixin):
                 f"{'completed' if rec.completed else 'failed'}]\n{summary}"
             )
             self.messages.append(
-                LLMMessage(role=Role.USER, content=message, injected=True)
+                LLMMessage(
+                    role=Role.USER,
+                    content=message,
+                    injected=True,
+                    injected_kind=InjectedMessageKind.BACKGROUND_TASK,
+                )
             )
             yield BackgroundTaskCompletedEvent(
                 task_id=rec.task_id,
@@ -3285,18 +3310,46 @@ class AgentLoop(AgentLoopHooksMixin):
         )
 
     def _messages_for_backend(self, active_model: ModelConfig) -> Sequence[LLMMessage]:
-        msgs = self._with_late_memory()
+        msgs = self._cap_injected_messages_for_backend(self._with_late_memory())
         if active_model.supports_images:
             return msgs
         if not any(m.images for m in msgs):
             return msgs
         return [m.model_copy(update={"images": None}) if m.images else m for m in msgs]
 
+    def _cap_injected_messages_for_backend(
+        self, messages: Sequence[LLMMessage]
+    ) -> Sequence[LLMMessage]:
+        max_tokens = self.config.context_shaping.max_injected_message_tokens
+        if max_tokens <= 0:
+            return messages
+        capped: list[LLMMessage] | None = None
+        for idx, message in enumerate(messages):
+            if not message.injected or not isinstance(message.content, str):
+                continue
+            if message.injected_kind == InjectedMessageKind.COMPACTION_CONTEXT:
+                content = truncate_compaction_context_for_backend(
+                    message.content, max_tokens
+                )
+            else:
+                content = truncate_middle_to_tokens(message.content, max_tokens)
+            if content == message.content:
+                continue
+            if capped is None:
+                capped = list(messages)
+            capped[idx] = message.model_copy(update={"content": content})
+        return messages if capped is None else capped
+
     def _with_late_memory(self) -> Sequence[LLMMessage]:
         section = self._late_memory_section
         if self.config.memory.inject_mode != "late" or not section:
             return self.messages
-        mem_msg = LLMMessage(role=Role.USER, content=self._wrap_memories(section))
+        mem_msg = LLMMessage(
+            role=Role.USER,
+            content=self._wrap_memories(section),
+            injected=True,
+            injected_kind=InjectedMessageKind.MEMORY,
+        )
         msgs = list(self.messages)
         insert_at = next(
             (i for i in range(len(msgs) - 1, -1, -1) if msgs[i].role == Role.USER),
@@ -3904,7 +3957,10 @@ class AgentLoop(AgentLoopHooksMixin):
                 prior_user_messages, summary_content, persisted_tool_outputs
             )
             compaction_context_message = LLMMessage(
-                role=Role.USER, content=compaction_context, injected=True
+                role=Role.USER,
+                content=compaction_context,
+                injected=True,
+                injected_kind=InjectedMessageKind.COMPACTION_CONTEXT,
             )
             self.messages.reset([
                 system_message,

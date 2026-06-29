@@ -6,8 +6,9 @@ from typing import Literal
 
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from vibe.core.agent_loop import AgentLoop
-from vibe.core.config._settings import MemoryConfig
-from vibe.core.types import LLMMessage, Role
+from vibe.core.compaction import render_compaction_context
+from vibe.core.config._settings import ContextShapingConfig, MemoryConfig
+from vibe.core.types import InjectedMessageKind, LLMMessage, Role
 
 
 def _loop(mode: Literal["system", "late"]) -> AgentLoop:
@@ -86,3 +87,68 @@ def test_late_mode_protects_system_prefix_that_system_mode_busts():
     # history behind it is no longer a cached prefix.
     common_sys, sys_len_sys = _divergence_vs_system_len(_loop("system"))
     assert common_sys < sys_len_sys
+
+
+def test_late_memory_message_is_typed_as_injected_memory():
+    loop = _loop("late")
+    loop._set_memory_section("RECALL-BODY")
+
+    sent = _sent(loop)
+    mem_msg = next(m for m in sent if "RECALL-BODY" in (m.content or ""))
+
+    assert mem_msg.injected is True
+    assert mem_msg.injected_kind == InjectedMessageKind.MEMORY
+
+
+def test_injected_context_is_capped_for_backend_without_mutating_history():
+    config = build_test_vibe_config(
+        memory=MemoryConfig(inject_mode="late"),
+        context_shaping=ContextShapingConfig(max_injected_message_tokens=12),
+    )
+    loop = build_test_agent_loop(config=config)
+    content = "HEAD-" + ("x" * 400) + "-TAIL"
+    loop.messages.append(
+        LLMMessage(
+            role=Role.USER,
+            content=content,
+            injected=True,
+            injected_kind=InjectedMessageKind.USER_CONTEXT,
+        )
+    )
+    loop.messages.append(LLMMessage(role=Role.USER, content="latest"))
+
+    sent = _sent(loop)
+    capped = sent[1]
+
+    assert "[... truncated ...]" in (capped.content or "")
+    assert (capped.content or "").startswith("HEAD-")
+    assert (capped.content or "").endswith("-TAIL")
+    assert loop.messages[1].content == content
+
+
+def test_compaction_context_cap_preserves_persisted_tool_outputs_tail():
+    config = build_test_vibe_config(
+        memory=MemoryConfig(inject_mode="late"),
+        context_shaping=ContextShapingConfig(max_injected_message_tokens=24),
+    )
+    loop = build_test_agent_loop(config=config)
+    compaction_context = render_compaction_context(
+        [], "SUMMARY-" + ("y" * 800), ["/tmp/full-tool-output.txt"]
+    )
+    loop.messages.append(
+        LLMMessage(
+            role=Role.USER,
+            content=compaction_context,
+            injected=True,
+            injected_kind=InjectedMessageKind.COMPACTION_CONTEXT,
+        )
+    )
+    loop.messages.append(LLMMessage(role=Role.USER, content="latest"))
+
+    sent = _sent(loop)
+    capped = sent[1].content or ""
+
+    assert len(capped) < len(compaction_context)
+    assert "<persisted_tool_outputs>" in capped
+    assert "/tmp/full-tool-output.txt" in capped
+    assert "</persisted_tool_outputs>" in capped

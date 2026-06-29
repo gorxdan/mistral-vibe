@@ -253,6 +253,20 @@ class Role(StrEnum):
     TOOL = auto()
 
 
+class InjectedMessageKind(StrEnum):
+    USER_CONTEXT = auto()
+    STAGED = auto()
+    SESSION_START = auto()
+    USER_PROMPT_HOOK = auto()
+    STOP_HOOK = auto()
+    POST_AGENT_TURN_HOOK = auto()
+    MIDDLEWARE = auto()
+    PLAN_UPDATE = auto()
+    BACKGROUND_TASK = auto()
+    COMPACTION_CONTEXT = auto()
+    MEMORY = auto()
+
+
 class ApprovalResponse(StrEnum):
     YES = "y"
     NO = "n"
@@ -309,6 +323,7 @@ class LLMMessage(BaseModel):
     content: Content | None = None
     images: list[ImageAttachment] | None = None
     injected: bool = False
+    injected_kind: InjectedMessageKind | None = None
     reasoning_content: Content | None = None
     reasoning_state: list[str] | None = None
     reasoning_signature: str | None = None
@@ -343,6 +358,8 @@ class LLMMessage(BaseModel):
             "name": getattr(v, "name", None),
             "tool_call_id": getattr(v, "tool_call_id", None),
             "images": getattr(v, "images", None),
+            "injected": getattr(v, "injected", False),
+            "injected_kind": getattr(v, "injected_kind", None),
             "message_id": getattr(v, "message_id", None)
             or (str(uuid4()) if role != "tool" else None),
         }
@@ -406,6 +423,8 @@ class LLMMessage(BaseModel):
             role=self.role,
             content=content,
             images=self.images if self.images is not None else other.images,
+            injected=self.injected or other.injected,
+            injected_kind=self.injected_kind or other.injected_kind,
             reasoning_content=reasoning_content,
             reasoning_state=reasoning_state,
             reasoning_signature=reasoning_signature,

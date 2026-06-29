@@ -380,6 +380,9 @@ class ContextShapingConfig(BaseSettings):
 
     snip: SnipConfig = Field(default_factory=SnipConfig)
     microcompact: MicrocompactConfig = Field(default_factory=MicrocompactConfig)
+    # Per-injected-message backend cap. The persisted transcript stays verbatim;
+    # only the model-facing copy is middle-truncated. 0 disables this pass.
+    max_injected_message_tokens: int = 20_000
     # Never edit messages within the first N estimated tokens after the system
     # prompt, to keep the provider's auto-cached prefix stable across edits.
     cache_prefix_guard_tokens: int = 4000

@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from html import escape, unescape
 import re
 
-from vibe.core.types import LLMMessage, Role
+from vibe.core.types import InjectedMessageKind, LLMMessage, Role
 from vibe.core.utils.tokens import approx_token_count, truncate_middle_to_tokens
 
 COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000
@@ -113,6 +113,25 @@ def parse_persisted_tool_outputs(content: str) -> list[str]:
     return [unescape(m.group(1)) for m in _PERSISTED_OUTPUT_LINE_RE.finditer(block)]
 
 
+def truncate_compaction_context_for_backend(content: str, max_tokens: int) -> str:
+    """Cap compaction context without orphaning persisted tool-output paths."""
+    block_start = content.find(_PERSISTED_OUTPUTS_OPEN)
+    if block_start < 0:
+        return truncate_middle_to_tokens(content, max_tokens)
+    block_end = content.find(_PERSISTED_OUTPUTS_CLOSE, block_start)
+    if block_end < 0:
+        return truncate_middle_to_tokens(content, max_tokens)
+    block_end += len(_PERSISTED_OUTPUTS_CLOSE)
+
+    prefix = content[:block_start].rstrip()
+    persisted_block = content[block_start:block_end]
+    remaining = max_tokens - approx_token_count(persisted_block)
+    capped_prefix = truncate_middle_to_tokens(prefix, remaining)
+    if not capped_prefix:
+        return persisted_block
+    return f"{capped_prefix}\n\n{persisted_block}"
+
+
 def collect_persisted_tool_outputs(messages: list[LLMMessage]) -> list[str]:
     """Gather persisted-output paths across the transcript, de-duplicated.
 
@@ -189,12 +208,24 @@ def collect_prior_user_messages(
             break
         cost = approx_token_count(content)
         if cost <= remaining:
-            selected.append(LLMMessage(role=Role.USER, content=content, injected=True))
+            selected.append(
+                LLMMessage(
+                    role=Role.USER,
+                    content=content,
+                    injected=True,
+                    injected_kind=InjectedMessageKind.COMPACTION_CONTEXT,
+                )
+            )
             remaining -= cost
         else:
             truncated = truncate_middle_to_tokens(content, remaining)
             selected.append(
-                LLMMessage(role=Role.USER, content=truncated, injected=True)
+                LLMMessage(
+                    role=Role.USER,
+                    content=truncated,
+                    injected=True,
+                    injected_kind=InjectedMessageKind.COMPACTION_CONTEXT,
+                )
             )
             remaining = 0
 

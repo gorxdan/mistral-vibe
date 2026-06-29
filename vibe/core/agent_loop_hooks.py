@@ -160,7 +160,7 @@ class AgentLoopHooksMixin:
         """Run stop hooks when the turn is about to end. Deny → a continuation
         user message (capped by the retry state); allow → end the turn.
         """
-        from vibe.core.types import LLMMessage, Role
+        from vibe.core.types import InjectedMessageKind, LLMMessage, Role
 
         events: list[HookEvent] = []
         continuation: LLMMessage | None = None
@@ -173,7 +173,10 @@ class AgentLoopHooksMixin:
         async for ev in self._hooks_manager.run(invocation):
             if isinstance(ev, HookUserMessage):
                 continuation = LLMMessage(
-                    role=Role.USER, content=ev.content, injected=True
+                    role=Role.USER,
+                    content=ev.content,
+                    injected=True,
+                    injected_kind=InjectedMessageKind.STOP_HOOK,
                 )
             elif isinstance(ev, HookEvent):
                 events.append(ev)
@@ -539,14 +542,17 @@ class AgentLoopHooksMixin:
         Returns a ``(retry_message, events)`` tuple.  ``retry_message`` is
         an injected ``LLMMessage`` when a hook requests a retry, else ``None``.
         """
-        from vibe.core.types import LLMMessage, Role
+        from vibe.core.types import InjectedMessageKind, LLMMessage, Role
 
         events: list[HookEvent] = []
         retry_msg: LLMMessage | None = None
         async for hook_event in self._run_post_agent_turn_hooks():
             if isinstance(hook_event, HookUserMessage):
                 retry_msg = LLMMessage(
-                    role=Role.USER, content=hook_event.content, injected=True
+                    role=Role.USER,
+                    content=hook_event.content,
+                    injected=True,
+                    injected_kind=InjectedMessageKind.POST_AGENT_TURN_HOOK,
                 )
             else:
                 events.append(hook_event)
