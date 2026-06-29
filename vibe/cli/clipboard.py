@@ -114,6 +114,16 @@ def _read_clipboard() -> str | None:
     return None
 
 
+def read_clipboard() -> str | None:
+    """Best-effort read of the OS clipboard as text.
+
+    Returns None when no backend can deliver clipboard contents (e.g. a Linux
+    host with neither xclip/wl-paste installed nor a pyperclip backend). OSC52
+    is write-only, so terminal-only setups cannot be read back.
+    """
+    return _read_clipboard()
+
+
 def _copy_to_clipboard(text: str) -> None:
     all_strategies_failed = True
     for to_clipboard in _COPY_METHODS:

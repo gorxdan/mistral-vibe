@@ -25,14 +25,18 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalGroup, VerticalScroll
 from textual.css.query import NoMatches
 from textual.driver import Driver
-from textual.events import AppBlur, AppFocus, MouseUp
+from textual.events import AppBlur, AppFocus, MouseUp, Paste
 from textual.theme import BUILTIN_THEMES
 from textual.timer import Timer
 from textual.widget import Widget
-from textual.widgets import Static
+from textual.widgets import Input, Static, TextArea
 
 from vibe import __version__ as CORE_VERSION
-from vibe.cli.clipboard import copy_selection_to_clipboard, copy_text_to_clipboard
+from vibe.cli.clipboard import (
+    copy_selection_to_clipboard,
+    copy_text_to_clipboard,
+    read_clipboard,
+)
 from vibe.cli.commands import CommandAvailabilityContext, CommandRegistry
 from vibe.cli.narrator_manager import NarratorManagerPort, NarratorState
 from vibe.cli.plan_offer.adapters.http_whoami_gateway import HttpWhoAmIGateway
@@ -5213,7 +5217,16 @@ class VibeApp(App):
         if copied_text is not None:
             self.agent_loop.telemetry_client.send_user_copied_text(copied_text)
 
+    _RIGHT_MOUSE_BUTTON = 3
+
     def on_mouse_up(self, event: MouseUp) -> None:
+        if event.button == self._RIGHT_MOUSE_BUTTON:
+            # Mouse tracking steals right-click from the terminal, so its
+            # native context-menu paste never fires. Read the OS clipboard and
+            # route it through the focused input's Paste handler (which also
+            # rewrites bare image paths to @<path> tokens).
+            self._paste_from_clipboard_into_focus()
+            return
         if self.config.autocopy_to_clipboard:
             copied_text = copy_selection_to_clipboard(self, show_toast=False)
             if copied_text is not None:
@@ -5225,6 +5238,18 @@ class VibeApp(App):
                     2.0, lambda: setattr(self._clipboard_notice, "display", False)
                 )
                 self.agent_loop.telemetry_client.send_user_copied_text(copied_text)
+
+    def _paste_from_clipboard_into_focus(self) -> None:
+        self.run_worker(self._paste_from_clipboard_worker(), exclusive=False)
+
+    async def _paste_from_clipboard_worker(self) -> None:
+        target = self.focused
+        if not isinstance(target, (TextArea, Input)):
+            return
+        text = await asyncio.to_thread(read_clipboard)
+        if not text:
+            return
+        target.post_message(Paste(text))
 
     def on_app_blur(self, event: AppBlur) -> None:
         self._terminal_notifier.on_blur()
