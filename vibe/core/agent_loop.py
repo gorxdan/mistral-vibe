@@ -3814,6 +3814,7 @@ class AgentLoop(AgentLoopHooksMixin):
             self.stats.update_pricing(
                 active_model.input_price, active_model.output_price
             )
+            self.stats.update_model_bounds(active_model.auto_compact_threshold)
         except ValueError:
             pass
 
@@ -4000,6 +4001,7 @@ class AgentLoop(AgentLoopHooksMixin):
             self.stats.update_pricing(
                 active_model.input_price, active_model.output_price
             )
+            self.stats.update_model_bounds(active_model.auto_compact_threshold)
         except ValueError:
             pass
 

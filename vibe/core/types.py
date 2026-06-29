@@ -58,6 +58,8 @@ class AgentStats(BaseModel):
     tool_calls_succeeded: int = 0
 
     context_tokens: int = 0
+    # Active model's soft compaction limit (mirrors update_pricing); 0 = disabled.
+    auto_compact_threshold: int = 0
 
     # Prompt tokens served from the provider's cache (subset of prompt tokens).
     session_cached_tokens: int = 0
@@ -131,6 +133,17 @@ class AgentStats(BaseModel):
         ) * self.output_price_per_million
         return input_cost + output_cost
 
+    @computed_field
+    @property
+    def tokens_until_compaction(self) -> int:
+        """Tokens remaining before auto-compaction fires (>=0).
+
+        Derived from the one-turn-behind context_tokens, so treat as advisory.
+        """
+        if self.auto_compact_threshold <= 0:
+            return 0
+        return max(0, self.auto_compact_threshold - self.context_tokens)
+
     def update_pricing(self, input_price: float, output_price: float) -> None:
         """Update pricing info when model changes.
 
@@ -141,6 +154,10 @@ class AgentStats(BaseModel):
         """
         self.input_price_per_million = input_price
         self.output_price_per_million = output_price
+
+    def update_model_bounds(self, auto_compact_threshold: int) -> None:
+        """Sync the active model's auto-compact threshold (mirrors update_pricing)."""
+        self.auto_compact_threshold = max(0, auto_compact_threshold)
 
     def reset_context_state(self) -> None:
         """Reset context-related fields while preserving cumulative session stats.

@@ -162,6 +162,22 @@ class TestAgentStatsHelpers:
         # Cost = 1M * $2/M + 0.5M * $4/M = $2 + $2 = $4
         assert stats.session_cost == 4.0
 
+    def test_tokens_until_compaction_reports_runway_to_threshold(self) -> None:
+        stats = AgentStats(context_tokens=150_000)
+        stats.update_model_bounds(auto_compact_threshold=200_000)
+        assert stats.auto_compact_threshold == 200_000
+        assert stats.tokens_until_compaction == 50_000
+
+    def test_tokens_until_compaction_clamps_at_zero(self) -> None:
+        stats = AgentStats(context_tokens=210_000)
+        stats.update_model_bounds(auto_compact_threshold=200_000)
+        assert stats.tokens_until_compaction == 0
+
+    def test_tokens_until_compaction_zero_when_threshold_unset(self) -> None:
+        stats = AgentStats(context_tokens=150_000)
+        assert stats.auto_compact_threshold == 0
+        assert stats.tokens_until_compaction == 0
+
 
 class TestReloadPreservesStats:
     @pytest.mark.asyncio
