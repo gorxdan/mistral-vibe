@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import shutil
 import subprocess
 
 from vibe.core.config import LSPServer
 from vibe.core.logger import logger
+from vibe.core.paths import VIBE_HOME
+
+_MANAGED_CACHE_DIR = VIBE_HOME.path / "lsp-servers"
 
 
 @dataclass(frozen=True)
@@ -147,12 +151,33 @@ class PresetProbe:
     stderr: str = ""
 
 
-def _probe(preset: ServerPreset) -> PresetProbe:
-    if shutil.which(preset.detection_command[0]) is None:
+def _resolve_binary(binary_name: str, root_path: Path | None) -> str | None:
+    """Resolve a language-server binary to its preferred absolute path.
+
+    Order: project venv → managed cache → PATH. The venv preference means a
+    project that pins a server (e.g. pyright) in its dev deps wins over a stray
+    global install — closing the version-skew class where the LSP tool spawns a
+    different binary than the project's own toolchain uses.
+    """
+    if root_path is not None:
+        venv_bin = root_path / ".venv" / "bin" / binary_name
+        if venv_bin.is_file() and os.access(venv_bin, os.X_OK):
+            return str(venv_bin)
+    cache_bin = _MANAGED_CACHE_DIR / binary_name
+    if cache_bin.is_file() and os.access(cache_bin, os.X_OK):
+        return str(cache_bin)
+    return shutil.which(binary_name)
+
+
+def _probe(
+    preset: ServerPreset, root_path: Path | None = None
+) -> PresetProbe:
+    resolved = _resolve_binary(preset.detection_command[0], root_path)
+    if resolved is None:
         return PresetProbe(preset=preset, status="absent")
     try:
         result = subprocess.run(
-            preset.detection_command,
+            (resolved, *preset.detection_command[1:]),
             capture_output=True,
             text=True,
             timeout=_PROBE_TIMEOUT,
@@ -180,7 +205,7 @@ def available_presets(root_path: Path | None = None) -> list[ServerPreset]:
         candidates = [p for p in candidates if preset_matches_root(p, root_path)]
 
     usable: list[ServerPreset] = []
-    for probe in (_probe(preset) for preset in candidates):
+    for probe in (_probe(preset, root_path) for preset in candidates):
         if probe.status == "available":
             usable.append(probe.preset)
         elif probe.status == "broken":

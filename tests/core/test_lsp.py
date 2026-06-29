@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -486,7 +487,9 @@ def test_available_presets_excludes_pathed_but_broken_preset(monkeypatch) -> Non
     which_map = {"rust-analyzer": "/fake/rust-analyzer", "pyright": "/fake/pyright"}
 
     def fake_run(cmd: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
-        if cmd[0] == "rust-analyzer":
+        # _probe now passes the resolved absolute path (_resolve_binary output),
+        # so match on the basename rather than the bare command name.
+        if cmd[0].endswith("rust-analyzer"):
             return SimpleNamespace(returncode=1, stderr="rustup-proxy: boom", stdout="")
         return SimpleNamespace(returncode=0, stderr="", stdout="ok")
 
@@ -1751,3 +1754,177 @@ def test_out_of_range_position_fails_soft(monkeypatch, tmp_path) -> None:
     assert isinstance(result, LspResult)
     assert "out of range" in result.summary
     assert "document_symbol" in result.summary
+
+
+def test_diagnostic_registry_suppresses_stale_import_when_module_exists(
+    tmp_path,
+) -> None:
+    """The new-module gap: pyright cached 'not found', then the module
+    appeared via git. The diagnostic is provably stale — the module file is on
+    disk — so it must not stage to the model.
+    """
+    (tmp_path / "vibe").mkdir()
+    pkg = tmp_path / "vibe" / "core"
+    pkg.mkdir(parents=True)
+    (tmp_path / "vibe" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "verifier.py").write_text("")
+
+    registry = DiagnosticRegistry(root_path=tmp_path)
+    diag = {
+        "uri": "file:///tmp/agent_loop.py",
+        "diagnostics": [
+            {
+                "range": {
+                    "start": {"line": 222, "character": 9},
+                    "end": {"line": 222, "character": 60},
+                },
+                "severity": 1,
+                "message": 'Import "vibe.core.verifier" could not be resolved',
+                "source": "pyright",
+            }
+        ],
+    }
+    registry.publish(diag, "pyright")
+    assert registry.consume() == []
+
+
+def test_diagnostic_registry_keeps_real_import_error_when_module_absent(
+    tmp_path,
+) -> None:
+    """A genuinely missing module must still stage — only provably-stale
+    (module exists on disk) errors are suppressed.
+    """
+    registry = DiagnosticRegistry(root_path=tmp_path)
+    diag = {
+        "uri": "file:///tmp/agent_loop.py",
+        "diagnostics": [
+            {
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 30},
+                },
+                "severity": 1,
+                "message": 'Import "vibe.core.nonexistent" could not be resolved',
+                "source": "pyright",
+            }
+        ],
+    }
+    registry.publish(diag, "pyright")
+    batches = registry.consume()
+    assert len(batches) == 1
+
+
+def test_diagnostic_registry_set_root_enables_suppression(tmp_path) -> None:
+    """Suppression engages only after set_root wires the workspace root."""
+    (tmp_path / "vibe").mkdir()
+    pkg = tmp_path / "vibe" / "core"
+    pkg.mkdir(parents=True)
+    (tmp_path / "vibe" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "verifier.py").write_text("")
+
+    registry = DiagnosticRegistry()
+    diag = {
+        "uri": "file:///tmp/agent_loop.py",
+        "diagnostics": [
+            {
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 10},
+                },
+                "severity": 1,
+                "message": 'Import "vibe.core.verifier" could not be resolved',
+                "source": "pyright",
+            }
+        ],
+    }
+    registry.publish(diag, "pyright")
+    assert len(registry.consume()) == 1
+    registry.set_root(tmp_path)
+    registry.publish(diag, "pyright")
+    assert registry.consume() == []
+
+
+def test_resolve_binary_prefers_project_venv(tmp_path, monkeypatch) -> None:
+    """The project-venv binary wins over a stray PATH global install — closing
+    the version-skew class where the LSP tool spawns a different binary than
+    the project's own toolchain uses.
+    """
+    from vibe.core.lsp._defaults import _resolve_binary
+
+    venv_bin = tmp_path / ".venv" / "bin" / "pyright-langserver"
+    venv_bin.parent.mkdir(parents=True)
+    venv_bin.write_text("#!/bin/sh\nexit 0\n")
+    venv_bin.chmod(0o755)
+
+    def fake_which(_name: str) -> str | None:
+        return "/usr/local/bin/stray-pyright"
+
+    monkeypatch.setattr("vibe.core.lsp._defaults.shutil.which", fake_which)
+    resolved = _resolve_binary("pyright-langserver", tmp_path)
+    assert resolved == str(venv_bin)
+
+
+def test_resolve_binary_falls_back_to_path_when_no_venv(tmp_path, monkeypatch) -> None:
+    from vibe.core.lsp._defaults import _resolve_binary
+
+    monkeypatch.setattr(
+        "vibe.core.lsp._defaults.shutil.which",
+        lambda _name: "/usr/local/bin/pyright-langserver",
+    )
+    resolved = _resolve_binary("pyright-langserver", tmp_path)
+    assert resolved == "/usr/local/bin/pyright-langserver"
+
+
+def test_resolve_binary_returns_none_when_absent(tmp_path, monkeypatch) -> None:
+    from vibe.core.lsp._defaults import _resolve_binary
+
+    monkeypatch.setattr(
+        "vibe.core.lsp._defaults.shutil.which", lambda _name: None
+    )
+    assert _resolve_binary("pyright-langserver", tmp_path) is None
+
+
+def test_probe_passes_root_to_resolve_binary(
+    tmp_path, monkeypatch
+) -> None:
+    """_probe honors root_path so available_presets() uses the venv binary."""
+    from vibe.core.lsp import _defaults
+    from vibe.core.lsp._defaults import PRESETS
+
+    calls: list[Path | None] = []
+
+    def fake_resolve(_name: str, root: Path | None) -> str | None:
+        calls.append(root)
+        return None  # forces "absent" without spawning a process
+
+    monkeypatch.setattr(_defaults, "_resolve_binary", fake_resolve)
+    _defaults._probe(PRESETS["pyright"], root_path=tmp_path)
+    assert calls == [tmp_path]
+
+
+def test_build_server_configs_resolves_command_to_venv_binary(
+    tmp_path, monkeypatch
+) -> None:
+    """The spawned ServerConfig.command[0] must be the venv binary when one
+    exists, not whatever stray global install is first on PATH.
+    """
+    from vibe.core.config import VibeConfig
+    from vibe.core.lsp import _config_bridge
+    from vibe.core.lsp._defaults import _PYRIGHT
+
+    venv_bin = tmp_path / ".venv" / "bin" / "pyright-langserver"
+    venv_bin.parent.mkdir(parents=True)
+    venv_bin.write_text("#!/bin/sh\nexit 0\n")
+    venv_bin.chmod(0o755)
+
+    def fake_available(_root=None):
+        return [_PYRIGHT]
+
+    monkeypatch.setattr(_config_bridge, "available_presets", fake_available)
+
+    config = VibeConfig(lsp_servers=[], lsp_auto_discover=True)
+    configs = _config_bridge.build_server_configs(config, tmp_path)
+    pyright = next(c for c in configs if c.name == "pyright")
+    assert pyright.command[0] == str(venv_bin)

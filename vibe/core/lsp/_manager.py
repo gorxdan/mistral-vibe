@@ -43,6 +43,9 @@ class LSPManager:
     def set_root(self, root_path: str | Path) -> None:
         self._root_uri = uri_from_path(root_path)
         self._root_path = Path(root_path).resolve()
+        # Keep the registry's workspace root in sync so it can suppress
+        # provably-stale import-resolution diagnostics against the live tree.
+        self._diagnostics.set_root(self._root_path)
 
     @property
     def diagnostics(self) -> DiagnosticRegistry:
