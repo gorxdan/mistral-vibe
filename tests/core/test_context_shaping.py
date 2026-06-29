@@ -393,6 +393,16 @@ def test_microcompact_per_message_cap_lowered() -> None:
     assert MicrocompactConfig().per_message_cap_tokens == 1000
 
 
+def test_microcompact_target_below_watermark_invariant() -> None:
+    # target must be < high_watermark; otherwise the loop's `est <= target` break
+    # fires the instant the gate (`est >= high_watermark`) opens, so nothing is
+    # gisted and the watermark is inert (micro would effectively engage at the
+    # higher target, not the watermark).
+    cfg = MicrocompactConfig()
+    assert cfg.target < cfg.high_watermark
+    assert cfg.target == 0.6
+
+
 def test_microcompact_default_rate_raised() -> None:
     # 1/turn treaded water at the watermark in prod; several blocks/turn lets
     # microcompact actually reduce non-recoverable bloat.

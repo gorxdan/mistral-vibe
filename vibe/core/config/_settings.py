@@ -320,8 +320,14 @@ class MicrocompactConfig(BaseSettings):
     # crack, then microcompact gists the non-recoverable remainder. The old 0.8
     # left a ~51k unshaped band (snip abstains on non-recoverable, microcompact
     # not yet triggered) — live glm session climbed 153.6k->204.8k unshaped.
+    # INVARIANT: target < high_watermark, else the loop's `est <= target` break
+    # fires the instant the gate opens and nothing is gisted (target 0.7 > the
+    # 0.65 gate made the watermark inert — micro effectively engaged at 0.7, not
+    # 0.65, so the band never actually closed). target 0.6 drives the
+    # non-recoverable floor to just above snip's engage point — gentler than
+    # snip's 0.5 since gisting is lossy and snip's pointer is not.
     high_watermark: float = 0.65
-    target: float = 0.7
+    target: float = 0.6
     # Each gisted block costs this much; the floor is ~(block count) x this, so a
     # long session's floor rises with length. 2000 was too high — new blocks
     # barely exceeded it (tiny sheds) and a live session climbed to 250k. 1000
