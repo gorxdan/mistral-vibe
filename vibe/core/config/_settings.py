@@ -353,6 +353,13 @@ class MemoryConfig(BaseSettings):
     consolidate_interval_days: int = 7
     consolidate_max_actions: int = 5
     consolidate_timeout: float = 45.0
+    verify: bool = False
+    verify_model: str | None = None
+    verify_min_age_days: int = 7
+    verify_min_candidates: int = 3
+    verify_interval_days: int = 14
+    verify_max_memories: int = 5
+    verify_timeout: float = 45.0
     # Trash retention: how long deleted/merged memory files stay recoverable in
     # the per-directory .trash/ tree before a session-start sweep unlinks them.
     # Aged by the timestamp encoded in the trash filename. 0 disables sweeping

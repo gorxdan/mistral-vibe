@@ -312,6 +312,59 @@ class MemoryStore:
                 out.append(e)
         return out
 
+    def verification_candidates(
+        self, *, min_age_days: int, today: datetime.date | None = None
+    ) -> list[MemoryEntry]:
+        out: list[MemoryEntry] = []
+        for e in self._entries().values():
+            stamp = e.metadata.last_verified
+            age = memory_age_days(stamp if stamp else e.metadata.updated, today)
+            if age is not None and age >= min_age_days:
+                out.append(e)
+        return out
+
+    def last_verification(self) -> datetime.date | None:
+        marker = self._user_dir / ".last_verification"
+        if not marker.exists():
+            return None
+        from vibe.core.utils.io import read_safe
+
+        try:
+            return datetime.date.fromisoformat(read_safe(marker).text.strip())
+        except (OSError, ValueError):
+            return None
+
+    def stamp_verification(self, today_iso: str) -> None:
+        self._user_dir.mkdir(parents=True, exist_ok=True)
+        self._atomic_write(self._user_dir / ".last_verification", today_iso)
+
+    def apply_verification_result(
+        self, memory_id: str, state: str, today_iso: str, *, reconcile_tags: bool = True
+    ) -> bool:
+        from vibe.core.memory.models import VerificationState
+
+        entry = self.get(memory_id)
+        if entry is None:
+            return False
+        m = entry.metadata
+        tags = m.tags
+        if reconcile_tags and state == "stale":
+            from vibe.core.memory.models import _STALE_TAGS
+
+            tags = [t for t in tags if t not in _STALE_TAGS]
+        meta = m.model_copy(
+            update={
+                "last_verified": today_iso,
+                "verification_state": VerificationState(state),
+                "tags": tags,
+            }
+        )
+        self.trash(memory_id, reason="verification-backup", into=memory_id)
+        self.upsert(
+            MemoryEntry(metadata=meta, body=entry.body), project=(m.scope == "project")
+        )
+        return True
+
     def last_consolidation(self) -> datetime.date | None:
         # Throttle marker for consolidation runs. Stored under the user dir so
         # one throttle covers the whole corpus (user + active project tier).

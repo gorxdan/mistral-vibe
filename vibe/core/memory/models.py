@@ -39,6 +39,18 @@ class MemoryType(StrEnum):
     REFERENCE = "reference"
 
 
+# Stale-signal tags that the verifier re-tags against. A "known issue" memory
+# whose check now passes is no longer a known issue, so the tag must go.
+_STALE_TAGS = frozenset({"known-issue", "pre-existing", "test-failure"})
+
+
+class VerificationState(StrEnum):
+    UNVERIFIED = "unverified"
+    VERIFIED = "verified"
+    STALE = "stale"
+    BROKEN = "broken"
+
+
 def slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return slug or "memory"
@@ -105,6 +117,12 @@ class MemoryMetadata(BaseModel):
     # back to the session/turn that produced it (auto-extracted memories
     # especially). Empty for legacy/manual memories; never used for recall.
     session_id: str = ""
+    # Verifier stamps: last_verified is an ISO date of the most recent check
+    # pass; verification_state is the outcome. unverified is the default so
+    # legacy files load unchanged. The selector surfaces verified/stale so recall
+    # can prefer validated memories without a per-turn LLM call.
+    last_verified: str = ""
+    verification_state: VerificationState = VerificationState.UNVERIFIED
 
     @field_validator("description", mode="before")
     @classmethod
@@ -130,6 +148,18 @@ class MemoryMetadata(BaseModel):
         except ValueError:
             return None
 
+    @field_validator("verification_state", mode="before")
+    @classmethod
+    def _coerce_verification_state(cls, v: object) -> VerificationState:
+        if v is None:
+            return VerificationState.UNVERIFIED
+        if not isinstance(v, str):
+            v = str(v)
+        try:
+            return VerificationState(v)
+        except ValueError:
+            return VerificationState.UNVERIFIED
+
 
 class MemoryEntry(BaseModel):
     """A parsed memory: frontmatter metadata + full markdown body."""
@@ -148,9 +178,16 @@ class MemoryEntry(BaseModel):
         desc = f": {m.description}" if m.description else ""
         scope = " (project)" if m.scope == "project" else ""
         age = age_label(m.updated, today)
-        # Fold age into the bracketed tag so it stays one token: `[project, 3d]`.
-        # When there is no type AND no age, omit the brackets entirely (legacy
-        # shape); with either, include both comma-separated.
-        parts = [p for p in (m.type.value if m.type is not None else None, age) if p]
+        # Fold age + verification state into the bracketed tag so it stays one
+        # token: `[project, 3d, verified]`. Unverified is the default and stays
+        # silent; verified/stale/broken surface so recall can weigh confidence.
+        state = (
+            m.verification_state.value
+            if m.verification_state != VerificationState.UNVERIFIED
+            else None
+        )
+        parts = [
+            p for p in (m.type.value if m.type is not None else None, age, state) if p
+        ]
         type_tag = f" [{', '.join(parts)}]" if parts else ""
         return f"- [{m.id}]{type_tag} {m.title}{desc}{tags}{scope}"

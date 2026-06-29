@@ -2312,3 +2312,254 @@ def test_sweep_trash_preserves_unparsable_ledger_lines(tmp_path) -> None:
     store.sweep_trash(30)
     text = ledger.read_text(encoding="utf-8")
     assert "this is not json" in text
+
+
+# --------------------------------------------------------------------------- #
+# Verification metadata                                                        #
+# --------------------------------------------------------------------------- #
+
+
+def test_verification_state_defaults_unverified_for_legacy_files() -> None:
+    m = MemoryMetadata(id="x", title="t")
+    assert m.verification_state.value == "unverified"
+    assert m.last_verified == ""
+
+
+def test_verification_state_coerces_unknown_value_to_unverified() -> None:
+    m = MemoryMetadata.model_validate({
+        "id": "x",
+        "title": "t",
+        "verification_state": "nonsense",
+    })
+    assert m.verification_state.value == "unverified"
+
+
+def test_index_line_surfaces_verified_state(tmp_path) -> None:
+    from vibe.core.memory.models import VerificationState
+
+    e = MemoryEntry(
+        metadata=MemoryMetadata(
+            id="m",
+            title="t",
+            type=MemoryType.PROJECT,
+            updated="2026-06-01",
+            verification_state=VerificationState.VERIFIED,
+        ),
+        body="b",
+    )
+    line = e.index_line(_dt.date(2026, 6, 29))
+    assert "verified" in line
+    assert "stale" not in line
+
+
+def test_index_line_silent_when_unverified() -> None:
+    e = MemoryEntry(
+        metadata=MemoryMetadata(id="m", title="t", type=MemoryType.PROJECT), body="b"
+    )
+    line = e.index_line(_dt.date(2026, 6, 29))
+    assert "unverified" not in line
+
+
+# --------------------------------------------------------------------------- #
+# Verification store primitives                                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_verification_candidates_uses_last_verified_falling_back_to_updated(
+    tmp_path,
+) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_stale_entry("old", days=30))
+    fresh_meta = MemoryMetadata(
+        id="recent", title="r", updated=_dt.date.today().isoformat()
+    )
+    store.upsert(MemoryEntry(metadata=fresh_meta, body="b"))
+    cands = store.verification_candidates(min_age_days=7, today=_dt.date(2026, 6, 29))
+    ids = {c.id for c in cands}
+    assert "old" in ids
+    assert "recent" not in ids
+
+
+def test_last_and_stamp_verification_round_trip(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    assert store.last_verification() is None
+    store.stamp_verification("2026-06-01")
+    assert store.last_verification() == _dt.date(2026, 6, 1)
+
+
+def test_apply_verification_stamps_and_strips_stale_tags(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="m", title="t", tags=["known-issue", "test-failure", "chaton"]
+            ),
+            body="b",
+        )
+    )
+    applied = store.apply_verification_result("m", "stale", "2026-06-29")
+    assert applied
+    out = store.get("m")
+    assert out is not None
+    assert out.metadata.verification_state.value == "stale"
+    assert out.metadata.last_verified == "2026-06-29"
+    # Stale-signal tags removed; neutral tags kept.
+    assert "known-issue" not in out.metadata.tags
+    assert "test-failure" not in out.metadata.tags
+    assert "chaton" in out.metadata.tags
+
+
+def test_apply_verification_keeps_tags_when_verified(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(id="m", title="t", tags=["known-issue", "chaton"]),
+            body="b",
+        )
+    )
+    store.apply_verification_result("m", "verified", "2026-06-29")
+    out = store.get("m")
+    assert out is not None
+    assert out.metadata.verification_state.value == "verified"
+    # A passing check does not rewrite history: tags stay.
+    assert out.metadata.tags == ["known-issue", "chaton"]
+
+
+def test_apply_verification_returns_false_for_missing_id(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    assert not store.apply_verification_result("ghost", "verified", "2026-06-29")
+
+
+# --------------------------------------------------------------------------- #
+# MemoryVerifier: assertion parsing + mechanical checkers                      #
+# --------------------------------------------------------------------------- #
+
+
+def _verifier(project_root: Path) -> Any:
+    from vibe.core.config import ModelConfig, ProviderConfig
+    from vibe.core.memory.verifier import MemoryVerifier
+
+    return MemoryVerifier(
+        model=ModelConfig(name="m", provider="p", alias="m"),
+        provider=ProviderConfig(name="p", api_base="x", backend=Backend.GENERIC),
+        project_root=project_root,
+    )
+
+
+def test_assertion_rejects_non_allowlisted_command() -> None:
+    from vibe.core.memory.verifier import Assertion
+
+    a = Assertion.model_validate({
+        "kind": "command_succeeds",
+        "command": ["rm", "-rf", "/"],
+    })
+    assert a.command == []
+
+
+def test_assertion_rejects_shell_metacharacters() -> None:
+    from vibe.core.memory.verifier import Assertion
+
+    a = Assertion.model_validate({
+        "kind": "command_succeeds",
+        "command": ["ruff", "check", "x; rm -rf /"],
+    })
+    assert a.command == []
+
+
+def test_assertion_strips_invalid_sha() -> None:
+    from vibe.core.memory.verifier import Assertion
+
+    a = Assertion.model_validate({"kind": "commit_exists", "sha": "not-a-sha"})
+    assert a.sha is None
+
+
+def test_parse_extracts_no_assertions_for_empty_payload() -> None:
+    v = _verifier(Path("."))
+    assert v._parse('{"assertions": []}') == []
+
+
+def test_parse_drops_unusable_assertions() -> None:
+    v = _verifier(Path("."))
+    # commit_exists without a sha, command_fails with an empty command.
+    raw = '{"assertions": [{"kind": "commit_exists"}, {"kind": "command_fails"}]}'
+    assert v._parse(raw) == []
+
+
+def test_looks_truncated_flags_mid_sentence_body() -> None:
+    from vibe.core.memory.verifier import _looks_truncated
+
+    assert _looks_truncated("The tool reported 'Merged into HEAD' twice in a")
+    assert not _looks_truncated("This memory records a verified fact.")
+
+
+def test_check_commit_passes_for_existing_sha(tmp_path) -> None:
+    import os
+    import subprocess
+
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], capture_output=True)
+    (tmp_path / "f.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], capture_output=True)
+    r = subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-q", "-m", "init"],
+        capture_output=True,
+        env=env,
+    )
+    assert r.returncode == 0, r.stderr.decode()
+    sha = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    from vibe.core.memory.verifier import _check_commit
+
+    ok, _ = _check_commit(sha[:12], tmp_path)
+    assert ok
+
+
+def test_check_commit_fails_for_missing_sha(tmp_path) -> None:
+    from vibe.core.memory.verifier import _check_commit
+
+    ok, detail = _check_commit("deadbeefdeadbeef", tmp_path)
+    assert not ok
+    assert "not found" in detail
+
+
+def test_check_path_for_existing_and_missing(tmp_path) -> None:
+    from vibe.core.memory.verifier import _check_path
+
+    f = tmp_path / "real.txt"
+    f.write_text("x", encoding="utf-8")
+    ok, _ = _check_path(str(f))
+    assert ok
+    ok, _ = _check_path(str(tmp_path / "ghost.txt"))
+    assert not ok
+
+
+def test_verify_skips_truncated_body() -> None:
+    v = _verifier(Path("."))
+    import asyncio
+
+    result = asyncio.run(v.verify("m", "Body that just cuts off mid", ["t"]))
+    assert result.skipped
+    assert "truncated" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_verify_returns_unverified_when_no_assertions(monkeypatch) -> None:
+    v = _verifier(Path("."))
+
+    async def fake_call(body: str, tags: list[str]) -> str | None:
+        return '{"assertions": []}'
+
+    monkeypatch.setattr(v, "_call", fake_call)
+    result = await v.verify("m", "A body with no checkable claim.", [])
+    assert not result.skipped
+    assert result.state.value == "unverified"
+    assert result.results == []

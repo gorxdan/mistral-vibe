@@ -220,6 +220,7 @@ if TYPE_CHECKING:
     from vibe.core.memory.models import MemoryEntry
     from vibe.core.memory.selector import MemorySelector
     from vibe.core.memory.store import MemoryStore
+    from vibe.core.memory.verifier import MemoryVerifier
     from vibe.core.teleport.teleport import TeleportService
     from vibe.core.teleport.types import TeleportPushResponseEvent, TeleportYieldEvent
     from vibe.core.tools.background import BackgroundRegistry
@@ -607,6 +608,7 @@ class AgentLoop(AgentLoopHooksMixin):
         self._mem_extract_task: asyncio.Task[None] | None = None
         self._mem_prefetch_task: asyncio.Task[list[str]] | None = None
         self._mem_consolidate_task: asyncio.Task[None] | None = None
+        self._mem_verify_task: asyncio.Task[None] | None = None
         self._memory_trash_swept: bool = False
         self.user_input_callback: UserInputCallback | None = None
         # Asked when a turn is rate-limited and no automatic fallback is
@@ -901,11 +903,12 @@ class AgentLoop(AgentLoopHooksMixin):
                 await task
         # Reap the fire-and-forget memory tasks so a session ending mid-flight
         # can't leave a dangling, state-mutating consolidation. Order matters:
-        # consolidation writes first (merge/trash), then extraction (upsert),
-        # then the short-lived prefetch. Each is cancelled then awaited so no
-        # task outlives the loop (which would otherwise warn and leak).
+        # consolidation writes first (merge/trash), then verification (re-tag +
+        # stamp), then extraction (upsert), then the short-lived prefetch. Each
+        # is cancelled then awaited so no task outlives the loop.
         for attr in (
             "_mem_consolidate_task",
+            "_mem_verify_task",
             "_mem_extract_task",
             "_mem_prefetch_task",
         ):
@@ -2041,6 +2044,95 @@ class AgentLoop(AgentLoopHooksMixin):
                     applied += 1
         return applied
 
+    def _resolve_memory_verifier(self) -> MemoryVerifier | None:
+        from pathlib import Path
+
+        from vibe.core.memory.verifier import MemoryVerifier
+
+        mem = self.config.memory
+        model = None
+        alias = mem.verify_model or mem.model
+        if alias:
+            model = next((m for m in self.config.models if m.alias == alias), None)
+        if model is None:
+            model = self.config.compaction_model or self.config.get_active_model()
+        if not self.config.is_model_available(model):
+            return None
+        provider = self.config.get_provider_for_model(model)
+        return MemoryVerifier(
+            model=model,
+            provider=provider,
+            project_root=Path.cwd(),
+            timeout=mem.verify_timeout,
+            extra_headers=self._get_extra_headers(provider),
+            extra_body=mem.extra_body or None,
+        )
+
+    def _maybe_schedule_verification(self) -> None:
+        if self._is_subagent:
+            return
+        mem = self.config.memory
+        if not mem.verify and not self.config.is_le_chaton():
+            return
+        for attr in ("_mem_consolidate_task", "_mem_extract_task", "_mem_verify_task"):
+            task = getattr(self, attr)
+            if task is not None and not task.done():
+                return
+        store = self._get_memory_store()
+        if store is None:
+            return
+        today = _dt.date.today()
+        last = store.last_verification()
+        if last is not None and (today - last).days < mem.verify_interval_days:
+            return
+        candidates = store.verification_candidates(
+            min_age_days=mem.verify_min_age_days, today=today
+        )
+        if len(candidates) < mem.verify_min_candidates:
+            return
+        selected = candidates[: mem.verify_max_memories]
+        task = asyncio.create_task(self._verify_memories(selected, today))
+        self._mem_verify_task = task
+        task.add_done_callback(self._on_verify_done)
+
+    def _on_verify_done(self, task: asyncio.Task[None]) -> None:
+        if task is self._mem_verify_task:
+            self._mem_verify_task = None
+        try:
+            task.result()
+        except Exception as e:
+            logger.warning("memory verification task failed (%s)", e)
+
+    async def _verify_memories(
+        self, candidates: list[MemoryEntry], today: _dt.date
+    ) -> None:
+        try:
+            store = self._get_memory_store()
+            if store is None:
+                return
+            verifier = self._resolve_memory_verifier()
+            today_iso = today.isoformat()
+            if verifier is None:
+                store.stamp_verification(today_iso)
+                return
+            for entry in candidates:
+                result = await verifier.verify(
+                    entry.id, entry.body, entry.metadata.tags
+                )
+                if result.skipped or not result.results:
+                    continue
+                store.apply_verification_result(entry.id, result.state.value, today_iso)
+                if result.state.value != "verified":
+                    logger.info(
+                        "memory %s is %s: %s",
+                        entry.id,
+                        result.state.value,
+                        "; ".join(r.detail for r in result.results if not r.passed),
+                    )
+            store.stamp_verification(today_iso)
+        except Exception as e:
+            logger.warning("memory verification failed (%s)", e)
+
     def _resolve_safety_judge(self) -> SafetyJudge | None:
         judge_cfg = self.config.safety_judge
         if not judge_cfg.enabled or not judge_cfg.model:
@@ -2458,6 +2550,9 @@ class AgentLoop(AgentLoopHooksMixin):
             # Periodic consolidation runs only after extraction has settled (_mem_extract_task
             # in-flight guard) so the two never mutate the store concurrently.
             self._maybe_schedule_consolidation()
+            # Periodic verification runs last: it reads the store and re-tags,
+            # so it must wait on consolidation's writes and extraction's upserts.
+            self._maybe_schedule_verification()
         finally:
             # Abandon any prefetch that never settled so it can't leak across
             # turns or race the next kick.
@@ -3385,10 +3480,7 @@ class AgentLoop(AgentLoopHooksMixin):
         return active_model, self.config.get_provider_for_model(active_model)
 
     def _capture_chat_content(
-        self,
-        span: trace.Span,
-        response_msg: LLMMessage,
-        user_msg: LLMMessage | None,
+        self, span: trace.Span, response_msg: LLMMessage, user_msg: LLMMessage | None
     ) -> None:
         """Attach turn prose to the chat span when content capture is opted in.
 
