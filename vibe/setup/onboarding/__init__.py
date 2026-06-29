@@ -277,4 +277,4 @@ def run_onboarding(
                 f"You may need to set it manually in {GLOBAL_ENV_FILE.path}[/]\n"
             )
         case "completed":
-            rprint('\nSetup complete 🎉. Run "chaton" to start using the Chaton CLI.\n')
+            rprint('\nSetup complete. Run "chaton" to start using the Chaton CLI.\n')
