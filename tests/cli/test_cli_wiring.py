@@ -176,9 +176,9 @@ def test_programmatic_mode_uses_stdin_prompt_and_outputs(
         )
     assert info.value.code == 0
     assert shell["captured"]["prompt"] == "from-stdin"
-    assert shell["captured"]["output_format"] == OutputFormat.JSON
-    assert shell["captured"]["headless"] is True
-    assert shell["captured"]["allow_subagent"] is True
+    assert shell["captured"]["options"].output_format == OutputFormat.JSON
+    assert shell["captured"]["options"].headless is True
+    assert shell["captured"]["options"].allow_subagent is True
 
 
 def test_programmatic_mode_teleport_gated_by_vibe_code_enabled(
@@ -191,7 +191,7 @@ def test_programmatic_mode_teleport_gated_by_vibe_code_enabled(
         cli_mod._run_programmatic_mode(
             args, cfg_off, "default", _EMPTY_HOOKS, None, None
         )
-    assert shell["captured"]["teleport"] is False
+    assert shell["captured"]["options"].teleport is False
 
     cfg_on = build_test_vibe_config(vibe_code_enabled=True)
     shell_on = _patch_programmatic_shell(monkeypatch, config=cfg_on)
@@ -199,7 +199,7 @@ def test_programmatic_mode_teleport_gated_by_vibe_code_enabled(
         cli_mod._run_programmatic_mode(
             args, cfg_on, "default", _EMPTY_HOOKS, None, None
         )
-    assert shell_on["captured"]["teleport"] is True
+    assert shell_on["captured"]["options"].teleport is True
 
 
 def test_programmatic_mode_disabled_tools_extended(
