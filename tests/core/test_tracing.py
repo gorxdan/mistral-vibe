@@ -171,26 +171,35 @@ def test_wire_temperature_reflects_what_is_sent() -> None:
     assert AgentLoop._wire_temperature(glm, chat) == 1.0
 
 
-def test_gc_local_traces_keeps_newest_per_prefix(tmp_path) -> None:
+def test_archive_old_traces_gzips_cold_tail_keeps_data(tmp_path) -> None:
+    import gzip
     import os
 
-    # 5 of each prefix, mtimes 0..4 (older -> newer).
+    # 5 of each prefix, mtimes 0..4 (older -> newer), distinct contents.
     for i in range(5):
         for prefix in ("trace_", "log_"):
             p = tmp_path / f"{prefix}{i}.jsonl"
-            p.write_text("x")
+            p.write_text(f"{prefix}{i}-payload")
             os.utime(p, (i, i))
-    # An unrelated file must never be touched.
     (tmp_path / "keep.txt").write_text("x")
 
-    tracing._gc_local_traces(tmp_path, keep_per_prefix=2)
+    tracing._archive_old_traces(tmp_path, keep_hot=2)
 
+    # Newest 2 of each prefix stay hot (uncompressed).
     assert {p.name for p in tmp_path.glob("trace_*.jsonl")} == {
         "trace_3.jsonl",
         "trace_4.jsonl",
     }
-    assert {p.name for p in tmp_path.glob("log_*.jsonl")} == {
-        "log_3.jsonl",
-        "log_4.jsonl",
+    # Older 3 are gzipped, NOT deleted — data recoverable.
+    assert {p.name for p in tmp_path.glob("trace_*.jsonl.gz")} == {
+        "trace_0.jsonl.gz",
+        "trace_1.jsonl.gz",
+        "trace_2.jsonl.gz",
     }
-    assert (tmp_path / "keep.txt").exists()
+    with gzip.open(tmp_path / "trace_0.jsonl.gz", "rt") as f:
+        assert f.read() == "trace_0-payload"
+    assert (tmp_path / "keep.txt").exists()  # unrelated untouched
+
+    # Idempotent: a second pass re-finds nothing to archive (gz already exists).
+    tracing._archive_old_traces(tmp_path, keep_hot=2)
+    assert len(list(tmp_path.glob("trace_*.jsonl.gz"))) == 3

@@ -3,10 +3,12 @@ from __future__ import annotations
 import atexit
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
+import gzip
 import json
 import logging
 import os
 from pathlib import Path
+import shutil
 from typing import TYPE_CHECKING, Any
 
 from opentelemetry import baggage, context, trace
@@ -138,17 +140,20 @@ def _local_trace_path(prefix: str) -> Path:
     return TRACE_LOG_DIR.path / f"{prefix}_{ts}_{os.getpid()}.jsonl"
 
 
-# Local trace/log JSONL accumulate one pair per process and were never reclaimed,
-# so the dir grew unbounded (hundreds of MB). Keep the newest N of each prefix.
-_LOCAL_TRACE_KEEP = 200
+# Local trace/log JSONL accumulate one pair per process; the dir grew unbounded
+# (hundreds of MB). Traces are valuable, so keep them all — but compress the cold
+# tail: the newest N of each prefix stay hot (uncompressed, fast to read), older
+# ones are gzipped in place (~10x smaller). Nothing is deleted.
+_LOCAL_TRACE_HOT = 50
 
 
-def _gc_local_traces(directory: Path, keep_per_prefix: int = _LOCAL_TRACE_KEEP) -> None:
-    """Reclaim old local trace/log files, keeping the newest N of each prefix.
+def _archive_old_traces(directory: Path, keep_hot: int = _LOCAL_TRACE_HOT) -> None:
+    """Gzip trace/log files beyond the newest *keep_hot* of each prefix, in place.
 
-    Best-effort and synchronous at startup: the newest files (incl. this
-    process's, just-created) are always retained, so an active session is never
-    touched. Failures are swallowed — trace GC must never block tracing setup.
+    Best-effort and synchronous at startup. The newest files (incl. this
+    process's, just-created) stay uncompressed; older ``*.jsonl`` become
+    ``*.jsonl.gz`` (the data is preserved, just compressed). Already-archived
+    files are skipped. Failures never block tracing setup.
     """
     try:
         if not directory.exists():
@@ -159,13 +164,18 @@ def _gc_local_traces(directory: Path, keep_per_prefix: int = _LOCAL_TRACE_KEEP) 
                 key=lambda p: p.stat().st_mtime,
                 reverse=True,
             )
-            for stale in files[keep_per_prefix:]:
+            for old in files[keep_hot:]:
+                gz = old.with_name(old.name + ".gz")
                 try:
-                    stale.unlink()
+                    if gz.exists():
+                        continue
+                    with old.open("rb") as src, gzip.open(gz, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    old.unlink()
                 except OSError:
                     pass
     except Exception:
-        logger.debug("local trace gc skipped", exc_info=True)
+        logger.debug("local trace archive skipped", exc_info=True)
 
 
 def setup_tracing(config: VibeConfig) -> None:
@@ -197,7 +207,7 @@ def setup_tracing(config: VibeConfig) -> None:
         provider.add_span_processor(BatchSpanProcessor(exporter))
 
     if local_export:
-        _gc_local_traces(TRACE_LOG_DIR.path)
+        _archive_old_traces(TRACE_LOG_DIR.path)
         provider.add_span_processor(
             SimpleSpanProcessor(_JsonlSpanExporter(_local_trace_path("trace")))
         )
