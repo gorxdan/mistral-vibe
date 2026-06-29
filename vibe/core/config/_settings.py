@@ -74,8 +74,20 @@ def load_dotenv_values(
     for key, value in env_vars.items():
         if not value:
             continue
-        if environ.get(key):
+        existing = environ.get(key)
+        if existing:
             # An explicit non-empty process/shell value wins over the .env file.
+            # When it DIFFERS from a saved credential, the saved one (e.g. from a
+            # browser sign-in) is silently shadowed — warn so the stale-key trap
+            # is visible rather than surfacing later as auth failures.
+            if existing != value and key.endswith("_API_KEY"):
+                logger.warning(
+                    "%s in your shell environment shadows the value saved in %s "
+                    "(e.g. a browser sign-in); the shell value is used. Remove the "
+                    "shell export to use the saved key.",
+                    key,
+                    env_path,
+                )
             continue
         environ[key] = value
 

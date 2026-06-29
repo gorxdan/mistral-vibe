@@ -1781,3 +1781,39 @@ class TestMigrateRenamedTools:
         with config_file.open("rb") as f:
             result = tomllib.load(f)
         assert result["tools"] == {"read": {"permission": "always"}}
+
+
+class TestLoadDotenvShadowWarning:
+    def test_warns_when_shell_shadows_a_different_saved_key(
+        self, tmp_path: Path
+    ) -> None:
+        from vibe.core.config._settings import load_dotenv_values
+
+        env_file = tmp_path / ".env"
+        env_file.write_text('ZAI_API_KEY="saved-from-browser-signin"\n')
+        environ = {"ZAI_API_KEY": "stale-shell-export"}
+        with patch("vibe.core.config._settings.logger") as log:
+            load_dotenv_values(env_file, environ)
+        assert environ["ZAI_API_KEY"] == "stale-shell-export"  # shell still wins
+        log.warning.assert_called_once()
+
+    def test_no_warning_when_shell_and_file_match(self, tmp_path: Path) -> None:
+        from vibe.core.config._settings import load_dotenv_values
+
+        env_file = tmp_path / ".env"
+        env_file.write_text('ZAI_API_KEY="same-value"\n')
+        environ = {"ZAI_API_KEY": "same-value"}
+        with patch("vibe.core.config._settings.logger") as log:
+            load_dotenv_values(env_file, environ)
+        log.warning.assert_not_called()
+
+    def test_loads_file_value_when_unset_in_shell(self, tmp_path: Path) -> None:
+        from vibe.core.config._settings import load_dotenv_values
+
+        env_file = tmp_path / ".env"
+        env_file.write_text('SAKANA_API_KEY="from-file"\n')
+        environ: dict[str, str] = {}
+        with patch("vibe.core.config._settings.logger") as log:
+            load_dotenv_values(env_file, environ)
+        assert environ["SAKANA_API_KEY"] == "from-file"
+        log.warning.assert_not_called()
