@@ -311,7 +311,11 @@ class MicrocompactConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
     enabled: bool = True
-    high_watermark: float = 0.8
+    # Engages just above snip's 0.6 so snip (lossless, recoverable) gets first
+    # crack, then microcompact gists the non-recoverable remainder. The old 0.8
+    # left a ~51k unshaped band (snip abstains on non-recoverable, microcompact
+    # not yet triggered) — live glm session climbed 153.6k->204.8k unshaped.
+    high_watermark: float = 0.65
     target: float = 0.7
     per_message_cap_tokens: int = 2000
     max_blocks_per_turn: int = 1

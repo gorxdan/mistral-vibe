@@ -336,6 +336,33 @@ async def test_snip_targets_recoverable_skips_nonrecoverable() -> None:
     assert ctx.messages[3].content == _content(500)  # non-recoverable untouched
 
 
+def test_microcompact_default_watermark_tightened() -> None:
+    # Tightened to ~snip's 0.6 so the two shapers engage together, closing the
+    # 51k unshaped band a live glm session climbed through (153.6k->204.8k).
+    assert MicrocompactConfig().high_watermark == 0.65
+
+
+@pytest.mark.asyncio
+async def test_microcompact_engages_in_old_gap_band() -> None:
+    # est ~0.7x threshold: above the new 0.65 watermark, below the old 0.8 — so
+    # this would NOT have fired before and must now.
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(per_message_cap_tokens=100),  # default 0.65
+    )
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.ASSISTANT, content=_content(350)),
+        LLMMessage(role=Role.ASSISTANT, content=_content(350)),
+        LLMMessage(role=Role.ASSISTANT, content="recent"),
+    ]
+    ctx = _ctx(msgs, cfg)  # est ~703 of 1000 threshold -> 0.70x
+    await MicrocompactMiddleware().before_turn(ctx)
+    assert any(
+        (m.content or "").startswith("<vibe_microcompacted>") for m in ctx.messages
+    )
+
+
 @pytest.mark.asyncio
 async def test_microcompact_targets_nonrecoverable_skips_recoverable() -> None:
     # microcompact owns non-recoverable content: it gist-truncates the path-less
