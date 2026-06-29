@@ -140,7 +140,7 @@ class EventHandler:
         else:
             await container.remove()
 
-    async def handle_event(  # noqa: PLR0912
+    async def handle_event(
         self, event: BaseEvent, loading_widget: LoadingWidget | None = None
     ) -> ToolCallMessage | None:
         match event:
@@ -164,14 +164,11 @@ class EventHandler:
                 await self.finalize_streaming()
                 await self._handle_compact_end(event)
             case AgentProfileChangedEvent():
-                if self.on_profile_changed:
-                    self.on_profile_changed()
+                self._handle_profile_changed()
             case SessionTitleUpdatedEvent():
                 pass
             case UserMessageEvent():
-                await self.finalize_streaming()
-                if self.is_remote:
-                    await self.mount_callback(UserMessage(event.content))
+                await self._handle_user_message(event)
             case HookEvent():
                 await self._handle_hook_event(event, loading_widget)
             case PlanReviewRequestedEvent():
@@ -184,6 +181,15 @@ class EventHandler:
                 await self.finalize_streaming()
                 await self._handle_unknown_event(event)
         return None
+
+    def _handle_profile_changed(self) -> None:
+        if self.on_profile_changed:
+            self.on_profile_changed()
+
+    async def _handle_user_message(self, event: UserMessageEvent) -> None:
+        await self.finalize_streaming()
+        if self.is_remote:
+            await self.mount_callback(UserMessage(event.content))
 
     def _sanitize_event(self, event: ToolResultEvent) -> ToolResultEvent:
         if isinstance(event, ToolResultEvent):

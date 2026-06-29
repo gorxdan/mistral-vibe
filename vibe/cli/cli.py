@@ -31,7 +31,7 @@ from vibe.core.hooks.config import HookConfigResult, load_hooks_from_fs
 from vibe.core.logger import logger
 from vibe.core.paths import HISTORY_FILE
 from vibe.core.plugins.integration import load_and_apply_plugins
-from vibe.core.programmatic import run_programmatic
+from vibe.core.programmatic import ProgrammaticOptions, run_programmatic
 from vibe.core.session import last_session_pointer
 from vibe.core.session.session_loader import SessionLoader
 from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
@@ -280,20 +280,22 @@ def _run_programmatic_mode(
         final_response = run_programmatic(
             config=config,
             prompt=programmatic_prompt or "",
-            max_turns=args.max_turns,
-            max_price=args.max_price,
-            max_session_tokens=args.max_tokens,
-            keep_alive_seconds=args.keep_alive,
-            output_format=output_format,
-            previous_messages=loaded_session[0] if loaded_session else None,
-            agent_name=initial_agent_name,
-            teleport=args.teleport and config.vibe_code_enabled,
-            headless=True,
-            hook_config_result=hook_config_result,
-            # Programmatic mode is a fresh top-level process, not a recursive
-            # spawn inside an interactive session, so allow selecting a SUBAGENT
-            # profile (e.g. reviewer) as the primary agent via --agent.
-            allow_subagent=True,
+            options=ProgrammaticOptions(
+                max_turns=args.max_turns,
+                max_price=args.max_price,
+                max_session_tokens=args.max_tokens,
+                keep_alive_seconds=args.keep_alive,
+                output_format=output_format,
+                previous_messages=loaded_session[0] if loaded_session else None,
+                agent_name=initial_agent_name,
+                teleport=args.teleport and config.vibe_code_enabled,
+                headless=True,
+                hook_config_result=hook_config_result,
+                # Programmatic mode is a fresh top-level process, not a recursive
+                # spawn inside an interactive session, so allow selecting a SUBAGENT
+                # profile (e.g. reviewer) as the primary agent via --agent.
+                allow_subagent=True,
+            ),
         )
         if final_response:
             print(final_response)

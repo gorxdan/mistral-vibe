@@ -295,7 +295,7 @@ class ChatTextArea(TextArea):
     def time_since_last_keystroke(self) -> float:
         return time.monotonic() - self._last_keystroke_time
 
-    async def _on_key(self, event: events.Key) -> None:  # noqa: PLR0911
+    async def _on_key(self, event: events.Key) -> None:
         self._last_keystroke_time = time.monotonic()
 
         if await self._handle_voice_key(event):
@@ -312,31 +312,42 @@ class ChatTextArea(TextArea):
             if event.character is not None:
                 self.post_message(self.NonFeedbackKeyPressed())
 
+        if self._handle_completion(event):
+            return
+
+        if self._handle_special_keys(event):
+            return
+
+        patch_vscode_space(event)
+
+        await super()._on_key(event)
+        self._mark_cursor_moved_if_needed()
+
+    def _handle_completion(self, event: events.Key) -> bool:
         manager = self._completion_manager
-        if manager:
-            match manager.on_key(
-                event, self.get_full_text(), self._get_full_cursor_offset()
-            ):
-                case CompletionResult.HANDLED:
-                    event.prevent_default()
-                    event.stop()
-                    return
-                case CompletionResult.SUBMIT:
-                    event.prevent_default()
-                    event.stop()
-                    self.post_message(self.Submitted(self.get_full_text().strip()))
-                    return
+        if not manager:
+            return False
+        match manager.on_key(
+            event, self.get_full_text(), self._get_full_cursor_offset()
+        ):
+            case CompletionResult.HANDLED:
+                event.prevent_default()
+                event.stop()
+                return True
+            case CompletionResult.SUBMIT:
+                event.prevent_default()
+                event.stop()
+                self.post_message(self.Submitted(self.get_full_text().strip()))
+                return True
+        return False
 
-        if event.key == "enter":
+    def _handle_special_keys(self, event: events.Key) -> bool:
+        if event.key in {"enter", "shift+enter"}:
             event.prevent_default()
             event.stop()
-            self.post_message(self.Submitted(self.get_full_text().strip()))
-            return
-
-        if event.key == "shift+enter":
-            event.prevent_default()
-            event.stop()
-            return
+            if event.key == "enter":
+                self.post_message(self.Submitted(self.get_full_text().strip()))
+            return True
 
         if (
             event.character
@@ -347,7 +358,7 @@ class ChatTextArea(TextArea):
             self._set_mode(event.character)
             event.prevent_default()
             event.stop()
-            return
+            return True
 
         if (
             event.key in {"backspace", "shift+backspace"}
@@ -356,22 +367,19 @@ class ChatTextArea(TextArea):
             self._set_mode(self.DEFAULT_MODE)
             event.prevent_default()
             event.stop()
-            return
+            return True
 
         if event.key == "up" and self._handle_history_up():
             event.prevent_default()
             event.stop()
-            return
+            return True
 
         if event.key == "down" and self._handle_history_down():
             event.prevent_default()
             event.stop()
-            return
+            return True
 
-        patch_vscode_space(event)
-
-        await super()._on_key(event)
-        self._mark_cursor_moved_if_needed()
+        return False
 
     @property
     def applying_completion(self) -> bool:

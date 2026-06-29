@@ -448,8 +448,8 @@ def requires_init(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
-    def __init__(  # noqa: PLR0913
+class AgentLoop(AgentLoopHooksMixin):
+    def __init__(
         self,
         config: VibeConfig,
         *,

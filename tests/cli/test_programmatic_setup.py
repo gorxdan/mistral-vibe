@@ -10,6 +10,7 @@ import pytest
 from tests.conftest import build_test_vibe_config
 from vibe.cli import cli as cli_mod, entrypoint as entrypoint_mod
 from vibe.core.config import MissingAPIKeyError
+from vibe.core.programmatic import ProgrammaticOptions
 from vibe.core.trusted_folders import trusted_folders_manager
 from vibe.setup import onboarding as onboarding_mod
 
@@ -341,7 +342,9 @@ def test_run_cli_passes_max_tokens_to_run_programmatic(
         cli_mod.run_cli(args)
 
     assert exc_info.value.code == 0
-    assert call["max_session_tokens"] == 123
+    options = call["options"]
+    assert isinstance(options, ProgrammaticOptions)
+    assert options.max_session_tokens == 123
 
 
 def test_run_cli_runs_update_prompt_before_trust_resolver(

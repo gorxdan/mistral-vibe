@@ -397,7 +397,7 @@ class _ImageAttachmentRejection:
     no_vision: bool = False
 
 
-class VibeApp(App):  # noqa: PLR0904
+class VibeApp(App):
     ENABLE_COMMAND_PALETTE = False
     CSS_PATH = "app.tcss"
     PAUSE_GC_ON_SCROLL: ClassVar[bool] = True

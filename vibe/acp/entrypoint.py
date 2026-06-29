@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from io import TextIOWrapper
 import os
 import sys
+from typing import cast
 
 import tomli_w
 
@@ -17,10 +19,11 @@ from vibe.core.logger import logger
 from vibe.core.paths import HISTORY_FILE
 from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
 
-# Configure line buffering for subprocess communication
-sys.stdout.reconfigure(line_buffering=True)  # pyright: ignore[reportAttributeAccessIssue]
-sys.stderr.reconfigure(line_buffering=True)  # pyright: ignore[reportAttributeAccessIssue]
-sys.stdin.reconfigure(line_buffering=True)  # pyright: ignore[reportAttributeAccessIssue]
+# Configure line buffering for subprocess communication. typeshed types
+# sys.std{out,err,in} as the minimal TextIO protocol, but at runtime they are
+# TextIOWrapper instances that expose reconfigure(); cast to the concrete type.
+for _stream in (sys.stdout, sys.stderr, sys.stdin):
+    cast(TextIOWrapper, _stream).reconfigure(line_buffering=True)
 
 
 @dataclass
