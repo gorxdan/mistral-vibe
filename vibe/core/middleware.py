@@ -128,6 +128,16 @@ _SNIP_OPEN = "<vibe_snipped>"
 _SNIP_CLOSE = "</vibe_snipped>"
 _MC_OPEN = "<vibe_microcompacted>"
 
+# Cap on the base that snip/microcompact watermarks scale off. Their thresholds
+# are fractions of the active model's auto_compact_threshold, which for a
+# giant-window model (glm/fugu at 880k, gpt-5.5/minimax at 400k) is pinned to the
+# nominal window — so without this cap proactive shaping would not start until
+# hundreds of k of tokens, hoarding stale context for latency and recall no gain.
+# Capping keeps every model trimming from the same absolute point. Full
+# auto-compaction (AutoCompactMiddleware) is deliberately NOT capped: it must
+# fire near the real window, so it keeps the raw auto_compact_threshold.
+_SHAPING_TOKEN_CAP = 256_000
+
 
 class ContextShaperMiddleware:
     """Base for cheap, local, in-place context shapers run before AutoCompact.
@@ -142,9 +152,10 @@ class ContextShaperMiddleware:
 
     @staticmethod
     def _threshold(context: ConversationContext) -> int:
-        return (
+        threshold = (
             context.active_model or context.config.get_active_model()
         ).auto_compact_threshold
+        return min(threshold, _SHAPING_TOKEN_CAP)
 
     @staticmethod
     def estimated_tokens(context: ConversationContext) -> int:

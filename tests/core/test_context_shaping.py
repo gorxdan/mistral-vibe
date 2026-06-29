@@ -6,6 +6,7 @@ from tests.conftest import build_test_vibe_config
 from vibe.core.config import ContextShapingConfig, VibeConfig
 from vibe.core.config._settings import MicrocompactConfig, SnipConfig
 from vibe.core.middleware import (
+    ContextShaperMiddleware,
     ConversationContext,
     MicrocompactMiddleware,
     SnipMiddleware,
@@ -62,6 +63,29 @@ def _history() -> list[LLMMessage]:
         LLMMessage(role=Role.ASSISTANT, content=_content(350)),
         LLMMessage(role=Role.ASSISTANT, content="recent reply"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("threshold", "expected"),
+    [
+        (880_000, 256_000),  # glm / fugu — 1M window, capped
+        (400_000, 256_000),  # gpt-5.5 / minimax — capped
+        (256_000, 256_000),  # exactly at the cap
+        (200_000, 200_000),  # kimi — below cap, unchanged
+        (108_800, 108_800),  # codex-spark — below cap, unchanged
+    ],
+)
+def test_shaping_base_is_capped(threshold: int, expected: int) -> None:
+    # snip/microcompact watermarks scale off this base; it is capped so a
+    # giant-window model starts proactive shaping at the same absolute point as
+    # a small one instead of hoarding context up to a window-pinned threshold.
+    # Full auto-compaction (AutoCompactMiddleware) reads the raw threshold and is
+    # unaffected.
+    cfg = build_test_vibe_config()
+    cfg.models[0].auto_compact_threshold = threshold
+    cfg.active_model = cfg.models[0].alias
+    ctx = _ctx([LLMMessage(role=Role.SYSTEM, content="s")], cfg)
+    assert ContextShaperMiddleware._threshold(ctx) == expected
 
 
 @pytest.mark.asyncio
