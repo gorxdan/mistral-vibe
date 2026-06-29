@@ -1,6 +1,40 @@
 from __future__ import annotations
 
+import os
+import tempfile
+
+import vibe.core.scratchpad as scratchpad
 from vibe.core.scratchpad import get_scratchpad_dir, init_scratchpad, is_scratchpad_path
+
+
+class TestScratchpadCleanup:
+    def test_cleanup_all_removes_active_dirs(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        scratchpad._active_scratchpads.clear()
+        d = init_scratchpad("cleanup-sess")
+        assert d is not None and d.is_dir()
+        scratchpad.cleanup_all_scratchpads()
+        assert not d.exists()
+        assert not scratchpad._active_scratchpads
+
+    def test_gc_reclaims_stale_keeps_fresh_and_active(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        scratchpad._active_scratchpads.clear()
+        stale = tmp_path / "vibe-scratchpad-old-x"
+        stale.mkdir()
+        os.utime(stale, (1, 1))  # ancient mtime
+        fresh = tmp_path / "vibe-scratchpad-new-y"
+        fresh.mkdir()  # current mtime
+        active = init_scratchpad("live-sess")  # in tmp_path, registered active
+
+        scratchpad.gc_stale_scratchpads(max_age_s=3600)
+
+        assert not stale.exists()  # past cutoff -> reclaimed
+        assert fresh.exists()  # recent -> kept
+        assert active is not None and active.exists()  # active -> never touched
+        scratchpad.cleanup_all_scratchpads()
 
 
 class TestInitScratchpad:

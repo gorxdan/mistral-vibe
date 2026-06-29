@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import atexit
 from pathlib import Path
+import shutil
 import tempfile
+import time
 
 from vibe.core.logger import logger
 from vibe.core.session.session_id import shorten_session_id
 
 _active_scratchpads: dict[str, Path] = {}
+_atexit_registered = False
+# Stranded scratchpads (process crashed/SIGKILLed before atexit) are reclaimed by
+# age. Generous so a long-running session never loses its own working dir.
+_SCRATCHPAD_GC_AGE_S = 24 * 3600
 
 
 def init_scratchpad(session_id: str) -> Path | None:
@@ -16,6 +23,14 @@ def init_scratchpad(session_id: str) -> Path | None:
     """
     if session_id in _active_scratchpads:
         return _active_scratchpads[session_id]
+
+    global _atexit_registered
+    if not _atexit_registered:
+        atexit.register(cleanup_all_scratchpads)
+        # Once per process: reap crash-stranded scratchpads (and the bash
+        # bg-logs / sandbox profiles parked inside them) from dead sessions.
+        gc_stale_scratchpads()
+        _atexit_registered = True
 
     try:
         dir_path = Path(
@@ -29,6 +44,37 @@ def init_scratchpad(session_id: str) -> Path | None:
     except OSError:
         logger.warning("Failed to create scratchpad directory")
         return None
+
+
+def cleanup_all_scratchpads() -> None:
+    """Remove this process's scratchpad dirs. Registered atexit so a clean exit
+    leaves nothing behind (covers the bash bg-logs / sandbox profiles inside).
+    """
+    for dir_path in list(_active_scratchpads.values()):
+        shutil.rmtree(dir_path, ignore_errors=True)
+    _active_scratchpads.clear()
+
+
+def gc_stale_scratchpads(max_age_s: int = _SCRATCHPAD_GC_AGE_S) -> None:
+    """Reclaim ``vibe-scratchpad-*`` dirs left by dead sessions, by age.
+
+    Skips this process's active dirs and anything written to recently, so an
+    in-flight session (its own or another process's) is never pulled out. Best
+    effort — never raises.
+    """
+    try:
+        active = {p.resolve() for p in _active_scratchpads.values()}
+        cutoff = time.time() - max_age_s
+        for d in Path(tempfile.gettempdir()).glob("vibe-scratchpad-*"):
+            try:
+                if not d.is_dir() or d.resolve() in active:
+                    continue
+                if d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                pass
+    except Exception:
+        logger.debug("scratchpad gc skipped", exc_info=True)
 
 
 def get_scratchpad_dir(session_id: str) -> Path | None:
