@@ -373,13 +373,19 @@ async def chat_span(
 
 
 def _set_usage_attrs(
-    span: trace.Span, *, input_tokens: int, output_tokens: int, cached_tokens: int
+    span: trace.Span,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    reasoning_tokens: int = 0,
 ) -> None:
-    # cached_tokens has no stable gen_ai constant; emit a vibe-namespaced attr.
+    # cached/reasoning tokens have no stable gen_ai constant; emit vibe-namespaced.
     try:
         span.set_attribute(gen_ai_attributes.GEN_AI_USAGE_INPUT_TOKENS, input_tokens)
         span.set_attribute(gen_ai_attributes.GEN_AI_USAGE_OUTPUT_TOKENS, output_tokens)
         span.set_attribute("gen_ai.usage.cached_input_tokens", cached_tokens)
+        span.set_attribute("gen_ai.usage.reasoning_tokens", reasoning_tokens)
     except Exception:
         pass
 
@@ -390,7 +396,21 @@ def set_usage(span: trace.Span, usage: LLMUsage) -> None:
         input_tokens=usage.prompt_tokens,
         output_tokens=usage.completion_tokens,
         cached_tokens=usage.cached_tokens,
+        reasoning_tokens=usage.reasoning_tokens,
     )
+
+
+def set_finish_reason(span: trace.Span, reason: str | None) -> None:
+    # gen_ai.response.finish_reasons is a list; vibe produces one stop per turn
+    # (stop/length/tool_calls/refusal). 'length' marks an output-truncated turn.
+    if not reason:
+        return
+    try:
+        span.set_attribute(
+            gen_ai_attributes.GEN_AI_RESPONSE_FINISH_REASONS, (reason,)
+        )
+    except Exception:
+        pass
 
 
 def set_agent_usage(
@@ -503,6 +523,7 @@ def set_context_shaping_result(
     threshold: int | None = None,
     blocks: int | None = None,
     status: str | None = None,
+    reasoning_preserved: bool | None = None,
 ) -> None:
     try:
         span.set_attribute("vibe.context.tokens_before", tokens_before)
@@ -516,5 +537,11 @@ def set_context_shaping_result(
             span.set_attribute("vibe.context.blocks", blocks)
         if status is not None:
             span.set_attribute("vibe.context.status", status)
+        # Whether elided assistant turns kept reasoning_content (Preserved
+        # Thinking). False here is the signal that snip stripped it.
+        if reasoning_preserved is not None:
+            span.set_attribute(
+                "vibe.context.reasoning_preserved", reasoning_preserved
+            )
     except Exception:
         pass

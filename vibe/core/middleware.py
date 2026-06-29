@@ -251,6 +251,7 @@ class SnipMiddleware(ContextShaperMiddleware):
                     tokens_after=est,
                     threshold=threshold,
                     blocks=snipped,
+                    reasoning_preserved=preserve_reasoning,
                 )
         return MiddlewareResult()
 

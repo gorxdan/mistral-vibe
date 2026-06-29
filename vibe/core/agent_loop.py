@@ -121,6 +121,7 @@ from vibe.core.tracing import (
     context_shaping_span,
     set_agent_usage,
     set_context_shaping_result,
+    set_finish_reason,
     set_tool_error,
     set_tool_exec_duration,
     set_tool_result,
@@ -2117,6 +2118,18 @@ class AgentLoop(AgentLoopHooksMixin):
         logger.warning("%s", hint)
         return hint
 
+    def _trace_recovery(self, *, error_type: str, action: str, **extra: Any) -> None:
+        # Record a self-heal (failover / escalation / compaction) on the active
+        # span, so a trace shows why a turn retried instead of just failing.
+        attrs: dict[str, Any] = {"error.type": error_type, "vibe.recovery.action": action}
+        for key, value in extra.items():
+            if value is not None:
+                attrs[f"vibe.recovery.{key}"] = value
+        try:
+            trace.get_current_span().add_event("llm_recovery", attrs)
+        except Exception:
+            pass
+
     def _escalate_max_output(self) -> int | None:
         esc = self.config.max_output_escalation
         if not esc.enabled:
@@ -2261,6 +2274,10 @@ class AgentLoop(AgentLoopHooksMixin):
                             "compaction"
                         )
                         if await self._try_reactive_shaping():
+                            self._trace_recovery(
+                                error_type="context_too_long",
+                                action="reactive_shaping",
+                            )
                             continue
                     emergency_compacted = True
                     threshold = self.effective_model().auto_compact_threshold
@@ -2268,6 +2285,10 @@ class AgentLoop(AgentLoopHooksMixin):
                         self.stats.context_tokens, threshold, trigger="emergency"
                     ):
                         yield ev
+                    self._trace_recovery(
+                        error_type="context_too_long",
+                        action="emergency_compact",
+                    )
                     continue
                 except RateLimitError as e:
                     fallback = self._switch_to_fallback_model()
@@ -2284,6 +2305,11 @@ class AgentLoop(AgentLoopHooksMixin):
                     logger.warning(
                         "Active model rate-limited; switching to %r", fallback.alias
                     )
+                    self._trace_recovery(
+                        error_type="rate_limit",
+                        action="failover",
+                        fallback=fallback.alias,
+                    )
                     continue
                 except ContentFilterError as e:
                     fallback = self._switch_to_fallback_model()
@@ -2296,6 +2322,11 @@ class AgentLoop(AgentLoopHooksMixin):
                         "Request blocked by %r content filter; falling back to %r",
                         e.provider,
                         fallback.alias,
+                    )
+                    self._trace_recovery(
+                        error_type="content_filter",
+                        action="failover",
+                        fallback=fallback.alias,
                     )
                     continue
                 except ServerError as e:
@@ -2310,6 +2341,11 @@ class AgentLoop(AgentLoopHooksMixin):
                         e.provider,
                         fallback.alias,
                     )
+                    self._trace_recovery(
+                        error_type="server_error",
+                        action="failover",
+                        fallback=fallback.alias,
+                    )
                     continue
                 except ResponseTooLongError:
                     nxt = self._escalate_max_output()
@@ -2317,6 +2353,11 @@ class AgentLoop(AgentLoopHooksMixin):
                         raise
                     logger.warning(
                         "Response truncated; retrying turn with max_tokens=%d", nxt
+                    )
+                    self._trace_recovery(
+                        error_type="response_too_long",
+                        action="escalate_max_output",
+                        new_max_tokens=nxt,
                     )
                     continue
                 # Per-turn save so the on-disk log stays fresh; after the
@@ -3337,6 +3378,7 @@ class AgentLoop(AgentLoopHooksMixin):
                     harness=harness,
                 )
                 set_usage(_span, result.usage)
+                set_finish_reason(_span, result.stop.reason if result.stop else None)
 
             if result.correlation_id:
                 self.telemetry_client.last_correlation_id = result.correlation_id
@@ -3450,6 +3492,9 @@ class AgentLoop(AgentLoopHooksMixin):
                         model=active_model,
                     )
                     set_usage(_span, chunk_acc.usage)
+                    set_finish_reason(
+                        _span, chunk_agg.stop.reason if chunk_agg.stop else None
+                    )
 
                 # Raise before committing the truncated turn so the escalation
                 # retry re-streams from a clean message list (mirrors _chat).
