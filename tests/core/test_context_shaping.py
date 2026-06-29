@@ -336,6 +336,33 @@ async def test_snip_targets_recoverable_skips_nonrecoverable() -> None:
     assert ctx.messages[3].content == _content(500)  # non-recoverable untouched
 
 
+def test_microcompact_default_rate_raised() -> None:
+    # 1/turn treaded water at the watermark in prod; several blocks/turn lets
+    # microcompact actually reduce non-recoverable bloat.
+    assert MicrocompactConfig().max_blocks_per_turn == 4
+
+
+@pytest.mark.asyncio
+async def test_microcompact_compresses_up_to_rate_per_pass() -> None:
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(per_message_cap_tokens=100),  # default rate=4
+    )
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.USER, content="go"),
+    ]
+    for _ in range(6):  # 6 eligible non-recoverable blocks; rate caps the pass
+        msgs.append(LLMMessage(role=Role.ASSISTANT, content=_content(400)))
+    msgs.append(LLMMessage(role=Role.ASSISTANT, content="recent"))
+    ctx = _ctx(msgs, cfg)
+    await MicrocompactMiddleware().before_turn(ctx)
+    n = sum(
+        1 for m in ctx.messages if (m.content or "").startswith("<vibe_microcompacted>")
+    )
+    assert n == 4  # bounded by max_blocks_per_turn, not all 6
+
+
 def test_microcompact_default_watermark_tightened() -> None:
     # Tightened to ~snip's 0.6 so the two shapers engage together, closing the
     # 51k unshaped band a live glm session climbed through (153.6k->204.8k).

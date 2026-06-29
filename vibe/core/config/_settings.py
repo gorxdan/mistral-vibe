@@ -318,7 +318,12 @@ class MicrocompactConfig(BaseSettings):
     high_watermark: float = 0.65
     target: float = 0.7
     per_message_cap_tokens: int = 2000
-    max_blocks_per_turn: int = 1
+    # Now that microcompact is the sole shaper for non-recoverable content, 1/turn
+    # treads water: a live session sat at ~204k for ~10 turns shedding 280-900
+    # tokens/turn while growth replaced them. Several blocks/turn lets it actually
+    # reduce. Cache stays ~95% even under heavy per-turn shaping, so the
+    # prefix-churn cost is small. Tune up if deep sessions still stall.
+    max_blocks_per_turn: int = 4
 
 
 class MemoryConfig(BaseSettings):
