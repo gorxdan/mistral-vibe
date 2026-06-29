@@ -9,7 +9,14 @@ from tests.conftest import (
     build_test_vibe_config,
     make_test_models,
 )
-from vibe.core.types import BaseEvent, ContextTooLongError, LLMMessage, Role
+from vibe.core.types import (
+    BaseEvent,
+    ContextTooLongError,
+    LLMChunk,
+    LLMMessage,
+    LLMUsage,
+    Role,
+)
 
 
 @pytest.mark.asyncio
@@ -101,3 +108,80 @@ async def test_try_reactive_shaping_returns_false_when_nothing_to_shape() -> Non
     result = await loop._try_reactive_shaping()
 
     assert result is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Emergency compaction runs the summary _chat call on the full, "
+        "already-over-window history (AgentLoop.compact). With no progressive "
+        "trim/chunk fallback the summarizer is handed the same payload that just "
+        "overflowed; it can itself raise ContextTooLongError, which escapes the "
+        "conversation loop as a hard, user-facing error. Remove this marker once "
+        "compaction reduces the summarizer input (or recovers from its overflow)."
+    ),
+)
+async def test_emergency_compaction_recovers_when_summarizer_overflows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from vibe.core.config import ContextShapingConfig
+    from vibe.core.config._settings import MicrocompactConfig, SnipConfig
+
+    simulated_window = 50_000
+
+    cfg = build_test_vibe_config(
+        models=make_test_models(auto_compact_threshold=500),
+        # Strict mode surfaces the summarizer overflow instead of silently
+        # swallowing it into the extractive fallback, exposing the hard crash.
+        raise_on_compaction_failure=True,
+        # Neutralize the cheap before-turn shapers so the scenario is isolated to
+        # the emergency-compaction summary call; reactive shaping is forced off
+        # below to model overflow trapped in the protected prefix.
+        context_shaping=ContextShapingConfig(
+            snip=SnipConfig(enabled=False),
+            microcompact=MicrocompactConfig(enabled=False),
+        ),
+    )
+    loop = build_test_agent_loop(config=cfg)
+    loop.messages.append(
+        LLMMessage(role=Role.USER, content="g" * 240_000, injected=True)
+    )
+    loop.messages.append(LLMMessage(role=Role.USER, content="u" * 240_000))
+
+    def history_tokens() -> int:
+        from vibe.core.utils.tokens import approx_token_count
+
+        return sum(approx_token_count(m.content or "") for m in loop.messages)
+
+    state = {"turns": 0, "summarizer_calls": 0}
+
+    async def fake_turn() -> AsyncGenerator[BaseEvent, None]:
+        state["turns"] += 1
+        if state["turns"] == 1:
+            raise ContextTooLongError("prov", "model")
+        return
+        yield  # pragma: no cover
+
+    async def no_shaping() -> bool:
+        return False
+
+    async def fake_chat(**_kwargs: object) -> LLMChunk:
+        state["summarizer_calls"] += 1
+        if history_tokens() > simulated_window:
+            raise ContextTooLongError("prov", "model")
+        return LLMChunk(
+            message=LLMMessage(role=Role.ASSISTANT, content="summary"),
+            usage=LLMUsage(prompt_tokens=10, completion_tokens=5),
+        )
+
+    monkeypatch.setattr(loop, "_perform_llm_turn", fake_turn)
+    monkeypatch.setattr(loop, "_try_reactive_shaping", no_shaping)
+    monkeypatch.setattr(loop, "_chat", fake_chat)
+
+    _ = [e async for e in loop._conversation_loop("hello")]
+
+    assert state["summarizer_calls"] >= 1, (
+        "emergency compaction must run the summarizer"
+    )
+    assert state["turns"] == 2, "turn retried after the loop recovered from overflow"
