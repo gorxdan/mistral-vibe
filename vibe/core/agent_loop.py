@@ -4166,19 +4166,35 @@ class AgentLoop(AgentLoopHooksMixin):
             self.agent_profile,
         )
 
+        model_changed = False
         if base_config is not None:
+            model_changed = base_config.active_model != self._base_config.active_model
             self._base_config = base_config
             self.agent_manager.invalidate_config()
 
-        # A reload re-establishes the configured active model as authoritative, so
-        # drop any transient rate-limit/fallback override. Otherwise the backend
-        # is rebuilt for the newly-configured model while _resolve_active_model
-        # still forces the stale override onto it (e.g. a switched-away glm-5.2
-        # reaching a kimi backend -> "invalid temperature / unknown model").
-        self._fallback_model_override = None
-        self._tried_fallback_aliases.clear()
+        # Drop the rate-limit/fallback override ONLY when the reload makes a
+        # different configured model authoritative — otherwise the stale override
+        # would force the old model onto the freshly-rebuilt backend (e.g. a
+        # switched-away glm-5.2 reaching a kimi backend -> "invalid temperature").
+        # A reload that doesn't change the active model (config edit, agent
+        # switch) must PRESERVE the user's explicit rate-limit switch, or the loop
+        # reverts to the rate-limited model and re-prompts every turn.
+        if model_changed:
+            self._fallback_model_override = None
+            self._tried_fallback_aliases.clear()
 
-        self.backend = self.backend_factory()
+        # Build the backend for whatever model is now effective: a surviving
+        # override keeps its own provider, so build for it rather than letting the
+        # config-default backend mismatch the overridden model.
+        if self._fallback_model_override is not None:
+            self.backend = create_backend(
+                provider=self.config.get_provider_for_model(
+                    self._fallback_model_override
+                ),
+                timeout=self.config.api_timeout,
+            )
+        else:
+            self.backend = self.backend_factory()
 
         if max_turns is not None:
             self._max_turns = max_turns

@@ -282,20 +282,44 @@ async def test_chat_model_override_uses_matching_backend_after_failover(
 
 
 @pytest.mark.asyncio
-async def test_reload_clears_fallback_override() -> None:
-    # A rate-limit/fallback switch sets _fallback_model_override. A later reload
-    # (e.g. /model picker -> _reload_config) rebuilds the backend for the newly
-    # configured model, so the stale override MUST be cleared — otherwise
-    # resolution forces the old model onto the new backend (glm-5.2 reaching a
-    # kimi backend -> "invalid temperature / unknown model").
+async def test_reload_preserves_override_when_active_model_unchanged() -> None:
+    # A rate-limit switch sets _fallback_model_override transiently (config still
+    # points at the rate-limited model). A reload that does NOT change the active
+    # model (config edit, agent switch, LSP toggle) must PRESERVE the switch —
+    # otherwise the loop reverts to the rate-limited model and re-prompts every
+    # turn (the f38d32d over-clear).
     loop = _loop([])
     backup = next(m for m in loop.config.models if m.alias == "backup")
     loop._fallback_model_override = backup
     loop._tried_fallback_aliases.add("primary")
 
-    await loop.reload_with_initial_messages()
+    await loop.reload_with_initial_messages()  # base_config=None -> no model change
+
+    assert loop._fallback_model_override is not None
+    assert loop._fallback_model_override.alias == "backup"
+    model, _ = loop._resolve_active_model()
+    assert model.alias == "backup", "the rate-limit switch survives a no-op reload"
+
+
+@pytest.mark.asyncio
+async def test_reload_clears_override_when_active_model_changes() -> None:
+    # When the reload makes a DIFFERENT model authoritative (e.g. /model picker
+    # writes active_model, then _reload_config), the stale override is dropped so
+    # it can't force the old model onto the new backend (glm reaching a kimi
+    # backend -> "invalid temperature / unknown model").
+    loop = _loop([])
+    backup = next(m for m in loop.config.models if m.alias == "backup")
+    loop._fallback_model_override = backup
+    loop._tried_fallback_aliases.add("primary")
+
+    changed = build_test_vibe_config(
+        providers=[_PROVIDER],
+        models=[_model("primary"), _model("backup")],
+        active_model="backup",  # config now authoritative on a different model
+    )
+    await loop.reload_with_initial_messages(base_config=changed)
 
     assert loop._fallback_model_override is None
     assert loop._tried_fallback_aliases == set()
     model, _ = loop._resolve_active_model()
-    assert model.alias == "primary", "resolution follows config, not the override"
+    assert model.alias == "backup", "resolution follows the new config"
