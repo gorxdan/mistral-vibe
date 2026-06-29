@@ -198,6 +198,21 @@ class ContextShaperMiddleware:
 
         return msg.role == Role.USER and not msg.injected
 
+    @staticmethod
+    def _is_recoverable(content: str) -> bool:
+        """True when the block's full text is on disk (it carries a persisted-
+        output path), so snip can elide it to a pointer the model can read back.
+
+        This is the routing line between the two shapers: recoverable content is
+        snip's domain (elide to a pointer, lossless — re-readable); path-less
+        content is microcompact's (keep an inline gist, since there's nothing to
+        recover). Keeping them disjoint stops snip from bare-eliding content it
+        can't restore.
+        """
+        from vibe.core.compaction import extract_persisted_output_path
+
+        return extract_persisted_output_path(content) is not None
+
 
 class SnipMiddleware(ContextShaperMiddleware):
     """Elide old, large messages to a placeholder once context is moderately
@@ -230,6 +245,9 @@ class SnipMiddleware(ContextShaperMiddleware):
             if approx_token_count(messages[i].content or "") >= cfg.min_message_tokens
             and not (messages[i].content or "").startswith(_SNIP_OPEN)
             and not self._is_real_user_message(messages[i])
+            # snip only touches recoverable (disk-backed) blocks; path-less
+            # content is microcompact's job (keep a gist, not a bare pointer).
+            and self._is_recoverable(messages[i].content or "")
         ]
         candidates.sort(
             key=lambda i: approx_token_count(messages[i].content or ""), reverse=True
@@ -326,6 +344,8 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
             return MiddlewareResult()
 
         messages = context.messages
+        active_model = context.active_model or context.config.get_active_model()
+        preserve_reasoning = active_model.preserve_reasoning
         prefix = self._protected_prefix_len(
             messages, context.config.context_shaping.cache_prefix_guard_tokens
         )
@@ -344,6 +364,8 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
                 self._is_real_user_message(msg)
                 or content.startswith(_SNIP_OPEN)
                 or content.startswith(_MC_OPEN)
+                # recoverable blocks are snip's domain; leave them for the pointer.
+                or self._is_recoverable(content)
             ):
                 continue
             if approx_token_count(content) <= cfg.per_message_cap_tokens:
@@ -351,7 +373,15 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
             new_content = f"{_MC_OPEN} " + truncate_middle_to_tokens(
                 content, cfg.per_message_cap_tokens
             )
-            messages.replace_at(i, msg.model_copy(update={"content": new_content}))
+            update: dict[str, object] = {"content": new_content}
+            # Mirror snip: a non-Preserved-Thinking model can shed the stale
+            # reasoning on a compressed turn too; Moonshot/GLM keep it to stay
+            # wire-valid. (Snip no longer reaches reasoning-bearing assistant
+            # turns — those are non-recoverable, so they land here.)
+            if not preserve_reasoning:
+                update["reasoning_content"] = None
+                update["reasoning_state"] = None
+            messages.replace_at(i, msg.model_copy(update=update))
             est -= approx_token_count(content) - approx_token_count(new_content)
             done += 1
         if done:

@@ -59,7 +59,12 @@ def _history() -> list[LLMMessage]:
                 )
             ],
         ),
-        LLMMessage(role=Role.TOOL, content=_content(400), tool_call_id="call_1"),
+        # Big tool output -> persisted to disk, so it is snip's (recoverable) domain.
+        LLMMessage(
+            role=Role.TOOL,
+            content=_content(400) + " persisted to /tmp/vibe/call_1.txt;",
+            tool_call_id="call_1",
+        ),
         LLMMessage(role=Role.ASSISTANT, content=_content(350)),
         LLMMessage(role=Role.ASSISTANT, content="recent reply"),
     ]
@@ -127,25 +132,32 @@ def _history_with_reasoning() -> list[LLMMessage]:
 
 
 @pytest.mark.asyncio
-async def test_snip_strips_reasoning_by_default() -> None:
-    ctx = _ctx(_history_with_reasoning(), _config())
-    await SnipMiddleware().before_turn(ctx)
+async def test_microcompact_strips_reasoning_by_default() -> None:
+    # Reasoning-bearing assistant turns are non-recoverable -> microcompact's
+    # domain. It inherits snip's rule: drop the stale reasoning by default.
+    cfg = _config(
+        microcompact=MicrocompactConfig(enabled=True, per_message_cap_tokens=100)
+    )
+    ctx = _ctx(_history_with_reasoning(), cfg)
+    await MicrocompactMiddleware().before_turn(ctx)
 
-    snipped = ctx.messages[4]
-    assert (snipped.content or "").startswith("<vibe_snipped>")  # was elided
-    assert snipped.reasoning_content is None  # default: reasoning dropped
+    block = ctx.messages[4]
+    assert (block.content or "").startswith("<vibe_microcompacted>")  # compressed
+    assert block.reasoning_content is None  # default: reasoning dropped
 
 
 @pytest.mark.asyncio
-async def test_snip_preserves_reasoning_when_model_requires_it() -> None:
-    cfg = _config()
+async def test_microcompact_preserves_reasoning_when_model_requires_it() -> None:
+    cfg = _config(
+        microcompact=MicrocompactConfig(enabled=True, per_message_cap_tokens=100)
+    )
     cfg.models[0].preserve_reasoning = True  # Kimi/GLM Preserved Thinking
     ctx = _ctx(_history_with_reasoning(), cfg)
-    await SnipMiddleware().before_turn(ctx)
+    await MicrocompactMiddleware().before_turn(ctx)
 
-    snipped = ctx.messages[4]
-    assert (snipped.content or "").startswith("<vibe_snipped>")  # still elided
-    assert snipped.reasoning_content == "step-by-step thoughts"  # kept verbatim
+    block = ctx.messages[4]
+    assert (block.content or "").startswith("<vibe_microcompacted>")  # compressed
+    assert block.reasoning_content == "step-by-step thoughts"  # kept verbatim
 
 
 @pytest.mark.asyncio
@@ -295,3 +307,47 @@ async def test_snip_preserves_persisted_output_path() -> None:
     ]
     assert snipped
     assert any(path in (m.content or "") for m in snipped)
+
+
+def _mixed_history() -> list[LLMMessage]:
+    # A recoverable (disk-backed) block and a same-size non-recoverable block,
+    # both old and eligible. Routing must send each to a different shaper.
+    return [
+        LLMMessage(role=Role.SYSTEM, content="system prompt"),
+        LLMMessage(role=Role.USER, content="do the thing"),
+        LLMMessage(
+            role=Role.TOOL,
+            content=_content(500) + " persisted to /tmp/o1.txt;",  # recoverable
+            tool_call_id="c1",
+        ),
+        LLMMessage(role=Role.ASSISTANT, content=_content(500)),  # non-recoverable
+        LLMMessage(role=Role.ASSISTANT, content="recent reply"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_snip_targets_recoverable_skips_nonrecoverable() -> None:
+    # snip owns disk-backed content: it elides the block carrying a persisted
+    # path and leaves the path-less block for microcompact.
+    msgs = _mixed_history()
+    ctx = _ctx(msgs, _config(cache_prefix_guard_tokens=0))
+    await SnipMiddleware().before_turn(ctx)
+    assert (ctx.messages[2].content or "").startswith("<vibe_snipped>")  # recoverable
+    assert ctx.messages[3].content == _content(500)  # non-recoverable untouched
+
+
+@pytest.mark.asyncio
+async def test_microcompact_targets_nonrecoverable_skips_recoverable() -> None:
+    # microcompact owns non-recoverable content: it gist-truncates the path-less
+    # block and leaves the disk-backed block for snip.
+    msgs = _mixed_history()
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(
+            enabled=True, per_message_cap_tokens=100, max_blocks_per_turn=5
+        ),
+    )
+    ctx = _ctx(msgs, cfg)
+    await MicrocompactMiddleware().before_turn(ctx)
+    assert (ctx.messages[3].content or "").startswith("<vibe_microcompacted>")
+    assert ctx.messages[2].content == _content(500) + " persisted to /tmp/o1.txt;"

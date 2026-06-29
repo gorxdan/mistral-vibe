@@ -87,14 +87,19 @@ async def test_try_reactive_shaping_compresses_old_history() -> None:
         ),
     )
     loop = build_test_agent_loop(config=cfg)
-    # Enough large messages that some fall outside the protected prefix/suffix.
+    # Large NON-recoverable assistant turns (no persisted path), each above the
+    # microcompact per-message cap. Snip leaves them alone (nothing to recover);
+    # microcompact gist-truncates them — reactive shaping runs both, so it still
+    # sheds tokens and returns True without bare-eliding unrecoverable narrative.
     for _ in range(4):
-        loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="x" * 4000))
+        loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="x" * 12000))
 
     result = await loop._try_reactive_shaping()
 
     assert result is True
-    assert any((m.content or "").startswith("<vibe") for m in loop.messages)
+    assert any(
+        (m.content or "").startswith("<vibe_microcompacted>") for m in loop.messages
+    )
 
 
 @pytest.mark.asyncio
