@@ -138,6 +138,36 @@ def _local_trace_path(prefix: str) -> Path:
     return TRACE_LOG_DIR.path / f"{prefix}_{ts}_{os.getpid()}.jsonl"
 
 
+# Local trace/log JSONL accumulate one pair per process and were never reclaimed,
+# so the dir grew unbounded (hundreds of MB). Keep the newest N of each prefix.
+_LOCAL_TRACE_KEEP = 200
+
+
+def _gc_local_traces(directory: Path, keep_per_prefix: int = _LOCAL_TRACE_KEEP) -> None:
+    """Reclaim old local trace/log files, keeping the newest N of each prefix.
+
+    Best-effort and synchronous at startup: the newest files (incl. this
+    process's, just-created) are always retained, so an active session is never
+    touched. Failures are swallowed — trace GC must never block tracing setup.
+    """
+    try:
+        if not directory.exists():
+            return
+        for prefix in ("trace_", "log_"):
+            files = sorted(
+                directory.glob(f"{prefix}*.jsonl"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for stale in files[keep_per_prefix:]:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+    except Exception:
+        logger.debug("local trace gc skipped", exc_info=True)
+
+
 def setup_tracing(config: VibeConfig) -> None:
     if not config.enable_telemetry or not config.enable_otel:
         return
@@ -167,6 +197,7 @@ def setup_tracing(config: VibeConfig) -> None:
         provider.add_span_processor(BatchSpanProcessor(exporter))
 
     if local_export:
+        _gc_local_traces(TRACE_LOG_DIR.path)
         provider.add_span_processor(
             SimpleSpanProcessor(_JsonlSpanExporter(_local_trace_path("trace")))
         )

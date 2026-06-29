@@ -169,3 +169,28 @@ def test_wire_temperature_reflects_what_is_sent() -> None:
     assert AgentLoop._wire_temperature(gpt4, responses) == 0.5
     # Chat-completions provider sends the configured value.
     assert AgentLoop._wire_temperature(glm, chat) == 1.0
+
+
+def test_gc_local_traces_keeps_newest_per_prefix(tmp_path) -> None:
+    import os
+
+    # 5 of each prefix, mtimes 0..4 (older -> newer).
+    for i in range(5):
+        for prefix in ("trace_", "log_"):
+            p = tmp_path / f"{prefix}{i}.jsonl"
+            p.write_text("x")
+            os.utime(p, (i, i))
+    # An unrelated file must never be touched.
+    (tmp_path / "keep.txt").write_text("x")
+
+    tracing._gc_local_traces(tmp_path, keep_per_prefix=2)
+
+    assert {p.name for p in tmp_path.glob("trace_*.jsonl")} == {
+        "trace_3.jsonl",
+        "trace_4.jsonl",
+    }
+    assert {p.name for p in tmp_path.glob("log_*.jsonl")} == {
+        "log_3.jsonl",
+        "log_4.jsonl",
+    }
+    assert (tmp_path / "keep.txt").exists()
