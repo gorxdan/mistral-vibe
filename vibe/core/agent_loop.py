@@ -3299,7 +3299,11 @@ class AgentLoop(AgentLoopHooksMixin):
 
         try:
             async with chat_span(
-                model=active_model.name, provider=provider.name
+                model=active_model.name,
+                provider=provider.name,
+                temperature=active_model.temperature,
+                max_tokens=max_tokens,
+                thinking=active_model.thinking,
             ) as _span:
                 start_time = time.perf_counter()
                 extra_headers, turn_state_sink = self._codex_routing(provider)
@@ -3383,7 +3387,11 @@ class AgentLoop(AgentLoopHooksMixin):
         for attempt in range(_STREAM_DEGENERATE_RETRIES):
             try:
                 async with chat_span(
-                    model=active_model.name, provider=provider.name
+                    model=active_model.name,
+                    provider=provider.name,
+                    temperature=active_model.temperature,
+                    max_tokens=max_tokens,
+                    thinking=active_model.thinking,
                 ) as _span:
                     start_time = time.perf_counter()
                     # Accumulate streamed deltas in O(n) instead of folding with

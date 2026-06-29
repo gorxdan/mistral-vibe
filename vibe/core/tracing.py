@@ -342,7 +342,12 @@ async def agent_span(
 
 @asynccontextmanager
 async def chat_span(
-    *, model: str | None = None, provider: str | None = None
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    thinking: str | None = None,
 ) -> AsyncGenerator[trace.Span]:
     attributes: dict[str, Any] = {
         gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.CHAT.value
@@ -351,6 +356,15 @@ async def chat_span(
         attributes[gen_ai_attributes.GEN_AI_PROVIDER_NAME] = prov
     if model:
         attributes[gen_ai_attributes.GEN_AI_REQUEST_MODEL] = model
+    # Sampling params, so a trace can be partitioned by them (e.g. a temperature
+    # A/B). temperature is recorded only when actually sent — None means the
+    # adapter omits it (Moonshot k2.7-code), so absence is the truthful signal.
+    if temperature is not None:
+        attributes[gen_ai_attributes.GEN_AI_REQUEST_TEMPERATURE] = temperature
+    if max_tokens is not None:
+        attributes[gen_ai_attributes.GEN_AI_REQUEST_MAX_TOKENS] = max_tokens
+    if thinking:
+        attributes["vibe.request.thinking"] = thinking
     if conv_id := baggage.get_baggage(gen_ai_attributes.GEN_AI_CONVERSATION_ID):
         attributes[gen_ai_attributes.GEN_AI_CONVERSATION_ID] = conv_id
 
