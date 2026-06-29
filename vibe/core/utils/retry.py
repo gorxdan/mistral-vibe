@@ -19,10 +19,26 @@ _RETRYABLE_REQUEST_ERRORS: tuple[type[httpx.RequestError], ...] = (
 )
 
 
+# Subscription/quota-exhaustion 429s carry these OpenAI-style error types. A
+# weekly/monthly cap won't clear within the retry window, so retrying just burns
+# the attempt budget — fail fast so the loop can fail over instead.
+_QUOTA_EXHAUSTION_MARKERS = ("usage_limit_reached", "insufficient_quota")
+
+
+def _is_quota_exhaustion(e: httpx.HTTPStatusError) -> bool:
+    try:
+        body = e.response.text.lower()
+    except Exception:
+        return False
+    return any(marker in body for marker in _QUOTA_EXHAUSTION_MARKERS)
+
+
 def _is_retryable_http_error(e: Exception) -> bool:
     if isinstance(e, httpx.HTTPStatusError):
         code = e.response.status_code
         if code == HTTPStatus.TOO_MANY_REQUESTS:
+            if _is_quota_exhaustion(e):
+                return False
             return _retry_after_seconds(e) is not None
         return code in {408, 409, 425, 500, 502, 503, 504, 529}
     if isinstance(e, _RETRYABLE_REQUEST_ERRORS):

@@ -122,7 +122,13 @@ class BackendError(RuntimeError):
             return "Invalid API key. Please check your API key and try again."
 
         if self.status == HTTPStatus.TOO_MANY_REQUESTS:
-            return "Rate limit exceeded. Please wait a moment before trying again."
+            base = "Rate limit exceeded. Please wait a moment before trying again."
+            # Keep the provider's own message (e.g. Sakana "weekly limit exhausted,
+            # resets at …") — it distinguishes a transient cap from a multi-day
+            # quota that retrying won't clear.
+            if self.parsed_error:
+                return f"{base}\n  provider_message: {self.parsed_error}"
+            return base
 
         rid = self.headers.get("x-request-id") or self.headers.get("request-id")
         if self.status:

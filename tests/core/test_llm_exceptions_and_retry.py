@@ -37,6 +37,7 @@ def _backend_error(
     reason: str | None = None,
     headers: dict[str, str] | None = None,
     body: str | None = None,
+    parsed_error: str | None = None,
 ) -> BackendError:
     return BackendError(
         provider="mistral",
@@ -45,7 +46,7 @@ def _backend_error(
         reason=reason,
         headers=headers,
         body_text=body,
-        parsed_error=None,
+        parsed_error=parsed_error,
         model="m",
         payload_summary=_summary(),
     )
@@ -159,6 +160,44 @@ def test_rate_limit_retryable_only_with_retry_after() -> None:
         _is_retryable_http_error(_http_status_error(429, headers={"retry-after": "5"}))
         is True
     )
+
+
+def _http_status_error_with_body(
+    status: int, body: bytes, headers: dict[str, str] | None = None
+) -> httpx.HTTPStatusError:
+    resp = httpx.Response(status, headers=headers or {}, content=body)
+    return httpx.HTTPStatusError(
+        "err", request=httpx.Request("GET", "/x"), response=resp
+    )
+
+
+def test_quota_exhaustion_429_not_retried_even_with_retry_after() -> None:
+    # Sakana-style weekly cap: a Retry-After header would normally allow a retry,
+    # but a usage_limit_reached body won't clear in the window -> fail fast.
+    exc = _http_status_error_with_body(
+        429,
+        b'{"error":{"type":"usage_limit_reached","message":"weekly limit"}}',
+        headers={"retry-after": "5"},
+    )
+    assert _is_retryable_http_error(exc) is False
+
+
+def test_transient_429_with_retry_after_still_retried() -> None:
+    exc = _http_status_error_with_body(
+        429, b'{"error":{"message":"slow down"}}', headers={"retry-after": "5"}
+    )
+    assert _is_retryable_http_error(exc) is True
+
+
+def test_rate_limit_message_includes_provider_message() -> None:
+    msg = str(
+        _backend_error(
+            status=HTTPStatus.TOO_MANY_REQUESTS,
+            parsed_error="Subscription weekly limit is exhausted, resets at …",
+        )
+    )
+    assert "Rate limit" in msg
+    assert "weekly limit is exhausted" in msg
 
 
 def test_is_retryable_http_error_request_errors() -> None:
