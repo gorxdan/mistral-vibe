@@ -58,6 +58,10 @@ def _manifest_names(manager: ToolManager) -> list[str]:
     return [tool.function.name for tool in tools]
 
 
+def test_dynamic_subset_is_enabled_by_default() -> None:
+    assert ToolManifestConfig().dynamic_subset_enabled is True
+
+
 def test_dynamic_manifest_suppresses_remote_tools_and_keeps_search_tool() -> None:
     manager = _manager(remote_count=80)
 

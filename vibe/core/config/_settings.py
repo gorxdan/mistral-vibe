@@ -785,7 +785,7 @@ class ToolManifestConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     dynamic_subset_enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
             "When true, large remote MCP/connector tool catalogs are withheld "
             "from the model-facing manifest and exposed through tool_search."

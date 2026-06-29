@@ -237,11 +237,11 @@ enabled_tools = ["bash", "read", "grep"]
 # Disable specific tools
 disabled_tools = ["webfetch"]
 
-# Dynamic remote-tool manifest. When enabled and the catalog is large,
+# Dynamic remote-tool manifest. Enabled by default: when the catalog is large,
 # remote MCP/connector tools are hidden from the per-turn manifest until
 # discovered with tool_search; built-in tools remain visible.
 [tool_manifest]
-dynamic_subset_enabled = false
+dynamic_subset_enabled = true
 dynamic_subset_threshold = 80
 dynamic_pinned_tool_limit = 8
 dynamic_search_results = 8
