@@ -20,23 +20,13 @@ jobs:
                   template-path: .github/ISSUE_TEMPLATE/bug-report.yml
               continue-on-error: true
 
-            - name: Parse feature request form
-              id: parse-feature
-              uses: stefanbuck/github-issue-parser@25f1485edffc1fee3ea68eb9f59a72e58720ffc4 # v3
-              with:
-                  template-path: .github/ISSUE_TEMPLATE/feature-request.yml
-              continue-on-error: true
-
             - name: Apply component label
               uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
               env:
                   BUG_COMPONENT: ${{ steps.parse-bug.outputs.issueparser_component }}
-                  FEATURE_COMPONENT: ${{ steps.parse-feature.outputs.issueparser_component }}
               with:
                   script: |
-                      const bugComponent = process.env.BUG_COMPONENT;
-                      const featureComponent = process.env.FEATURE_COMPONENT;
-                      const component = bugComponent || featureComponent;
+                      const component = process.env.BUG_COMPONENT;
 
                       if (!component) {
                         console.log('No component field found, skipping labeling');

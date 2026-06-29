@@ -89,7 +89,16 @@ jobs:
       - name: Get package version
         id: get_version
         shell: bash
-        run: echo "version=$(uv version | cut -d' ' -f2)" >> $GITHUB_OUTPUT
+        run: |
+          # `uv version` errors on dynamic (hatch-vcs) versions; read the version
+          # that hatch-vcs baked into the installed dist-info instead, and fail
+          # hard if it is empty so artifacts are never mislabeled without a version.
+          version="$(uv run python -c "from importlib.metadata import version; print(version('chaton'))")"
+          if [ -z "$version" ]; then
+            echo "::error::Could not resolve package version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Upload ACP binary as artifact
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5

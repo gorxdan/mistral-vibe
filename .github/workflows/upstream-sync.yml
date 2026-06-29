@@ -115,6 +115,11 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin gh to THIS fork. With an `upstream` remote present, gh's repo
+          # resolution otherwise targets the parent (mistralai/mistral-vibe),
+          # where the fork token has no write access, so every pr/issue/label
+          # call silently 403s and no PR/issue is ever opened.
+          GH_REPO: ${{ github.repository }}
           MERGE_OUTCOME: ${{ steps.merge.outcome }}
           TESTS_OUTCOME: ${{ steps.tests.outcome }}
         run: |
@@ -162,12 +167,15 @@ jobs:
 
           git push origin "$BRANCH"
 
-          if [ "$TESTS_OUTCOME" = "failure" ]; then
+          if [ "$TESTS_OUTCOME" = "success" ]; then
+            status="tests passed"
+            extra_label=""
+          elif [ "$TESTS_OUTCOME" = "failure" ]; then
             status="TESTS FAILING — do not merge until resolved"
             extra_label="--label tests-failing"
           else
-            status="tests passed"
-            extra_label=""
+            status="TESTS DID NOT RUN ($TESTS_OUTCOME) — do not merge until verified"
+            extra_label="--label tests-failing"
           fi
 
           release_url="https://github.com/$UPSTREAM_REPO/releases/tag/$TAG"
