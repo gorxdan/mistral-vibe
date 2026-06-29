@@ -1,24 +1,17 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Mapping
 from pathlib import Path
-import re
 import threading
 from typing import Any
 
+from vibe.core.lsp._stale import FILTERS_BY_SOURCE, StaleDiagnosticFilter
 from vibe.core.lsp._types import Diagnostic, DiagnosticSeverity, Range, path_from_uri
 
 MAX_DIAGNOSTICS_PER_FILE = 10
 MAX_TOTAL_DIAGNOSTICS = 30
 _DELIVERED_LRU_SIZE = 500
-
-# Match the module path in pyright's import-resolution error messages, e.g.
-#   'Import "vibe.core.memory.verifier" could not be resolved'
-#   'Cannot import "vibe.core.memory.verifier" from ...'
-# Captures the dotted module name in group 1.
-_IMPORT_RESOLVE_RE = re.compile(
-    r'(?:Import|import)\s+"([a-zA-Z_][\w.]*?)"\s+.*(?:could not be resolved|cannot be resolved|cannot be imported)'
-)
 
 
 class DiagnosticRegistry:
@@ -29,57 +22,39 @@ class DiagnosticRegistry:
     source server, drained on each call to :meth:`consume`; ``_delivered``
     is an LRU keyed by URI that suppresses re-surfacing of identical
     diagnostics across turns.
+
+    Stale-suppression is delegated to per-source :class:`StaleDiagnosticFilter`
+    strategies (see :data:`~vibe.core.lsp._stale.FILTERS_BY_SOURCE`); the
+    registry itself is server-agnostic.
     """
 
-    def __init__(self, root_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        root_path: str | Path | None = None,
+        *,
+        filters: Mapping[str, StaleDiagnosticFilter] | None = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._pending: list[tuple[str, list[Diagnostic], str]] = []
         self._delivered: OrderedDict[str, set[str]] = OrderedDict()
         self._root = Path(root_path).resolve() if root_path is not None else None
+        self._filters = filters if filters is not None else FILTERS_BY_SOURCE
 
     def set_root(self, root_path: str | Path | None) -> None:
-        """Set the workspace root used for stale-suppression checks.
-
-        Pass None to disable suppression. Called by the LSP manager when the
-        workspace root is known so import-resolution errors can be validated
-        against the live tree.
-        """
+        """Set the workspace root the per-source filters check against."""
         self._root = Path(root_path).resolve() if root_path is not None else None
 
-    def _module_resolves_on_disk(self, module_path: str) -> bool:
-        """True when a dotted module name maps to an existing file under root.
+    def _filter_stale(
+        self, diagnostics: list[Diagnostic], server_name: str
+    ) -> list[Diagnostic]:
+        """Drop diagnostics a source-specific filter proves stale.
 
-        This is the stale-suppression check: if the module the server claims it
-        cannot resolve actually exists on disk (the new-module gap — pyright's
-        ``markFilesDirty`` no-ops on never-loaded files), the diagnostic is
-        provably stale and must not be staged to the model.
+        Servers with no registered filter pass through unchanged.
         """
-        if self._root is None:
-            return False
-        parts = module_path.split(".")
-        if not parts:
-            return False
-        rel = Path(*parts)
-        # Module file (foo/bar.py) or package init (foo/bar/__init__.py).
-        candidates = [
-            self._root / rel.with_suffix(".py"),
-            self._root / rel / "__init__.py",
-        ]
-        return any(p.is_file() for p in candidates)
-
-    def _is_stale_import_error(self, diagnostic: Diagnostic) -> bool:
-        """True for an import-resolution diagnostic whose target does exist.
-
-        Only suppresses when the evidence proves the error wrong: the module
-        file is on disk, so the LSP server's cached 'not found' is stale. Real
-        missing-module errors (file genuinely absent) still stage.
-        """
-        if diagnostic.severity != DiagnosticSeverity.ERROR:
-            return False
-        match = _IMPORT_RESOLVE_RE.search(diagnostic.message)
-        if match is None:
-            return False
-        return self._module_resolves_on_disk(match.group(1))
+        policy = self._filters.get(server_name)
+        if policy is None:
+            return diagnostics
+        return [d for d in diagnostics if not policy.is_stale(d, self._root)]
 
     def publish(self, params: dict[str, Any], server_name: str) -> None:
         uri = params.get("uri", "")
@@ -96,11 +71,7 @@ class DiagnosticRegistry:
             if int(d.get("severity", DiagnosticSeverity.ERROR))
             <= DiagnosticSeverity.WARNING
         ]
-        # Drop provably-stale import-resolution errors: the server cached a
-        # 'module not found' result, then a concurrent session added the module
-        # via git. Without this guard the model is staged phantom errors it
-        # would 'fix' by editing working code. See plan Phase 0b.
-        diagnostics = [d for d in diagnostics if not self._is_stale_import_error(d)]
+        diagnostics = self._filter_stale(diagnostics, server_name)
         if not diagnostics:
             return
         with self._lock:

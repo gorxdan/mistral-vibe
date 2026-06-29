@@ -10,6 +10,7 @@ from vibe.core.lsp._manager import (
 )
 from vibe.core.lsp._registry import DiagnosticRegistry, format_diagnostics_for_model
 from vibe.core.lsp._server import LanguageServer, ServerConfig
+from vibe.core.lsp._stale import FILTERS_BY_SOURCE, StaleDiagnosticFilter
 from vibe.core.lsp._types import (
     Location,
     LSPError,
@@ -23,6 +24,7 @@ from vibe.core.lsp._types import (
 )
 
 __all__ = [
+    "FILTERS_BY_SOURCE",
     "DiagnosticRegistry",
     "InstallResult",
     "LSPError",
@@ -38,6 +40,7 @@ __all__ = [
     "Range",
     "ServerConfig",
     "ServerState",
+    "StaleDiagnosticFilter",
     "clear_lsp_manager",
     "format_diagnostics_for_model",
     "get_lsp_manager",

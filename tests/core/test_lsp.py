@@ -1846,6 +1846,38 @@ def test_diagnostic_registry_set_root_enables_suppression(tmp_path) -> None:
     assert registry.consume() == []
 
 
+def test_diagnostic_registry_stale_filter_is_source_specific(tmp_path) -> None:
+    """The import-resolution filter is keyed to the pyright source. A
+    diagnostic with an identical message shape from another server passes
+    through unchanged — the registry never silently applies one server's
+    heuristic to another's diagnostics.
+    """
+    (tmp_path / "vibe").mkdir()
+    pkg = tmp_path / "vibe" / "core"
+    pkg.mkdir(parents=True)
+    (tmp_path / "vibe" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "verifier.py").write_text("")
+
+    registry = DiagnosticRegistry(root_path=tmp_path)
+    diag = {
+        "uri": "file:///tmp/agent_loop.py",
+        "diagnostics": [
+            {
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 10},
+                },
+                "severity": 1,
+                "message": 'Import "vibe.core.verifier" could not be resolved',
+                "source": "pyright",
+            }
+        ],
+    }
+    registry.publish(diag, "typescript-language-server")
+    assert len(registry.consume()) == 1
+
+
 def test_resolve_binary_prefers_project_venv(tmp_path, monkeypatch) -> None:
     """The project-venv binary wins over a stray PATH global install — closing
     the version-skew class where the LSP tool spawns a different binary than
@@ -1880,15 +1912,11 @@ def test_resolve_binary_falls_back_to_path_when_no_venv(tmp_path, monkeypatch) -
 def test_resolve_binary_returns_none_when_absent(tmp_path, monkeypatch) -> None:
     from vibe.core.lsp._defaults import _resolve_binary
 
-    monkeypatch.setattr(
-        "vibe.core.lsp._defaults.shutil.which", lambda _name: None
-    )
+    monkeypatch.setattr("vibe.core.lsp._defaults.shutil.which", lambda _name: None)
     assert _resolve_binary("pyright-langserver", tmp_path) is None
 
 
-def test_probe_passes_root_to_resolve_binary(
-    tmp_path, monkeypatch
-) -> None:
+def test_probe_passes_root_to_resolve_binary(tmp_path, monkeypatch) -> None:
     """_probe honors root_path so available_presets() uses the venv binary."""
     from vibe.core.lsp import _defaults
     from vibe.core.lsp._defaults import PRESETS
@@ -2010,7 +2038,9 @@ def test_install_for_preset_runs_after_consent(monkeypatch) -> None:
 
     monkeypatch.setattr(_installer.subprocess, "run", fake_run)
     monkeypatch.setattr(
-        _defaults, "_resolve_binary", lambda _binary, _root: "/fake/venv/bin/pyright-langserver"
+        _defaults,
+        "_resolve_binary",
+        lambda _binary, _root: "/fake/venv/bin/pyright-langserver",
     )
     result = install_for_preset(_PYRIGHT, consent_callback=lambda _desc: True)
     assert ran and ran[0] == _PYRIGHT.install_command
@@ -2039,14 +2069,17 @@ def test_preset_install_command_field_round_trips() -> None:
     """
     from vibe.core.lsp._defaults import PRESETS
 
-    bootstrap_keys = {
-        "pyright", "typescript", "rust", "go", "csharp", "php", "ruby"
-    }
+    bootstrap_keys = {"pyright", "typescript", "rust", "go", "csharp", "php", "ruby"}
     hint_only_keys = {"clangd", "java", "swift"}
     for key in bootstrap_keys:
         assert PRESETS[key].install_command, f"{key} should bootstrap"
         assert PRESETS[key].install_command[0] in {
-            "pip", "npm", "rustup", "go", "dotnet", "gem"
+            "pip",
+            "npm",
+            "rustup",
+            "go",
+            "dotnet",
+            "gem",
         }, f"{key} channel not in bootstrap set"
     for key in hint_only_keys:
         assert not PRESETS[key].install_command, f"{key} should stay hint-only"
