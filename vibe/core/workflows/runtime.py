@@ -241,7 +241,7 @@ def _loop_log_path(loop: Any) -> Path | None:
     return sl.messages_filepath
 
 
-DEFAULT_ISOLATED_MAX_TURNS = 40
+DEFAULT_ISOLATED_MAX_TURNS = 300
 
 IsolatedExecutor = Callable[
     [str, str, str | None, int], Awaitable["str | tuple[str, dict[str, int] | None]"]
