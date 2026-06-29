@@ -235,8 +235,7 @@ def _add_caveman_thinking_guidance() -> str:
         "When you think (reasoning/thinking blocks): be terse. "
         "Drop articles, filler, hedging, and pleasantries. Fragments are fine. "
         "Keep ALL technical substance — names, file:line references, errors, and "
-        "code verbatim. This governs only your private reasoning; your final "
-        "answer to the user stays normal prose."
+        "code verbatim. This governs only your private reasoning."
     )
 
 
@@ -690,7 +689,7 @@ def get_universal_system_prompt(
 def _get_le_chaton_section() -> str:
     return (
         "## Le Chaton Mode\n\n"
-        "Max thinking + automatic workflow orchestration. For substantive tasks "
+        "Max thinking + workflow orchestration. For substantive tasks "
         "(codebase audits, large migrations, cross-checked research, multi-file "
         "refactors), write a workflow script that orchestrates parallel agents "
         "instead of working turn-by-turn. Do not launch a workflow as the first "
