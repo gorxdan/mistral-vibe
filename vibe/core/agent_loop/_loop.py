@@ -10,7 +10,6 @@ from enum import StrEnum, auto
 import functools
 from functools import wraps
 import hashlib
-from http import HTTPStatus
 import inspect
 import os
 from pathlib import Path
@@ -19,13 +18,37 @@ import shutil
 import threading
 from threading import Thread
 import time
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from opentelemetry import trace
 import orjson
 from pydantic import BaseModel, ConfigDict
 
+from vibe.core.agent_loop._errors import (
+    _STREAM_DEGENERATE_RETRIES,
+    AgentLoopError,
+    AgentLoopLLMResponseError,
+    CompactionFailedError,
+    ImagesNotSupportedError,
+    InvalidStreamError,
+    TeleportError,
+    _degenerate_response_reason,
+    _raise_for_backend_error,
+    _refusal_error,
+)
+from vibe.core.agent_loop._limits import (
+    AGGREGATE_TOOL_RESULT_CHARS,
+    JUDGE_ARGS_LIMIT,
+    JUDGE_ARGS_TRUNCATED_SENTINEL,
+    JUDGE_TRANSCRIPT_LIMIT,
+    JUDGE_TRANSCRIPT_TURNS,
+    MAX_CONCURRENT_SUBAGENTS,
+    MAX_TOOL_RESULT_CHARS,
+    TOOL_RESULT_CHARS_PER_TOKEN,
+    TOOL_RESULT_PREVIEW_CHARS,
+    TOOL_RESULT_WINDOW_FRACTION,
+)
 from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
@@ -50,7 +73,6 @@ from vibe.core.experiments.session import (
 from vibe.core.hooks.manager import HooksManager
 from vibe.core.hooks.models import HookConfigResult, HookEvent
 from vibe.core.llm.backend.factory import create_backend
-from vibe.core.llm.exceptions import BackendError
 from vibe.core.llm.format import APIToolFormatHandler
 from vibe.core.llm.models import FailedToolCall, ResolvedMessage, ResolvedToolCall
 from vibe.core.llm.types import BackendLike, CompletionRequest
@@ -160,7 +182,6 @@ from vibe.core.types import (
     RateLimitCallback,
     RateLimitError,
     ReasoningEvent,
-    RefusalError,
     ResponseTooLongError,
     Role,
     ServerError,
@@ -228,57 +249,6 @@ if TYPE_CHECKING:
     from vibe.core.tools.connectors import ConnectorRegistry
     from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
 
-# Central cap on a single tool result's size before it enters the conversation.
-# Tools may self-limit, but read/MCP/connector tools can return arbitrarily large
-# blobs; this keeps one oversized result from blowing the context window (which
-# would otherwise hard-fail the turn). ~100k chars ≈ 25k tokens.
-MAX_TOOL_RESULT_CHARS = 100_000
-
-# Inline preview size (head 75% + tail 25%) when a result exceeds the cap and is
-# persisted to disk. Deliberately smaller than the cap so one oversized result
-# no longer costs ~25k tokens of context; the full output is recoverable via the
-# `read` tool using the path surfaced in the preview marker.
-TOOL_RESULT_PREVIEW_CHARS = 12_000
-
-# Aggregate cap on all tool results from a single parallel-tool-call turn.
-# Prevents N medium results (each under the per-result cap) from collectively
-# flooding context. Full content is persisted before any inline compression.
-AGGREGATE_TOOL_RESULT_CHARS = 200_000
-
-# A single result may occupy up to this fraction of the model's context budget
-# before it is previewed-and-persisted. Scaling the fixed cap above to the
-# window stops large-context models (e.g. glm, 880k) from truncating big reads —
-# which forces ranged re-reads; small windows stay at MAX_TOOL_RESULT_CHARS via
-# the floor, so behaviour is unchanged below a ~500k-token window.
-TOOL_RESULT_WINDOW_FRACTION = 0.05
-TOOL_RESULT_CHARS_PER_TOKEN = 4
-
-# Safety-judge input window. _serialize_args hands the judge only this many
-# chars of the serialized tool args. A destructive tail hidden past the cut is
-# invisible to the judge, so (a) a sentinel is appended to the truncated repr
-# warning the model it is judging a PARTIAL payload, and (b) _judge_tool_safety
-# force-defers to the user when such a truncated call also carries a risk flag
-# (uncovered permission) — never auto-approving on a blind prefix.
-JUDGE_ARGS_LIMIT = 4000
-JUDGE_ARGS_TRUNCATED_SENTINEL = (
-    "\n\n...[TRUNCATED — the judge sees only the first "
-    f"{JUDGE_ARGS_LIMIT} chars of these arguments. A destructive payload "
-    "could be hidden beyond this point; do not auto-approve on the basis of "
-    "the visible prefix.]"
-)
-# Capped recent-transcript window handed to the safety judge so it can tell a
-# call the user explicitly requested from one the agent decided unprompted.
-# Last user/assistant turns only (tool results and injections are noise), and
-# the total is char-bounded so it never dominates the judge's input budget.
-JUDGE_TRANSCRIPT_LIMIT = 2000
-JUDGE_TRANSCRIPT_TURNS = 4
-
-# Cap on how many subagent (task) fan-outs run concurrently in one turn. Bounds
-# backend throughput contention / rate-limiting when the model emits several
-# independent read-only task calls at once; ordinary concurrent tools (read,
-# grep, glob) are not gated.
-MAX_CONCURRENT_SUBAGENTS = 4
-
 
 class ToolExecutionResponse(StrEnum):
     SKIP = auto()
@@ -296,140 +266,6 @@ class ToolDecision(BaseModel):
     # re-dispatched with these args (user already approved the modified form,
     # so no re-prompt). None for EXECUTE/SKIP decisions.
     modified_args: dict[str, Any] | None = None
-
-
-class AgentLoopError(Exception): ...
-
-
-class AgentLoopStateError(AgentLoopError): ...
-
-
-class AgentLoopLLMResponseError(AgentLoopError): ...
-
-
-# Bounded retry count for a degenerate streamed response (no content, tool calls,
-# or reasoning): one initial attempt plus a single re-request. A degenerate
-# response yields inert (empty) chunks upstream, so a retry with a fresh
-# accumulator is clean; two failures means something is structurally wrong.
-_STREAM_DEGENERATE_RETRIES = 2
-
-
-class InvalidStreamError(AgentLoopLLMResponseError):
-    def __init__(self, reason: str) -> None:
-        self.reason = reason
-        super().__init__(f"Invalid streamed response: {reason}")
-
-
-class CompactionFailedError(AgentLoopError):
-    def __init__(self, reason: str) -> None:
-        self.reason = reason  # "tool_call" | "empty_summary"
-        super().__init__(f"Compaction did not produce a summary (reason={reason}).")
-
-
-class ImagesNotSupportedError(AgentLoopError): ...
-
-
-class TeleportError(AgentLoopError): ...
-
-
-def _refusal_error(provider: str, model: str, chunk: LLMChunk) -> RefusalError:
-    stop = chunk.stop
-    return RefusalError(
-        provider,
-        model,
-        category=stop.category if stop else None,
-        explanation=stop.explanation if stop else None,
-    )
-
-
-def _degenerate_response_reason(chunk: LLMChunk) -> str | None:
-    msg = chunk.message
-    has_content = bool((msg.content or "").strip())
-    has_tool_calls = bool(msg.tool_calls)
-    has_reasoning = bool((msg.reasoning_content or "").strip())
-    if has_content or has_tool_calls or has_reasoning:
-        return None
-    if chunk.usage is not None:
-        return None
-    return "empty response (no content, tool calls, or reasoning) and no usage"
-
-
-def _raise_for_backend_error(
-    e: Exception, provider_name: str, model_name: str
-) -> NoReturn:
-    if isinstance(e, RefusalError | ResponseTooLongError):
-        raise
-    if _should_raise_rate_limit_error(e):
-        raise RateLimitError(provider_name, model_name) from e
-    if _is_context_too_long_error(e):
-        raise ContextTooLongError(provider_name, model_name) from e
-    if _is_response_too_long_error(e):
-        raise ResponseTooLongError(provider_name, model_name) from e
-    if _is_content_filter_error(e):
-        raise ContentFilterError(provider_name, model_name) from e
-    if _is_non_retryable_error(e):
-        raise
-    if _is_server_error(e):
-        raise ServerError(provider_name, model_name) from e
-    raise RuntimeError(
-        f"API error from {provider_name} (model: {model_name}): {e}"
-    ) from e
-
-
-def _should_raise_rate_limit_error(e: Exception) -> bool:
-    return isinstance(e, BackendError) and e.status == HTTPStatus.TOO_MANY_REQUESTS
-
-
-_MAX_SERVER_STATUS = 599
-
-
-def _is_server_error(e: Exception) -> bool:
-    backend = e if isinstance(e, BackendError) else getattr(e, "__cause__", None)
-    return (
-        isinstance(backend, BackendError)
-        and backend.status is not None
-        and HTTPStatus.INTERNAL_SERVER_ERROR <= backend.status <= _MAX_SERVER_STATUS
-    )
-
-
-def _is_context_too_long_error(e: Exception) -> bool:
-    if isinstance(e, BackendError):
-        return e.is_context_too_long
-    if isinstance(e, RuntimeError) and isinstance(e.__cause__, BackendError):
-        return e.__cause__.is_context_too_long
-    return False
-
-
-def _is_response_too_long_error(e: Exception) -> bool:
-    if isinstance(e, BackendError):
-        return e.is_response_too_long
-    if isinstance(e, RuntimeError) and isinstance(e.__cause__, BackendError):
-        return e.__cause__.is_response_too_long
-    return False
-
-
-def _is_content_filter_error(e: Exception) -> bool:
-    if isinstance(e, BackendError):
-        return e.is_content_filtered
-    if isinstance(e, RuntimeError) and isinstance(e.__cause__, BackendError):
-        return e.__cause__.is_content_filtered
-    return False
-
-
-def _is_non_retryable_error(e: BaseException) -> bool:
-    # Detect Temporal-style ``non_retryable`` flag without importing temporalio.
-    # Walks ``__cause__`` so an ``ActivityError`` whose cause is a non-retryable
-    # ``ApplicationError`` is detected too — that's what callers driving the
-    # agent loop from a Temporal activity will see when a sub-activity has
-    # already failed terminally.
-    seen: set[int] = set()
-    current: BaseException | None = e
-    while current is not None and id(current) not in seen:
-        if getattr(current, "non_retryable", False):
-            return True
-        seen.add(id(current))
-        current = current.__cause__
-    return False
 
 
 def requires_init(fn: Callable[..., Any]) -> Callable[..., Any]:
