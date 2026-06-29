@@ -1055,6 +1055,10 @@ class VibeConfig(BaseSettings):
     enable_otel: bool = Field(default=True, exclude=True)
     otel_endpoint: str = Field(default="", exclude=True)
     otel_local_export: bool = Field(default=True, exclude=True)
+    # Opt-in: attach prompt/response prose to chat spans as events (recall /
+    # forgetfulness debugging). Off by default — content capture balloons local
+    # trace files and records user/source bytes.
+    otel_capture_content: bool = Field(default=False, exclude=True)
 
     console_base_url: str = Field(default=DEFAULT_CONSOLE_BASE_URL, exclude=True)
     vibe_base_url: str = Field(default=DEFAULT_VIBE_BASE_URL, exclude=True)

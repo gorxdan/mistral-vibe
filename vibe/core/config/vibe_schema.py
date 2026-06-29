@@ -302,6 +302,7 @@ class VibeConfigSchema(ConfigSchema):
     enable_otel: Annotated[bool, WithReplaceMerge()] = True
     otel_endpoint: Annotated[str, WithReplaceMerge()] = ""
     otel_local_export: Annotated[bool, WithReplaceMerge()] = True
+    otel_capture_content: Annotated[bool, WithReplaceMerge()] = False
     console_base_url: Annotated[str, WithReplaceMerge()] = DEFAULT_CONSOLE_BASE_URL
     enable_experimental_hooks: Annotated[bool, WithReplaceMerge()] = False
 

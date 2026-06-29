@@ -119,6 +119,7 @@ from vibe.core.tools.permissions import (
 )
 from vibe.core.tools.tool_result_store import ToolResultStore
 from vibe.core.tracing import (
+    add_message_content_events,
     agent_span,
     chat_span,
     context_shaping_span,
@@ -3383,6 +3384,32 @@ class AgentLoop(AgentLoopHooksMixin):
         )
         return active_model, self.config.get_provider_for_model(active_model)
 
+    def _capture_chat_content(
+        self,
+        span: trace.Span,
+        response_msg: LLMMessage,
+        user_msg: LLMMessage | None,
+    ) -> None:
+        """Attach turn prose to the chat span when content capture is opted in.
+
+        Off by default; the only way a long session's recall behaviour (model
+        restating/contradicting itself) becomes visible in a trace, since spans
+        otherwise carry token counts but no message text.
+        """
+        if not self.config.otel_capture_content:
+            return
+        add_message_content_events(
+            span,
+            user_text=user_msg.content if user_msg else None,
+            assistant_text=response_msg.content,
+            reasoning_text=response_msg.reasoning_content,
+            tool_call_names=[
+                tc.function.name
+                for tc in (response_msg.tool_calls or ())
+                if tc.function.name
+            ],
+        )
+
     async def _chat(
         self,
         max_tokens: int | None = None,
@@ -3469,6 +3496,7 @@ class AgentLoop(AgentLoopHooksMixin):
                 )
                 set_usage(_span, result.usage)
                 set_finish_reason(_span, result.stop.reason if result.stop else None)
+                self._capture_chat_content(_span, result.message, last_user_message)
 
             if result.correlation_id:
                 self.telemetry_client.last_correlation_id = result.correlation_id
@@ -3584,6 +3612,9 @@ class AgentLoop(AgentLoopHooksMixin):
                     set_usage(_span, chunk_acc.usage)
                     set_finish_reason(
                         _span, chunk_agg.stop.reason if chunk_agg.stop else None
+                    )
+                    self._capture_chat_content(
+                        _span, chunk_agg.message, last_user_message
                     )
 
                 # Raise before committing the truncated turn so the escalation

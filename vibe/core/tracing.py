@@ -400,6 +400,53 @@ def set_usage(span: trace.Span, usage: LLMUsage) -> None:
     )
 
 
+_CONTENT_EVENT_MAX_CHARS = 8_000
+
+
+def _clip_middle(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    head = max_chars // 2
+    tail = max_chars - head
+    elided = len(text) - max_chars
+    return f"{text[:head]}…[{elided} chars elided]…{text[-tail:]}"
+
+
+def add_message_content_events(
+    span: trace.Span,
+    *,
+    user_text: str | None = None,
+    assistant_text: str | None = None,
+    reasoning_text: str | None = None,
+    tool_call_names: Sequence[str] = (),
+    max_chars: int = _CONTENT_EVENT_MAX_CHARS,
+) -> None:
+    """Attach prompt/response prose to a chat span as events, for recall debugging.
+
+    Opt-in (``config.otel_capture_content``, default off): spans normally carry
+    only token counts, never message text — capturing content balloons local
+    trace files and records user/source bytes. When enabled, each field is
+    middle-clipped to *max_chars* so one huge turn can't dominate the file. Event
+    names follow the gen_ai semantic convention.
+    """
+    try:
+        if user_text:
+            span.add_event(
+                "gen_ai.user.message", {"content": _clip_middle(user_text, max_chars)}
+            )
+        attrs: dict[str, Any] = {}
+        if assistant_text:
+            attrs["content"] = _clip_middle(assistant_text, max_chars)
+        if reasoning_text:
+            attrs["reasoning"] = _clip_middle(reasoning_text, max_chars)
+        if tool_call_names:
+            attrs["tool_calls"] = ", ".join(tool_call_names)
+        if attrs:
+            span.add_event("gen_ai.assistant.message", attrs)
+    except Exception:
+        logger.warning("Failed to attach message content to span", exc_info=True)
+
+
 def set_finish_reason(span: trace.Span, reason: str | None) -> None:
     # gen_ai.response.finish_reasons is a list; vibe produces one stop per turn
     # (stop/length/tool_calls/refusal). 'length' marks an output-truncated turn.

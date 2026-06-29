@@ -52,9 +52,13 @@ async def test_chat_span_records_sampling_params() -> None:
 class _FakeSpan:
     def __init__(self) -> None:
         self.attrs: dict[str, Any] = {}
+        self.events: list[tuple[str, dict[str, Any]]] = []
 
     def set_attribute(self, key: str, value: Any) -> None:
         self.attrs[key] = value
+
+    def add_event(self, name: str, attributes: dict[str, Any]) -> None:
+        self.events.append((name, attributes))
 
 
 def test_set_usage_emits_reasoning_tokens() -> None:
@@ -69,6 +73,53 @@ def test_set_usage_emits_reasoning_tokens() -> None:
         ),
     )
     assert span.attrs["gen_ai.usage.reasoning_tokens"] == 999
+
+
+def test_otel_capture_content_defaults_off() -> None:
+    # Content capture must be opt-in: it balloons trace files and records
+    # user/source bytes, so the default has to stay False.
+    from vibe.core.config import VibeConfig
+
+    assert VibeConfig().otel_capture_content is False
+
+
+def test_add_message_content_events_captures_and_clips() -> None:
+    span = _FakeSpan()
+    tracing.add_message_content_events(
+        span,  # type: ignore[arg-type]
+        user_text="hello",
+        assistant_text="x" * 50,
+        reasoning_text="think",
+        tool_call_names=["read", "bash"],
+        max_chars=10,
+    )
+    assert [n for n, _ in span.events] == [
+        "gen_ai.user.message",
+        "gen_ai.assistant.message",
+    ]
+    assert span.events[0][1]["content"] == "hello"
+    asst = span.events[1][1]
+    # 50-char assistant text middle-clipped near max_chars with an elision marker.
+    assert "chars elided" in asst["content"]
+    assert len(asst["content"]) < 50
+    assert asst["reasoning"] == "think"
+    assert asst["tool_calls"] == "read, bash"
+
+
+def test_add_message_content_events_skips_empty_fields() -> None:
+    # No content at all -> no events (an empty assistant turn isn't recorded).
+    blank = _FakeSpan()
+    tracing.add_message_content_events(blank)  # type: ignore[arg-type]
+    assert blank.events == []
+
+    # Tool-call-only turn -> a single assistant event carrying just the names.
+    tools_only = _FakeSpan()
+    tracing.add_message_content_events(
+        tools_only,  # type: ignore[arg-type]
+        tool_call_names=["read"],
+    )
+    assert [n for n, _ in tools_only.events] == ["gen_ai.assistant.message"]
+    assert tools_only.events[0][1] == {"tool_calls": "read"}
 
 
 def test_set_finish_reason_records_and_omits_none() -> None:
