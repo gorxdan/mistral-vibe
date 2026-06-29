@@ -266,7 +266,7 @@ async def test_chat_model_override_uses_matching_backend_after_failover(
     ) -> object:
         return alpha_backend if provider.name == "alpha" else beta_backend
 
-    monkeypatch.setattr("vibe.core.agent_loop._loop.create_backend", fake_create_backend)
+    monkeypatch.setattr("vibe.core.agent_loop.backend_mixin.create_backend", fake_create_backend)
 
     await loop._chat(model_override=primary)
 
