@@ -1332,31 +1332,73 @@ ExpandingBorder {
     content-align: left bottom;
 }
 
-PathDisplay,
-ContextProgress {
+PathDisplay {
     width: auto;
     height: auto;
     background: transparent;
     padding: 0;
     margin: 0;
     color: $text-muted;
+    max-width: 40;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 
     &:ansi {
         text-style: dim;
     }
 }
 
+ContextProgress {
+    width: auto;
+    height: auto;
+    background: transparent;
+    padding: 0 1 0 0;
+    margin: 0;
+    color: $text-muted;
+    text-wrap: nowrap;
+
+    &:ansi {
+        text-style: dim;
+    }
+}
+
+ContextProgress.ctx-warn {
+    color: $warning;
+
+    &:ansi {
+        text-style: bold;
+    }
+}
+
+ContextProgress.ctx-crit {
+    color: $error;
+    text-style: bold;
+
+    &:ansi {
+        text-style: bold;
+    }
+}
+
 ModelStatusBadge,
+SubModelBadge,
 SubagentsBadge {
     width: auto;
     height: auto;
     background: transparent;
-    padding: 0 0 0 2;
+    padding: 0 0 0 1;
     margin: 0;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
 }
 
 ModelStatusBadge {
+    color: $mistral_orange;
+    max-width: 46;
+}
+
+SubModelBadge {
     color: $text-muted;
+    max-width: 40;
 
     &:ansi {
         text-style: dim;
@@ -1365,7 +1407,7 @@ ModelStatusBadge {
 
 SubagentsBadge {
     color: $primary;
-    text-style: bold;
+    max-width: 40;
 }
 
 NarratorStatus {

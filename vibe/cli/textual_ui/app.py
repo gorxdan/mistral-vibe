@@ -55,7 +55,7 @@ from vibe.cli.textual_ui.notifications import (
 from vibe.cli.textual_ui.quit_manager import QuitManager
 from vibe.cli.textual_ui.scheduled_loop_runner import ScheduledLoopRunner
 from vibe.cli.textual_ui.session_exit import print_session_resume_message
-from vibe.cli.textual_ui.widgets.agent_badge import ModelStatusBadge
+from vibe.cli.textual_ui.widgets.agent_badge import ModelStatusBadge, SubModelBadge
 from vibe.cli.textual_ui.widgets.approval_app import ApprovalApp
 from vibe.cli.textual_ui.widgets.banner.banner import Banner
 from vibe.cli.textual_ui.widgets.chat_input import ChatInputContainer
@@ -759,6 +759,7 @@ class VibeApp(App):  # noqa: PLR0904
         with Horizontal(id="bottom-bar"):
             yield PathDisplay(self.config.displayed_workdir or Path.cwd())
             yield ModelStatusBadge()
+            yield SubModelBadge()
             yield SubagentsBadge()
             yield NoMarkupStatic(id="spacer")
             yield ContextProgress()
@@ -1391,12 +1392,7 @@ class VibeApp(App):  # noqa: PLR0904
         ):
             self._pending_model_switch.set_result(message.alias)
             subagent_model = str(self.config.subagent_model or message.alias)
-            try:
-                self.query_one(ModelStatusBadge).set_models(
-                    message.alias, subagent_model
-                )
-            except NoMatches:
-                pass
+            self._set_model_badges(message.alias, subagent_model)
             return
         target = getattr(self, "_model_picker_target", "active")
         self._model_picker_target = "active"
@@ -5052,16 +5048,20 @@ class VibeApp(App):  # noqa: PLR0904
             self._chat_input_container.set_agent_name(profile.display_name.lower())
             self._chat_input_container.set_custom_border(None)
 
+    def _set_model_badges(self, active_model: str, subagent_model: str) -> None:
+        try:
+            self.query_one(ModelStatusBadge).set_model(active_model)
+            self.query_one(SubModelBadge).set_model(subagent_model, active_model)
+        except NoMatches:
+            pass
+
     def _refresh_model_status_badge(self) -> None:
         try:
             active_model = self.agent_loop.effective_model().alias
         except ValueError:
             active_model = str(self.config.active_model or "")
         subagent_model = str(self.config.subagent_model or active_model)
-        try:
-            self.query_one(ModelStatusBadge).set_models(active_model, subagent_model)
-        except NoMatches:
-            pass
+        self._set_model_badges(active_model, subagent_model)
 
     async def _cycle_agent(self) -> None:
         new_profile = self.agent_loop.agent_manager.next_agent(
