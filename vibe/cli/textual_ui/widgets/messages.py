@@ -41,17 +41,17 @@ class ExpandingBorder(NonSelectableStatic):
     def __init__(self, *, classes: str | None = None) -> None:
         super().__init__(classes=classes)
         self._row_colors: dict[int, str] = {}
-        self._render_cache: tuple[object, Content | str] | None = None
+        self._border_cache: tuple[object, Content | str] | None = None
 
     def set_row_colors(self, colors: dict[int, str]) -> None:
         self._row_colors = colors
-        self._render_cache = None
+        self._border_cache = None
         self.refresh()
 
     def render(self) -> Content | str:
         height = self.size.height
         cache_key = (height, tuple(sorted(self._row_colors.items())))
-        cached = self._render_cache
+        cached = self._border_cache
         if cached is not None and cached[0] == cache_key:
             return cached[1]
 
@@ -67,7 +67,7 @@ class ExpandingBorder(NonSelectableStatic):
             ]
             result = Content("\n").join(rows)
 
-        self._render_cache = (cache_key, result)
+        self._border_cache = (cache_key, result)
         return result
 
     def on_resize(self) -> None:
