@@ -157,10 +157,11 @@ class ProjectContextProvider:
         if (wt := worktree_manager.active) is not None:
             context += (
                 f"\n\n## Worktree isolation active\n"
-                f"Writes land on branch `{wt.branch}` (isolated worktree at "
-                f"`{wt.worktree_path}`); changes are isolated until merged. "
-                f"Commit finished work with a clear message so it merges back "
-                f"cleanly. Original repo root: `{wt.original_repo_root}`."
+                f"Your shell is `cd`'d into an isolated worktree; writes land on "
+                f"branch `{wt.branch}`, isolated until merged. Use relative paths "
+                f"so reads/edits/writes resolve against the worktree; do not "
+                f"write under the original repo root. Commit finished work with a "
+                f"clear message so it merges back cleanly."
             )
         return context
 
@@ -698,10 +699,14 @@ def get_universal_system_prompt(
         wt = worktree_manager.active
         sections.append(
             f"## Worktree isolation\n\n"
-            f"You are running in an isolated git worktree. Your writes land on "
-            f"branch `{wt.branch}`, not the user's live checkout. Task subagents "
-            f"share this worktree — there is no per-subagent filesystem "
-            f"isolation.\n\n"
+            f"You are running in an isolated git worktree and your shell is "
+            f"already `cd`'d into it. Your writes land on branch `{wt.branch}`, "
+            f"not the user's live checkout. **Use relative paths** (or absolute "
+            f"paths under this worktree) for every read/edit/write — they "
+            f"resolve against the worktree. Do NOT construct paths under the "
+            f"original repo root; writing there escapes isolation and edits the "
+            f"user's live tree. Task subagents share this worktree — there is no "
+            f"per-subagent filesystem isolation.\n\n"
             f"**Commit your finished work** if you have a shell: a real "
             f'`git commit -m "<summary>"` as your last step is how it is '
             f"delivered and reviewed, and report the branch name. Uncommitted "
@@ -712,8 +717,7 @@ def get_universal_system_prompt(
             f"sessions don't strand it), then fast-forwarded, including when the "
             f"original tree was dirty at start. The branch is kept for recovery "
             f"(`chaton worktree merge {wt.branch}`) only if it genuinely conflicts "
-            f"with another session's changes.\n\n"
-            f"Original repo root: `{wt.original_repo_root}`"
+            f"with another session's changes."
         )
 
     return "\n\n".join(sections)
