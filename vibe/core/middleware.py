@@ -363,15 +363,21 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
             if (
                 self._is_real_user_message(msg)
                 or content.startswith(_SNIP_OPEN)
-                or content.startswith(_MC_OPEN)
                 # recoverable blocks are snip's domain; leave them for the pointer.
                 or self._is_recoverable(content)
             ):
                 continue
             if approx_token_count(content) <= cfg.per_message_cap_tokens:
-                continue  # naturally small, not worth compressing
+                continue  # naturally small (or already at the cap), skip
+            # A prior gist still above the cap is re-gisted smaller. Without this,
+            # accumulated <vibe_microcompacted> blocks formed an unreclaimable
+            # floor that rose with session length (a live session climbed to 250k
+            # this way). Strip the old marker so it isn't nested.
+            body = content
+            if body.startswith(_MC_OPEN):
+                body = body[len(_MC_OPEN) :].lstrip()
             new_content = f"{_MC_OPEN} " + truncate_middle_to_tokens(
-                content, cfg.per_message_cap_tokens
+                body, cfg.per_message_cap_tokens
             )
             update: dict[str, object] = {"content": new_content}
             # Mirror snip: a non-Preserved-Thinking model can shed the stale

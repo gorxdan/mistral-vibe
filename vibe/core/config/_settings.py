@@ -317,7 +317,11 @@ class MicrocompactConfig(BaseSettings):
     # not yet triggered) — live glm session climbed 153.6k->204.8k unshaped.
     high_watermark: float = 0.65
     target: float = 0.7
-    per_message_cap_tokens: int = 2000
+    # Each gisted block costs this much; the floor is ~(block count) x this, so a
+    # long session's floor rises with length. 2000 was too high — new blocks
+    # barely exceeded it (tiny sheds) and a live session climbed to 250k. 1000
+    # halves the floor and makes more blocks eligible per pass.
+    per_message_cap_tokens: int = 1000
     # Now that microcompact is the sole shaper for non-recoverable content, 1/turn
     # treads water: a live session sat at ~204k for ~10 turns shedding 280-900
     # tokens/turn while growth replaced them. Several blocks/turn lets it actually

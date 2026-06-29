@@ -336,6 +336,34 @@ async def test_snip_targets_recoverable_skips_nonrecoverable() -> None:
     assert ctx.messages[3].content == _content(500)  # non-recoverable untouched
 
 
+@pytest.mark.asyncio
+async def test_microcompact_regists_oversized_prior_gist() -> None:
+    # An already-microcompacted block still above the cap is re-gisted smaller
+    # (reclaims the accumulated floor); the marker is not nested.
+    from vibe.core.middleware import _MC_OPEN
+
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(per_message_cap_tokens=100),
+    )
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.ASSISTANT, content=f"{_MC_OPEN} " + _content(700)),
+        LLMMessage(role=Role.ASSISTANT, content="recent"),
+    ]
+    ctx = _ctx(msgs, cfg)
+    await MicrocompactMiddleware().before_turn(ctx)
+
+    block = ctx.messages[1].content or ""
+    assert block.startswith(_MC_OPEN)
+    assert block.count(_MC_OPEN) == 1  # re-gisted, not nested
+    assert len(block) < len(f"{_MC_OPEN} " + _content(700)) // 2  # shrank
+
+
+def test_microcompact_per_message_cap_lowered() -> None:
+    assert MicrocompactConfig().per_message_cap_tokens == 1000
+
+
 def test_microcompact_default_rate_raised() -> None:
     # 1/turn treaded water at the watermark in prod; several blocks/turn lets
     # microcompact actually reduce non-recoverable bloat.
