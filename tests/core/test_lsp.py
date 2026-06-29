@@ -1928,3 +1928,125 @@ def test_build_server_configs_resolves_command_to_venv_binary(
     configs = _config_bridge.build_server_configs(config, tmp_path)
     pyright = next(c for c in configs if c.name == "pyright")
     assert pyright.command[0] == str(venv_bin)
+
+
+def test_install_for_preset_no_command_returns_hint_only_error() -> None:
+    """A preset without install_command falls back to the hint path."""
+    from vibe.core.lsp import install_for_preset
+    from vibe.core.lsp._defaults import _CLANGD
+
+    result = install_for_preset(_CLANGD)
+    assert not result.success
+    assert "no install_command" in result.error
+
+
+def test_install_for_preset_unsupported_channel_returns_hint_only_error() -> None:
+    """A preset whose install_command uses a tool chaton does not bootstrap
+    (e.g. a hand-rolled curl) stays hint-only — the user installs manually.
+    """
+    from vibe.core.config import LSPServer
+    from vibe.core.lsp import install_for_preset
+    from vibe.core.lsp._defaults import ServerPreset
+
+    preset = ServerPreset(
+        key="exotic",
+        display_name="Exotic",
+        server=LSPServer(
+            name="exotic", command="exotic-ls", languages={".ex": "exotic"}
+        ),
+        install_hint="curl https://example.com/exotic-ls | sh",
+        detection_command=("exotic-ls", "--version"),
+        install_command=("curl", "https://example.com/install.sh"),
+    )
+    result = install_for_preset(preset)
+    assert not result.success
+    assert "does not bootstrap" in result.error
+
+
+def test_install_for_preset_channel_absent_returns_explanatory_error(
+    monkeypatch,
+) -> None:
+    """The install_command's tool exists in the channel map but the binary
+    itself is not on PATH — the error names the missing tool.
+    """
+    from vibe.core.lsp import _installer, install_for_preset
+    from vibe.core.lsp._defaults import _PYRIGHT
+
+    monkeypatch.setattr(_installer.shutil, "which", lambda _name: None)
+    result = install_for_preset(_PYRIGHT)
+    assert not result.success
+    assert "not on PATH" in result.error
+
+
+def test_install_for_preset_declined_without_consent_callback() -> None:
+    """A None consent_callback declines by default — install never fires."""
+    from vibe.core.lsp import _installer, install_for_preset
+    from vibe.core.lsp._defaults import _PYRIGHT
+
+    _installer.channel_available("pip")  # touch to ensure import is live
+    result = install_for_preset(_PYRIGHT, consent_callback=None)
+    assert not result.success
+    assert result.error == "declined by user"
+
+
+def test_install_for_preset_runs_after_consent(monkeypatch) -> None:
+    """A returning-True consent_callback triggers the subprocess; the post-run
+    binary resolution check decides success.
+    """
+    from types import SimpleNamespace
+
+    from vibe.core.lsp import _installer, install_for_preset
+    from vibe.core.lsp._defaults import _PYRIGHT
+
+    ran: list[tuple[str, ...]] = []
+
+    def fake_run(cmd, **kwargs):
+        ran.append(tuple(cmd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    # The installer imports _resolve_binary inline from _defaults, so patch the
+    # source module to make the post-install existence check succeed.
+    from vibe.core.lsp import _defaults
+
+    monkeypatch.setattr(_installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        _defaults, "_resolve_binary", lambda _binary, _root: "/fake/venv/bin/pyright-langserver"
+    )
+    result = install_for_preset(_PYRIGHT, consent_callback=lambda _desc: True)
+    assert ran and ran[0] == _PYRIGHT.install_command
+    assert result.success
+
+
+def test_install_for_preset_nonzero_exit_is_failure(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from vibe.core.lsp import _installer, install_for_preset
+    from vibe.core.lsp._defaults import _PYRIGHT
+
+    def fake_run(cmd, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="permission denied")
+
+    monkeypatch.setattr(_installer.subprocess, "run", fake_run)
+    result = install_for_preset(_PYRIGHT, consent_callback=lambda _desc: True)
+    assert not result.success
+    assert "exit 1" in result.error
+    assert "permission denied" in result.output
+
+
+def test_preset_install_command_field_round_trips() -> None:
+    """7 bootstrap-eligible presets carry a channel-mapped install_command;
+    hint-only presets (clangd, jdtls, sourcekit) leave it empty.
+    """
+    from vibe.core.lsp._defaults import PRESETS
+
+    bootstrap_keys = {
+        "pyright", "typescript", "rust", "go", "csharp", "php", "ruby"
+    }
+    hint_only_keys = {"clangd", "java", "swift"}
+    for key in bootstrap_keys:
+        assert PRESETS[key].install_command, f"{key} should bootstrap"
+        assert PRESETS[key].install_command[0] in {
+            "pip", "npm", "rustup", "go", "dotnet", "gem"
+        }, f"{key} channel not in bootstrap set"
+    for key in hint_only_keys:
+        assert not PRESETS[key].install_command, f"{key} should stay hint-only"

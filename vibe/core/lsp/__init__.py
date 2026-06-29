@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from vibe.core.lsp._installer import InstallResult, install_for_preset
 from vibe.core.lsp._manager import (
     LSPManager,
     LSPServerSource,
@@ -23,6 +24,7 @@ from vibe.core.lsp._types import (
 
 __all__ = [
     "DiagnosticRegistry",
+    "InstallResult",
     "LSPError",
     "LSPManager",
     "LSPNotConnectedError",
@@ -40,4 +42,5 @@ __all__ = [
     "format_diagnostics_for_model",
     "get_lsp_manager",
     "init_lsp_manager",
+    "install_for_preset",
 ]

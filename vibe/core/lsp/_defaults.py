@@ -17,8 +17,12 @@ _MANAGED_CACHE_DIR = VIBE_HOME.path / "lsp-servers"
 class ServerPreset:
     """A ready-made language server definition users can opt into.
 
-    ``install_hint`` is the command a user runs to put the binary on PATH.
-    Chaton never shells out to install it — the user does.
+    ``install_hint`` is the human-facing command a user runs to put the binary
+    on PATH. ``install_command`` is the machine-runnable argv chaton's
+    bootstrap installer executes after consent, when its first token matches a
+    supported channel (npm/pip/go/rustup/brew/dotnet/gem). An empty
+    ``install_command`` (or one whose channel chaton does not bootstrap) falls
+    back to hint-only — the user installs manually.
     """
 
     key: str
@@ -26,6 +30,7 @@ class ServerPreset:
     server: LSPServer
     install_hint: str
     detection_command: tuple[str, ...]
+    install_command: tuple[str, ...] = ()
 
 
 _PYRIGHT = ServerPreset(
@@ -47,6 +52,7 @@ _PYRIGHT = ServerPreset(
     ),
     install_hint="npm install -g pyright  (or: pip install pyright)",
     detection_command=("pyright", "--version"),
+    install_command=("pip", "install", "pyright"),
 )
 
 _TSLANGUAGE = ServerPreset(
@@ -66,6 +72,13 @@ _TSLANGUAGE = ServerPreset(
     ),
     install_hint="npm install -g typescript-language-server typescript",
     detection_command=("typescript-language-server", "--version"),
+    install_command=(
+        "npm",
+        "install",
+        "-g",
+        "typescript-language-server",
+        "typescript",
+    ),
 )
 
 _RUST_ANALYZER = ServerPreset(
@@ -79,6 +92,7 @@ _RUST_ANALYZER = ServerPreset(
     ),
     install_hint="rustup component add rust-analyzer",
     detection_command=("rust-analyzer", "--version"),
+    install_command=("rustup", "component", "add", "rust-analyzer"),
 )
 
 _GOPLS = ServerPreset(
@@ -92,6 +106,7 @@ _GOPLS = ServerPreset(
     ),
     install_hint="go install golang.org/x/tools/gopls@latest",
     detection_command=("gopls", "version"),
+    install_command=("go", "install", "golang.org/x/tools/gopls@latest"),
 )
 
 _CLANGD = ServerPreset(
@@ -148,6 +163,7 @@ _OMNISHARP = ServerPreset(
     ),
     install_hint="dotnet tool install --global OmniSharp",
     detection_command=("OmniSharp", "--version"),
+    install_command=("dotnet", "tool", "install", "--global", "OmniSharp"),
 )
 
 _INTELEPHENSE = ServerPreset(
@@ -162,6 +178,7 @@ _INTELEPHENSE = ServerPreset(
     ),
     install_hint="npm install -g intelephense",
     detection_command=("intelephense", "--version"),
+    install_command=("npm", "install", "-g", "intelephense"),
 )
 
 _RUBY_LSP = ServerPreset(
@@ -175,6 +192,7 @@ _RUBY_LSP = ServerPreset(
     ),
     install_hint="gem install ruby-lsp",
     detection_command=("ruby-lsp", "--version"),
+    install_command=("gem", "install", "ruby-lsp"),
 )
 
 _SOURCEKIT_LSP = ServerPreset(
