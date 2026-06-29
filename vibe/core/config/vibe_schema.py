@@ -274,6 +274,16 @@ class VibeConfigSchema(ConfigSchema):
             "contract section."
         ),
     )
+    investigation_subsystem: Annotated[bool, WithReplaceMerge()] = Field(
+        default=True,
+        description=(
+            "Enable the host-agent investigation layer: a contract section in "
+            "the system prompt stating when a reproduction is required before "
+            "a fix/design/diff may be proposed for a failure. Always-on "
+            "guidance (the conditions live in the prompt), not a trigger "
+            "detector — the model applies judgment. Gates the contract section."
+        ),
+    )
 
     # Internal
     vibe_code_enabled: Annotated[bool, WithReplaceMerge()] = True

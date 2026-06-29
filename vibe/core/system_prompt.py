@@ -387,6 +387,37 @@ def _get_verification_contract_section() -> str:
     )
 
 
+def _get_investigation_contract_section() -> str:
+    """Host-agent investigation contract. The sibling of the verification
+    contract for the *front* of a fix task: states when a reproduction is
+    required before a fix/design/diff may be proposed. Always-on guidance
+    (the conditions live here in the prompt), not a brittle trigger detector
+    — the model applies judgment, the contract teaches the rule. Gated on the
+    ``investigation_subsystem`` config flag at the call site.
+    """
+    return (
+        "## Investigation contract\n\n"
+        "Before you propose a fix, design, or diff for a failure, you must "
+        "have reproduced the failure — a test, a script, a deterministic "
+        "trigger, or a code trace that proves the failure exists and shows "
+        "where it originates. Proposing mechanisms for an unreproduced "
+        "premise reproduces symptoms, masks the root cause, and designs into "
+        "a stale mental model.\n\n"
+        "**Reproduce first when the task is:** fixing a bug, test failure, "
+        "error, crash, exception, performance regression, or any unexpected "
+        "behavior. The reproduction is the root-cause evidence; trace the bad "
+        "value to its source before touching code.\n\n"
+        "**Exempt (no reproduction needed):** adding a feature, refactoring, "
+        "docs, typo, config change, one-line change, cosmetic edits, or "
+        "anything where there is no 'broken' state to reproduce. A design for "
+        "greenfield work proceeds from reading the code, not from a repro.\n\n"
+        "When a fix task lands and you have NOT reproduced it, stop and "
+        "reproduce before proposing the fix. A structural change made against "
+        "an assumed gap — without a trace proving the gap — is the failure "
+        "mode this contract exists to prevent."
+    )
+
+
 def _get_scratchpad_section(scratchpad_dir: Path | None) -> str | None:
     if not scratchpad_dir:
         return None
@@ -554,6 +585,8 @@ def _build_prompt_detail_sections(
         sections.append(_get_orchestration_section())
         if getattr(config, "verification_subsystem", True):
             sections.append(_get_verification_contract_section())
+        if getattr(config, "investigation_subsystem", True):
+            sections.append(_get_investigation_contract_section())
 
     sections.extend(filter(None, [_get_scratchpad_section(scratchpad_dir)]))
     return sections

@@ -159,6 +159,7 @@ active_tts_model = "voxtral-tts"
 effort_mode = "normal"            # "normal" or "le-chaton" (max thinking + auto-workflow)
 disable_workflows = false         # Disable all workflow features
 verification_subsystem = true     # Host verification layer (todo nudge + contract section → verifier subagent)
+investigation_subsystem = true    # Host investigation layer (contract section: reproduce-before-fix guidance)
 workflow_paths = []               # Additional dirs to search for workflow scripts
 
 # Additional top-level keys (defaults shown)

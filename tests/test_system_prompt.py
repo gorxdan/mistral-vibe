@@ -443,6 +443,44 @@ def test_verification_contract_section_absent_when_subsystem_disabled() -> None:
     assert "## Verification contract" not in prompt_off
 
 
+def test_investigation_contract_section_present_when_subsystem_enabled() -> None:
+    common = {
+        "system_prompt_id": "tests",
+        "include_project_context": False,
+        "include_prompt_detail": True,
+        "include_model_info": False,
+        "include_commit_signature": False,
+        "include_humanizer_guidance": False,
+    }
+    on = build_test_vibe_config(investigation_subsystem=True, **common)
+    prompt_on = get_universal_system_prompt(
+        ToolManager(lambda: on), on, SkillManager(lambda: on), AgentManager(lambda: on)
+    )
+    assert "## Investigation contract" in prompt_on
+    # The contract states both the rule and the exempt set (guidance, not gate).
+    assert "reproduce" in prompt_on.lower()
+    assert "Exempt" in prompt_on
+
+
+def test_investigation_contract_section_absent_when_subsystem_disabled() -> None:
+    common = {
+        "system_prompt_id": "tests",
+        "include_project_context": False,
+        "include_prompt_detail": True,
+        "include_model_info": False,
+        "include_commit_signature": False,
+        "include_humanizer_guidance": False,
+    }
+    off = build_test_vibe_config(investigation_subsystem=False, **common)
+    prompt_off = get_universal_system_prompt(
+        ToolManager(lambda: off),
+        off,
+        SkillManager(lambda: off),
+        AgentManager(lambda: off),
+    )
+    assert "## Investigation contract" not in prompt_off
+
+
 def test_workflow_authoring_guide_is_lazy_not_always_on() -> None:
     # The ~3.2k launch_workflow authoring guide must NOT be injected into every
     # system prompt; it loads on demand via the `workflow-authoring` skill. The
