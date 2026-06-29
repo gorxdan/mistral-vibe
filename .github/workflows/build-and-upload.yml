@@ -7,6 +7,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Cancel superseded PR/dispatch builds for the same ref. Release events use
+# unique tag refs, so a publish build is never cancelled by this.
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   configure:
     runs-on: ubuntu-latest
@@ -58,6 +64,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          persist-credentials: false
 
       - name: Install uv with caching
         uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7
@@ -124,6 +132,8 @@ jobs:
       - name: Checkout repository
         if: matrix.os != 'windows'
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          persist-credentials: false
 
       - name: Install Nix
         if: matrix.os != 'windows'
@@ -154,6 +164,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         if: ${{ !matrix.container }}
