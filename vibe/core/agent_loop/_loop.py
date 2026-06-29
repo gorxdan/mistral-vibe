@@ -47,6 +47,7 @@ from vibe.core.agent_loop._limits import (
     TOOL_RESULT_PREVIEW_CHARS,
     TOOL_RESULT_WINDOW_FRACTION,
 )
+from vibe.core.agent_loop.failover_mixin import AgentLoopFailoverMixin
 from vibe.core.agent_loop.memory_mixin import AgentLoopMemoryMixin
 from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
 from vibe.core.agents.manager import AgentManager
@@ -287,7 +288,7 @@ def requires_init(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-class AgentLoop(AgentLoopMemoryMixin, AgentLoopHooksMixin):
+class AgentLoop(AgentLoopFailoverMixin, AgentLoopMemoryMixin, AgentLoopHooksMixin):
     def __init__(
         self,
         config: VibeConfig,
@@ -1318,105 +1319,6 @@ class AgentLoop(AgentLoopMemoryMixin, AgentLoopHooksMixin):
             config=self.config.safety_judge,
             extra_headers=self._get_extra_headers(provider),
             timeout=self.config.api_timeout,
-        )
-
-    def _switch_to_fallback_model(self) -> ModelConfig | None:
-        current_alias = (
-            self._fallback_model_override.alias
-            if self._fallback_model_override
-            else self.config.active_model
-        )
-        self._tried_fallback_aliases.add(current_alias)
-        for alias in self.config.fallback_models:
-            if alias in self._tried_fallback_aliases:
-                continue
-            self._tried_fallback_aliases.add(alias)
-            model = next((m for m in self.config.models if m.alias == alias), None)
-            if model is None or not self.config.is_model_available(model):
-                continue
-            return self._activate_model(model)
-        return None
-
-    def _activate_model(self, model: ModelConfig) -> ModelConfig:
-        self._tried_fallback_aliases.add(model.alias)
-        provider = self.config.get_provider_for_model(model)
-        self._fallback_model_override = model
-        self.backend = create_backend(
-            provider=provider, timeout=self.config.api_timeout
-        )
-        return model
-
-    def _switchable_model_aliases(self) -> list[str]:
-        return [
-            m.alias
-            for m in self.config.models
-            if m.alias not in self._tried_fallback_aliases
-            and self.config.is_model_available(m)
-        ]
-
-    def _switch_to_chosen_model(self, alias: str) -> ModelConfig | None:
-        model = next((m for m in self.config.models if m.alias == alias), None)
-        if model is None or not self.config.is_model_available(model):
-            return None
-        return self._activate_model(model)
-
-    def _auto_fallback_headless(self) -> ModelConfig | None:
-        candidates = self._switchable_model_aliases()
-        if not candidates:
-            return None
-        return self._switch_to_chosen_model(candidates[0])
-
-    async def _prompt_model_switch_on_rate_limit(
-        self, error: RateLimitError
-    ) -> ModelConfig | None:
-        if self.rate_limit_callback is None:
-            return None
-        candidates = self._switchable_model_aliases()
-        if not candidates:
-            return None
-        chosen = await self.rate_limit_callback(error.provider, error.model, candidates)
-        if not chosen:
-            return None
-        return self._switch_to_chosen_model(chosen)
-
-    def _failover_unavailable_hint(self, reason: str) -> str:
-        if not self.config.fallback_models:
-            hint = (
-                f"{reason} and no fallback_models configured; set "
-                "config.fallback_models to enable automatic failover."
-            )
-        else:
-            hint = (
-                f"{reason} and fallback pool exhausted (tried "
-                f"{sorted(self._tried_fallback_aliases)})."
-            )
-        logger.warning("%s", hint)
-        return hint
-
-    def _apply_failover(
-        self,
-        exc: RateLimitError | ContentFilterError | ServerError,
-        fallback: ModelConfig | None,
-        *,
-        error_type: str,
-        unavailable_reason: str,
-        log_template: str,
-        log_prefix_args: Sequence[object] = (),
-    ) -> None:
-        # Finish a failover attempt. On success, log the switch and record a
-        # recovery trace; when no fallback resolved, attach an actionable hint
-        # to `exc` and re-raise so the reason reaches the user-visible error
-        # rather than only the log file. The caller resolves `fallback`
-        # (configured pool, plus the rate-limit callback/headless path for
-        # rate-limit errors) — the structural difference between the clauses.
-        # `log_template`'s trailing %r is always the fallback alias; the helper
-        # appends it after `log_prefix_args` so call sites stay closure-free.
-        if fallback is None:
-            exc.failover_hint = self._failover_unavailable_hint(unavailable_reason)
-            raise exc
-        logger.warning(log_template, *log_prefix_args, fallback.alias)
-        self._trace_recovery(
-            error_type=error_type, action="failover", fallback=fallback.alias
         )
 
     @staticmethod
