@@ -79,6 +79,7 @@ from vibe.core.middleware import (
 )
 from vibe.core.plan_session import PlanSession
 from vibe.core.prompts import UtilityPrompt
+from vibe.core.resource_monitor import ResourceMonitor
 from vibe.core.rewind import RewindManager
 from vibe.core.scratchpad import init_scratchpad
 from vibe.core.session.session_id import extract_suffix, generate_session_id
@@ -663,6 +664,9 @@ class AgentLoop(AgentLoopHooksMixin):
             experiments_getter=lambda: self.experiment_manager.assignments(),
         )
         self.session_logger = SessionLogger(config.session_logging, self.session_id)
+        self.resource_monitor = ResourceMonitor(
+            enabled=not is_subagent, label_getter=lambda: self.session_id
+        )
         self._hook_config_result = hook_config_result
         self._hooks_manager = (
             HooksManager(hook_config_result.hooks) if hook_config_result else None
@@ -897,6 +901,7 @@ class AgentLoop(AgentLoopHooksMixin):
         self.telemetry_client.send_session_closed()
 
     async def aclose(self) -> None:
+        await self.resource_monitor.aclose()
         if (task := self._experiments_task) is not None and not task.done():
             task.cancel()
             with contextlib.suppress(BaseException):
@@ -1050,6 +1055,7 @@ class AgentLoop(AgentLoopHooksMixin):
         response_format: dict[str, Any] | None = None,
     ) -> AsyncGenerator[BaseEvent, None]:
         self._response_format = response_format
+        self.resource_monitor.start()
         try:
             try:
                 active_model = self.effective_model()
@@ -1099,13 +1105,14 @@ class AgentLoop(AgentLoopHooksMixin):
                 completion0 = self.stats.session_completion_tokens
                 cached0 = self.stats.session_cached_tokens
                 try:
-                    async for event in self._conversation_loop(
-                        msg,
-                        client_message_id=client_message_id,
-                        auto_title=auto_title,
-                        images=images,
-                    ):
-                        yield event
+                    with self.resource_monitor.turn():
+                        async for event in self._conversation_loop(
+                            msg,
+                            client_message_id=client_message_id,
+                            auto_title=auto_title,
+                            images=images,
+                        ):
+                            yield event
                 finally:
                     set_agent_usage(
                         agent_turn_span,
