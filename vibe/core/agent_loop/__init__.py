@@ -18,7 +18,8 @@ from vibe.core.agent_loop._errors import (
     TeleportError,
     _degenerate_response_reason,
 )
-from vibe.core.agent_loop._loop import AgentLoop, ToolDecision, ToolExecutionResponse
+from vibe.core.agent_loop._loop import AgentLoop
+from vibe.core.agent_loop._models import ToolDecision, ToolExecutionResponse
 
 __all__ = [
     "AgentLoop",
