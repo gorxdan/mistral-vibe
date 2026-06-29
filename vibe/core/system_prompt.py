@@ -569,7 +569,7 @@ def _build_prompt_detail_sections(
     if lsp_section := _get_lsp_priority_section(config):
         sections.append(lsp_section)
     tool_prompts = []
-    for tool_class in tool_manager.available_tools.values():
+    for tool_class in tool_manager.manifest_tools.values():
         if prompt := tool_class.get_tool_prompt():
             tool_prompts.append(prompt)
     if tool_prompts:
