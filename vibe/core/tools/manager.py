@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Iterator
+import difflib
 import functools
 import hashlib
 import importlib.util
@@ -15,9 +16,11 @@ from typing import TYPE_CHECKING, Any
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.logger import logger
 from vibe.core.paths import DEFAULT_TOOL_DIR
-from vibe.core.tools.base import BaseTool, BaseToolConfig, ToolPermission
+from vibe.core.tools.base import BaseTool, BaseToolConfig, ToolInfo, ToolPermission
 from vibe.core.tools.mcp import MCPRegistry
 from vibe.core.utils import name_matches, run_sync
+
+_TOOL_SEARCH_FUZZY_MATCH_THRESHOLD = 0.25
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
@@ -99,6 +102,7 @@ class ToolManager:
         self._mcp_registry = mcp_registry or MCPRegistry()
         self._connector_registry = connector_registry
         self._instances: dict[str, BaseTool] = {}
+        self._manifest_pins: list[str] = []
         self._search_paths: list[Path] = self._compute_search_paths(self._config)
         self._lock = threading.Lock()
         self._mcp_integrated = False
@@ -210,6 +214,32 @@ class ToolManager:
 
     @property
     def available_tools(self) -> dict[str, type[BaseTool]]:
+        return self._filtered_available_tools()
+
+    @property
+    def manifest_tools(self) -> dict[str, type[BaseTool]]:
+        tools = self._filtered_available_tools()
+        manifest = self._config.tool_manifest
+        if not manifest.dynamic_subset_enabled or self._config.enabled_tools:
+            return tools
+        tool_search = tools.get("tool_search")
+        remote_tools = {
+            name: cls
+            for name, cls in tools.items()
+            if self._is_dynamic_remote_tool(cls)
+        }
+        if not remote_tools or len(tools) <= manifest.dynamic_subset_threshold:
+            return {name: cls for name, cls in tools.items() if name != "tool_search"}
+        if tool_search is None:
+            return tools
+        pinned = set(self._manifest_pins[: manifest.dynamic_pinned_tool_limit])
+        return {
+            name: cls
+            for name, cls in tools.items()
+            if name == "tool_search" or name in pinned or name not in remote_tools
+        }
+
+    def _filtered_available_tools(self) -> dict[str, type[BaseTool]]:
         with self._lock:
             runtime_available = {
                 name: cls
@@ -234,6 +264,61 @@ class ToolManager:
                 if not name_matches(name, self._config.disabled_tools)
             }
         return result
+
+    @staticmethod
+    def _is_dynamic_remote_tool(tool_cls: type[BaseTool]) -> bool:
+        return (
+            issubclass(tool_cls, _mcp_tool_base())
+            and tool_cls.get_name() != "tool_search"
+        )
+
+    def pin_manifest_tools(self, tool_names: list[str]) -> list[str]:
+        available = self._filtered_available_tools()
+        remote_names = {
+            name for name, cls in available.items() if self._is_dynamic_remote_tool(cls)
+        }
+        selected = [name for name in tool_names if name in remote_names]
+        if not selected:
+            return []
+        limit = self._config.tool_manifest.dynamic_pinned_tool_limit
+        merged = selected + [
+            name for name in self._manifest_pins if name not in selected
+        ]
+        self._manifest_pins = merged[:limit]
+        return list(self._manifest_pins)
+
+    def search_tools(
+        self, query: str, *, max_results: int | None = None
+    ) -> list[ToolInfo]:
+        available = self._filtered_available_tools()
+        candidates = [
+            (name, cls)
+            for name, cls in available.items()
+            if self._is_dynamic_remote_tool(cls)
+        ]
+        limit = max_results or self._config.tool_manifest.dynamic_search_results
+        terms = [term for term in query.lower().split() if term]
+        scored: list[tuple[float, str, type[BaseTool]]] = []
+        for name, cls in candidates:
+            description = str(getattr(cls, "description", ""))
+            haystack = f"{name} {description}".lower()
+            if not terms:
+                scored.append((0.0, name, cls))
+                continue
+            exact_hits = sum(1 for term in terms if term in haystack)
+            fuzzy = difflib.SequenceMatcher(None, query.lower(), haystack).ratio()
+            score = exact_hits + fuzzy
+            if exact_hits or fuzzy >= _TOOL_SEARCH_FUZZY_MATCH_THRESHOLD:
+                scored.append((score, name, cls))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [
+            ToolInfo(
+                name=name,
+                description=str(getattr(cls, "description", "")),
+                parameters=cls.get_parameters(),
+            )
+            for _, name, cls in scored[:limit]
+        ]
 
     def _is_tool_available(self, cls: type[BaseTool]) -> bool:
         # Backwards-compatibility check to avoid breaking
@@ -325,7 +410,11 @@ class ToolManager:
             return
 
         with self._lock:
+            self._purge_mcp_state()
             self._all_tools = {**self._all_tools, **mcp_tools}
+            self._manifest_pins = [
+                name for name in self._manifest_pins if name in self._all_tools
+            ]
         self._mcp_integrated = True
         logger.info(
             "MCP integration registered %d tools (via registry)", len(mcp_tools)
@@ -376,6 +465,9 @@ class ToolManager:
         with self._lock:
             self._purge_connector_state()
             self._all_tools.update(connector_tools)
+            self._manifest_pins = [
+                name for name in self._manifest_pins if name in self._all_tools
+            ]
         logger.info("Connector integration registered %s tools", len(connector_tools))
 
     async def refresh_remote_tools_async(self) -> None:

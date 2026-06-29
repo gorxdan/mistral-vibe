@@ -38,7 +38,7 @@ class APIToolFormatHandler:
                     parameters=tool_class.get_parameters(),
                 )
             )
-            for tool_class in tool_manager.available_tools.values()
+            for tool_class in tool_manager.manifest_tools.values()
         ]
 
     def get_tool_choice(self) -> StrToolChoice | AvailableTool:
@@ -97,7 +97,7 @@ class APIToolFormatHandler:
         resolved_calls = []
         failed_calls = []
 
-        active_tools = tool_manager.available_tools
+        active_tools = tool_manager.manifest_tools
 
         for parsed_call in parsed.tool_calls:
             tool_class = active_tools.get(parsed_call.tool_name)

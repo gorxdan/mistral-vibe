@@ -781,6 +781,31 @@ class ConnectorConfig(BaseModel):
     )
 
 
+class ToolManifestConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    dynamic_subset_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, large remote MCP/connector tool catalogs are withheld "
+            "from the model-facing manifest and exposed through tool_search."
+        ),
+    )
+    dynamic_subset_threshold: int = Field(
+        default=80,
+        ge=1,
+        description="Total available-tool count above which remote tools are gated.",
+    )
+    dynamic_pinned_tool_limit: int = Field(
+        default=8,
+        ge=1,
+        description="Maximum number of tool_search-selected remote tools kept visible.",
+    )
+    dynamic_search_results: int = Field(
+        default=8, ge=1, description="Default maximum matches returned by tool_search."
+    )
+
+
 def _default_alias_to_name(data: Any) -> Any:
     if isinstance(data, dict):
         if "alias" not in data or data["alias"] is None:
@@ -1106,6 +1131,7 @@ class VibeConfig(BaseSettings):
             "tools are discovered or registered, regardless of provider/API key."
         ),
     )
+    tool_manifest: ToolManifestConfig = Field(default_factory=ToolManifestConfig)
     connectors: list[ConnectorConfig] = Field(
         default_factory=list,
         description="Per-connector settings (disable, disabled_tools).",

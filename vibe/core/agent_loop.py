@@ -2568,7 +2568,7 @@ class AgentLoop(AgentLoopHooksMixin):
             if tc.id in emitted_ids:
                 continue
 
-            tool_class = self.tool_manager.available_tools.get(tc.function.name)
+            tool_class = self.tool_manager.manifest_tools.get(tc.function.name)
             if tool_class is None:
                 continue
 
@@ -2929,6 +2929,7 @@ class AgentLoop(AgentLoopHooksMixin):
                     team_dir_callback=self.team_dir_callback,
                     background_registry=self.background_registry,
                     files_read=self._files_read,
+                    tool_manager=self.tool_manager,
                 ),
                 **tool_call.args_dict,
             ):

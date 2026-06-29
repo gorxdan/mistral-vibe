@@ -112,6 +112,9 @@ class InvokeContext:
     # read-before-edit with staleness detection across calls. None when no loop
     # is running.
     files_read: dict[str, str] | None = field(default=None)
+    # Tool manager for meta-tools (e.g. tool_search) that need to inspect or
+    # adjust the active manifest without reaching back into AgentLoop.
+    tool_manager: Any | None = field(default=None)
 
 
 class ToolError(Exception):
