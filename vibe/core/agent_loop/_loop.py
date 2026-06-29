@@ -218,6 +218,45 @@ class AgentLoop(AgentLoopSessionMixin):
         mcp_registry: MCPRegistry | None = None,
         cache_store: VibeCodeCacheStore | None = None,
     ) -> None:
+        self._init_base_state(config, cache_store, headless, defer_heavy_init)
+        self._init_registries(
+            permission_store,
+            mcp_registry,
+            agent_name,
+            is_subagent,
+            defer_heavy_init,
+            message_observer,
+            max_turns,
+            max_price,
+            max_session_tokens,
+        )
+        self._init_backend(backend, enable_streaming)
+        self._init_session_identity(is_subagent)
+        self._init_messages(defer_heavy_init, message_observer)
+        self._init_session_state(
+            is_subagent, entrypoint_metadata, terminal_emulator, config
+        )
+        self._init_telemetry(config, is_subagent)
+        self._init_hooks(hook_config_result)
+        self._init_rewind()
+
+        Thread(
+            target=migrate_sessions_entrypoint,
+            args=(config.session_logging,),
+            daemon=True,
+            name="migrate_sessions",
+        ).start()
+
+        if defer_heavy_init:
+            self._start_deferred_init()
+
+    def _init_base_state(
+        self,
+        config: VibeConfig,
+        cache_store: VibeCodeCacheStore | None,
+        headless: bool,
+        defer_heavy_init: bool,
+    ) -> None:
         self.cache_store = cache_store or InMemoryVibeCodeCacheStore()
         self._base_config = config
         self._headless = headless
@@ -231,6 +270,18 @@ class AgentLoop(AgentLoopSessionMixin):
         self._pending_new_session_telemetry: bool = False
         self._ready_telemetry_pending: bool = defer_heavy_init
 
+    def _init_registries(
+        self,
+        permission_store: PermissionStore | None,
+        mcp_registry: MCPRegistry | None,
+        agent_name: str,
+        is_subagent: bool,
+        defer_heavy_init: bool,
+        message_observer: Callable[[LLMMessage], None] | None,
+        max_turns: int | None,
+        max_price: float | None,
+        max_session_tokens: int | None,
+    ) -> None:
         self._permission_store = permission_store or PermissionStore()
 
         self.mcp_registry: MCPRegistry | None = (
@@ -260,6 +311,9 @@ class AgentLoop(AgentLoopSessionMixin):
 
         self.format_handler = APIToolFormatHandler()
 
+    def _init_backend(
+        self, backend: BackendLike | None, enable_streaming: bool
+    ) -> None:
         self.backend_factory = lambda: backend or self._select_backend()
         self.backend = self.backend_factory()
         self._sampling_handler = MCPSamplingHandler(
@@ -278,6 +332,7 @@ class AgentLoop(AgentLoopSessionMixin):
         )
         self._setup_middleware()
 
+    def _init_session_identity(self, is_subagent: bool) -> None:
         self.session_id = generate_session_id()
         self.parent_session_id: str | None = None
         # codex (openai-chatgpt) sticky-routing token: captured from the
@@ -294,6 +349,12 @@ class AgentLoop(AgentLoopSessionMixin):
         self._agents_md_fingerprint: str | None = None
 
         self._system_prompt_tier = self._current_baseline_tier()
+
+    def _init_messages(
+        self,
+        defer_heavy_init: bool,
+        message_observer: Callable[[LLMMessage], None] | None,
+    ) -> None:
         system_prompt = get_universal_system_prompt(
             self.tool_manager,
             self.config,
@@ -308,6 +369,14 @@ class AgentLoop(AgentLoopSessionMixin):
         self.messages = MessageList(initial=[system_message], observer=message_observer)
 
         self.stats = AgentStats()
+
+    def _init_session_state(
+        self,
+        is_subagent: bool,
+        entrypoint_metadata: EntrypointMetadata | None,
+        terminal_emulator: TerminalEmulator | None,
+        config: VibeConfig,
+    ) -> None:
         self.approval_callback: ApprovalCallback | None = None
         self.scheduler: Scheduler | None = None
         # Reason the safety judge deferred the current tool call to the user, if
@@ -359,6 +428,7 @@ class AgentLoop(AgentLoopSessionMixin):
         self.entrypoint_metadata = entrypoint_metadata
         self.terminal_emulator = terminal_emulator
 
+    def _init_telemetry(self, config: VibeConfig, is_subagent: bool) -> None:
         try:
             active_model = config.get_active_model()
             self.stats.input_price_per_million = active_model.input_price
@@ -407,6 +477,8 @@ class AgentLoop(AgentLoopSessionMixin):
         self.resource_monitor = ResourceMonitor(
             enabled=not is_subagent, label_getter=lambda: self.session_id
         )
+
+    def _init_hooks(self, hook_config_result: HookConfigResult | None) -> None:
         self._hook_config_result = hook_config_result
         self._hooks_manager = (
             HooksManager(hook_config_result.hooks) if hook_config_result else None
@@ -415,22 +487,14 @@ class AgentLoop(AgentLoopSessionMixin):
             hook_config_result.issues if hook_config_result else []
         )
         self.hooks_count = len(hook_config_result.hooks) if hook_config_result else 0
+
+    def _init_rewind(self) -> None:
         self.rewind_manager = RewindManager(
             messages=self.messages,
             save_messages=self._save_messages,
             reset_session=self._reset_session,
         )
         self._teleport_service: TeleportService | None = None
-
-        Thread(
-            target=migrate_sessions_entrypoint,
-            args=(config.session_logging,),
-            daemon=True,
-            name="migrate_sessions",
-        ).start()
-
-        if defer_heavy_init:
-            self._start_deferred_init()
 
     @property
     def hooks_manager(self) -> HooksManager | None:
