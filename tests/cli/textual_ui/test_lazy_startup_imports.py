@@ -6,6 +6,29 @@ import subprocess
 import sys
 
 
+def test_importing_entrypoint_does_not_import_interactive_ui_modules() -> None:
+    code = """
+import sys
+import vibe.cli.entrypoint
+
+blocked = [
+    "vibe.cli.cli",
+    "vibe.setup.trusted_folders.trust_folder_dialog",
+    "textual",
+    "git",
+]
+loaded = [name for name in blocked if name in sys.modules]
+if loaded:
+    raise SystemExit(f"unexpected entrypoint modules loaded: {loaded}")
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code], check=False, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_importing_tui_app_does_not_import_deferred_startup_modules() -> None:
     code = """
 import sys

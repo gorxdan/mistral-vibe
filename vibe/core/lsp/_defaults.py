@@ -174,9 +174,13 @@ def preset_probe_passes(preset: ServerPreset) -> bool:
     return _probe(preset).status == "available"
 
 
-def available_presets() -> list[ServerPreset]:
+def available_presets(root_path: Path | None = None) -> list[ServerPreset]:
+    candidates = list(PRESETS.values())
+    if root_path is not None:
+        candidates = [p for p in candidates if preset_matches_root(p, root_path)]
+
     usable: list[ServerPreset] = []
-    for probe in (p for p in (_probe(preset) for preset in PRESETS.values())):
+    for probe in (_probe(preset) for preset in candidates):
         if probe.status == "available":
             usable.append(probe.preset)
         elif probe.status == "broken":

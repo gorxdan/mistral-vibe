@@ -17,10 +17,6 @@ from vibe.core.trusted_folders import (
     trusted_folders_manager,
 )
 from vibe.core.utils.paths import is_dangerous_directory
-from vibe.setup.trusted_folders.trust_folder_dialog import (
-    TrustDialogQuitException,
-    ask_trust_folder,
-)
 
 _SPLASH_GRADIENT = (
     "#ff6b00",
@@ -247,6 +243,11 @@ def check_and_resolve_trusted_folder(cwd: Path) -> None:
     if prompt is None:
         return
 
+    from vibe.setup.trusted_folders.trust_folder_dialog import (
+        TrustDialogQuitException,
+        ask_trust_folder,
+    )
+
     try:
         decision = ask_trust_folder(
             prompt.cwd,
@@ -330,15 +331,15 @@ def main() -> None:
     with _interactive_splash(interactive):
         from vibe.cli.cli import run_cli
 
-        resolve_trusted_folder: Callable[[], None] | None = None
-        if interactive:
+    resolve_trusted_folder: Callable[[], None] | None = None
+    if interactive:
 
-            def _resolve_trusted_folder() -> None:
-                check_and_resolve_trusted_folder(cwd)
+        def _resolve_trusted_folder() -> None:
+            check_and_resolve_trusted_folder(cwd)
 
-            resolve_trusted_folder = _resolve_trusted_folder
+        resolve_trusted_folder = _resolve_trusted_folder
 
-        run_cli(args, resolve_trusted_folder=resolve_trusted_folder)
+    run_cli(args, resolve_trusted_folder=resolve_trusted_folder)
 
 
 if __name__ == "__main__":

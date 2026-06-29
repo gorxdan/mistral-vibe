@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from vibe.core.lsp._defaults import available_presets, preset_matches_root
+from vibe.core.lsp._defaults import available_presets
 from vibe.core.lsp._manager import LSPServerSource
 from vibe.core.lsp._server import ServerConfig
 
@@ -34,10 +34,8 @@ def build_server_configs(
     manual_names = {s.name for s in manual}
     if not getattr(config, "lsp_auto_discover", True):
         return manual
-    auto_presets = available_presets()
-    if root_path is not None:
-        root = Path(root_path)
-        auto_presets = [p for p in auto_presets if preset_matches_root(p, root)]
+    root = Path(root_path) if root_path is not None else None
+    auto_presets = available_presets(root)
     auto = [p.server.to_server_config() for p in auto_presets]
     return manual + [s for s in auto if s.name not in manual_names]
 

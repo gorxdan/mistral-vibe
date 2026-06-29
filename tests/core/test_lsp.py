@@ -511,17 +511,31 @@ def test_preset_matches_root_requires_manifest_marker(tmp_path) -> None:
 def test_build_server_configs_filters_to_project_languages(
     monkeypatch, tmp_path
 ) -> None:
-    from vibe.core.lsp import _config_bridge
+    from vibe.core.lsp import _config_bridge, _defaults
     from vibe.core.lsp._config_bridge import build_server_configs
     from vibe.core.lsp._defaults import _GOPLS, _PYRIGHT, _RUST_ANALYZER
 
+    probed: list[str] = []
+
+    def preset_probe_passes(preset) -> bool:
+        probed.append(preset.key)
+        return True
+
     monkeypatch.setattr(
-        _config_bridge, "available_presets", lambda: [_PYRIGHT, _RUST_ANALYZER, _GOPLS]
+        _config_bridge,
+        "available_presets",
+        lambda root_path=None: [
+            p
+            for p in [_PYRIGHT, _RUST_ANALYZER, _GOPLS]
+            if root_path is None or _defaults.preset_matches_root(p, root_path)
+            if preset_probe_passes(p)
+        ],
     )
     (tmp_path / "pyproject.toml").write_text("")
     config = build_test_vibe_config(lsp_auto_discover=True)
     names = {s.name for s in build_server_configs(config, root_path=tmp_path)}
     assert names == {"pyright"}
+    assert probed == ["pyright"]
 
 
 def test_build_server_configs_auto_discover_false_skips_presets(

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -131,6 +132,42 @@ def test_warn_if_workdir_untrusted_silent_when_no_project_config(
     cli_mod.warn_if_workdir_trust_is_unset()
 
     assert capsys.readouterr().err == ""
+
+
+def test_interactive_splash_stops_before_running_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    @contextmanager
+    def fake_splash(_enabled: bool) -> Iterator[None]:
+        calls.append("splash_enter")
+        yield
+        calls.append("splash_exit")
+
+    def fake_run_cli(
+        _args: argparse.Namespace,
+        *,
+        resolve_trusted_folder: Callable[[], None] | None = None,
+    ) -> None:
+        assert callable(resolve_trusted_folder)
+        calls.append("run_cli")
+        raise SystemExit(0)
+
+    monkeypatch.setattr(entrypoint_mod, "_interactive_splash", fake_splash)
+    monkeypatch.setattr(
+        entrypoint_mod, "parse_arguments", lambda: _make_args(prompt=None)
+    )
+    monkeypatch.setattr(
+        entrypoint_mod, "init_harness_files_manager", lambda *a, **k: None
+    )
+    monkeypatch.setattr("vibe.cli.cli.run_cli", fake_run_cli)
+
+    with pytest.raises(SystemExit) as exc_info:
+        entrypoint_mod.main()
+
+    assert exc_info.value.code == 0
+    assert calls == ["splash_enter", "splash_exit", "run_cli"]
 
 
 def test_trust_flag_trusts_cwd_for_session_only(
