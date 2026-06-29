@@ -3243,6 +3243,19 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if max_tokens is None and model_override is None:
             max_tokens = self._max_output_override
         active_model, provider = self._resolve_active_model(model_override)
+        # self.backend always serves effective_model()'s provider (init, failover,
+        # and reload keep them in lockstep). A model_override (e.g. compaction)
+        # may target a different provider than the current failover backend —
+        # reuse self.backend only when providers match, otherwise build a one-off
+        # backend so the model name + temperature reach the right endpoint
+        # (gpt-5.5 reaching a kimi backend -> "invalid temperature").
+        backend = self.backend
+        if (
+            model_override is not None
+            and provider.name
+            != self.config.get_provider_for_model(self.effective_model()).name
+        ):
+            backend = create_backend(provider=provider, timeout=self.config.api_timeout)
         backend_metadata = self._build_backend_metadata()
 
         available_tools = self.format_handler.get_available_tools(self.tool_manager)
@@ -3269,7 +3282,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             ) as _span:
                 start_time = time.perf_counter()
                 extra_headers, turn_state_sink = self._codex_routing(provider)
-                result = await self.backend.complete(
+                result = await backend.complete(
                     CompletionRequest(
                         model=active_model,
                         messages=self._messages_for_backend(active_model),

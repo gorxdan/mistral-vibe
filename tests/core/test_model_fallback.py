@@ -216,6 +216,72 @@ async def test_streaming_honors_fallback_model_override() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_model_override_uses_matching_backend_after_failover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: after a failover rebuilds self.backend for provider B, a
+    # compaction-style _chat(model_override=<model on provider A>) must NOT reuse
+    # the B backend — otherwise the A model name + temperature reach the B
+    # endpoint (gpt-5.5 -> kimi -> "invalid temperature"). _chat must build a
+    # backend for the override's provider when it differs from effective_model()'s.
+    from tests.mock.utils import mock_llm_chunk
+    from tests.stubs.fake_backend import FakeBackend
+    from vibe.core.types import LLMMessage, Role
+
+    alpha = ProviderConfig(
+        name="alpha",
+        api_base="http://alpha/v1",
+        api_key_env_var="",
+        api_style="openai",
+        backend=Backend.GENERIC,
+    )
+    beta = ProviderConfig(
+        name="beta",
+        api_base="http://beta/v1",
+        api_key_env_var="",
+        api_style="openai",
+        backend=Backend.GENERIC,
+    )
+    primary = ModelConfig(
+        name="primary", provider="alpha", alias="primary", temperature=0.2
+    )
+    backup = ModelConfig(
+        name="backup", provider="beta", alias="backup", temperature=1.0
+    )
+    config = build_test_vibe_config(
+        providers=[alpha, beta], models=[primary, backup], active_model="primary"
+    )
+    # Simulate the post-failover state: backend rebuilt for beta (backup).
+    beta_backend = FakeBackend([[mock_llm_chunk(content="from-beta")]])
+    loop = build_test_agent_loop(config=config, backend=beta_backend)
+    loop._fallback_model_override = backup
+    loop.messages.append(
+        LLMMessage(role=Role.USER, content="summarize", message_id="u1")
+    )
+
+    alpha_backend = FakeBackend([[mock_llm_chunk(content="from-alpha")]])
+
+    def fake_create_backend(
+        *, provider: ProviderConfig, timeout: float = 720.0
+    ) -> object:
+        return alpha_backend if provider.name == "alpha" else beta_backend
+
+    monkeypatch.setattr("vibe.core.agent_loop.create_backend", fake_create_backend)
+
+    await loop._chat(model_override=primary)
+
+    # The override model lives on alpha, so the request must reach the alpha
+    # backend — not the post-failover beta backend that self.backend still is.
+    assert alpha_backend.requests_models, (
+        "model_override must reach a backend for its own provider"
+    )
+    assert alpha_backend.requests_models[-1].alias == "primary"
+    assert not beta_backend.requests_models, (
+        "the failover (beta) backend must not serve a provider-alpha model_override"
+    )
+
+
+@pytest.mark.asyncio
 async def test_reload_clears_fallback_override() -> None:
     # A rate-limit/fallback switch sets _fallback_model_override. A later reload
     # (e.g. /model picker -> _reload_config) rebuilds the backend for the newly
