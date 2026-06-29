@@ -18,10 +18,16 @@ from vibe.core.agent_loop._errors import (
     TeleportError,
     _degenerate_response_reason,
 )
-from vibe.core.agent_loop._loop import AgentLoop
+from vibe.core.agent_loop._loop import (
+    _TELEPORT_AVAILABLE,
+    AgentLoop,
+    _git_executable_present,
+    _teleport_service_cls,
+)
 from vibe.core.agent_loop._models import ToolDecision, ToolExecutionResponse
 
 __all__ = [
+    "_TELEPORT_AVAILABLE",
     "AgentLoop",
     "AgentLoopError",
     "AgentLoopLLMResponseError",
@@ -33,4 +39,6 @@ __all__ = [
     "ToolDecision",
     "ToolExecutionResponse",
     "_degenerate_response_reason",
+    "_git_executable_present",
+    "_teleport_service_cls",
 ]
