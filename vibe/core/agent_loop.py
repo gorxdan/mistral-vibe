@@ -139,6 +139,7 @@ from vibe.core.types import (
     BackgroundTaskCompletedEvent,
     BaseEvent,
     CompactEndEvent,
+    CompactionOrigin,
     CompactStartEvent,
     ContentFilterError,
     ContextTooLongError,
@@ -1326,11 +1327,23 @@ class AgentLoop(AgentLoopHooksMixin):
                     status=compact_status,
                 )
 
+        # Snapshot what shaped this conversation for downstream observability.
+        # Pure record — never consulted by the turn loop. Hash the system prompt
+        # (messages[0]) so a recompaction under a different prompt is detectable
+        # without retaining the full prompt text on the event.
+        system_prompt_text = self.messages[0].content or ""
         yield CompactEndEvent(
             tool_call_id=tool_call_id,
             summary_length=len(summary),
             old_session_id=old_session_id,
             new_session_id=self.session_id,
+            origin=CompactionOrigin(
+                model_alias=self.effective_model().alias,
+                agent_profile=self.agent_profile.name,
+                system_prompt_hash=hashlib.sha256(
+                    system_prompt_text.encode("utf-8")
+                ).hexdigest()[:16],
+            ),
         )
 
     def effective_model(self) -> ModelConfig:

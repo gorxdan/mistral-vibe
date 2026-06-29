@@ -5,7 +5,7 @@ import pytest
 from tests.agent_loop.e2e.conftest import MistralAPI, build_e2e_agent_loop
 from tests.backend.data.mistral import mistral_completion
 from tests.conftest import build_test_vibe_config, make_test_models
-from vibe.core.types import CompactStartEvent
+from vibe.core.types import CompactEndEvent, CompactStartEvent
 
 COMPACTION_MODELS = make_test_models(auto_compact_threshold=1)
 
@@ -80,3 +80,26 @@ async def test_oversized_user_message_is_middle_truncated_in_compaction(
     sent_after_second_compaction = mistral_api.model_facing_text(3)
     assert "[... truncated ...]" in sent_after_second_compaction
     assert "intro" not in sent_after_second_compaction
+
+
+@pytest.mark.asyncio
+async def test_compact_end_event_carries_origin_tag(mistral_api: MistralAPI) -> None:
+    mistral_api.reply(
+        mistral_completion("a summary"),
+        mistral_completion("final reply"),
+    )
+    agent = build_e2e_agent_loop(
+        config=build_test_vibe_config(models=COMPACTION_MODELS)
+    )
+    agent.stats.context_tokens = 5
+
+    events = [event async for event in agent.act("do work")]
+
+    end_events = [e for e in events if isinstance(e, CompactEndEvent)]
+    assert len(end_events) == 1
+    origin = end_events[0].origin
+    assert origin is not None
+    assert origin.model_alias == agent.effective_model().alias
+    assert origin.agent_profile == agent.agent_profile.name
+    assert len(origin.system_prompt_hash) == 16
+    assert all(c in "0123456789abcdef" for c in origin.system_prompt_hash)

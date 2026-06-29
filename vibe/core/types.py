@@ -729,10 +729,24 @@ class CompactStartEvent(BaseEvent):
     tool_call_id: str
 
 
+class CompactionOrigin(BaseModel):
+    """Snapshot of what shaped the conversation when a compaction ran.
+
+    Pure observability — recorded on CompactEndEvent for debugging, session
+    analytics, and downstream tooling. Not consulted by the turn loop.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    model_alias: str
+    agent_profile: str
+    system_prompt_hash: str
+
+
 class CompactEndEvent(BaseEvent):
     summary_length: int
     old_session_id: str | None = None
     new_session_id: str | None = None
+    origin: CompactionOrigin | None = None
     # WORKAROUND: Using tool_call to communicate compact events to the client.
     # This should be revisited when the ACP protocol defines how compact events
     # should be represented.
