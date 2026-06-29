@@ -114,8 +114,96 @@ _CLANGD = ServerPreset(
     detection_command=("clangd", "--version"),
 )
 
+_JDTLS = ServerPreset(
+    key="java",
+    display_name="Java (jdtls)",
+    server=LSPServer(
+        name="jdtls",
+        command="jdtls",
+        languages={".java": "java"},
+        manifest_markers=(
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+        ),
+    ),
+    install_hint="brew install jdtls  (or: download from eclipse.org/jdtls)",
+    detection_command=("jdtls", "--help"),
+)
+
+_OMNISHARP = ServerPreset(
+    key="csharp",
+    display_name="C# (OmniSharp)",
+    server=LSPServer(
+        name="omnisharp",
+        command="OmniSharp",
+        languages={".cs": "csharp"},
+        manifest_markers=(
+            "*.csproj",
+            "*.sln",
+            "Directory.Build.props",
+        ),
+    ),
+    install_hint="dotnet tool install --global OmniSharp",
+    detection_command=("OmniSharp", "--version"),
+)
+
+_INTELEPHENSE = ServerPreset(
+    key="php",
+    display_name="PHP (intelephense)",
+    server=LSPServer(
+        name="intelephense",
+        command="intelephense",
+        languages={".php": "php"},
+        manifest_markers=("composer.json",),
+        args=["--stdio"],
+    ),
+    install_hint="npm install -g intelephense",
+    detection_command=("intelephense", "--version"),
+)
+
+_RUBY_LSP = ServerPreset(
+    key="ruby",
+    display_name="Ruby (ruby-lsp)",
+    server=LSPServer(
+        name="ruby-lsp",
+        command="ruby-lsp",
+        languages={".ruby": "ruby", ".rb": "ruby", ".rake": "ruby"},
+        manifest_markers=("Gemfile", "Gemfile.lock", "*.gemspec", "Rakefile"),
+    ),
+    install_hint="gem install ruby-lsp",
+    detection_command=("ruby-lsp", "--version"),
+)
+
+_SOURCEKIT_LSP = ServerPreset(
+    key="swift",
+    display_name="Swift (sourcekit-lsp)",
+    server=LSPServer(
+        name="sourcekit-lsp",
+        command="sourcekit-lsp",
+        languages={".swift": "swift"},
+        manifest_markers=("Package.swift",),
+    ),
+    install_hint="brew install sourcekit-lsp  (or: xcode on macOS)",
+    detection_command=("sourcekit-lsp", "--version"),
+)
+
 PRESETS: dict[str, ServerPreset] = {
-    p.key: p for p in [_PYRIGHT, _TSLANGUAGE, _RUST_ANALYZER, _GOPLS, _CLANGD]
+    p.key: p
+    for p in [
+        _PYRIGHT,
+        _TSLANGUAGE,
+        _RUST_ANALYZER,
+        _GOPLS,
+        _CLANGD,
+        _JDTLS,
+        _OMNISHARP,
+        _INTELEPHENSE,
+        _RUBY_LSP,
+        _SOURCEKIT_LSP,
+    ]
 }
 
 
@@ -221,13 +309,21 @@ def preset_matches_root(preset: ServerPreset, root_path: Path) -> bool:
     """Whether ``preset`` is relevant to the project at ``root_path``.
 
     A preset is relevant when any of its ``manifest_markers`` exists at the
-    project root. Presets without markers (none in the builtin set today) are
-    always relevant so a future marker-less server isn't silently dropped.
+    project root. Markers containing glob characters (``*``, ``?``, ``[``)
+    are matched with :meth:`Path.glob` so variable-name files like
+    ``*.csproj`` or ``*.sln`` work. Presets without markers are always
+    relevant so a marker-less server isn't silently dropped.
     """
     markers = preset.server.manifest_markers
     if not markers:
         return True
-    return any((root_path / marker).exists() for marker in markers)
+    for marker in markers:
+        if any(c in marker for c in "*?["):
+            if any(root_path.glob(marker)):
+                return True
+        elif (root_path / marker).exists():
+            return True
+    return False
 
 
 def broken_presets() -> list[PresetProbe]:
