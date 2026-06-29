@@ -88,3 +88,24 @@ def test_context_shaping_records_reasoning_preserved() -> None:
         tokens_before=1000, tokens_after=500, reasoning_preserved=False,
     )
     assert span.attrs["vibe.context.reasoning_preserved"] is False
+
+
+def test_wire_temperature_reflects_what_is_sent() -> None:
+    from vibe.core.agent_loop import AgentLoop
+    from vibe.core.config import ModelConfig, ProviderConfig
+
+    responses = ProviderConfig(
+        name="openai", api_base="x", api_key_env_var="",
+        api_style="openai-responses",
+    )
+    chat = ProviderConfig(name="zai", api_base="x", api_key_env_var="")
+    gpt55 = ModelConfig(name="gpt-5.5", provider="openai", alias="g", temperature=0.2)
+    gpt4 = ModelConfig(name="gpt-4o", provider="openai", alias="g4", temperature=0.5)
+    glm = ModelConfig(name="glm-5.2", provider="zai", alias="glm", temperature=1.0)
+
+    # Reasoning model on the Responses API omits temperature -> not over-reported.
+    assert AgentLoop._wire_temperature(gpt55, responses) is None
+    # gpt-4 family does send it.
+    assert AgentLoop._wire_temperature(gpt4, responses) == 0.5
+    # Chat-completions provider sends the configured value.
+    assert AgentLoop._wire_temperature(glm, chat) == 1.0

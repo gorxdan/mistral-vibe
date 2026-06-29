@@ -2118,6 +2118,23 @@ class AgentLoop(AgentLoopHooksMixin):
         logger.warning("%s", hint)
         return hint
 
+    @staticmethod
+    def _wire_temperature(
+        active_model: ModelConfig, provider: ProviderConfig
+    ) -> float | None:
+        # Temperature as actually sent, for the trace: the Responses API
+        # (gpt-5.x/codex/fugu) omits it for non gpt-4/3.5 models, so recording the
+        # config value would over-report a temperature that never hits the wire.
+        api_style = getattr(provider, "api_style", "openai")
+        if api_style in {"openai-responses", "openai-chatgpt"}:
+            from vibe.core.llm.backend.openai_responses import (
+                responses_temperature_supported,
+            )
+
+            if not responses_temperature_supported(active_model.name):
+                return None
+        return active_model.temperature
+
     def _trace_recovery(self, *, error_type: str, action: str, **extra: Any) -> None:
         # Record a self-heal (failover / escalation / compaction) on the active
         # span, so a trace shows why a turn retried instead of just failing.
@@ -3342,7 +3359,7 @@ class AgentLoop(AgentLoopHooksMixin):
             async with chat_span(
                 model=active_model.name,
                 provider=provider.name,
-                temperature=active_model.temperature,
+                temperature=self._wire_temperature(active_model, provider),
                 max_tokens=max_tokens,
                 thinking=active_model.thinking,
             ) as _span:
@@ -3431,7 +3448,7 @@ class AgentLoop(AgentLoopHooksMixin):
                 async with chat_span(
                     model=active_model.name,
                     provider=provider.name,
-                    temperature=active_model.temperature,
+                    temperature=self._wire_temperature(active_model, provider),
                     max_tokens=max_tokens,
                     thinking=active_model.thinking,
                 ) as _span:

@@ -776,6 +776,10 @@ def _default_alias_to_name(data: Any) -> Any:
 ThinkingLevel = Literal["off", "low", "medium", "high", "max"]
 THINKING_LEVELS: list[str] = list(get_args(ThinkingLevel))
 
+# Output verbosity for the OpenAI Responses API (gpt-5.x text.verbosity). The
+# Responses-style models' output-length dial; ignored on other wire formats.
+Verbosity = Literal["low", "medium", "high"]
+
 EffortLevel = Literal["normal", "le-chaton"]
 EFFORT_LEVELS: list[str] = list(get_args(EffortLevel))
 
@@ -794,6 +798,9 @@ class ModelConfig(BaseModel):
     input_price: float = 0.0
     output_price: float = 0.0
     thinking: ThinkingLevel = "off"
+    # None omits text.verbosity (server default). Only the Responses API
+    # (gpt-5.x) sends it; ignored on other wire formats.
+    verbosity: Verbosity | None = None
     supports_images: bool = False
     auto_compact_threshold: int = DEFAULT_AUTO_COMPACT_THRESHOLD
     # Model's true output-token ceiling; seeds/caps max-output escalation when set.

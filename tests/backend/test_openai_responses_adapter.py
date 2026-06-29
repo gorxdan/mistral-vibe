@@ -352,6 +352,25 @@ class TestPrepareRequest:
         )
         assert "temperature" not in payload
 
+    def test_verbosity_sets_text_verbosity(self, adapter, provider):
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.USER, content="Hi")],
+            model_name="gpt-5.5",
+            verbosity="low",
+        )
+        assert payload["text"]["verbosity"] == "low"
+
+    def test_no_text_block_without_verbosity_or_format(self, adapter, provider):
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.USER, content="Hi")],
+            model_name="gpt-5.5",
+        )
+        assert "text" not in payload
+
     def test_streaming_flag(self, adapter, provider):
         payload = _prepare(
             adapter,

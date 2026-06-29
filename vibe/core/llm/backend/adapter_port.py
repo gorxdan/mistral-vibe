@@ -29,6 +29,7 @@ class RequestParams:
     provider: ProviderConfig
     api_key: str | None = None
     thinking: str = "off"
+    verbosity: str | None = None
     response_format: dict[str, Any] | None = None
     extra_body: dict[str, Any] | None = None
     # Stable per-conversation id used as the OpenAI ``prompt_cache_key`` routing

@@ -31,6 +31,13 @@ if TYPE_CHECKING:
 _EMPTY_USAGE = LLMUsage(prompt_tokens=0, completion_tokens=0)
 
 
+def responses_temperature_supported(model_name: str) -> bool:
+    # The Responses API accepts temperature only for gpt-4/gpt-3.5; reasoning
+    # models (gpt-5.x, o-series, fugu) omit it entirely — OpenAI's own codex CLI
+    # sends no temperature for these. So a sent-temperature is the exception.
+    return model_name.startswith(("gpt-4", "gpt-3.5"))
+
+
 class _ResponsesInputTokensDetails(TypedDict, total=False):
     cached_tokens: int
 
@@ -475,8 +482,7 @@ class OpenAIResponsesAdapter(APIAdapter):
 
     @staticmethod
     def _is_temperature_supported(model_name: str) -> bool:
-        supported_prefixes = ("gpt-4", "gpt-3.5")
-        return model_name.startswith(supported_prefixes)
+        return responses_temperature_supported(model_name)
 
     @staticmethod
     def _map_reasoning_effort(thinking: str, model_name: str = "") -> str:
@@ -571,7 +577,7 @@ class OpenAIResponsesAdapter(APIAdapter):
             "parameters": tool.function.parameters,
         }
 
-    def build_payload(
+    def build_payload(  # noqa: PLR0913
         self,
         *,
         model_name: str,
@@ -582,6 +588,7 @@ class OpenAIResponsesAdapter(APIAdapter):
         tool_choice: StrToolChoice | AvailableTool | None,
         thinking: str,
         enable_streaming: bool,
+        verbosity: str | None = None,
         response_format: dict[str, Any] | None = None,
         cache_session_id: str | None = None,
     ) -> dict[str, Any]:
@@ -630,10 +637,15 @@ class OpenAIResponsesAdapter(APIAdapter):
         if max_tokens is not None:
             payload["max_output_tokens"] = max_tokens
 
+        # text.verbosity (gpt-5.x output-length dial) and text.format share the
+        # one `text` object, so merge rather than overwrite.
+        text: dict[str, Any] = {}
         if response_format is not None:
-            payload["text"] = {
-                "format": self._to_responses_text_format(response_format)
-            }
+            text["format"] = self._to_responses_text_format(response_format)
+        if verbosity:
+            text["verbosity"] = verbosity
+        if text:
+            payload["text"] = text
 
         if enable_streaming:
             payload["stream"] = True
@@ -669,6 +681,7 @@ class OpenAIResponsesAdapter(APIAdapter):
             max_tokens=max_tokens,
             tool_choice=tool_choice,
             thinking=thinking,
+            verbosity=params.verbosity,
             enable_streaming=enable_streaming,
             response_format=response_format,
             cache_session_id=params.cache_session_id,
