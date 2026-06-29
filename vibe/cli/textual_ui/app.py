@@ -333,6 +333,10 @@ _AUTO_CONTINUE_PROMPT = (
     "A background subagent finished; its result is above. Continue the task, "
     "or stop if nothing remains."
 )
+_WORKFLOW_CONTINUE_PROMPT = (
+    "A background workflow finished; its result is above. Continue the task, "
+    "or stop if nothing remains."
+)
 
 _DEFAULT_TYPING_DEBOUNCE_MS = 1000
 _TYPING_DEBOUNCE_ENV_VAR = "VIBE_TYPING_GRACE_PERIOD_MS"
@@ -476,6 +480,7 @@ class VibeApp(App):
         self._agent_running = False
         self._interrupt_requested = False
         self._agent_task: asyncio.Task | None = None
+        self._workflow_flush_tasks: set[asyncio.Task] = set()
         self._auto_continue_active = False
         self._consecutive_auto_continues = 0
         self._bash_task: asyncio.Task | None = None
@@ -3816,6 +3821,20 @@ class VibeApp(App):
                     # appends to history, which a running turn never re-reads, so
                     # the agent would otherwise appear to stop on a failed run.
                     self.agent_loop.stage_injected_message(payload)
+                    # Teardown race: the run can complete in the window between
+                    # the loop's last pending-injection drain and the turn
+                    # actually ending (_agent_running flips false only after an
+                    # awaited save). There the staged result is folded into
+                    # history without any LLM turn acting on it, stranding it
+                    # until the next human message. Arm a post-turn flush that
+                    # resumes once if that strand is detected.
+                    launching = self._agent_task
+                    if launching is not None:
+                        flush = asyncio.create_task(
+                            self._flush_stranded_workflow_delivery(launching)
+                        )
+                        self._workflow_flush_tasks.add(flush)
+                        flush.add_done_callback(self._workflow_flush_tasks.discard)
                 else:
                     # Idle: the launching turn already ended, so there is no live
                     # loop to fold into. Auto-resume — drive a continuation turn
@@ -3835,6 +3854,35 @@ class VibeApp(App):
                 logger.warning(
                     "Failed to deliver workflow result to agent loop", exc_info=True
                 )
+
+    async def _flush_stranded_workflow_delivery(
+        self, launching_task: asyncio.Task
+    ) -> None:
+        # Safety net for the busy-branch teardown race in _on_workflow_complete.
+        # Once the launching turn settles, drive one continuation turn iff the
+        # staged delivery was stranded: the agent is fully idle and history ends
+        # with an injected user message that no assistant reply followed (a
+        # normally-consumed delivery ends with the agent's assistant response,
+        # so this never double-fires). Gated by the same auto-continue cap as
+        # the subagent wake so an unattended chain stays bounded.
+        try:
+            await launching_task
+        except Exception:
+            return
+        if self._is_busy() or self._auto_continue_active:
+            return
+        if self._input_queue.paused or bool(self._input_queue):
+            return
+        msgs = self.agent_loop.messages
+        if not msgs or msgs[-1].role != Role.USER or not msgs[-1].injected:
+            return
+        if self._consecutive_auto_continues >= _MAX_AUTO_CONTINUES:
+            return
+        self._auto_continue_active = True
+        self._consecutive_auto_continues += 1
+        self._agent_running = True
+        self._start_queued_agent_turn(_WORKFLOW_CONTINUE_PROMPT)
+        self._queue.notify_busy_changed()
 
     _WORKFLOW_DELIVERY_CHAR_CAP = 16_000
 

@@ -6,7 +6,11 @@ from typing import Any
 
 import pytest
 
-from vibe.cli.textual_ui.app import VibeApp
+from vibe.cli.textual_ui.app import (
+    _WORKFLOW_CONTINUE_PROMPT,
+    VibeApp,
+)
+from vibe.core.types import Role
 from vibe.cli.textual_ui.widgets.messages import ErrorMessage, UserCommandMessage
 from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
 from vibe.core.workflows.models import WorkflowResult, WorkflowRun, WorkflowStatus
@@ -362,6 +366,110 @@ async def test_on_workflow_complete_resumes_idle_agent() -> None:
     assert len(started) == 1, "an idle agent must be resumed to act on the result"
     assert "all good" in started[0]
     assert "Workflow completed" in started[0]
+
+
+async def test_on_workflow_complete_flushes_stranded_delivery() -> None:
+    # Teardown race: the run completes while the launching turn is still flagged
+    # running but its loop has already broken, so the staged result is folded
+    # into history without any LLM turn acting on it. The safety net must drive
+    # one continuation turn once the launching turn settles, instead of stranding
+    # the result until the next human message.
+    from tests.conftest import build_test_vibe_app
+
+    app = build_test_vibe_app()
+
+    async def _noop_mount(_w: Any) -> None:
+        return None
+
+    app._mount_and_scroll = _noop_mount  # type: ignore[method-assign]
+
+    started: list[str] = []
+
+    async def _fake_turn(prompt: str, **_kw: Any) -> None:
+        started.append(prompt)
+
+    app._handle_agent_loop_turn = _fake_turn  # type: ignore[method-assign]
+
+    gate = asyncio.Event()
+
+    async def _launching() -> None:
+        # Mimic act()'s finally: fold staged injections into history and clear
+        # the running flag without re-reading them in a live loop.
+        await gate.wait()
+        app.agent_loop._drain_pending_injections()
+        app._agent_running = False
+
+    app._agent_task = asyncio.create_task(_launching())
+    app._agent_running = True
+
+    result = _result(
+        summary="Workflow completed: 1 agents, 10 tokens, $0.0001",
+        return_value={"findings": ["all good"]},
+        status=WorkflowStatus.COMPLETED,
+    )
+    await app._on_workflow_complete(result)
+
+    # Staged into the (still-running) launching turn, and a flush armed.
+    assert len(app.agent_loop._pending_injected_messages) == 1
+    assert len(app._workflow_flush_tasks) == 1
+
+    # Let the launching turn settle (strands the staged result in history), then
+    # let the flush run.
+    gate.set()
+    await asyncio.gather(*list(app._workflow_flush_tasks))
+
+    # Stranded delivery is now in history as an unacted injected user message.
+    assert app.agent_loop.messages[-1].role == Role.USER
+    assert app.agent_loop.messages[-1].injected
+    # A continuation turn was driven to act on it.
+    assert app._agent_running is True
+    assert app._agent_task is not None
+    await app._agent_task
+    assert started == [_WORKFLOW_CONTINUE_PROMPT]
+
+
+async def test_on_workflow_complete_no_flush_when_turn_consumes() -> None:
+    # The safety net must NOT double-fire when the live turn consumed the staged
+    # result normally (history ends with the agent's assistant reply, not an
+    # unacted injected user message).
+    from tests.conftest import build_test_vibe_app
+
+    from vibe.core.types import LLMMessage
+
+    app = build_test_vibe_app()
+
+    async def _noop_mount(_w: Any) -> None:
+        return None
+
+    app._mount_and_scroll = _noop_mount  # type: ignore[method-assign]
+
+    started: list[str] = []
+
+    async def _fake_turn(prompt: str, **_kw: Any) -> None:
+        started.append(prompt)
+
+    app._handle_agent_loop_turn = _fake_turn  # type: ignore[method-assign]
+
+    async def _launching() -> None:
+        # Live loop drained + acted: result folded in, then an assistant reply.
+        app.agent_loop._drain_pending_injections()
+        app.agent_loop.messages.append(
+            LLMMessage(role=Role.ASSISTANT, content="done")
+        )
+        app._agent_running = False
+
+    app._agent_task = asyncio.create_task(_launching())
+    app._agent_running = True
+
+    result = _result(
+        summary="Workflow completed: 1 agents, 10 tokens, $0.0001",
+        return_value={"findings": ["all good"]},
+        status=WorkflowStatus.COMPLETED,
+    )
+    await app._on_workflow_complete(result)
+    await asyncio.gather(*list(app._workflow_flush_tasks))
+
+    assert started == [], "no continuation turn when the live turn already acted"
 
 
 async def test_persist_callback_fires_on_cancel() -> None:
