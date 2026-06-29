@@ -918,6 +918,15 @@ class ContentFilterError(Exception):
         super().__init__(f"The request was blocked by the {provider} content filter.")
 
 
+class ServerError(Exception):
+    failover_hint: str | None = None
+
+    def __init__(self, provider: str, model: str) -> None:
+        self.provider = provider
+        self.model = model
+        super().__init__(f"The {provider} backend returned a persistent server error.")
+
+
 class RefusalError(Exception):
     def __init__(
         self,

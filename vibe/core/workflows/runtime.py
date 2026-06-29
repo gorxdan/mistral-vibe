@@ -1524,6 +1524,7 @@ class WorkflowRuntime:
             defer_heavy_init=True,
             permission_store=ctx.permission_store if ctx else None,
             hook_config_result=ctx.hook_config_result if ctx else None,
+            max_turns=DEFAULT_ISOLATED_MAX_TURNS,
         )
         if ctx and ctx.session_id:
             loop.parent_session_id = ctx.session_id

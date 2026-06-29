@@ -679,7 +679,7 @@ def get_universal_system_prompt(
             f"automatically — rebased onto the latest HEAD first (so concurrent "
             f"sessions don't strand it), then fast-forwarded, including when the "
             f"original tree was dirty at start. The branch is kept for recovery "
-            f"(`vibe worktree merge {wt.branch}`) only if it genuinely conflicts "
+            f"(`chaton worktree merge {wt.branch}`) only if it genuinely conflicts "
             f"with another session's changes.\n\n"
             f"Original repo root: `{wt.original_repo_root}`"
         )

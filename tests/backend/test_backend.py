@@ -904,3 +904,45 @@ async def test_client_bounds_network_timeouts_but_keeps_long_read() -> None:
     assert t.write is not None and t.write <= 60
     assert t.pool is not None and t.pool <= 60
     assert t.read == 720.0
+
+
+class TestTtftCap:
+    @pytest.mark.asyncio
+    async def test_open_hang_aborts_within_ttft_budget(self, monkeypatch):
+        import asyncio
+        import time
+
+        import vibe.core.llm.backend.generic as generic_mod
+
+        monkeypatch.setattr(generic_mod, "_OPEN_TIMEOUT", 0.05)
+
+        class _HangingStream:
+            async def __aenter__(self):
+                await asyncio.sleep(30)
+                raise AssertionError("stream open should have been aborted")
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _FakeClient:
+            def stream(self, **kwargs):
+                return _HangingStream()
+
+        provider = ProviderConfig(
+            name="provider_name",
+            api_base="https://api.fireworks.ai/v1",
+            api_key_env_var="API_KEY",
+        )
+        backend = GenericBackend(provider=provider, client=_FakeClient())
+
+        async def _drain():
+            async for _ in backend._make_streaming_request(
+                "https://api.fireworks.ai/v1/chat/completions", b"{}", {}
+            ):
+                pass
+
+        started = time.monotonic()
+        with pytest.raises(httpx.ConnectTimeout):
+            await asyncio.wait_for(_drain(), timeout=8)
+        # The cap (x3 retries) fires far below the 30s open-hang.
+        assert time.monotonic() - started < 7

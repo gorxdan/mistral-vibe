@@ -33,7 +33,12 @@ from vibe.core.utils.text import locate_edit_matches, snippet_start_line
 
 class EditArgs(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    file_path: str = Field(description="The absolute path to the file to modify")
+    file_path: str = Field(
+        description=(
+            "Path to the file to modify. May be relative to the working directory "
+            "(preferred — shorter and less error-prone) or absolute."
+        )
+    )
     old_string: str = Field(description="The text to replace")
     new_string: str = Field(
         description="The text to replace it with (must be different from old_string)"

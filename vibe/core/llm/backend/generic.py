@@ -258,6 +258,12 @@ def _get_adapter(api_style: str) -> APIAdapter:
 _CONNECT_TIMEOUT = 15.0
 _NETWORK_OP_TIMEOUT = 60.0
 
+# Time-to-first-byte budget: caps stream-open + status so a provider that accepts
+# the connection but never streams fails fast (releasing the slot) instead of
+# hanging the full `read` budget. Disarmed once the first SSE byte arrives, so
+# slow generation is unaffected.
+_OPEN_TIMEOUT = 90.0
+
 # Reasoning-effort tiers, highest → lowest. Used to recover when a backend
 # rejects an effort value (a model without "xhigh", or codex rejecting "none"):
 # retry with the supported value nearest the rejected one. Nearest-by-tier
@@ -606,37 +612,54 @@ class GenericBackend:
         # Slot spans the whole stream — a live response stays in-flight until drained.
         async with provider_slot(self._provider):
             client = self._get_client()
-            async with client.stream(
-                method="POST", url=url, content=data, headers=headers
-            ) as response:
-                if not response.is_success:
-                    await response.aread()
-                response.raise_for_status()
-                # Surface response headers (e.g. the codex `x-codex-turn-state`
-                # sticky-routing token) to the caller as soon as the stream opens,
-                # before any chunk — the caller replays it on the next request.
-                if response_headers_sink is not None:
-                    response_headers_sink.update(dict(response.headers))
-                async for line in iter_sse_lines(response):
-                    if line.strip() == "":
-                        continue
+            ttft_armed = True
+            try:
+                async with (
+                    asyncio.timeout(_OPEN_TIMEOUT) as open_deadline,
+                    client.stream(
+                        method="POST", url=url, content=data, headers=headers
+                    ) as response,
+                ):
+                    if not response.is_success:
+                        await response.aread()
+                    response.raise_for_status()
+                    # Surface response headers (e.g. the codex `x-codex-turn-state`
+                    # sticky-routing token) to the caller as soon as the stream
+                    # opens, before any chunk — the caller replays it on the next
+                    # request.
+                    if response_headers_sink is not None:
+                        response_headers_sink.update(dict(response.headers))
+                    async for line in iter_sse_lines(response):
+                        if ttft_armed:
+                            # First byte: provider is streaming — lift the cap so
+                            # slow reasoning generation is not killed.
+                            open_deadline.reschedule(None)
+                            ttft_armed = False
+                        if line.strip() == "":
+                            continue
 
-                    # SSE comment/keepalive lines start with ':'
-                    if line.startswith(":"):
-                        continue
-                    delim_index = line.find(":")
-                    if delim_index == -1:
-                        continue
-                    key = line[:delim_index]
-                    value = line[delim_index + 1 :]
-                    if value.startswith(" "):
-                        value = value[1:]
-                    if key != "data":
-                        # This might be the case with openrouter, so we just ignore it
-                        continue
-                    if value == "[DONE]":
-                        return
-                    yield orjson.loads(value.strip())
+                        # SSE comment/keepalive lines start with ':'
+                        if line.startswith(":"):
+                            continue
+                        delim_index = line.find(":")
+                        if delim_index == -1:
+                            continue
+                        key = line[:delim_index]
+                        value = line[delim_index + 1 :]
+                        if value.startswith(" "):
+                            value = value[1:]
+                        if key != "data":
+                            # This might be the case with openrouter, so we just ignore it
+                            continue
+                        if value == "[DONE]":
+                            return
+                        yield orjson.loads(value.strip())
+            except TimeoutError as exc:
+                # Re-raise as a retryable network timeout so existing backoff
+                # tries a fresh node and the slot is freed between attempts.
+                raise httpx.ConnectTimeout(
+                    f"time-to-first-byte exceeded {_OPEN_TIMEOUT:.0f}s"
+                ) from exc
 
     async def close(self) -> None:
         if self._owns_client and self._client:

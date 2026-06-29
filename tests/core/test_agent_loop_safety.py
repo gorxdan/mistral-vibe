@@ -12,6 +12,7 @@ from vibe.core.agent_loop import (
     _is_context_too_long_error,
     _is_non_retryable_error,
     _is_response_too_long_error,
+    _is_server_error,
     _should_raise_rate_limit_error,
 )
 from vibe.core.agents.models import BuiltinAgentName
@@ -25,6 +26,7 @@ from vibe.core.types import (
     RateLimitError,
     ResponseTooLongError,
     Role,
+    ServerError,
     ToolCall,
     ToolResultEvent,
 )
@@ -113,6 +115,22 @@ def test_is_response_too_long_error_direct_and_via_cause() -> None:
     )
 
 
+def test_is_server_error_matches_5xx_direct_and_via_cause() -> None:
+    assert _is_server_error(_backend_error(status=500)) is True
+    assert _is_server_error(_backend_error(status=503)) is True
+
+    wrapped = RuntimeError("upstream")
+    wrapped.__cause__ = _backend_error(status=502)
+    assert _is_server_error(wrapped) is True
+
+    assert _is_server_error(_backend_error(status=HTTPStatus.BAD_REQUEST)) is False
+    assert (
+        _is_server_error(_backend_error(status=HTTPStatus.TOO_MANY_REQUESTS)) is False
+    )
+    assert _is_server_error(_backend_error(status=None)) is False
+    assert _is_server_error(RuntimeError("plain")) is False
+
+
 def test_is_non_retryable_error_walks_cause_chain_and_detects_flag() -> None:
     class _Inner(Exception):
         non_retryable = True
@@ -161,6 +179,13 @@ async def test_chat_translates_rate_limit_to_rate_limit_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_translates_5xx_to_server_error() -> None:
+    loop = _loop_with_backend(_RaisingBackend(_backend_error(status=500)))
+    with pytest.raises(ServerError):
+        await loop._chat()
+
+
+@pytest.mark.asyncio
 async def test_chat_translates_context_too_long() -> None:
     exc = _backend_error(status=HTTPStatus.BAD_REQUEST, body="context too long")
     loop = _loop_with_backend(_RaisingBackend(exc))
@@ -190,7 +215,7 @@ async def test_chat_reraises_non_retryable_error() -> None:
 
 @pytest.mark.asyncio
 async def test_chat_wraps_unknown_backend_error_as_runtime_error() -> None:
-    exc = _backend_error(status=HTTPStatus.INTERNAL_SERVER_ERROR, body="boom")
+    exc = _backend_error(status=HTTPStatus.NOT_FOUND, body="boom")
     loop = _loop_with_backend(_RaisingBackend(exc))
     with pytest.raises(RuntimeError, match="API error"):
         await loop._chat()

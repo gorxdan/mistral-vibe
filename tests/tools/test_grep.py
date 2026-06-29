@@ -624,3 +624,21 @@ class TestGnuGrepEnrichment:
         assert "a.py" in result.matches
         assert "2" in result.matches
         assert "b.py" not in result.matches
+
+
+@pytest.mark.skipif(not shutil.which("rg"), reason="ripgrep not available")
+@pytest.mark.asyncio
+async def test_multiline_regex_error_hints_at_multiline_arg(grep):
+    with pytest.raises(ToolError) as err:
+        await collect_result(grep.run(GrepArgs(pattern=r"foo\nbar")))
+    assert "`multiline` argument" in str(err.value)
+
+
+@pytest.mark.skipif(not shutil.which("rg"), reason="ripgrep not available")
+@pytest.mark.asyncio
+async def test_lookaround_regex_error_hints_unsupported(grep):
+    with pytest.raises(ToolError) as err:
+        await collect_result(grep.run(GrepArgs(pattern="(?<=foo)bar")))
+    msg = str(err.value).lower()
+    assert "look-around" in msg
+    assert "rewrite" in msg or "unsupported" in msg

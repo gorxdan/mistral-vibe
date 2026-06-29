@@ -246,9 +246,22 @@ class Lsp(
                 else None
             )
             if position is not None:
-                self._validate_position(
-                    Path(file_path), args.line or 1, args.character or 1, text.text
-                )
+                try:
+                    self._validate_position(
+                        Path(file_path), args.line or 1, args.character or 1, text.text
+                    )
+                except ToolError as exc:
+                    # Bad guessed coords are recoverable: yield a soft steer to
+                    # document_symbol instead of a hard error + dead-coord retry.
+                    yield LspResult(
+                        operation=str(args.operation),
+                        summary=(
+                            f"{exc} No symbol at line {args.line}:{args.character} — "
+                            f"use document_symbol to list valid symbol positions in "
+                            f"{Path(file_path).name}."
+                        ),
+                    )
+                    return
             # Memoize repeat queries on an unchanged file. workspace_symbol is
             # global (no single-file mtime to invalidate on), so never cache it.
             cache_key: tuple[Any, ...] | None = None

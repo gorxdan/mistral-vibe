@@ -195,6 +195,38 @@ class TestTaskToolModelRouting:
             assert mock_load.call_args.kwargs.get("active_model") == valid_alias
 
     @pytest.mark.asyncio
+    async def test_in_process_subagent_has_turn_cap(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        from vibe.core.workflows.runtime import DEFAULT_ISOLATED_MAX_TURNS
+
+        assert ctx.agent_manager is not None
+
+        async def mock_act(task: str):
+            yield AssistantEvent(content="ok")
+
+        with (
+            patch("vibe.core.tools.builtins.task.AgentLoop") as mock_loop_class,
+            patch(
+                "vibe.core.tools.builtins.task.VibeConfig.load",
+                return_value=ctx.agent_manager.config,
+            ),
+        ):
+            mock_loop = MagicMock()
+            mock_loop.act = mock_act
+            mock_loop.messages = []
+            mock_loop.set_approval_callback = MagicMock()
+            mock_loop_class.return_value = mock_loop
+
+            args = TaskArgs(task="review", agent="explore")
+            await collect_result(task_tool.run(args, ctx))
+
+            assert (
+                mock_loop_class.call_args.kwargs.get("max_turns")
+                == DEFAULT_ISOLATED_MAX_TURNS
+            )
+
+    @pytest.mark.asyncio
     async def test_omitted_model_inherits_parent_in_process_loop(
         self, task_tool: Task, ctx: InvokeContext
     ) -> None:

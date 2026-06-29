@@ -45,7 +45,12 @@ def _warning(message: str) -> str:
 
 class ReadArgs(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    file_path: str = Field(description="The absolute path to the file to read.")
+    file_path: str = Field(
+        description=(
+            "Path to the file to read. May be relative to the working directory "
+            "(preferred — shorter and less error-prone) or absolute."
+        )
+    )
     offset: int | None = Field(
         default=None,
         ge=1,

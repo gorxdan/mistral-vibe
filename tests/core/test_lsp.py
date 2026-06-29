@@ -1675,3 +1675,65 @@ def test_preset_states_returns_all_in_declaration_order(monkeypatch) -> None:
     states = defaults.preset_states()
     assert [p.status for p in states] == ["absent"] * len(states)
     assert states[0].preset.key == _PYRIGHT.key
+
+
+def test_out_of_range_position_fails_soft(monkeypatch, tmp_path) -> None:
+    import asyncio
+
+    from vibe.core.tools.base import ToolError
+    from vibe.core.tools.builtins.lsp import (
+        Lsp,
+        LspArgs,
+        LspConfig,
+        LspOperation,
+        LspResult,
+        LspState,
+    )
+
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+
+    class _FakeServer:
+        def __init__(self) -> None:
+            self.config = ServerConfig(
+                name="pyright", command=["x"], languages={".py": "python"}
+            )
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self.server = _FakeServer()
+
+        def get_server_for_file(self, path):
+            return self.server
+
+        async def open_document(self, path, text, language_id):
+            pass
+
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.lsp.get_lsp_manager", lambda: _FakeManager()
+    )
+    monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
+
+    tmp = tmp_path / "test.py"
+    tmp.write_text("x = 1\ny = 2\n")
+    args = LspArgs(
+        operation=LspOperation.GO_TO_DEFINITION,
+        file_path=str(tmp),
+        line=99,
+        character=1,
+    )
+
+    events: list = []
+
+    async def _inner() -> None:
+        async for ev in tool.run(args):
+            events.append(ev)
+
+    try:
+        asyncio.run(_inner())
+    except ToolError as exc:  # pragma: no cover - asserts the bug, must not fire
+        raise AssertionError(f"expected fail-soft, got hard ToolError: {exc}")
+
+    result = events[-1]
+    assert isinstance(result, LspResult)
+    assert "out of range" in result.summary
+    assert "document_symbol" in result.summary

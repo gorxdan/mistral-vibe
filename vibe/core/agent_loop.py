@@ -155,6 +155,7 @@ from vibe.core.types import (
     RefusalError,
     ResponseTooLongError,
     Role,
+    ServerError,
     SessionTitleUpdatedEvent,
     ToolCall,
     ToolCallEvent,
@@ -385,6 +386,8 @@ def _raise_for_backend_error(
         raise ContentFilterError(provider_name, model_name) from e
     if _is_non_retryable_error(e):
         raise
+    if _is_server_error(e):
+        raise ServerError(provider_name, model_name) from e
     raise RuntimeError(
         f"API error from {provider_name} (model: {model_name}): {e}"
     ) from e
@@ -392,6 +395,18 @@ def _raise_for_backend_error(
 
 def _should_raise_rate_limit_error(e: Exception) -> bool:
     return isinstance(e, BackendError) and e.status == HTTPStatus.TOO_MANY_REQUESTS
+
+
+_MAX_SERVER_STATUS = 599
+
+
+def _is_server_error(e: Exception) -> bool:
+    backend = e if isinstance(e, BackendError) else getattr(e, "__cause__", None)
+    return (
+        isinstance(backend, BackendError)
+        and backend.status is not None
+        and HTTPStatus.INTERNAL_SERVER_ERROR <= backend.status <= _MAX_SERVER_STATUS
+    )
 
 
 def _is_context_too_long_error(e: Exception) -> bool:
@@ -2467,6 +2482,19 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         raise
                     logger.warning(
                         "Request blocked by %r content filter; falling back to %r",
+                        e.provider,
+                        fallback.alias,
+                    )
+                    continue
+                except ServerError as e:
+                    fallback = self._switch_to_fallback_model()
+                    if fallback is None:
+                        e.failover_hint = self._failover_unavailable_hint(
+                            f"{e.provider!r} backend server error"
+                        )
+                        raise
+                    logger.warning(
+                        "%r backend server error; falling back to %r",
                         e.provider,
                         fallback.alias,
                     )

@@ -209,6 +209,25 @@ def _result_noun(output_mode: GrepOutputMode, count: int) -> str:
     return "files" if count != 1 else "file"
 
 
+def _ripgrep_regex_hint(cmd: list[str], stderr: str) -> str:
+    # Map ripgrep's regex-syntax stderr to an actionable fix; cmd[0] is "rg" only
+    # for the ripgrep backend (GNU grep wouldn't emit these), so the gate is safe.
+    if not (cmd and cmd[0] == "rg" and stderr):
+        return ""
+    low = stderr.lower()
+    if "multiline mode" in low:
+        return (
+            "\n\nHint: this tool has no --multiline flag; set the `multiline` "
+            "argument to true to match across lines."
+        )
+    if any(k in low for k in ("look-around", "look-ahead", "look-behind")):
+        return (
+            "\n\nHint: ripgrep here has no PCRE2; look-around and backreferences "
+            "are unsupported. Rewrite the pattern without them."
+        )
+    return ""
+
+
 class Grep(
     BaseTool[GrepArgs, GrepResult, GrepToolConfig, BaseToolState],
     ToolUIData[GrepArgs, GrepResult],
@@ -467,7 +486,9 @@ class Grep(
 
             if proc.returncode not in {0, 1}:
                 error_msg = stderr or f"Process exited with code {proc.returncode}"
-                raise ToolError(f"grep error: {error_msg}")
+                raise ToolError(
+                    f"grep error: {error_msg}{_ripgrep_regex_hint(cmd, stderr)}"
+                )
 
             return stdout
 
