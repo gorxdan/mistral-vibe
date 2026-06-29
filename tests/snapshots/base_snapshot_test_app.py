@@ -8,7 +8,7 @@ from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from tests.stubs.fake_backend import FakeBackend
 from vibe.cli.plan_offer.ports.whoami_gateway import WhoAmIPlanType, WhoAmIResponse
 from vibe.cli.textual_ui.app import VibeApp
-from vibe.cli.textual_ui.widgets.agent_badge import AgentProfileBadge
+from vibe.cli.textual_ui.widgets.agent_badge import ModelStatusBadge
 from vibe.cli.textual_ui.widgets.chat_input import ChatTextArea
 from vibe.cli.textual_ui.widgets.context_progress import ContextProgress, TokenState
 from vibe.core.agents.models import BuiltinAgentName
@@ -75,7 +75,7 @@ class BaseSnapshotTestApp(VibeApp):
         # Token-count + agent badge populate via an async reactive update on mount;
         # that re-render races the snapshot capture (flaky in CI). Pin empty.
         self.query_one(ContextProgress).tokens = TokenState()
-        for badge in self.query(AgentProfileBadge):
+        for badge in self.query(ModelStatusBadge):
             badge.update("")
 
     def _hide_chat_input_cursor(self) -> None:

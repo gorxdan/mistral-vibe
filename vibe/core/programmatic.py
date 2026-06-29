@@ -110,7 +110,9 @@ class ProgrammaticOptions:
     output_format: OutputFormat = OutputFormat.TEXT
     previous_messages: list[LLMMessage] | None = None
     agent_name: str = BuiltinAgentName.DEFAULT
-    client_metadata: ClientMetadata = field(default_factory=lambda: _DEFAULT_CLIENT_METADATA)
+    client_metadata: ClientMetadata = field(
+        default_factory=lambda: _DEFAULT_CLIENT_METADATA
+    )
     teleport: bool = False
     headless: bool = False
     hook_config_result: HookConfigResult | None = None

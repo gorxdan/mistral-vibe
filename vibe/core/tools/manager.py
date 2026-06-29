@@ -402,6 +402,14 @@ class ToolManager:
         """
         run_sync(self._integrate_all_async(raise_on_mcp_failure=raise_on_mcp_failure))
 
+    def set_mcp_registry(self, mcp_registry: MCPRegistry) -> None:
+        self._mcp_registry = mcp_registry
+
+    def set_connector_registry(
+        self, connector_registry: ConnectorRegistry | None
+    ) -> None:
+        self._connector_registry = connector_registry
+
     async def _integrate_all_async(self, *, raise_on_mcp_failure: bool = False) -> None:
         """Run MCP and connector discovery concurrently.
 

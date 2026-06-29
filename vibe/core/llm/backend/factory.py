@@ -11,6 +11,13 @@ if TYPE_CHECKING:
 
 def create_backend(*, provider: ProviderConfig, timeout: float = 720.0) -> BackendLike:
     backend = provider.backend
+    # Consult BACKEND_FACTORY first so test mocks that patch it (see
+    # tests/mock/mock_backend_factory.py) intercept production call sites
+    # (AgentLoop._select_backend / failover). Falls back to direct inline
+    # construction (lazy-import-preserving) if no factory override is set.
+    factory = globals().get("BACKEND_FACTORY")
+    if factory is not None and backend in factory:
+        return factory[backend](provider=provider, timeout=timeout)
     if backend == Backend.MISTRAL:
         from vibe.core.llm.backend.mistral import MistralBackend
 

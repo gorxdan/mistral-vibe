@@ -32,6 +32,7 @@ from vibe.core.config._settings import (
     MaxOutputEscalationConfig,
     MCPServer,
     MemoryConfig,
+    MissingAPIKeyError,
     ModelConfig,
     ProjectContextConfig,
     ProviderConfig,
@@ -42,6 +43,8 @@ from vibe.core.config._settings import (
     TTSModelConfig,
     TTSProviderConfig,
     WorktreeConfig,
+    _skip_api_key_check,
+    resolve_api_key,
     resolve_theme_name,
 )
 from vibe.core.config.schema import (
@@ -365,4 +368,58 @@ class VibeConfigSchema(ConfigSchema):
                     "model aliases must be unique."
                 )
             seen_aliases.add(model.alias)
+        return self
+
+    @property
+    def active_model_config(self) -> ModelConfig:
+        if model := next(
+            (m for m in self.models if m.alias == self.active_model), None
+        ):
+            return model
+        raise ValueError(
+            f"Active model '{self.active_model}' not found in configuration."
+        )
+
+    def get_provider_for_model(self, model: ModelConfig) -> ProviderConfig:
+        if provider := next(
+            (p for p in self.providers if p.name == model.provider), None
+        ):
+            return provider
+        raise ValueError(
+            f"Provider '{model.provider}' for model '{model.name}' not found in configuration."
+        )
+
+    @property
+    def active_provider_config(self) -> ProviderConfig:
+        return self.get_provider_for_model(self.active_model_config)
+
+    @model_validator(mode="after")
+    def _check_compaction_model_provider(self) -> VibeConfigSchema:
+        if self.compaction_model is None:
+            return self
+
+        compaction_provider = self.get_provider_for_model(self.compaction_model)
+        try:
+            active_provider = self.active_provider_config
+        except ValueError:
+            return self
+        if active_provider.name != compaction_provider.name:
+            raise ValueError(
+                f"Compaction model '{self.compaction_model.alias}' uses provider "
+                f"'{compaction_provider.name}' but active model uses provider "
+                f"'{active_provider.name}'. They must share the same provider."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_api_key(self) -> VibeConfigSchema:
+        if _skip_api_key_check.get():
+            return self
+        try:
+            provider = self.active_provider_config
+            api_key_env = provider.api_key_env_var
+            if api_key_env and not resolve_api_key(api_key_env):
+                raise MissingAPIKeyError(api_key_env, provider.name)
+        except ValueError:
+            pass
         return self

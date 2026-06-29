@@ -485,8 +485,12 @@ class AgentLoop(AgentLoopHooksMixin):
 
         self._permission_store = permission_store or PermissionStore()
 
-        self.mcp_registry = mcp_registry or MCPRegistry()
-        self.connector_registry = self._create_connector_registry()
+        self.mcp_registry: MCPRegistry | None = (
+            None if defer_heavy_init else mcp_registry or self._create_mcp_registry()
+        )
+        self.connector_registry: ConnectorRegistry | None = (
+            None if defer_heavy_init else self._create_connector_registry()
+        )
         self.agent_manager = AgentManager(
             lambda: self._base_config,
             initial_agent=agent_name,
@@ -703,6 +707,7 @@ class AgentLoop(AgentLoopHooksMixin):
 
     def _complete_init(self) -> None:
         try:
+            self._ensure_remote_registries()
             self.tool_manager.integrate_all(raise_on_mcp_failure=True)
             system_prompt = get_universal_system_prompt(
                 self.tool_manager,
@@ -906,8 +911,11 @@ class AgentLoop(AgentLoopHooksMixin):
             await self.backend.__aexit__(None, None, None)
         with contextlib.suppress(Exception):
             await self.experiment_manager.aclose()
-        with contextlib.suppress(Exception):
-            await self.mcp_registry.close()
+        # Tear down pooled MCP connections (subprocess/SSE) so no server is
+        # left alive after the agent exits.
+        if self.mcp_registry is not None:
+            with contextlib.suppress(Exception):
+                await self.mcp_registry.close()
 
     def _create_connector_registry(self) -> ConnectorRegistry | None:
         if not self._base_config.enable_connectors:
@@ -931,6 +939,19 @@ class AgentLoop(AgentLoopHooksMixin):
         from vibe.core.tools.connectors import ConnectorRegistry
 
         return ConnectorRegistry(api_key=api_key, server_url=server_url)
+
+    @staticmethod
+    def _create_mcp_registry() -> MCPRegistry:
+        return MCPRegistry()
+
+    def _ensure_remote_registries(self) -> None:
+        if self.mcp_registry is None and self.config.mcp_servers:
+            self.mcp_registry = self._create_mcp_registry()
+            self.tool_manager.set_mcp_registry(self.mcp_registry)
+
+        if self.connector_registry is None:
+            self.connector_registry = self._create_connector_registry()
+            self.tool_manager.set_connector_registry(self.connector_registry)
 
     @requires_init
     async def refresh_system_prompt(self) -> None:
@@ -3880,6 +3901,7 @@ class AgentLoop(AgentLoopHooksMixin):
         if max_price is not None:
             self._max_price = max_price
 
+        self._ensure_remote_registries()
         self.tool_manager = ToolManager(
             lambda: self.config,
             mcp_registry=self.mcp_registry,

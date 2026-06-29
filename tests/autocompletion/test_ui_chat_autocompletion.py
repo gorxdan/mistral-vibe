@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from rich.text import Text
+from textual.content import Content
 from textual.widgets import Markdown
 
 from vibe.cli.textual_ui.app import VibeApp
@@ -61,7 +62,7 @@ def ensure_selected_command(popup: CompletionPopup, expected_alias: str) -> None
     selected_labels: list[str] = []
     for item in popup.query(_CompletionItem):
         rendered = item.render()
-        assert isinstance(rendered, Text)
+        assert isinstance(rendered, Text | Content)
         for span in getattr(rendered, "spans", []):
             if getattr(span.style, "reverse", False):
                 selected_labels.append(rendered.plain[span.start : span.end].strip())
