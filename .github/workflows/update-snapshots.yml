@@ -37,14 +37,28 @@ jobs:
       - name: Regenerate snapshots
         run: uv run pytest tests/snapshots --snapshot-update || true
 
+      - name: Ensure dispatched against a branch
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          # A tag dispatch checks out a detached HEAD, so `git push` below would
+          # fail with "not currently on a branch". Fail early with a clear message.
+          case "$REF" in
+            refs/heads/*) ;;
+            *) echo "::error::Run Update Snapshots against a branch, not $REF." >&2; exit 1 ;;
+          esac
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [ -n "$(git status --porcelain tests/snapshots)" ]; then
-            git add tests/snapshots
+          # Force-add in case the baseline dir is re-ignored, and gate on the
+          # staged index (git status --porcelain hides ignored files).
+          git add -f tests/snapshots/__snapshots__
+          git add tests/snapshots
+          if git diff --cached --quiet -- tests/snapshots; then
+            echo "No snapshot changes."
+          else
             git commit -m "test: regenerate UI snapshots in CI environment"
             git push
-          else
-            echo "No snapshot changes."
           fi
