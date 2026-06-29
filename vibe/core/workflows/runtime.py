@@ -58,12 +58,6 @@ if TYPE_CHECKING:
 
 
 class _AwaitableResult:
-    """Wraps a coroutine so it must be awaited before unpacking.
-
-    Gives a helpful error if the workflow script tries to unpack or index
-    the result of parallel()/pipeline() without awaiting first.
-    """
-
     __slots__ = ("_coro",)
 
     def __init__(self, coro: Awaitable[list[Any]]) -> None:
@@ -98,14 +92,6 @@ _JSON_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*\n?(.*?)```", re.DOTALL)
 
 
 def _strip_code_fences(text: str) -> str:
-    """Extract the JSON payload from a schema-tagged agent response.
-
-    Agents routinely narrate before the payload ("Based on my trace..."), with or
-    without a code fence. Try, in order: any fenced block anywhere in the text,
-    then the first balanced ``{...}``/``[...]`` span (string/escape-aware). A
-    no-JSON response returns as-is so the caller's ``json.loads`` reports a real
-    error instead of a misleading char-0 one.
-    """
     s = text.strip()
     for match in _JSON_FENCE_RE.finditer(s):
         candidate = match.group(1).strip()
@@ -118,12 +104,6 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _first_json_span(s: str) -> str | None:
-    """First balanced ``{...}``/``[...]`` substring of ``s``.
-
-    String/escape-aware so braces inside literals or prose do not skew depth.
-    Returns None with no opener; returns the opener's tail when unbalanced so
-    ``json.loads`` reports a meaningful error.
-    """
     start = -1
     opener = ""
     closer = ""
@@ -160,14 +140,6 @@ def _first_json_span(s: str) -> str | None:
 
 
 class _AwaitableNoop:
-    """Wraps a sync log/phase-style call so it works both bare and awaited.
-
-    ``log("x")`` returns the wrapper (which behaves as a falsy/noop value), and
-    ``await log("x")`` awaits to ``None`` — so the historical trap of awaiting
-    these injected helpers (wf-1 died on "NoneType can't be used in 'await'")
-    becomes harmless instead of killing the run with zero agents spawned.
-    """
-
     __slots__ = ("_fn", "_args", "_kwargs")
 
     def __init__(self, fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
@@ -192,17 +164,10 @@ def _awaitable(fn: Any) -> Any:
 
 
 def _eager_awaitable(fn: Any) -> Any:
-    """Like _awaitable but executes eagerly on call, not deferred to __await__.
-
-    Used for ``phase()`` so implicit phase binding takes effect immediately
-    whether or not the script awaits the return value. The returned object is
-    still await-safe (a falsy noop), so ``await phase("x")`` doesn't raise.
-    """
-
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> _AwaitableNoop:
         fn(*args, **kwargs)  # execute NOW so binding takes effect
-        return _AwaitableNoop(lambda *a, **k: None, (), {})  # await-safe noop
+        return _AwaitableNoop(lambda *a, **k: None, (), {})
 
     return wrapper
 
@@ -212,13 +177,6 @@ def _eager_awaitable(fn: Any) -> Any:
 
 
 def _flatten(items: Any) -> list[Any]:
-    """Flatten one level of nested iterables into a single list.
-
-    ``flatten([[1,2],[3],4]) == [1,2,3,4]``. Strings/bytes/dicts are treated as
-    atoms (not iterated), so a list of strings is returned unchanged. Any other
-    non-iterable item (int, None, bool) passes through as-is — flatten never
-    silently drops data; filter ``None`` upstream if you don't want it.
-    """
     out: list[Any] = []
     for sub in items:
         if isinstance(sub, (str, bytes, dict)):
@@ -227,19 +185,13 @@ def _flatten(items: Any) -> list[Any]:
         try:
             iterator = iter(sub)
         except TypeError:
-            out.append(sub)  # scalar atom — keep it
+            out.append(sub)
             continue
         out.extend(iterator)
     return out
 
 
 def _dedup_by(items: Any, key: Callable[[Any], Any]) -> list[Any]:
-    """Return ``items`` with duplicates removed, keeping first occurrence.
-
-    ``key`` maps each item to a hashable identity (e.g. ``lambda f: f["id"]``
-    or ``lambda f: f"{f['file']}:{f['line']}"``). Items whose key raises are
-    kept as-is (never dropped) and treated as unique by their id().
-    """
     seen: set[Any] = set()
     out: list[Any] = []
     for item in items:
@@ -257,13 +209,6 @@ def _dedup_by(items: Any, key: Callable[[Any], Any]) -> list[Any]:
 def _merge_by(
     items: Any, key: Callable[[Any], Any], merge: Callable[[Any, Any], Any]
 ) -> list[Any]:
-    """Group ``items`` by ``key`` and fold each group with ``merge``.
-
-    For each key, ``merge(acc, item)`` combines the running accumulator with the
-    next item (acc starts as the first item). Returns one merged value per key,
-    in first-seen order. Use to union findings, sum counts, or pick the
-    highest-scored item per group.
-    """
     groups: dict[Any, Any] = {}
     order: list[Any] = []
     for item in items:
@@ -281,15 +226,6 @@ def _merge_by(
 
 
 def _coerce_json_safe(value: Any) -> Any:
-    """Coerce a workflow return value to pure JSON types for snapshotting.
-
-    A workflow script can return arbitrary Python (a dataclass, a set, a custom
-    object). The snapshot is persisted via ``model_dump(mode="json")`` and
-    re-validated on resume, so a non-serializable value would either crash the
-    dump or fail validation. Round-trip through ``json`` with ``default=str``:
-    serializable values pass through unchanged, anything exotic degrades to its
-    ``str()`` form rather than dropping the whole snapshot. ``None`` is a no-op.
-    """
     if value is None:
         return None
     try:
@@ -299,13 +235,6 @@ def _coerce_json_safe(value: Any) -> Any:
 
 
 def _loop_log_path(loop: Any) -> Path | None:
-    """Path to an in-process agent loop's transcript (messages.jsonl), or None.
-
-    Defensive against custom/mock loop factories that return an object without
-    a session_logger, and against disabled logging — such agents simply aren't
-    tailable by the background tool. Isolated (worktree) agents never reach
-    here (they run via a subprocess with no in-process loop).
-    """
     sl = getattr(loop, "session_logger", None)
     if sl is None or not getattr(sl, "enabled", False):
         return None
@@ -314,9 +243,6 @@ def _loop_log_path(loop: Any) -> Path | None:
 
 DEFAULT_ISOLATED_MAX_TURNS = 40
 
-# Signature of the isolated-agent executor seam: (prompt, agent, label,
-# max_turns) -> the agent's text output. Injectable so tests can stub the
-# worktree + subprocess; the default runs `vibe -p` in a fresh git worktree.
 IsolatedExecutor = Callable[
     [str, str, str | None, int], Awaitable["str | tuple[str, dict[str, int] | None]"]
 ]
@@ -331,13 +257,6 @@ class WorkflowError(Exception):
 
 
 class _WorkerSpawnArgs(BaseModel):
-    """Args payload for an isolated-worker spawn approval.
-
-    The host approval callback receives a BaseModel; this carries the worker's
-    prompt/profile/label so the prompt UI can show what the user is approving
-    when the safety judge defers a worker spawn.
-    """
-
     # Internal-only: built by our own code for the host approval callback, never
     # round-tripped through LLM/provider/session/MCP JSON -> extra="forbid" per
     # the per-family ConfigDict policy (constructed at a single kwargs site).
@@ -350,15 +269,6 @@ class _WorkerSpawnArgs(BaseModel):
 
 @dataclass
 class _LiveAgent:
-    """An in-flight agent whose tokens are tracked live (before finalize).
-
-    Recorded separately from finalized PhaseReport results so observers (the
-    workflow_status tool, /workflows list) can see per-agent spend while an
-    agent is still running, not only after it completes. Retired (removed) once
-    the agent's AgentResult is recorded into its phase, so at any instant an
-    agent is counted in exactly one place — live XOR finalized — never both.
-    """
-
     agent_id: str
     agent: str
     label: str | None = None
@@ -369,8 +279,6 @@ class _LiveAgent:
     tokens_out: int = 0
     started_at: float = field(default_factory=time.monotonic)
     error: str | None = None
-    # The prompt this agent was spawned with, so observers (/workflows, the Tasks
-    # pane) can show what an in-flight agent was asked to do — not only its label.
     prompt: str = ""
     # The asyncio task running this agent, captured so cancel_agent() can abort
     # a single in-flight agent without stopping the whole run. Set inside the
@@ -384,10 +292,6 @@ class _LiveAgent:
     # dir removed on exit, so there is nothing stable to tail. Refreshed per
     # retry attempt, so it always points at the current attempt's log.
     log_path: Path | None = field(default=None, init=False)
-    # i4: partial response text accumulated as the agent streams, so observers
-    # can see what an agent is producing mid-run (not only after finalize).
-    # Capped at _LIVE_RESPONSE_CAP chars to bound memory; the full text lives
-    # in the agent's transcript and in AgentResult.response after finalize.
     response_so_far: str = field(default="", init=False)
     # i7: per-agent timeout watchdog task. Cancelled in _retire_live (called at
     # every exit path via _finalize_agent) so it never outlives the agent.
@@ -398,21 +302,10 @@ class _LiveAgent:
         return self.tokens_in + self.tokens_out
 
 
-# Cap on how much partial response text we accumulate on _LiveAgent. The full
-# text is in the transcript; this is just for live-preview window in live_status.
 _LIVE_RESPONSE_CAP = 8000
 
 
 class _MessageBoard:
-    """In-process, single-event-loop message board shared across all agents in a
-    workflow run. Lets the orchestrator (main()) route named-channel handoffs
-    between phases and pipeline stages without funneling everything through
-    return values at a barrier.
-
-    Safe for concurrent use only within one asyncio loop (no locks): workflow
-    agents and the orchestrator all run on the runtime's loop.
-    """
-
     def __init__(self) -> None:
         self._channels: dict[str, list[Any]] = {}
 
@@ -445,7 +338,6 @@ _ISOLATED_STATS_SENTINEL = "__VIBE_WORKFLOW_STATS__"
 
 
 def _parse_stats(stderr_text: str) -> dict[str, int] | None:
-    """Extract the real token stats line a workflow subprocess emits on stderr."""
     for line in reversed(stderr_text.splitlines()):
         if line.startswith(_ISOLATED_STATS_SENTINEL):
             try:
@@ -461,17 +353,6 @@ def _parse_stats(stderr_text: str) -> dict[str, int] | None:
 
 @dataclass
 class IsolatedResult:
-    """Outcome of an isolated-agent run.
-
-    ``branch`` is set only when work was kept for recovery (delivery skipped or
-    ff refused) — recover with ``git merge <branch>``; None on clean delivery.
-    ``worktree_path`` is retained for back-compat but normally None: the kept
-    worktree's directory is reclaimed and only its branch survives. ``wt``
-    is the live ``EphemeralWorktree`` only when the caller passed
-    ``keep_worktree=True`` (the workflow executor does this so it can verify
-    against the live tree before reaping).
-    """
-
     output: str
     stats: dict[str, int] | None = None
     delivered: bool = False
@@ -491,27 +372,6 @@ async def run_isolated_agent(
     model: str | None = None,
     log_path: Path | None = None,
 ) -> IsolatedResult:
-    """Run *agent* as a ``vibe -p`` subprocess in a fresh git worktree.
-
-    Shared implementation for the workflow isolated executor and the
-    ``task()`` tool's isolation path. Creates an ephemeral worktree off HEAD,
-    runs the agent there, and on success optionally ff-merges the branch back
-    into the parent repo. The worktree is removed on clean delivery; kept
-    (with its branch) for manual recovery when delivery was skipped or refused.
-
-    ``keep_worktree=True`` skips the internal delivery+reap and hands the live
-    worktree back on ``result.wt`` so the caller can verify against the tree
-    before delivering/removing it itself. Used by the workflow executor so it
-    can run ``contract`` verification before delivery.
-
-    The requested *agent* profile is threaded into the subprocess cmd (the old
-    workflow executor hardcoded ``auto-approve``).
-
-    ``log_path``, when set, redirects the subprocess stdout to that file (tailed
-    live by the background registry) instead of a PIPE. The final stdout is then
-    read back from the file as ``result.output``. Workflow callers leave it
-    unset, preserving the historical in-memory capture.
-    """
     from vibe.core.worktree.ephemeral import create_ephemeral_worktree
 
     wt = await asyncio.to_thread(create_ephemeral_worktree, Path.cwd(), label or agent)
@@ -557,9 +417,6 @@ async def run_isolated_agent(
 
 
 def _reap_on_failure(wt: Any) -> None:
-    """Best-effort worktree cleanup on spawn failure or cancel. Keep changed
-    trees so partial work stays recoverable.
-    """
     from vibe.core.worktree.ephemeral import remove_ephemeral_worktree
 
     try:
@@ -579,19 +436,6 @@ async def _spawn_isolated(
     model: str | None = None,
     log_path: Path | None = None,
 ) -> IsolatedResult:
-    """Spawn the ``vibe -p`` subprocess in *wt*, return output + stats.
-
-    ``stamp_wt`` (when set) is returned on ``result.wt`` so a ``keep_worktree``
-    caller can verify against the live tree before reaping.
-
-    ``log_path`` redirects the child's stdout to a file (tailed live by the
-    background registry) instead of a PIPE; the final output is then read back
-    from that file. When unset, stdout is captured in memory as before.
-
-    The subprocess reaping (process-group kill on cancel) is load-bearing
-    against the EBUSY race — the caller must not remove the worktree while the
-    subprocess still owns it as cwd.
-    """
     import os
     import shlex
     import signal
@@ -622,8 +466,6 @@ async def _spawn_isolated(
     # confines its file tools to this worktree (enforce_isolated_confine).
     env["VIBE_ISOLATED_AUTO_APPROVE"] = "1"
     env["VIBE_ISOLATED_WORKTREE_ROOT"] = str(wt.path)
-    # Redirect stdout to a file when a log_path is requested so the background
-    # registry can tail live progress. On open failure we fall back to a PIPE.
     stdout_target, log_fh = _open_isolated_log(log_path)
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -666,8 +508,6 @@ async def _spawn_isolated(
             f"{stderr_text[:300]}"
         )
     if log_path is not None and log_fh is not None:
-        # stdout went to the file; read it back as the result output (the child
-        # has exited and flushed by the time communicate() returns).
         try:
             output = log_path.read_bytes().decode("utf-8", "replace")
         except OSError:
@@ -681,14 +521,6 @@ async def _spawn_isolated(
 
 
 def _open_isolated_log(log_path: Path | None) -> tuple[Any, Any]:
-    """Open a log file for isolated-subprocess stdout redirection.
-
-    Returns ``(stdout_target, log_fh)`` — ``stdout_target`` is the value to pass
-    as the child's ``stdout`` (an open file handle when redirection is active,
-    else ``asyncio.subprocess.PIPE``), and ``log_fh`` is the owning handle to
-    close after the child exits (None when no file was opened). On open failure
-    logs a warning and falls back to a PIPE so the spawn still works.
-    """
     if log_path is None:
         return asyncio.subprocess.PIPE, None
     try:
@@ -702,14 +534,6 @@ def _open_isolated_log(log_path: Path | None) -> tuple[Any, Any]:
 def _maybe_reap_isolated_worktree(
     wt: Any, delivered: bool, result: IsolatedResult
 ) -> None:
-    """Reclaim the worktree directory; keep the branch if work is undelivered.
-
-    On clean delivery the work is in the parent, so remove dir + branch.
-    Otherwise the helper commits any work onto the branch and reclaims the
-    directory; if it kept the branch for recovery (returned False), stamp the
-    branch onto *result* so the caller can ``git merge <branch>``. The directory
-    is gone either way, so ``worktree_path`` is left unset.
-    """
     from vibe.core.worktree.ephemeral import remove_ephemeral_worktree
 
     if delivered:
@@ -750,19 +574,10 @@ class WorkflowRuntime:
     # the agent returns a SchemaValidationFailure carrying the raw response so the
     # workflow script never silently loses output to None via parallel._safe.
     strict_schema: bool = False
-    # i7: per-agent safety guardrails (opt-in, default off). agent_timeout_s
-    # wraps each agent's body in asyncio.wait_for so a hung agent is stopped
-    # after N seconds instead of blocking the run indefinitely. agent_budget_ceiling
-    # checks per-agent token spend mid-stream and cancels the agent if it exceeds
-    # the ceiling — catches runaway agents that read freely in a tool loop.
     agent_timeout_s: float | None = None
     agent_budget_ceiling: int | None = None
     agent_loop_factory: AgentLoopFactory | None = None
-    # Resolves a workflow name to its script source, enabling nested workflow()
-    # calls. Wired from WorkflowManager at launch; None disables nesting.
     workflow_source_resolver: Callable[[str], str | None] | None = None
-    # Runs an isolation="worktree" agent. None -> the default executor that
-    # spawns `vibe -p` in a fresh git worktree. Injectable for tests.
     isolated_executor: IsolatedExecutor | None = None
     _semaphore: asyncio.Semaphore = field(init=False)
     _budget: Budget = field(init=False)
@@ -796,13 +611,11 @@ class WorkflowRuntime:
         return self._budget.snapshot()
 
     def pause(self) -> None:
-        """Pause the run: in-flight agents continue, new agents block."""
         self._paused = True
         self._run_gate.clear()
         self._log("paused")
 
     def unpause(self) -> None:
-        """Resume a paused run: blocked agents proceed."""
         self._paused = False
         self._run_gate.set()
         self._log("resumed")
@@ -812,14 +625,6 @@ class WorkflowRuntime:
         return self._paused
 
     def cancel_agent(self, agent_id: str) -> bool:
-        """Cancel a single in-flight agent by its live agent id.
-
-        Returns True if a live agent was found and its task was cancelled,
-        False if the agent isn't live (already finished / unknown / running
-        without a capturable task). The cancelled agent's _retire_live /
-        finalize path records it as failed, so the run continues with the
-        remaining agents — distinct from stop(), which cancels the whole run.
-        """
         live = self._live_agents.get(agent_id)
         if live is None or live.task is None:
             return False
@@ -839,11 +644,6 @@ class WorkflowRuntime:
             self._event_sink(msg)
 
     def _set_phase(self, name: str | None) -> None:
-        """Declare a phase AND bind it as the ambient phase for subsequent
-        agent() calls (i5). Passing None resets the ambient phase so agents
-        without an explicit phase= land in "default" again. Explicit phase=
-        on agent() always overrides the ambient value.
-        """
         if name is None:
             self._current_phase = None
             self._log("phase: (reset)")
@@ -895,12 +695,6 @@ class WorkflowRuntime:
         self._live_agents.pop(live.agent_id, None)
 
     def _validate_workflow_profile(self, agent: str, isolation: str | None) -> None:
-        """Validate the requested agent profile for a workflow spawn: it must be a
-        subagent, and a write-capable profile (per profile_requires_isolation)
-        must run isolated — its write tools would race the shared tree and its
-        ASK tools auto-skip headless. No-op when the profile can't be resolved
-        (e.g. no agent_manager in unit contexts).
-        """
         ctx = self.parent_context
         if not ctx or not ctx.agent_manager:
             return
@@ -925,22 +719,6 @@ class WorkflowRuntime:
     async def _judge_isolated_spawn(
         self, prompt: str, agent: str, label: str | None
     ) -> None:
-        """Pre-flight safety judge for an isolated worker spawn.
-
-        Isolated workers run as an auto-approved ``vibe -p`` subprocess, so the
-        host's per-tool judge never sees their calls. This judges the worker's
-        *prompt* (the task the host/script gave it) using the workflow-aware
-        judge prompt, since the prompt describes what the worker will do.
-
-        - No judge configured / judge unusable: proceed (fail open at spawn;
-          the launch-time script judge already ran).
-        - Judge rules safe: proceed.
-        - Judge defers: route through the host approval callback so the user
-          can approve or deny this specific worker. The judge's reason travels
-          as ``judge_note`` so the prompt shows why. A user denial raises
-          WorkflowError, recorded as a failed agent — distinct from a hard
-          budget/cap ceiling so the run continues with other agents.
-        """
         ctx = self.parent_context
         if not ctx or not ctx.safety_judge_factory:
             return
@@ -967,8 +745,6 @@ class WorkflowRuntime:
             )
             return
 
-        # Deferred to the user. Surface via the host approval callback if one
-        # is wired; otherwise fail closed (deny the spawn).
         self._log(
             f"safety judge deferred isolated '{agent}' worker"
             + (f" ({label})" if label else "")
@@ -1031,8 +807,6 @@ class WorkflowRuntime:
             prompt, agent, isolation, label, budget_estimate
         )
         async with self._semaphore:
-            # Pause gate: when cleared, agents holding a semaphore slot wait here
-            # so no new agent work starts until unpause(). No-op when not paused.
             await self._run_gate.wait()
             if isolation == "worktree":
                 return await self._run_isolated_agent(
@@ -1071,8 +845,6 @@ class WorkflowRuntime:
         label: str | None,
         budget_estimate: int | None,
     ) -> Reservation:
-        # Validate the profile, judge isolated spawns, enforce the agent cap, and
-        # reserve budget. Called only on a cache miss.
         self._validate_workflow_profile(agent, isolation)
         # Isolated workers run auto-approved in their subprocess and can't prompt
         # the host per-tool, so judge each worker's prompt at spawn. In-process
@@ -1091,9 +863,6 @@ class WorkflowRuntime:
     def _is_structured_output_rejection(
         error: BaseException, *, has_response_format: bool, can_retry: bool
     ) -> TypeGuard[BackendError]:
-        # True only when the provider rejected the response_format payload itself
-        # (not the content) and a retry slot remains. Used to drop response_format
-        # and retry on the prompt-level JSON fallback.
         return (
             has_response_format
             and can_retry
@@ -1208,7 +977,6 @@ class WorkflowRuntime:
                         content = self._extract_content(event)
                         if content:
                             accumulated.append(content)
-                            # i4: accumulate partial response for live preview.
                             if len(live.response_so_far) < _LIVE_RESPONSE_CAP:
                                 live.response_so_far += content
                         # i7: per-agent budget ceiling (opt-in). Check mid-stream
@@ -1443,11 +1211,6 @@ class WorkflowRuntime:
     def _resolve_agent_config(
         self, *, agent: str, model: str | None = None
     ) -> VibeConfig:
-        """Build the per-agent VibeConfig (session logging + model override).
-
-        Runs the blocking config load (TOML/env reads, migration, SSL init) so it
-        can be offloaded to a worker thread by callers.
-        """
         from vibe.core.config import SessionLoggingConfig, VibeConfig
 
         ctx = self.parent_context
@@ -1642,10 +1405,6 @@ class WorkflowRuntime:
         strip_unknown: bool = True,
         contract: ContractSpec | None = None,
     ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure:
-        """Run an isolation='worktree' agent: a `vibe -p` subprocess in a fresh
-        git worktree, so file mutations cannot collide with other agents. The
-        worktree's branch is kept for manual merge if the agent changed files.
-        """
         effective_prompt = prompt + (
             build_prompt_fallback(schema) if schema is not None else ""
         )
@@ -1717,8 +1476,6 @@ class WorkflowRuntime:
         *,
         model: str | None = None,
     ) -> tuple[str, dict[str, int] | None, ContractReport | None, bool, str | None]:
-        # Run the isolated executor and fold exceptions into the (output, stats,
-        # report, completed, error) tuple the caller consumes.
         try:
             if self.isolated_executor is not None:
                 # Custom test seam: returns output (str) or (output, stats).
@@ -1801,8 +1558,6 @@ class WorkflowRuntime:
         error_msg: str | None,
         output: str,
     ) -> SchemaValidationFailure | ContractFailure | None:
-        # Map a not-completed isolated agent to its structured failure value, or
-        # None when there is nothing recoverable (caller raises WorkflowError).
         if contract_report is not None and not contract_report.passed:
             return ContractFailure(
                 report=contract_report, error=error_msg or "contract failed"
@@ -1886,27 +1641,6 @@ class WorkflowRuntime:
     def parallel(
         self, *thunks: Any, max_concurrency: int | None = None
     ) -> _AwaitableResult:
-        """Run items concurrently and return their results in order (barrier).
-
-        Each item may be a **coroutine** (``parallel(agent(...), agent(...))``) or
-        a **zero-arg thunk** (``parallel(lambda: agent(...))``) — both work, because
-        Python coroutines are lazy (they do not start until awaited), so the bare
-        form bounds concurrency identically. The JS Workflow contract requires
-        thunks because JS promises are eager; that does not apply here, and
-        requiring it was the most common authoring footgun.
-
-        - accepts either ``parallel(a, b, ...)`` or ``parallel([a, b, ...])``;
-        - an item that raises resolves to ``None`` (the call never rejects), so
-          one bad agent does not kill the batch — filter with ``[r for r in ... if r]``.
-
-        ``max_concurrency`` optionally caps how many thunks run at once (e.g. 3
-        for providers that rate-limit at 1–3 concurrent agents). It uses a
-        semaphore LOCAL to this call, distinct from the global spawn_agent
-        semaphore, so there is no nested acquisition of a non-reentrant lock
-        (the historical deadlock risk). When omitted, concurrency is bounded
-        only by the runtime's global ``max_concurrent``
-        (``DEFAULT_MAX_CONCURRENT``).
-        """
         if len(thunks) == 1 and isinstance(thunks[0], (list, tuple)):
             thunk_list = list(thunks[0])
         else:
@@ -1967,10 +1701,6 @@ class WorkflowRuntime:
     def _call_stage(
         stage: Callable[..., Any], result: Any, item: Any, index: int
     ) -> Any:
-        """Invoke a pipeline stage, passing as many of (prev, item, index) as it
-        accepts (min 1). Lets a one-arg stage ``fn(item)`` and a full Claude-Code
-        style ``(prev, item, index)`` stage both work.
-        """
         args = (result, item, index)
         try:
             params = list(inspect.signature(stage).parameters.values())
@@ -1985,10 +1715,6 @@ class WorkflowRuntime:
 
     @staticmethod
     def _stage_accepts_positional(stage: Callable[..., Any]) -> bool:
-        """A pipeline stage must accept at least one positional arg (the item /
-        prev result). Used to reject keyword-only stages up front with a clear
-        error instead of silently dropping every item to None at call time.
-        """
         try:
             params = list(inspect.signature(stage).parameters.values())
         except (TypeError, ValueError):
@@ -2004,18 +1730,6 @@ class WorkflowRuntime:
         *stages: Callable[..., Awaitable[Any]],
         max_concurrency: int | None = None,
     ) -> _AwaitableResult:
-        """Run each item through all stages independently — no barrier between
-        stages, so item A can be in stage 3 while item B is still in stage 1
-        (Claude Code pipeline semantics). Each stage receives (prevResult,
-        originalItem, index). A stage that raises drops that item to ``None``
-        and skips its remaining stages. Returns one final result per item, in order.
-
-        ``max_concurrency`` optionally caps how many items are in flight at once
-        (across all stages). It uses a LOCAL semaphore, distinct from the global
-        spawn_agent semaphore, so there is no nested-acquire deadlock. When
-        omitted, concurrency is bounded only by the runtime's global
-        ``max_concurrent``.
-        """
         for stage in stages:
             if not self._stage_accepts_positional(stage):
                 raise WorkflowError(
@@ -2112,16 +1826,9 @@ class WorkflowRuntime:
             return await self._run_nested(name, args)
 
         def _post_message(channel: str, message: Any) -> None:
-            """Post a message to a named channel on this run's shared board.
-
-            Visible to other agents/stages in the SAME run via fetch_messages.
-            Use for inter-agent handoffs that don't fit the barrier-return model
-            (e.g. a finder posting partial results a verifier polls for).
-            """
             self._board.post(channel, message)
 
         def _fetch_messages(channel: str) -> list[Any]:
-            """Return (a copy of) all messages posted to a channel so far."""
             return self._board.fetch(channel)
 
         injected: dict[str, Any] = {
@@ -2134,8 +1841,6 @@ class WorkflowRuntime:
             "budget": ReadOnlyBudget(self._budget),
             "post_message": _post_message,
             "fetch_messages": _fetch_messages,
-            # Synthesis helpers: pure functions so workflow authors stop
-            # reinventing flatten/dedup/merge list comprehensions in every script.
             "flatten": _flatten,
             "dedup_by": _dedup_by,
             "merge_by": _merge_by,
@@ -2144,13 +1849,6 @@ class WorkflowRuntime:
         return build_namespace(injected)
 
     async def _run_nested(self, name: str, args: Any) -> Any:
-        """Run another workflow inline as a sub-step (Claude Code workflow()).
-
-        The child shares this runtime's budget, semaphore, agent counter and
-        result cache, and its phases merge into the parent's (so it appears in
-        the same live monitor). Nesting is one level only — a workflow() call
-        inside a nested run raises.
-        """
         if self._nesting_depth >= 1:
             raise WorkflowError(
                 "workflow() can only nest one level deep "
@@ -2200,15 +1898,6 @@ class WorkflowRuntime:
         )
 
     def live_status(self) -> dict[str, Any]:
-        """Point-in-time, JSON-serializable view of this run for observers
-        (the workflow_status tool, /workflows list). Includes both finalized
-        phase results AND in-flight agents with their live token counts, so a
-        caller can gauge progress mid-run — not only after each agent finishes.
-
-        Live + finalized are mutually exclusive per agent (an agent is retired
-        from _live_agents the instant its AgentResult is recorded), so summing
-        the two never double-counts.
-        """
         budget = self._budget.snapshot()
         phases = []
         for name in self._phase_order:
@@ -2221,9 +1910,6 @@ class WorkflowRuntime:
                 "name": name,
                 "agents": len(report.agent_results),
                 "tokens": report.tokens_total,
-                # Per-phase pass/fail breakdown so observers (workflow_status
-                # tool, /workflows list) can see which agents failed without
-                # waiting for the run to finish and parsing the summary string.
                 "completed": completed,
                 "failed": len(failed_results),
                 "failed_details": [
@@ -2241,9 +1927,6 @@ class WorkflowRuntime:
                 "tokens_out": la.tokens_out,
                 "tokens": la.tokens_total,
                 "elapsed_s": round(time.monotonic() - la.started_at, 1),
-                # i4: partial response preview so observers can see what the
-                # agent is producing mid-run. Capped at 2000 chars for the
-                # status view (full text is in the transcript + after finalize).
                 "response_preview": la.response_so_far[:2000],
             }
             for la in self._live_agents.values()

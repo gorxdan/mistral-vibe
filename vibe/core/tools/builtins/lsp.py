@@ -149,13 +149,6 @@ class Lsp(
         return "lsp" in VibeConfig.load().installed_components
 
     def _ensure_manager(self) -> Any:
-        """Return the process LSP manager, lazy-initializing if needed.
-
-        A session that started before /lspstall was run (or before a server
-        binary landed on PATH) never had setup_lsp_for_config called, so the
-        singleton is None even though installed_components says "lsp". Calling
-        the tool then self-heals: if the flag is set, initialize on first use.
-        """
         manager = get_lsp_manager()
         if manager is not None:
             return manager
@@ -180,8 +173,6 @@ class Lsp(
                     "typescript-language-server/etc. on PATH and run /lspstall."
                 )
             raise ToolError("LSP is not enabled. Run /lspstall to enable it.")
-        # workspace_symbol is the only operation that may omit file_path: it is
-        # workspace-wide and queries servers without a specific document.
         raw_path = args.file_path
         if raw_path is None:
             if args.operation is LspOperation.WORKSPACE_SYMBOL:
@@ -415,13 +406,6 @@ class Lsp(
 
     @staticmethod
     def _merge_symbol_batches(batches: Any) -> tuple[list[dict[str, Any]], bool]:
-        """Flatten gathered workspace/symbol responses into one deduped list.
-
-        Returns ``(symbols, supported)`` where ``supported`` is False only when
-        every server errored (none returned a result at all). Symbols sharing a
-        name and uri are deduped (two servers configured for the same language
-        can return the same definition); a symbol with no uri is always kept.
-        """
         merged: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         supported = False
@@ -824,11 +808,6 @@ class Lsp(
         return kept
 
     async def _repo_toplevel(self, cwd: Path) -> Path | None:
-        """Resolve the repo root containing ``cwd``. ``None`` if not a git
-        repo or git is unavailable. A path outside this root is not subject
-        to the repo's ignore rules and is reported not-ignored by the caller.
-        Cached per-cwd on the tool instance.
-        """
         cached = getattr(self, "_cached_repo_root", None)
         if cached is not None and cached[0] == cwd:
             return cached[1]
@@ -962,12 +941,6 @@ class Lsp(
 
     @staticmethod
     def _validate_position(path: Path, line: int, character: int, text: str) -> None:
-        """Reject out-of-bounds line/character before sending the request.
-
-        Servers reject bad positions with opaque messages ("column is beyond
-        end of file"); validate here so the agent gets an actionable error
-        naming the actual file bounds.
-        """
         lines = text.splitlines()
         line_count = len(lines)
         if line < 1 or line > line_count:
@@ -986,12 +959,6 @@ class Lsp(
 
     @staticmethod
     def _symbol_rank(sym: Any, query: str) -> tuple[int, str]:
-        """Sort key for workspace_symbol relevance. Lower sorts first.
-
-        Tier: 0 exact name, 1 prefix, 2 substring, 3 no match. Test symbols
-        (name starts with test_ or Test) get +10 so real definitions surface
-        ahead of test noise even when both are substring matches.
-        """
         name = str(sym.get("name", "")) if isinstance(sym, dict) else ""
         lower = name.lower()
         ql = query.lower()

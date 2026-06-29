@@ -294,8 +294,7 @@ class AgentLoopError(Exception): ...
 class AgentLoopStateError(AgentLoopError): ...
 
 
-class AgentLoopLLMResponseError(AgentLoopError):
-    """Raised when LLM response is malformed or missing expected data."""
+class AgentLoopLLMResponseError(AgentLoopError): ...
 
 
 # Bounded retry count for a degenerate streamed response (no content, tool calls,
@@ -306,21 +305,12 @@ _STREAM_DEGENERATE_RETRIES = 2
 
 
 class InvalidStreamError(AgentLoopLLMResponseError):
-    """A streamed response was structurally unusable (degenerate/empty).
-
-    Raised after stream assembly so a bounded retry can re-request rather than
-    silently appending a no-op assistant turn that ends the loop producing
-    nothing.
-    """
-
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(f"Invalid streamed response: {reason}")
 
 
 class CompactionFailedError(AgentLoopError):
-    """Raised when a compaction turn did not produce a usable summary."""
-
     def __init__(self, reason: str) -> None:
         self.reason = reason  # "tool_call" | "empty_summary"
         super().__init__(f"Compaction did not produce a summary (reason={reason}).")
@@ -343,17 +333,6 @@ def _refusal_error(provider: str, model: str, chunk: LLMChunk) -> RefusalError:
 
 
 def _degenerate_response_reason(chunk: LLMChunk) -> str | None:
-    """Reason if a completed response is an unusable no-op, else None.
-
-    Conservative: only flag when the response has no content, no tool calls,
-    no reasoning, AND no usage. A model can legitimately produce an empty
-    response (e.g. a follow-up after tool results) to end its turn, and such
-    responses still carry usage — so requiring usage to be absent avoids
-    false-positives on legitimate turn-ends. In the streaming path the
-    pre-existing ``usage is None`` guard already raises before this runs, so
-    this check is effectively a defensive backstop for the non-streaming path
-    and any future caller, not a hot-path retry trigger.
-    """
     msg = chunk.message
     has_content = bool((msg.content or "").strip())
     has_tool_calls = bool(msg.tool_calls)
@@ -368,12 +347,6 @@ def _degenerate_response_reason(chunk: LLMChunk) -> str | None:
 def _raise_for_backend_error(
     e: Exception, provider_name: str, model_name: str
 ) -> NoReturn:
-    """Classify a backend exception and re-raise as a typed AgentLoop error.
-
-    Shared by the streaming and non-streaming chat paths so the rate-limit /
-    context-too-long / response-too-long / content-filter / non-retryable
-    classification lives in one place. Always raises.
-    """
     if isinstance(e, RefusalError | ResponseTooLongError):
         raise
     if _should_raise_rate_limit_error(e):
@@ -450,7 +423,6 @@ def _is_non_retryable_error(e: BaseException) -> bool:
 
 
 def requires_init(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Decorator that awaits deferred initialization before executing the method."""
     if inspect.isasyncgenfunction(fn):
 
         @wraps(fn)
@@ -583,8 +555,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
         self.stats = AgentStats()
         self.approval_callback: ApprovalCallback | None = None
-        # Live scheduler (LoopManager) wired by the interactive app so the
-        # `schedule` tool can enqueue future turns. None in headless mode.
         self.scheduler: Scheduler | None = None
         # Reason the safety judge deferred the current tool call to the user, if
         # any; read by the approval UI. Set per-decision in _judge_tool_safety.
@@ -615,23 +585,16 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._stop_hook_active: bool = False
         # SessionStart fires once on the first act() of a session.
         self._session_started: bool = False
-        # File-based cross-session memory (opt-in). Store built lazily; memories
-        # are relevance-selected per turn and injected into the system prompt.
         self._is_subagent = is_subagent
         self._memory_store: MemoryStore | None = None
         self._memory_applied = False
-        # Recall/extract bookkeeping (see _apply_memory_selection / _extract_*).
         self._mem_surfaced: set[str] = set()
         self._mem_extract_cursor: int = 0
         self._late_memory_section: str = ""
         self._mem_extract_writes: int = 0
         self._mem_extract_task: asyncio.Task[None] | None = None
-        # Deep-recall prefetch task (see _kick/_consume/_cancel_memory_prefetch).
         self._mem_prefetch_task: asyncio.Task[list[str]] | None = None
-        # Consolidation task (see _maybe_schedule_consolidation).
         self._mem_consolidate_task: asyncio.Task[None] | None = None
-        # One-shot guard so the trash sweep runs at most once per session, on
-        # first memory-store construction (see _get_memory_store).
         self._memory_trash_swept: bool = False
         self.user_input_callback: UserInputCallback | None = None
         # Asked when a turn is rate-limited and no automatic fallback is
@@ -654,7 +617,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._current_user_message_id: str | None = None
         self._is_user_prompt_call: bool = False
         self._pending_injected_messages: list[LLMMessage] = []
-        # Bounds concurrent subagent fan-out (see MAX_CONCURRENT_SUBAGENTS).
         self._subagent_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUBAGENTS)
         self._response_format: dict[str, Any] | None = None
         self.launch_workflow_callback: Callable[[str, str | None], str] | None = None
@@ -714,10 +676,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
     @property
     def hooks_manager(self) -> HooksManager | None:
-        """The hooks manager, or None if no hooks are configured. Exposed so
-        lead-side features (e.g. TeamManager) can dispatch lifecycle events
-        through the same hook pipeline as agent/tool events.
-        """
         return self._hooks_manager
 
     @property
@@ -725,7 +683,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return self._hook_config_result
 
     def _start_deferred_init(self) -> threading.Thread:
-        """Spawn a daemon thread that finishes deferred heavy I/O once."""
         with self._deferred_init_lock:
             if self._deferred_init_thread is not None:
                 return self._deferred_init_thread
@@ -739,18 +696,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
     @property
     def is_initialized(self) -> bool:
-        """Whether deferred initialization has completed (successfully or not)."""
         if not self._defer_heavy_init:
             return True
         thread = self._deferred_init_thread
         return thread is not None and not thread.is_alive()
 
     def _complete_init(self) -> None:
-        """Run deferred heavy I/O: MCP and connector discovery.
-
-        Intended to be called from a background thread when
-        ``defer_heavy_init=True`` was passed to ``__init__``.
-        """
         try:
             self.tool_manager.integrate_all(raise_on_mcp_failure=True)
             system_prompt = get_universal_system_prompt(
@@ -767,7 +718,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self._init_error = exc
 
     async def wait_until_ready(self) -> None:
-        """Await deferred initialization (MCP + experiments) from an async context."""
         if self._defer_heavy_init:
             thread = self._start_deferred_init()
             await asyncio.to_thread(thread.join)
@@ -848,7 +798,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         required_permissions: list[RequiredPermission] | None,
         save_permanently: bool = False,
     ) -> None:
-        """Handle 'Allow Always' approval: add session rules or set tool-level permission."""
         if required_permissions:
             for rp in required_permissions:
                 self._permission_store.add_rule(
@@ -957,8 +906,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             await self.backend.__aexit__(None, None, None)
         with contextlib.suppress(Exception):
             await self.experiment_manager.aclose()
-        # Tear down pooled MCP connections (subprocess/SSE) so no server is
-        # left alive after the agent exits.
         with contextlib.suppress(Exception):
             await self.mcp_registry.close()
 
@@ -987,7 +934,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
     @requires_init
     async def refresh_system_prompt(self) -> None:
-        """Rebuild and replace the system prompt with current tool/skill state."""
         system_prompt = get_universal_system_prompt(
             self.tool_manager,
             self.config,
@@ -1049,15 +995,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         images: list[ImageAttachment] | None = None,
         client_message_id: str | None = None,
     ) -> None:
-        """Stage a user message to be folded into the running turn at the next
-        step boundary, without ending the turn.
-
-        Unlike ``inject_user_context``, this does NOT append to the message
-        history immediately. The conversation loop picks it up via
-        ``_drain_pending_injections`` after the current LLM/tool step, then
-        continues so the model acts on it. Safe to call while ``act`` is
-        running; the message is seen as soon as the current step yields.
-        """
         self._pending_injected_messages.append(
             LLMMessage(
                 role=Role.USER,
@@ -1223,7 +1160,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         self._max_output_override = max_tokens
 
     def _setup_middleware(self) -> None:
-        """Configure middleware pipeline for this conversation."""
         self.middleware_pipeline.clear()
 
         if self._max_turns is not None:
@@ -1311,13 +1247,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _run_compaction(
         self, old_tokens: int, threshold: int, *, trigger: str = "auto"
     ) -> AsyncGenerator[BaseEvent, None]:
-        """Run history compaction, emitting start/end events + telemetry.
-
-        Shared by the auto-compact middleware path and emergency recovery from
-        a context-overflow error. ``trigger`` ("auto" | "emergency" | "manual")
-        is forwarded to the PreCompact hook so it can distinguish why compaction
-        fired, instead of always reporting "auto".
-        """
         old_session_id = self.session_id
         old_parent_session_id = self.parent_session_id
         old_cached = self.stats.last_turn_cached_tokens
@@ -1394,13 +1323,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
     async def _try_reactive_shaping(self) -> bool:
-        """Aggressively run snip + microcompact to recover from a context
-        overflow without the paid compaction call.
-
-        Returns True only if the shapers actually reduced the estimated token
-        count (i.e. there was old history worth compressing). Mutates
-        ``self.messages`` in place via the shapers.
-        """
         threshold = self.effective_model().auto_compact_threshold
         if threshold <= 0:
             return False
@@ -1413,7 +1335,7 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             await snip.before_turn(ctx)
             await microcompact.before_turn(ctx)
             after = snip.estimated_tokens(ctx)
-            if after >= before:  # no further progress
+            if after >= before:
                 break
         return snip.estimated_tokens(ctx) < start
 
@@ -1453,18 +1375,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _codex_routing(
         self, provider: ProviderConfig
     ) -> tuple[dict[str, str], dict[str, str] | None]:
-        """Per-call routing headers + a sink to capture response headers.
-
-        For the codex (openai-chatgpt) backend, replay the captured
-        ``x-codex-turn-state`` so the call sticks to the partition that already
-        holds the warm prefix. The token is reset at each user turn (main_call)
-        because codex forbids replaying a turn's token into the next turn.
-
-        Returns ``(headers, sink)``. The sink is always a dict so the generic
-        backend can capture ``x-ratelimit-*`` headers from every provider
-        (ZAI, Kimi, OpenAI-compatible, …) for the /status limits view; codex
-        also reads its sticky-routing token out of it.
-        """
         headers = self._get_extra_headers(provider)
         if getattr(provider, "api_style", "") != "openai-chatgpt":
             return headers, {}
@@ -1475,14 +1385,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return headers, {}
 
     def _capture_codex_turn_state(self, sink: dict[str, str] | None) -> None:
-        """Stash the codex sticky-routing token from a response for the next call."""
         if sink and (ts := sink.get("x-codex-turn-state")):
             self._codex_turn_state = ts
 
     def _capture_rate_limits(
         self, provider: ProviderConfig, sink: dict[str, str] | None
     ) -> None:
-        """Parse x-ratelimit-* headers from a response into the rate-limit store."""
         if not sink:
             return
         snapshot = rate_limit_from_headers(provider.name, sink, captured_at=time.time())
@@ -1502,10 +1410,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self._memory_store = MemoryStore(
                 user_dir=VIBE_HOME.path / "memory", project_dirs=project_dirs
             )
-        # Bound the .trash/ tree once per session: a stale trash entry older
-        # than the configured TTL is unlinked and the ledger compacted. Runs
-        # synchronously on first store access (handful of stat+unlink calls);
-        # never lets a sweep failure break the store.
         if not self._memory_trash_swept:
             self._memory_trash_swept = True
             knob = self.config.memory.trash_max_age_days
@@ -1542,19 +1446,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
     async def _apply_memory_selection(self, user_msg: str) -> None:
-        """Inject memories into the system prompt: an always-on index plus
-        best-effort deep recall of full bodies.
-
-        Two layers, fault-tolerant by construction:
-          - The lightweight index (one line per memory) is ALWAYS shown, so the
-            model knows what memories exist even when the deep-recall selector
-            returns nothing, errors, or times out.
-          - Full bodies of selector-chosen memories are appended on top.
-
-        Fail-soft: any error leaves the turn fully functional. Memories live in
-        the system prompt (not message history), so they never accumulate or
-        pollute the session log; the block is replaced each turn.
-        """
         # Snapshot where this turn's transcript begins, for post-turn extraction.
         self._mem_extract_cursor = len(self.messages)
         try:
@@ -1644,15 +1535,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             self.messages.update_system_prompt(new)
 
     def _kick_memory_prefetch(self, user_msg: str) -> None:
-        """Inject the always-on index now and race deep recall in the background.
-
-        The selector runs as a fire-and-forget task; its result is folded in by
-        ``_consume_memory_prefetch`` only if it settles before the first LLM
-        turn. An unsettled selector never blocks: index-only is already in
-        context, so deep recall simply defers. This replaces a blocking await
-        that could stall the turn for the full selector timeout with zero added
-        wait — a slow backend degrades to index-only rather than dead time.
-        """
         self._cancel_memory_prefetch()
         self._mem_extract_cursor = len(self.messages)
         try:
@@ -1667,10 +1549,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 self._set_memory_section("")
                 self._memory_applied = True
                 return
-            # Index goes in immediately so the model always knows what exists.
             self._set_memory_section(self._compose_memory_section(index_md, ""))
             self._memory_applied = True
-            # select_mode == "always" needs no selector call: inject synchronously.
             if mem.select_mode == "always":
                 self._apply_memory_recall(store.ids()[: mem.max_selected])
                 return
@@ -1701,10 +1581,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                 logger.warning("memory prefetch errored (%s); index-only stays", e)
 
     def _consume_memory_prefetch(self) -> None:
-        """Fold deep-recall bodies in iff the prefetch settled before the first
-        LLM turn. Never waits — a still-running selector is abandoned to
-        index-only and cleaned up at turn end.
-        """
         task = self._mem_prefetch_task
         if task is None or not task.done() or task.cancelled():
             return
@@ -1757,12 +1633,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
     def _maybe_schedule_memory_extraction(self) -> None:
-        """Fire-and-forget memory extraction at the end of a completed turn.
-
-        Gated by config, the per-session write cap, a minimum-turn-size floor,
-        and mutual exclusion with manual manage_memory writes (which make the
-        forked pass redundant). Never raises — extraction is best-effort.
-        """
         if self._is_subagent:
             return
         mem = self.config.memory
@@ -1786,7 +1656,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         if end - start < mem.auto_extract_min_messages:
             return
         if self._mem_wrote_memory_since(start, end):
-            # The main agent persisted a memory this turn; advance past it.
             self._mem_extract_cursor = end
             return
         self._mem_extract_cursor = end
@@ -1945,12 +1814,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
     def _maybe_schedule_consolidation(self) -> None:
-        """Fire-and-forget consolidation at turn end, gated by config, an
-        in-flight guard, the candidate floor, and a per-corpus interval.
-
-        Runs only after the turn's extraction pass has settled, so the two
-        never mutate the store concurrently.
-        """
         if self._is_subagent:
             return
         mem = self.config.memory
@@ -2039,8 +1902,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     ) -> str:
         from vibe.core.memory.models import age_label
 
-        # Candidate payload: id + age + body, bounded so a large corpus can't
-        # blow the prompt. Later candidates truncate first.
         char_budget = mem.max_inject_chars
         parts: list[str] = []
         used = 0
@@ -2130,13 +1991,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return applied
 
     def _resolve_safety_judge(self) -> SafetyJudge | None:
-        """Build the LLM safety judge if configured & usable, else None.
-
-        Returns None when the feature is disabled, no usable judge model is
-        configured, or its provider/model cannot be resolved. Built fresh per
-        decision (cheap; no network until a verdict is requested) so it tracks
-        live config.
-        """
         judge_cfg = self.config.safety_judge
         if not judge_cfg.enabled or not judge_cfg.model:
             return None
@@ -2170,13 +2024,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
     def _switch_to_fallback_model(self) -> ModelConfig | None:
-        """Switch to the next untried fallback model, rebuilding the backend.
-
-        Marks the current model tried, then picks the first configured
-        ``fallback_models`` alias that is untried and available, rebuilding
-        ``self.backend`` for its provider. Returns the model, or None when the
-        fallback pool is exhausted.
-        """
         current_alias = (
             self._fallback_model_override.alias
             if self._fallback_model_override
@@ -2194,10 +2041,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return None
 
     def _activate_model(self, model: ModelConfig) -> ModelConfig:
-        """Make ``model`` the active override and rebuild the backend for it.
-
-        Shared by automatic fallback and the interactive rate-limit switch.
-        """
         self._tried_fallback_aliases.add(model.alias)
         provider = self.config.get_provider_for_model(model)
         self._fallback_model_override = model
@@ -2207,11 +2050,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return model
 
     def _switchable_model_aliases(self) -> list[str]:
-        """Available configured models not already tried this session — the
-        candidates offered when the user is asked to switch off a rate-limited
-        model. Excludes the current/tried models so the pool drains and the
-        prompt terminates instead of re-offering a model just rate-limited.
-        """
         return [
             m.alias
             for m in self.config.models
@@ -2220,23 +2058,12 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         ]
 
     def _switch_to_chosen_model(self, alias: str) -> ModelConfig | None:
-        """Switch to an explicitly chosen model alias, rebuilding the backend.
-        Returns the activated model, or None if the alias is unknown/unavailable.
-        """
         model = next((m for m in self.config.models if m.alias == alias), None)
         if model is None or not self.config.is_model_available(model):
             return None
         return self._activate_model(model)
 
     def _auto_fallback_headless(self) -> ModelConfig | None:
-        """Auto-recover to the first available model when headless (no callback).
-
-        Headless contexts (ACP, workflow subagents, forked sessions, teammates)
-        have no interactive rate-limit prompt. Without this, a 429 dead-ends even
-        when alternative models are configured and available — the 53x "no
-        fallback_models configured" path. Picks the first untried available model,
-        draining the pool so repeated 429s eventually exhaust it and surface.
-        """
         candidates = self._switchable_model_aliases()
         if not candidates:
             return None
@@ -2245,10 +2072,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _prompt_model_switch_on_rate_limit(
         self, error: RateLimitError
     ) -> ModelConfig | None:
-        """Ask the user to pick a model when a rate-limited turn has no automatic
-        fallback. Returns the activated model, or None (no callback wired, no
-        candidates left, or the user declined) so the caller surfaces the error.
-        """
         if self.rate_limit_callback is None:
             return None
         candidates = self._switchable_model_aliases()
@@ -2260,14 +2083,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return self._switch_to_chosen_model(chosen)
 
     def _failover_unavailable_hint(self, reason: str) -> str:
-        """Build the actionable hint for when automatic failover cannot proceed.
-
-        The rate-limit / content-filter handlers fall over to
-        ``fallback_models``, which defaults to empty, so on stock config the
-        recovery path is a silent no-op. Return why so it can be logged AND
-        attached to the terminal error, so the hint reaches the user instead
-        of only the log file.
-        """
         if not self.config.fallback_models:
             hint = (
                 f"{reason} and no fallback_models configured; set "
@@ -2282,12 +2097,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return hint
 
     def _escalate_max_output(self) -> int | None:
-        """Compute the next, larger output budget after a truncated response.
-
-        Returns the new max_tokens (also stored on ``_max_output_override``), or
-        None when escalation is disabled, the attempt budget is spent, or the
-        value is already pinned at the cap (so a retry could not grow it).
-        """
         esc = self.config.max_output_escalation
         if not esc.enabled:
             return None
@@ -2404,11 +2213,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
                 self.stats.steps += 1
                 user_cancelled = False
-                # Drain async-subagent completions queued by the background
-                # registry before the next LLM turn, so the model sees each
-                # completed delegation as context. No-op when nothing is pending
-                # (the common case). Each completion also emits a typed event
-                # for the UI; the user-role message carries the result text.
                 async for ev in self._drain_async_agent_completions():
                     yield ev
                 if first_llm_turn:
@@ -2445,14 +2249,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                         yield ev
                     continue
                 except RateLimitError as e:
-                    # Fail over to the next configured fallback model and retry,
-                    # instead of surfacing a terminal rate-limit error. With no
-                    # automatic fallback, ask the user to pick a model (the
-                    # rate-limit model-switch dialog) before giving up. When
-                    # headless (no callback), auto-recover to the first available
-                    # model so subagents/workflows/ACP don't dead-end. Re-raise
-                    # only if no path yields a model, attaching the reason to the
-                    # terminal error so the user sees why recovery failed.
                     fallback = self._switch_to_fallback_model()
                     if fallback is None:
                         if self.rate_limit_callback is not None:
@@ -2469,11 +2265,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     )
                     continue
                 except ContentFilterError as e:
-                    # Provider content filter blocked the request (e.g. zai code
-                    # 1301) — frequently a false positive on defensive-security
-                    # work. Fail over to the next configured fallback model; when
-                    # the pool is exhausted, surface the clean error instead of a
-                    # raw RuntimeError dump, with the reason attached.
                     fallback = self._switch_to_fallback_model()
                     if fallback is None:
                         e.failover_hint = self._failover_unavailable_hint(
@@ -2500,9 +2291,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     )
                     continue
                 except ResponseTooLongError:
-                    # Self-heal: retry the turn with a larger output budget
-                    # rather than dead-ending on a truncated response. When
-                    # escalation is disabled/exhausted/pinned at cap, re-raise.
                     nxt = self._escalate_max_output()
                     if nxt is None:
                         raise
@@ -2548,13 +2336,9 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     else:
                         self._stop_hook_active = False
 
-            # Turn fully complete (no hook/stop-hook continuation): schedule
-            # best-effort memory extraction. Fire-and-forget; never raises.
             self._maybe_schedule_memory_extraction()
-            # Periodic consolidation (throttled, default-off, reversible). Runs
-            # only after extraction has settled (its own in-flight guard holds
-            # off while _mem_extract_task is live) so the two never mutate the
-            # store concurrently from sibling tasks.
+            # Periodic consolidation runs only after extraction has settled (_mem_extract_task
+            # in-flight guard) so the two never mutate the store concurrently.
             self._maybe_schedule_consolidation()
         finally:
             # Abandon any prefetch that never settled so it can't leak across
@@ -2602,11 +2386,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _drain_async_agent_completions(
         self,
     ) -> AsyncGenerator[BackgroundTaskCompletedEvent]:
-        """Yield one event per completed async subagent queued by the background
-        registry, and append a matching user-role message so the model sees
-        each result as context for the upcoming turn. No-op without a registry
-        or when no completions are pending.
-        """
         registry = self.background_registry
         if registry is None:
             return
@@ -2758,13 +2537,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _run_tools_concurrently(
         self, tool_calls: list[ResolvedToolCall]
     ) -> AsyncGenerator[ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent]:
-        """Execute a batch of tool calls, yielding events as they arrive.
-
-        Read-only tools (``tool_class.read_only``) run concurrently. Tools with
-        side effects run sequentially (in model-emitted order) so that, e.g.,
-        two edits to the same file cannot interleave. The mutating chain runs
-        concurrently with the read-only pool.
-        """
         queue: asyncio.Queue[
             ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent | None
         ] = asyncio.Queue()
@@ -2829,7 +2601,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent | None
         ],
     ) -> None:
-        """Run a single tool call, sending events to the queue."""
         # Cap concurrent subagent fan-out so a batch of independent task calls
         # doesn't overwhelm the backend; other tools run uncapped.
         if tc.tool_class.is_subagent_spawner:
@@ -3143,13 +2914,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     async def _judge_tool_safety(
         self, tool_name: str, args: BaseModel, uncovered: list[RequiredPermission]
     ) -> ToolDecision | None:
-        """Consult the LLM safety judge for an ASK-gated call.
-
-        Returns an EXECUTE decision when the judge rules the call safe, or None
-        to fall through to the normal human prompt. The judge can never reach a
-        denied (NEVER) call — those return earlier — and fails closed, so any
-        error or "unsafe" verdict simply defers to the user.
-        """
         # Cleared each decision; set to the judge's reason when it defers so the
         # approval UI can show why the user is being asked. Must not leak stale
         # values to the next prompt.
@@ -3231,20 +2995,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
 
     @staticmethod
     def _serialize_args(args: BaseModel) -> tuple[str, str, bool]:
-        """Return ``(cache_key_fingerprint, judge_input_repr, truncated)``.
-
-        The fingerprint hashes the FULL serialized form, so two calls that share
-        an identical truncation but differ further on get distinct cache keys.
-        Hashing keeps each key constant-size regardless of how large the args
-        are (e.g. ``write_file`` content).
-
-        The repr is the slice handed to the judge model. When the full args
-        exceed ``JUDGE_ARGS_LIMIT``, the slice is capped and a sentinel is
-        appended so the judge knows it is judging a PARTIAL payload — a
-        destructive tail can hide beyond the cut. ``truncated`` lets the caller
-        (``_judge_tool_safety``) force-defer rather than trust the judge on a
-        payload it cannot fully see.
-        """
         try:
             blob = args.model_dump_json()
         except Exception:
@@ -3258,14 +3008,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return digest, repr_, truncated
 
     def _judge_transcript_window(self) -> str:
-        """Build a capped recent-turns excerpt for the safety judge.
-
-        Takes the last ``JUDGE_TRANSCRIPT_TURNS`` user/assistant messages (real
-        turns only — injected context, tool calls, and tool results are noise for
-        an intent check), joins them role-labeled, and truncates to
-        ``JUDGE_TRANSCRIPT_LIMIT`` chars. Returns "" when there is no usable
-        recent context, which leaves the judge on its original, context-free path.
-        """
         turns: list[str] = []
         for msg in reversed(self.messages):
             if len(turns) >= JUDGE_TRANSCRIPT_TURNS:
@@ -3288,7 +3030,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _judge_verdict_cache_get(
         self, key: tuple[str, str, tuple[str, ...], str]
     ) -> JudgeVerdict | None:
-        """Return a cached verdict, marking it most-recently-used, or None."""
         if self._judge_verdict_cache_maxsize <= 0:
             return None
         cache = self._judge_verdict_cache
@@ -3300,7 +3041,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _judge_verdict_cache_put(
         self, key: tuple[str, str, tuple[str, ...], str], verdict: JudgeVerdict
     ) -> None:
-        """Store a verdict with bounded-LRU eviction. No-op when disabled."""
         if self._judge_verdict_cache_maxsize <= 0:
             return
         cache = self._judge_verdict_cache
@@ -3312,14 +3052,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _apply_modification(
         self, tool_call: ResolvedToolCall, modified_args: dict[str, Any]
     ) -> tuple[ResolvedToolCall, dict[str, Any]] | ToolDecision:
-        """Re-validate user-modified args and rebuild the tool call for dispatch.
-
-        Mirrors the before_tool-hook rewrite path: validates against the tool's
-        args model, rebuilds ``ResolvedToolCall``, patches the assistant message
-        so the transcript reflects what actually ran. Returns a feedback SKIP
-        decision on validation failure (the user edited the args, so the
-        validation error is theirs to understand) instead of raising.
-        """
         tool_class = tool_call.tool_class
         args_model, _ = tool_class._get_tool_args_results()
         try:
@@ -3341,13 +3073,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         tool_input: dict[str, Any],
         decision: ToolDecision,
     ) -> tuple[ResolvedToolCall, dict[str, Any], ToolDecision]:
-        """Apply a MODIFY decision, returning (tool_call, tool_input, decision).
-
-        On a validation failure the returned decision is a feedback SKIP so the
-        caller's unified SKIP path handles it; otherwise the decision is passed
-        through unchanged. No-op (returns inputs as-is) when there is nothing to
-        modify.
-        """
         if decision.modified_args is None:
             return tool_call, tool_input, decision
         modified = self._apply_modification(tool_call, decision.modified_args)
@@ -3402,15 +3127,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         )
 
     def _apply_tool_result_budget(self, tool_call: ResolvedToolCall, text: str) -> str:
-        """Cap a tool result's inline size.
-
-        A single oversized result (large file read, chatty MCP tool) can push
-        the context past the model limit and hard-fail the turn. Results over
-        ``MAX_TOOL_RESULT_CHARS`` are persisted in full to the session log and
-        replaced inline with a smaller head+tail preview naming the persisted
-        path (recoverable via the ``read`` tool). When persistence is off, fall
-        back to permanent middle-truncation at the cap.
-        """
         return self.tool_result_store.shape(
             tool_call.call_id,
             text,
@@ -3466,7 +3182,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         cancelled: bool = False,
         span: trace.Span | None = None,
     ) -> ToolResultEvent:
-        """Create a ToolResultEvent for a failed tool and record the failure."""
         self._handle_tool_response(tool_call, error_msg, "failure", decision, span=span)
         return ToolResultEvent(
             tool_name=tool_call.tool_name,
@@ -3485,13 +3200,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
         return [m.model_copy(update={"images": None}) if m.images else m for m in msgs]
 
     def _with_late_memory(self) -> Sequence[LLMMessage]:
-        """In "late" inject_mode, splice the volatile recall block in as an
-        ephemeral message just before the latest user turn.
-
-        Request-only: it never enters ``self.messages``, so it is not persisted,
-        not extracted, and rebuilt fresh each turn — keeping the system+history
-        prefix byte-stable for the provider's prompt cache.
-        """
         section = self._late_memory_section
         if self.config.memory.inject_mode != "late" or not section:
             return self.messages
@@ -3516,15 +3224,6 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _resolve_active_model(
         self, model_override: ModelConfig | None = None
     ) -> tuple[ModelConfig, ProviderConfig]:
-        """Pick the (model, provider) for an LLM call. An explicit
-        ``model_override`` wins (e.g. compaction), then a fallback/rate-limit
-        override set by a model switch, then the configured active model.
-
-        Streaming and non-streaming MUST resolve identically: a model switch
-        rebuilds ``self.backend`` for the new provider, so if one path ignored
-        the override it would send the old model name to the new provider's
-        backend (e.g. gpt-5.5 → zai → "Unknown Model").
-        """
         active_model = (
             model_override
             or self._fallback_model_override
@@ -3796,15 +3495,8 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
     def _collect_responded_ids(
         messages: Sequence[LLMMessage], start: int
     ) -> tuple[set[str], int]:
-        """Scan the contiguous tool-response block from ``start``.
-
-        Returns the answered tool_call_ids and the index of the first non-tool
-        message after the block (the insertion point for any missing
-        responses). Only the contiguous block is scanned — not every later
-        tool message — so a placeholder always lands inside the current turn,
-        immediately after its originating assistant message, even when a later
-        turn carries its own tool results.
-        """
+        # Only the contiguous block is scanned — not every later tool message —
+        # so a placeholder always lands inside the current turn, not a later one.
         responded: set[str] = set()
         j = start
         while j < len(messages) and messages[j].role == "tool":

@@ -135,10 +135,6 @@ class TaskResult(BaseModel):
 class TaskToolConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ASK
     allowlist: list[str] = Field(default=[BuiltinAgentName.EXPLORE])
-    # "auto" isolates write-capable profiles (worker/auto-approve/editor and any
-    # profile with write_file/edit or un-jailed bash) in their own worktree;
-    # read-only and read-jailed profiles stay in-process. "always" isolates
-    # every profile. "off" forces in-process (the historical behavior).
     isolation: Literal["off", "auto", "always"] = "auto"
 
 
@@ -241,11 +237,6 @@ class Task(
     async def _run_async_isolated(
         self, args: TaskArgs, ctx: InvokeContext
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
-        # Non-blocking variant of _run_isolated: spawn the isolated subagent as
-        # an asyncio.Task, register it with the background registry, and return
-        # immediately with the task_id. The registry's finalizer captures the
-        # IsolatedResult; the parent agent loop drains queued completions at the
-        # top of each turn and emits BackgroundTaskCompletedEvent for each.
         registry = ctx.background_registry
         if registry is None:
             # No registry wired (e.g. tests, programmatic runner without TUI).
@@ -271,10 +262,6 @@ class Task(
             )
             return
 
-        # Stream the subprocess stdout to a log file so the Tasks pane and
-        # `background` tool can tail live progress. Mirrors the bash tool's bg
-        # log layout (scratchpad/bg/). None when there's nowhere to write — the
-        # runtime then captures stdout in memory as before (no live tail).
         log_path = self._bg_log_path(ctx)
         if log_path is not None:
             log_path.touch()
@@ -325,11 +312,6 @@ class Task(
     async def _run_isolated(
         self, args: TaskArgs, ctx: InvokeContext
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
-        # Run the subagent as a `vibe -p` subprocess in its own git worktree so
-        # its writes can't race the parent tree or siblings. The branch is
-        # ff-merged back on success (deliver=True) so delegated edits land, the
-        # way they do in the in-process path. On non-delivery the worktree is
-        # kept and surfaced via TaskResult.worktree_path/.branch for recovery.
         task_text = args.task
         if ctx.scratchpad_dir:
             task_text = (
@@ -390,17 +372,6 @@ class Task(
     async def _judge_isolated_spawn(
         self, prompt: str, agent: str, ctx: InvokeContext
     ) -> str | None:
-        """Pre-flight safety judge for an isolated subagent spawn.
-
-        Isolated subagents run as an auto-approved ``vibe -p`` subprocess, so
-        the host's per-tool judge never sees their calls. This judges the
-        subagent's *prompt* (the task the lead gave it) before the subprocess
-        starts. Mirrors ``WorkflowRuntime._judge_isolated_spawn``.
-
-        Returns ``None`` to proceed; returns the judge's (or user's) denial
-        reason to skip the spawn. Fail-open when no judge is configured or the
-        judge is unusable — the launch-time script/CLI judge already ran.
-        """
         factory = getattr(ctx, "safety_judge_factory", None)
         if factory is None:
             return None
@@ -595,10 +566,6 @@ class Task(
     async def _run_in_process_collect(
         self, args: TaskArgs, ctx: InvokeContext
     ) -> _InProcessResult:
-        # Background variant: drive to completion, return an IsolatedResult-shaped
-        # object (no parent yields — the parent turn already returned). Pushes
-        # live progress (partial response + turn count) to the registry so the
-        # Tasks pane and `background` tool reflect streaming activity.
         registry = ctx.background_registry
         current_task = asyncio.current_task()
         subagent_loop, task_text = self._build_subagent_loop(args, ctx)
@@ -672,14 +639,6 @@ class Task(
 
     @staticmethod
     def _bg_log_path(ctx: InvokeContext) -> Path | None:
-        """A unique log file path for an isolated subagent's stdout, or None.
-
-        Mirrors the bash tool's background-log layout (scratchpad/bg/, falling
-        back to the session dir) so the Tasks pane can tail live progress. The
-        caller is responsible for ``touch()`` before handing the path to the
-        subprocess. Returns None when neither dir is available — the runtime
-        then falls back to an in-memory PIPE capture.
-        """
         root = ctx.scratchpad_dir or ctx.session_dir
         if root is None:
             return None
