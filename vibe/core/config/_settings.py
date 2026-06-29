@@ -1676,12 +1676,46 @@ class VibeConfig(BaseSettings):
         if cls._migrate_renamed_tools(data):
             changed = True
 
+        if cls._migrate_kimi_glm_reasoning(data):
+            changed = True
+
         if changed:
             cls.dump_config(data)
+
+    # GLM temperature left at the generic ModelConfig default by old presets.
+    _GLM_LEGACY_TEMPERATURE: ClassVar[float] = 0.2
+
+    @classmethod
+    def _migrate_kimi_glm_reasoning(cls, data: dict[str, Any]) -> bool:
+        # Backfill preserve_reasoning (Kimi/GLM Preserved Thinking) and lift GLM
+        # off the legacy 0.2 temperature on pre-fix configs. One-shot.
+        applied = data.get("applied_migrations", [])
+        if cls._KIMI_GLM_REASONING_MIGRATION in applied:
+            return False
+        migrated = False
+        for model in data.get("models", []):
+            provider = model.get("provider")
+            if provider in {"kimi", "zai"} and "preserve_reasoning" not in model:
+                model["preserve_reasoning"] = True
+                migrated = True
+            if (
+                provider == "zai"
+                and model.get("temperature") == cls._GLM_LEGACY_TEMPERATURE
+            ):
+                model["temperature"] = 1.0
+                migrated = True
+        if not migrated:
+            return False
+        data["applied_migrations"] = [*applied, cls._KIMI_GLM_REASONING_MIGRATION]
+        return True
 
     # One-shot id: syncs an existing bash allowlist up to the current default
     # read-only commands once, so users keep the ability to remove any of them.
     _BASH_READ_ONLY_MIGRATION: ClassVar[str] = "bash_read_only_defaults_v1"
+
+    # One-shot id: backfills preserve_reasoning + GLM temperature on configs
+    # written before the Kimi/GLM Preserved-Thinking fix.
+    _KIMI_GLM_REASONING_MIGRATION: ClassVar[str] = "kimi_glm_preserve_reasoning_v1"
 
     # Old tool name -> new tool name. The new tools replaced these in-place, so
     # existing user configs keyed by the old names need their settings moved over.

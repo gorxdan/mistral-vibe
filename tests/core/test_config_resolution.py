@@ -621,6 +621,67 @@ class TestMigrateBashReadOnlyDefaults:
         assert result == {"active_model": "test"}
 
 
+class TestMigrateKimiGlmPreservedThinking:
+    def test_backfills_preserve_reasoning_and_glm_temperature(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "models": [
+                {"name": "kimi-k2.7-code", "provider": "kimi", "alias": "kimi",
+                 "temperature": 1.0},
+                {"name": "glm-5.2", "provider": "zai", "alias": "glm",
+                 "temperature": 0.2},
+                {"name": "devstral", "provider": "mistral", "alias": "m",
+                 "temperature": 0.2},
+            ],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        by_alias = {m["alias"]: m for m in result["models"]}
+        assert by_alias["kimi"]["preserve_reasoning"] is True
+        assert by_alias["glm"]["preserve_reasoning"] is True
+        assert by_alias["glm"]["temperature"] == 1.0  # 0.2 default corrected
+        assert "preserve_reasoning" not in by_alias["m"]  # mistral untouched
+        assert by_alias["m"]["temperature"] == 0.2
+        assert (
+            VibeConfig._KIMI_GLM_REASONING_MIGRATION in result["applied_migrations"]
+        )
+
+    def test_does_not_clobber_chosen_values_or_rerun(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "applied_migrations": [VibeConfig._KIMI_GLM_REASONING_MIGRATION],
+            "models": [
+                {"name": "glm-5.2", "provider": "zai", "alias": "glm",
+                 "temperature": 0.2, "preserve_reasoning": False},
+            ],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        glm = result["models"][0]
+        assert glm["preserve_reasoning"] is False  # already-set value kept
+        assert glm["temperature"] == 0.2  # marker present -> no rerun/clobber
+
+
 class TestMigrateMistralVibeCliLatestDefaults:
     def test_updates_alias_temperature_and_thinking_for_default_model(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
