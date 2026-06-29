@@ -19,7 +19,7 @@ from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError, ToolPe
 from vibe.core.tools.builtins.task import Task, TaskArgs, TaskResult, TaskToolConfig
 from vibe.core.tools.permissions import PermissionContext
 from vibe.core.tools.safety_judge import JudgeVerdict
-from vibe.core.types import AssistantEvent, LLMMessage, Role
+from vibe.core.types import AssistantEvent, LLMMessage, Role, ToolResultEvent
 
 
 @pytest.fixture
@@ -749,3 +749,40 @@ class TestAsyncRun:
         assert "too destructive" in result.response
         assert result.task_id is None
         assert mock_run.call_count == 0
+
+
+class TestGetResultDisplay:
+    @staticmethod
+    def _display(result: TaskResult):
+        event = ToolResultEvent(
+            tool_name="task",
+            tool_class=Task,
+            result=result,
+            tool_call_id="tc-1",
+        )
+        return Task.get_result_display(event)
+
+    def test_background_launch_renders_as_running_not_interrupted(self) -> None:
+        # Background-launch handoff: task_id set, completed=False (not done yet),
+        # turns_used=None. Successful launch, NOT an interruption.
+        result = TaskResult(
+            response="launched",
+            completed=False,
+            turns_used=None,
+            task_id="asub-9",
+        )
+        display = self._display(result)
+        assert display.success is True
+        assert "interrupted" not in display.message.lower()
+
+    def test_real_interruption_without_task_id_still_reads_interrupted(self) -> None:
+        result = TaskResult(response="", completed=False, turns_used=None)
+        display = self._display(result)
+        assert display.success is False
+        assert "interrupted" in display.message.lower()
+
+    def test_completed_in_process_unaffected(self) -> None:
+        result = TaskResult(response="ok", completed=True, turns_used=3)
+        display = self._display(result)
+        assert display.success is True
+        assert "completed" in display.message.lower()

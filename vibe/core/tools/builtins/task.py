@@ -200,6 +200,13 @@ class Task(
     def get_result_display(cls, event: ToolResultEvent) -> ToolResultDisplay:
         result = event.result
         if isinstance(result, TaskResult):
+            # A set task_id means this is a background-launch handoff, not a
+            # terminal result: completed=False here means "still running", not
+            # "interrupted". The launch itself succeeded.
+            if result.task_id is not None:
+                return ToolResultDisplay(
+                    success=True, message="Agent running in background"
+                )
             # turns_used is None for isolated subagents (subprocess doesn't
             # report it); omit the count instead of showing a misleading "0".
             if result.turns_used is None:
