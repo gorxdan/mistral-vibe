@@ -27,10 +27,32 @@ AGGREGATE_TOOL_RESULT_CHARS = 200_000
 # A single result may occupy up to this fraction of the model's context budget
 # before it is previewed-and-persisted. Scaling the fixed cap above to the
 # window stops large-context models (e.g. glm, 880k) from truncating big reads —
-# which forces ranged re-reads; small windows stay at MAX_TOOL_RESULT_CHARS via
-# the floor, so behaviour is unchanged below a ~500k-token window.
+# which forces ranged re-reads.
 TOOL_RESULT_WINDOW_FRACTION = 0.05
 TOOL_RESULT_CHARS_PER_TOKEN = 4
+
+# Ceiling on the FLOOR as a fraction of the budget. The fixed MAX_TOOL_RESULT_CHARS
+# floor (~25k tokens) was safe only while every real window dwarfed it; a 32k-token
+# local model would let one result claim ~76% of the window and overflow it (which
+# truncates the request and, on strict chat templates like Qwen3, hard-400s). So
+# the floor itself is capped here: below a ~167k-token window it scales DOWN with
+# the budget instead of pinning at the constant. Large windows are unaffected
+# (0.15 * budget exceeds the constant, so min() keeps the original floor).
+TOOL_RESULT_FLOOR_MAX_FRACTION = 0.15
+
+
+def tool_result_hard_cap(threshold_tokens: int) -> int:
+    """Max chars a single tool result may occupy before it is previewed+persisted.
+
+    Scales with the model's token budget (the auto_compact_threshold window
+    proxy): a small fraction of the budget, floored so ordinary reads aren't
+    over-truncated, but with the floor itself bounded to the budget so a
+    small-window model scales DOWN rather than pinning at MAX_TOOL_RESULT_CHARS.
+    """
+    budget_chars = threshold_tokens * TOOL_RESULT_CHARS_PER_TOKEN
+    scaled = int(budget_chars * TOOL_RESULT_WINDOW_FRACTION)
+    floor = min(MAX_TOOL_RESULT_CHARS, int(budget_chars * TOOL_RESULT_FLOOR_MAX_FRACTION))
+    return max(floor, scaled)
 
 # Safety-judge input window. _serialize_args hands the judge only this many
 # chars of the serialized tool args. A destructive tail hidden past the cut is

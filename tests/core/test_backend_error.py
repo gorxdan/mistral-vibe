@@ -36,6 +36,26 @@ def _make_error(
     )
 
 
+class TestContextTooLongClassification:
+    def test_qwen_template_truncation_is_context_too_long(self) -> None:
+        # When an over-window request is truncated to fit num_ctx, the oldest
+        # messages (incl. the user query) drop out and strict chat templates
+        # (Qwen3/Ornith) hard-400 with this body. The harness always sends a
+        # user query, so this signature only arises from over-window truncation
+        # -> route it to the compact-and-retry recovery, not a hard failure.
+        body = (
+            '{"error":{"code":400,"message":"Unable to generate parser for this '
+            "template. Automatic parser generation failed: Jinja Exception: "
+            'No user query found in messages."}}'
+        )
+        err = _make_error(status=400, body_text=body)
+        assert err.is_context_too_long is True
+
+    def test_unrelated_400_is_not_context_too_long(self) -> None:
+        err = _make_error(status=400, body_text="some other bad request")
+        assert err.is_context_too_long is False
+
+
 class TestBackendErrorFmt:
     def test_standard_status_code(self) -> None:
         err = _make_error(status=500)

@@ -26,6 +26,11 @@ _CONTEXT_TOO_LONG_SUBSTRINGS = (
     "prompt_too_long",
     # kimi: "exceeded model token limit: N (requested: M)"
     "model token limit",
+    # An over-window request truncated to fit num_ctx drops the oldest messages
+    # (incl. the user query); strict chat templates (Qwen3/Ornith) then 400 with
+    # this. The harness always sends a user query, so it only arises from
+    # over-window truncation — route it to compact-and-retry, not a hard fail.
+    "no user query found in messages",
 )
 
 _RESPONSE_TOO_LONG_SUBSTRINGS = ("max_tokens_exceeded", "finish_reason=length")

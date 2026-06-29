@@ -28,9 +28,8 @@ from vibe.core.agent_loop._limits import (
     AGGREGATE_TOOL_RESULT_CHARS,
     MAX_CONCURRENT_SUBAGENTS,
     MAX_TOOL_RESULT_CHARS,
-    TOOL_RESULT_CHARS_PER_TOKEN,
     TOOL_RESULT_PREVIEW_CHARS,
-    TOOL_RESULT_WINDOW_FRACTION,
+    tool_result_hard_cap,
 )
 from vibe.core.agent_loop.session_mixin import AgentLoopSessionMixin
 from vibe.core.agents.manager import AgentManager
@@ -2027,10 +2026,7 @@ class AgentLoop(AgentLoopSessionMixin):
             threshold = self.effective_model().auto_compact_threshold
         except Exception:
             return MAX_TOOL_RESULT_CHARS
-        scaled = int(
-            threshold * TOOL_RESULT_CHARS_PER_TOKEN * TOOL_RESULT_WINDOW_FRACTION
-        )
-        return max(MAX_TOOL_RESULT_CHARS, scaled)
+        return tool_result_hard_cap(threshold)
 
     def _handle_tool_response(
         self,
