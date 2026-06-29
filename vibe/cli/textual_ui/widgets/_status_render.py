@@ -9,6 +9,7 @@ from rich.cells import cell_len
 from rich.text import Text
 
 if TYPE_CHECKING:
+    from vibe.core.config import ModelConfig
     from vibe.core.types import AgentStats
     from vibe.core.usage import (
         CodexCredits,
@@ -73,6 +74,19 @@ class StatusCardData:
     rate_limits: dict[str, RateLimitSnapshot] | None = None
     codex_quota: CodexQuotaSnapshot | None = None
     width: int = _CARD_WIDTH
+
+
+def status_context_window(active_model: ModelConfig | None) -> int | None:
+    """Denominator for the status-card Context line.
+
+    Must mirror the live ContextProgress bar, which measures fill against
+    ``auto_compact_threshold`` (the budget auto-compaction fires at).
+    ``max_output_tokens`` is the completion cap — unset for most models — so
+    reading it left the Context line blank for glm/kimi/etc.
+    """
+    if active_model is None:
+        return None
+    return active_model.auto_compact_threshold or None
 
 
 def format_tokens_compact(value: int) -> str:

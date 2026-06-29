@@ -85,6 +85,50 @@ def test_status_render_import_does_not_require_type_only_usage_exports():
     assert imported.StatusCardData.__name__ == "StatusCardData"
 
 
+def test_status_context_window_uses_compaction_budget_not_output_cap():
+    # Regression: the /status Context line read max_output_tokens (the completion
+    # cap, unset for glm/kimi/etc) as its denominator, so the line silently
+    # vanished for those models. It must mirror the live ContextProgress bar,
+    # which measures fill against auto_compact_threshold.
+    from vibe.cli.textual_ui.widgets._status_render import status_context_window
+    from vibe.core.config import ModelConfig
+
+    glm = ModelConfig(name="glm-5.2", provider="zai", auto_compact_threshold=880_000)
+    assert glm.max_output_tokens is None  # the old denominator -> blank line
+    assert status_context_window(glm) == 880_000
+    assert status_context_window(None) is None
+    # threshold disabled (0) -> no meaningful ratio, hide the line
+    zero = ModelConfig(name="m", provider="p", auto_compact_threshold=0)
+    assert status_context_window(zero) is None
+
+
+def test_render_shows_context_line_for_glm_like_model():
+    # End-to-end: a glm session deep into its budget must surface the Context
+    # line (it was hidden because max_output_tokens was None).
+    from vibe.cli.textual_ui.widgets._status_render import status_context_window
+    from vibe.core.config import ModelConfig
+
+    glm = ModelConfig(name="glm-5.2", provider="zai", auto_compact_threshold=880_000)
+    s = AgentStats()
+    s.context_tokens = 315_630
+    summary = summarize(_records(), now=1_000_000.0)
+    text = render_status_card(
+        StatusCardData(
+            stats=s,
+            summary=summary,
+            version="0.1.1",
+            model_name="glm-5.2",
+            provider_name="zai",
+            workdir=Path("/home/dan/p"),
+            session_id="s1",
+            context_window=status_context_window(glm),
+        )
+    )
+    plain = text.plain
+    assert "Context" in plain
+    assert "880K" in plain  # denominator rendered, line not hidden
+
+
 def test_format_tokens_compact():
     assert format_tokens_compact(0) == "0"
     assert format_tokens_compact(999) == "999"

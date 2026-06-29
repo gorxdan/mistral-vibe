@@ -2579,7 +2579,10 @@ class VibeApp(App):
         await self._switch_from_input(MCPAddApp())
 
     async def _show_status(self, **kwargs: Any) -> None:
-        from vibe.cli.textual_ui.widgets._status_render import StatusCardData
+        from vibe.cli.textual_ui.widgets._status_render import (
+            StatusCardData,
+            status_context_window,
+        )
         from vibe.cli.textual_ui.widgets.status_card import StatusCard
         from vibe.core.usage import fetch_codex_quota, get_usage_recorder, summarize
 
@@ -2587,7 +2590,7 @@ class VibeApp(App):
         try:
             active_model = self.config.get_active_model()
             model_name = active_model.name
-            context_window = active_model.max_output_tokens
+            context_window = status_context_window(active_model)
         except ValueError:
             model_name = "<none>"
             context_window = None
