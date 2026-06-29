@@ -8,6 +8,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import TYPE_CHECKING
 
 from humanize import naturalsize
@@ -170,12 +171,35 @@ async def handle_clipboard_image_paste(
     )
 
 
+# Pasted images written to /tmp (no active session dir) were never reaped. Drop
+# ones older than this on each paste — generous so an image sitting unsent in the
+# input is never pulled out from under its token.
+_PASTED_IMAGE_GC_AGE_S = 24 * 3600
+
+
+def _gc_stale_pasted_images(target_dir: Path, max_age_s: int = _PASTED_IMAGE_GC_AGE_S) -> None:
+    try:
+        cutoff = time.time() - max_age_s
+        for f in target_dir.glob("clipboard-*"):
+            try:
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+    except Exception:
+        logger.debug("pasted-image gc skipped", exc_info=True)
+
+
 def write_clipboard_image(data: bytes, *, session_dir: Path | None) -> Path:
     if session_dir is not None:
         target_dir = session_dir / "attachments"
     else:
         target_dir = Path(tempfile.gettempdir()) / "vibe-pasted-images"
     target_dir.mkdir(parents=True, exist_ok=True)
+    if session_dir is None:
+        # Session-dir attachments are reclaimed with the session; the /tmp pool
+        # has no owner, so age-GC it here.
+        _gc_stale_pasted_images(target_dir)
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     path = target_dir / f"clipboard-{timestamp}.png"
     # Same-second collision: append a short numeric suffix until free.

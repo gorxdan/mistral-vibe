@@ -498,3 +498,23 @@ async def test_insert_image_token_adds_leading_space_when_needed() -> None:
             await pilot.pause()
             value = app.query_one(ChatInputContainer).value
             assert " @" in value and value.startswith("look at this: @")
+
+
+def test_write_clipboard_image_reaps_stale_tmp_pool(tmp_path, monkeypatch) -> None:
+    import os
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    pool = tmp_path / "vibe-pasted-images"
+    pool.mkdir()
+    stale = pool / "clipboard-20200101T000000.png"
+    stale.write_bytes(b"x")
+    os.utime(stale, (1, 1))  # ancient
+    fresh = pool / "clipboard-recent.png"
+    fresh.write_bytes(b"x")  # current mtime
+
+    out = write_clipboard_image(b"PNGDATA", session_dir=None)
+
+    assert out.exists()  # new paste written
+    assert not stale.exists()  # stale reaped
+    assert fresh.exists()  # recent kept
