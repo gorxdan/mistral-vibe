@@ -13,7 +13,7 @@ the tests will be. Always prefer real API data over manually constructed example
 from __future__ import annotations
 
 import json
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -933,7 +933,9 @@ class TestTtftCap:
             api_base="https://api.fireworks.ai/v1",
             api_key_env_var="API_KEY",
         )
-        backend = GenericBackend(provider=provider, client=_FakeClient())
+        backend = GenericBackend(
+            provider=provider, client=cast(httpx.AsyncClient, _FakeClient())
+        )
 
         async def _drain():
             async for _ in backend._make_streaming_request(

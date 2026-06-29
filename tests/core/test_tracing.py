@@ -25,8 +25,11 @@ async def test_chat_span_omits_temperature_when_none() -> None:
     attrs: dict[str, Any] = {}
     async with _capture(attrs):
         async with tracing.chat_span(
-            model="kimi-k2.7-code", provider="kimi",
-            temperature=None, max_tokens=16384, thinking="max",
+            model="kimi-k2.7-code",
+            provider="kimi",
+            temperature=None,
+            max_tokens=16384,
+            thinking="max",
         ):
             pass
     # None temperature is omitted on the wire, so the span must not claim one.
@@ -40,8 +43,11 @@ async def test_chat_span_records_sampling_params() -> None:
     attrs: dict[str, Any] = {}
     async with _capture(attrs):
         async with tracing.chat_span(
-            model="glm-5.2", provider="zai",
-            temperature=1.0, max_tokens=None, thinking="max",
+            model="glm-5.2",
+            provider="zai",
+            temperature=1.0,
+            max_tokens=None,
+            thinking="max",
         ):
             pass
     assert attrs["gen_ai.request.temperature"] == 1.0
@@ -68,8 +74,10 @@ def test_set_usage_emits_reasoning_tokens() -> None:
     tracing.set_usage(
         span,  # type: ignore[arg-type]
         LLMUsage(
-            prompt_tokens=100, completion_tokens=50,
-            cached_tokens=20, reasoning_tokens=999,
+            prompt_tokens=100,
+            completion_tokens=50,
+            cached_tokens=20,
+            reasoning_tokens=999,
         ),
     )
     assert span.attrs["gen_ai.usage.reasoning_tokens"] == 999
@@ -136,7 +144,9 @@ def test_context_shaping_records_reasoning_preserved() -> None:
     span = _FakeSpan()
     tracing.set_context_shaping_result(
         span,  # type: ignore[arg-type]
-        tokens_before=1000, tokens_after=500, reasoning_preserved=False,
+        tokens_before=1000,
+        tokens_after=500,
+        reasoning_preserved=False,
     )
     assert span.attrs["vibe.context.reasoning_preserved"] is False
 
@@ -146,8 +156,7 @@ def test_wire_temperature_reflects_what_is_sent() -> None:
     from vibe.core.config import ModelConfig, ProviderConfig
 
     responses = ProviderConfig(
-        name="openai", api_base="x", api_key_env_var="",
-        api_style="openai-responses",
+        name="openai", api_base="x", api_key_env_var="", api_style="openai-responses"
     )
     chat = ProviderConfig(name="zai", api_base="x", api_key_env_var="")
     gpt55 = ModelConfig(name="gpt-5.5", provider="openai", alias="g", temperature=0.2)

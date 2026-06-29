@@ -755,10 +755,7 @@ class TestGetResultDisplay:
     @staticmethod
     def _display(result: TaskResult):
         event = ToolResultEvent(
-            tool_name="task",
-            tool_class=Task,
-            result=result,
-            tool_call_id="tc-1",
+            tool_name="task", tool_class=Task, result=result, tool_call_id="tc-1"
         )
         return Task.get_result_display(event)
 
@@ -766,10 +763,7 @@ class TestGetResultDisplay:
         # Background-launch handoff: task_id set, completed=False (not done yet),
         # turns_used=None. Successful launch, NOT an interruption.
         result = TaskResult(
-            response="launched",
-            completed=False,
-            turns_used=None,
-            task_id="asub-9",
+            response="launched", completed=False, turns_used=None, task_id="asub-9"
         )
         display = self._display(result)
         assert display.success is True

@@ -85,8 +85,7 @@ async def test_oversized_user_message_is_middle_truncated_in_compaction(
 @pytest.mark.asyncio
 async def test_compact_end_event_carries_origin_tag(mistral_api: MistralAPI) -> None:
     mistral_api.reply(
-        mistral_completion("a summary"),
-        mistral_completion("final reply"),
+        mistral_completion("a summary"), mistral_completion("final reply")
     )
     agent = build_e2e_agent_loop(
         config=build_test_vibe_config(models=COMPACTION_MODELS)

@@ -629,13 +629,25 @@ class TestMigrateKimiGlmPreservedThinking:
         config_file = tmp_path / "config.toml"
         data = {
             "models": [
-                {"name": "kimi-k2.7-code", "provider": "kimi", "alias": "kimi",
-                 "temperature": 1.0},
-                {"name": "glm-5.2", "provider": "zai", "alias": "glm",
-                 "temperature": 0.2},
-                {"name": "devstral", "provider": "mistral", "alias": "m",
-                 "temperature": 0.2},
-            ],
+                {
+                    "name": "kimi-k2.7-code",
+                    "provider": "kimi",
+                    "alias": "kimi",
+                    "temperature": 1.0,
+                },
+                {
+                    "name": "glm-5.2",
+                    "provider": "zai",
+                    "alias": "glm",
+                    "temperature": 0.2,
+                },
+                {
+                    "name": "devstral",
+                    "provider": "mistral",
+                    "alias": "m",
+                    "temperature": 0.2,
+                },
+            ]
         }
         with config_file.open("wb") as f:
             tomli_w.dump(data, f)
@@ -652,9 +664,7 @@ class TestMigrateKimiGlmPreservedThinking:
         assert by_alias["glm"]["temperature"] == 1.0  # 0.2 default corrected
         assert "preserve_reasoning" not in by_alias["m"]  # mistral untouched
         assert by_alias["m"]["temperature"] == 0.2
-        assert (
-            VibeConfig._KIMI_GLM_REASONING_MIGRATION in result["applied_migrations"]
-        )
+        assert VibeConfig._KIMI_GLM_REASONING_MIGRATION in result["applied_migrations"]
 
     def test_does_not_clobber_chosen_values_or_rerun(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -664,8 +674,13 @@ class TestMigrateKimiGlmPreservedThinking:
         data = {
             "applied_migrations": [VibeConfig._KIMI_GLM_REASONING_MIGRATION],
             "models": [
-                {"name": "glm-5.2", "provider": "zai", "alias": "glm",
-                 "temperature": 0.2, "preserve_reasoning": False},
+                {
+                    "name": "glm-5.2",
+                    "provider": "zai",
+                    "alias": "glm",
+                    "temperature": 0.2,
+                    "preserve_reasoning": False,
+                }
             ],
         }
         with config_file.open("wb") as f:

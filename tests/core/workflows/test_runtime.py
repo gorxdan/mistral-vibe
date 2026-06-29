@@ -2397,14 +2397,9 @@ async def test_worker_spawn_args_forbids_extra_fields() -> None:
 def test_create_real_loop_caps_turns() -> None:
     from unittest.mock import MagicMock, patch
 
-    from vibe.core.workflows.runtime import (
-        DEFAULT_ISOLATED_MAX_TURNS,
-        WorkflowRuntime,
-    )
+    from vibe.core.workflows.runtime import DEFAULT_ISOLATED_MAX_TURNS, WorkflowRuntime
 
     rt = WorkflowRuntime(agent_loop_factory=None)
     with patch("vibe.core.agent_loop.AgentLoop") as mock_loop:
         rt._create_real_loop(agent="explore", base_config=MagicMock())
-        assert (
-            mock_loop.call_args.kwargs.get("max_turns") == DEFAULT_ISOLATED_MAX_TURNS
-        )
+        assert mock_loop.call_args.kwargs.get("max_turns") == DEFAULT_ISOLATED_MAX_TURNS

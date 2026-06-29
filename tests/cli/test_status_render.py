@@ -93,12 +93,14 @@ def test_status_context_window_uses_compaction_budget_not_output_cap():
     from vibe.cli.textual_ui.widgets._status_render import status_context_window
     from vibe.core.config import ModelConfig
 
-    glm = ModelConfig(name="glm-5.2", provider="zai", auto_compact_threshold=880_000)
+    glm = ModelConfig(
+        name="glm-5.2", alias="glm-5.2", provider="zai", auto_compact_threshold=880_000
+    )
     assert glm.max_output_tokens is None  # the old denominator -> blank line
     assert status_context_window(glm) == 880_000
     assert status_context_window(None) is None
     # threshold disabled (0) -> no meaningful ratio, hide the line
-    zero = ModelConfig(name="m", provider="p", auto_compact_threshold=0)
+    zero = ModelConfig(name="m", alias="m", provider="p", auto_compact_threshold=0)
     assert status_context_window(zero) is None
 
 
@@ -108,7 +110,9 @@ def test_render_shows_context_line_for_glm_like_model():
     from vibe.cli.textual_ui.widgets._status_render import status_context_window
     from vibe.core.config import ModelConfig
 
-    glm = ModelConfig(name="glm-5.2", provider="zai", auto_compact_threshold=880_000)
+    glm = ModelConfig(
+        name="glm-5.2", alias="glm-5.2", provider="zai", auto_compact_threshold=880_000
+    )
     s = AgentStats()
     s.context_tokens = 315_630
     summary = summarize(_records(), now=1_000_000.0)
