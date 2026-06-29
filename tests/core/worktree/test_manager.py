@@ -950,3 +950,18 @@ class TestFullLifecycle:
         assert (handle.worktree_path / "README.md").exists()
         assert (handle.worktree_path / "src.py").exists()
         manager.exit(handle)
+
+
+def test_pid_from_leaf_parses_creating_pid() -> None:
+    assert WorktreeManager._pid_from_leaf("cli-12345-67890") == 12345
+    assert WorktreeManager._pid_from_leaf("programmatic-999-111222333") == 999
+    # Unparseable leaves -> None (never reaped).
+    assert WorktreeManager._pid_from_leaf("garbage") is None
+    assert WorktreeManager._pid_from_leaf("cli-notapid-111") is None
+
+
+def test_pid_alive_distinguishes_live_from_dead() -> None:
+    assert WorktreeManager._pid_alive(os.getpid()) is True
+    assert WorktreeManager._pid_alive(0) is False
+    # A pid at the top of the range is essentially never live.
+    assert WorktreeManager._pid_alive(2**31 - 1) is False

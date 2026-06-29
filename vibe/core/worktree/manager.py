@@ -401,6 +401,68 @@ class WorktreeManager:
             logger.debug("git worktree prune failed: %s", exc)
             return
         self._gc_abandoned_worktrees(repo, config)
+        self._reap_dead_pid_worktrees(repo, config)
+
+    @staticmethod
+    def _pid_from_leaf(leaf: str) -> int | None:
+        # leaf == "<label>-<pid>-<time_ns>"; pid is the second field from the end.
+        parts = leaf.rsplit("-", 2)
+        if len(parts) != 3:
+            return None
+        try:
+            return int(parts[1])
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True  # exists but not signalable (e.g. owned by another user)
+        return True
+
+    def _reap_dead_pid_worktrees(self, repo: Repo, config: WorktreeConfig) -> None:
+        """Force-remove worktree dirs left by dead sessions, older than the GC age.
+
+        The dir leaf encodes the creating pid (``<label>-<pid>-<ns>``). If that
+        process is gone and the dir is older than ``gc_age_days``, reap it with
+        --force — per the configured aggressive policy this discards any
+        uncommitted WIP a crashed session left behind. The live/active worktree
+        and any still-running pid are never touched. (Branch GC above keeps
+        unmerged branches, so merged history is still recoverable from refs.)
+        """
+        if config.gc_age_days <= 0:
+            return
+        try:
+            base = Path(config.base_dir).resolve()
+            out = repo.git.worktree("list", "--porcelain")
+        except Exception as exc:
+            logger.debug("reap: worktree list failed: %s", exc)
+            return
+        active = self._active.worktree_path.resolve() if self._active else None
+        cutoff = time.time() - config.gc_age_days * 86400
+        for line in out.splitlines():
+            if not line.startswith("worktree "):
+                continue
+            wt = Path(line[len("worktree ") :].strip())
+            try:
+                rp = wt.resolve()
+                if base not in rp.parents or rp == active:
+                    continue
+                pid = self._pid_from_leaf(rp.name)
+                if pid is None or pid == os.getpid() or self._pid_alive(pid):
+                    continue  # unknown / self / still-running -> never touch
+                if not wt.exists() or wt.stat().st_mtime > cutoff:
+                    continue
+                repo.git.worktree("remove", "--force", str(wt))
+                logger.info("reaped stranded worktree %s (pid %d dead)", wt, pid)
+            except (OSError, GitCommandError) as exc:
+                logger.debug("reap: skip %s: %s", wt, exc)
 
     def _gc_abandoned_worktrees(self, repo: Repo, config: WorktreeConfig) -> None:
         if config.gc_age_days <= 0:
