@@ -266,13 +266,6 @@ def _is_vscode_family_terminal() -> bool:
 
 
 class BottomApp(StrEnum):
-    """Bottom panel app types.
-
-    Convention: Each value must match the widget class name with "App" suffix removed.
-    E.g., ApprovalApp -> Approval, ConfigApp -> Config, QuestionApp -> Question.
-    This allows dynamic lookup via: BottomApp[type(widget).__name__.removesuffix("App")]
-    """
-
     Approval = auto()
     Config = auto()
     ConnectorAuth = auto()
@@ -293,8 +286,6 @@ class BottomApp(StrEnum):
 
 
 class ChatScroll(VerticalScroll):
-    """Optimized scroll container that skips cascading style recalculations."""
-
     @property
     def is_at_bottom(self) -> bool:
         return self.scroll_target_y >= self.max_scroll_y
@@ -356,11 +347,6 @@ def _resolve_typing_debounce_s() -> float:
 async def prune_oldest_children(
     messages_area: Widget, low_mark: int, high_mark: int
 ) -> bool:
-    """Remove the oldest children so the virtual height stays within bounds.
-
-    Walks children back-to-front to find how much to keep (up to *low_mark*
-    of visible height), then removes everything before that point.
-    """
     total_height = messages_area.virtual_size.height
     if total_height <= high_mark:
         return False
@@ -404,14 +390,6 @@ _SUBAGENT_MODEL_HINT = (
     "per-spawn model is set. Empty inherits the host session's model."
 )
 
-# Slash commands declared `safe_while_busy=True` (see Command in commands.py)
-# stay reachable while the agent is busy or the queue is paused. These are
-# monitors, settings pickers, and background-state managers that never mutate
-# the conversation history a running turn depends on — `/status`, `/model`,
-# `/tasks`, `/mcp`, etc. run immediately instead of being rejected as "cannot
-# be queued". History/session-mutating commands (`/clear`, `/compact`,
-# `/rewind`, `/resume`, `/exit`, ...) stay gated.
-
 
 @dataclass(frozen=True, slots=True)
 class _ImageAttachmentRejection:
@@ -449,7 +427,6 @@ class VibeApp(App):  # noqa: PLR0904
     ]
 
     def get_driver_class(self) -> type[Driver]:
-        """Patch the platform driver to strip malformed mouse reports from input."""
         from vibe.cli.textual_ui.terminal_input_filter import patch_driver_parser
 
         driver_class = super().get_driver_class()
@@ -893,7 +870,6 @@ class VibeApp(App):  # noqa: PLR0904
             logger.debug("bubblewrap install nudge skipped", exc_info=True)
 
     async def _watch_init_completion(self) -> None:
-        """Show 'Initializing' loading indicator until background init finishes."""
         init_widget = None
         try:
             if not self.agent_loop.is_initialized:
@@ -971,10 +947,6 @@ class VibeApp(App):  # noqa: PLR0904
             await self._inject_queued_now()
             return
 
-        # Monitor/management commands for background state (e.g. /workflows)
-        # must stay usable while the agent is busy or the queue is paused —
-        # that is exactly when you need to watch or stop a background run. Run
-        # them immediately instead of routing into the "cannot be queued" path.
         if (
             self._input_queue.paused or self._is_busy()
         ) and self._is_busy_allowed_command(value):
@@ -1076,7 +1048,6 @@ class VibeApp(App):  # noqa: PLR0904
         return True
 
     async def _inject_queued_now(self) -> None:
-        """Fold queued prompts into the running agent turn (double-enter)."""
         if await self._queue.inject_now():
             self.notify(
                 "Injected — the agent will pick this up at the next step.", timeout=3
@@ -1092,14 +1063,6 @@ class VibeApp(App):  # noqa: PLR0904
         return False
 
     def _is_busy_allowed_command(self, value: str) -> bool:
-        """Whether `value` is a slash command allowed to run while busy/paused.
-
-        A command qualifies when it is declared `safe_while_busy` — it only
-        reads state, opens a picker, or manages background tasks, never mutating
-        the conversation history the running turn depends on. The canonical
-        command is resolved through the registry so aliases and arguments
-        (e.g. `/workflows list`) are matched correctly.
-        """
         if not value.startswith("/"):
             return False
         resolved = self.commands.parse_command(value)
@@ -2026,8 +1989,6 @@ class VibeApp(App):  # noqa: PLR0904
         required_permissions: list[RequiredPermission] | None,
         judge_note: str | None = None,
     ) -> tuple[ApprovalResponse, str | None, dict[str, Any] | None]:
-        # Auto-approve only if parent is in auto-approve mode AND tool is enabled
-        # This ensures subagents respect the main agent's tool restrictions
         if self.agent_loop and self.agent_loop.config.bypass_tool_permissions:
             if self._is_tool_enabled_in_main_agent(tool):
                 return (ApprovalResponse.YES, None, None)
@@ -2075,11 +2036,6 @@ class VibeApp(App):  # noqa: PLR0904
     async def _rate_limit_callback(
         self, provider: str, model: str, candidates: list[str]
     ) -> str | None:
-        """Rate-limit recovery dialog: a turn hit a 429 with no automatic
-        fallback. Show the model picker (limited to switchable models) and return
-        the chosen alias so the agent loop switches and retries, or None if the
-        user cancels (Esc) — then the loop surfaces the error.
-        """
         async with self._user_interaction_lock:
             await self._wait_for_typing_pause()
             self._pending_model_switch = asyncio.Future()
@@ -2493,7 +2449,6 @@ class VibeApp(App):  # noqa: PLR0904
         if await self._dispatch_mcp_subcommand(cmd_args):
             return
 
-        # Bare /mcp or /mcp <name> → open the browser.
         mcp_servers = self.config.mcp_servers
         connector_registry = (
             self.agent_loop.connector_registry if self._connectors_enabled else None
@@ -3049,7 +3004,6 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
 
     def _recent_preset_keys(self) -> list[str]:
-        """Preset keys ordered by how recently the user edited their files."""
         from vibe.core.lsp._defaults import preset_for_extension
 
         seen: set[str] = set()
@@ -3063,13 +3017,6 @@ class VibeApp(App):  # noqa: PLR0904
         return ordered
 
     def _lsp_install_hint_lines(self, *, lead: str, footer: str) -> list[str]:
-        """Install-hint list, context-aware + with broken-preset callouts.
-
-        Presets whose language the user has recently edited are pinned to the
-        top (most-recent first); the rest follow in declaration order. Broken
-        presets (binary present but probe failed) get a dedicated callout line
-        so the user can tell "installed-but-broken" from "not installed".
-        """
         from vibe.core.lsp._defaults import PRESETS, broken_presets
 
         recent = self._recent_preset_keys()
@@ -3170,7 +3117,6 @@ class VibeApp(App):  # noqa: PLR0904
                 lambda: self._mount_lsp_callout(decision.preset_display_name)
             )
         elif decision.kind == "reminder":
-            # One reminder per session; then silent until next session.
             self._lsp_nudge_shown_this_session = True
             self.notify(
                 f"LSP is available for {decision.preset_display_name}. "
@@ -3285,12 +3231,6 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(widget)
 
     async def _tasks_command(self, cmd_args: str = "", **kwargs: Any) -> None:
-        """Handle /tasks (and the /workflows alias).
-
-        Bare -> open the Tasks pane. With args -> route to the workflow runner's
-        subcommands (stop/snapshot/resume) for back-compat with /workflows stop,
-        and add /tasks stop <id> for unified stop across all categories.
-        """
         from vibe.cli.textual_ui.widgets.messages import (
             ErrorMessage,
             UserCommandMessage,
@@ -3303,7 +3243,6 @@ class VibeApp(App):  # noqa: PLR0904
             await self._switch_to_tasks_app()
             return
 
-        # Unified stop across all task categories via the registry.
         parts = cmd_args.split(None, 1)
         if parts[0].lower() in {"stop", "cancel", "kill"} and len(parts) > 1:
             target = parts[1].strip()
@@ -3342,10 +3281,6 @@ class VibeApp(App):  # noqa: PLR0904
         await self._mount_and_scroll(widget)
 
     def _build_team_manager(self) -> TeamManager:
-        """Build a TeamManager wired to the agent loop's hook pipeline so team
-        lifecycle events (teammate idle, task created/completed) fire through
-        the same HooksManager as agent/tool events.
-        """
         loop = self.agent_loop
 
         def hook_context() -> Any:
@@ -3533,7 +3468,6 @@ class VibeApp(App):  # noqa: PLR0904
     async def on_tasks_app_task_stop_requested(
         self, message: TasksApp.TaskStopRequested
     ) -> None:
-        # Unified cancel via the registry — routes to the right owner by id.
         stopped = await self._background_registry.stop(message.task_id)
         if stopped:
             self.notify(f"Stopped {message.task_id}", markup=False)
@@ -3618,20 +3552,10 @@ class VibeApp(App):  # noqa: PLR0904
             )
 
     def _resolve_workflow_source(self, name: str) -> str | None:
-        """Resolve a discovered workflow's source by name, for nested workflow()."""
         info = self._workflow_manager.get_workflow(name)
         return info.source if info is not None else None
 
     def _build_workflow_parent_context(self, tool_call_id: str) -> InvokeContext:
-        """Build the parent InvokeContext for a workflow runtime.
-
-        Threading this into both the model-invoked and TUI-invoked launch
-        paths keeps spawned agents subject to the subagent-type guard and the
-        inherited permission store / approval callback, session logging, and
-        cost tracking. Omitting it (the prior model-invoked path) left agents
-        running with ctx=None, which bypassed the subagent-type guard and let
-        scripts spawn non-subagent profiles such as auto-approve.
-        """
         loop = self.agent_loop
         return InvokeContext(
             tool_call_id=tool_call_id,
@@ -3667,9 +3591,6 @@ class VibeApp(App):  # noqa: PLR0904
         return run_id
 
     def _workflow_status_for_tool(self, run_id: str | None = None) -> list[dict]:
-        """Back the workflow_status model tool: a live, JSON-serializable view
-        of runs. Filters to one run when run_id is given, else returns all.
-        """
         runs = self._workflow_runner.runs
         if run_id is not None:
             runs = [r for r in runs if r.run_id == run_id]
@@ -3688,16 +3609,6 @@ class VibeApp(App):  # noqa: PLR0904
     def _workflow_results_for_tool(
         self, run_id: str, *, phase: str | None = None, raw: bool = False
     ) -> dict[str, Any]:
-        """Back the workflow_results model tool (i1): return the actual agent
-        outputs for a run, tagged with completion status. Sources finalized
-        phases from the result if the run completed/stopped/failed, else from
-        the live runtime so results are also recoverable mid-run.
-
-        Per-agent response text is capped to 4000 chars by default so a large batch
-        doesn't flood the host's context; ``raw=True`` lifts the cap. Failed
-        agents' raw responses are included so schema-validation failures and
-        crashes are recoverable instead of silently swallowed.
-        """
         from vibe.core.tools.builtins.workflow_results import WorkflowResults
 
         cap = None if raw else WorkflowResults._DEFAULT_PER_AGENT_CHAR_CAP
@@ -3765,15 +3676,6 @@ class VibeApp(App):  # noqa: PLR0904
 
     @staticmethod
     def _return_value_for_tool(entry: Any, *, raw: bool) -> Any:
-        """Surface the script's return_value through the workflow_results tool.
-
-        This is the pull path that makes a run's result re-readable after the
-        one-shot completion delivery (which is best-effort and capped). When the
-        run hasn't finished (entry.result is None) the value is None. When it
-        has, the structured value is returned as-is if it fits the cap; a value
-        whose stringified form exceeds the cap is returned as a truncated string
-        with a marker, unless raw=True lifts the cap.
-        """
         result = getattr(entry, "result", None)
         if result is None:
             return None
@@ -3791,11 +3693,6 @@ class VibeApp(App):  # noqa: PLR0904
     async def _workflow_stop_for_tool(
         self, run_id: str | None, all_runs: bool
     ) -> dict[str, Any]:
-        """Back the workflow_stop model tool: cancel one run (run_id) or every
-        active run (all_runs). Returns stopped / stopped_run_ids / message.
-        Delegates to the runner's existing stop/stop_all (same path as the
-        `/workflows stop` slash command).
-        """
         runner = self._workflow_runner
         if all_runs:
             active = [
@@ -3831,9 +3728,6 @@ class VibeApp(App):  # noqa: PLR0904
         }
 
     def _team_dir_for_tool(self) -> str | None:
-        """Back the team_message model tool: the active team directory, or None
-        when no team is active.
-        """
         if self._team_manager is None:
             return None
         return str(self._team_manager.team_dir)
@@ -3950,15 +3844,6 @@ class VibeApp(App):  # noqa: PLR0904
 
     @classmethod
     def _format_workflow_delivery(cls, result: Any) -> str:
-        """Render a workflow result as a message for the host agent's context.
-
-        Always surfaces the script's return_value. When any agent did not
-        complete cleanly (schema failure, crash, cancellation), ALSO surfaces
-        those agents' raw responses: a raising agent becomes ``None`` inside
-        ``parallel()``/``pipeline()`` and vanishes from return_value, so without
-        this recovery a run where every agent failed schema validation delivers
-        an empty result despite real work being recorded on the run.
-        """
         summary = getattr(result, "summary", "") or ""
         return_value = getattr(result, "return_value", None)
         parts: list[str] = []
@@ -4008,11 +3893,6 @@ class VibeApp(App):  # noqa: PLR0904
     def _collect_recoverable_outputs(
         run: Any,
     ) -> list[tuple[str | None, Any, str | None, list[str]]]:
-        """Return ``(label, response, error, schema_errors)`` for every agent
-        that did not complete cleanly, in run order. Carries partial work the
-        host may still use; agents that produced no output (e.g. cancelled
-        before emitting) are skipped since there is nothing to recover.
-        """
         if run is None:
             return []
         out: list[tuple[str | None, Any, str | None, list[str]]] = []
@@ -4055,14 +3935,9 @@ class VibeApp(App):  # noqa: PLR0904
         await self.agent_loop.session_logger.persist_workflow_snapshots(snapshots)
 
     def _load_workflow_snapshots(self) -> list[dict[str, Any]]:
-        """Read persisted workflow snapshots back (WF-2 resume read-back)."""
         return self.agent_loop.session_logger.load_workflow_snapshots()
 
     def _build_resume_runtime(self) -> WorkflowRuntime | None:
-        """Build a WorkflowRuntime for resuming a prior run, with the same
-        parent context as a fresh launch so the subagent-type guard and
-        permission/logging inheritance apply.
-        """
         if self.config.disable_workflows:
             return None
         parent_context = self._build_workflow_parent_context("workflow-resume")
@@ -4172,7 +4047,6 @@ class VibeApp(App):  # noqa: PLR0904
         return short_session_id(self.agent_loop.session_logger.session_id)
 
     async def _worktree_command(self, cmd_args: str = "", **kwargs: Any) -> None:
-        """Read-only /worktree command: status, diff, or merge handoff info."""
         from vibe.cli.textual_ui.widgets.messages import (
             ErrorMessage,
             UserCommandMessage,
@@ -4235,11 +4109,6 @@ class VibeApp(App):  # noqa: PLR0904
             )
 
     async def _stop_teams(self) -> None:
-        """Terminate and reap all spawned teammates, then drop the manager.
-
-        Shared by graceful exit and force-quit so trusted `vibe -p` teammate
-        subprocesses are never orphaned regardless of how the app exits.
-        """
         if self._team_manager is not None:
             try:
                 await self._team_manager.stop_all()
@@ -4548,14 +4417,6 @@ class VibeApp(App):  # noqa: PLR0904
     def _close_bottom_panel(
         self, source: str, action: Callable[[], None], *, clear_timestamp: bool = True
     ) -> None:
-        """Run a bottom-panel escape/focus action.
-
-        Swallows NoMatches (the panel isn't mounted — expected during teardown or
-        when the user Escapes before a panel is focused) but logs every other
-        exception instead of burying it, so focus/telemetry/close failures stop
-        being invisible. ``clear_timestamp`` resets the double-Esc tracker (False
-        for the focus path, which doesn't consume an Esc).
-        """
         try:
             action()
         except NoMatches:
@@ -4646,11 +4507,6 @@ class VibeApp(App):  # noqa: PLR0904
         self._close_bottom_panel("tasks", _close)
 
     def _get_user_message_widgets(self) -> list[UserMessage]:
-        """Return all UserMessage widgets currently visible in #messages.
-
-        Only includes messages with a valid message_index (i.e. real user
-        messages, not slash-command echo messages).
-        """
         return [
             child
             for child in self._messages_area.children
@@ -4686,13 +4542,10 @@ class VibeApp(App):  # noqa: PLR0904
         self.run_worker(self._select_rewind_widget(target), exclusive=False)
 
     async def _rewind_prev_at_top(self) -> None:
-        """Handle alt+up when already at the topmost visible user message."""
         if self._load_more.widget is not None and self._windowing.has_backfill:
             await self.on_history_load_more_requested(HistoryLoadMoreRequested())
             user_widgets = self._get_user_message_widgets()
             if user_widgets and self._rewind_highlighted_widget is not None:
-                # Find the current highlighted widget in the refreshed list
-                # and select the one above it
                 try:
                     idx = user_widgets.index(self._rewind_highlighted_widget)
                 except ValueError:
@@ -4700,7 +4553,6 @@ class VibeApp(App):  # noqa: PLR0904
                 if idx > 0:
                     await self._select_rewind_widget(user_widgets[idx - 1])
                     return
-        # No load more or already first message: scroll to top
         self.call_after_refresh(self._chat_widget.scroll_home, animate=False)
 
     def action_rewind_next(self) -> None:
@@ -4723,7 +4575,6 @@ class VibeApp(App):  # noqa: PLR0904
         )
 
     async def _select_rewind_widget(self, widget: UserMessage) -> None:
-        """Highlight the given user message widget and show the rewind panel."""
         if self._rewind_highlighted_widget is not None:
             self._rewind_highlighted_widget.remove_class("rewind-selected")
 
@@ -4746,7 +4597,6 @@ class VibeApp(App):  # noqa: PLR0904
     async def _switch_to_rewind_app(
         self, message_preview: str, *, has_file_changes: bool
     ) -> None:
-        """Show the rewind action panel at the bottom."""
         if self._current_bottom_app == BottomApp.Rewind:
             # Reuse existing widget if the option set hasn't changed
             try:
@@ -4778,7 +4628,6 @@ class VibeApp(App):  # noqa: PLR0904
         self._rewind_mode = False
 
     async def _exit_rewind_mode(self) -> None:
-        """Exit rewind mode and restore the input panel."""
         self._clear_rewind_state()
         await self._switch_to_input_app()
 
@@ -4793,7 +4642,6 @@ class VibeApp(App):  # noqa: PLR0904
         await self._execute_rewind(restore_files=False)
 
     async def _execute_rewind(self, *, restore_files: bool) -> None:
-        """Fork the session at the selected user message."""
         if not self._rewind_mode or self._rewind_highlighted_widget is None:
             return
 
@@ -4821,7 +4669,6 @@ class VibeApp(App):  # noqa: PLR0904
         for error in restore_errors:
             self.notify(error, severity="warning")
 
-        # Remove UI widgets from the selected message onward
         children = list(self._messages_area.children)
         try:
             target_idx = children.index(target_widget)
@@ -4833,7 +4680,6 @@ class VibeApp(App):  # noqa: PLR0904
 
         self._clear_rewind_state()
 
-        # Switch back to input and pre-fill with the original message
         await self._switch_to_input_app()
         if self._chat_input_container:
             self._chat_input_container.value = message_content

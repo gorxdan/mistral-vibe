@@ -1,11 +1,3 @@
-"""Git worktree isolation for the vibe harness.
-
-When active, agent writes land on a throwaway branch in a git worktree
-instead of the user's live checkout.  The lever is a single ``os.chdir``
-at the top-level entrypoint — subagents inherit the process cwd and
-never call :meth:`WorktreeManager.enter`.
-"""
-
 from __future__ import annotations
 
 import atexit
@@ -47,15 +39,9 @@ _MERGE_LOCK_TIMEOUT_S = 30.0
 
 
 class WorktreeError(RuntimeError):
-    """Raised when worktree isolation was required but could not be established.
-
-    Signals the caller (CLI/programmatic) that an explicit ``mode="on"`` /
-    ``--worktree`` requirement could not be honored, so it can surface the
-    failure rather than silently running in the user's live checkout.
-    """
+    pass
 
 
-# Names of files/dirs that indicate a git operation is in progress.
 _MID_OPERATION_MARKERS = [
     "MERGE_HEAD",
     "rebase-merge",
@@ -65,15 +51,12 @@ _MID_OPERATION_MARKERS = [
     "BISECT_LOG",
 ]
 
-# Default git identity for WIP commits when the user has none configured.
 _FALLBACK_GIT_NAME = "vibe"
 _FALLBACK_GIT_EMAIL = "vibe@local"
 
 
 @dataclass(frozen=True)
 class WorktreeHandle:
-    """Durable anchor for an active worktree session."""
-
     original_repo_root: Path
     worktree_path: Path
     branch: str
@@ -89,8 +72,6 @@ class WorktreeHandle:
 
 @dataclass(frozen=True)
 class StrandedBranch:
-    """A vibe worktree branch holding unmerged work with no live worktree."""
-
     branch: str
     ahead: int
     age: str
@@ -104,21 +85,10 @@ def worktree_enabled(
         return False
     if m == "on":
         return True
-    # auto-by-entrypoint: programmatic ON, cli needs --worktree, acp OFF.
     return programmatic or cli_flag
 
 
 def original_working_directory() -> str:
-    """Return the original repo root for the current checkout.
-
-    Used by :mod:`vibe.core.session.session_logger` to record a session's
-    ``working_directory`` and by the resume picker to scope to it, so the two
-    must agree. When a worktree this process entered is active, use its recorded
-    origin. Otherwise, if cwd sits inside a git worktree we did not enter (e.g.
-    launched directly inside one), resolve to the *main* working tree so a
-    session opened from a worktree still maps to the checkout it was recorded
-    under. Falls back to the resolved cwd outside any repo.
-    """
     if worktree_manager.active is not None:
         return str(worktree_manager.active.original_repo_root)
     return _origin_repo_root_for_cwd()
@@ -139,12 +109,6 @@ def _origin_repo_root_for_cwd() -> str:
 
 
 class WorktreeManager:
-    """Manages a single active git worktree for the process.
-
-    Only one worktree can be active at a time (the nested-enter guard).
-    Subagents never call :meth:`enter` — they inherit the process cwd.
-    """
-
     def __init__(self) -> None:
         self._active: WorktreeHandle | None = None
         self._atexit_registered = False
@@ -156,21 +120,6 @@ class WorktreeManager:
         return self._active
 
     def enter(self, label: str, config: WorktreeConfig) -> WorktreeHandle | None:
-        """Create a worktree, carry dirty state, and chdir into it.
-
-        Returns ``None`` (run in-place) if the cwd is not inside a git repo, or
-        the repo is mid-operation, or has dirty submodules — deliberate refusals
-        that must never lose the user's in-progress work (and the non-repo case
-        has no live checkout to isolate in the first place).
-
-        Raises :class:`WorktreeError` if worktree creation itself failed while
-        isolation was explicitly required (``mode="on"`` or ``--worktree``).
-        For ``mode="auto-by-entrypoint"`` the failure is soft: logged and
-        returns ``None`` so the run continues in-place.
-
-        Raises :class:`RuntimeError` if a worktree is already active
-        (nested-enter guard).
-        """
         if self._active is not None:
             raise RuntimeError(
                 "WorktreeManager.enter() called while a worktree is already active. "
@@ -180,8 +129,6 @@ class WorktreeManager:
         try:
             return self._do_enter(label, config)
         except Exception:
-            # Best-effort cleanup of partial state, then record the full
-            # traceback so programming errors are diagnosable.
             self._cleanup_partial()
             logger.exception("Worktree creation failed")
             # mode="on" expresses an isolation requirement — fail closed so an
@@ -198,18 +145,13 @@ class WorktreeManager:
             return None
 
     def _do_enter(self, label: str, config: WorktreeConfig) -> WorktreeHandle | None:
-        # 1. Crash recovery: prune stale worktrees.
         self._prune_and_report(config)
 
-        # 2. Resolve original repo root via git (NOT find_git_repo_ancestor,
-        #    which requires .git to be a dir and misses worktree roots).
+        # Resolve original repo root via git (NOT find_git_repo_ancestor,
+        # which requires .git to be a dir and misses worktree roots).
         try:
             repo = self._get_repo(Path.cwd())
         except InvalidGitRepositoryError:
-            # Not inside a git repo: there is no live checkout to isolate
-            # agent writes from, so running in-place violates nothing. Fail
-            # soft (even under mode="on") rather than blocking launch outside
-            # a repo. Mirrors the mid-operation / dirty-submodule refusals.
             logger.warning(
                 "Not a git repository: skipping worktree isolation and "
                 "running in-place. Run from inside a git repo (or use "
@@ -221,7 +163,6 @@ class WorktreeManager:
             raise RuntimeError("Cannot resolve working tree dir (bare repo?)")
         original_root = Path(working_tree_dir).resolve()
 
-        # 3. Refuse if repo mid-operation.
         if self._is_mid_operation(original_root):
             logger.warning(
                 "Repo is mid-operation (merge/rebase/cherry-pick). "
@@ -229,7 +170,6 @@ class WorktreeManager:
             )
             return None
 
-        # 4. Refuse if dirty submodules.
         if self._has_dirty_submodules(repo):
             logger.warning(
                 "Repo has dirty submodules. Skipping worktree isolation — "
@@ -239,12 +179,9 @@ class WorktreeManager:
 
         create_head_sha = repo.head.commit.hexsha
 
-        # 6. Collision-free branch name (nanosecond resolution).
         leaf = f"{label}-{os.getpid()}-{time.time_ns()}"
         branch = f"{config.branch_prefix}{leaf}"
 
-        # 7. Resolve worktree path from config.base_dir (outside the repo by
-        #    default, so it never appears in the user's git status).
         base_dir = Path(config.base_dir)
         repo_name = original_root.name
         worktree_path = base_dir / repo_name / leaf
@@ -252,9 +189,6 @@ class WorktreeManager:
         repo.git.worktree("add", str(worktree_path), "-b", branch, "HEAD")
         logger.info("Created worktree at %s on branch %s", worktree_path, branch)
 
-        # 8. Carry dirty state (excluding carry_ignored paths, which are
-        #    symlinked in step 9 instead).  Fingerprint the carried diff so exit
-        #    can confirm the live tree still matches before auto-merging over it.
         symlinks: list[Path] = []
         entry_dirty_fingerprint: str | None = None
         if config.carry_dirty:
@@ -263,18 +197,12 @@ class WorktreeManager:
             )
             self._carry_dirty(repo, worktree_path, config.carry_ignored)
 
-        # 9. Symlink deps.
         symlinks = self._symlink_deps(original_root, worktree_path, config)
 
-        # 10. Trust the worktree.
         trusted_folders_manager.trust_for_session(worktree_path)
-
-        # 11. Set orientation (footer shows original root).
-        # Done by the caller via config.displayed_workdir.
 
         os.chdir(worktree_path)
 
-        # 13. Store handle and register cleanup backstops.
         handle = WorktreeHandle(
             original_repo_root=original_root,
             worktree_path=worktree_path,
@@ -289,11 +217,6 @@ class WorktreeManager:
         return handle
 
     def exit(self, handle: WorktreeHandle) -> None:
-        """WIP-commit dirty state, optionally merge, then remove the worktree.
-
-        Never discards work.  If WIP-commit or removal fails, the worktree
-        and branch are kept for manual recovery.
-        """
         if self._active is None or self._active.branch != handle.branch:
             logger.warning(
                 "WorktreeManager.exit() called with a stale handle (branch=%s). "
@@ -315,33 +238,27 @@ class WorktreeManager:
     def _do_exit(self, handle: WorktreeHandle) -> None:
         wt_repo = self._get_repo(handle.worktree_path)
 
-        # 1. Unlink dep symlinks BEFORE the WIP commit so the worktree
-        #    tree is clean of ephemeral symlinks (they are gitignored, but
-        #    deleting them after the commit leaves the worktree dirty again
-        #    and blocks git worktree remove).
+        # Unlink dep symlinks BEFORE the WIP commit so the worktree
+        # tree is clean of ephemeral symlinks (they are gitignored, but
+        # deleting them after the commit leaves the worktree dirty again
+        # and blocks git worktree remove).
         for s in handle.symlinks:
             try:
                 s.unlink()
             except OSError as exc:
                 logger.warning("Failed to unlink symlink %s: %s", s, exc)
 
-        # 2. WIP-commit if dirty.
         wip_ok = True
         if self._is_dirty(wt_repo):
             wip_ok = self._wip_commit(wt_repo, handle)
 
-        # 3. Auto-ff merge (only if configured and the WIP commit succeeded).
-        #    If the WIP commit failed, the branch is missing the latest work;
-        #    merging it would give a misleading "merged" result, so skip and
-        #    leave the worktree for manual recovery.
         merged = False
         if handle.config.merge == "auto-ff" and wip_ok:
             merged = self._try_auto_ff(handle)
 
-        # 4. chdir back BEFORE worktree remove (removing cwd leaves stale cwd).
+        # chdir back BEFORE worktree remove (removing cwd leaves stale cwd).
         os.chdir(handle.original_repo_root)
 
-        # 5. Remove worktree (no --force).
         if handle.config.cleanup == "remove":
             try:
                 root_repo = self._get_repo(handle.original_repo_root)
@@ -355,7 +272,6 @@ class WorktreeManager:
                     handle.branch,
                 )
 
-        # 6. Print handoff.
         if merged:
             print(
                 "\n✓ Your changes were merged into the original checkout.\n",
@@ -365,23 +281,14 @@ class WorktreeManager:
             print(
                 f"\nYour work is kept on branch {handle.branch} but couldn't merge "
                 "automatically (it conflicts with another session's changes).\n"
-                f"  Land it later: vibe worktree merge {handle.branch}\n"
-                f"  Or discard:    vibe worktree discard {handle.branch}\n",
+                f"  Land it later: chaton worktree merge {handle.branch}\n"
+                f"  Or discard:    chaton worktree discard {handle.branch}\n",
                 file=sys.stdout,
             )
 
     def _carry_exclude_pathspecs(
         self, repo: Repo, carry_ignored: list[str]
     ) -> list[str]:
-        """``:(exclude)`` pathspecs for UNTRACKED carry_ignored paths.
-
-        Those are symlinked into the worktree instead of carried, so they are
-        excluded from the carried diff. Tracked carry_ignored paths (e.g. a
-        committed ``.env`` with uncommitted edits) are NOT excluded — their dirty
-        diff must be carried, or the worktree silently reverts to the committed
-        version. The exact same exclusion set is reused by the exit stash bracket
-        so the carried diff and the stash agree on which paths are in play.
-        """
         specs: list[str] = []
         for name in carry_ignored:
             if repo.git.ls_files(name).strip():
@@ -390,16 +297,7 @@ class WorktreeManager:
         return specs
 
     def _compute_dirty_patch(self, repo: Repo, carry_ignored: list[str]) -> bytes:
-        """Return the original tree's dirty diff vs HEAD (tracked + untracked),
-        excluding untracked carry_ignored paths. Empty bytes if clean.
-
-        Uses a COPY of the real index under ``GIT_INDEX_FILE`` so the user's
-        ``.git/index`` is never touched.  Adapts the pattern from
-        ``teleport/git.py:158-159`` (``add -N .`` + ``diff HEAD --binary``).
-
-        Uses subprocess directly (not GitPython) so binary patch data survives
-        — GitPython's string return corrupts binary patches.
-        """
+        # Uses subprocess (not GitPython): GitPython's string return corrupts binary patches.
         import subprocess
 
         wtd = repo.working_tree_dir
@@ -446,7 +344,6 @@ class WorktreeManager:
     def _carry_dirty(
         self, repo: Repo, worktree_path: Path, carry_ignored: list[str]
     ) -> None:
-        """Copy tracked + untracked working-tree changes into the worktree."""
         import subprocess
 
         patch_bytes = self._compute_dirty_patch(repo, carry_ignored)
@@ -468,15 +365,6 @@ class WorktreeManager:
             patch_file.unlink(missing_ok=True)
 
     def _dirty_fingerprint(self, repo: Repo, carry_ignored: list[str]) -> str | None:
-        """sha256 of the carried dirty diff, or None when the tree is clean.
-
-        Captured at enter and recomputed at exit: if they match, the live dirty
-        state is exactly what was carried into the worktree (and thus already
-        reproduced in the branch's WIP commit), so it is safe to stash-and-drop
-        it during the fast-forward. A mismatch means a concurrent writer touched
-        the original tree — the stash would capture work the branch does not
-        contain, so the merge is held instead.
-        """
         import hashlib
 
         try:
@@ -491,7 +379,6 @@ class WorktreeManager:
     def _symlink_deps(
         self, original_root: Path, worktree_path: Path, config: WorktreeConfig
     ) -> list[Path]:
-        """Symlink gitignored dep directories from the original repo."""
         symlinks: list[Path] = []
         for name in config.carry_ignored:
             src = original_root / name
@@ -507,12 +394,6 @@ class WorktreeManager:
         return symlinks
 
     def _prune_and_report(self, config: WorktreeConfig) -> None:
-        """Prune stale worktree admin entries and GC merged-and-old branches.
-
-        Surfacing unmerged orphans to the user is handled separately by
-        :meth:`print_startup_report` (the orphan log here was file-only and
-        invisible at the default WARNING level).
-        """
         try:
             repo = self._get_repo(Path.cwd())
             repo.git.worktree("prune")
@@ -522,16 +403,6 @@ class WorktreeManager:
         self._gc_abandoned_worktrees(repo, config)
 
     def _gc_abandoned_worktrees(self, repo: Repo, config: WorktreeConfig) -> None:
-        """Delete ``branch_prefix`` branches that are already merged into HEAD,
-        have no live worktree, and are older than ``config.gc_age_days``.
-
-        Conservative by construction: a merged branch's commits are reachable
-        from HEAD, so deleting the ref loses nothing. Branches with unmerged work
-        are never touched (that is the user's recoverable residue), and branches
-        with a live worktree (an active session) are skipped entirely. Leaked
-        worktree *directories* are left for the user-driven ``vibe worktree``
-        command rather than auto-removed, so an in-use checkout is never yanked.
-        """
         if config.gc_age_days <= 0:
             return
         try:
@@ -554,7 +425,7 @@ class WorktreeManager:
             except GitCommandError:
                 continue
             if ts > cutoff:
-                continue  # merged but recent -> leave it a while
+                continue
             try:
                 repo.git.branch("-D", name)
                 logger.info(
@@ -566,12 +437,6 @@ class WorktreeManager:
                 logger.debug("GC: could not delete branch %s: %s", name, exc)
 
     def list_stranded_branches(self, config: WorktreeConfig) -> list[StrandedBranch]:
-        """Enumerate ``branch_prefix`` branches that hold unmerged work and have
-        no live worktree — i.e. work from a prior session that never merged back.
-
-        Excludes branches with a live worktree (the active session), branches
-        already merged into HEAD, and empty branches (tip == HEAD).
-        """
         repo = self._get_repo(Path.cwd())
         live = self._live_worktree_branches(repo)
         try:
@@ -585,15 +450,15 @@ class WorktreeManager:
         for raw in names.splitlines():
             name = raw.strip()
             if not name or name in live:
-                continue  # empty line or a live worktree's branch (active)
+                continue
             if self._is_ancestor(repo, name, "HEAD"):
-                continue  # already merged into HEAD — GC reclaims it
+                continue
             try:
                 ahead = int(repo.git.rev_list("--count", f"HEAD..{name}").strip() or 0)
             except GitCommandError:
                 continue
             if ahead == 0:
-                continue  # nothing ahead of HEAD to recover
+                continue
             try:
                 age = repo.git.log("-1", "--format=%cr", name).strip()
             except GitCommandError:
@@ -602,13 +467,6 @@ class WorktreeManager:
         return stranded
 
     def print_startup_report(self, config: WorktreeConfig) -> None:
-        """Print a user-facing notice for any unmerged worktree branches.
-
-        This is the visibility backstop: ``_prune_and_report`` only logs orphans
-        to the (file-only, WARNING-default) logger, so stranded work was never
-        surfaced. Prints to stderr; no-op when there is nothing to report or the
-        cwd is not a git repo.
-        """
         if not config.report_on_startup:
             return
         try:
@@ -627,13 +485,12 @@ class WorktreeManager:
             lines.append(f"  {b.branch}  ({b.ahead} commit(s), {b.age})")
             lines.append(
                 f"    merge:  git merge {b.branch}"
-                f"   (or: vibe worktree merge {b.branch})"
+                f"   (or: chaton worktree merge {b.branch})"
             )
-        lines.append("  review/clean up:  vibe worktree list")
+        lines.append("  review/clean up:  chaton worktree list")
         print("\n".join(lines), file=sys.stderr)
 
     def _is_ancestor(self, repo: Repo, rev: str, ancestor_of: str) -> bool:
-        """Return True if *rev* is an ancestor of *ancestor_of* (i.e. merged)."""
         try:
             repo.git.merge_base("--is-ancestor", rev, ancestor_of)
             return True
@@ -641,13 +498,9 @@ class WorktreeManager:
             return False
 
     def _live_worktree_branches(self, repo: Repo) -> set[str]:
-        """Short refnames of branches checked out in a live worktree.
-
-        Parsed exactly from ``git worktree list --porcelain`` (``branch
-        refs/heads/<ref>`` lines) — a substring test against the raw porcelain
-        text would false-positive when one branch name is a prefix of another
-        (e.g. ``vibe/foo`` inside ``vibe/foobar``), hiding stranded work.
-        """
+        # Parsed from `git worktree list --porcelain` by exact prefix match, not
+        # substring: a substring test false-positives when one branch name is a
+        # prefix of another (e.g. `vibe/foo` inside `vibe/foobar`).
         try:
             out = repo.git.worktree("list", "--porcelain")
         except GitCommandError:
@@ -659,7 +512,6 @@ class WorktreeManager:
         return live
 
     def _get_repo(self, path: Path) -> Repo:
-        """Get a GitPython Repo for *path*, searching parent dirs."""
         return Repo(str(path), search_parent_directories=True)
 
     def _is_mid_operation(self, repo_root: Path) -> bool:
@@ -693,11 +545,6 @@ class WorktreeManager:
             return False
 
     def _wip_commit(self, repo: Repo, handle: WorktreeHandle) -> bool:
-        """WIP-commit dirty state onto the branch. Never discards work.
-
-        Returns True if the commit succeeded (or there was nothing to commit),
-        False if the commit failed so the caller can skip auto-ff.
-        """
         import subprocess
 
         try:
@@ -741,18 +588,6 @@ class WorktreeManager:
             return False
 
     def _try_auto_ff(self, handle: WorktreeHandle) -> bool:
-        """Attempt a fast-forward merge into the original repo.
-
-        Returns ``True`` if merged, ``False`` if manual handoff is needed.
-
-        When the original tree is clean this is a plain ``--ff-only``. When it is
-        dirty *and* the dirt is exactly what was carried at enter (fingerprint
-        match), the dirt is already reproduced in the branch's WIP commit, so it
-        is stashed away, the branch is fast-forwarded (which re-materialises the
-        dirt plus the agent's work in the working tree), and the now-redundant
-        stash is dropped. If the dirt changed (a concurrent writer), the merge is
-        held — dropping that stash would lose work the branch never captured.
-        """
         try:
             root_repo = self._get_repo(handle.original_repo_root)
             lock_path = Path(handle.original_repo_root) / ".git" / _MERGE_LOCK_NAME
@@ -770,8 +605,6 @@ class WorktreeManager:
     def _merge_under_lock(self, root_repo: Repo, handle: WorktreeHandle) -> bool:
         current_head = root_repo.head.commit.hexsha
         if current_head != handle.create_head_sha:
-            # HEAD moved (a concurrent session merged): rebase the branch onto it
-            # so the ff below still applies, instead of stranding the work.
             if not self._rebase_branch_onto(handle, current_head):
                 return False
         # None == no carried dirt -> a plain ff is safe (carry_ignored never blocks).
@@ -784,8 +617,6 @@ class WorktreeManager:
                 handle.original_repo_root,
             )
             return True
-        # Stash-ff-drop only when the live dirt matches what we carried at enter
-        # (the branch's WIP reproduces it); else a concurrent writer -> hold.
         if now_fp != handle.entry_dirty_fingerprint:
             logger.info(
                 "Auto-ff skipped: original tree dirty and changed since enter "
@@ -795,10 +626,6 @@ class WorktreeManager:
         return self._stash_ff_drop(root_repo, handle)
 
     def _rebase_branch_onto(self, handle: WorktreeHandle, base_sha: str) -> bool:
-        """Rebase the worktree branch onto *base_sha* so a later ``--ff-only``
-        applies. Returns False (after aborting the rebase) on conflict, leaving
-        the branch intact for resolution.
-        """
         wt_repo = self._get_repo(handle.worktree_path)
         try:
             wt_repo.git.rebase(base_sha)
@@ -820,11 +647,8 @@ class WorktreeManager:
             return False
 
     def _stash_ref_for_message(self, repo: Repo, message: str) -> str | None:
-        """Resolve the ``stash@{N}`` whose message equals *message*.
-
-        ``git stash drop``/``pop`` reject raw commit SHAs, and concurrent stashes
-        shift ``stash@{0}``, so the entry is located by its unique message.
-        """
+        # `git stash drop`/`pop` reject raw commit SHAs; concurrent stashes
+        # shift `stash@{0}`, so locate by unique message suffix instead.
         try:
             out = repo.git.stash("list", "--format=%gd %s")
         except GitCommandError:
@@ -838,9 +662,6 @@ class WorktreeManager:
         return None
 
     def _restore_stash(self, repo: Repo, message: str) -> None:
-        """Pop the stash back onto the tree (used when the merge could not land,
-        so the user's live changes are never abandoned in the stash list).
-        """
         ref = self._stash_ref_for_message(repo, message)
         if ref is None:
             return
@@ -855,11 +676,6 @@ class WorktreeManager:
             )
 
     def _stash_ff_drop(self, root_repo: Repo, handle: WorktreeHandle) -> bool:
-        """Stash the live dirt, fast-forward the branch, drop the redundant stash.
-
-        Precondition (checked by the caller): HEAD is unchanged and the live dirt
-        matches the carried fingerprint, so the branch tip already reproduces it.
-        """
         # Exclude the same untracked carry_ignored paths the carried diff did, so
         # symlinked deps / an untracked .env are never swept into (and dropped
         # with) the stash.
@@ -888,7 +704,6 @@ class WorktreeManager:
                 )
                 self._restore_stash(root_repo, message)
                 return False
-            # Merge landed; the WIP commit reproduces the dirt -> drop the stash.
             ref = self._stash_ref_for_message(root_repo, message)
             if ref is not None:
                 try:
@@ -912,9 +727,6 @@ class WorktreeManager:
             return False
 
     def _cleanup_partial(self) -> None:
-        """Best-effort cleanup of a partially-created worktree."""
-        # Nothing specific to clean — the worktree add either succeeded or
-        # didn't. If it did, the branch persists for recovery.
         pass
 
     def _register_cleanup_backstops(self) -> None:

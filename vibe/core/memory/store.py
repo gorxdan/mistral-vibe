@@ -1,12 +1,3 @@
-"""File-based memory store: human-editable markdown with YAML frontmatter.
-
-One file per memory under a memory dir (user: ``~/.vibe/memory/*.md``; project:
-``<root>/.vibe/memory/*.md``). No embeddings, no DB — discovery is a file scan,
-relevance is an LLM header-scan (see selector.py). Project memories shadow user
-memories by id. Writes are atomic (temp + os.replace) so concurrent agents on a
-shared tree never tear a sibling file.
-"""
-
 from __future__ import annotations
 
 import contextlib
@@ -81,7 +72,7 @@ class MemoryStore:
                     continue
                 entry = self._load_file(f)
                 if entry is not None:
-                    entries[entry.id] = entry  # later dirs (project) shadow user
+                    entries[entry.id] = entry
         self._cache = entries
         self._mtimes = mtimes
         return entries
@@ -117,11 +108,6 @@ class MemoryStore:
         return [e.index_line() for e in self._sorted_entries()[:limit]]
 
     def index_markdown(self, limit: int = 200) -> str:
-        # The selector consumes index() (clean list); this markdown form is the
-        # always-on display the model reads. When the corpus exceeds the cap,
-        # silently dropping the tail makes those memories recall-invisible with
-        # no signal — surface a footer so the model knows to raise the cap or
-        # grep the store rather than assume the index is exhaustive.
         entries = self._sorted_entries()
         shown = entries[:limit]
         lines = [e.index_line() for e in shown]
@@ -141,9 +127,6 @@ class MemoryStore:
         return self._entries().get(memory_id)
 
     def bodies(self, ids: list[str], max_chars: int) -> str:
-        """Concatenate selected bodies in given order, capped at max_chars
-        (whole-entry drop — never a partial body).
-        """
         blocks: list[str] = []
         used = 0
         for mid in ids:
@@ -168,16 +151,10 @@ class MemoryStore:
         fm = entry.metadata.model_dump(mode="json")
         doc = f"---\n{yaml.safe_dump(fm, sort_keys=False)}---\n{entry.body}\n"
         self._atomic_write(path, doc)
-        self._cache = None  # invalidate
+        self._cache = None
         return path
 
     def remove_from_tier(self, memory_id: str, *, project: bool) -> bool:
-        """Remove the memory from ONE tier only (user xor project).
-
-        Used on tier change so the old tier's file does not shadow the new one
-        (project shadows user by id; without this, a project->user re-scope is
-        invisible because the stale project file keeps winning).
-        """
         if not _ID_RE.fullmatch(memory_id):
             return False
         target = (
@@ -224,11 +201,6 @@ class MemoryStore:
         return None
 
     def trash(self, memory_id: str, *, reason: str, into: str | None = None) -> bool:
-        """Move a memory's effective file into a per-dir ``.trash/`` tree with
-        a ledger entry. Never hard-deletes — the file stays recoverable (see
-        ``restore``) and the ledger records why it moved. Returns False if the
-        id has no effective file (nothing to trash).
-        """
         src = self._effective_path(memory_id)
         if src is None:
             return False
@@ -263,15 +235,6 @@ class MemoryStore:
         return True
 
     def restore(self, memory_id: str) -> Path | None:
-        """Restore the most recently trashed copy of ``memory_id`` back to a
-        live memory file, returning its path. The undo is itself ledger-audited.
-
-        Recovery scans ``.trash/`` trees by filename, so it does NOT depend on
-        the ledger being intact — a trashed file is recoverable even if its
-        ledger line was lost to a crash. Returns None when no trashed copy
-        exists, or when a live file already occupies the id: restore refuses to
-        clobber (delete it first if you really want the old copy back).
-        """
         if not _ID_RE.fullmatch(memory_id):
             return None
         # Refuse to clobber a live memory: restoring over it would silently
@@ -317,21 +280,6 @@ class MemoryStore:
         *,
         extra_tags: list[str] | None = None,
     ) -> int:
-        """Rewrite ``into_id`` with a reconciled body and trash its sources.
-
-        The target keeps its metadata (scope/type); only ``updated`` is bumped
-        to ``today`` so the recency signal reflects the reconciliation, and
-        ``source`` is marked ``auto``. Tags from the folded-in sources are
-        unioned in via ``extra_tags`` so a merge does not silently lose a source
-        tag (e.g. folding a [commits] memory into a [git] one). Returns the
-        count of source files actually trashed. A source equal to the target is
-        skipped (not trashed).
-
-        The survivor's PRE-merge body is backed up to trash before the rewrite,
-        so a merge is reversible end to end — not just its sources. Use
-        ``restore(into_id)`` to recover the pre-merge state (after deleting the
-        reconciled copy, since restore refuses to clobber a live file).
-        """
         target = self.get(into_id)
         if target is None:
             return 0
@@ -357,10 +305,6 @@ class MemoryStore:
     def consolidation_candidates(
         self, *, min_age_days: int, today: datetime.date | None = None
     ) -> list[MemoryEntry]:
-        """Effective entries older than ``min_age_days`` — the consolidation
-        set. Fresh memories and undated entries (unknown age) are excluded: a
-        consolidate pass should never merge away something just learned.
-        """
         out: list[MemoryEntry] = []
         for e in self._entries().values():
             age = memory_age_days(e.metadata.updated, today)
@@ -418,17 +362,6 @@ class MemoryStore:
             os.fsync(f.fileno())
 
     def sweep_trash(self, max_age_days: int) -> int:
-        """Delete trash entries older than ``max_age_days`` and compact the ledger.
-
-        Ages trashed files by the timestamp encoded in their filename (written by
-        ``trash()``), not file mtime — ``os.replace`` preserves the source mtime,
-        so mtime would report the memory's original write time rather than when
-        it was trashed. Files whose filename timestamp is unparsable are LEFT
-        (conservative: never delete what cannot be dated). After unlinking, the
-        per-directory ledger is compacted to drop entries referencing removed
-        files. ``max_age_days <= 0`` disables the sweep (no-op). Returns the
-        count of files removed.
-        """
         if max_age_days <= 0:
             return 0
         now = datetime.datetime.now()
@@ -516,14 +449,6 @@ def _parse_trash_ts(filename: str) -> datetime.datetime | None:
 
 
 def _project_identity(workdir: Path) -> Path:
-    """Stable per-project identity for *workdir*.
-
-    Git's common dir is shared by the main worktree and every linked worktree
-    of one repo, so sessions across all of them collapse to one memory
-    namespace (the multi-agent/multi-worktree case). Older git returns it
-    relative, so resolve against workdir. Falls back to the workdir itself
-    outside git (per-path isolation).
-    """
     try:
         out = subprocess.run(
             ["git", "-C", str(workdir), "rev-parse", "--git-common-dir"],
@@ -540,12 +465,6 @@ def _project_identity(workdir: Path) -> Path:
 
 
 def _namespace_for(identity: Path, *, create: bool = False) -> Path:
-    """Memory namespace dir under ``~/.vibe`` for a resolved project identity.
-
-    Shared by the harness-rooted resolver (:func:`project_memory_dir`) and the
-    explicit-root resolver (:func:`project_memory_dir_for`). ``create`` also
-    stamps a ``.origin`` file so an opaque hash dir stays debuggable.
-    """
     digest = hashlib.sha256(str(identity).encode("utf-8")).hexdigest()[:16]
     ns = VIBE_HOME.path / "memory" / "projects" / digest
     if create:
@@ -560,26 +479,10 @@ def _namespace_for(identity: Path, *, create: bool = False) -> Path:
 
 
 def project_memory_dir_for(root: Path, *, create: bool = False) -> Path:
-    """Memory namespace for an *explicit* project root, not the running one.
-
-    Lets a caller target another repo's namespace (e.g. leaving a resume-memory
-    for a project the agent is not currently running in). The identity is the
-    same ``_project_identity`` the harness uses, so this resolves to the SAME
-    namespace that an agent running inside ``root`` would see.
-    """
     return _namespace_for(_project_identity(root), create=create)
 
 
 def project_memory_dir(*, create: bool = False) -> Path | None:
-    """Current project's memory namespace under ``~/.vibe``, or ``None``.
-
-    Per-project memories live UNDER ``~/.vibe`` (never in the repo) so they
-    can't be committed — this is why project memory is on by default. The
-    namespace is keyed by the project identity (see ``_project_identity``): all
-    sessions and worktrees of one git repo share it; different repos (and
-    non-git dirs) stay isolated. Returns ``None`` when there's no trusted
-    project (caller falls back to global only).
-    """
     try:
         from vibe.core.config.harness_files import get_harness_files_manager
 

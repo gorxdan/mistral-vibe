@@ -97,9 +97,6 @@ def _extract_commands_cached(command: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
-# Parse once per command string, reuse the result: resolve_permission() and
-# _resolve_sandbox() each extract the same command, and identical commands
-# recur across a session. Hand back a fresh list so callers may mutate freely.
 def _extract_commands(command: str) -> list[str]:
     return list(_extract_commands_cached(command))
 
@@ -231,15 +228,6 @@ _FIND_EXECUTION_PREDICATES = {"-exec", "-execdir", "-ok", "-okdir"}
 
 
 def _collect_outside_dirs(command_parts: list[str]) -> set[str]:
-    """Collect parent directories referenced outside the workdir.
-
-    Iterates file-manipulating commands (see _PATH_COMMANDS) and inspects
-    their arguments as candidate paths. Skips flags (-r, --recursive) and
-    chmod mode strings (+x). For any argument that resolves outside the current
-    working directory, adds the parent directory (or the path itself when it is
-    a directory) to the result set — suitable for building an OUTSIDE_DIRECTORY
-    RequiredPermission.
-    """
     dirs: set[str] = set()
     for part in command_parts:
         tokens = part.split()
@@ -247,13 +235,10 @@ def _collect_outside_dirs(command_parts: list[str]) -> set[str]:
         if not command or command not in _PATH_COMMANDS:
             continue
         for token in tokens[1:]:
-            # Skip CLI flags like -r, --recursive
             if token.startswith("-"):
                 continue
-            # Skip chmod mode strings like +x, +rwx — they are not file paths
             if command == "chmod" and token.startswith("+"):
                 continue
-            # Only consider tokens that look like paths
             if not (
                 token.startswith(os.sep)
                 or token.startswith("~")
@@ -265,12 +250,10 @@ def _collect_outside_dirs(command_parts: list[str]) -> set[str]:
                 continue
             if is_scratchpad_path(token):
                 continue
-            # Resolve relative / home-relative paths, then collect parent dir
             resolved = Path(token).expanduser()
             if not resolved.is_absolute():
                 resolved = Path.cwd() / resolved
             resolved = resolved.resolve()
-            # For a directory target use the dir itself; for a file use its parent
             parent = str(resolved) if resolved.is_dir() else str(resolved.parent)
             dirs.add(parent)
     return dirs
@@ -280,8 +263,6 @@ def _matches_pattern(command: str, pattern: str) -> bool:
     return command == pattern or command.startswith(pattern + " ")
 
 
-# A `sleep` of this many seconds or more is treated as a blocking wait — the
-# agent should schedule a future turn instead of tying up the session.
 _SLEEP_BLOCK_THRESHOLD_S = 10.0
 _SLEEP_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 # Match `sleep <duration>` anywhere in the raw command (any position in a
@@ -293,17 +274,10 @@ _SLEEP_RE = re.compile(r"(?:^|[\s;&|()`])sleep\s+(\d[\d.]*[smhd]?)")
 def _sleep_token_seconds(token: str) -> float:
     if token and token[-1] in _SLEEP_UNIT_SECONDS:
         return float(token[:-1]) * _SLEEP_UNIT_SECONDS[token[-1]]
-    return float(token)  # bare number = seconds; raises ValueError if non-numeric
+    return float(token)
 
 
 def _blocking_sleep_reason(command: str) -> str | None:
-    """Reason to deny a long blocking `sleep` in *command*, or None to allow it.
-
-    Short sleeps (a couple seconds, e.g. waiting for a service) are fine; a long
-    sleep blocks the turn, hits the command timeout, and wastes the session —
-    denied with a pointer to the `schedule` tool. A non-numeric duration
-    (`sleep $X`) doesn't match and is left to the normal flow.
-    """
     longest = 0.0
     for match in _SLEEP_RE.finditer(command):
         try:
@@ -351,13 +325,6 @@ def _forbidden_control_char_reason(command: str) -> str | None:
 
 
 def _auto_approval_blocker(command: str) -> str | None:
-    """Return a reason the command must not resolve to ALWAYS, even when its
-    leading words are allowlisted; None permits auto-approval.
-
-    Side-effecting shell operators compose or redirect in ways the prefix
-    allowlist check cannot soundly approve, and a shlex tokenization failure
-    means tree-sitter's view of the command may not match what the shell runs.
-    """
     for op in _SIDE_EFFECTING_OPERATORS:
         if op in command:
             return (
@@ -429,9 +396,6 @@ class BashResult(BaseModel):
     stdout: str
     stderr: str
     returncode: int
-    # Set only for background spawns (background=True). background_task_id is the
-    # registry id ("proc-N"); pid is the OS pid. returncode is -1 (still running)
-    # at yield time and is finalized asynchronously by the registry.
     background_task_id: str | None = None
     pid: int | None = None
 
@@ -470,7 +434,6 @@ class Bash(
 
     @staticmethod
     def _has_find_execution_predicate(command: str) -> bool:
-        """Defensive check for find -exec, -execdir, -ok, -okdir predicates."""
         if not _matches_pattern(command, "find"):
             return False
         return any(predicate in command for predicate in _FIND_EXECUTION_PREDICATES)
@@ -519,12 +482,6 @@ class Bash(
         )
 
     def _is_auto_approved(self, command: str) -> bool:
-        """Allowlisted AND argument-safe.
-
-        A binary that is allowlisted can still be dangerous in a particular
-        invocation (e.g. ``find -delete``); the argument gate keeps those from
-        being unconditionally auto-approved.
-        """
         return self._is_allowlisted(command) and (
             allowlisted_argument_is_unsafe(command) is None
         )
@@ -662,16 +619,6 @@ class Bash(
         blocker: str | None,
         guardrail_permission: PermissionContext | None,
     ) -> PermissionContext | None:
-        """Decide ALWAYS vs ASK vs None once guardrails have run.
-
-        A destructive command (``rm -rf``) or an allowlisted binary with dangerous
-        arguments (``find -delete``) is never auto-approved; its reason is surfaced
-        on the ASK so the user/LLM understands the escalation.
-
-        The raw command is scanned alongside tree-sitter's parsed parts because the
-        bash parser drops bare numeric arguments (e.g. ``chmod 777 .`` extracts as
-        ``chmod .``), which would hide the mode from the destructive detector.
-        """
         destructive = destructive_command_reason([*command_parts, raw_command])
         arg_reason: str | None = None
         for part in command_parts:
@@ -723,11 +670,6 @@ class Bash(
     def _resolve_sandbox(
         self, ctx: InvokeContext | None, command: str
     ) -> tuple[list[str] | None, Path | None, dict[str, str]]:
-        """Resolve the sandbox wrapper for a command.
-
-        Returns (argv_prefix, seatbelt_profile_path, env). argv_prefix is None
-        when sandboxing is disabled or no backend is available (run as today).
-        """
         sb = self.config.sandbox
         if not sb.enabled:
             return None, None, _get_base_env()
@@ -771,18 +713,6 @@ class Bash(
     async def _run_background(
         self, args: BashArgs, ctx: InvokeContext | None
     ) -> AsyncGenerator[ToolStreamEvent | BashResult, None]:
-        """Spawn a long-lived command, register it, and return immediately.
-
-        Output is captured via fd-level redirection: the log file is opened in
-        the parent and passed as the child's stdout (stderr dup'd to it). This
-        avoids shell-level `{ cmd ; } >> log` grouping, which a command
-        containing a literal ``}`` could close early and so write part of its
-        output off the log. The registry owns closing the handle when the
-        process leaves the running state. The process is spawned with
-        start_new_session so the registry's process-group signaling reaches
-        grandchildren (npm/vite child servers). The same sandbox resolution as
-        the foreground path applies.
-        """
         if ctx is None:
             raise ToolError(
                 "background execution is not available in this context "
@@ -795,8 +725,6 @@ class Bash(
             raise ToolError(
                 "background execution requires a scratchpad or session directory"
             )
-        # Bind then narrow: the registry may be None in headless/ACP runs; an
-        # explicit check lets pyright narrow away the Optional before use.
         registry = ctx.background_registry
         if registry is None:
             raise ToolError(
@@ -810,8 +738,6 @@ class Bash(
         # eagerly so the Tasks pane's log tail works before the first write.
         log_path = bg_dir / f"bg-{time.monotonic_ns()}.log"
         log_path.touch()
-        # Open for binary append; handed to the child as stdout/stderr so the
-        # shell command runs verbatim with no redirection wrapping needed.
         log_handle = log_path.open("ab", buffering=0)
 
         kwargs: dict[Literal["start_new_session"], bool] = (
@@ -884,10 +810,7 @@ class Bash(
         timeout = args.timeout or self.config.default_timeout
         max_bytes = self.config.max_output_bytes
 
-        # Background branch: spawn, register, return immediately. The process
-        # outlives this turn; output is tailed from a log file via the registry
-        # (background tool / Tasks pane). Returns BEFORE the foreground try/try
-        # below, so the finally that kills the proc never runs for backgrounds.
+        # Returns BEFORE foreground try/finally below — finally never kills backgrounds.
         if args.background:
             async for item in self._run_background(args, ctx):
                 yield item
@@ -896,7 +819,6 @@ class Bash(
         proc = None
         profile_path: Path | None = None
         try:
-            # start_new_session is Unix-only, on Windows it's ignored
             kwargs: dict[Literal["start_new_session"], bool] = (
                 {} if is_windows() else {"start_new_session": True}
             )
@@ -917,8 +839,6 @@ class Bash(
                         **kwargs,
                     )
                 except (FileNotFoundError, OSError) as exc:
-                    # Wrapper binary missing / namespace creation refused. Fail
-                    # closed only if the user demanded a sandbox.
                     if self.config.sandbox.require_backend:
                         raise ToolError(
                             f"Sandbox wrapper failed to start: {exc}"

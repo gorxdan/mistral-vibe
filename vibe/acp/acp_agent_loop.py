@@ -518,7 +518,6 @@ class VibeAcpAgentLoop(AcpAgent):
         # For this reason, we make a distinction in the way we call the setup command
         command = sys.executable
         if "python" not in Path(command).name:
-            # It's the case for bundled binaries, we don't need any other arguments
             args = ["--setup"]
         else:
             script_name = sys.argv[0]
@@ -763,10 +762,6 @@ class VibeAcpAgentLoop(AcpAgent):
     def _make_loop_fire(
         self, session: AcpSessionLoop
     ) -> Callable[[ScheduledLoop], Awaitable[None]]:
-        """Fire a scheduled loop as an agent-initiated turn, streaming its
-        updates to the client like a normal prompt.
-        """
-
         async def _fire(due: ScheduledLoop) -> None:
             async for update in self._run_agent_loop(session, due.prompt):
                 await self.client.session_update(session_id=session.id, update=update)
@@ -780,10 +775,6 @@ class VibeAcpAgentLoop(AcpAgent):
         await self._send_available_commands(session)
 
     async def _warm_up_agent_loop(self, agent_loop: AgentLoop) -> None:
-        """Proactively await deferred init so `vibe.ready` telemetry is emitted
-        without waiting for the user's first prompt. Errors are swallowed here
-        and will resurface on the first `act()` call via `requires_init`.
-        """
         try:
             await agent_loop.wait_until_ready()
         except Exception:
@@ -983,16 +974,6 @@ class VibeAcpAgentLoop(AcpAgent):
     async def _register_additional_directories(
         self, additional_directories: list[str] | None
     ) -> None:
-        """Trust and register ACP ``additional_directories`` for harness discovery.
-
-        Mirrors the CLI ``--add-dir`` flow so ACP provides the same access to
-        skills/tools/hooks/workflows/config in those roots. Each dir is trusted
-        for the session and set on the harness manager's project roots. A dir the
-        client DECLINES is neither trusted nor registered. The session's dir set
-        REPLACES any prior session's (cross-session isolation via
-        ``add_session_dirs``), so this is always called even when the list is
-        empty.
-        """
         resolved: list[Path] = []
         for d in additional_directories or []:
             path = Path(d).expanduser().resolve()
@@ -1035,10 +1016,6 @@ class VibeAcpAgentLoop(AcpAgent):
             agent_loop = self._create_agent_loop(
                 config, BuiltinAgentName.DEFAULT, hook_config_result=hook_config_result
             )
-            # NOTE: For now, we pin session.id to agent_loop.session_id right after init time.
-            # We should just use agent_loop.session_id everywhere, but it can still change during
-            # session lifetime (e.g. agent_loop.compact is called).
-            # We should refactor agent_loop.session_id to make it immutable in ACP context.
             session = await self._create_acp_session(agent_loop.session_id, agent_loop)
         except Exception as e:
             raise ConfigurationError(str(e)) from e
@@ -1606,7 +1583,6 @@ class VibeAcpAgentLoop(AcpAgent):
         for block in ordered:
             separator = "\n\n" if text_prompt else ""
             match block.type:
-                # NOTE: ACP supports annotations, but we don't use them here yet.
                 case "text":
                     text_prompt = f"{text_prompt}{separator}{block.text}"
                 case "resource":
@@ -1624,9 +1600,6 @@ class VibeAcpAgentLoop(AcpAgent):
                     block_prompt = "\n".join(parts)
                     text_prompt = f"{text_prompt}{separator}{block_prompt}"
                 case "resource_link":
-                    # NOTE: we currently keep more information than just the URI
-                    # making it more detailed than the output of the read tool.
-                    # This is OK, but might be worth testing how it affect performance.
                     fields = {
                         "uri": block.uri,
                         "name": block.name,
@@ -1656,7 +1629,7 @@ class VibeAcpAgentLoop(AcpAgent):
         if not parts or not parts[0].startswith("/"):
             return None
 
-        cmd_name = parts[0][1:]  # strip leading "/"
+        cmd_name = parts[0][1:]
         command = session.command_registry.get(cmd_name)
         if command is None:
             return None
@@ -2378,7 +2351,6 @@ def run_acp_server(
                 )
             except (TimeoutError, Exception):
                 pass
-        # This is expected when the server is terminated
         pass
     except Exception as e:
         print(f"ACP Agent Server error: {e}", file=sys.stderr)

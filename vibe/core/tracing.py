@@ -30,9 +30,6 @@ from vibe.core.utils import utc_now
 VIBE_TRACER_NAME = "chaton"
 VIBE_AGENT_NAME = "chaton"
 
-# Map internal backend identifiers to the OTel gen_ai.provider.name well-known
-# values where one exists; unknown backends (zai, sakana, ...) pass through as
-# free-form strings, which the convention permits.
 _PROVIDER_ALIASES = {
     "mistral": gen_ai_attributes.GenAiProviderNameValues.MISTRAL_AI.value,
     "openai-chatgpt": gen_ai_attributes.GenAiProviderNameValues.OPENAI.value,
@@ -55,13 +52,6 @@ def _span_to_jsonl(span: ReadableSpan) -> str:
 
 
 class _JsonlSpanExporter(SpanExporter):
-    """Appends each ended span as one JSON line to a local file.
-
-    Used with :class:`~opentelemetry.sdk.trace.export.SimpleSpanProcessor` so
-    spans are written immediately on end — durable across crashes, suitable for
-    local debugging without an external collector.
-    """
-
     def __init__(self, path: Path) -> None:
         self._path = path
 
@@ -82,17 +72,6 @@ class _JsonlSpanExporter(SpanExporter):
 
 
 class _JsonlLogExporter:
-    """Local JSONL sink for OTel logs (mirrors :class:`_JsonlSpanExporter`).
-
-    A plain callable-style exporter (export/shutdown/force_flush). It is wrapped
-    by :class:`_OtelLogExporterAdapter` at setup time to satisfy the
-    ``LogRecordExporter`` protocol, so this class never imports the optional logs
-    SDK at module load. Used so structured logs reach a durable local file
-    without requiring the ``opentelemetry-exporter-otlp-proto-http`` log exporter
-    subpackage (not currently a dependency). Each record is one JSON line:
-    timestamp, severity, body, and attributes.
-    """
-
     def __init__(self, path: Path) -> None:
         self._path = path
 
@@ -132,12 +111,6 @@ def _log_record_to_json(log: Any) -> str:
 
 
 def _make_log_processor(path: Path) -> Any:
-    """Build a BatchLogRecordProcessor wrapping a local-JSONL LogRecordExporter.
-
-    Defined lazily (only called from _setup_logging, which already imported the
-    logs SDK) so the LogRecordExporter base resolves at runtime, not at module
-    import — keeping the logs pillar optional.
-    """
     from opentelemetry.sdk._logs.export import (
         BatchLogRecordProcessor,
         LogRecordExporter,
@@ -201,7 +174,6 @@ def setup_tracing(config: VibeConfig) -> None:
     trace.set_tracer_provider(provider)
     atexit.register(provider.shutdown)
 
-    # Pillar 2 (metrics) + Pillar 3 (logs): best-effort, never fatal to startup.
     _setup_metrics(config, resource, exporter_cfg, local_export)
     _setup_logging(config, resource, exporter_cfg, local_export)
 
@@ -221,7 +193,6 @@ def setup_tracing(config: VibeConfig) -> None:
 def _setup_metrics(
     config: VibeConfig, resource: Any, exporter_cfg: Any, local_export: bool
 ) -> None:
-    """Install a MeterProvider when the metric SDK + exporter are importable."""
     try:
         from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
             OTLPMetricExporter,
@@ -252,12 +223,6 @@ def _setup_metrics(
 def _setup_logging(
     config: VibeConfig, resource: Any, exporter_cfg: Any, local_export: bool
 ) -> None:
-    """Install a LoggerProvider bridging stdlib logging.
-
-    Exports structured logs locally (JSONL). The OTLP log exporter is optional —
-    it lights up if ``opentelemetry-exporter-otlp-proto-http`` ships a log
-    exporter in a future version, but is not a hard dependency today.
-    """
     try:
         from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
     except ImportError:
@@ -266,22 +231,15 @@ def _setup_logging(
 
     log_provider = LoggerProvider(resource=resource)
 
-    # Local JSONL export mirrors the span path: durable, no collector needed.
     if local_export:
         log_provider.add_log_record_processor(
             _make_log_processor(_local_trace_path("log"))
         )
 
-    # An OTLP log exporter would slot in here once the
-    # ``opentelemetry-exporter-otlp-proto-http`` log subpackage is a dependency;
-    # it is intentionally not a hard requirement today, so local logs are the
-    # default export path.
-
     from opentelemetry import _logs
 
     _logs.set_logger_provider(log_provider)
 
-    # Bridge stdlib logging so vibe's logger output reaches the OTel log stream.
     handler = LoggingHandler(logger_provider=log_provider)
     handler.setLevel(logging.INFO)
     root = logging.getLogger()
@@ -291,11 +249,6 @@ def _setup_logging(
 
 
 def _swap_otel_path(endpoint: str, signal: str) -> str:
-    """Replace the trailing OTLP signal path (traces -> metrics|logs).
-
-    OTLP HTTP endpoints end in a signal segment (``.../v1/traces``); swap it to
-    the requested signal. Falls back to appending when the pattern isn't found.
-    """
     for seg in ("traces", "metrics", "logs"):
         if endpoint.rstrip("/").endswith(f"/{seg}"):
             return endpoint.rstrip("/")[: -len(seg)] + signal
@@ -429,10 +382,6 @@ def set_usage(span: trace.Span, usage: LLMUsage) -> None:
 def set_agent_usage(
     span: trace.Span, *, input_tokens: int, output_tokens: int, cached_tokens: int
 ) -> None:
-    # An invoke_agent span aggregates its child chat calls (a user turn, or a
-    # whole subagent run). Recording the summed usage here lets per-turn and
-    # per-subagent token cost be read off the agent span without re-summing
-    # children — closes the gap where invoke_agent spans carried no usage.
     _set_usage_attrs(
         span,
         input_tokens=input_tokens,
@@ -522,13 +471,6 @@ def set_tool_user_wait(span: trace.Span, seconds: float) -> None:
 async def context_shaping_span(
     *, op: str, trigger: str = "auto"
 ) -> AsyncGenerator[trace.Span]:
-    """Span for a context-reshaping op (snip / microcompact / compact).
-
-    These rewrite history mid-session and so bust the provider's prefix cache;
-    tracing them makes each cache-busting event visible (otherwise a cache-rate
-    drop has no corresponding span). Emitted only when reshaping actually runs.
-    The caller stamps token deltas via :func:`set_context_shaping_result`.
-    """
     attributes: dict[str, Any] = {
         "vibe.context.op": op,
         "vibe.context.trigger": trigger,

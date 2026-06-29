@@ -48,8 +48,6 @@ ARGS_COUNT = 4
 
 @dataclass
 class InvokeContext:
-    """Context passed to tools during invocation."""
-
     tool_call_id: str
     approval_callback: ApprovalCallback | None = field(default=None)
     # Live scheduler (LoopManager) so the `schedule` tool can enqueue a future
@@ -117,7 +115,7 @@ class InvokeContext:
 
 
 class ToolError(Exception):
-    """Raised when the tool encounters an unrecoverable problem."""
+    pass
 
 
 class CancellableToolResult(BaseModel):
@@ -136,7 +134,7 @@ class ToolInfo(BaseModel):
 
 
 class ToolPermissionError(Exception):
-    """Raised when a tool permission is not allowed."""
+    pass
 
 
 class ToolPermission(StrEnum):
@@ -155,15 +153,6 @@ class ToolPermission(StrEnum):
 
 
 class BaseToolConfig(BaseModel):
-    """Configuration for a tool.
-
-    Attributes:
-        permission: The permission level required to use the tool.
-        allowlist: Patterns that automatically allow tool execution.
-        denylist: Patterns that automatically deny tool execution.
-        sensitive_patterns: Patterns that trigger ASK even when permission is ALWAYS.
-    """
-
     model_config = ConfigDict(extra="allow")
 
     permission: ToolPermission = ToolPermission.ASK
@@ -226,15 +215,7 @@ class BaseTool[
 
     @classmethod
     def call_is_read_only(cls, args: BaseModel, *, agent_manager: Any = None) -> bool:
-        """Whether THIS specific call is side-effect-free and safe to run
-        concurrently with other tool calls in the same turn.
-
-        Defaults to the static :attr:`read_only` flag. Tools whose effect
-        depends on their arguments override this — e.g. ``task`` spawns a
-        read-only subagent for some profiles (safe to fan out) and a
-        write-capable one for others (must serialize). Kept distinct from the
-        static flag, which still governs permission auto-approval.
-        """
+        # static read_only governs permission auto-approval; this controls per-call concurrency.
         return cls.read_only
 
     def __init__(
@@ -251,25 +232,17 @@ class BaseTool[
     async def run(
         self, args: ToolArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | ToolResult, None]:
-        """Invoke the tool with the given arguments."""
         raise NotImplementedError  # pragma: no cover
         if False:  # pragma: no cover
             yield
 
     @classmethod
     def get_tool_prompt(cls) -> str | None:
-        """Loads and returns the content of the tool's .md prompt file, if it exists.
-
-        The prompt file is expected to be in a 'prompts' subdirectory relative to
-        the tool's source file, with the same name but a .md extension
-        (e.g., bash.py -> prompts/bash.md). Memoized via ``_load_tool_prompt``.
-        """
         return _load_tool_prompt(cls)
 
     async def invoke(
         self, ctx: InvokeContext | None = None, **raw: Any
     ) -> AsyncGenerator[ToolStreamEvent | ToolResult, None]:
-        """Validate arguments and run the tool."""
         try:
             args_model, _ = self._get_tool_args_results()
             args = args_model.model_validate(raw)
@@ -338,12 +311,7 @@ class BaseTool[
     @classmethod
     @functools.cache
     def _get_tool_args_results(cls) -> tuple[type[ToolArgs], type[ToolResult]]:
-        """Extract <ToolArgs, ToolResult> from the annotated signature of `run`.
-        Works even when `from __future__ import annotations` is in effect.
-
-        Cached per concrete tool class: the result is fixed by `run`'s
-        annotations and the underlying `get_type_hints` call is expensive.
-        """
+        # from __future__ import annotations stringifies all hints; get_type_hints resolves them.
         run_fn = cls.run.__func__ if isinstance(cls.run, classmethod) else cls.run
 
         type_hints = get_type_hints(
@@ -383,7 +351,6 @@ class BaseTool[
 
     @classmethod
     def _extract_result_type(cls, return_annotation: Any) -> type:
-        """Extract the ToolResult type from AsyncGenerator[ToolStreamEvent | ToolResult, None]."""
         origin = get_origin(return_annotation)
         if origin is not AsyncGenerator:
             if isinstance(return_annotation, type):
@@ -397,13 +364,11 @@ class BaseTool[
         yield_type = gen_args[0]
         yield_origin = get_origin(yield_type)
 
-        # Handle Union types (X | Y or Union[X, Y])
         if yield_origin is Union or isinstance(yield_type, types.UnionType):
             for arg in get_args(yield_type):
                 if arg is not ToolStreamEvent and isinstance(arg, type):
                     return arg
 
-        # Handle single type
         if isinstance(yield_type, type):
             return yield_type
 
@@ -412,12 +377,7 @@ class BaseTool[
     @classmethod
     @functools.cache
     def _build_parameters(cls) -> dict[str, Any]:
-        """Build the cleaned JSON-schema for the args model once per tool class.
-
-        Cached because `get_available_tools` calls it for every tool on every
-        LLM turn, and `model_json_schema()` is a per-turn CPU hot path. The
-        result is treated as immutable; `get_parameters` hands out copies.
-        """
+        # cached: model_json_schema is expensive; called for every tool on every LLM turn.
         args_model, _ = cls._get_tool_args_results()
         schema = args_model.model_json_schema()
         schema = dereference_refs(schema)
@@ -427,13 +387,7 @@ class BaseTool[
 
     @classmethod
     def get_parameters(cls) -> dict[str, Any]:
-        """Return a cleaned-up JSON-schema dict describing the arguments model
-        with which this concrete tool was parametrised.
-
-        Returns a fresh copy of the cached schema so callers remain free to
-        mutate the result without corrupting the cache. An orjson round-trip is
-        markedly faster than copy.deepcopy for this JSON-shaped dict.
-        """
+        # orjson round-trip: faster than deepcopy for JSON-shaped dict.
         return orjson.loads(orjson.dumps(cls._build_parameters()))
 
     @classmethod
@@ -455,23 +409,11 @@ class BaseTool[
         return config_class(permission=permission)
 
     def resolve_permission(self, args: ToolArgs) -> PermissionContext | None:
-        """Per-invocation permission override, checked before config-level permission.
-
-        Returns:
-            PermissionContext with granular required_permissions and a permission
-            level (ALWAYS/NEVER/ASK), or None to fall through to config permission.
-
-        Override in subclasses for domain-specific rules (e.g. workdir checks).
-        """
+        # return None to fall through to config-level permission.
         return None
 
     def get_file_snapshot(self, args: ToolArgs) -> FileSnapshot | None:
-        """Return a snapshot of the file this tool is about to modify.
-
-        Called before ``run()`` so the checkpoint system can capture
-        the file's state *before* the tool writes to it.
-        Override in tools that modify files on disk.
-        """
+        # called before run(); override in tools that write files on disk.
         return None
 
     @staticmethod
@@ -490,10 +432,4 @@ class BaseTool[
         return FileSnapshot(path=str(file_path), content=content)
 
     def get_result_extra(self, result: ToolResult) -> str | None:
-        """Optional extra context appended to the result text sent to the LLM.
-
-        Override in subclasses to inject contextual information alongside
-        tool results (e.g. directory-level instructions discovered during
-        file reads).  The default returns ``None`` (no annotation).
-        """
         return None

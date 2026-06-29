@@ -234,15 +234,6 @@ def validate_script(source: str) -> list[Violation]:
 
 
 def _bound_names(tree: ast.AST) -> set[str]:
-    """Over-approximate every name BOUND anywhere in the script: imports,
-    assignments, def/lambda params, function/class names, loop/comprehension/
-    with/except targets, and walrus.
-
-    Over-approximation (collecting bindings from every scope, ignoring scope
-    boundaries) is deliberate: the goal is ZERO false positives on valid scripts
-    at the cost of possibly missing some genuinely-undefined uses. A name bound
-    anywhere is treated as defined everywhere.
-    """
     bound: set[str] = set()
 
     def add_target(t: ast.AST) -> None:
@@ -262,9 +253,6 @@ def _bound_names(tree: ast.AST) -> set[str]:
         if a.kwarg:
             bound.add(a.kwarg.arg)
 
-    # Nodes that expose a single `.target` to bind (assignment-like, loop, and
-    # comprehension targets all share the attribute), grouped to keep the
-    # dispatch flat.
     target_nodes = (
         ast.AnnAssign,
         ast.AugAssign,
@@ -275,7 +263,6 @@ def _bound_names(tree: ast.AST) -> set[str]:
     )
 
     for node in ast.walk(tree):
-        # def/class introduce a name; def/lambda also bind their parameters.
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bound.add(node.name)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -305,13 +292,6 @@ def _bound_names(tree: ast.AST) -> set[str]:
 
 
 def _undefined_names(tree: ast.AST, bound: set[str]) -> list[Violation]:
-    """Flag names that are LOADead but never bound, injected, a pre-bound safe
-    module, or a safelisted builtin — the exec-time `name 'X' is not defined`
-    class, caught pre-flight at no cost. SAFE_MODULES are allowed because the
-    runtime auto-binds them (build_namespace), and DANGEROUS_CALLS names are
-    allowed because they are reported by the more specific `dangerous-call`
-    rule, not double-flagged.
-    """
     allowed = (
         bound
         | INJECTED_NAMES
@@ -342,12 +322,6 @@ def _undefined_names(tree: ast.AST, bound: set[str]) -> list[Violation]:
 
 
 def _thunk_misuse(tree: ast.AST) -> list[Violation]:
-    """`pipeline` STAGES must be callables of the item (`lambda x: agent(...)` or
-    a def), not a bare coroutine: each stage is invoked per item, so a single
-    `agent(...)` coroutine cannot serve as one. `parallel` is NOT flagged — it
-    accepts coroutines directly (`parallel(agent(...))`), so the natural form is
-    valid. Catch the common `pipeline(items, agent(...))` slip pre-flight.
-    """
     violations: list[Violation] = []
 
     def is_spawn_call(n: ast.AST) -> bool:
@@ -385,15 +359,6 @@ def _thunk_misuse(tree: ast.AST) -> list[Violation]:
 
 
 def _late_binding_lambda(tree: ast.AST) -> list[Violation]:
-    """Flag the classic Python late-binding footgun: a `lambda` inside a
-    comprehension that reads the comprehension's loop variable in its body
-    WITHOUT capturing it as a default arg. The body resolves the name at CALL
-    time, so every lambda collapses to the loop's LAST value — e.g.
-    `parallel(*[lambda: agent(a["prompt"], label=a["key"]) for a in areas])`
-    runs every agent with the last area's label/profile. Silent (no crash), just
-    wrong. Fix: drop the lambda and pass the coroutine directly
-    (`parallel(*[agent(...) for a in areas])`), or bind a default (`lambda a=a:`).
-    """
     violations: list[Violation] = []
     comp_types = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
 
@@ -459,13 +424,6 @@ def _late_binding_lambda(tree: ast.AST) -> list[Violation]:
 
 
 def lint_script(source: str) -> list[Violation]:
-    """Correctness lint (distinct from validate_script's safety gate): catches
-    classes that PASS the AST safety check but crash or silently misbehave once
-    running — undefined names, a coroutine used as a pipeline stage, and the
-    late-binding-closure footgun in lambda thunks over a comprehension.
-
-    Returns violations sorted by (line, col). Empty list means clean.
-    """
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
@@ -479,10 +437,6 @@ def lint_script(source: str) -> list[Violation]:
 
 
 def check_script(source: str) -> list[Violation]:
-    """Full pre-flight gate: safety (validate_script) + correctness (lint_script).
-    Use at the agent-authored launch boundary so the common authoring mistakes
-    fail before any agent spawns instead of at exec time.
-    """
     violations = list(validate_script(source))
     violations.extend(lint_script(source))
     violations.sort(key=lambda v: (v.line, v.col))

@@ -331,8 +331,6 @@ class _OpenAIResponsesStreamParser:
             raise ValueError("Tool call chunk missing index")
 
         state = self._tool_call_states.setdefault(index, _ResponsesToolCallState())
-        # Append the delta to the buffer (O(1)); the full string is materialised
-        # lazily when state.arguments is read at finalize.
         state.append_arguments(delta)
         self._remember_tool_call_state(
             index=index,
@@ -447,15 +445,6 @@ class _OpenAIResponsesStreamParser:
 
 
 def _normalize_schema_for_strict(node: Any) -> Any:
-    """Return a deep copy of *node* normalized for OpenAI Responses strict mode.
-
-    The Responses API's ``text.format`` validation rejects schemas that lack
-    ``additionalProperties: false`` and don't list every property in
-    ``required``. Workflow schemas are user-authored and lenient (our own
-    validation handles extras and optional fields), so this normalizer rewrites
-    a copy to be wire-compliant before sending. The original schema is never
-    mutated and remains the source of truth for our own validation.
-    """
     if not isinstance(node, dict):
         return node
     result = dict(node)
@@ -774,20 +763,6 @@ class OpenAIResponsesAdapter(APIAdapter):
 
 
 class ChatGPTResponsesAdapter(OpenAIResponsesAdapter):
-    """Responses adapter for the ChatGPT-subscription backend (codex).
-
-    The wire format matches the platform Responses API, but the
-    ``chatgpt.com/backend-api/codex`` endpoint has two extra requirements,
-    reverse-engineered from openai/codex:
-
-    * a non-empty ``instructions`` string is mandatory (the backend rejects
-      requests with "Instructions are not valid" otherwise), so system messages
-      are hoisted out of ``input`` into ``instructions``;
-    * encrypted reasoning must be requested via ``include`` and echoed back
-      across turns, which the base adapter already round-trips via
-      ``reasoning_state``.
-    """
-
     _DEFAULT_INSTRUCTIONS: ClassVar[str] = (
         "You are a coding assistant operating in a terminal-based coding harness."
     )
@@ -805,17 +780,10 @@ class ChatGPTResponsesAdapter(OpenAIResponsesAdapter):
         return "\n\n".join(system_parts), rest
 
     def prepare_request(self, params: RequestParams) -> PreparedRequest:
-        # Reuse the parent payload (it converts messages + builds the body),
-        # then post-process: hoist system messages into `instructions`, request
-        # encrypted reasoning when thinking is on, and force tool_choice. Doing
-        # the work via super().prepare_request(params) avoids re-deriving the
-        # payload here and keeps the override focused on the ChatGPT deltas.
         base = super().prepare_request(params)
         body = orjson.loads(base.body)
 
         instructions, conversation = self._split_system(params.messages)
-        # Rebuild the input list from the system-stripped conversation; the
-        # parent saw the original messages, so its input still has system rows.
         body["input"] = self._convert_messages(conversation)
         body["instructions"] = instructions or self._DEFAULT_INSTRUCTIONS
 

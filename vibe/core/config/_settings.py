@@ -125,13 +125,6 @@ class TomlFileSettingsSource(PydanticBaseSettingsSource):
 
     @staticmethod
     def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-        """Recursively merge ``override`` onto ``base`` (override wins).
-
-        Project config must layer on top of user config per-key, not replace
-        it wholesale -- otherwise a project ``.vibe/config.toml`` that sets
-        only e.g. ``[tools.web_search]`` silently drops the user's
-        ``active_model``/``models``/``providers`` and falls back to defaults.
-        """
         merged = dict(base)
         for key, value in override.items():
             if (
@@ -262,20 +255,9 @@ class SessionLoggingConfig(BaseSettings):
 
 
 class SafetyJudgeConfig(BaseSettings):
-    """Configuration for the optional LLM safety judge.
-
-    When enabled, tool calls that would otherwise prompt the user for approval
-    (the ``ASK`` path) are first shown to a separate "judge" model. If the judge
-    deems the call safe, it runs without a prompt. The judge can never override
-    hard denials (denylist / ``NEVER``) and fails closed: any error, timeout, or
-    unparsable response falls back to the normal human prompt.
-    """
-
     model_config = SettingsConfigDict(extra="ignore")
 
     enabled: bool = True
-    # Alias of a model from ``[[models]]`` to use as the judge. If unset or not
-    # found, the judge stays disabled regardless of ``enabled``.
     model: str | None = None
     max_tokens: int = 512
     # None → use the judge model's own configured temperature (some providers
@@ -285,25 +267,11 @@ class SafetyJudgeConfig(BaseSettings):
     # take >15s on large tool args before emitting the verdict. On timeout the
     # judge fails closed (the user is prompted).
     timeout: float = 30.0
-    # Provider-specific request-body extras merged into the judge's LLM call
-    # (generic backend only). Use to make a reasoning judge fast, e.g. for GLM:
-    #   extra_body = { thinking = { type = "disabled" } }
     extra_body: dict[str, Any] = Field(default_factory=dict)
-    # Max number of judge verdicts cached per session, keyed on the exact tool
-    # call signature. Identical repeated ASK-gated calls reuse the verdict
-    # instead of re-querying the judge model. Fail-closed verdicts (timeout /
-    # backend error) are never cached. Set to 0 to disable.
     verdict_cache_size: int = 256
 
 
 class MaxOutputEscalationConfig(BaseSettings):
-    """Retry a truncated turn with a larger ``max_tokens`` instead of failing.
-
-    When the model truncates its response (ResponseTooLongError), the turn is
-    retried with a geometrically larger output budget, up to ``max_attempts``
-    and a hard ``cap``. Disabled or exhausted → the error surfaces as before.
-    """
-
     model_config = SettingsConfigDict(extra="ignore")
 
     enabled: bool = True
@@ -317,33 +285,27 @@ class MaxOutputEscalationConfig(BaseSettings):
 
 
 class SnipConfig(BaseSettings):
-    """Cheap whole-message elision stage (replaces old content with a marker)."""
-
     model_config = SettingsConfigDict(extra="ignore")
 
     enabled: bool = True
     # Watermarks are fractions of the active model's auto_compact_threshold.
-    high_watermark: float = 0.6  # start eliding at/above this fraction
-    target: float = 0.5  # stop once back down to this fraction
-    keep_recent_turns: int = 8  # protected suffix: never snip the last N messages
-    min_message_tokens: int = 300  # skip messages smaller than this
+    high_watermark: float = 0.6
+    target: float = 0.5
+    keep_recent_turns: int = 8
+    min_message_tokens: int = 300
 
 
 class MicrocompactConfig(BaseSettings):
-    """Mid-tier per-message compression (head+tail truncate, no LLM call)."""
-
     model_config = SettingsConfigDict(extra="ignore")
 
     enabled: bool = True
     high_watermark: float = 0.8
     target: float = 0.7
-    per_message_cap_tokens: int = 2000  # max tokens kept per compressed message
-    max_blocks_per_turn: int = 1  # cache-preservation rate limit
+    per_message_cap_tokens: int = 2000
+    max_blocks_per_turn: int = 1
 
 
 class MemoryConfig(BaseSettings):
-    """File-based, LLM-selected cross-session memory (on by default)."""
-
     model_config = SettingsConfigDict(extra="ignore")
 
     enabled: bool = True
@@ -354,7 +316,7 @@ class MemoryConfig(BaseSettings):
     # selector is abandoned to index-only rather than stalling the turn for the
     # full timeout. Set false to restore the blocking pre-loop selection.
     prefetch: bool = True
-    model: str | None = None  # alias; falls back to compaction/active model
+    model: str | None = None
     max_selected: int = 5
     max_inject_chars: int = 8000
     # Where the volatile recall block is placed. "system" embeds it in the
@@ -367,26 +329,17 @@ class MemoryConfig(BaseSettings):
     max_entries_scanned: int = 200
     timeout: float = 20.0
     extra_body: dict[str, Any] = Field(default_factory=dict)
-    # Auto-extraction: a post-turn pass that proposes durable memories from the
-    # transcript. Off by default — the manage_memory tool is the primary write
-    # path. Shares the selector model/extra_body when its own model is unset.
     auto_extract: bool = False
-    auto_extract_model: str | None = (
-        None  # alias; falls back to model/compaction/active
-    )
-    auto_extract_max_writes: int = 3  # per-session cap on extracted memories
-    auto_extract_min_messages: int = 4  # skip extraction on trivial turns
+    auto_extract_model: str | None = None
+    auto_extract_max_writes: int = 3
+    auto_extract_min_messages: int = 4
     auto_extract_timeout: float = 30.0
-    # Consolidation: a periodic pass that reconciles fragmented/duplicate
-    # memories and prunes obsolete ones. Off by default. Applies via reversible
-    # trash + ledger (MemoryStore.trash), so a bad pass is recoverable — never
-    # a hard delete. Shares the selector model/extra_body when its own is unset.
     consolidate: bool = False
-    consolidate_model: str | None = None  # alias; falls back to model/compaction/active
-    consolidate_min_age_days: int = 14  # only memories this old are candidates
-    consolidate_min_candidates: int = 6  # skip unless this many old candidates exist
-    consolidate_interval_days: int = 7  # min gap between consolidation runs
-    consolidate_max_actions: int = 5  # cap on merges+deletes applied per run
+    consolidate_model: str | None = None
+    consolidate_min_age_days: int = 14
+    consolidate_min_candidates: int = 6
+    consolidate_interval_days: int = 7
+    consolidate_max_actions: int = 5
     consolidate_timeout: float = 45.0
     # Trash retention: how long deleted/merged memory files stay recoverable in
     # the per-directory .trash/ tree before a session-start sweep unlinks them.
@@ -398,30 +351,6 @@ class MemoryConfig(BaseSettings):
 
 
 class SandboxConfig(BaseModel):
-    """OS-level sandbox for the bash tool (opt-in, defense-in-depth).
-
-    A plain BaseModel (not BaseSettings): a security control must NOT be
-    silently driven by stray environment variables. Default disabled -> bash
-    behaves exactly as before.
-
-    Backend capability (what ``write_dirs`` / ``allow_network`` actually buy
-    you, by resolved backend):
-
-    - ``bwrap`` (Linux, preferred): full filesystem read-only confinement with
-      ``write_dirs`` bind-mounted writable; network enforcement via a separate
-      namespace.
-    - ``unshare`` (Linux fallback, auto-selected when bwrap is absent): PID/IPC
-      namespace isolation ONLY. ``write_dirs`` and ``allow_network`` are NOT
-      enforced — commands can still read/write anywhere the running user can,
-      and the network is not isolated. A loud warning is emitted at spawn time
-      when this backend is used with containment requested. Install bubblewrap
-      for real containment.
-    - ``sandbox-exec`` (macOS, seatbelt): filesystem read-only with
-      ``write_dirs`` allow-listed; network allow/deny enforced.
-    - ``none`` (Windows, or nothing available): no sandbox. ``require_backend``
-      controls whether this fails closed or runs unsandboxed.
-    """
-
     model_config = ConfigDict(extra="ignore")
 
     enabled: bool = False
@@ -429,14 +358,12 @@ class SandboxConfig(BaseModel):
     allow_network: bool = True
     scrub_env: bool = True
     env_passthrough: list[str] = Field(default_factory=list)
-    require_backend: bool = False  # fail closed if no sandbox backend available
+    require_backend: bool = False
     backend: str = "auto"  # auto | bwrap | unshare | sandbox-exec | none
     extra_args: list[str] = Field(default_factory=list)
 
 
 class ContextShapingConfig(BaseSettings):
-    """Pre-model context-shaper pipeline (runs before auto-compaction)."""
-
     model_config = SettingsConfigDict(extra="ignore")
 
     snip: SnipConfig = Field(default_factory=SnipConfig)
@@ -447,12 +374,6 @@ class ContextShapingConfig(BaseSettings):
 
 
 class WorktreeConfig(BaseSettings):
-    """Configuration for git worktree isolation.
-
-    When active, agent writes land on a throwaway branch in a git worktree
-    instead of the user's live checkout.
-    """
-
     model_config = SettingsConfigDict(extra="ignore")
 
     mode: Literal["off", "on", "auto-by-entrypoint"] = "on"
@@ -464,8 +385,6 @@ class WorktreeConfig(BaseSettings):
     carry_ignored: list[str] = Field(
         default_factory=lambda: ["node_modules", ".venv", "venv", ".env"]
     )
-    # Print a stderr notice at interactive startup listing prior-session branches
-    # that hold unmerged work (vibe worktree branches with no live worktree).
     report_on_startup: bool = True
     # Garbage-collect abandoned worktrees/branches older than this many days,
     # but only when the branch is already merged into HEAD or empty (never when
@@ -486,16 +405,6 @@ DEFAULT_VIBE_BASE_URL = "https://chat.mistral.ai"
 
 
 class ProviderCacheConfig(BaseModel):
-    """Prompt-cache hints for the generic/OpenAI-compatible path.
-
-    Defaults to ``mode="explicit"``, ``style="passthrough"``. With the
-    passthrough style the hint is inert unless ``extra_body`` / ``cache_key`` is
-    set per provider, so enabling by default does not mutate request bodies.
-    Most generic providers (OpenAI, DeepSeek, GLM, Together, Groq) auto-cache
-    prefixes anyway; set ``style="anthropic-compat"`` only for a provider that
-    documents an Anthropic-style cache breakpoint and needs it.
-    """
-
     model_config = ConfigDict(extra="ignore")
 
     mode: Literal["off", "explicit"] = "explicit"
@@ -759,12 +668,6 @@ MCPServer = Annotated[
 
 class LSPServer(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    """Configuration for a single Language Server Protocol server.
-
-    A server owns one or more file extensions; the LSP manager routes a file
-    to the first matching server. Multi-language support is achieved by
-    declaring one ``[[lsp_servers]]`` entry per language.
-    """
 
     name: str = Field(description="Short alias identifying this language server.")
     command: str | list[str] = Field(
@@ -888,8 +791,8 @@ class ModelConfig(BaseModel):
     # None omits temperature from the wire (Moonshot k2.7-code rejects an explicit
     # value); omission is enforced in OpenAIAdapter.build_payload.
     temperature: float | None = 0.2
-    input_price: float = 0.0  # Price per million input tokens
-    output_price: float = 0.0  # Price per million output tokens
+    input_price: float = 0.0
+    output_price: float = 0.0
     thinking: ThinkingLevel = "off"
     supports_images: bool = False
     auto_compact_threshold: int = DEFAULT_AUTO_COMPACT_THRESHOLD
@@ -1033,7 +936,6 @@ DEFAULT_THEME = "ansi-dark"
 
 
 def resolve_api_key(env_key: str) -> str | None:
-    """Resolve an API key value: process/.env environment first, then OS keyring."""
     if not env_key:
         return None
     value = os.environ.get(env_key)
@@ -1103,7 +1005,6 @@ class VibeConfig(BaseSettings):
     )
     vibe_code_project_name: str | None = Field(default=None, exclude=True)
 
-    # TODO(otel): remove exclude=True once the feature is publicly available
     enable_otel: bool = Field(default=True, exclude=True)
     otel_endpoint: str = Field(default="", exclude=True)
     otel_local_export: bool = Field(default=True, exclude=True)
@@ -1118,8 +1019,6 @@ class VibeConfig(BaseSettings):
     )
     models: list[ModelConfig] = Field(default_factory=lambda: list(DEFAULT_MODELS))
     compaction_model: ModelConfig | None = None
-    # Aliases of models to fall back to (in order) when the active model is rate
-    # limited / overloaded. Empty = no failover (error surfaces as before).
     fallback_models: list[str] = Field(default_factory=list)
     # Empty = inherit the host session's model.
     subagent_model: str = ""
@@ -1474,13 +1373,6 @@ class VibeConfig(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Define the priority of settings sources.
-
-        Note: dotenv_settings is intentionally excluded. API keys and other
-        non-config environment variables are stored in .env but loaded manually
-        into os.environ for use by providers. Only VIBE_* prefixed environment
-        variables (via env_settings) and TOML config are used for Pydantic settings.
-        """
         return (
             init_settings,
             env_settings,
@@ -1797,7 +1689,6 @@ class VibeConfig(BaseSettings):
         "read_file": "read",
         "search_replace": "edit",
     }
-    # Options on the old tool that have no equivalent on the new one; dropped on migrate.
     _DROPPED_TOOL_OPTIONS: ClassVar[dict[str, tuple[str, ...]]] = {
         "edit": ("max_content_size", "create_backup")
     }

@@ -1,24 +1,3 @@
-"""Unified background-task registry.
-
-Aggregates six categories of "background thing" into one read/cancel surface so
-the TUI's Tasks pane and the model-facing `background` tool see the same state:
-
-  - process    : agent bash spawns with background=True (OWNED here — the only
-                 place a process table exists; Bash.run() otherwise drops the PID)
-  - workflow   : workflow runs (read from WorkflowRunner)
-  - agent      : in-flight workflow agents (read from WorkflowRuntime._live_agents)
-  - team       : teammate subprocesses (read from TeamManager)
-  - loop       : schedule timers (read from LoopManager)
-  - async_agent: task(async_run=true) subagents (OWNED here as asyncio tasks)
-
-The registry owns processes and async subagents outright and delegates everything
-else to the subsystem that already owns it, via injected refs. Nothing duplicates
-state. Cancellation routes by task-id prefix to the right owner's stop method, so
-the Tasks pane, the `background` tool, and any future caller all share one path.
-
-See docs/design/tasks.md for the full design.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -43,32 +22,12 @@ if TYPE_CHECKING:
     from vibe.core.teams.manager import TeamManager
 
 
-# Process termination backoff — mirrors TeamManager._terminate_proc semantics
-# (SIGTERM, wait, then SIGKILL) so a backgrounded server and its children are
-# reliably reaped rather than orphaned to init.
 _TERMINATE_GRACE_S = 3.0
-
-# Soft cap on finalized-process entries retained in the pane. Without this a
-# long session accumulates every command ever backgrounded.
 _MAX_FINALIZED_PROCS = 50
-
-# Hard cap on concurrently RUNNING background processes. Without it a looping
-# or injected agent can spawn thousands of shells (each holding an asyncio
-# finalizer task + OS fds) and exhaust the host. Finalized entries are not
-# counted — only live processes.
 _MAX_RUNNING_PROCS = 32
-
-# Ceiling on how much of a background log file read_log_tail will read into
-# memory before splitting into lines. Chatty servers can write a lot; the
-# per-file hard cap (enforced at write time by the bash tool) is larger.
-_LOG_TAIL_MAX_BYTES = 1 << 20  # 1 MiB
-
-# Write-side disk cap: when a background log exceeds this, read_log_tail trims
-# it in place to _LOG_DISK_KEEP_BYTES. The pane polls every second, so a chatty
-# server's log is bounded near the cap rather than growing unbounded for the
-# session lifetime.
-_LOG_DISK_CAP_BYTES = 16 << 20  # 16 MiB
-_LOG_DISK_KEEP_BYTES = 4 << 20  # 4 MiB retained after a trim
+_LOG_TAIL_MAX_BYTES = 1 << 20
+_LOG_DISK_CAP_BYTES = 16 << 20
+_LOG_DISK_KEEP_BYTES = 4 << 20
 
 
 class TaskCategory(StrEnum):
@@ -82,17 +41,10 @@ class TaskCategory(StrEnum):
 
 @dataclass
 class TaskEntry:
-    """Unified view-model row for one background task, any category.
-
-    `detail` carries category-specific fields the renderer formats (pid,
-    returncode, agent_count, tokens, interval, next_fire_at, log_path…). Kept
-    as a plain dict so the registry never imports TUI or rendering types.
-    """
-
     task_id: str
     category: TaskCategory
     label: str
-    status: str  # running | completed | failed | paused | stopped | waiting
+    status: str
     elapsed: float
     detail: dict[str, Any] = field(default_factory=dict)
     parent_id: str | None = None
@@ -102,23 +54,13 @@ class TaskEntry:
 
 @dataclass
 class _BgProc:
-    """Owned background process record.
-
-    `finalizer` awaits proc.wait() in the background and flips status when the
-    process exits on its own (server crash, self-terminate). It is cancelled on
-    explicit stop / registry shutdown. `log_handle` is the open file object the
-    process writes to via fd-level stdout/stderr redirection (None when the
-    caller used shell-level redirection); the registry closes it once the
-    process is no longer running.
-    """
-
     task_id: str
     proc: asyncio.subprocess.Process
     command: str
     cwd: Path
     log_path: Path
     started_at: float
-    status: str = "running"  # running | completed | failed | stopped
+    status: str = "running"
     returncode: int | None = None
     finalizer: asyncio.Task[None] | None = None
     log_handle: Any = None
@@ -126,34 +68,18 @@ class _BgProc:
 
 @dataclass
 class _AsyncAgentRec:
-    """Owned async-subagent record.
-
-    The TaskTool spawns an isolated subagent as an ``asyncio.Task`` (via
-    ``run_isolated_agent``), registers it here, and returns immediately with
-    the task_id. ``finalizer`` awaits the asyncio.Task and captures its
-    IsolatedResult; on completion the record moves to ``completed``/``failed``
-    and the result is queued for the parent agent loop to drain via
-    ``pop_async_completions``. Stopped records move to ``stopped`` and do not
-    queue a completion (the stop is explicit; no surprise event).
-    """
-
     task_id: str
     agent: str
     label: str
     task: asyncio.Task[Any]
     started_at: float
-    status: str = "running"  # running | completed | failed | stopped
+    status: str = "running"
     finalizer: asyncio.Task[None] | None = None
     response: str = ""
     completed: bool = False
     worktree_path: str | None = None
     branch: str | None = None
     error: str | None = None
-    # Observability fields. ``prompt``/``model`` are set at registration so the
-    # Tasks pane and `background` tool can show what the agent was asked to do
-    # without re-deriving it. ``response_so_far``/``turns_used`` are updated live
-    # by the in-process collector; ``log_path`` is the file the isolated
-    # subprocess streams to, tailed like a PROCESS log.
     prompt: str = ""
     model: str | None = None
     response_so_far: str = ""
@@ -162,14 +88,6 @@ class _AsyncAgentRec:
 
 
 def _signal_proc_group(proc: asyncio.subprocess.Process, sig: int) -> None:
-    """Signal the process group led by `proc`.
-
-    Backgrounded processes are spawned with start_new_session=True (set by the
-    bash tool), so proc.pid is the session/pgid leader — killpg reaches the
-    shell AND any grandchildren (npm/vite/python child servers) that would
-    otherwise orphan. Falls back to signaling the direct child if the group
-    lookup fails (already-exited, permission, etc.).
-    """
     try:
         os.killpg(os.getpgid(proc.pid), sig)
         return
@@ -185,7 +103,6 @@ def _signal_proc_group(proc: asyncio.subprocess.Process, sig: int) -> None:
 
 
 async def _terminate_proc(proc: asyncio.subprocess.Process) -> None:
-    """SIGTERM, wait the grace period, then SIGKILL. Reaps the process."""
     if proc.returncode is not None:
         return
     _signal_proc_group(proc, signal.SIGTERM)
@@ -200,13 +117,6 @@ async def _terminate_proc(proc: asyncio.subprocess.Process) -> None:
 
 
 def _extract_message_text(content: Any) -> str:
-    """Pull a plain-text snippet from an LLMMessage ``content`` field.
-
-    ``content`` may be a string or a list of content blocks (text, tool_use,
-    tool_result). Text blocks contribute their text; tool blocks contribute a
-    short ``[name]`` marker so the tail shows tool activity without dumping
-    whole payloads.
-    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -229,13 +139,6 @@ def _extract_message_text(content: Any) -> str:
 def _format_jsonl_tail(
     raw: str, *, content_limit: int = 160, max_role_width: int = 10
 ) -> str:
-    """Render raw messages.jsonl text as readable ``role: content`` snippets.
-
-    Each line is a JSON-serialized LLMMessage. Malformed or partial trailing
-    writes are passed through verbatim so an in-progress append never blanks the
-    tail. Long content is truncated to ``content_limit`` chars; the role label
-    is capped to ``max_role_width`` chars.
-    """
     if not raw:
         return ""
     out: list[str] = []
@@ -254,19 +157,12 @@ def _format_jsonl_tail(
         role = str(msg.get("role") or "?")[:max_role_width]
         text = _extract_message_text(msg.get("content")).replace("\n", " ").strip()
         if len(text) > content_limit:
-            text = text[: content_limit - 1] + "\u2026"
+            text = text[: content_limit - 1] + "…"
         out.append(f"{role}: {text}" if text else f"{role}:")
     return "\n".join(out)
 
 
 class BackgroundRegistry:
-    """Owns background processes; aggregates workflows/teams/loops read-only.
-
-    Attach the subsystem owners once at TUI startup; they are read lazily via
-    the refs so a lazily-created owner (e.g. TeamManager) is picked up when it
-    appears. All methods tolerate a missing owner (returns empty / False).
-    """
-
     def __init__(self) -> None:
         self._procs: dict[str, _BgProc] = {}
         self._next_proc_id = 1
@@ -274,14 +170,11 @@ class BackgroundRegistry:
         self._next_async_id = 1
         self._async_completions: list[_AsyncAgentRec] = []
 
-        # Refs default to "absent"; wired by the TUI app after construction.
         self._workflow_runner_ref: Callable[[], WorkflowRunner | None] = lambda: None
         self._team_manager_ref: Callable[[], TeamManager | None] = lambda: None
         self._loop_manager_ref: Callable[[], LoopManager | None] = lambda: None
         self._tui_bash_ref: Callable[[], asyncio.Task | None] = lambda: None
         self._completion_callback: Callable[[], Coroutine[Any, Any, None]] | None = None
-
-    # --- adapter wiring ---------------------------------------------------
 
     def attach_workflow_runner(self, ref: Callable[[], WorkflowRunner | None]) -> None:
         self._workflow_runner_ref = ref
@@ -293,14 +186,12 @@ class BackgroundRegistry:
         self._loop_manager_ref = ref
 
     def attach_tui_bash(self, ref: Callable[[], asyncio.Task | None]) -> None:
-        """Surface the TUI's foreground `!cmd` slot (v2 hook; unused in v1)."""
         self._tui_bash_ref = ref
 
     def attach_completion_callback(
         self, callback: Callable[[], Coroutine[Any, Any, None]] | None
     ) -> None:
-        # Wake hook: fired fire-and-forget when an async subagent finishes so an
-        # idle host auto-continues instead of stalling until the user types.
+        # Wake hook: fires when async subagent finishes so idle host auto-continues.
         self._completion_callback = callback
 
     def _notify_completion(self) -> None:
@@ -310,8 +201,6 @@ class BackgroundRegistry:
             asyncio.create_task(self._completion_callback())
         except RuntimeError:
             pass
-
-    # --- process ownership ------------------------------------------------
 
     def _next_id(self) -> str:
         task_id = f"proc-{self._next_proc_id}"
@@ -327,18 +216,6 @@ class BackgroundRegistry:
         log_path: Path,
         log_handle: Any = None,
     ) -> str:
-        """Record a backgrounded process and start its exit-watcher.
-
-        Returns the stable task_id ("proc-N") the caller yields back to the
-        model. The process is NOT awaited here — the caller (Bash.run) returns
-        immediately so the agent turn unblocks.
-
-        Raises ``RuntimeError`` if the concurrent running-process cap would be
-        exceeded, so the caller (bash tool) surfaces a clear error instead of
-        silently growing the table to exhaustion. ``log_handle`` is the open
-        file object used for fd-level stdout/stderr redirection; the registry
-        owns closing it when the process leaves the running state.
-        """
         running = sum(1 for r in self._procs.values() if r.status == "running")
         if running >= _MAX_RUNNING_PROCS:
             raise RuntimeError(
@@ -363,13 +240,6 @@ class BackgroundRegistry:
         return task_id
 
     async def _finalize_proc(self, rec: _BgProc) -> None:
-        """Background awaiter: flip status when the process exits on its own.
-
-        Explicit stop() sets status='stopped' itself and cancels this task, so
-        reaching here means the process ended without intervention (clean exit
-        or crash). Any exception is swallowed — the finalizer must never raise
-        into the event loop.
-        """
         try:
             rc = await rec.proc.wait()
         except asyncio.CancelledError:
@@ -386,9 +256,6 @@ class BackgroundRegistry:
 
     @staticmethod
     def _close_log_handle(rec: _BgProc) -> None:
-        """Close the fd-level redirection handle, idempotently. Called from the
-        finalizer, _stop_process, and shutdown — safe to call multiple times.
-        """
         if rec.log_handle is None:
             return
         try:
@@ -396,8 +263,6 @@ class BackgroundRegistry:
         except Exception:
             pass
         rec.log_handle = None
-
-    # --- async subagent ownership ----------------------------------------
 
     def _next_async_task_id(self) -> str:
         task_id = f"asub-{self._next_async_id}"
@@ -414,19 +279,6 @@ class BackgroundRegistry:
         model: str | None = None,
         log_path: Path | None = None,
     ) -> str:
-        """Record an async subagent and start its completion-watcher.
-
-        Returns the stable task_id ("asub-N") the caller yields back to the
-        model. The asyncio.Task is NOT awaited here — the TaskTool returns
-        immediately so the agent turn unblocks. On completion the result is
-        queued for the parent agent loop via ``pop_async_completions``.
-
-        ``prompt``/``model``/``log_path`` are observability-only: stored on the
-        record so the Tasks pane and ``background`` tool can render what the
-        agent is doing. ``log_path`` is the file an isolated subprocess streams
-        its stdout to (tailed live like a PROCESS log); in-process agents have
-        none and are monitored via ``response_so_far`` updates instead.
-        """
         running = sum(1 for r in self._async_agents.values() if r.status == "running")
         if running >= _MAX_RUNNING_PROCS:
             raise RuntimeError(
@@ -457,14 +309,6 @@ class BackgroundRegistry:
         response_so_far: str | None = None,
         turns_used: int | None = None,
     ) -> None:
-        """Live-update an in-process async subagent's progress on its record.
-
-        Called by the TaskTool's in-process collector as events stream so the
-        Tasks pane's 1s poll and the ``background`` tool see partial output
-        while the agent runs, not only after it finishes. No-op for unknown or
-        finalized ids — a stale update after completion must not clobber the
-        captured response. Same-event-loop writes only; no locking needed.
-        """
         rec = self._async_agents.get(task_id)
         if rec is None or rec.status != "running":
             return
@@ -480,13 +324,6 @@ class BackgroundRegistry:
         response_so_far: str | None = None,
         turns_used: int | None = None,
     ) -> None:
-        """Update progress keyed by the running asyncio.Task instead of id.
-
-        The in-process collector is started before ``register_async_agent``
-        assigns its task_id, so it identifies itself via ``asyncio.current_task``
-        rather than threading the id through a closure. Linear scan over the
-        small in-process agent table; no-op when the task is not registered.
-        """
         for rec in self._async_agents.values():
             if rec.task is task:
                 self.update_async_progress(
@@ -495,12 +332,6 @@ class BackgroundRegistry:
                 return
 
     async def _finalize_async_agent(self, rec: _AsyncAgentRec) -> None:
-        """Background awaiter: capture the IsolatedResult when the task ends.
-
-        Exceptions are swallowed — the finalizer must never raise into the
-        event loop. A captured failure is recorded on the rec and queued like
-        a success; the parent loop sees it as ``completed=False``.
-        """
         try:
             result = await rec.task
         except asyncio.CancelledError:
@@ -513,8 +344,6 @@ class BackgroundRegistry:
             self._async_completions.append(rec)
             self._notify_completion()
             return
-        # The TaskTool's background wrapper returns an IsolatedResult-like
-        # object (see run_isolated_agent). Read its fields defensively.
         rec.response = str(getattr(result, "output", result) or "")
         rec.completed = bool(getattr(result, "returncode", 1) == 0)
         rec.worktree_path = getattr(result, "worktree_path", None)
@@ -527,10 +356,6 @@ class BackgroundRegistry:
         self._notify_completion()
 
     def pop_async_completions(self) -> list[_AsyncAgentRec]:
-        """Drain and return the async-subagent completions queued since the
-        last call. Called by the parent agent loop at the top of each turn.
-        Returns an empty list when nothing is pending (the common case).
-        """
         if not self._async_completions:
             return []
         drained = self._async_completions[:]
@@ -538,29 +363,15 @@ class BackgroundRegistry:
         return drained
 
     def _reap_finalized(self) -> None:
-        """Drop oldest finalized entries beyond the cap; never reap running."""
         finalized = [tid for tid, r in self._procs.items() if r.status != "running"]
         if len(finalized) <= _MAX_FINALIZED_PROCS:
             return
-        # Finalized entries are appended in id order; drop the lowest ids.
         for tid in sorted(finalized, key=lambda t: int(t.split("-")[1]))[
             : len(finalized) - _MAX_FINALIZED_PROCS
         ]:
             self._procs.pop(tid, None)
 
     def read_log_tail(self, task_id: str, *, lines: int = 50) -> str:
-        """Last `lines` lines of a background process's log file.
-
-        Returns an empty string for unknown ids, missing logs, or unreadable
-        files — the renderer treats all of these as "no output yet".
-
-        As a best-effort write-side guard against unbounded disk growth from a
-        chatty server, if the file exceeds ``_LOG_DISK_CAP_BYTES`` it is trimmed
-        in place to its tail. The trim rewrites the same inode (seek+truncate,
-        not replace) so the shell's append redirect keeps the right fd. The pane
-        polls every second, so disk usage stays bounded near the cap. Errors are
-        swallowed — trimming must never break a read.
-        """
         rec = self._procs.get(task_id)
         if rec is None:
             return ""
@@ -574,11 +385,6 @@ class BackgroundRegistry:
 
     @staticmethod
     def _tail_bytes(path: Path, lines: int) -> str:
-        """Read the last ``lines`` lines of a file (capped to the last
-        ``_LOG_TAIL_MAX_BYTES`` of bytes). Format-agnostic: returns raw decoded
-        text; callers needing structured formatting (e.g. JSONL transcripts)
-        post-process the result. Returns '' on missing/unreadable files.
-        """
         try:
             data = path.read_bytes()[-_LOG_TAIL_MAX_BYTES:]
         except (FileNotFoundError, OSError):
@@ -587,14 +393,6 @@ class BackgroundRegistry:
         return "\n".join(text.splitlines()[-lines:])
 
     def read_async_tail(self, task_id: str, *, lines: int = 50) -> str:
-        """Recent output from an async subagent (``asub-N``).
-
-        Isolated subagents stream their stdout to ``log_path`` — tail that file
-        the same way a PROCESS log is tailed, so live progress is visible while
-        the subprocess runs. In-process subagents have no file; return the tail
-        of their ``response_so_far`` (kept current by the collector). Returns ''
-        for unknown ids, missing logs, or agents that have produced nothing yet.
-        """
         rec = self._async_agents.get(task_id)
         if rec is None:
             return ""
@@ -606,14 +404,6 @@ class BackgroundRegistry:
         return "\n".join(text.splitlines()[-lines:])
 
     def read_agent_log_tail(self, task_id: str, *, lines: int = 50) -> str:
-        """Last ``lines`` messages from an in-process workflow agent's transcript.
-
-        Resolves a ``wf-N/live-la-M`` task id back to the agent's messages.jsonl
-        via the workflow runner and renders recent messages as readable
-        'role: content' lines (not raw JSON). Returns '' for isolated (worktree)
-        agents, which have no in-process log; unknown ids; or missing logs — the
-        renderer treats all of these as "no output yet".
-        """
         run_id, agent_id = self._parse_agent_task_id(task_id)
         if run_id is None or agent_id is None:
             return ""
@@ -634,12 +424,6 @@ class BackgroundRegistry:
 
     @staticmethod
     def _parse_agent_task_id(task_id: str) -> tuple[str | None, str | None]:
-        """Split ``wf-1/live-la-3`` into ``('wf-1', 'la-3')``.
-
-        Returns ``(None, None)`` when the id is not a hierarchical agent id (no
-        ``/``, or the suffix is not a ``live-`` child), so callers can treat the
-        whole non-agent-id space uniformly.
-        """
         if "/" not in task_id:
             return None, None
         run_id, _, agent_suffix = task_id.partition("/")
@@ -650,9 +434,6 @@ class BackgroundRegistry:
 
     @staticmethod
     def _trim_log_in_place(path: Path) -> None:
-        """Rewrite a log file to keep only its tail, preserving the inode so the
-        writing shell's append fd stays valid. Best-effort.
-        """
         try:
             keep = path.read_bytes()[-_LOG_DISK_KEEP_BYTES:]
             with path.open("r+b") as fh:
@@ -662,19 +443,11 @@ class BackgroundRegistry:
         except OSError:
             pass
 
-    # --- aggregation ------------------------------------------------------
-
     def list_tasks(self, *, category: TaskCategory | None = None) -> list[TaskEntry]:
-        """Build the unified task list across all attached sources.
-
-        Order: processes (running first), then workflows, in-flight agents,
-        teams, loops. Renderers re-sort/filter as needed.
-        """
         entries: list[TaskEntry] = []
         now = time.monotonic()
 
         if category in {None, TaskCategory.PROCESS}:
-            # Running first, then by id, so live servers sort to the top.
             for rec in sorted(
                 self._procs.values(),
                 key=lambda r: (r.status != "running", int(r.task_id.split("-")[1])),
@@ -846,20 +619,7 @@ class BackgroundRegistry:
             )
         return entries
 
-    # --- routing ----------------------------------------------------------
-
     async def stop(self, task_id: str) -> bool:
-        """Route a cancellation by task-id prefix. Returns False if the target
-        is missing or already finalized; True if a stop action was taken.
-
-        Id grammar:
-          proc-N            -> terminate owned process (+ group)
-          asub-N            -> cancel owned async subagent
-          wf-N              -> WorkflowRunner.stop(run_id)
-          wf-N/live-AGENT   -> WorkflowRunner.cancel_agent(run_id, agent_id)
-          team:NAME         -> TeamManager.stop_teammate(name)
-          loop-LOOPID       -> LoopManager.cancel(loop_id)
-        """
         if task_id.startswith(("proc-", "asub-")):
             return await self._stop_owned(task_id)
         if task_id.startswith("team:"):
@@ -868,7 +628,6 @@ class BackgroundRegistry:
             return await self._stop_loop(task_id.removeprefix("loop-"))
         if "/" in task_id and task_id.startswith("wf-"):
             run_id, _, agent_suffix = task_id.partition("/")
-            # agent_suffix is "live-<agent_id>"
             agent_id = (
                 agent_suffix.removeprefix("live-")
                 if agent_suffix.startswith("live-")
@@ -880,23 +639,11 @@ class BackgroundRegistry:
         return False
 
     async def _stop_owned(self, task_id: str) -> bool:
-        """Cancel a registry-owned background task by id.
-
-        Routes ``proc-N`` to process termination and ``asub-N`` to async-agent
-        cancellation so the public ``stop()`` does not have to spell out each
-        owned prefix.
-        """
         if task_id.startswith("proc-"):
             return await self._stop_process(task_id)
         return await self._stop_async_agent(task_id)
 
     async def pause(self, task_id: str) -> bool:
-        """Pause/resume toggle for workflow runs only. Returns False otherwise.
-
-        Unlike stop, pause is not a universal verb — only workflows model it
-        (in-flight agents finish, new agents block). The pane only offers the
-        key for rows with can_pause=True.
-        """
         runner = self._workflow_runner_ref()
         if runner is None or not task_id.startswith("wf-"):
             return False
@@ -931,8 +678,7 @@ class BackgroundRegistry:
         except (asyncio.CancelledError, Exception):
             pass
         rec.status = "stopped"
-        # Explicit stop does not queue a completion — the parent asked for it,
-        # no surprise event. The Tasks pane sees status='stopped' via list().
+        # Explicit stop does not queue a completion — parent asked for it, no surprise event.
         return True
 
     async def _stop_workflow(self, run_id: str) -> bool:
@@ -976,16 +722,7 @@ class BackgroundRegistry:
             return False
         return count > 0
 
-    # --- lifecycle --------------------------------------------------------
-
     async def shutdown(self) -> None:
-        """Terminate every still-running owned process. Called from the app
-        exit path so backgrounded servers don't orphan to init when vibe exits.
-
-        Aggregated categories (workflows/teams/loops) are shut down by their
-        own owners (WorkflowRunner.stop_all, TeamManager.stop_all, etc.) — this
-        method only reaps what the registry owns.
-        """
         for rec in list(self._procs.values()):
             if rec.status != "running":
                 continue
@@ -1014,13 +751,6 @@ class BackgroundRegistry:
 
 
 def _team_status(raw: str) -> str:
-    """Normalize TeamMember.status into the unified status vocabulary.
-
-    TeamManager writes statuses as: 'running', 'running:pid=123', 'completed',
-    'failed:<err>', 'stopped', 'error:<err>'. The head token before any ':'
-    is the state; 'error' maps to 'failed' (an error is a failure outcome).
-    Unknown heads default to 'running' (safer than hiding an active teammate).
-    """
     if not raw:
         return "running"
     head = raw.split(":", 1)[0]
