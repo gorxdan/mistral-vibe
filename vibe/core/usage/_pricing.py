@@ -17,7 +17,7 @@ class ModelPricing:
 
 # Verified per-million-token USD prices (2026), sourced from each provider's
 # official pricing page. Unknown models are intentionally absent — the lookup
-# returns None and the card shows — (honest) rather than a guessed figure.
+# returns None and the card shows — rather than a guessed figure.
 # Keys are lowercased canonical model names. Extend as providers publish more.
 #
 # Sources:
@@ -81,7 +81,6 @@ def lookup_pricing(model_name: str) -> ModelPricing | None:
     so 'gpt-4o-mini-*' resolves to the cheaper mini tier, not 'gpt-4o'.
     """
     name = model_name.lower().strip()
-    # Direct hit.
     if name in _PRICING:
         return _PRICING[name]
     # Strip a 'provider/' or 'provider:' prefix and retry the direct + prefix

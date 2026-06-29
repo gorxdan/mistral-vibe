@@ -132,7 +132,7 @@ _MC_OPEN = "<vibe_microcompacted>"
 # are fractions of the active model's auto_compact_threshold, which for a
 # giant-window model (glm/fugu at 880k, gpt-5.5/minimax at 400k) is pinned to the
 # nominal window — so without this cap proactive shaping would not start until
-# hundreds of k of tokens, hoarding stale context for latency and recall no gain.
+# hundreds of k of tokens, hoarding stale context with no latency or recall gain.
 # Capping keeps every model trimming from the same absolute point. Full
 # auto-compaction (AutoCompactMiddleware) is deliberately NOT capped: it must
 # fire near the real window, so it keeps the raw auto_compact_threshold.
