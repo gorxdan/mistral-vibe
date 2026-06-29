@@ -3,7 +3,10 @@ from __future__ import annotations
 from vibe.core.compaction import (
     build_extractive_summary,
     collect_leading_injected_context,
+    collect_persisted_tool_outputs,
     collect_prior_user_messages,
+    extract_persisted_output_path,
+    parse_persisted_tool_outputs,
     parse_previous_user_messages,
     render_compaction_context,
 )
@@ -237,3 +240,113 @@ class TestCollectLeadingInjectedContext:
     def test_empty_when_no_system_message(self) -> None:
         messages = [_user("env", injected=True)]
         assert collect_leading_injected_context(messages) == []
+
+
+_PATH = "/tmp/sess/tool_results/call_abc.txt"
+
+
+def _shaped_content() -> str:
+    # Mirrors ToolResultStore.shape's persisted-output marker phrasing.
+    return (
+        "head preview...\n\n…[elided]…\n\ntail preview\n\n"
+        "…[Full output (208,065 characters) persisted to "
+        f"{_PATH}; use the `read` tool with this path to retrieve it.]…"
+    )
+
+
+def _snipped_content() -> str:
+    # Mirrors SnipMiddleware._snip's path-carrying placeholder.
+    return (
+        "<vibe_snipped> 5000 tokens of older tool content elided; "
+        f"full output persisted to {_PATH}; </vibe_snipped>"
+    )
+
+
+def _tool(content: str, name: str = "bash") -> LLMMessage:
+    return LLMMessage(role=Role.TOOL, content=content, tool_call_id="c1", name=name)
+
+
+class TestExtractPersistedOutputPath:
+    def test_extracts_from_shaped_content(self) -> None:
+        assert extract_persisted_output_path(_shaped_content()) == _PATH
+
+    def test_extracts_from_snip_placeholder(self) -> None:
+        assert extract_persisted_output_path(_snipped_content()) == _PATH
+
+    def test_returns_none_when_absent(self) -> None:
+        assert extract_persisted_output_path("plain tool output, no marker") is None
+
+    def test_returns_none_on_empty(self) -> None:
+        assert extract_persisted_output_path("") is None
+
+
+class TestCollectPersistedToolOutputs:
+    def test_gathers_from_tool_and_snip_dedupes(self) -> None:
+        messages = [
+            _user("ask"),
+            LLMMessage(role=Role.ASSISTANT, content="ran build"),
+            _tool(_shaped_content()),
+            _tool(_snipped_content()),  # same path, must dedupe
+        ]
+        assert collect_persisted_tool_outputs(messages) == [_PATH]
+
+    def test_preserves_first_seen_order(self) -> None:
+        other = "/tmp/sess/tool_results/call_def.txt"
+        messages = [
+            _tool(f"...persisted to {other}; use the `read` tool..."),
+            _tool(_shaped_content()),
+        ]
+        assert collect_persisted_tool_outputs(messages) == [other, _PATH]
+
+    def test_empty_when_no_markers(self) -> None:
+        messages = [_user("ask"), LLMMessage(role=Role.ASSISTANT, content="reply")]
+        assert collect_persisted_tool_outputs(messages) == []
+
+    def test_flattens_from_prior_compaction_envelope(self) -> None:
+        # A prior compaction-context message carries its own persisted-outputs
+        # block; a chained compaction must surface those paths alongside any
+        # new ones in the transcript.
+        prior = render_compaction_context(
+            [_user("old ask", injected=True)], "old summary", [_PATH]
+        )
+        messages = [
+            LLMMessage(role=Role.SYSTEM, content="sys"),
+            LLMMessage(role=Role.USER, content=prior, injected=True),
+            _user("new ask"),
+        ]
+        assert collect_persisted_tool_outputs(messages) == [_PATH]
+
+
+class TestRenderCompactionContextPersisted:
+    def test_includes_persisted_block_when_provided(self) -> None:
+        out = render_compaction_context([], "summary", [_PATH])
+        assert "<persisted_tool_outputs>" in out
+        assert "</persisted_tool_outputs>" in out
+        assert _PATH in out
+
+    def test_omits_block_when_empty(self) -> None:
+        out = render_compaction_context([], "summary", [])
+        assert "<persisted_tool_outputs>" not in out
+
+    def test_round_trips_through_parse(self) -> None:
+        paths = [_PATH, "/tmp/sess/tool_results/call_xyz.txt"]
+        out = render_compaction_context([], "summary", paths)
+        assert parse_persisted_tool_outputs(out) == paths
+
+
+def test_extractive_summary_surfaces_persisted_path() -> None:
+    # The compaction-fallback summarizer must surface the disk path of a tool
+    # result so the recovery contract survives even the no-LLM fallback path.
+    messages = [
+        LLMMessage(role=Role.ASSISTANT, content="ran the build"),
+        _tool(_shaped_content()),
+    ]
+    summary = build_extractive_summary(messages)
+    assert _PATH in summary
+
+
+def test_extractive_summary_no_path_marker_when_none() -> None:
+    # Regression guard: a plain tool result without a persisted marker is
+    # summarized as before, with no spurious path mention.
+    messages = [LLMMessage(role=Role.ASSISTANT, content="hi"), _tool("plain output")]
+    assert "persisted to" not in build_extractive_summary(messages)

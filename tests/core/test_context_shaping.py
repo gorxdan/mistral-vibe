@@ -98,9 +98,7 @@ async def test_snip_preserves_tool_linkage() -> None:
 def _history_with_reasoning() -> list[LLMMessage]:
     # Attach reasoning_content to the big standalone assistant turn (idx 4).
     msgs = _history()
-    msgs[4] = msgs[4].model_copy(
-        update={"reasoning_content": "step-by-step thoughts"}
-    )
+    msgs[4] = msgs[4].model_copy(update={"reasoning_content": "step-by-step thoughts"})
     return msgs
 
 
@@ -233,3 +231,43 @@ async def test_microcompact_is_idempotent() -> None:
     snapshot = [m.content for m in ctx.messages]
     await MicrocompactMiddleware().before_turn(ctx)
     assert [m.content for m in ctx.messages] == snapshot
+
+
+@pytest.mark.asyncio
+async def test_snip_preserves_persisted_output_path() -> None:
+    # A tool result carrying a persisted-output disk path must carry that path
+    # into the snip placeholder so the recovery contract survives shaping.
+    path = "/tmp/sess/tool_results/call_abc.txt"
+    tool_with_path = LLMMessage(
+        role=Role.TOOL,
+        content=(
+            _content(400) + "\n\n…[Full output (100,000 characters) persisted to "
+            f"{path}; use the `read` tool to retrieve it.]…"
+        ),
+        tool_call_id="call_p",
+    )
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.USER, content="please do the thing"),
+        LLMMessage(
+            role=Role.ASSISTANT,
+            content=_content(400),
+            tool_calls=[
+                ToolCall(
+                    id="call_p",
+                    index=0,
+                    function=FunctionCall(name="bash", arguments='{"cmd":"build"}'),
+                )
+            ],
+        ),
+        tool_with_path,
+        LLMMessage(role=Role.ASSISTANT, content="recent reply"),
+    ]
+    ctx = _ctx(msgs, _config())
+    await SnipMiddleware().before_turn(ctx)
+    # The snipped tool message carries the path into the placeholder.
+    snipped = [
+        m for m in ctx.messages if (m.content or "").startswith("<vibe_snipped>")
+    ]
+    assert snipped
+    assert any(path in (m.content or "") for m in snipped)

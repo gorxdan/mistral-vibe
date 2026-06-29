@@ -13,13 +13,22 @@ _PREVIOUS_USER_MESSAGES_OPEN = "<previous_user_messages>"
 _PREVIOUS_USER_MESSAGES_CLOSE = "</previous_user_messages>"
 _COMPACTION_SUMMARY_OPEN = "<compaction_summary>"
 _COMPACTION_SUMMARY_CLOSE = "</compaction_summary>"
+_PERSISTED_OUTPUTS_OPEN = "<persisted_tool_outputs>"
+_PERSISTED_OUTPUTS_CLOSE = "</persisted_tool_outputs>"
 _PREVIOUS_USER_MESSAGE_RE = re.compile(
     r"<previous_user_message_(\d+)>(.*?)</previous_user_message_\1>", re.DOTALL
 )
+# Matches the persisted-output path marker written by ToolResultStore.shape and
+# carried forward by SnipMiddleware. The path sits between "persisted to " and
+# a ";" in both the shaped-content marker and the snip placeholder.
+_PERSISTED_PATH_RE = re.compile(r"persisted to (?P<path>[^;]+);")
+_PERSISTED_OUTPUT_LINE_RE = re.compile(r"^\s*(.+?)\s*$", re.MULTILINE)
 
 
 def render_compaction_context(
-    previous_user_messages: Sequence[LLMMessage], summary: str
+    previous_user_messages: Sequence[LLMMessage],
+    summary: str,
+    persisted_tool_outputs: Sequence[str] = (),
 ) -> str:
     lines = [
         "You are continuing a trajectory after a context compaction.",
@@ -43,6 +52,17 @@ def render_compaction_context(
         escape(summary, quote=False),
         _COMPACTION_SUMMARY_CLOSE,
     ])
+    if persisted_tool_outputs:
+        lines.extend([
+            "",
+            "Full outputs of tool calls from earlier in the session are saved "
+            "on disk. Read any you still need with the `read` tool:",
+            "",
+            _PERSISTED_OUTPUTS_OPEN,
+        ])
+        for path in persisted_tool_outputs:
+            lines.append(f"  {escape(path, quote=False)}")
+        lines.append(_PERSISTED_OUTPUTS_CLOSE)
     return "\n".join(lines)
 
 
@@ -67,6 +87,57 @@ def parse_previous_user_messages(content: str) -> list[str]:
             return []
         previous_user_messages.append(unescape(match.group(2)))
     return previous_user_messages
+
+
+def extract_persisted_output_path(content: str) -> str | None:
+    """Return the persisted-output disk path embedded in *content*, or None.
+
+    Works on the shaped-content marker written by ``ToolResultStore.shape``
+    and on the snip placeholder that carries it forward, since both use the
+    ``persisted to <path>;`` phrasing.
+    """
+    match = _PERSISTED_PATH_RE.search(content or "")
+    return match.group("path").strip() if match else None
+
+
+def parse_persisted_tool_outputs(content: str) -> list[str]:
+    """Extract persisted-tool-output paths from a compaction-context envelope."""
+    block_start = content.find(_PERSISTED_OUTPUTS_OPEN)
+    if block_start < 0:
+        return []
+    block_start += len(_PERSISTED_OUTPUTS_OPEN)
+    block_end = content.find(_PERSISTED_OUTPUTS_CLOSE, block_start)
+    if block_end < 0:
+        return []
+    block = content[block_start:block_end]
+    return [unescape(m.group(1)) for m in _PERSISTED_OUTPUT_LINE_RE.finditer(block)]
+
+
+def collect_persisted_tool_outputs(messages: list[LLMMessage]) -> list[str]:
+    """Gather persisted-output paths across the transcript, de-duplicated.
+
+    Scans every message for the shaped-content path marker (tool results,
+    snipped placeholders, microcompacted tails) and flattens paths from any
+    prior compaction-context envelope (chained compactions). Order is
+    preserved so the most recently surfaced paths appear first.
+    """
+    seen: set[str] = set()
+    paths: list[str] = []
+    for msg in messages:
+        content = msg.content or ""
+        if not content:
+            continue
+        if _is_compaction_context_message(msg):
+            for path in parse_persisted_tool_outputs(content):
+                if path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+            continue
+        path = extract_persisted_output_path(content)
+        if path is not None and path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
 
 
 def _is_compaction_context_message(message: LLMMessage) -> bool:
@@ -196,6 +267,9 @@ def build_extractive_summary(
                 if content.startswith("<vibe_")
                 else _first_line(content)
             )
+            path = extract_persisted_output_path(content)
+            if path:
+                status = f"{status} (full output persisted to {path})"
             lines.append(f"  - {msg.name or 'tool'} result: {status}")
     text = "\n".join(lines)
     return truncate_middle_to_tokens(text, max_tokens)

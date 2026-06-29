@@ -257,12 +257,21 @@ class SnipMiddleware(ContextShaperMiddleware):
 
     @staticmethod
     def _snip(msg: LLMMessage, *, preserve_reasoning: bool = False) -> LLMMessage:
+        from vibe.core.compaction import extract_persisted_output_path
         from vibe.core.types import FunctionCall, ToolCall
         from vibe.core.utils.tokens import approx_token_count
 
         n = approx_token_count(msg.content or "")
+        path = extract_persisted_output_path(msg.content or "")
+        # Carry the persisted-output pointer into the placeholder so the
+        # recovery contract (oversized output -> disk path surfaced) survives
+        # snip. Uses the canonical "persisted to <path>;" phrasing so the same
+        # extractor finds it in shaped content, snip placeholders, and
+        # microcompacted tails alike.
+        path_suffix = f"; full output persisted to {path};" if path else ""
         placeholder = (
-            f"{_SNIP_OPEN} {n} tokens of older {msg.role} content elided {_SNIP_CLOSE}"
+            f"{_SNIP_OPEN} {n} tokens of older {msg.role} content elided"
+            f"{path_suffix} {_SNIP_CLOSE}"
         )
         new_tool_calls = None
         if msg.tool_calls:

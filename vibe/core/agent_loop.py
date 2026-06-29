@@ -33,6 +33,7 @@ from vibe.core.cache_store import InMemoryVibeCodeCacheStore, VibeCodeCacheStore
 from vibe.core.compaction import (
     build_extractive_summary,
     collect_leading_injected_context,
+    collect_persisted_tool_outputs,
     collect_prior_user_messages,
     render_compaction_context,
 )
@@ -3898,8 +3899,9 @@ class AgentLoop(AgentLoopHooksMixin):
             # skips every injected message, so without this the model's grounding
             # vanishes after every reset.
             leading_context = collect_leading_injected_context(history_snapshot)
+            persisted_tool_outputs = collect_persisted_tool_outputs(history_snapshot)
             compaction_context = render_compaction_context(
-                prior_user_messages, summary_content
+                prior_user_messages, summary_content, persisted_tool_outputs
             )
             compaction_context_message = LLMMessage(
                 role=Role.USER, content=compaction_context, injected=True
