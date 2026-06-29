@@ -50,6 +50,7 @@ from vibe.core.agent_loop._errors import (
     _raise_for_backend_error,
     _refusal_error,
 )
+from vibe.core.agent_loop.failover_mixin import AgentLoopFailoverMixin
 from vibe.core.agent_loop.memory_mixin import AgentLoopMemoryMixin
 from vibe.core.agent_loop.safety_mixin import AgentLoopSafetyMixin
 from vibe.core.compaction import truncate_compaction_context_for_backend
@@ -85,12 +86,15 @@ if TYPE_CHECKING:
     from vibe.core.usage import UsageRecorder
 
 
-class AgentLoopBackendMixin(AgentLoopMemoryMixin, AgentLoopSafetyMixin):
+class AgentLoopBackendMixin(
+    AgentLoopFailoverMixin, AgentLoopMemoryMixin, AgentLoopSafetyMixin
+):
     """Mixin that adds the LLM-backend chat / streaming path to AgentLoop.
 
-    Inherits AgentLoopMemoryMixin (for ``_wrap_memories`` / ``_late_memory_section``)
-    and AgentLoopSafetyMixin (→ AgentLoopHooksMixin, for ``messages`` etc.) so all
-    shared attrs/methods resolve via the inheritance chain without redeclaration.
+    Inherits Failover (for ``_fallback_model_override``), Memory (for
+    ``_wrap_memories`` / ``_late_memory_section``), and Safety (→ Hooks, for
+    ``messages`` etc.) so all shared attrs/methods resolve via the inheritance
+    chain without redeclaration.
     """
 
     # Declared for type-checking only; set by AgentLoop.__init__.
@@ -104,7 +108,6 @@ class AgentLoopBackendMixin(AgentLoopMemoryMixin, AgentLoopSafetyMixin):
     _response_format: Any
     _codex_routing: Any
     _max_output_override: int | None
-    _fallback_model_override: ModelConfig | None
 
     @property
     def config(self) -> VibeConfig: ...
