@@ -360,6 +360,35 @@ async def test_microcompact_regists_oversized_prior_gist() -> None:
     assert len(block) < len(f"{_MC_OPEN} " + _content(700)) // 2  # shrank
 
 
+@pytest.mark.asyncio
+async def test_microcompact_skips_capped_gist_and_processes_new_block() -> None:
+    # Regression: a block already gisted to the cap looked re-eligible (the marker
+    # pushes its full content just over the cap) and was re-churned to no effect,
+    # burning the per-turn block budget so NEW big content never got gisted and the
+    # session climbed (blocks=4 shed=0 in a live trace). The eligibility check must
+    # measure the marker-stripped body.
+    from vibe.core.middleware import _MC_OPEN
+
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(per_message_cap_tokens=100, max_blocks_per_turn=1),
+    )
+    capped = f"{_MC_OPEN} " + _content(100)  # body already at the cap
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.USER, content="go"),
+        LLMMessage(role=Role.ASSISTANT, content=capped),  # oldest, already capped
+        LLMMessage(role=Role.ASSISTANT, content=_content(600)),  # new, gistable
+        LLMMessage(role=Role.ASSISTANT, content="recent"),
+    ]
+    ctx = _ctx(msgs, cfg)
+    await MicrocompactMiddleware().before_turn(ctx)
+
+    # The one block slot went to the fresh block, not the no-op capped one.
+    assert ctx.messages[2].content == capped  # already-capped gist left alone
+    assert (ctx.messages[3].content or "").startswith(_MC_OPEN)  # new block gisted
+
+
 def test_microcompact_per_message_cap_lowered() -> None:
     assert MicrocompactConfig().per_message_cap_tokens == 1000
 

@@ -367,15 +367,18 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
                 or self._is_recoverable(content)
             ):
                 continue
-            if approx_token_count(content) <= cfg.per_message_cap_tokens:
-                continue  # naturally small (or already at the cap), skip
-            # A prior gist still above the cap is re-gisted smaller. Without this,
-            # accumulated <vibe_microcompacted> blocks formed an unreclaimable
-            # floor that rose with session length (a live session climbed to 250k
-            # this way). Strip the old marker so it isn't nested.
+            # A prior gist still above the cap is re-gisted smaller (this is how
+            # the accumulated <vibe_microcompacted> floor gets reclaimed). Measure
+            # and truncate the marker-STRIPPED body: a block already gisted to the
+            # cap is body<=cap and must be skipped, else the marker pushes it just
+            # over the cap and it is re-churned to no effect every turn — wasting
+            # the per-turn block budget so new growth never gets gisted (a live
+            # session climbed unbounded this way, blocks=4 shed=0).
             body = content
             if body.startswith(_MC_OPEN):
                 body = body[len(_MC_OPEN) :].lstrip()
+            if approx_token_count(body) <= cfg.per_message_cap_tokens:
+                continue  # naturally small, or already gisted to the cap
             new_content = f"{_MC_OPEN} " + truncate_middle_to_tokens(
                 body, cfg.per_message_cap_tokens
             )
