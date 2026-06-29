@@ -18,6 +18,7 @@ from vibe.core.types import (
     LLMMessage,
     LLMUsage,
     Role,
+    StopInfo,
     StrToolChoice,
     ToolCall,
 )
@@ -90,7 +91,7 @@ class ReasoningAdapter(APIAdapter):
         *,
         model_name: str,
         messages: list[dict[str, Any]],
-        temperature: float,
+        temperature: float | None,
         tools: list[AvailableTool] | None,
         max_tokens: int | None,
         tool_choice: StrToolChoice | AvailableTool | None,
@@ -100,8 +101,9 @@ class ReasoningAdapter(APIAdapter):
         payload: dict[str, Any] = {
             "model": model_name,
             "messages": messages,
-            "temperature": temperature,
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
 
         if thinking != "off":
             # "max" is our internal top level → request the API's top, "xhigh".
@@ -245,4 +247,6 @@ class ReasoningAdapter(APIAdapter):
             completion_tokens=usage_data.get("completion_tokens", 0),
         )
 
-        return LLMChunk(message=message, usage=usage)
+        return LLMChunk(
+            message=message, usage=usage, stop=StopInfo.from_chat_choices(data)
+        )

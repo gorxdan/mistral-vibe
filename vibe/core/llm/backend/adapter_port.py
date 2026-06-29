@@ -21,7 +21,7 @@ class PreparedRequest(NamedTuple):
 class RequestParams:
     model_name: str
     messages: Sequence[LLMMessage]
-    temperature: float
+    temperature: float | None
     tools: list[AvailableTool] | None
     max_tokens: int | None
     tool_choice: StrToolChoice | AvailableTool | None

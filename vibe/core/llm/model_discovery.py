@@ -413,14 +413,20 @@ def _synth_model(
     alias: str,
     *,
     auto_compact_threshold: int | None = None,
+    template: ModelConfig | None = None,
 ) -> ModelConfig:
+    # Inherit reasoning behaviour from the provider's configured model so a
+    # discovered sibling of a thinking model (Moonshot/GLM/OpenAI) is not
+    # silently labelled thinking="off" and keeps Preserved Thinking + temperature.
     kwargs: dict[str, Any] = dict(
         name=model_id,
         provider=provider_name,
         alias=alias,
         input_price=0.0,
         output_price=0.0,
-        thinking="off",
+        thinking=template.thinking if template else "off",
+        preserve_reasoning=template.preserve_reasoning if template else False,
+        temperature=template.temperature if template else 0.2,
     )
     if auto_compact_threshold is not None:
         kwargs["auto_compact_threshold"] = auto_compact_threshold
@@ -469,6 +475,9 @@ async def discover_extra_models(
     discovered: list[DiscoveredModel] = []
 
     for (provider, ephemeral), raw_models in zip(probe, results, strict=True):
+        template = next(
+            (m for m in config.models if m.provider == provider.name), None
+        )
         num_ctx_cap = _ollama_num_ctx_cap() if _is_ollama_provider(provider) else None
         chat_models = [rm for rm in raw_models if _is_chat_model(rm.id)]
         if (dropped := len(raw_models) - len(chat_models)) > 0:
@@ -492,7 +501,11 @@ async def discover_extra_models(
             discovered.append(
                 DiscoveredModel(
                     model=_synth_model(
-                        provider.name, rm.id, alias, auto_compact_threshold=budget
+                        provider.name,
+                        rm.id,
+                        alias,
+                        auto_compact_threshold=budget,
+                        template=template,
                     ),
                     provider=provider,
                     ephemeral=ephemeral,

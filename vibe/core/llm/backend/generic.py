@@ -32,6 +32,7 @@ from vibe.core.types import (
     LLMMessage,
     LLMUsage,
     Role,
+    StopInfo,
     StrToolChoice,
 )
 from vibe.core.utils import async_generator_retry, async_retry
@@ -49,18 +50,16 @@ class OpenAIAdapter(APIAdapter):
         self,
         model_name: str,
         converted_messages: list[dict[str, Any]],
-        temperature: float,
+        temperature: float | None,
         tools: list[AvailableTool] | None,
         max_tokens: int | None,
         tool_choice: StrToolChoice | AvailableTool | None,
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload = {
-            "model": model_name,
-            "messages": converted_messages,
-            "temperature": temperature,
-        }
+        payload: dict[str, Any] = {"model": model_name, "messages": converted_messages}
+        if temperature is not None:
+            payload["temperature"] = temperature
 
         if tools:
             payload["tools"] = [tool.model_dump(exclude_none=True) for tool in tools]
@@ -227,7 +226,9 @@ class OpenAIAdapter(APIAdapter):
             reasoning_tokens=reasoning,
         )
 
-        return LLMChunk(message=message, usage=usage)
+        return LLMChunk(
+            message=message, usage=usage, stop=StopInfo.from_chat_choices(data)
+        )
 
 
 _ADAPTERS: dict[str, APIAdapter] = {

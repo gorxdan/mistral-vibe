@@ -544,6 +544,12 @@ class LLMUsage(BaseModel):
 
 class StopReason(StrEnum):
     REFUSAL = "refusal"
+    LENGTH = "length"
+
+
+# Finish reasons signalling the response hit its output-token ceiling. OpenAI
+# chat uses "length"; some compatible servers use "max_tokens".
+_TRUNCATION_REASONS = frozenset({StopReason.LENGTH, "max_tokens"})
 
 
 class StopInfo(BaseModel):
@@ -555,6 +561,18 @@ class StopInfo(BaseModel):
     @property
     def is_refusal(self) -> bool:
         return self.reason == StopReason.REFUSAL
+
+    @property
+    def is_truncated(self) -> bool:
+        return self.reason in _TRUNCATION_REASONS
+
+    @staticmethod
+    def from_chat_choices(data: dict[str, Any]) -> StopInfo | None:
+        choices = data.get("choices")
+        if not choices:
+            return None
+        reason = choices[0].get("finish_reason")
+        return StopInfo(reason=reason) if reason else None
 
 
 class LLMChunk(BaseModel):

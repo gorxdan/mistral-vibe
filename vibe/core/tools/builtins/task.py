@@ -526,6 +526,8 @@ class Task(
             entrypoint_metadata=ctx.entrypoint_metadata,
             terminal_emulator=ctx.terminal_emulator,
             is_subagent=True,
+            # Stream like the host: reasoning models (k2.7-code/GLM) need stream=True.
+            enable_streaming=True,
             defer_heavy_init=True,
             permission_store=ctx.permission_store,
             hook_config_result=ctx.hook_config_result,

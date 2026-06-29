@@ -308,8 +308,8 @@ class MaxOutputEscalationConfig(BaseSettings):
 
     enabled: bool = True
     # Floor for the first escalation step when no override is active yet. The
-    # first retry uses min(base*factor, cap); set at/above the backend default
-    # so the first retry is a real increase.
+    # first retry uses min(base*factor, cap) = 16384, the >=16k that thinking
+    # models (Moonshot k2.7-code) need for reasoning+output.
     base: int = 8192
     factor: float = 2.0
     cap: int = 65536
@@ -885,7 +885,9 @@ class ModelConfig(BaseModel):
     name: str
     provider: str
     alias: str
-    temperature: float = 0.2
+    # None omits temperature from the wire (Moonshot k2.7-code rejects an explicit
+    # value); omission is enforced in OpenAIAdapter.build_payload.
+    temperature: float | None = 0.2
     input_price: float = 0.0  # Price per million input tokens
     output_price: float = 0.0  # Price per million output tokens
     thinking: ThinkingLevel = "off"
@@ -893,6 +895,9 @@ class ModelConfig(BaseModel):
     auto_compact_threshold: int = DEFAULT_AUTO_COMPACT_THRESHOLD
     # Model's true output-token ceiling; seeds/caps max-output escalation when set.
     max_output_tokens: int | None = None
+    # Preserved Thinking (Moonshot/GLM): resend every historical reasoning_content
+    # verbatim. Read by SnipMiddleware to skip nulling it on elided turns.
+    preserve_reasoning: bool = False
     _default_alias_to_name = model_validator(mode="before")(_default_alias_to_name)
 
 

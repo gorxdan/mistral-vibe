@@ -47,7 +47,7 @@ class PayloadSummary(BaseModel):
     model: str
     message_count: int
     approx_chars: int
-    temperature: float
+    temperature: float | None
     has_tools: bool
     tool_choice: StrToolChoice | AvailableTool | None
 
@@ -185,7 +185,7 @@ class BackendErrorBuilder:
         error: HttpError,
         model: str,
         messages: Sequence[LLMMessage],
-        temperature: float,
+        temperature: float | None,
         has_tools: bool,
         tool_choice: StrToolChoice | AvailableTool | None,
     ) -> BackendError:
@@ -217,7 +217,7 @@ class BackendErrorBuilder:
         error: httpx.RequestError,
         model: str,
         messages: Sequence[LLMMessage],
-        temperature: float,
+        temperature: float | None,
         has_tools: bool,
         tool_choice: StrToolChoice | AvailableTool | None,
     ) -> BackendError:
@@ -261,7 +261,7 @@ class BackendErrorBuilder:
     def _payload_summary(
         model_name: str,
         messages: Sequence[LLMMessage],
-        temperature: float,
+        temperature: float | None,
         has_tools: bool,
         tool_choice: StrToolChoice | AvailableTool | None,
     ) -> PayloadSummary:

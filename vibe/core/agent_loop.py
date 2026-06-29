@@ -373,7 +373,7 @@ def _raise_for_backend_error(
     context-too-long / response-too-long / content-filter / non-retryable
     classification lives in one place. Always raises.
     """
-    if isinstance(e, RefusalError):
+    if isinstance(e, RefusalError | ResponseTooLongError):
         raise
     if _should_raise_rate_limit_error(e):
         raise RateLimitError(provider_name, model_name) from e
@@ -3579,6 +3579,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
             processed_message = self.format_handler.process_api_response_message(
                 result.message
             )
+            # Raise before committing the truncated turn to history so the
+            # escalation retry (larger max_tokens) starts from a clean message list.
+            if result.stop and result.stop.is_truncated:
+                raise ResponseTooLongError(provider.name, active_model.name)
             self.messages.append(processed_message)
             if result.stop and result.stop.is_refusal:
                 raise _refusal_error(provider.name, active_model.name, result)
@@ -3678,6 +3682,10 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
                     )
                     set_usage(_span, chunk_acc.usage)
 
+                # Raise before committing the truncated turn so the escalation
+                # retry re-streams from a clean message list (mirrors _chat).
+                if chunk_agg.stop and chunk_agg.stop.is_truncated:
+                    raise ResponseTooLongError(provider.name, active_model.name)
                 self.messages.append(chunk_agg.message)
                 if chunk_agg.stop and chunk_agg.stop.is_refusal:
                     raise _refusal_error(provider.name, active_model.name, chunk_agg)

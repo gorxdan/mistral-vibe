@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class CompletionRequest:
     model: ModelConfig
     messages: Sequence[LLMMessage]
-    temperature: float = 0.2
+    temperature: float | None = 0.2
     tools: list[AvailableTool] | None = None
     max_tokens: int | None = None
     tool_choice: StrToolChoice | AvailableTool | None = None

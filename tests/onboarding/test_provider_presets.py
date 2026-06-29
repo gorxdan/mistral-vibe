@@ -144,18 +144,18 @@ def test_apply_sakana_preset_persists_provider_and_model(
     assert persisted["fugu-ultra"]["auto_compact_threshold"] == 880000
 
 
-def test_zai_preset_discovers_models() -> None:
+def test_zai_preset_does_not_discover_models() -> None:
     preset = next((p for p in PRESETS if p.key == "zai"), None)
     assert preset is not None
     assert preset.provider is not None
-    assert preset.provider.discover_models is True
+    assert preset.provider.discover_models is False
 
 
-def test_kimi_preset_discovers_models() -> None:
+def test_kimi_preset_does_not_discover_models() -> None:
     preset = next((p for p in PRESETS if p.key == "kimi"), None)
     assert preset is not None
     assert preset.provider is not None
-    assert preset.provider.discover_models is True
+    assert preset.provider.discover_models is False
 
 
 def test_minimax_preset_discovers_models() -> None:

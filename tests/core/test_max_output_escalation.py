@@ -158,3 +158,30 @@ async def test_chat_passes_override_to_backend_but_not_compaction() -> None:
     await loop._chat(model_override=loop.config.get_active_model())  # compaction-like
 
     assert seen == [16384, None]
+
+
+@pytest.mark.asyncio
+async def test_chat_raises_on_truncated_finish_reason_without_committing() -> None:
+    from vibe.core.types import LLMChunk, LLMMessage, LLMUsage, Role, StopInfo
+
+    loop = build_test_agent_loop()
+
+    class _Trunc:
+        async def __aenter__(self) -> _Trunc:
+            return self
+
+        async def __aexit__(self, *a: object) -> None:
+            return None
+
+        async def complete(self, request, *, response_headers_sink=None):
+            return LLMChunk(
+                message=LLMMessage(role=Role.ASSISTANT, content="partial..."),
+                usage=LLMUsage(prompt_tokens=1, completion_tokens=1),
+                stop=StopInfo(reason="length"),
+            )
+
+    loop.backend = _Trunc()  # type: ignore[assignment]
+    before = len(loop.messages)
+    with pytest.raises(ResponseTooLongError):
+        await loop._chat()
+    assert len(loop.messages) == before, "truncated turn must not enter history"

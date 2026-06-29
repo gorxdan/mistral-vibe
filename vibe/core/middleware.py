@@ -206,6 +206,8 @@ class SnipMiddleware(ContextShaperMiddleware):
             return MiddlewareResult()
 
         messages = context.messages
+        active_model = context.active_model or context.config.get_active_model()
+        preserve_reasoning = active_model.preserve_reasoning
         prefix = self._protected_prefix_len(
             messages, context.config.context_shaping.cache_prefix_guard_tokens
         )
@@ -228,7 +230,7 @@ class SnipMiddleware(ContextShaperMiddleware):
             if est <= target:
                 break
             before = approx_token_count(messages[i].content or "")
-            new_msg = self._snip(messages[i])
+            new_msg = self._snip(messages[i], preserve_reasoning=preserve_reasoning)
             messages.replace_at(i, new_msg)
             est -= max(0, before - approx_token_count(new_msg.content or ""))
             snipped += 1
@@ -253,7 +255,7 @@ class SnipMiddleware(ContextShaperMiddleware):
         return MiddlewareResult()
 
     @staticmethod
-    def _snip(msg: LLMMessage) -> LLMMessage:
+    def _snip(msg: LLMMessage, *, preserve_reasoning: bool = False) -> LLMMessage:
         from vibe.core.types import FunctionCall, ToolCall
         from vibe.core.utils.tokens import approx_token_count
 
@@ -273,15 +275,17 @@ class SnipMiddleware(ContextShaperMiddleware):
                 )
                 for tc in msg.tool_calls
             ]
-        return msg.model_copy(
-            update={
-                "content": placeholder,
-                "images": None,
-                "tool_calls": new_tool_calls,
-                "reasoning_content": None,
-                "reasoning_state": None,
-            }
-        )
+        update: dict[str, object] = {
+            "content": placeholder,
+            "images": None,
+            "tool_calls": new_tool_calls,
+        }
+        # Preserved-Thinking providers (Moonshot/GLM) reject a history where some
+        # assistant turns lack reasoning_content, so keep it for them.
+        if not preserve_reasoning:
+            update["reasoning_content"] = None
+            update["reasoning_state"] = None
+        return msg.model_copy(update=update)
 
 
 class MicrocompactMiddleware(ContextShaperMiddleware):

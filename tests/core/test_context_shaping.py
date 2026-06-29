@@ -95,6 +95,37 @@ async def test_snip_preserves_tool_linkage() -> None:
         assert tool.tool_call_id == "call_1"  # linkage intact
 
 
+def _history_with_reasoning() -> list[LLMMessage]:
+    # Attach reasoning_content to the big standalone assistant turn (idx 4).
+    msgs = _history()
+    msgs[4] = msgs[4].model_copy(
+        update={"reasoning_content": "step-by-step thoughts"}
+    )
+    return msgs
+
+
+@pytest.mark.asyncio
+async def test_snip_strips_reasoning_by_default() -> None:
+    ctx = _ctx(_history_with_reasoning(), _config())
+    await SnipMiddleware().before_turn(ctx)
+
+    snipped = ctx.messages[4]
+    assert (snipped.content or "").startswith("<vibe_snipped>")  # was elided
+    assert snipped.reasoning_content is None  # default: reasoning dropped
+
+
+@pytest.mark.asyncio
+async def test_snip_preserves_reasoning_when_model_requires_it() -> None:
+    cfg = _config()
+    cfg.models[0].preserve_reasoning = True  # Kimi/GLM Preserved Thinking
+    ctx = _ctx(_history_with_reasoning(), cfg)
+    await SnipMiddleware().before_turn(ctx)
+
+    snipped = ctx.messages[4]
+    assert (snipped.content or "").startswith("<vibe_snipped>")  # still elided
+    assert snipped.reasoning_content == "step-by-step thoughts"  # kept verbatim
+
+
 @pytest.mark.asyncio
 async def test_snip_is_idempotent() -> None:
     cfg = _config()

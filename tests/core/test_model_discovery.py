@@ -113,6 +113,45 @@ async def test_discover_drops_non_chat_models(monkeypatch: pytest.MonkeyPatch) -
     assert {dm.model.alias for dm in out} == {"gpt-4o", "o3"}
 
 
+@pytest.mark.asyncio
+async def test_discover_inherits_reasoning_from_configured_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A discovered sibling of a thinking model must inherit the provider's
+    # configured reasoning behaviour, not the bare thinking="off" default.
+    config = build_test_vibe_config(
+        providers=[
+            ProviderConfig(
+                name="kimi",
+                api_base="https://api.kimi.com/coding/v1",
+                api_key_env_var="",
+                discover_models=True,
+            )
+        ],
+        models=[
+            ModelConfig(
+                name="kimi-k2.7-code",
+                provider="kimi",
+                alias="kimi",
+                thinking="max",
+                preserve_reasoning=True,
+                temperature=None,
+            )
+        ],
+    )
+
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        return [RawModel("kimi-k2.6")] if provider.name == "kimi" else []
+
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
+    out = await discover_extra_models(config)
+    assert len(out) == 1
+    sibling = out[0].model
+    assert sibling.thinking == "max"
+    assert sibling.preserve_reasoning is True
+    assert sibling.temperature is None
+
+
 # --- fetch_model_ids -------------------------------------------------------
 
 

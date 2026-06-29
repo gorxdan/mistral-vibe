@@ -587,7 +587,7 @@ class OpenAIResponsesAdapter(APIAdapter):
         *,
         model_name: str,
         input_items: list[dict[str, Any]],
-        temperature: float,
+        temperature: float | None,
         tools: list[AvailableTool] | None,
         max_tokens: int | None,
         tool_choice: StrToolChoice | AvailableTool | None,
@@ -613,7 +613,7 @@ class OpenAIResponsesAdapter(APIAdapter):
         if cache_key := (cache_session_id or prefix_cache_key(input_items)):
             payload["prompt_cache_key"] = cache_key
 
-        if self._is_temperature_supported(model_name):
+        if temperature is not None and self._is_temperature_supported(model_name):
             payload["temperature"] = temperature
 
         effort = self._map_reasoning_effort(thinking, model_name)
