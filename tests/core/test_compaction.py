@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from vibe.core.compaction import (
     build_extractive_summary,
+    build_summary_input,
     collect_leading_injected_context,
     collect_persisted_tool_outputs,
     collect_prior_user_messages,
@@ -11,6 +12,7 @@ from vibe.core.compaction import (
     render_compaction_context,
 )
 from vibe.core.types import FunctionCall, LLMMessage, Role, ToolCall
+from vibe.core.utils.tokens import approx_token_count
 
 _PREFIX = "Another language model started to solve this problem"
 
@@ -350,3 +352,50 @@ def test_extractive_summary_no_path_marker_when_none() -> None:
     # summarized as before, with no spurious path mention.
     messages = [LLMMessage(role=Role.ASSISTANT, content="hi"), _tool("plain output")]
     assert "persisted to" not in build_extractive_summary(messages)
+
+
+def test_build_summary_input_within_budget_is_unchanged() -> None:
+    messages = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        _user("hello"),
+        LLMMessage(role=Role.ASSISTANT, content="hi"),
+    ]
+    result = build_summary_input(messages, "SUMMARIZE", max_tokens=10_000)
+    assert result[:-1] == messages
+    assert result[-1].role == Role.USER
+    assert result[-1].content == "SUMMARIZE"
+
+
+def test_build_summary_input_over_budget_is_bounded_and_keeps_system() -> None:
+    budget = 500
+    messages = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        _user("u" * 240_000),
+        LLMMessage(role=Role.ASSISTANT, content="a" * 240_000),
+    ]
+    result = build_summary_input(messages, "SUMMARIZE", max_tokens=budget)
+
+    assert result[0].role == Role.SYSTEM
+    assert result[0].content == "sys"
+    assert result[-1].content == "SUMMARIZE"
+    bounded_tokens = sum(approx_token_count(m.content or "") for m in result)
+    full_tokens = sum(approx_token_count(m.content or "") for m in messages)
+    assert bounded_tokens <= budget
+    assert bounded_tokens < full_tokens
+
+
+def test_build_summary_input_over_budget_preserves_no_tool_messages() -> None:
+    # The flattened transcript carries no tool-role messages, so the summary
+    # request can never 400 on an orphaned tool result.
+    messages = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(
+            role=Role.ASSISTANT,
+            content="x" * 240_000,
+            tool_calls=[ToolCall(id="c1", function=FunctionCall(name="read"))],
+        ),
+        _tool("y" * 240_000),
+    ]
+    result = build_summary_input(messages, "SUMMARIZE", max_tokens=500)
+    assert all(m.role in (Role.SYSTEM, Role.USER) for m in result)
+    assert all(not m.tool_calls for m in result)

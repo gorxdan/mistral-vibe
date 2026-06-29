@@ -111,17 +111,6 @@ async def test_try_reactive_shaping_returns_false_when_nothing_to_shape() -> Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Emergency compaction runs the summary _chat call on the full, "
-        "already-over-window history (AgentLoop.compact). With no progressive "
-        "trim/chunk fallback the summarizer is handed the same payload that just "
-        "overflowed; it can itself raise ContextTooLongError, which escapes the "
-        "conversation loop as a hard, user-facing error. Remove this marker once "
-        "compaction reduces the summarizer input (or recovers from its overflow)."
-    ),
-)
 async def test_emergency_compaction_recovers_when_summarizer_overflows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

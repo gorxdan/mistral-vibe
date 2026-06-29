@@ -32,6 +32,7 @@ from vibe.core.agents.models import AgentProfile, BuiltinAgentName
 from vibe.core.cache_store import InMemoryVibeCodeCacheStore, VibeCodeCacheStore
 from vibe.core.compaction import (
     build_extractive_summary,
+    build_summary_input,
     collect_leading_injected_context,
     collect_persisted_tool_outputs,
     collect_prior_user_messages,
@@ -3914,15 +3915,28 @@ class AgentLoop(AgentLoopHooksMixin):
                 )
             self.stats.steps += 1
 
+            compaction_model = self.config.get_compaction_model()
+            # Bound the summarizer input: feeding the full, already over-window
+            # history to the summary call overflows the summarizer itself (the very
+            # case compaction handles). Run the call against the bounded copy so it
+            # never overflows; the real history is restored before reset() below.
+            summary_messages = MessageList(
+                build_summary_input(
+                    history_snapshot,
+                    summary_request,
+                    compaction_model.auto_compact_threshold,
+                )
+            )
             summary_content = ""
             try:
-                with self.messages.silent():
-                    self.messages.append(
-                        LLMMessage(role=Role.USER, content=summary_request)
-                    )
+                original_messages = self.messages
+                self.messages = summary_messages
+                try:
                     summary_result = await self._chat(
-                        model_override=self.config.get_compaction_model(), harness=True
+                        model_override=compaction_model, harness=True
                     )
+                finally:
+                    self.messages = original_messages
 
                 if summary_result.usage is None:
                     raise AgentLoopLLMResponseError(

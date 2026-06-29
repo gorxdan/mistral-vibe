@@ -304,3 +304,50 @@ def build_extractive_summary(
             lines.append(f"  - {msg.name or 'tool'} result: {status}")
     text = "\n".join(lines)
     return truncate_middle_to_tokens(text, max_tokens)
+
+
+def _render_summary_transcript(messages: Sequence[LLMMessage]) -> str:
+    lines: list[str] = []
+    for msg in messages:
+        parts = [msg.content or ""]
+        for tc in msg.tool_calls or ():
+            parts.append(f"[called {tc.function.name or 'tool'}]")
+        body = " ".join(p for p in parts if p)
+        if body:
+            lines.append(f"{msg.role.value}: {body}")
+    return "\n\n".join(lines)
+
+
+def build_summary_input(
+    messages: Sequence[LLMMessage], summary_request: str, max_tokens: int
+) -> list[LLMMessage]:
+    """Bound the message payload handed to the compaction summary LLM call.
+
+    The summary call runs a model over the conversation; feeding it the full,
+    already over-window history overflows the summarizer itself -- the exact case
+    compaction exists to handle. When the history fits ``max_tokens`` the original
+    structured messages are returned unchanged. Over budget, the conversation is
+    flattened into a single middle-truncated transcript message so the request
+    always fits and can never 400 on an orphaned tool message; the leading system
+    prompt and the ``summary_request`` are always preserved.
+    """
+    request_msg = LLMMessage(role=Role.USER, content=summary_request)
+    total = sum(approx_token_count(m.content or "") for m in messages)
+    if max_tokens <= 0 or total <= max_tokens:
+        return [*messages, request_msg]
+    has_system = bool(messages) and messages[0].role == Role.SYSTEM
+    system = messages[0] if has_system else None
+    body = messages[1:] if has_system else list(messages)
+    reserve = approx_token_count(summary_request)
+    if system is not None:
+        reserve += approx_token_count(system.content or "")
+    transcript = truncate_middle_to_tokens(
+        _render_summary_transcript(body), max(max_tokens - reserve, 0)
+    )
+    bounded: list[LLMMessage] = []
+    if system is not None:
+        bounded.append(system)
+    if transcript:
+        bounded.append(LLMMessage(role=Role.USER, content=transcript))
+    bounded.append(request_msg)
+    return bounded
