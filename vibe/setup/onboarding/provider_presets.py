@@ -19,6 +19,8 @@ OPENAI_API_BASE = "https://api.openai.com/v1"
 OPENAI_HELP_URL = "https://platform.openai.com/api-keys"
 SAKANA_API_BASE = "https://api.sakana.ai/v1"
 SAKANA_HELP_URL = "https://sakana.ai"
+LONGCAT_API_BASE = "https://api.longcat.chat/openai/v1"
+LONGCAT_HELP_URL = "https://longcat.chat/platform/api_keys"
 
 CUSTOM_PROVIDER_NAME = "custom"
 
@@ -241,6 +243,33 @@ PRESETS: list[ProviderPreset] = [
                 # Same 1M-token context window as fugu; compact before the ceiling.
                 auto_compact_threshold=880000,
             ),
+        ),
+    ),
+    ProviderPreset(
+        key="longcat",
+        label="LongCat (Meituan)",
+        description=(
+            "LongCat-2.0 via the LongCat API Platform (OpenAI-compatible). A "
+            "high-performance agentic model with a 1M-token context window. "
+            "Requires a LONGCAT_API_KEY."
+        ),
+        requires_api_key=True,
+        help_url=LONGCAT_HELP_URL,
+        provider=ProviderConfig(
+            name="longcat",
+            api_base=LONGCAT_API_BASE,
+            api_key_env_var="LONGCAT_API_KEY",
+            # The platform serves only the LongCat family; discovery would just
+            # echo LongCat-2.0 back (already configured below).
+            discover_models=False,
+        ),
+        model=ModelConfig(
+            name="LongCat-2.0",
+            provider="longcat",
+            alias="longcat",
+            # 1M-token context window (128K output). Compact well before the
+            # ceiling, matching the other 1M-window presets.
+            auto_compact_threshold=880000,
         ),
     ),
     ProviderPreset(

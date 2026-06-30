@@ -163,3 +163,58 @@ def test_minimax_preset_discovers_models() -> None:
     assert preset is not None
     assert preset.provider is not None
     assert preset.provider.discover_models is True
+
+
+def test_longcat_preset_present_and_keyed() -> None:
+    preset = next((p for p in PRESETS if p.key == "longcat"), None)
+    assert preset is not None
+    assert preset.requires_api_key is True
+    assert preset.provider is not None
+    assert preset.model is not None
+
+
+def test_longcat_preset_provider_config() -> None:
+    preset = next(p for p in PRESETS if p.key == "longcat")
+    provider = preset.provider
+    assert provider is not None
+    assert provider.name == "longcat"
+    assert provider.api_base == "https://api.longcat.chat/openai/v1"
+    assert provider.api_key_env_var == "LONGCAT_API_KEY"
+    # OpenAI-compatible chat-completions endpoint; the default openai adapter.
+    assert provider.api_style == "openai"
+    # Single-model platform; discovery is disabled.
+    assert provider.discover_models is False
+
+
+def test_longcat_preset_model_config() -> None:
+    preset = next(p for p in PRESETS if p.key == "longcat")
+    model = preset.model
+    assert model is not None
+    assert model.name == "LongCat-2.0"
+    assert model.provider == "longcat"
+    assert model.alias == "longcat"
+    # 1M-token context window; compaction budget sits below the ceiling.
+    assert model.auto_compact_threshold == 880000
+
+
+def test_apply_longcat_preset_persists_provider_and_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LONGCAT_API_KEY", "sk-longcat-test")
+    preset = next(p for p in PRESETS if p.key == "longcat")
+    assert preset.provider is not None and preset.model is not None
+
+    apply_provider_config(preset.provider, preset.model)
+
+    from vibe.core.config import VibeConfig
+
+    config = VibeConfig.get_persisted_config()
+    provider_names = {p["name"] for p in config["providers"]}
+    assert "longcat" in provider_names
+    assert config["active_model"] == preset.model.alias
+
+
+def test_longcat_preset_resolvable_by_provider_name() -> None:
+    preset = preset_for_provider_name("longcat")
+    assert preset is not None
+    assert preset.key == "longcat"
