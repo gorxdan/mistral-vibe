@@ -14,15 +14,17 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from vibe.cli.textual_ui.external_editor import ExternalEditor
+from vibe.cli.textual_ui.shortcut_hints import shortcut, shortcut_hint
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.cli.textual_ui.widgets.tool_widgets import get_approval_widget
+from vibe.cli.textual_ui.widgets.vim_navigation import VimNavigationMixin
 from vibe.core.config import VibeConfig
 from vibe.core.tools.permissions import RequiredPermission
 
 _INPUT_GRACE_PERIOD_S = 0.5
 
 
-class ApprovalApp(Container):
+class ApprovalApp(VimNavigationMixin, Container):
     can_focus = True
     can_focus_children = False
 
@@ -141,7 +143,10 @@ class ApprovalApp(Container):
                 self.option_widgets.append(widget)
                 yield widget
             self.help_widget = NoMarkupStatic(
-                "↑↓ navigate  Enter select  e edit args  ESC reject",
+                shortcut_hint(
+                    f"{shortcut('↑↓/jk')} navigate  {shortcut('Enter')} select  "
+                    f"{shortcut('e')} edit args  {shortcut('Esc')} reject"
+                ),
                 classes="approval-help",
             )
             yield self.help_widget
@@ -318,6 +323,9 @@ class ApprovalApp(Container):
                         tool_name=self.tool_name, tool_args=self.tool_args
                     )
                 )
+
+    def on_key(self, event: events.Key) -> None:
+        self._handle_vim_navigation_key(event)
 
     def on_blur(self, event: events.Blur) -> None:
         self.call_after_refresh(self.focus)

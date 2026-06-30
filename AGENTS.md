@@ -39,6 +39,10 @@ Search: `lsp` for symbol questions (`go_to_definition`/`find_references`/`hover`
 
 `from vibe.core.logger import logger` (stdlib `logging` + `StructuredLogFormatter`). Env: `LOG_LEVEL` (default `WARNING`), `LOG_MAX_BYTES`. Logs in `~/.vibe/logs/vibe.log`. `%s` positional args (deferred formatting, grep-friendly). Module-local exception hierarchies with `_fmt()` helper.
 
+## Widgets
+
+- For selectable lists, use `NavigableOptionList` from `vibe/cli/textual_ui/widgets/navigable_option_list.py` instead of Textual's `OptionList`. It adds `j`/`k` cursor navigation on top of the arrow keys; the bare `OptionList` only handles arrows.
+
 ## TCSS
 
 `$text-muted` → pair with `&:ansi { text-style: dim; }` | never `ansi_*` colors — use `$primary`/`$foreground`/`$surface`/`$error` (ANSI derived automatically)
@@ -53,7 +57,15 @@ Search: `lsp` for symbol questions (`go_to_definition`/`find_references`/`hover`
 
 ## Git
 
-No `--amend`, no `--force`, no `--force-with-lease`. New commits + plain `git push`. Rejected push → rebase (never merge, never force-push).
+No `--amend`, no `--force`, no `--force-with-lease`. New commits + plain `git push`. Push rejected because the upstream of the current branch advanced → rebase the current branch onto its upstream (never merge it in, never force-push). Once a PR is open, reconcile the base branch (`origin/main`) by merging it into the current branch (not rebase — rebasing rewrites already-pushed history and forces a force-push). Run git through `uv run` (`uv run git commit`, `uv run git push`) so pre-commit hooks resolve the project venv — bare `git commit` fails pre-commit with `reportMissingImports` because pyright can't find third-party packages.
+
+## CI / GitHub Actions
+
+Pin every `uses:` to a full **commit SHA** with an exact version comment (`uses: owner/action@<commit-sha> # vX.Y.Z`). Resolve to the commit, not the annotated-tag object: take the `refs/tags/vX^{}` line from `git ls-remote --tags`, or `gh api repos/<owner>/<repo>/git/refs/tags/<tag> --jq .object` peeled to a commit (verify `git cat-file -t <sha>` → `commit`, not `tag`). Never pin a moving major tag (`v9`).
+
+## Editor tip
+
+In Cursor / Pyright the "Add import" quick fix is missing — use the workspace snippets `acpschema`, `acphelpers`, `vibetypes`, `vibeconfig` to insert the import line, then rename the symbol.
 
 ## Versioning
 

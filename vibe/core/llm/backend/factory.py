@@ -9,7 +9,13 @@ if TYPE_CHECKING:
     from vibe.core.llm.types import BackendLike
 
 
-def create_backend(*, provider: ProviderConfig, timeout: float = 720.0) -> BackendLike:
+def create_backend(
+    *,
+    provider: ProviderConfig,
+    timeout: float = 720.0,
+    retry_max_elapsed_time: float = 300.0,
+    enable_otel: bool = False,
+) -> BackendLike:
     backend = provider.backend
     # Consult BACKEND_FACTORY first so test mocks that patch it (see
     # tests/mock/mock_backend_factory.py) intercept production call sites
@@ -17,11 +23,24 @@ def create_backend(*, provider: ProviderConfig, timeout: float = 720.0) -> Backe
     # construction (lazy-import-preserving) if no factory override is set.
     factory = globals().get("BACKEND_FACTORY")
     if factory is not None and backend in factory:
-        return factory[backend](provider=provider, timeout=timeout)
+        ctor = factory[backend]
+        if backend == Backend.MISTRAL:
+            return ctor(
+                provider=provider,
+                timeout=timeout,
+                retry_max_elapsed_time=retry_max_elapsed_time,
+                enable_otel=enable_otel,
+            )
+        return ctor(provider=provider, timeout=timeout)
     if backend == Backend.MISTRAL:
         from vibe.core.llm.backend.mistral import MistralBackend
 
-        return MistralBackend(provider=provider, timeout=timeout)
+        return MistralBackend(
+            provider=provider,
+            timeout=timeout,
+            retry_max_elapsed_time=retry_max_elapsed_time,
+            enable_otel=enable_otel,
+        )
     if backend == Backend.GENERIC:
         from vibe.core.llm.backend.generic import GenericBackend
 

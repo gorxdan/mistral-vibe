@@ -32,6 +32,7 @@ from vibe.core.logger import logger
 from vibe.core.paths import HISTORY_FILE
 from vibe.core.plugins.integration import load_and_apply_plugins
 from vibe.core.programmatic import ProgrammaticOptions, run_programmatic
+from vibe.core.sentry import init_sentry
 from vibe.core.session import last_session_pointer
 from vibe.core.session.session_loader import SessionLoader
 from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
@@ -418,6 +419,8 @@ def run_cli(
     *,
     resolve_trusted_folder: Callable[[], None] | None = None,
 ) -> None:
+    sentry_enabled = False
+
     load_dotenv_values()
     bootstrap_config_files()
 
@@ -444,6 +447,11 @@ def run_cli(
                 resolve_trusted_folder()
                 config = load_config_or_exit(interactive=True)
 
+        sentry_enabled = init_sentry(
+            config,
+            headless=not is_interactive,
+            entrypoint_metadata=_build_cli_entrypoint_metadata(),
+        )
         initial_agent_name = get_initial_agent_name(args, config)
         plugin_result = load_and_apply_plugins(config)
         hook_config_result = load_hooks_from_fs(
@@ -528,3 +536,9 @@ def run_cli(
     except (KeyboardInterrupt, EOFError):
         rprint("\n[dim]Bye![/]")
         sys.exit(0)
+    finally:
+        if sentry_enabled:
+            import sentry_sdk
+
+            if sentry_sdk.is_initialized():
+                sentry_sdk.flush(timeout=5)

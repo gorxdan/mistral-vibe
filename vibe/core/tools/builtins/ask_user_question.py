@@ -34,9 +34,8 @@ class Question(BaseModel):
         description="Short header for the question (1-2 words, e.g. 'Auth', 'Database'). Display chip — truncated to 12 chars.",
     )
     options: list[Choice] = Field(
-        description="Available options (2-4, not including 'Other'). An 'Other' option for free text is automatically added.",
+        description="Available options (2-4 recommended, not including 'Other'). An 'Other' option for free text is automatically added.",
         min_length=2,
-        max_length=4,
     )
     multi_select: bool = Field(
         default=False, description="If true, user can select multiple options"
@@ -57,9 +56,8 @@ class Question(BaseModel):
 class AskUserQuestionArgs(BaseModel):
     model_config = ConfigDict(extra="ignore")
     questions: list[Question] = Field(
-        description="Questions to ask (1-4). Displayed as tabs if multiple.",
+        description="Questions to ask (1-4 recommended). Displayed as tabs if multiple.",
         min_length=1,
-        max_length=4,
     )
     footer_note: str | None = Field(
         default=None,

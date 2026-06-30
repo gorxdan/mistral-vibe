@@ -30,6 +30,7 @@ from textual.theme import BUILTIN_THEMES
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Input, Static, TextArea
+from textual.worker import Worker, WorkerFailed, WorkerState
 
 from vibe import __version__ as CORE_VERSION
 from vibe.cli.clipboard import (
@@ -194,6 +195,7 @@ from vibe.core.search import (
     signal_autostart_done,
     stop_all_started,
 )
+from vibe.core.sentry import capture_sentry_exception
 from vibe.core.session.image_snapshot import ImageSnapshotError, snapshot_image
 from vibe.core.session.resume_sessions import (
     ResumeSessionInfo,
@@ -885,6 +887,7 @@ class VibeApp(App):
                 await self._ensure_loading_widget("Initializing", show_hint=False)
                 init_widget = self._loading_widget
             await self.agent_loop.wait_until_ready()
+            await self._show_mcp_auth_required_notice()
         except Exception as e:
             await self._mount_and_scroll(
                 ErrorMessage(
@@ -909,6 +912,36 @@ class VibeApp(App):
                 self.query_one(MCPApp).refresh_index()
             except Exception:
                 pass
+
+    async def _show_mcp_auth_required_notice(self) -> None:
+        """Show a notice if any enabled MCP servers require OAuth authentication."""
+        registry = self.agent_loop.mcp_registry
+        if registry is None:
+            return
+        from vibe.core.tools.mcp import AuthStatus
+
+        statuses = registry.status()
+        disabled = registry.disabled_aliases()
+        aliases = sorted(
+            alias
+            for alias, status in statuses.items()
+            if status is AuthStatus.NEEDS_AUTH and alias not in disabled
+        )
+        if not aliases:
+            return
+        command = f"/mcp login {aliases[0]}"
+        if len(aliases) > 1:
+            detail = ", ".join(aliases)
+            message = (
+                "MCP servers need OAuth authentication: "
+                f"{detail}. Run `{command}` to start with {aliases[0]!r}."
+            )
+        else:
+            message = (
+                f"MCP server {aliases[0]!r} needs OAuth authentication. "
+                f"Run `{command}` to authenticate."
+            )
+        await self._mount_and_scroll(UserCommandMessage(message))
 
     def _process_initial_prompt(self) -> None:
         if self._teleport_on_start and self.commands.has_command("teleport"):
@@ -1336,7 +1369,7 @@ class VibeApp(App):
                 if desired:
                     await self._mount_and_scroll(
                         UserCommandMessage(
-                            "Voice mode enabled. Press ctrl+r to start recording."
+                            "Voice mode enabled. Press **Ctrl+R** to start recording."
                         )
                     )
                 else:
@@ -2089,11 +2122,13 @@ class VibeApp(App):
             )
         )
 
-    async def _handle_turn_error(self) -> None:
+    async def _handle_turn_error(self, *, cancelled: bool = False) -> None:
         if self._loading_widget and self._loading_widget.parent:
             await self._loading_widget.remove()
         if self.event_handler:
-            self.event_handler.stop_current_tool_call(success=False)
+            self.event_handler.stop_current_tool_call(
+                success=False, cancelled=cancelled
+            )
 
     async def _handle_agent_loop_init(self) -> None:
         show_init_spinner = not self.agent_loop.is_initialized
@@ -2166,7 +2201,7 @@ class VibeApp(App):
             ) as events:
                 await self._handle_agent_loop_events(events)
         except asyncio.CancelledError:
-            await self._handle_turn_error()
+            await self._handle_turn_error(cancelled=True)
             self._narrator_manager.on_turn_cancel()
             raise
         except Exception as e:
@@ -2194,6 +2229,7 @@ class VibeApp(App):
             self._loading_widget = None
             if self.event_handler:
                 await self.event_handler.finalize_streaming()
+                self.event_handler.escalate_unresolved_errors()
             self._queue.notify_busy_changed()
             self._queue.start_drain_if_needed()
             await self._refresh_windowing_from_history()
@@ -2392,7 +2428,7 @@ class VibeApp(App):
                 pass
 
         if self.event_handler:
-            self.event_handler.stop_current_tool_call(success=False)
+            self.event_handler.stop_current_tool_call(cancelled=True)
             self.event_handler.stop_current_compact()
             await self.event_handler.finalize_streaming()
 
@@ -2450,9 +2486,25 @@ class VibeApp(App):
                 await self._mcp_refresh()
             case "add":
                 await self._mcp_add()
+            case "status":
+                await self._show_mcp_status()
             case _:
                 return False
         return True
+
+    async def _show_mcp_status(self) -> None:
+        await self.agent_loop.wait_until_ready()
+        registry = self.agent_loop.mcp_registry
+        statuses = registry.status() if registry is not None else {}
+        if not statuses:
+            await self._mount_and_scroll(
+                UserCommandMessage("No MCP servers configured.")
+            )
+            return
+        lines = ["### MCP auth status", ""]
+        for alias, status in sorted(statuses.items()):
+            lines.append(f"- `{alias}`: `{status.value}`")
+        await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
 
     async def _show_mcp(self, cmd_args: str = "", **kwargs: Any) -> None:
         if await self._dispatch_mcp_subcommand(cmd_args):
@@ -5043,6 +5095,10 @@ class VibeApp(App):
                 container.input_widget.action_delete_right()
             return
 
+        if not self.config.ask_confirmation_on_exit:
+            self._force_quit()
+            return
+
         if self._quit_manager.is_confirmed("Ctrl+D"):
             self._force_quit()
             return
@@ -5342,6 +5398,25 @@ class VibeApp(App):
             audio_player=AudioPlayer(),
             telemetry_client=self.agent_loop.telemetry_client,
         )
+
+    def _handle_exception(self, error: Exception) -> None:
+        if not isinstance(error, WorkerFailed):
+            capture_sentry_exception(
+                error, fatal=True, tags={"vibe_boundary": "textual_app"}
+            )
+        return super()._handle_exception(error)
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        error = event.worker.error
+        if event.state == WorkerState.ERROR and error:
+            capture_sentry_exception(
+                error,
+                fatal=False,
+                tags={
+                    "vibe_boundary": "textual_worker",
+                    "worker_name": event.worker.name or "",
+                },
+            )
 
 
 def run_textual_ui(

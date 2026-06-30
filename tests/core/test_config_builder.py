@@ -6,8 +6,7 @@ from pydantic import Field, ValidationError
 import pytest
 
 from vibe.core.config.builder import ConfigBuilder
-from vibe.core.config.layer import ConfigLayer
-from vibe.core.config.models import RawConfig
+from vibe.core.config.layer import ConfigLayer, RawConfig
 from vibe.core.config.schema import (
     ConfigFragment,
     ConfigSchema,

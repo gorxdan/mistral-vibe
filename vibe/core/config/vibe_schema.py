@@ -6,47 +6,52 @@ from typing import Annotated, Any
 from pydantic import Field, field_validator, model_validator
 
 from vibe.core.agents.models import BuiltinAgentName
-from vibe.core.config._settings import (
-    DEFAULT_ACTIVE_MODEL_CONFIG,
-    DEFAULT_ACTIVE_TRANSCRIBE_MODEL_CONFIG,
-    DEFAULT_ACTIVE_TTS_MODEL_CONFIG,
+from vibe.core.config._defaults import (
+    DEFAULT_API_RETRY_MAX_ELAPSED_TIME,
     DEFAULT_API_TIMEOUT,
     DEFAULT_AUTO_COMPACT_THRESHOLD,
     DEFAULT_CONSOLE_BASE_URL,
     DEFAULT_MISTRAL_API_ENV_KEY,
     DEFAULT_MISTRAL_SERVER_URL,
+    DEFAULT_THEME,
+    DEFAULT_VIBE_BASE_URL,
+)
+from vibe.core.config._settings import (
+    DEFAULT_ACTIVE_MODEL_CONFIG,
+    DEFAULT_ACTIVE_TRANSCRIBE_MODEL_CONFIG,
+    DEFAULT_ACTIVE_TTS_MODEL_CONFIG,
     DEFAULT_MODELS,
     DEFAULT_PROVIDERS,
-    DEFAULT_THEME,
     DEFAULT_TRANSCRIBE_MODELS,
     DEFAULT_TRANSCRIBE_PROVIDERS,
     DEFAULT_TTS_MODELS,
     DEFAULT_TTS_PROVIDERS,
-    DEFAULT_VIBE_BASE_URL,
     DEFAULT_VIBE_CODE_TASK_QUEUE,
     DEFAULT_VIBE_CODE_WORKFLOW_ID,
     BaselineScalingConfig,
-    ConnectorConfig,
     ContextShapingConfig,
-    ExperimentsConfig,
     LSPServer,
     MaxOutputEscalationConfig,
-    MCPServer,
     MemoryConfig,
+    SafetyJudgeConfig,
+    WorktreeConfig,
+    _skip_api_key_check,
+    resolve_api_key,
+    resolve_theme_name,
+)
+from vibe.core.config.models import (
+    ConnectorConfig,
+    ExperimentsConfig,
+    MCPServer,
     MissingAPIKeyError,
     ModelConfig,
     ProjectContextConfig,
     ProviderConfig,
-    SafetyJudgeConfig,
     SessionLoggingConfig,
     TranscribeModelConfig,
     TranscribeProviderConfig,
     TTSModelConfig,
     TTSProviderConfig,
-    WorktreeConfig,
-    _skip_api_key_check,
-    resolve_api_key,
-    resolve_theme_name,
 )
 from vibe.core.config.schema import (
     ConfigSchema,
@@ -55,7 +60,12 @@ from vibe.core.config.schema import (
     WithShallowMerge,
     WithUnionMerge,
 )
-from vibe.core.prompts import SystemPrompt, UtilityPrompt
+from vibe.core.prompts import (
+    SystemPrompt,
+    UtilityPrompt,
+    load_prompt,
+    load_system_prompt,
+)
 
 
 class VibeConfigSchema(ConfigSchema):
@@ -241,6 +251,15 @@ class VibeConfigSchema(ConfigSchema):
             " is set. Supports glob patterns and regex with 're:' prefix."
         ),
     )
+    experimental_enable_registry_skills: Annotated[bool, WithReplaceMerge()] = Field(
+        default=False,
+        description=(
+            "Experimental: pull workspace skills from the Mistral AI Registry"
+            " (api.mistral.ai) and make them available alongside local skills."
+            " Requires a Mistral provider and API key. Local and builtin skills take"
+            " precedence on name collision."
+        ),
+    )
 
     # Workflows
     workflow_paths: Annotated[list[Path], WithConcatMerge()] = Field(
@@ -322,6 +341,7 @@ class VibeConfigSchema(ConfigSchema):
     disable_welcome_banner_animation: Annotated[bool, WithReplaceMerge()] = False
     autocopy_to_clipboard: Annotated[bool, WithReplaceMerge()] = True
     file_watcher_for_autocomplete: Annotated[bool, WithReplaceMerge()] = True
+    ask_confirmation_on_exit: Annotated[bool, WithReplaceMerge()] = True
     displayed_workdir: Annotated[str, WithReplaceMerge()] = ""
     context_warnings: Annotated[bool, WithReplaceMerge()] = True
     voice_mode_enabled: Annotated[bool, WithReplaceMerge()] = False
@@ -343,6 +363,9 @@ class VibeConfigSchema(ConfigSchema):
     enable_notifications: Annotated[bool, WithReplaceMerge()] = True
     enable_system_trust_store: Annotated[bool, WithReplaceMerge()] = False
     api_timeout: Annotated[float, WithReplaceMerge()] = DEFAULT_API_TIMEOUT
+    api_retry_max_elapsed_time: Annotated[float, WithReplaceMerge()] = (
+        DEFAULT_API_RETRY_MAX_ELAPSED_TIME
+    )
     vibe_base_url: Annotated[str, WithReplaceMerge()] = DEFAULT_VIBE_BASE_URL
     vibe_code_sessions_base_url: Annotated[str, WithReplaceMerge()] = (
         "https://chat.mistral.ai"
@@ -385,8 +408,7 @@ class VibeConfigSchema(ConfigSchema):
             seen_aliases.add(model.alias)
         return self
 
-    @property
-    def active_model_config(self) -> ModelConfig:
+    def get_active_model(self) -> ModelConfig:
         if model := next(
             (m for m in self.models if m.alias == self.active_model), None
         ):
@@ -405,8 +427,29 @@ class VibeConfigSchema(ConfigSchema):
         )
 
     @property
-    def active_provider_config(self) -> ProviderConfig:
-        return self.get_provider_for_model(self.active_model_config)
+    def system_prompt(self) -> str:
+        return load_system_prompt(self.system_prompt_id)
+
+    @property
+    def compaction_prompt(self) -> str:
+        return load_prompt(
+            self.compaction_prompt_id,
+            setting_name="compaction_prompt_id",
+            builtins={"compact": UtilityPrompt.COMPACT.path},
+        )
+
+    @model_validator(mode="after")
+    def _apply_global_auto_compact_threshold(self) -> VibeConfigSchema:
+        models = [
+            model
+            if "auto_compact_threshold" in model.model_fields_set
+            else model.model_copy(
+                update={"auto_compact_threshold": self.auto_compact_threshold}
+            )
+            for model in self.models
+        ]
+        object.__setattr__(self, "models", models)
+        return self
 
     @model_validator(mode="after")
     def _check_compaction_model_provider(self) -> VibeConfigSchema:
@@ -415,7 +458,7 @@ class VibeConfigSchema(ConfigSchema):
 
         compaction_provider = self.get_provider_for_model(self.compaction_model)
         try:
-            active_provider = self.active_provider_config
+            active_provider = self.get_provider_for_model(self.get_active_model())
         except ValueError:
             return self
         if active_provider.name != compaction_provider.name:
@@ -431,7 +474,7 @@ class VibeConfigSchema(ConfigSchema):
         if _skip_api_key_check.get():
             return self
         try:
-            provider = self.active_provider_config
+            provider = self.get_provider_for_model(self.get_active_model())
             api_key_env = provider.api_key_env_var
             if api_key_env and not resolve_api_key(api_key_env):
                 raise MissingAPIKeyError(api_key_env, provider.name)

@@ -26,6 +26,7 @@ from textual.widgets import Button, Link, Markdown, Static
 from textual.widgets._markdown import MarkdownStream
 from watchfiles import awatch
 
+from vibe.cli.textual_ui.shortcut_hints import shortcut, shortcut_hint
 from vibe.cli.textual_ui.widgets.collapsible import (
     ClickWithoutDragMixin,
     CollapsibleSection,
@@ -204,7 +205,7 @@ class UserMessage(Static):
 
 class QueueHeaderMessage(Static):
     DEFAULT_LABEL = "» Queued"
-    PAUSED_LABEL = "» Queued — press Enter to send, type to add"
+    PAUSED_LABEL = f"» Queued — press {shortcut('Enter')} to send, type to add"
 
     def __init__(self, *, paused: bool = False) -> None:
         super().__init__()
@@ -215,7 +216,7 @@ class QueueHeaderMessage(Static):
     def compose(self) -> ComposeResult:
         with Vertical(classes="queue-header-container"):
             self._label_widget = NoMarkupStatic(
-                self._current_label(), classes="queue-header-content"
+                shortcut_hint(self._current_label()), classes="queue-header-content"
             )
             yield self._label_widget
             yield ExpandingSeparator(classes="queue-header-separator")
@@ -225,7 +226,7 @@ class QueueHeaderMessage(Static):
             return
         self._paused = paused
         if self._label_widget is not None:
-            self._label_widget.update(self._current_label())
+            self._label_widget.update(shortcut_hint(self._current_label()))
 
     def _current_label(self) -> str:
         return self.PAUSED_LABEL if self._paused else self.DEFAULT_LABEL
@@ -811,7 +812,7 @@ class BashOutputMessage(ClickWithoutDragMixin, SpinnerMixin, Static):
 
 class ErrorMessage(Static):
     def __init__(
-        self, error: str, collapsed: bool = False, show_border: bool = True
+        self, error: str | Content, collapsed: bool = False, show_border: bool = True
     ) -> None:
         super().__init__()
         self.add_class("error-message")
@@ -824,7 +825,12 @@ class ErrorMessage(Static):
         with Horizontal(classes="error-container"):
             if self._show_border:
                 yield ExpandingBorder(classes="error-border")
-            text = f"Error: {self._error}" if self._show_border else self._error
+            error = (
+                self._error
+                if isinstance(self._error, Content)
+                else Content(self._error)
+            )
+            text = Content("Error: ") + error if self._show_border else error
             self._content_widget = NoMarkupStatic(text, classes="error-content")
             yield self._content_widget
 

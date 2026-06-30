@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.18.3] - 2026-06-30
+
+### Added
+
+- `j`/`k` navigation in selectable lists across the TUI (questions, theme picker, rewind, voice, MCP panels)
+- `ask_confirmation_on_exit` config option to prompt before quitting
+- Project-level `.vibe/config.toml` now persists config option changes
+
+### Changed
+
+- Consistent styling and casing for keyboard shortcut hints across the TUI
+- `ask_user_question` now supports more than 4 options and questions
+
+### Fixed
+
+- No longer prompts to log in for disabled MCP servers
+- Teleport diff no longer mutates the real git index
+
+
+## [2.18.2] - 2026-06-29
+
+### Added
+
+- Sentry crash reporting for unhandled exceptions in the TUI (gated by `enable_telemetry`; off when telemetry is disabled)
+
+### Changed
+
+- Recoverable tool-call errors are now muted in the UI; only terminal errors render as a hard failure
+
+### Fixed
+
+- MarkupError crash when tool output contained square brackets
+- OpenTelemetry chat/LLM spans missing after Mistral Python SDK 2.4.10+ telemetry opt-in gate
+
+
+## [2.18.1] - 2026-06-26
+
+### Added
+
+- `/mcp add` slash command for adding OAuth MCP servers
+- Petit chat animation idle pauses
+
+### Changed
+
+- Bare exit synonyms (exit, quit, :q, :quit) now treated as slash commands instead of prompts
+
+### Fixed
+
+- MCP OAuth login crash when keyring backend is un-loadable
+
+
+## [2.18.0] - 2026-06-25
+
 ### Added
 
 - Local SearXNG web search backend with managed container lifecycle: onboarding now offers SearXNG vs Mistral, vibe auto-starts a configured-but-down instance at session start (stopping it on exit only if vibe started it), and prompts to start it or fall back to Mistral when a search hits a down instance. See [docs/searxng-setup.md](docs/searxng-setup.md).

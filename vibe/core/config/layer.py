@@ -2,18 +2,25 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from pydantic import BaseModel
+from jsonpatch import JsonPatchException, apply_patch
+from jsonpointer import JsonPointerException
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from vibe.core.config.models import RawConfig
 from vibe.core.config.patch import ConfigPatch
 from vibe.core.config.types import (
     ConcurrencyConflictError,
     ConflictStrategy,
     LayerConfigSnapshot,
 )
+
+
+class RawConfig(BaseModel):
+    """Permissive default schema that preserves all fields as extras."""
+
+    model_config = ConfigDict(extra="allow")
 
 
 class ConfigLayerError(Exception):
@@ -45,6 +52,22 @@ class TrustNotResolvedError(ConfigLayerError):
         super().__init__(
             layer_name, f"Layer '{layer_name}': trust has not been resolved yet"
         )
+
+
+class LayerNotLoadedError(ConfigLayerError):
+    """Raised when a layer operation requires cached data and fingerprint."""
+
+    def __init__(self, layer_name: str) -> None:
+        super().__init__(
+            layer_name, f"Layer '{layer_name}' must be loaded before applying patches"
+        )
+
+
+class ConfigPatchApplicationError(ConfigLayerError):
+    """Raised when a patch cannot be applied to cached layer data."""
+
+    def __init__(self, layer_name: str) -> None:
+        super().__init__(layer_name, f"Layer '{layer_name}': failed to apply patch")
 
 
 class TrustResolutionError(ConfigLayerError):
@@ -97,6 +120,12 @@ class _InvalidateCache:
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class _ApplyPatch:
+    patch: ConfigPatch
+    on_conflict: ConflictStrategy
+
+
 class ConfigLayer[S: BaseModel](ABC):
     """Each layer represents a named source that produces a sparse
     dictionary of configuration values.
@@ -108,6 +137,8 @@ class ConfigLayer[S: BaseModel](ABC):
 
         self._state: _LayerState[S] = _LayerState()
         self._lock = asyncio.Lock()
+
+    # --- Overridable ---
 
     async def _check_trust(self) -> bool:
         """Resolve whether this layer should be trusted.
@@ -136,6 +167,16 @@ class ConfigLayer[S: BaseModel](ABC):
         Default is a no-op.
         """
         return
+
+    @abstractmethod
+    async def _save_to_store(self, _next_config: S) -> str:
+        """Persist full layer data and return the store's new fingerprint.
+
+        The base class applies patches and validates the result before calling this.
+        """
+        ...
+
+    # --- Internal ---
 
     async def _notify_trust_change(self, old: bool | None, new: bool | None) -> None:
         """Call ``_on_trust_changed`` and wrap any error."""
@@ -173,6 +214,10 @@ class ConfigLayer[S: BaseModel](ABC):
                     new_state = await self._handle_load(state, force)
                 case _InvalidateCache():
                     new_state = await self._handle_invalidate_cache(state)
+                case _ApplyPatch(patch=patch, on_conflict=on_conflict):
+                    new_state = await self._handle_apply_patch(
+                        state, patch, on_conflict
+                    )
                 case _:
                     raise NotImplementedError(f"Unknown action: {action!r}")
 
@@ -250,6 +295,40 @@ class ConfigLayer[S: BaseModel](ABC):
     async def _handle_invalidate_cache(self, state: _LayerState[S]) -> _LayerState[S]:
         return _LayerState(is_trusted=state.is_trusted, data=None, fingerprint=None)
 
+    async def _handle_apply_patch(
+        self, state: _LayerState[S], patch: ConfigPatch, on_conflict: ConflictStrategy
+    ) -> _LayerState[S]:
+
+        if state.data is None or state.fingerprint is None:
+            raise LayerNotLoadedError(self.name)
+
+        match on_conflict:
+            case ConflictStrategy.CANCEL:
+                if patch.fingerprint != state.fingerprint:
+                    raise ConcurrencyConflictError(
+                        expected_fp=patch.fingerprint, actual_fp=state.fingerprint
+                    )
+            case ConflictStrategy.REPLACE:
+                pass
+            case _:
+                raise ValueError(f"Unsupported conflict strategy: {on_conflict!r}")
+
+        try:
+            new_data = apply_patch(state.data.model_dump(), patch.to_json_patch())
+            validated_new_data = self.validate_output(new_data)
+        except (JsonPatchException, JsonPointerException, ValidationError) as e:
+            raise ConfigPatchApplicationError(self.name) from e
+
+        try:
+            new_fingerprint = await self._save_to_store(validated_new_data)
+        except NotImplementedError:
+            raise
+        except Exception as e:
+            raise LayerImplementationError(self.name, "_save_to_store") from e
+        return replace(state, data=validated_new_data, fingerprint=new_fingerprint)
+
+    # --- Public ---
+
     @property
     def is_trusted(self) -> bool | None:
         """Current trust status. ``None`` if unresolved."""
@@ -306,7 +385,7 @@ class ConfigLayer[S: BaseModel](ABC):
         on_conflict: ConflictStrategy = ConflictStrategy.CANCEL,
     ) -> None:
         """Persist a patch to this layer's backing store."""
-        raise NotImplementedError
+        await self._dispatch(_ApplyPatch(patch=patch, on_conflict=on_conflict))
 
     def validate_output(self, data: dict[str, Any]) -> S:
         """Validate *data* against ``output_schema``."""

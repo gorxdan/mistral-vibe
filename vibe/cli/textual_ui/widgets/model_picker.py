@@ -10,6 +10,8 @@ from textual.message import Message
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
+from vibe.cli.textual_ui.shortcut_hints import shortcut, shortcut_hint
+from vibe.cli.textual_ui.widgets.navigable_option_list import NavigableOptionList
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.cli.textual_ui.widgets.vscode_compat import VscodeCompatInput
 
@@ -138,11 +140,14 @@ class ModelPickerApp(Container):
         with Vertical(id="modelpicker-content"):
             yield NoMarkupStatic("Select Model", classes="modelpicker-title")
             yield VscodeCompatInput(placeholder="Filter models…", id=_FILTER_INPUT_ID)
-            yield OptionList(*self._build_options(), id="modelpicker-options")
+            yield NavigableOptionList(*self._build_options(), id="modelpicker-options")
             if self._footer_hint:
                 yield NoMarkupStatic(self._footer_hint, classes="modelpicker-hint")
             yield NoMarkupStatic(
-                "Type to filter  ↑↓ Navigate  Enter Select  Esc Cancel",
+                shortcut_hint(
+                    f"Type to filter  {shortcut('↑↓')} Navigate  "
+                    f"{shortcut('Enter')} Select  {shortcut('Esc')} Cancel"
+                ),
                 classes="modelpicker-help",
             )
 

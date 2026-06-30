@@ -32,7 +32,7 @@ async def test_full_toml_to_vibe_config_schema(tmp_path: Path) -> None:
     toml_path = tmp_path / "config.toml"
     toml_path.write_text(
         """\
-vim_keybindings = true
+disable_welcome_banner_animation = true
 api_timeout = 300.0
 active_model = "codestral"
 disabled_tools = ["bash"]
@@ -55,11 +55,11 @@ provider = "mistral"
 
     layer = UserConfigLayer(path=toml_path)
     orchestrator = await ConfigOrchestrator[VibeConfig].create(
-        schema=VibeConfig, layers=[layer]
+        schema=VibeConfig, layers=[layer], default_layer_resolver=lambda: layer
     )
     config = orchestrator.config
 
-    assert config.vim_keybindings is True
+    assert config.disable_welcome_banner_animation is True
     assert config.api_timeout == 300.0
     assert config.active_model == "codestral"
     assert config.models[0].alias == "codestral"
