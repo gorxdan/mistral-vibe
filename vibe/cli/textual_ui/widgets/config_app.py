@@ -26,7 +26,7 @@ class ConfigOptionKind(StrEnum):
     ACTION_THINKING = auto()
     ACTION_JUDGE_MODEL = auto()
     ACTION_SUBAGENT_MODEL = auto()
-    ACTION_MECHANICAL_MODEL = auto()
+    ACTION_GRUNT_MODEL = auto()
 
     @staticmethod
     def toggle(key: str) -> str:
@@ -73,7 +73,7 @@ class ConfigApp(Container):
     class OpenSubagentModelPicker(Message):
         pass
 
-    class OpenMechanicalModelPicker(Message):
+    class OpenGruntModelPicker(Message):
         pass
 
     def __init__(self, config: VibeConfig) -> None:
@@ -151,10 +151,10 @@ class ConfigApp(Container):
             text.append("(inherit host)", style="dim")
         return text
 
-    def _mechanical_model_prompt(self) -> Text:
+    def _grunt_model_prompt(self) -> Text:
         text = Text(no_wrap=True)
-        text.append("  Mechanic model: ")
-        model = str(getattr(self.config, "mechanical_model", "") or "")
+        text.append("  Grunt model: ")
+        model = str(getattr(self.config, "grunt_model", "") or "")
         if model:
             text.append(model, style="bold")
         else:
@@ -189,10 +189,7 @@ class ConfigApp(Container):
             )
         )
         options.append(
-            Option(
-                self._mechanical_model_prompt(),
-                id=ConfigOptionKind.ACTION_MECHANICAL_MODEL,
-            )
+            Option(self._grunt_model_prompt(), id=ConfigOptionKind.ACTION_GRUNT_MODEL)
         )
 
         with Vertical(id="config-content"):
@@ -233,7 +230,7 @@ class ConfigApp(Container):
             ConfigOptionKind.ACTION_SUBAGENT_MODEL, self._subagent_model_prompt()
         )
         option_list.replace_option_prompt(
-            ConfigOptionKind.ACTION_MECHANICAL_MODEL, self._mechanical_model_prompt()
+            ConfigOptionKind.ACTION_GRUNT_MODEL, self._grunt_model_prompt()
         )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -257,8 +254,8 @@ class ConfigApp(Container):
             self.post_message(self.OpenSubagentModelPicker())
             return
 
-        if option_id == ConfigOptionKind.ACTION_MECHANICAL_MODEL:
-            self.post_message(self.OpenMechanicalModelPicker())
+        if option_id == ConfigOptionKind.ACTION_GRUNT_MODEL:
+            self.post_message(self.OpenGruntModelPicker())
             return
 
         if ConfigOptionKind.is_toggle(option_id):

@@ -28,7 +28,7 @@ class SystemPrompt(Prompt):
     SECURITY = auto()
     VERIFIER = auto()
     EDITOR = auto()
-    MECHANIC = auto()
+    GRUNT = auto()
     TESTS = auto()
     LEAN = auto()
     MINIMAL = auto()

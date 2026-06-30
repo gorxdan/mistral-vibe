@@ -72,7 +72,7 @@ class VibeConfigSchema(ConfigSchema):
     # Models
     active_model: Annotated[str, WithReplaceMerge()] = DEFAULT_ACTIVE_MODEL_CONFIG.alias
     subagent_model: Annotated[str, WithReplaceMerge()] = ""
-    mechanical_model: Annotated[str, WithReplaceMerge()] = ""
+    grunt_model: Annotated[str, WithReplaceMerge()] = ""
     providers: Annotated[list[ProviderConfig], WithUnionMerge(merge_key="name")] = (
         Field(default_factory=lambda: list(DEFAULT_PROVIDERS))
     )

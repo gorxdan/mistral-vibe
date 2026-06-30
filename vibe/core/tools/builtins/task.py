@@ -50,21 +50,21 @@ def _configured_subagent_model(ctx: InvokeContext) -> str | None:
     return None
 
 
-def _configured_mechanical_model(ctx: InvokeContext) -> str | None:
-    if ctx.agent_manager and ctx.agent_manager.config.mechanical_model:
-        return ctx.agent_manager.config.mechanical_model
+def _configured_grunt_model(ctx: InvokeContext) -> str | None:
+    if ctx.agent_manager and ctx.agent_manager.config.grunt_model:
+        return ctx.agent_manager.config.grunt_model
     return None
 
 
 def _effective_subagent_model(args: TaskArgs, ctx: InvokeContext) -> str | None:
-    # Resolve the model a subagent spawn runs on. The mechanic profile has its
-    # own cheap-model default (mechanical_model); other profiles fall straight
+    # Resolve the model a subagent spawn runs on. The grunt profile has its
+    # own cheap-model default (grunt_model); other profiles fall straight
     # to subagent_model. Both then fall through to the parent session's model.
     if args.model:
         return args.model
-    if args.agent == BuiltinAgentName.MECHANIC:
-        if mech := _configured_mechanical_model(ctx):
-            return mech
+    if args.agent == BuiltinAgentName.GRUNT:
+        if grunt := _configured_grunt_model(ctx):
+            return grunt
     if sub := _configured_subagent_model(ctx):
         return sub
     if ctx.active_model:
@@ -493,12 +493,12 @@ class Task(
         except Exception as e:
             resolved_provider = repr(e)
         logger.warning(
-            "subagent model resolve: agent=%s args_model=%s mechanical_model=%s"
+            "subagent model resolve: agent=%s args_model=%s grunt_model=%s"
             " subagent_model=%s ctx_active=%s has_mgr=%s -> inherited=%s"
             " loaded_active=%s provider=%s",
             args.agent,
             args.model,
-            _configured_mechanical_model(ctx),
+            _configured_grunt_model(ctx),
             _configured_subagent_model(ctx),
             ctx.active_model,
             ctx.agent_manager is not None,

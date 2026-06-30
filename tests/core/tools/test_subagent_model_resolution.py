@@ -6,7 +6,7 @@ from vibe.core.config import VibeConfig
 from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.builtins.task import (
     TaskArgs,
-    _configured_mechanical_model,
+    _configured_grunt_model,
     _configured_subagent_model,
     _effective_subagent_model,
 )
@@ -33,49 +33,43 @@ def test_returns_alias_when_configured() -> None:
     assert _configured_subagent_model(_ctx(config)) == "glm"
 
 
-def test_mechanical_model_resolver() -> None:
-    config = VibeConfig(active_model="host", mechanical_model="haiku")
-    assert _configured_mechanical_model(_ctx(config)) == "haiku"
+def test_grunt_model_resolver() -> None:
+    config = VibeConfig(active_model="host", grunt_model="haiku")
+    assert _configured_grunt_model(_ctx(config)) == "haiku"
     empty = VibeConfig(active_model="host")
-    assert _configured_mechanical_model(_ctx(empty)) is None
+    assert _configured_grunt_model(_ctx(empty)) is None
 
 
-def test_effective_model_mechanic_prefers_mechanical_model() -> None:
-    config = VibeConfig(
-        active_model="host", mechanical_model="haiku", subagent_model="glm"
-    )
-    args = TaskArgs(task="rename X", agent="mechanic")
-    # mechanic picks mechanical_model even when subagent_model is also set
+def test_effective_model_grunt_prefers_grunt_model() -> None:
+    config = VibeConfig(active_model="host", grunt_model="haiku", subagent_model="glm")
+    args = TaskArgs(task="rename X", agent="grunt")
+    # grunt picks grunt_model even when subagent_model is also set
     assert _effective_subagent_model(args, _ctx(config)) == "haiku"
 
 
-def test_effective_model_mechanic_falls_back_to_subagent_model() -> None:
+def test_effective_model_grunt_falls_back_to_subagent_model() -> None:
     config = VibeConfig(active_model="host", subagent_model="glm")
-    args = TaskArgs(task="rename X", agent="mechanic")
-    # no mechanical_model -> falls through to subagent_model
+    args = TaskArgs(task="rename X", agent="grunt")
+    # no grunt_model -> falls through to subagent_model
     assert _effective_subagent_model(args, _ctx(config)) == "glm"
 
 
-def test_effective_model_mechanic_falls_back_to_host() -> None:
+def test_effective_model_grunt_falls_back_to_host() -> None:
     config = VibeConfig(active_model="host")
-    args = TaskArgs(task="rename X", agent="mechanic")
-    # no mechanical_model, no subagent_model -> host active model
+    args = TaskArgs(task="rename X", agent="grunt")
+    # no grunt_model, no subagent_model -> host active model
     assert _effective_subagent_model(args, _ctx(config)) == "host"
 
 
 def test_effective_model_explicit_arg_wins() -> None:
-    config = VibeConfig(
-        active_model="host", mechanical_model="haiku", subagent_model="glm"
-    )
-    args = TaskArgs(task="rename X", agent="mechanic", model="spark")
-    # per-call model= always wins, overriding mechanical_model
+    config = VibeConfig(active_model="host", grunt_model="haiku", subagent_model="glm")
+    args = TaskArgs(task="rename X", agent="grunt", model="spark")
+    # per-call model= always wins, overriding grunt_model
     assert _effective_subagent_model(args, _ctx(config)) == "spark"
 
 
-def test_effective_model_non_mechanic_ignores_mechanical_model() -> None:
-    config = VibeConfig(
-        active_model="host", mechanical_model="haiku", subagent_model="glm"
-    )
+def test_effective_model_non_grunt_ignores_grunt_model() -> None:
+    config = VibeConfig(active_model="host", grunt_model="haiku", subagent_model="glm")
     args = TaskArgs(task="explore", agent="explore")
-    # explore does not pick up mechanical_model; uses subagent_model
+    # explore does not pick up grunt_model; uses subagent_model
     assert _effective_subagent_model(args, _ctx(config)) == "glm"
