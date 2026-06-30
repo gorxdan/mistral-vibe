@@ -736,6 +736,9 @@ class VibeConfig(BaseSettings):
     fallback_models: list[str] = Field(default_factory=list)
     # Empty = inherit the host session's model.
     subagent_model: str = ""
+    # Default model for the `mechanic` subagent (bulk/mechanical work). Empty =
+    # fall back to subagent_model, then the host session's model.
+    mechanical_model: str = ""
     max_output_escalation: MaxOutputEscalationConfig = Field(
         default_factory=MaxOutputEscalationConfig
     )

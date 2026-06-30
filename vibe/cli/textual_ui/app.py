@@ -399,6 +399,10 @@ _SUBAGENT_MODEL_HINT = (
     "Subagent model — used by the task tool and workflow agents when no "
     "per-spawn model is set. Empty inherits the host session's model."
 )
+_MECHANICAL_MODEL_HINT = (
+    "Mechanic model — default model for the 'mechanic' subagent (bulk/"
+    "mechanical work). Empty falls back to subagent_model, then the host."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1303,6 +1307,17 @@ class VibeApp(App):
         await self._switch_to_input_app()
         await self._switch_to_model_picker_app(target="subagent")
 
+    async def on_config_app_open_mechanical_model_picker(
+        self, _message: ConfigApp.OpenMechanicalModelPicker
+    ) -> None:
+        config_app = self.query_one(ConfigApp)
+        changes = config_app.convert_changes_for_save()
+        if changes:
+            VibeConfig.save_updates(changes)
+            await self._reload_config()
+        await self._switch_to_input_app()
+        await self._switch_to_model_picker_app(target="mechanical")
+
     async def on_config_app_open_thinking_picker(
         self, _message: ConfigApp.OpenThinkingPicker
     ) -> None:
@@ -1413,6 +1428,8 @@ class VibeApp(App):
             updates["safety_judge"] = {"model": message.alias}
         elif target == "subagent":
             updates["subagent_model"] = message.alias
+        elif target == "mechanical":
+            updates["mechanical_model"] = message.alias
         else:
             updates["active_model"] = message.alias
         self._discovered_models = {}
@@ -4391,6 +4408,8 @@ class VibeApp(App):
             current_model = str(self.config.safety_judge.model or "")
         elif target == "subagent":
             current_model = str(self.config.subagent_model or "")
+        elif target == "mechanical":
+            current_model = str(self.config.mechanical_model or "")
         else:
             current_model = str(self.config.active_model)
         await self._switch_from_input(
@@ -4398,7 +4417,13 @@ class VibeApp(App):
                 model_aliases=model_aliases,
                 current_model=current_model,
                 display_names=display_names,
-                footer_hint=_SUBAGENT_MODEL_HINT if target == "subagent" else None,
+                footer_hint=(
+                    _SUBAGENT_MODEL_HINT
+                    if target == "subagent"
+                    else _MECHANICAL_MODEL_HINT
+                    if target == "mechanical"
+                    else None
+                ),
                 providers=providers,
             )
         )

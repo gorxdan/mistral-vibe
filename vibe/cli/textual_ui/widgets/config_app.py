@@ -26,6 +26,7 @@ class ConfigOptionKind(StrEnum):
     ACTION_THINKING = auto()
     ACTION_JUDGE_MODEL = auto()
     ACTION_SUBAGENT_MODEL = auto()
+    ACTION_MECHANICAL_MODEL = auto()
 
     @staticmethod
     def toggle(key: str) -> str:
@@ -70,6 +71,9 @@ class ConfigApp(Container):
         pass
 
     class OpenSubagentModelPicker(Message):
+        pass
+
+    class OpenMechanicalModelPicker(Message):
         pass
 
     def __init__(self, config: VibeConfig) -> None:
@@ -147,6 +151,16 @@ class ConfigApp(Container):
             text.append("(inherit host)", style="dim")
         return text
 
+    def _mechanical_model_prompt(self) -> Text:
+        text = Text(no_wrap=True)
+        text.append("  Mechanic model: ")
+        model = str(getattr(self.config, "mechanical_model", "") or "")
+        if model:
+            text.append(model, style="bold")
+        else:
+            text.append("(inherit subagent/host)", style="dim")
+        return text
+
     def _toggle_prompt(self, key: str, label: str) -> Content:
         value = self._get_toggle_value(key)
         if value == "On":
@@ -172,6 +186,12 @@ class ConfigApp(Container):
         options.append(
             Option(
                 self._subagent_model_prompt(), id=ConfigOptionKind.ACTION_SUBAGENT_MODEL
+            )
+        )
+        options.append(
+            Option(
+                self._mechanical_model_prompt(),
+                id=ConfigOptionKind.ACTION_MECHANICAL_MODEL,
             )
         )
 
@@ -212,6 +232,9 @@ class ConfigApp(Container):
         option_list.replace_option_prompt(
             ConfigOptionKind.ACTION_SUBAGENT_MODEL, self._subagent_model_prompt()
         )
+        option_list.replace_option_prompt(
+            ConfigOptionKind.ACTION_MECHANICAL_MODEL, self._mechanical_model_prompt()
+        )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         option_id = event.option.id
@@ -232,6 +255,10 @@ class ConfigApp(Container):
 
         if option_id == ConfigOptionKind.ACTION_SUBAGENT_MODEL:
             self.post_message(self.OpenSubagentModelPicker())
+            return
+
+        if option_id == ConfigOptionKind.ACTION_MECHANICAL_MODEL:
+            self.post_message(self.OpenMechanicalModelPicker())
             return
 
         if ConfigOptionKind.is_toggle(option_id):

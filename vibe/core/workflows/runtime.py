@@ -1222,15 +1222,23 @@ class WorkflowRuntime:
         # Inherit the launching session's model when the workflow step didn't
         # pin one, so the per-agent config doesn't re-derive the hardcoded
         # mistral default (which fails without MISTRAL_API_KEY). This was killing
-        # workflow fan-out agents whose parent ran on glm/zai/fugu.
+        # workflow fan-out agents whose parent ran on glm/zai/fugu. The mechanic
+        # profile has its own cheap-model default (mechanical_model) tried first.
         cfg = ctx.agent_manager.config if ctx and ctx.agent_manager else None
+        configured_mechanical = cfg.mechanical_model if cfg else ""
         configured_subagent = cfg.subagent_model if cfg else ""
-        inherited_model = (
-            model
-            or configured_subagent
-            or (ctx.active_model if ctx else None)
-            or (cfg.active_model if cfg else None)
-        )
+        if model:
+            inherited_model = model
+        elif agent == "mechanic" and configured_mechanical:
+            inherited_model = configured_mechanical
+        elif configured_subagent:
+            inherited_model = configured_subagent
+        elif ctx and ctx.active_model:
+            inherited_model = ctx.active_model
+        elif cfg:
+            inherited_model = cfg.active_model
+        else:
+            inherited_model = None
         overrides: dict[str, Any] = {}
         if inherited_model:
             overrides["active_model"] = inherited_model

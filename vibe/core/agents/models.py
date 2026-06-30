@@ -50,6 +50,7 @@ class BuiltinAgentName(StrEnum):
     VERIFIER = "verifier"
     EDITOR = "editor"
     WORKER = "worker"
+    MECHANIC = "mechanic"
     LEAN = "lean"
     COORDINATOR = "coordinator"
 
@@ -540,6 +541,27 @@ WORKER = AgentProfile(
     overrides={"system_prompt_id": "explore"},
 )
 
+MECHANIC = AgentProfile(
+    name=BuiltinAgentName.MECHANIC,
+    display_name="Mechanic",
+    description=(
+        "Write-capable subagent for mechanical/bulk work: renames, codemods, "
+        "boilerplate generation, repetitive edits across many files. Routes "
+        "onto a cheap model by default (the `mechanical_model` config key, "
+        "falling back to subagent_model then the host). Writes run isolated in "
+        "its own worktree, like worker; the difference is intent and prompt — "
+        "give it a concrete, well-scoped task with no design decisions, and "
+        "keep thinkers (planner/verifier) for the reasoning around it. "
+        "Composes in workflows: thinkers plan and verify, the mechanic executes "
+        "the grunt."
+    ),
+    # Same tool surface as worker — the prompt and model routing, not a tool
+    # restriction, make this a cheap-work profile.
+    safety=AgentSafety.NEUTRAL,
+    agent_type=AgentType.SUBAGENT,
+    overrides={"system_prompt_id": "mechanic"},
+)
+
 LEAN = AgentProfile(
     name=BuiltinAgentName.LEAN,
     display_name="Lean",
@@ -632,6 +654,7 @@ BUILTIN_AGENTS: dict[str, AgentProfile] = {
     BuiltinAgentName.VERIFIER: VERIFIER,
     BuiltinAgentName.EDITOR: EDITOR,
     BuiltinAgentName.WORKER: WORKER,
+    BuiltinAgentName.MECHANIC: MECHANIC,
     BuiltinAgentName.LEAN: LEAN,
     BuiltinAgentName.COORDINATOR: COORDINATOR,
 }

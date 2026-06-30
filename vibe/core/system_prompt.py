@@ -343,6 +343,10 @@ phased plan with risks and the files to touch (it plans, you decide).
 to sinks and returns severity-ranked findings with fixes.
 - `verifier` — gate a *completed* implementation: proves it works by trying to \
 break it, then emits a PASS/FAIL/PARTIAL verdict with command evidence.
+- `mechanic` — mechanical/bulk execution of a *fully-specified* change: renames, \
+codemods, repetitive edits across many files. Routes onto a cheap model by \
+default (`mechanical_model`), so it's the grunt in a thinker-plan / mechanic-\
+execute / verifier-gate split. Give it a concrete task with no design decisions.
 
 Fan out: issue several `task` calls in one turn so independent sub-questions \
 run in parallel. Give each a self-contained brief and ask for findings and \
@@ -353,10 +357,10 @@ Don't delegate trivia. For a single known lookup — you already have the file \
 path or symbol — just `read`/`grep` it directly. Delegate breadth and \
 uncertainty; handle pinpoints yourself. The read-only profiles (explore, \
 research, reviewer, debugger, planner, security, verifier) can't write files or \
-ask the user — you own every edit and all user interaction. `editor` and \
-`worker` are write-capable but only function inside a workflow worktree; in a \
-plain `task` call their writes are approval-gated and skipped, so treat every \
-edit as yours."""
+ask the user — you own every edit and all user interaction. `editor`, `worker`, \
+and `mechanic` are write-capable but only function inside a workflow worktree; \
+in a plain `task` call their writes are approval-gated and skipped, so treat \
+every edit as yours."""
 
 
 def _get_orchestration_section() -> str:

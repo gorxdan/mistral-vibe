@@ -14,6 +14,7 @@ def test_write_profiles_isolate() -> None:
     assert profile_requires_isolation(BUILTIN_AGENTS[BuiltinAgentName.WORKER])
     assert profile_requires_isolation(BUILTIN_AGENTS[BuiltinAgentName.AUTO_APPROVE])
     assert profile_requires_isolation(BUILTIN_AGENTS[BuiltinAgentName.EDITOR])
+    assert profile_requires_isolation(BUILTIN_AGENTS[BuiltinAgentName.MECHANIC])
 
 
 def test_read_only_profiles_stay_in_process() -> None:
@@ -79,3 +80,14 @@ def test_coordinator_profile_is_registered_and_constrained() -> None:
 def test_coordinator_profile_does_not_isolate() -> None:
     # Read-only allowlist (no bash, no write/edit) -> stays in process.
     assert not profile_requires_isolation(BUILTIN_AGENTS[BuiltinAgentName.COORDINATOR])
+
+
+def test_mechanic_profile_is_registered_and_constrained() -> None:
+    profile = BUILTIN_AGENTS[BuiltinAgentName.MECHANIC]
+    assert profile.agent_type is AgentType.SUBAGENT
+    assert profile.safety is AgentSafety.NEUTRAL
+    # No enabled_tools allowlist -> full tool surface like worker (isolation is
+    # what makes it safe, not a tool restriction). The prompt, not the tools,
+    # makes this the cheap-work profile.
+    assert "enabled_tools" not in profile.overrides
+    assert profile.overrides.get("system_prompt_id") == "mechanic"

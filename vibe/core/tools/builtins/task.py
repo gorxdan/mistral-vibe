@@ -50,6 +50,30 @@ def _configured_subagent_model(ctx: InvokeContext) -> str | None:
     return None
 
 
+def _configured_mechanical_model(ctx: InvokeContext) -> str | None:
+    if ctx.agent_manager and ctx.agent_manager.config.mechanical_model:
+        return ctx.agent_manager.config.mechanical_model
+    return None
+
+
+def _effective_subagent_model(args: TaskArgs, ctx: InvokeContext) -> str | None:
+    # Resolve the model a subagent spawn runs on. The mechanic profile has its
+    # own cheap-model default (mechanical_model); other profiles fall straight
+    # to subagent_model. Both then fall through to the parent session's model.
+    if args.model:
+        return args.model
+    if args.agent == BuiltinAgentName.MECHANIC:
+        if mech := _configured_mechanical_model(ctx):
+            return mech
+    if sub := _configured_subagent_model(ctx):
+        return sub
+    if ctx.active_model:
+        return ctx.active_model
+    if ctx.agent_manager:
+        return ctx.agent_manager.config.active_model or None
+    return None
+
+
 @dataclass
 class _InProcessResult:
     # IsolatedResult-shaped result for a backgrounded in-process subagent, so the
@@ -273,12 +297,7 @@ class Task(
         if log_path is not None:
             log_path.touch()
 
-        effective_model = (
-            args.model
-            or _configured_subagent_model(ctx)
-            or ctx.active_model
-            or (ctx.agent_manager.config.active_model if ctx.agent_manager else None)
-        )
+        effective_model = _effective_subagent_model(args, ctx)
         bg_task = asyncio.create_task(
             run_isolated_agent(
                 task_text,
@@ -351,14 +370,7 @@ class Task(
                     max_turns=DEFAULT_ISOLATED_MAX_TURNS,
                     deliver=True,
                     # Inherit the parent's effective model (not the configured default).
-                    model=args.model
-                    or _configured_subagent_model(ctx)
-                    or ctx.active_model
-                    or (
-                        ctx.agent_manager.config.active_model
-                        if ctx.agent_manager
-                        else None
-                    ),
+                    model=_effective_subagent_model(args, ctx),
                 )
                 response_text = result.output
                 worktree_path = result.worktree_path
@@ -471,12 +483,7 @@ class Task(
         )
         # A fresh VibeConfig.load() falls back to the hardcoded default (mistral),
         # which fails when the parent runs on another provider; inherit instead.
-        inherited_model = (
-            args.model
-            or _configured_subagent_model(ctx)
-            or ctx.active_model
-            or (ctx.agent_manager.config.active_model if ctx.agent_manager else None)
-        )
+        inherited_model = _effective_subagent_model(args, ctx)
         load_overrides: dict[str, str] = {}
         if inherited_model:
             load_overrides["active_model"] = inherited_model
@@ -486,10 +493,12 @@ class Task(
         except Exception as e:
             resolved_provider = repr(e)
         logger.warning(
-            "subagent model resolve: agent=%s args_model=%s subagent_model=%s"
-            " ctx_active=%s has_mgr=%s -> inherited=%s loaded_active=%s provider=%s",
+            "subagent model resolve: agent=%s args_model=%s mechanical_model=%s"
+            " subagent_model=%s ctx_active=%s has_mgr=%s -> inherited=%s"
+            " loaded_active=%s provider=%s",
             args.agent,
             args.model,
+            _configured_mechanical_model(ctx),
             _configured_subagent_model(ctx),
             ctx.active_model,
             ctx.agent_manager is not None,
@@ -615,12 +624,7 @@ class Task(
             async for result in self._run_in_process(args, ctx):
                 yield result
             return
-        effective_model = (
-            args.model
-            or _configured_subagent_model(ctx)
-            or ctx.active_model
-            or (ctx.agent_manager.config.active_model if ctx.agent_manager else None)
-        )
+        effective_model = _effective_subagent_model(args, ctx)
         bg_task = asyncio.create_task(
             self._run_in_process_collect(args, ctx), name=f"async-task-{args.agent}"
         )
