@@ -563,19 +563,23 @@ def _trailing_tool_call_fingerprints(
 ) -> list[tuple[str, str]]:
     """Last ``limit`` (tool_name, canonical_args) fingerprints from the history.
 
-    Scans every assistant tool call in order and returns the trailing window so
-    a caller can detect a consecutive run of identical calls (an agent stuck
-    repeating itself).
+    Scans assistant tool calls from newest to oldest and stops once ``limit``
+    fingerprints are collected, so the cost is bounded by ``limit`` (not by the
+    full history). Returns them in chronological order (oldest-of-window first)
+    to preserve the original contract: callers compare consecutive runs and the
+    trailing element is the most recent call.
     """
     fingerprints: list[tuple[str, str]] = []
-    for msg in messages:
+    for msg in reversed(messages):
         if msg.role != Role.ASSISTANT or not msg.tool_calls:
             continue
-        for tc in msg.tool_calls:
+        for tc in reversed(msg.tool_calls):
             name = tc.function.name or ""
             fingerprints.append((name, _canonical_tool_args(tc.function.arguments)))
-    if len(fingerprints) > limit:
-        return fingerprints[-limit:]
+            if len(fingerprints) >= limit:
+                fingerprints.reverse()
+                return fingerprints
+    fingerprints.reverse()
     return fingerprints
 
 
