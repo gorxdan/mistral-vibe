@@ -11,6 +11,7 @@ import subprocess
 import time
 from typing import TYPE_CHECKING
 
+from vibe.core.baseline_scaling import BaselineTier, section_enabled
 from vibe.core.config import VibeConfig
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.experiments import ExperimentName
@@ -262,7 +263,9 @@ def _skill_index_line(info: SkillInfo) -> str:
     return _truncate_to_first_sentence(info.description)
 
 
-def _get_available_skills_section(skill_manager: SkillManager) -> str:
+def _get_available_skills_section(
+    skill_manager: SkillManager, *, summaries: bool = True
+) -> str:
     skills = skill_manager.available_skills
     if not skills:
         return ""
@@ -279,9 +282,15 @@ def _get_available_skills_section(skill_manager: SkillManager) -> str:
         "<available_skills>",
     ]
 
+    # On small windows the index keeps the discovery surface (the skill names the
+    # `skill` tool loads) but drops the per-skill summary to save tokens.
     for name, info in sorted(skills.items()):
-        summary = _skill_index_line(info)
-        lines.append(f"- **{html.escape(str(name))}**: {html.escape(summary)}")
+        escaped = html.escape(str(name))
+        if summaries:
+            summary = html.escape(_skill_index_line(info))
+            lines.append(f"- **{escaped}**: {summary}")
+        else:
+            lines.append(f"- **{escaped}**")
 
     lines.append("</available_skills>")
 
@@ -565,6 +574,7 @@ def _build_prompt_detail_sections(
     agent_manager: AgentManager,
     scratchpad_dir: Path | None,
     config: VibeConfig,
+    tier: BaselineTier = BaselineTier.LARGE,
 ) -> list[str]:
     sections = [_get_os_system_prompt()]
     if lsp_section := _get_lsp_priority_section(config):
@@ -576,17 +586,28 @@ def _build_prompt_detail_sections(
     if tool_prompts:
         sections.append("\n---\n".join(tool_prompts))
 
-    skills_section = _get_available_skills_section(skill_manager)
-    if skills_section:
-        sections.append(skills_section)
+    # Couple the skills index to the `skill` tool: emit it iff the tool exists
+    # (so a small-window tier never instructs the model to use a pruned tool).
+    # On SMALL the index is compressed to names only, not dropped.
+    if "skill" in tool_manager.manifest_tools:
+        skills_section = _get_available_skills_section(
+            skill_manager, summaries=section_enabled(tier, "skills_summaries")
+        )
+        if skills_section:
+            sections.append(skills_section)
 
     subagents_section = _get_available_subagents_section(agent_manager)
     if subagents_section:
         sections.append(subagents_section)
-        sections.append(_get_orchestration_section())
-        if getattr(config, "verification_subsystem", True):
+        if section_enabled(tier, "orchestration_prose"):
+            sections.append(_get_orchestration_section())
+        if getattr(config, "verification_subsystem", True) and section_enabled(
+            tier, "verification_contract"
+        ):
             sections.append(_get_verification_contract_section())
-        if getattr(config, "investigation_subsystem", True):
+        if getattr(config, "investigation_subsystem", True) and section_enabled(
+            tier, "investigation_contract"
+        ):
             sections.append(_get_investigation_contract_section())
 
     sections.extend(filter(None, [_get_scratchpad_section(scratchpad_dir)]))
@@ -650,6 +671,7 @@ def get_universal_system_prompt(
     scratchpad_dir: Path | None = None,
     headless: bool = False,
     experiment_manager: ExperimentManager | None = None,
+    tier: BaselineTier = BaselineTier.LARGE,
 ) -> str:
     sections = [_interpolate_prompt(_resolve_system_prompt(config, experiment_manager))]
 
@@ -659,7 +681,7 @@ def get_universal_system_prompt(
     if config.include_commit_signature:
         sections.append(_add_commit_signature())
 
-    if config.include_humanizer_guidance:
+    if config.include_humanizer_guidance and section_enabled(tier, "humanizer"):
         sections.append(_add_humanizer_guidance())
 
     if config.caveman_thinking:
@@ -667,7 +689,7 @@ def get_universal_system_prompt(
 
     if config.include_model_info:
         sections.append(f"Your model name is: `{config.active_model}`")
-        if len(config.models) > 1:
+        if len(config.models) > 1 and section_enabled(tier, "model_routing_list"):
             routable = ", ".join(f"`{m.alias}` ({m.provider})" for m in config.models)
             sections.append(
                 "Models available for subagents (pass one as the `model` argument "
@@ -675,21 +697,28 @@ def get_universal_system_prompt(
                 "The subagent inherits your model when `model` is omitted."
             )
 
-    if config.include_config_reference:
+    if config.include_config_reference and section_enabled(tier, "config_reference"):
         sections.append(_get_config_reference_section())
 
     if config.include_prompt_detail:
         sections.extend(
             _build_prompt_detail_sections(
-                tool_manager, skill_manager, agent_manager, scratchpad_dir, config
+                tool_manager,
+                skill_manager,
+                agent_manager,
+                scratchpad_dir,
+                config,
+                tier,
             )
         )
 
     if config.include_project_context:
         sections.extend(_build_project_context_sections(config, include_git_status))
 
-    if getattr(config, "effort_mode", "normal") == "le-chaton" and not getattr(
-        config, "disable_workflows", False
+    if (
+        getattr(config, "effort_mode", "normal") == "le-chaton"
+        and not getattr(config, "disable_workflows", False)
+        and section_enabled(tier, "le_chaton_long")
     ):
         sections.append(_get_le_chaton_section())
 
@@ -697,28 +726,35 @@ def get_universal_system_prompt(
 
     if worktree_manager.active is not None:
         wt = worktree_manager.active
-        sections.append(
-            f"## Worktree isolation\n\n"
-            f"You are running in an isolated git worktree and your shell is "
-            f"already `cd`'d into it. Your writes land on branch `{wt.branch}`, "
-            f"not the user's live checkout. **Use relative paths** (or absolute "
-            f"paths under this worktree) for every read/edit/write — they "
-            f"resolve against the worktree. Do NOT construct paths under the "
-            f"original repo root; writing there escapes isolation and edits the "
-            f"user's live tree. Task subagents share this worktree — there is no "
-            f"per-subagent filesystem isolation.\n\n"
-            f"**Commit your finished work** if you have a shell: a real "
-            f'`git commit -m "<summary>"` as your last step is how it is '
-            f"delivered and reviewed, and report the branch name. Uncommitted "
-            f"work still merges back via an anonymous `WIP` auto-save, but a "
-            f"real commit message is far clearer for the user.\n\n"
-            f"On exit your branch is merged back into the original HEAD "
-            f"automatically — rebased onto the latest HEAD first (so concurrent "
-            f"sessions don't strand it), then fast-forwarded, including when the "
-            f"original tree was dirty at start. The branch is kept for recovery "
-            f"(`chaton worktree merge {wt.branch}`) only if it genuinely conflicts "
-            f"with another session's changes."
-        )
+        if not section_enabled(tier, "worktree_detail"):
+            sections.append(
+                f"## Worktree isolation\n\nIsolated git worktree; writes land on "
+                f"branch `{wt.branch}` (use relative paths). Commit your work as "
+                f"the last step; it merges back on exit."
+            )
+        else:
+            sections.append(
+                f"## Worktree isolation\n\n"
+                f"You are running in an isolated git worktree and your shell is "
+                f"already `cd`'d into it. Your writes land on branch `{wt.branch}`, "
+                f"not the user's live checkout. **Use relative paths** (or absolute "
+                f"paths under this worktree) for every read/edit/write — they "
+                f"resolve against the worktree. Do NOT construct paths under the "
+                f"original repo root; writing there escapes isolation and edits the "
+                f"user's live tree. Task subagents share this worktree — there is no "
+                f"per-subagent filesystem isolation.\n\n"
+                f"**Commit your finished work** if you have a shell: a real "
+                f'`git commit -m "<summary>"` as your last step is how it is '
+                f"delivered and reviewed, and report the branch name. Uncommitted "
+                f"work still merges back via an anonymous `WIP` auto-save, but a "
+                f"real commit message is far clearer for the user.\n\n"
+                f"On exit your branch is merged back into the original HEAD "
+                f"automatically — rebased onto the latest HEAD first (so concurrent "
+                f"sessions don't strand it), then fast-forwarded, including when the "
+                f"original tree was dirty at start. The branch is kept for recovery "
+                f"(`chaton worktree merge {wt.branch}`) only if it genuinely "
+                f"conflicts with another session's changes."
+            )
 
     return "\n\n".join(sections)
 

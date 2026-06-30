@@ -47,6 +47,61 @@ def test_get_universal_system_prompt_includes_windows_prompt_on_windows(
     assert "Script shebang: Not applicable on Windows" in prompt
 
 
+def test_small_tier_drops_gated_sections_large_keeps_them() -> None:
+    from vibe.core.baseline_scaling import BaselineTier
+
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=True,
+        include_commit_signature=False,
+        include_humanizer_guidance=True,
+    )
+    tool_manager = ToolManager(lambda: config)
+    skill_manager = SkillManager(lambda: config)
+    agent_manager = AgentManager(lambda: config)
+
+    def build(tier: BaselineTier) -> str:
+        return get_universal_system_prompt(
+            tool_manager, config, skill_manager, agent_manager, tier=tier
+        )
+
+    large = build(BaselineTier.LARGE)
+    small = build(BaselineTier.SMALL)
+
+    # LARGE (the default) keeps the orchestration prose; SMALL drops it.
+    assert "## Orchestrating Subagents" in large
+    assert "## Orchestrating Subagents" not in small
+    # The subagents list itself stays (tool subset is tier-invariant).
+    assert "# Available Subagents" in small
+    # SMALL is strictly smaller.
+    assert len(small) < len(large)
+
+
+def test_default_tier_is_large() -> None:
+    from vibe.core.baseline_scaling import BaselineTier
+
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+    )
+    tm, sm, am = (
+        ToolManager(lambda: config),
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+    )
+    default = get_universal_system_prompt(tm, config, sm, am)
+    large = get_universal_system_prompt(
+        tm, config, sm, am, tier=BaselineTier.LARGE
+    )
+    assert default == large
+
+
 def test_orchestration_section_present_in_normal_mode() -> None:
     config = build_test_vibe_config(
         system_prompt_id="tests",
