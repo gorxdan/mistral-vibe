@@ -96,6 +96,23 @@ def test_mtime_cache_invalidation(tmp_path) -> None:
     assert store.ids() == ["new"]  # picked up after write (cache invalidated)
 
 
+def test_cache_detects_in_place_content_edit(tmp_path) -> None:
+    # Regression guard: a cross-process edit to an EXISTING memory file (mtime
+    # changes, dir mtime does not) must still be picked up on the next read.
+    # The cache is validated per-file; a dir-mtime-only gate would miss this
+    # (attempted + reverted: see discussion of two-tier invalidation).
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_entry("edit-me", body="original"))
+    store.ids()  # prime the cache
+
+    path = tmp_path / "edit-me.md"
+    path.write_text(path.read_text().replace("original", "edited-in-place"))
+
+    edited = store.get("edit-me")
+    assert edited is not None
+    assert edited.body == "edited-in-place"
+
+
 # --------------------------------------------------------------------------- #
 # MemoryMetadata validation                                                    #
 # --------------------------------------------------------------------------- #
