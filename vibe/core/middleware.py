@@ -158,6 +158,17 @@ class ContextShaperMiddleware:
         return min(threshold, _SHAPING_TOKEN_CAP)
 
     @staticmethod
+    def _guard_tokens(context: ConversationContext) -> int:
+        # Single chokepoint for the cache-prefix guard band so the two shapers
+        # never disagree. Scales the band to the window for tiered models; a
+        # LARGE/untiered model gets the live config value unchanged.
+        from vibe.core.baseline_scaling import baseline_tier_for, scaled_guard_tokens
+
+        model = context.active_model or context.config.get_active_model()
+        tier = baseline_tier_for(model, context.config)
+        return scaled_guard_tokens(context.config, model, tier)
+
+    @staticmethod
     def estimated_tokens(context: ConversationContext) -> int:
         from vibe.core.utils.tokens import approx_token_count
 
@@ -234,9 +245,7 @@ class SnipMiddleware(ContextShaperMiddleware):
         messages = context.messages
         active_model = context.active_model or context.config.get_active_model()
         preserve_reasoning = active_model.preserve_reasoning
-        prefix = self._protected_prefix_len(
-            messages, context.config.context_shaping.cache_prefix_guard_tokens
-        )
+        prefix = self._protected_prefix_len(messages, self._guard_tokens(context))
         suffix = self._protected_suffix_len(messages, cfg.keep_recent_turns, prefix)
         band = range(prefix, len(messages) - suffix)
         candidates = [
@@ -346,9 +355,7 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
         messages = context.messages
         active_model = context.active_model or context.config.get_active_model()
         preserve_reasoning = active_model.preserve_reasoning
-        prefix = self._protected_prefix_len(
-            messages, context.config.context_shaping.cache_prefix_guard_tokens
-        )
+        prefix = self._protected_prefix_len(messages, self._guard_tokens(context))
         suffix = self._protected_suffix_len(
             messages, context.config.context_shaping.snip.keep_recent_turns, prefix
         )
