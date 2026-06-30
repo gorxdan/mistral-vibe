@@ -2402,4 +2402,6 @@ def test_create_real_loop_caps_turns() -> None:
     rt = WorkflowRuntime(agent_loop_factory=None)
     with patch("vibe.core.agent_loop.AgentLoop") as mock_loop:
         rt._create_real_loop(agent="explore", base_config=MagicMock())
-        assert mock_loop.call_args.kwargs.get("max_turns") == DEFAULT_ISOLATED_MAX_TURNS
+        params = mock_loop.call_args.kwargs.get("params")
+        assert params is not None
+        assert params.max_turns == DEFAULT_ISOLATED_MAX_TURNS

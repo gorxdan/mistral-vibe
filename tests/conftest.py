@@ -21,7 +21,7 @@ from tests.update_notifier.adapters.fake_update_cache_repository import (
 from tests.update_notifier.adapters.fake_update_gateway import FakeUpdateGateway
 from vibe.cli.plan_offer.ports.whoami_gateway import WhoAmIPlanType, WhoAmIResponse
 from vibe.cli.textual_ui.app import CORE_VERSION, StartupOptions, VibeApp
-from vibe.core.agent_loop import AgentLoop
+from vibe.core.agent_loop import AgentLoop, AgentLoopParams
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import (
     DEFAULT_MODELS,
@@ -375,12 +375,14 @@ def build_test_agent_loop(
     resolved_config = config or build_test_vibe_config()
 
     return AgentLoop(
-        config=resolved_config,
-        agent_name=agent_name,
+        resolved_config,
         backend=backend or FakeBackend(),
-        enable_streaming=enable_streaming,
-        mcp_registry=kwargs.pop("mcp_registry", FakeMCPRegistry()),
-        **kwargs,
+        params=AgentLoopParams(
+            agent_name=agent_name,
+            enable_streaming=enable_streaming,
+            mcp_registry=kwargs.pop("mcp_registry", FakeMCPRegistry()),
+            **kwargs,
+        ),
     )
 
 

@@ -13,8 +13,7 @@ from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from tests.stubs.fake_connector_registry import FakeConnectorRegistry
 from tests.stubs.fake_mcp_registry import FakeMCPRegistry
-from vibe.core.agent_loop import _loop as agent_loop_module
-from vibe.core.agent_loop import AgentLoop
+from vibe.core.agent_loop import AgentLoop, AgentLoopParams, _loop as agent_loop_module
 from vibe.core.config import MCPStdio
 from vibe.core.telemetry.types import TerminalEmulator
 from vibe.core.tools.manager import ToolManager
@@ -80,7 +79,9 @@ class TestCompleteInit:
         config = build_test_vibe_config(enable_connectors=True)
         with patch.object(AgentLoop, "_start_deferred_init"):
             loop = AgentLoop(
-                config=config, backend=FakeBackend(), defer_heavy_init=True
+                config=config,
+                backend=FakeBackend(),
+                params=AgentLoopParams(defer_heavy_init=True),
             )
 
         assert loop.connector_registry is None

@@ -52,7 +52,8 @@ def _spy_agent_loop(backend: FakeBackend) -> tuple[MagicMock, type[AgentLoop]]:
 
 
 def _hook_config_from_spy(spy: MagicMock) -> HookConfigResult | None:
-    hook_config_result = spy.call_args.kwargs["hook_config_result"]
+    params = spy.call_args.kwargs.get("params")
+    hook_config_result = params.hook_config_result if params is not None else None
     if hook_config_result is None:
         return None
     assert isinstance(hook_config_result, HookConfigResult)

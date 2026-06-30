@@ -11,7 +11,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from vibe.core.agent_loop import AgentLoop
+from vibe.core.agent_loop import AgentLoop, AgentLoopParams
 from vibe.core.agents.models import (
     AgentType,
     BuiltinAgentName,
@@ -500,16 +500,18 @@ class Task(
         # Subagents inherit the parent worktree; never call worktree_manager.enter().
         subagent_loop = AgentLoop(
             config=base_config,
-            agent_name=args.agent,
-            entrypoint_metadata=ctx.entrypoint_metadata,
-            terminal_emulator=ctx.terminal_emulator,
-            is_subagent=True,
-            # Stream like the host: reasoning models (k2.7-code/GLM) need stream=True.
-            enable_streaming=True,
-            defer_heavy_init=True,
-            permission_store=ctx.permission_store,
-            hook_config_result=ctx.hook_config_result,
-            max_turns=DEFAULT_ISOLATED_MAX_TURNS,
+            params=AgentLoopParams(
+                agent_name=args.agent,
+                entrypoint_metadata=ctx.entrypoint_metadata,
+                terminal_emulator=ctx.terminal_emulator,
+                is_subagent=True,
+                # Stream like the host: reasoning models (k2.7-code/GLM) need stream=True.
+                enable_streaming=True,
+                defer_heavy_init=True,
+                permission_store=ctx.permission_store,
+                hook_config_result=ctx.hook_config_result,
+                max_turns=DEFAULT_ISOLATED_MAX_TURNS,
+            ),
         )
         if ctx.session_id:
             subagent_loop.parent_session_id = ctx.session_id

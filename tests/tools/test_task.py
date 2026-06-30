@@ -221,10 +221,9 @@ class TestTaskToolModelRouting:
             args = TaskArgs(task="review", agent="explore")
             await collect_result(task_tool.run(args, ctx))
 
-            assert (
-                mock_loop_class.call_args.kwargs.get("max_turns")
-                == DEFAULT_ISOLATED_MAX_TURNS
-            )
+            _params = mock_loop_class.call_args.kwargs.get("params")
+            assert _params is not None
+            assert _params.max_turns == DEFAULT_ISOLATED_MAX_TURNS
 
     @pytest.mark.asyncio
     async def test_omitted_model_inherits_parent_in_process_loop(
@@ -440,10 +439,9 @@ class TestTaskToolExecution:
             assert result.response == "Hello from subagent! More content."
             assert result.turns_used == 2  # 2 assistant messages in mock_messages
             assert result.completed is True
-            assert (
-                mock_agent_loop_class.call_args.kwargs["terminal_emulator"]
-                is TerminalEmulator.VSCODE
-            )
+            _params = mock_agent_loop_class.call_args.kwargs.get("params")
+            assert _params is not None
+            assert _params.terminal_emulator is TerminalEmulator.VSCODE
 
     @pytest.mark.asyncio
     async def test_handles_stopped_by_middleware(

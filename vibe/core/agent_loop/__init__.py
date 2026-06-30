@@ -21,6 +21,7 @@ from vibe.core.agent_loop._errors import (
 from vibe.core.agent_loop._loop import (
     _TELEPORT_AVAILABLE,
     AgentLoop,
+    AgentLoopParams,
     _git_executable_present,
     _teleport_service_cls,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "AgentLoop",
     "AgentLoopError",
     "AgentLoopLLMResponseError",
+    "AgentLoopParams",
     "AgentLoopStateError",
     "CompactionFailedError",
     "ImagesNotSupportedError",

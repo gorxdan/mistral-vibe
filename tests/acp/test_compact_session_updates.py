@@ -21,8 +21,11 @@ from vibe.core.types import LLMMessage, Role
 def acp_agent_loop(backend: FakeBackend) -> VibeAcpAgentLoop:
     class PatchedAgent(AgentLoop):
         def __init__(self, *args, **kwargs) -> None:
-            kwargs["config"] = build_test_vibe_config(
-                models=make_test_models(auto_compact_threshold=1)
+            args = (
+                build_test_vibe_config(
+                    models=make_test_models(auto_compact_threshold=1)
+                ),
+                *args[1:],
             )
             super().__init__(*args, **kwargs, backend=backend)
 

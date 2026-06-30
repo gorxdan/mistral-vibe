@@ -128,7 +128,7 @@ def test_constructing_deferred_agent_loop_does_not_import_mcp_package(
     code = """
 import sys
 
-from vibe.core.agent_loop import AgentLoop
+from vibe.core.agent_loop import AgentLoop, AgentLoopParams
 from vibe.core.config import SessionLoggingConfig, VibeConfig
 from vibe.core.config.harness_files import (
     init_harness_files_manager,
@@ -151,10 +151,9 @@ try:
         session_logging=SessionLoggingConfig(enabled=False),
     )
     loop = AgentLoop(
-        config=config,
+        config,
         backend=Backend(),
-        defer_heavy_init=True,
-        headless=True,
+        params=AgentLoopParams(defer_heavy_init=True, headless=True),
     )
     if loop._deferred_init_thread is not None:
         loop._deferred_init_thread.join()

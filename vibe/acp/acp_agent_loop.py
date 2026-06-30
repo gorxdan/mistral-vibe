@@ -118,7 +118,7 @@ from vibe.acp.utils import (
     is_valid_acp_mode,
     make_thinking_response,
 )
-from vibe.core.agent_loop import AgentLoop, CompactionFailedError
+from vibe.core.agent_loop import AgentLoop, AgentLoopParams, CompactionFailedError
 from vibe.core.agents.models import CHAT as CHAT_AGENT, BuiltinAgentName
 from vibe.core.autocompletion.path_prompt_adapter import render_path_prompt
 from vibe.core.config import (
@@ -784,12 +784,14 @@ class VibeAcpAgentLoop(AcpAgent):
         self, config: VibeConfig, agent_name: str, hook_config_result: Any = None
     ) -> AgentLoop:
         agent_loop = AgentLoop(
-            config=config,
-            agent_name=agent_name,
-            enable_streaming=True,
-            entrypoint_metadata=self._build_entrypoint_metadata(),
-            defer_heavy_init=True,
-            hook_config_result=hook_config_result,
+            config,
+            params=AgentLoopParams(
+                agent_name=agent_name,
+                enable_streaming=True,
+                entrypoint_metadata=self._build_entrypoint_metadata(),
+                defer_heavy_init=True,
+                hook_config_result=hook_config_result,
+            ),
         )
         agent_loop.agent_manager.register_agent(CHAT_AGENT)
         # Per-session background registry so the bash tool's background=True

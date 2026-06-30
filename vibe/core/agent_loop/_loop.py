@@ -5,6 +5,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 import contextlib
 import copy
+import dataclasses
 import functools
 import hashlib
 import os
@@ -196,48 +197,54 @@ if TYPE_CHECKING:
 from vibe.core.agent_loop._models import ToolDecision, ToolExecutionResponse
 
 
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class AgentLoopParams:
+    agent_name: str = BuiltinAgentName.DEFAULT
+    message_observer: Callable[[LLMMessage], None] | None = None
+    max_turns: int | None = None
+    max_price: float | None = None
+    max_session_tokens: int | None = None
+    enable_streaming: bool = False
+    entrypoint_metadata: EntrypointMetadata | None = None
+    terminal_emulator: TerminalEmulator | None = None
+    is_subagent: bool = False
+    defer_heavy_init: bool = False
+    headless: bool = False
+    hook_config_result: HookConfigResult | None = None
+    permission_store: PermissionStore | None = None
+    mcp_registry: MCPRegistry | None = None
+    cache_store: VibeCodeCacheStore | None = None
+
+
 class AgentLoop(AgentLoopSessionMixin):
     def __init__(
         self,
         config: VibeConfig,
         *,
-        agent_name: str = BuiltinAgentName.DEFAULT,
-        message_observer: Callable[[LLMMessage], None] | None = None,
-        max_turns: int | None = None,
-        max_price: float | None = None,
-        max_session_tokens: int | None = None,
         backend: BackendLike | None = None,
-        enable_streaming: bool = False,
-        entrypoint_metadata: EntrypointMetadata | None = None,
-        terminal_emulator: TerminalEmulator | None = None,
-        is_subagent: bool = False,
-        defer_heavy_init: bool = False,
-        headless: bool = False,
-        hook_config_result: HookConfigResult | None = None,
-        permission_store: PermissionStore | None = None,
-        mcp_registry: MCPRegistry | None = None,
-        cache_store: VibeCodeCacheStore | None = None,
+        params: AgentLoopParams | None = None,
     ) -> None:
-        self._init_base_state(config, cache_store, headless, defer_heavy_init)
+        p = params or AgentLoopParams()
+        self._init_base_state(config, p.cache_store, p.headless, p.defer_heavy_init)
         self._init_registries(
-            permission_store,
-            mcp_registry,
-            agent_name,
-            is_subagent,
-            defer_heavy_init,
-            message_observer,
-            max_turns,
-            max_price,
-            max_session_tokens,
+            p.permission_store,
+            p.mcp_registry,
+            p.agent_name,
+            p.is_subagent,
+            p.defer_heavy_init,
+            p.message_observer,
+            p.max_turns,
+            p.max_price,
+            p.max_session_tokens,
         )
-        self._init_backend(backend, enable_streaming)
-        self._init_session_identity(is_subagent)
-        self._init_messages(defer_heavy_init, message_observer)
+        self._init_backend(backend, p.enable_streaming)
+        self._init_session_identity(p.is_subagent)
+        self._init_messages(p.defer_heavy_init, p.message_observer)
         self._init_session_state(
-            is_subagent, entrypoint_metadata, terminal_emulator, config
+            p.is_subagent, p.entrypoint_metadata, p.terminal_emulator, config
         )
-        self._init_telemetry(config, is_subagent)
-        self._init_hooks(hook_config_result)
+        self._init_telemetry(config, p.is_subagent)
+        self._init_hooks(p.hook_config_result)
         self._init_rewind()
 
         Thread(
@@ -247,7 +254,7 @@ class AgentLoop(AgentLoopSessionMixin):
             name="migrate_sessions",
         ).start()
 
-        if defer_heavy_init:
+        if p.defer_heavy_init:
             self._start_deferred_init()
 
     def _init_base_state(

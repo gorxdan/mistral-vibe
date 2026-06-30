@@ -110,8 +110,13 @@ def _make_patched_agent_loop(
 
     class PatchedAgentLoop(AgentLoop):
         def __init__(self, *args, **kwargs) -> None:
-            if config_updates and "config" in kwargs and kwargs["config"] is not None:
-                kwargs["config"] = kwargs["config"].model_copy(update=config_updates)
+            if config_updates:
+                if args:
+                    args = (args[0].model_copy(update=config_updates), *args[1:])
+                elif kwargs.get("config") is not None:
+                    kwargs["config"] = kwargs["config"].model_copy(
+                        update=config_updates
+                    )
             super().__init__(*args, **{**kwargs, "backend": backend})
 
     return PatchedAgentLoop

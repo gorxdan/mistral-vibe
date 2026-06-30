@@ -304,20 +304,22 @@ class AgentLoopSessionMixin(AgentLoopBackendMixin):
         self.emit_new_session_telemetry()
 
     async def fork(self, message_id: str | None = None) -> AgentLoop:
-        from vibe.core.agent_loop._loop import AgentLoop as _AgentLoop
+        from vibe.core.agent_loop._loop import AgentLoop as _AgentLoop, AgentLoopParams
 
         messages = self._messages_for_fork(message_id)
         forked = _AgentLoop(
-            config=self.base_config.model_copy(deep=True),
-            agent_name=self.agent_profile.name,
-            max_turns=self._max_turns,
-            max_price=self._max_price,
-            max_session_tokens=self._max_session_tokens,
-            enable_streaming=self.enable_streaming,
-            entrypoint_metadata=self.entrypoint_metadata,
-            terminal_emulator=self.terminal_emulator,
-            defer_heavy_init=True,
-            hook_config_result=self._hook_config_result,
+            self.base_config.model_copy(deep=True),
+            params=AgentLoopParams(
+                agent_name=self.agent_profile.name,
+                max_turns=self._max_turns,
+                max_price=self._max_price,
+                max_session_tokens=self._max_session_tokens,
+                enable_streaming=self.enable_streaming,
+                entrypoint_metadata=self.entrypoint_metadata,
+                terminal_emulator=self.terminal_emulator,
+                defer_heavy_init=True,
+                hook_config_result=self._hook_config_result,
+            ),
         )
         forked._max_output_override = self._max_output_override
         forked.session_id = generate_session_id(suffix=extract_suffix(self.session_id))

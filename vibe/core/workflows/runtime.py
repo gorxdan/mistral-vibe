@@ -1257,7 +1257,7 @@ class WorkflowRuntime:
         model: str | None = None,
         base_config: VibeConfig | None = None,
     ) -> AgentLoop:
-        from vibe.core.agent_loop import AgentLoop as _AgentLoop
+        from vibe.core.agent_loop import AgentLoop as _AgentLoop, AgentLoopParams
 
         ctx = self.parent_context
 
@@ -1279,15 +1279,17 @@ class WorkflowRuntime:
         # Subagents inherit the parent worktree; never call worktree_manager.enter().
         # Workflow stages share one worktree.
         loop = _AgentLoop(
-            config=base_config,
-            agent_name=agent,
-            entrypoint_metadata=ctx.entrypoint_metadata if ctx else None,
-            terminal_emulator=ctx.terminal_emulator if ctx else None,
-            is_subagent=True,
-            defer_heavy_init=True,
-            permission_store=ctx.permission_store if ctx else None,
-            hook_config_result=ctx.hook_config_result if ctx else None,
-            max_turns=DEFAULT_ISOLATED_MAX_TURNS,
+            base_config,
+            params=AgentLoopParams(
+                agent_name=agent,
+                entrypoint_metadata=ctx.entrypoint_metadata if ctx else None,
+                terminal_emulator=ctx.terminal_emulator if ctx else None,
+                is_subagent=True,
+                defer_heavy_init=True,
+                permission_store=ctx.permission_store if ctx else None,
+                hook_config_result=ctx.hook_config_result if ctx else None,
+                max_turns=DEFAULT_ISOLATED_MAX_TURNS,
+            ),
         )
         if ctx and ctx.session_id:
             loop.parent_session_id = ctx.session_id

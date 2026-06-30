@@ -23,7 +23,7 @@ from vibe.cli.update_notifier import (
     get_update_if_available,
     mark_update_as_dismissed,
 )
-from vibe.core.agent_loop import AgentLoop, TeleportError
+from vibe.core.agent_loop import AgentLoop, AgentLoopParams, TeleportError
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import MissingAPIKeyError, VibeConfig, load_dotenv_values
 from vibe.core.config.harness_files import get_harness_files_manager
@@ -486,12 +486,14 @@ def run_cli(
                 try:
                     agent_loop = AgentLoop(
                         config,
-                        agent_name=initial_agent_name,
-                        enable_streaming=True,
-                        entrypoint_metadata=_build_cli_entrypoint_metadata(),
-                        terminal_emulator=detect_terminal(),
-                        defer_heavy_init=True,
-                        hook_config_result=hook_config_result,
+                        params=AgentLoopParams(
+                            agent_name=initial_agent_name,
+                            enable_streaming=True,
+                            entrypoint_metadata=_build_cli_entrypoint_metadata(),
+                            terminal_emulator=detect_terminal(),
+                            defer_heavy_init=True,
+                            hook_config_result=hook_config_result,
+                        ),
                     )
                 except ValueError as e:
                     rprint(f"[red]Error:[/] {e}")

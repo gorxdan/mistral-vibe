@@ -18,7 +18,7 @@ from pydantic import BaseModel
 _STATS_SENTINEL = "__VIBE_WORKFLOW_STATS__"
 
 from vibe import __version__
-from vibe.core.agent_loop import AgentLoop, TeleportError
+from vibe.core.agent_loop import AgentLoop, AgentLoopParams, TeleportError
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import VibeConfig
 from vibe.core.hooks.models import HookConfigResult
@@ -205,21 +205,23 @@ def run_programmatic(
 
     agent_loop = AgentLoop(
         config,
-        agent_name=opts.agent_name,
-        message_observer=formatter.on_message_added,
-        max_turns=opts.max_turns,
-        max_price=opts.max_price,
-        max_session_tokens=opts.max_session_tokens,
-        enable_streaming=False,
-        headless=opts.headless,
-        is_subagent=opts.allow_subagent,
-        entrypoint_metadata=build_entrypoint_metadata(
-            agent_entrypoint="programmatic",
-            agent_version=__version__,
-            client_name=opts.client_metadata.name,
-            client_version=opts.client_metadata.version,
+        params=AgentLoopParams(
+            agent_name=opts.agent_name,
+            message_observer=formatter.on_message_added,
+            max_turns=opts.max_turns,
+            max_price=opts.max_price,
+            max_session_tokens=opts.max_session_tokens,
+            enable_streaming=False,
+            headless=opts.headless,
+            is_subagent=opts.allow_subagent,
+            entrypoint_metadata=build_entrypoint_metadata(
+                agent_entrypoint="programmatic",
+                agent_version=__version__,
+                client_name=opts.client_metadata.name,
+                client_version=opts.client_metadata.version,
+            ),
+            hook_config_result=opts.hook_config_result,
         ),
-        hook_config_result=opts.hook_config_result,
     )
     _wire_isolated_approval(agent_loop)
     # Wire the scheduler so the `schedule` tool works headless (create/list/
