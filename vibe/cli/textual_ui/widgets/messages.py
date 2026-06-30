@@ -37,10 +37,11 @@ from vibe.cli.textual_ui.widgets.no_markup_static import (
 )
 from vibe.cli.textual_ui.widgets.spinner import SpinnerMixin, SpinnerType
 
-# Streaming deltas are coalesced into one MarkdownStream.write per render frame
-# (see StreamingMessageBase._flush_buffer). Tuned so streamed text still appears
-# smooth (~33 fps) while collapsing dozens of per-token markdown re-parses into a
-# single write — the dominant loop-thread cost during a streamed reply.
+# Streaming deltas are coalesced into one widget write per render frame
+# (see StreamingMessageBase._flush_buffer and BashOutputMessage._flush_output).
+# Tuned so streamed text still appears smooth (~33 fps) while collapsing dozens
+# of per-token/per-chunk re-parses or re-renders into a single write — the
+# dominant loop-thread cost during a streamed reply or a chatty command.
 _STREAM_FLUSH_INTERVAL_S = 0.03
 
 
@@ -627,6 +628,13 @@ class BashOutputMessage(ClickWithoutDragMixin, SpinnerMixin, Static):
         self._output_container: Horizontal | None = None
         self._prompt_widget: NonSelectableStatic | None = None
         self._indicator_widget: Static | None = None
+        # Coalesced flush: stdout/stderr chunks accumulate in self._output and
+        # _refresh_output_widgets runs at most once per render frame (mirrors
+        # StreamingMessageBase). Without this, each 4KB chunk re-splitlines the
+        # ENTIRE accumulated output and re-renders both widgets — O(n^2) over a
+        # chatty command, freezing the TUI mid-stream.
+        self._output_dirty = False
+        self._flush_timer: Timer | None = None
 
     QUEUED_PROMPT = "! "
 
@@ -640,8 +648,9 @@ class BashOutputMessage(ClickWithoutDragMixin, SpinnerMixin, Static):
         return max(0, len(self._output.splitlines()) - self.PREVIEW_LINES)
 
     def _refresh_output_widgets(self) -> None:
-        # Called per output chunk: split the buffer once and derive preview /
-        # overflow / count from it rather than re-splitlines()'ing three times.
+        # Re-derive preview / overflow / count from the accumulated output in a
+        # single splitlines, then update both widgets. Called once per render
+        # frame via _flush_output (coalesced), not per chunk.
         lines = self._output.splitlines()
         count = max(0, len(lines) - self.PREVIEW_LINES)
         if self._output_widget:
@@ -735,11 +744,41 @@ class BashOutputMessage(ClickWithoutDragMixin, SpinnerMixin, Static):
         await self.mount(self._output_container)
 
     async def append_output(self, text: str) -> None:
+        if not text:
+            return
         await self._ensure_output_container()
         self._output += text
+        self._output_dirty = True
+        self._schedule_output_flush()
+
+    def _schedule_output_flush(self) -> None:
+        # At most one in-flight flush: chunks arriving before the timer fires
+        # just leave _output_dirty set, so N chunks collapse into one refresh.
+        if self._flush_timer is None:
+            self._flush_timer = self.set_timer(
+                _STREAM_FLUSH_INTERVAL_S, self._flush_output
+            )
+
+    def _flush_output(self) -> None:
+        self._flush_timer = None
+        if not self._output_dirty:
+            return
+        self._output_dirty = False
         self._refresh_output_widgets()
 
+    def _cancel_output_flush_timer(self) -> None:
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
+
+    def on_unmount(self) -> None:
+        self._cancel_output_flush_timer()
+        super().on_unmount()
+
     async def finish(self, exit_code: int, *, interrupted: bool = False) -> None:
+        # Cancel any in-flight coalesced flush so it can't race the terminal
+        # state update; the final _refresh_output_widgets below renders once.
+        self._cancel_output_flush_timer()
         self._exit_code = exit_code
         self._pending = False
         self.stop_spinning()
@@ -767,6 +806,7 @@ class BashOutputMessage(ClickWithoutDragMixin, SpinnerMixin, Static):
             self._output = "(no output)"
         await self._ensure_output_container()
         self._refresh_output_widgets()
+        self._output_dirty = False
 
 
 class ErrorMessage(Static):
