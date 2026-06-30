@@ -245,10 +245,12 @@ def test_openrouter_preset_model_config() -> None:
     preset = next(p for p in PRESETS if p.key == "openrouter")
     model = preset.model
     assert model is not None
+    assert model.name == "openrouter/owl-alpha"
     assert model.provider == "openrouter"
     assert model.alias == "openrouter"
-    # Default model's ~200k window; compaction budget sits below the ceiling.
-    assert model.auto_compact_threshold == 180000
+    # Default Owl Alpha has a ~1M context window; budget matches the other
+    # large presets.
+    assert model.auto_compact_threshold == 880000
 
 
 def test_apply_openrouter_preset_persists_provider_and_model(

@@ -298,17 +298,20 @@ PRESETS: list[ProviderPreset] = [
             discover_models=True,
         ),
         model=ModelConfig(
-            name="anthropic/claude-sonnet-4.5",
+            # Owl Alpha: OpenRouter's own agentic coding foundation model.
+            # Native tool use, ~1M-token context, $0 input / $0 output. Other
+            # reachable models fill the picker via discover_models above.
+            # Note: provider logs prompts/completions for this model.
+            name="openrouter/owl-alpha",
             provider="openrouter",
             alias="openrouter",
-            # OpenRouter re-bills per model at provider pricing; override per
-            # model in config for cost tracking. Default below stays at 0.0.
+            # Free first-party model; OpenRouter re-bills others at provider
+            # pricing. Override per model in config for cost tracking.
             input_price=0.0,
             output_price=0.0,
-            supports_images=True,
-            # Default model's window is ~200k; compact before the ceiling.
-            # Discovered siblings carry their own context windows at runtime.
-            auto_compact_threshold=180000,
+            # 1.05M-token context window; compact well before the ceiling,
+            # matching the other ~1M-window presets.
+            auto_compact_threshold=880000,
         ),
     ),
     ProviderPreset(
