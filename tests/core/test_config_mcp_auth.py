@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import logging
-from unittest.mock import patch
-
 from pydantic import ValidationError
 import pytest
 
 from vibe.core.config import MCPHttp, MCPOAuth, MCPStaticAuth, MCPStreamableHttp
-from vibe.core.tools.mcp.registry import MCPRegistry
+from vibe.core.tools.mcp.registry import AuthStatus, MCPRegistry
 
 HTTP_TRANSPORTS = [
     pytest.param(MCPHttp, "http", id="http"),
@@ -184,10 +181,9 @@ def test_oauth_scopes_empty_list_allowed() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("cls", "transport"), HTTP_TRANSPORTS)
-async def test_registry_oauth_not_logged_in_warns_and_is_retryable(
+async def test_registry_oauth_not_logged_in_marks_needs_auth_and_is_retryable(
     cls: type[MCPHttp | MCPStreamableHttp],
     transport: str,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     srv = cls.model_validate({
         "name": "linear",
@@ -197,20 +193,17 @@ async def test_registry_oauth_not_logged_in_warns_and_is_retryable(
     })
     registry = MCPRegistry()
 
-    with patch("vibe.core.auth.is_logged_in", return_value=False):
-        with caplog.at_level(logging.WARNING, logger="vibe"):
-            first = await registry.get_tools_async([srv])
+    first = await registry.get_tools_async([srv])
 
+    # No stored OAuth tokens: discovery yields no tools and the server is
+    # flagged as needing auth (surfaced via `needs_auth`/`status`, no log warn).
     assert first == {}
-    assert "requires OAuth login" in caplog.text
-    assert "/mcp login" in caplog.text
+    assert "linear" in registry.needs_auth
+    assert registry.status() == {"linear": AuthStatus.NEEDS_AUTH}
 
-    # None (retryable) is not cached, so a second call re-warns — once the user
-    # runs `/mcp login` and refreshes, discovery retries and may succeed.
-    caplog.clear()
-    with patch("vibe.core.auth.is_logged_in", return_value=False):
-        with caplog.at_level(logging.WARNING, logger="vibe"):
-            second = await registry.get_tools_async([srv])
+    # None (retryable) is not cached, so a second call re-discovers and still
+    # marks needs_auth — once the user runs `/mcp login`, discovery may succeed.
+    second = await registry.get_tools_async([srv])
 
     assert second == {}
-    assert "requires OAuth login" in caplog.text
+    assert "linear" in registry.needs_auth

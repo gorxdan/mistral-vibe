@@ -10,7 +10,7 @@ import pytest
 from textual.app import WINDOWS
 
 from tests.conftest import build_test_vibe_app, build_test_vibe_config
-from vibe.cli.textual_ui.app import VibeApp, _run_app_with_cleanup
+from vibe.cli.textual_ui.app import VibeApp
 from vibe.cli.textual_ui.quit_manager import QUIT_CONFIRM_DELAY, QuitManager
 
 

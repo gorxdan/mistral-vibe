@@ -116,7 +116,7 @@ class ToolCallMessage(StatusMessage):
 
     def _set_text(self, text: str, suffix: str, *, linkify: bool = False) -> None:
         if self._text_widget:
-            content = linkify_urls_in_text(text) if linkify else escape_markup(text)
+            content = linkify_urls_in_text(text) if linkify else text
             self._text_widget.update(content)
         self._update_suffix(suffix)
 
