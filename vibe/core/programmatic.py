@@ -90,7 +90,7 @@ async def _isolated_auto_approve(
     The spawn was pre-judged (task._judge_isolated_spawn / workflow runtime) and
     write/edit/read are confined to the worktree (enforce_isolated_confine), so
     the host's unreachable per-tool gate can be bypassed. Without this the
-    isolated worker/editor SKIPs every write/edit/bash and silently produces no
+    isolated worker/editor/grunt SKIPs every write/edit/bash and silently produces no
     work — see programmatic.run_programmatic for the env-flag handshake.
     """
     return ApprovalResponse.YES, None, None
