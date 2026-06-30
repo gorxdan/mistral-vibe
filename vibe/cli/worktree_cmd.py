@@ -134,6 +134,14 @@ def _cmd_merge(branch: str) -> int:
             file=sys.stderr,
         )
         return 1
+    if _is_merged(repo, branch):
+        # `git merge --ff-only` of an already-merged branch exits 0 with
+        # "Already up to date" and moves nothing — do not claim a merge.
+        print(
+            f"chaton worktree: {branch} is already merged into HEAD; nothing to merge.",
+            file=sys.stdout,
+        )
+        return 0
     try:
         repo.git.merge("--ff-only", branch)
     except GitCommandError:

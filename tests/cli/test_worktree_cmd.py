@@ -79,6 +79,22 @@ def test_merge_lands_branch(tmp_path: Path) -> None:
     assert (_wt_dir(root) / "work.txt").read_text() == "agent work\n"
 
 
+def test_merge_already_merged_branch_does_not_claim_success(
+    tmp_path: Path, capsys
+) -> None:
+    # Re-merging a branch already in HEAD is a no-op: `git merge --ff-only`
+    # exits 0 with "Already up to date" and moves nothing. The command must
+    # NOT print a false "Merged ... into HEAD." in that case.
+    root, branch = _repo_with_orphan_branch(tmp_path)
+    assert run_worktree_command(["merge", branch]) == 0
+    capsys.readouterr()  # drain first merge
+
+    assert run_worktree_command(["merge", branch]) == 0
+    out = capsys.readouterr().out
+    assert "Merged" not in out
+    assert "already merged" in out.lower() or "nothing to merge" in out.lower()
+
+
 def test_merge_refuses_dirty_tree(tmp_path: Path) -> None:
     root, branch = _repo_with_orphan_branch(tmp_path)
     (_wt_dir(root) / "f.txt").write_text("dirty\n")
