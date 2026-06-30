@@ -25,6 +25,7 @@ from vibe.core.config._settings import (
     DEFAULT_VIBE_BASE_URL,
     DEFAULT_VIBE_CODE_TASK_QUEUE,
     DEFAULT_VIBE_CODE_WORKFLOW_ID,
+    BaselineScalingConfig,
     ConnectorConfig,
     ContextShapingConfig,
     ExperimentsConfig,
@@ -76,6 +77,9 @@ class VibeConfigSchema(ConfigSchema):
     )
     context_shaping: Annotated[ContextShapingConfig, WithReplaceMerge()] = Field(
         default_factory=ContextShapingConfig
+    )
+    baseline_scaling: Annotated[BaselineScalingConfig, WithReplaceMerge()] = Field(
+        default_factory=BaselineScalingConfig
     )
     auto_compact_threshold: Annotated[int, WithReplaceMerge()] = (
         DEFAULT_AUTO_COMPACT_THRESHOLD

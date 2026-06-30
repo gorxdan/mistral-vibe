@@ -419,6 +419,34 @@ class ContextShapingConfig(BaseSettings):
     cache_prefix_guard_tokens: int = 4000
 
 
+class BaselineScalingConfig(BaseSettings):
+    """Window-tiered shrinking of the irreducible baseline (system prompt + tool
+    schemas + project context). Opt-in per model via ModelConfig.context_window:
+    a model with no declared window is always tier LARGE and unchanged.
+    """
+
+    model_config = SettingsConfigDict(extra="ignore")
+
+    # Master switch. False => every model is LARGE even with context_window set.
+    enabled: bool = True
+    # effective_context_window < small_max => SMALL; < medium_max => MEDIUM;
+    # otherwise LARGE. Below small_max the baseline is aggressively trimmed.
+    small_max: int = 48_000
+    medium_max: int = 200_000
+    # Window-scaled cache_prefix_guard_tokens for tiered (non-LARGE) models, so
+    # the fixed 4000 guard isn't a large fraction of a small window.
+    guard_window_fraction: float = 0.05
+    guard_floor: int = 512
+    # auto_compact_threshold = window * derive_threshold_fraction when a window is
+    # declared and no explicit threshold is set; an explicit threshold is clamped
+    # to <= window * safety_cap_fraction so a declared window always governs.
+    derive_threshold_fraction: float = 0.85
+    safety_cap_fraction: float = 0.95
+    # SMALL-tier builtin tool-schema description trimming.
+    trim_tool_descriptions_small: bool = True
+    tool_description_max_chars: int = 220
+
+
 class WorktreeConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore")
 
@@ -874,12 +902,21 @@ class ModelConfig(BaseModel):
     verbosity: Verbosity | None = None
     supports_images: bool = False
     auto_compact_threshold: int = DEFAULT_AUTO_COMPACT_THRESHOLD
+    # The model's real serving context window in tokens. The single opt-in marker
+    # for baseline scaling: when unset (every cloud/default model) the model is
+    # always tier LARGE and behaviour is byte-identical. When set it also seeds /
+    # clamps auto_compact_threshold so one overflow number governs everything.
+    context_window: int | None = None
     # Model's true output-token ceiling; seeds/caps max-output escalation when set.
     max_output_tokens: int | None = None
     # Preserved Thinking (Moonshot/GLM): resend every historical reasoning_content
     # verbatim. Read by SnipMiddleware to skip nulling it on elided turns.
     preserve_reasoning: bool = False
     _default_alias_to_name = model_validator(mode="before")(_default_alias_to_name)
+
+    @property
+    def effective_context_window(self) -> int:
+        return self.context_window or self.auto_compact_threshold
 
 
 class TranscribeModelConfig(BaseModel):
@@ -1108,6 +1145,9 @@ class VibeConfig(BaseSettings):
         default_factory=MaxOutputEscalationConfig
     )
     context_shaping: ContextShapingConfig = Field(default_factory=ContextShapingConfig)
+    baseline_scaling: BaselineScalingConfig = Field(
+        default_factory=BaselineScalingConfig
+    )
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
     transcribe_providers: list[TranscribeProviderConfig] = Field(
@@ -1475,14 +1515,33 @@ class VibeConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _apply_global_auto_compact_threshold(self) -> VibeConfig:
-        self.models = [
-            model
-            if "auto_compact_threshold" in model.model_fields_set
-            else model.model_copy(
-                update={"auto_compact_threshold": self.auto_compact_threshold}
-            )
-            for model in self.models
-        ]
+        # Per model, derive the one runtime overflow number (auto_compact_threshold)
+        # so every consumer reads a window-correct value with no signature change:
+        #  - explicit threshold + declared window -> keep, clamped to <= 95% window
+        #  - declared window, no explicit threshold -> 85% of the window
+        #  - no declared window -> legacy global-threshold propagation (unchanged)
+        bs = self.baseline_scaling
+        derive = bs.derive_threshold_fraction
+        cap = bs.safety_cap_fraction
+        updated: list[ModelConfig] = []
+        for model in self.models:
+            explicit = "auto_compact_threshold" in model.model_fields_set
+            window = model.context_window
+            if window and window > 0:
+                if explicit:
+                    threshold = min(model.auto_compact_threshold, int(window * cap))
+                else:
+                    threshold = int(window * derive)
+            elif explicit:
+                threshold = model.auto_compact_threshold
+            else:
+                threshold = self.auto_compact_threshold
+            if threshold != model.auto_compact_threshold:
+                model = model.model_copy(
+                    update={"auto_compact_threshold": threshold}
+                )
+            updated.append(model)
+        self.models = updated
         return self
 
     @model_validator(mode="after")
