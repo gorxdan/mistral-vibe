@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import keyring
 import pytest
 import respx
 
@@ -205,6 +206,26 @@ async def test_fetch_model_ids_sends_auth_header_when_key_set(
     )
     await fetch_model_ids(_provider(api_key_env_var="DISCOVERY_KEY"))
     assert route.calls.last.request.headers["Authorization"] == "Bearer sk-test"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_model_ids_sends_auth_header_from_keyring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DISCOVERY_KEY", raising=False)
+
+    def _get_password(service: str, username: str) -> str | None:
+        return "keyring-key" if username == "DISCOVERY_KEY" else None
+
+    monkeypatch.setattr(keyring, "get_password", _get_password)
+    route = respx.get(MODELS_URL).mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "m"}]})
+    )
+
+    await fetch_model_ids(_provider(api_key_env_var="DISCOVERY_KEY"))
+
+    assert route.calls.last.request.headers["Authorization"] == "Bearer keyring-key"
 
 
 # --- fetch_models: context-window detection --------------------------------

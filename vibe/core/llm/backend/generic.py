@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
-import os
 import re
 import types
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
@@ -11,6 +10,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 import httpx
 import orjson
 
+from vibe.core.config import resolve_api_key
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
 from vibe.core.llm.backend.adapter_port import (
     APIAdapter,
@@ -360,10 +360,11 @@ class GenericBackend:
     async def _resolve_auth(self) -> tuple[str | None, dict[str, str]]:
         """Resolve the request credential and any auth-bound headers.
 
-        For normal providers this is just the static env-var API key. For the
-        ChatGPT-subscription provider (``api_style="openai-chatgpt"``) it loads
-        (and refreshes) the OAuth access token and returns the identity headers
-        the ChatGPT backend requires (account id, originator, version).
+        For normal providers this is the configured API key, resolved from the
+        environment or keyring. For the ChatGPT-subscription provider
+        (``api_style="openai-chatgpt"``) it loads (and refreshes) the OAuth access
+        token and returns the identity headers the ChatGPT backend requires
+        (account id, originator, version).
         """
         if getattr(self._provider, "api_style", "openai") == "openai-chatgpt":
             from vibe.core.auth.openai_oauth import resolve_chatgpt_credentials
@@ -372,7 +373,7 @@ class GenericBackend:
             return creds.access_token, creds.auth_headers()
 
         api_key = (
-            os.getenv(self._provider.api_key_env_var)
+            resolve_api_key(self._provider.api_key_env_var)
             if self._provider.api_key_env_var
             else None
         )

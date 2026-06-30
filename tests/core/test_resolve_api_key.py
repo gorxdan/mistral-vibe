@@ -5,7 +5,12 @@ from keyring.errors import KeyringError
 import pytest
 
 from tests.conftest import build_test_vibe_config
-from vibe.core.config import MissingAPIKeyError, ProviderConfig, resolve_api_key
+from vibe.core.config import (
+    MissingAPIKeyError,
+    ModelConfig,
+    ProviderConfig,
+    resolve_api_key,
+)
 from vibe.core.llm.backend.mistral import MistralBackend
 from vibe.core.types import Backend
 from vibe.core.utils.keyring import clear_api_key_keyring_cache
@@ -132,6 +137,29 @@ def test_check_api_key_accepts_keyring_only_key(
     config = build_test_vibe_config()
 
     assert config.get_active_provider().api_key_env_var == "MISTRAL_API_KEY"
+
+
+def test_available_models_include_keyring_only_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+
+    def _get_password(service: str, username: str) -> str | None:
+        return "keyring-key" if username == "ZAI_API_KEY" else None
+
+    monkeypatch.setattr(keyring, "get_password", _get_password)
+    provider = ProviderConfig(
+        name="zai",
+        api_base="https://api.z.ai/api/coding/paas/v4",
+        api_key_env_var="ZAI_API_KEY",
+        backend=Backend.GENERIC,
+    )
+    model = ModelConfig(name="glm-5.2", provider="zai", alias="glm")
+
+    config = build_test_vibe_config(providers=[provider], models=[model])
+
+    assert config.is_provider_available(provider) is True
+    assert config.available_models == [model]
 
 
 def test_check_api_key_raises_when_neither_env_nor_keyring(

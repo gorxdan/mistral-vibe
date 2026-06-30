@@ -26,7 +26,7 @@ import urllib.parse
 
 import httpx
 
-from vibe.core.config import ModelConfig, ProviderConfig
+from vibe.core.config import ModelConfig, ProviderConfig, resolve_api_key
 from vibe.core.logger import logger
 from vibe.core.types import Backend
 from vibe.core.utils.http import build_ssl_context
@@ -139,7 +139,7 @@ def _ctx_from_models_item(item: dict[str, Any]) -> int | None:
 
 
 def _auth_headers(provider: ProviderConfig) -> dict[str, str]:
-    if provider.api_key_env_var and (key := os.getenv(provider.api_key_env_var)):
+    if provider.api_key_env_var and (key := resolve_api_key(provider.api_key_env_var)):
         return {"Authorization": f"Bearer {key}"}
     return {}
 
@@ -475,9 +475,7 @@ async def discover_extra_models(
     discovered: list[DiscoveredModel] = []
 
     for (provider, ephemeral), raw_models in zip(probe, results, strict=True):
-        template = next(
-            (m for m in config.models if m.provider == provider.name), None
-        )
+        template = next((m for m in config.models if m.provider == provider.name), None)
         num_ctx_cap = _ollama_num_ctx_cap() if _is_ollama_provider(provider) else None
         chat_models = [rm for rm in raw_models if _is_chat_model(rm.id)]
         if (dropped := len(raw_models) - len(chat_models)) > 0:
