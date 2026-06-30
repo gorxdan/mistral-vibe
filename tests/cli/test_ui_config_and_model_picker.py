@@ -213,6 +213,66 @@ async def test_model_picker_groups_models_by_provider() -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_picker_filter_narrows_by_name() -> None:
+    # Typing in the filter input narrows the visible models by name/alias.
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            await app._show_model()
+            await pilot.pause(0.2)
+
+            picker = app.query_one(ModelPickerApp)
+            assert _selectable_option_ids(picker) == ["alpha", "beta", "gamma"]
+
+            # "model-c" is the API name of alias "gamma"; the others are model-a/b.
+            await pilot.press("m", "o", "d", "e", "l", "-", "c")
+            await pilot.pause(0.2)
+
+            assert _selectable_option_ids(picker) == ["gamma"]
+
+
+@pytest.mark.asyncio
+async def test_model_picker_filter_clear_restores_all() -> None:
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            await app._show_model()
+            await pilot.pause(0.2)
+
+            picker = app.query_one(ModelPickerApp)
+            await pilot.press("b", "e", "t", "a")
+            await pilot.pause(0.2)
+            assert _selectable_option_ids(picker) == ["beta"]
+
+            # Clear the filter; all models reappear.
+            await pilot.press("ctrl+u")
+            await pilot.pause(0.2)
+            assert _selectable_option_ids(picker) == ["alpha", "beta", "gamma"]
+
+
+@pytest.mark.asyncio
+async def test_model_picker_keyboard_nav_and_select_while_filter_focused() -> None:
+    # Arrow/enter keep driving the option list even though the filter has focus.
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            await app._show_model()
+            await pilot.pause(0.2)
+
+            with patch("vibe.cli.textual_ui.app.VibeConfig.save_updates") as mock_save:
+                await pilot.press("down")
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+
+                mock_save.assert_called_once_with({"active_model": "beta"})
+
+            assert app._current_bottom_app == BottomApp.Input
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_model_picker_groups_candidates_by_provider() -> None:
     app = build_test_vibe_app(config=_make_config_with_mixed_provider_models())
     async with app.run_test() as pilot:
