@@ -218,3 +218,57 @@ def test_longcat_preset_resolvable_by_provider_name() -> None:
     preset = preset_for_provider_name("longcat")
     assert preset is not None
     assert preset.key == "longcat"
+
+
+def test_openrouter_preset_present_and_keyed() -> None:
+    preset = next((p for p in PRESETS if p.key == "openrouter"), None)
+    assert preset is not None
+    assert preset.requires_api_key is True
+    assert preset.provider is not None
+    assert preset.model is not None
+
+
+def test_openrouter_preset_provider_config() -> None:
+    preset = next(p for p in PRESETS if p.key == "openrouter")
+    provider = preset.provider
+    assert provider is not None
+    assert provider.name == "openrouter"
+    assert provider.api_base == "https://openrouter.ai/api/v1"
+    assert provider.api_key_env_var == "OPENROUTER_API_KEY"
+    # OpenAI-compatible chat-completions endpoint; the default openai adapter.
+    assert provider.api_style == "openai"
+    # Multi-model router; discovery fills the picker with available models.
+    assert provider.discover_models is True
+
+
+def test_openrouter_preset_model_config() -> None:
+    preset = next(p for p in PRESETS if p.key == "openrouter")
+    model = preset.model
+    assert model is not None
+    assert model.provider == "openrouter"
+    assert model.alias == "openrouter"
+    # Default model's ~200k window; compaction budget sits below the ceiling.
+    assert model.auto_compact_threshold == 180000
+
+
+def test_apply_openrouter_preset_persists_provider_and_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter-test")
+    preset = next(p for p in PRESETS if p.key == "openrouter")
+    assert preset.provider is not None and preset.model is not None
+
+    apply_provider_config(preset.provider, preset.model)
+
+    from vibe.core.config import VibeConfig
+
+    config = VibeConfig.get_persisted_config()
+    provider_names = {p["name"] for p in config["providers"]}
+    assert "openrouter" in provider_names
+    assert config["active_model"] == preset.model.alias
+
+
+def test_openrouter_preset_resolvable_by_provider_name() -> None:
+    preset = preset_for_provider_name("openrouter")
+    assert preset is not None
+    assert preset.key == "openrouter"

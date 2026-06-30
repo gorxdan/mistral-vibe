@@ -21,6 +21,8 @@ SAKANA_API_BASE = "https://api.sakana.ai/v1"
 SAKANA_HELP_URL = "https://sakana.ai"
 LONGCAT_API_BASE = "https://api.longcat.chat/openai/v1"
 LONGCAT_HELP_URL = "https://longcat.chat/platform/api_keys"
+OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
+OPENROUTER_HELP_URL = "https://openrouter.ai/keys"
 
 CUSTOM_PROVIDER_NAME = "custom"
 
@@ -274,6 +276,42 @@ PRESETS: list[ProviderPreset] = [
         ),
     ),
     ProviderPreset(
+        key="openrouter",
+        label="OpenRouter",
+        description=(
+            "300+ models (Anthropic, OpenAI, Google, Meta, ...) through one "
+            "OpenAI-compatible endpoint. Requires an OPENROUTER_API_KEY; "
+            "available models are detected automatically."
+        ),
+        requires_api_key=True,
+        help_url=OPENROUTER_HELP_URL,
+        provider=ProviderConfig(
+            name="openrouter",
+            api_base=OPENROUTER_API_BASE,
+            api_key_env_var="OPENROUTER_API_KEY",
+            # OpenRouter recommends these attribution headers (optional; help
+            # with app ranking / free-tier credits). The default openai adapter
+            # handles the OpenAI-compatible chat-completions surface.
+            extra_headers={"X-Title": "Vibe"},
+            # OpenRouter fronts hundreds of models behind one key; discovery
+            # fills the picker with everything the key can reach.
+            discover_models=True,
+        ),
+        model=ModelConfig(
+            name="anthropic/claude-sonnet-4.5",
+            provider="openrouter",
+            alias="openrouter",
+            # OpenRouter re-bills per model at provider pricing; override per
+            # model in config for cost tracking. Default below stays at 0.0.
+            input_price=0.0,
+            output_price=0.0,
+            supports_images=True,
+            # Default model's window is ~200k; compact before the ceiling.
+            # Discovered siblings carry their own context windows at runtime.
+            auto_compact_threshold=180000,
+        ),
+    ),
+    ProviderPreset(
         key="ollama",
         label="Ollama / local",
         description=(
@@ -288,7 +326,7 @@ PRESETS: list[ProviderPreset] = [
         label="Custom OpenAI-compatible",
         description=(
             "Any OpenAI-compatible /chat/completions endpoint (DeepSeek, vLLM, "
-            "LM Studio, OpenRouter, ...). Provide a base URL and key."
+            "LM Studio, ...). Provide a base URL and key."
         ),
         requires_api_key=True,
     ),

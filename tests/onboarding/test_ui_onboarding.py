@@ -1461,8 +1461,8 @@ async def test_provider_selection_ollama_without_server_stays_on_screen(
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
         # Presets: mistral, zai, kimi, minimax, openai, openai-chatgpt, sakana,
-        # longcat, ollama, custom -> ollama is row 8.
-        await pilot.press(*(["down"] * 8), "enter")
+        # longcat, openrouter, ollama, custom -> ollama is row 9.
+        await pilot.press(*(["down"] * 9), "enter")
 
         await _wait_for(
             lambda: (
@@ -1496,8 +1496,8 @@ async def test_provider_selection_custom_routes_to_api_key_and_persists(
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
         # Presets: mistral, zai, kimi, minimax, openai, openai-chatgpt, sakana,
-        # longcat, ollama, custom -> custom is row 9.
-        await pilot.press(*(["down"] * 9), "enter")
+        # longcat, openrouter, ollama, custom -> custom is row 10.
+        await pilot.press(*(["down"] * 10), "enter")
         await _wait_for(
             lambda: isinstance(pilot.app.screen, CustomProviderScreen), pilot
         )
