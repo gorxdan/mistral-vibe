@@ -71,6 +71,26 @@ def trim_tool_descriptions(tier: BaselineTier, config: VibeConfig) -> bool:
     return tier is BaselineTier.SMALL and config.baseline_scaling.trim_tool_descriptions_small
 
 
+def agents_md_byte_budget(tier: BaselineTier, config: VibeConfig) -> int | None:
+    """Per-doc byte cap for injected AGENTS.md on SMALL (None = unlimited)."""
+    if tier is BaselineTier.SMALL:
+        return config.baseline_scaling.small_agents_md_bytes
+    return None
+
+
+def budget_doc(body: str, budget: int | None) -> str:
+    """Apply a byte budget to a doc body: None = unlimited, 0 = drop (empty),
+    >0 = truncate to that many bytes with a marker.
+    """
+    if budget is None:
+        return body
+    if budget <= 0:
+        return ""
+    if len(body) <= budget:
+        return body
+    return body[:budget].rstrip() + "\n…[truncated for small context window]"
+
+
 def scaled_guard_tokens(
     config: VibeConfig, model: ModelConfig, tier: BaselineTier
 ) -> int:

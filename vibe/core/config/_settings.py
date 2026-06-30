@@ -445,6 +445,10 @@ class BaselineScalingConfig(BaseSettings):
     # SMALL-tier builtin tool-schema description trimming.
     trim_tool_descriptions_small: bool = True
     tool_description_max_chars: int = 220
+    # SMALL-tier byte budget for each injected AGENTS.md doc (user + per-project).
+    # The project context is the largest untrimmed baseline chunk on a small
+    # window; each doc body is truncated to this many bytes (0 keeps full text).
+    small_agents_md_bytes: int = 2000
 
 
 class WorktreeConfig(BaseSettings):

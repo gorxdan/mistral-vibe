@@ -11,7 +11,12 @@ import subprocess
 import time
 from typing import TYPE_CHECKING
 
-from vibe.core.baseline_scaling import BaselineTier, section_enabled
+from vibe.core.baseline_scaling import (
+    BaselineTier,
+    agents_md_byte_budget,
+    budget_doc,
+    section_enabled,
+)
 from vibe.core.config import VibeConfig
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.experiments import ExperimentName
@@ -615,7 +620,9 @@ def _build_prompt_detail_sections(
 
 
 def _build_project_context_sections(
-    config: VibeConfig, include_git_status: bool
+    config: VibeConfig,
+    include_git_status: bool,
+    tier: BaselineTier = BaselineTier.LARGE,
 ) -> list[str]:
     sections: list[str] = []
     is_dangerous, reason = is_dangerous_directory()
@@ -640,16 +647,21 @@ def _build_project_context_sections(
             "file-access permissions as the primary working directory):\n" + dirs_lines
         )
 
-    user_doc = mgr.load_user_doc()
-    project_docs = mgr.load_project_docs()
+    # On a small window the AGENTS.md docs are the largest untrimmed baseline
+    # chunk; cap each doc body to the tier budget (None on LARGE = unchanged).
+    budget = agents_md_byte_budget(tier, config)
+    user_doc = budget_doc(mgr.load_user_doc(), budget)
+    project_docs = [(d, budget_doc(c, budget)) for d, c in mgr.load_project_docs()]
     doc_sections: list[str] = []
     if user_doc.strip():
         doc_sections.append(
             f"## User instructions\n\nContents of {VIBE_HOME.path}/AGENTS.md (user-level instructions):\n\n{user_doc.strip()}"
         )
-    if project_docs:
+    if any(c.strip() for _, c in project_docs):
         doc_sections.append("## Project instructions (checked into the codebase)")
     for doc_dir, doc_content in project_docs:
+        if not doc_content.strip():
+            continue
         doc_sections.append(
             f"Contents of {doc_dir}/AGENTS.md:\n\n{doc_content.strip()}"
         )
@@ -713,7 +725,9 @@ def get_universal_system_prompt(
         )
 
     if config.include_project_context:
-        sections.extend(_build_project_context_sections(config, include_git_status))
+        sections.extend(
+            _build_project_context_sections(config, include_git_status, tier)
+        )
 
     if (
         getattr(config, "effort_mode", "normal") == "le-chaton"
