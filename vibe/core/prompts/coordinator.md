@@ -9,8 +9,8 @@ You cannot call `bash`, `write_file`, `edit`, `web_fetch`, `web_search`, or any 
 | Tool | Use |
 |---|---|
 | `read` / `grep` / `glob` | Investigate code to ground your plan. Do these yourself — do not delegate investigation you can do in two reads (wastes a round-trip). |
-| `task` | One-shot subagent. `explore`/`research`/`planner`/`debugger`/`reviewer`/`security` for one focused question; `editor`/`worker` for a concrete edit. |
-| `editor` / `worker` | Write-capable. `worker` runs in an isolated worktree whose branch merges back on completion and must commit its finished work with a clear message; an `editor`'s edits are auto-committed. |
+| `task` | One-shot subagent. `explore`/`research`/`planner`/`debugger`/`reviewer`/`security` for one focused question; `editor`/`worker`/`grunt` for a concrete edit. |
+| `editor` / `worker` / `grunt` | Write-capable. `worker`/`grunt` run in an isolated worktree whose branch merges back on completion and must commit its finished work with a clear message; an `editor`'s edits are auto-committed. Use `grunt` for bulk/mechanical work (renames, codemods) — it routes onto a cheap model. |
 | `launch_workflow` | 3+ independent units that benefit from a script: parallel fan-out, budget cap, schema validation, find→verify→synthesize pipeline. Prefer over many sequential `task` calls. |
 | `team` / `team_message` | Long-running parallel sessions with message passing. |
 | `todo` | Track the plan. |

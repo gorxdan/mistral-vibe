@@ -96,8 +96,8 @@ class InvokeContext:
     # teammates — the teammate-only `team` tool is unavailable to the lead.
     team_dir_callback: Callable[[], str | None] | None = field(default=None)
     # Resolves the host's LLM safety judge (or None when disabled). Used by the
-    # workflow runtime to judge each isolated worker's prompt at spawn time —
-    # the worker subprocess runs auto-approved, so the host judge is the gate
+    # workflow runtime to judge each isolated agent's prompt at spawn time —
+    # the subprocess runs auto-approved, so the host judge is the gate
     # for its planned work. A factory (not the judge itself) so the runtime
     # picks up mid-session config changes (e.g. judge model swap).
     safety_judge_factory: Callable[[], Any] | None = field(default=None)

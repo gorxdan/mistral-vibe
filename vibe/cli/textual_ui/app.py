@@ -3653,7 +3653,7 @@ class VibeApp(App):
             session_id=loop.session_id,
             terminal_emulator=loop.terminal_emulator,
             # Hand the runtime the host's judge resolver so each isolated
-            # worker's prompt is judged at spawn (the subprocess itself runs
+            # agent's prompt is judged at spawn (the subprocess itself runs
             # auto-approved and can't prompt the host per-tool).
             safety_judge_factory=loop._resolve_safety_judge,
         )

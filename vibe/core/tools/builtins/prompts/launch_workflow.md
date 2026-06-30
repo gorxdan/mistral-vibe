@@ -34,7 +34,7 @@ confusing "no main()" later.
 
 The script must define `async def main()`. The runtime injects:
 
-- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent; `isolation="worktree"` runs it in a fresh git worktree (isolates file edits for parallel agents). Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `debugger` (+bash; systematic root-cause analysis of a failure or flaky test), `planner` (grep/read; returns a phased, code-grounded plan), `security` (+bash; defensive vuln audit with severity-ranked findings), `editor` (read/grep/write/edit, no bash/MCP; surgical edits — **requires** `isolation="worktree"`), `worker` (full tools incl. MCP — **requires** `isolation="worktree"`). `schema=` validates the agent's JSON output and **strips unknown keys by default** (`strip_unknown=True`), so an extra field degrades gracefully. If output can't be validated after retries the result is a **falsy** `SchemaValidationFailure` (a `dict` subclass): filter with the canonical `[r for r in results if r]` (NOT `isinstance(r, dict)` — that would wrongly include it), `r.get(k, default)` is safe, `json.dumps(results)` won't crash, and `isinstance(r, SchemaValidationFailure)` + `r.schema_errors` give the detail — one bad agent degrades the batch instead of crashing the run.
+- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent; `isolation="worktree"` runs it in a fresh git worktree (isolates file edits for parallel agents). Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `debugger` (+bash; systematic root-cause analysis of a failure or flaky test), `planner` (grep/read; returns a phased, code-grounded plan), `security` (+bash; defensive vuln audit with severity-ranked findings), `editor` (read/grep/write/edit, no bash/MCP; surgical edits — **requires** `isolation="worktree"`), `grunt` (full tools like `worker`; bulk/mechanical work on a cheap model via `grunt_model` — **requires** `isolation="worktree"`), `worker` (full tools incl. MCP — **requires** `isolation="worktree"`). `schema=` validates the agent's JSON output and **strips unknown keys by default** (`strip_unknown=True`), so an extra field degrades gracefully. If output can't be validated after retries the result is a **falsy** `SchemaValidationFailure` (a `dict` subclass): filter with the canonical `[r for r in results if r]` (NOT `isinstance(r, dict)` — that would wrongly include it), `r.get(k, default)` is safe, `json.dumps(results)` won't crash, and `isinstance(r, SchemaValidationFailure)` + `r.schema_errors` give the detail — one bad agent degrades the batch instead of crashing the run.
 - `parallel(*items, max_concurrency=None)` (or `parallel([items])`) — run items concurrently, results in order; an item that raises yields `None` (filter the results). Each item may be a **coroutine** (`parallel(agent("a"), agent("b"))`) or a zero-arg thunk (`parallel(lambda: agent("a"))`); both work and bound concurrency identically. `max_concurrency=N` caps in-flight items when a provider limits concurrency.
 - `pipeline(items, *stages, max_concurrency=None)` — run each item through all stages with no barrier between stages (item A can be in stage 3 while B is still in stage 1); each stage receives `(prev, item, index)` and acts as a concurrent map. `max_concurrency=N` caps in-flight items.
 - `phase(name)` — declare a phase for progress tracking. Works bare (`phase("x")`) or awaited.
@@ -100,17 +100,17 @@ async def main():
 
 `launch_workflow` is ASK-gated: each launch is reviewed by the safety judge (if
 configured) with a **workflow-aware** prompt — it judges the script's planned
-surface (which agent profiles spawn, read-only vs full-tool `worker`; fan-out
+surface (which agent profiles spawn, read-only vs full-tool `worker`/`grunt`; fan-out
 across `parallel`/`pipeline`; any destructive logic), not the Python syntax. A
 deferral's reason reaches your launch approval prompt.
 
 In-process subagents (`explore`/`research`/`reviewer`/`editor`) consult the judge
 per tool call, and any deferral is surfaced to the host for approval. Isolated
-`worker`/`editor` agents get a **second judge pass at spawn**: each worker's
+`worker`/`editor`/`grunt` agents get a **second judge pass at spawn**: each one's
 prompt is judged before its subprocess starts, and a deferral routes to your
-approval with the judge's reason — so even though the worker runs auto-approved
-inside its worktree, its planned task is gated. A worker you deny is recorded as
-**failed**; the run continues with the others.
+approval with the judge's reason — so even though the isolated agent runs
+auto-approved inside its worktree, its planned task is gated. An agent you deny
+is recorded as **failed**; the run continues with the others.
 
 ## Sandbox restrictions
 

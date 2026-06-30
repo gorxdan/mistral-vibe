@@ -735,24 +735,24 @@ class WorkflowRuntime:
         verdict = await judge.judge(
             "launch_workflow",  # select the workflow-aware system prompt
             prompt,
-            [f"isolated '{agent}' worker spawn" + (f": {label}" if label else "")],
+            [f"isolated '{agent}' spawn" + (f": {label}" if label else "")],
         )
         if verdict.safe:
             self._log(
-                f"safety judge approved isolated '{agent}' worker"
+                f"safety judge approved isolated '{agent}'"
                 + (f" ({label})" if label else "")
                 + f": {verdict.reason}"
             )
             return
 
         self._log(
-            f"safety judge deferred isolated '{agent}' worker"
+            f"safety judge deferred isolated '{agent}'"
             + (f" ({label})" if label else "")
             + f" to user: {verdict.reason}"
         )
         if ctx.approval_callback is None:
             raise WorkflowError(
-                f"Safety judge denied isolated worker spawn and no approval "
+                f"Safety judge denied isolated '{agent}' spawn and no approval "
                 f"callback is available: {verdict.reason}"
             )
         from vibe.core.types import ApprovalResponse
@@ -766,7 +766,7 @@ class WorkflowRuntime:
         )
         if response != ApprovalResponse.YES:
             raise WorkflowError(
-                f"Isolated worker spawn denied by user (judge: {verdict.reason})"
+                f"Isolated '{agent}' spawn denied by user (judge: {verdict.reason})"
             )
 
     @staticmethod
@@ -846,9 +846,10 @@ class WorkflowRuntime:
         budget_estimate: int | None,
     ) -> Reservation:
         self._validate_workflow_profile(agent, isolation)
-        # Isolated workers run auto-approved in their subprocess and can't prompt
-        # the host per-tool, so judge each worker's prompt at spawn. In-process
-        # subagents consult the judge per-tool, so they're not pre-judged here.
+        # Isolated agents (worker/grunt/editor) run auto-approved in their
+        # subprocess and can't prompt the host per-tool, so judge each isolated
+        # spawn's prompt at spawn. In-process subagents consult the judge
+        # per-tool, so they're not pre-judged here.
         if isolation == "worktree":
             await self._judge_isolated_spawn(prompt, agent, label)
         if self._agent_count >= self.max_agents:
@@ -1305,7 +1306,7 @@ class WorkflowRuntime:
             loop.set_approval_callback(ctx.approval_callback)
         # NOTE: in-process subagents are MCP-free by design. Restricted profiles
         # (explore/research/reviewer) filter MCP out via their allowlist anyway;
-        # full-tool MCP work runs as the 'worker' profile under
+        # full-tool MCP work runs as the 'worker' or 'grunt' profile under
         # isolation='worktree', whose `vibe -p` subprocess discovers MCP itself.
         # (An earlier in-process integrate_mcp() here blocked the event loop and
         # raced the shared registry — removed.)
