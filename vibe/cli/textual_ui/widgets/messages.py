@@ -20,6 +20,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
+from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Button, Link, Markdown, Static
 from textual.widgets._markdown import MarkdownStream
@@ -35,6 +36,12 @@ from vibe.cli.textual_ui.widgets.no_markup_static import (
     NonSelectableStatic,
 )
 from vibe.cli.textual_ui.widgets.spinner import SpinnerMixin, SpinnerType
+
+# Streaming deltas are coalesced into one MarkdownStream.write per render frame
+# (see StreamingMessageBase._flush_buffer). Tuned so streamed text still appears
+# smooth (~33 fps) while collapsing dozens of per-token markdown re-parses into a
+# single write — the dominant loop-thread cost during a streamed reply.
+_STREAM_FLUSH_INTERVAL_S = 0.03
 
 
 class ExpandingBorder(NonSelectableStatic):
@@ -246,6 +253,7 @@ class StreamingMessageBase(Static):
         self._stream: MarkdownStream | None = None
         self._content_initialized = False
         self._to_write_buffer = ""
+        self._flush_timer: Timer | None = None
         self._chat_scroll: ChatScroll | None = None
 
     @property
@@ -293,14 +301,37 @@ class StreamingMessageBase(Static):
         if not self._should_write_content():
             return
 
-        if self._is_chat_at_bottom():
-            to_write = self._to_write_buffer + content
-            self._to_write_buffer = ""
-            stream = self._ensure_stream()
-            await stream.write(to_write)
-            return
-
+        # Always buffer the delta; _flush_buffer writes it to the stream at most
+        # once per render frame (see _schedule_flush). Writing on every chunk made
+        # Textual re-parse + re-render the growing markdown synchronously on the
+        # event-loop thread — O(n^2) over a reply and the dominant cause of a
+        # pegged core and a frozen UI while streaming. When scrolled away, content
+        # stays buffered (no re-render of off-screen text) and is flushed by
+        # stop_stream.
         self._to_write_buffer += content
+        if self._is_chat_at_bottom():
+            self._schedule_flush()
+
+    def _schedule_flush(self) -> None:
+        # At most one in-flight flush: deltas arriving before the timer fires
+        # just extend the buffer, so N chunks collapse into a single write.
+        if self._flush_timer is None:
+            self._flush_timer = self.set_timer(
+                _STREAM_FLUSH_INTERVAL_S, self._flush_buffer
+            )
+
+    async def _flush_buffer(self) -> None:
+        self._flush_timer = None
+        if not self._to_write_buffer or not self._should_write_content():
+            return
+        # Scrolled away since the delta landed — keep it buffered; it is flushed
+        # on stop_stream or when the next at-bottom append reschedules.
+        if not self._is_chat_at_bottom():
+            return
+        to_write = self._to_write_buffer
+        self._to_write_buffer = ""
+        stream = self._ensure_stream()
+        await stream.write(to_write)
 
     async def write_initial_content(self) -> None:
         if self._content_initialized:
@@ -312,6 +343,10 @@ class StreamingMessageBase(Static):
             self._to_write_buffer = ""
 
     async def stop_stream(self) -> None:
+        self._cancel_flush_timer()
+        # stop_stream flushes the remainder regardless of scroll position so the
+        # completed message always renders (the timer-driven flush skips writes
+        # while the user is scrolled away).
         if self._to_write_buffer and self._should_write_content():
             stream = self._ensure_stream()
             await stream.write(self._to_write_buffer)
@@ -322,6 +357,14 @@ class StreamingMessageBase(Static):
 
         await self._stream.stop()
         self._stream = None
+
+    def _cancel_flush_timer(self) -> None:
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
+
+    def on_unmount(self) -> None:
+        self._cancel_flush_timer()
 
     def _should_write_content(self) -> bool:
         return True

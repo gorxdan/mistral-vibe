@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from vibe.cli.textual_ui.widgets.messages import StreamingMessageBase
@@ -21,6 +23,12 @@ class FakeStream:
         return "".join(self.written)
 
 
+class _PendingTimer:
+    """Stand-in for a Textual Timer — only ``stop()`` is ever touched."""
+
+    def stop(self) -> None: ...
+
+
 class MessageTestDouble(StreamingMessageBase):
     """Minimal test double for StreamingMessageBase that bypasses Textual internals."""
 
@@ -31,6 +39,8 @@ class MessageTestDouble(StreamingMessageBase):
         self._to_write_buffer = ""
         self._stream = None
         self._markdown = None
+        self._flush_timer = None
+        self._timers_started = 0
         self._at_bottom = at_bottom
         self._should_write = should_write
         self._fake_stream: FakeStream = FakeStream()
@@ -48,6 +58,19 @@ class MessageTestDouble(StreamingMessageBase):
     def _should_write_content(self) -> bool:
         return self._should_write
 
+    def set_timer(  # type: ignore[override]
+        self,
+        delay: float,
+        callback: Any = None,
+        *,
+        name: str | None = None,
+        pause: bool = False,
+    ) -> _PendingTimer:
+        # Seam for _schedule_flush: record that a flush timer was armed (so the
+        # coalescing guard is testable) without running a real event loop.
+        self._timers_started += 1
+        return _PendingTimer()
+
 
 def make_msg(*, at_bottom: bool = True, should_write: bool = True) -> MessageTestDouble:
     return MessageTestDouble(at_bottom=at_bottom, should_write=should_write)
@@ -55,22 +78,25 @@ def make_msg(*, at_bottom: bool = True, should_write: bool = True) -> MessageTes
 
 class TestAppendContent:
     @pytest.mark.asyncio
-    async def test_at_bottom_writes_directly_no_buffer(self) -> None:
+    async def test_at_bottom_buffers_and_schedules_flush(self) -> None:
         msg = make_msg(at_bottom=True)
 
         await msg.append_content("hello")
 
-        assert msg._fake_stream.all_written == "hello"
-        assert msg._to_write_buffer == ""
+        # Buffered, not written; one flush timer armed for the render frame.
+        assert msg._fake_stream.all_written == ""
+        assert msg._to_write_buffer == "hello"
+        assert msg._timers_started == 1
 
     @pytest.mark.asyncio
-    async def test_scrolled_away_buffers_without_writing(self) -> None:
+    async def test_scrolled_away_buffers_without_writing_or_scheduling(self) -> None:
         msg = make_msg(at_bottom=False)
 
         await msg.append_content("hello")
 
         assert msg._fake_stream.all_written == ""
         assert msg._to_write_buffer == "hello"
+        assert msg._timers_started == 0
 
     @pytest.mark.asyncio
     async def test_multiple_chunks_scrolled_away_accumulate(self) -> None:
@@ -83,28 +109,48 @@ class TestAppendContent:
         assert msg._to_write_buffer == "foo bar"
 
     @pytest.mark.asyncio
-    async def test_scroll_back_flushes_buffer_with_new_chunk(self) -> None:
+    async def test_at_bottom_chunks_coalesce_into_single_write(self) -> None:
+        msg = make_msg(at_bottom=True)
+
+        for chunk in ("a", "b", "c", "d", "e"):
+            await msg.append_content(chunk)
+
+        # All buffered; the guard arms the flush timer exactly once.
+        assert msg._fake_stream.all_written == ""
+        assert msg._to_write_buffer == "abcde"
+        assert msg._timers_started == 1
+
+        await msg._flush_buffer()
+
+        # One write carries the whole coalesced buffer; timer cleared so the
+        # next delta can reschedule.
+        assert msg._fake_stream.written == ["abcde"]
+        assert msg._to_write_buffer == ""
+        assert msg._flush_timer is None
+
+    @pytest.mark.asyncio
+    async def test_flush_is_noop_when_buffer_empty(self) -> None:
+        msg = make_msg(at_bottom=True)
+
+        await msg._flush_buffer()
+
+        assert msg._fake_stream.all_written == ""
+        assert msg._flush_timer is None
+
+    @pytest.mark.asyncio
+    async def test_scroll_back_then_flush_writes_buffer_with_new_chunk(self) -> None:
         msg = make_msg(at_bottom=False)
         await msg.append_content("buffered")
 
         msg._at_bottom = True
         await msg.append_content(" new")
 
-        # Both buffered and new chunk written together in one write call.
-        assert msg._fake_stream.all_written == "buffered new"
-        assert msg._to_write_buffer == ""
+        # Nothing written yet — flush is scheduled, not immediate.
+        assert msg._fake_stream.all_written == ""
+        await msg._flush_buffer()
 
-    @pytest.mark.asyncio
-    async def test_scroll_back_subsequent_chunks_written_directly(self) -> None:
-        msg = make_msg(at_bottom=False)
-        await msg.append_content("a")
-        await msg.append_content("b")
-
-        msg._at_bottom = True
-        await msg.append_content("c")
-        await msg.append_content("d")
-
-        assert msg._fake_stream.all_written == "abc" + "d"
+        # Buffered + new chunk written together in a single write call.
+        assert msg._fake_stream.written == ["buffered new"]
         assert msg._to_write_buffer == ""
 
     @pytest.mark.asyncio
@@ -171,11 +217,11 @@ class TestStopStream:
     @pytest.mark.asyncio
     async def test_empty_buffer_no_extra_write(self) -> None:
         msg = make_msg()
-        await msg.append_content("live")  # written directly, buffer stays empty
+        await msg.append_content("live")  # buffered (flush armed, not yet run)
 
         await msg.stop_stream()
 
-        # Only the original direct write, no spurious extra write from stop_stream.
+        # stop_stream flushes the buffer once; no spurious second write.
         assert msg._fake_stream.written == ["live"]
 
 
