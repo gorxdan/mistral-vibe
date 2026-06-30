@@ -267,6 +267,7 @@ PRESETS: list[ProviderPreset] = [
             name="LongCat-2.0",
             provider="longcat",
             alias="longcat",
+            temperature=1.0,
             # 1M-token context window (128K output). Compact well before the
             # ceiling, matching the other 1M-window presets.
             auto_compact_threshold=880000,
