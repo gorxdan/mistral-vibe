@@ -26,7 +26,7 @@ import urllib.parse
 
 import httpx
 
-from vibe.core.config import ModelConfig, ProviderConfig
+from vibe.core.config import ModelConfig, ProviderConfig, resolve_api_key
 from vibe.core.logger import logger
 from vibe.core.types import Backend
 from vibe.core.utils.http import build_ssl_context
@@ -139,7 +139,7 @@ def _ctx_from_models_item(item: dict[str, Any]) -> int | None:
 
 
 def _auth_headers(provider: ProviderConfig) -> dict[str, str]:
-    if provider.api_key_env_var and (key := os.getenv(provider.api_key_env_var)):
+    if provider.api_key_env_var and (key := resolve_api_key(provider.api_key_env_var)):
         return {"Authorization": f"Bearer {key}"}
     return {}
 

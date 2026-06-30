@@ -1043,7 +1043,7 @@ class VibeConfig(BaseSettings):
     def is_provider_available(self, provider: ProviderConfig) -> bool:
         if not provider.api_key_env_var:
             return True
-        return bool(os.getenv(provider.api_key_env_var))
+        return bool(resolve_api_key(provider.api_key_env_var))
 
     def is_model_available(self, model: ModelConfig) -> bool:
         try:

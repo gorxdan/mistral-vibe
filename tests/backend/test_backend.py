@@ -17,6 +17,7 @@ from typing import ClassVar, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import keyring
 from mistralai.client.errors import SDKError
 from mistralai.client.models import AssistantMessage
 from mistralai.client.utils.retries import BackoffStrategy, RetryConfig
@@ -438,6 +439,53 @@ class TestBackend:
             )
 
             assert mock_api.calls.last.request.headers["user-agent"] == user_agent
+
+    @pytest.mark.asyncio
+    async def test_generic_backend_sends_keyring_only_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+
+        def _get_password(service: str, username: str) -> str | None:
+            return "keyring-key" if username == "ZAI_API_KEY" else None
+
+        monkeypatch.setattr(keyring, "get_password", _get_password)
+        base_url = "https://api.z.ai"
+        json_response = {
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "Hey"},
+                }
+            ]
+        }
+        with respx.mock(base_url=base_url) as mock_api:
+            mock_api.post(CHAT_COMPLETIONS_PATH).mock(
+                return_value=httpx.Response(status_code=200, json=json_response)
+            )
+            provider = ProviderConfig(
+                name="zai", api_base=f"{base_url}/v1", api_key_env_var="ZAI_API_KEY"
+            )
+            backend = GenericBackend(provider=provider)
+            model = ModelConfig(name="glm-5.2", provider="zai", alias="glm")
+
+            await backend.complete(
+                CompletionRequest(
+                    model=model,
+                    messages=[LLMMessage(role=Role.USER, content="Just say hi")],
+                    temperature=0.2,
+                    tools=None,
+                    max_tokens=None,
+                    tool_choice=None,
+                    extra_headers=None,
+                )
+            )
+
+            assert (
+                mock_api.calls.last.request.headers["Authorization"]
+                == "Bearer keyring-key"
+            )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("backend_type", [Backend.MISTRAL, Backend.GENERIC])
