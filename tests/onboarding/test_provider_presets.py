@@ -151,6 +151,15 @@ def test_zai_preset_does_not_discover_models() -> None:
     assert preset.provider.discover_models is False
 
 
+def test_zai_preset_is_session_keyed() -> None:
+    # ZAI's prefix cache scatters across nodes under concurrency; the preset pins
+    # each conversation to one partition via a per-session prompt_cache_key.
+    preset = next((p for p in PRESETS if p.key == "zai"), None)
+    assert preset is not None
+    assert preset.provider is not None
+    assert preset.provider.cache.session_keyed is True
+
+
 def test_kimi_preset_does_not_discover_models() -> None:
     preset = next((p for p in PRESETS if p.key == "kimi"), None)
     assert preset is not None

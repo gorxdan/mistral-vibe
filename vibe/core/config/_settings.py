@@ -489,6 +489,11 @@ class ProviderCacheConfig(BaseModel):
     style: Literal["off", "anthropic-compat", "passthrough"] = "passthrough"
     extra_body: dict[str, Any] = Field(default_factory=dict)
     cache_key: str | None = None
+    # Opt a passthrough provider into a per-conversation ``prompt_cache_key``.
+    # OpenAI/sakana auto-enable by endpoint; set this for any other
+    # OpenAI-compatible provider whose prefix cache load-balances across nodes
+    # and misses without a routing pin (e.g. zai/GLM under concurrency).
+    session_keyed: bool = False
 
 
 class ProviderConfig(BaseModel):

@@ -62,13 +62,34 @@ def test_openai_default_gets_stable_per_conversation_prompt_cache_key() -> None:
 
 
 def test_non_openai_provider_gets_no_auto_cache_key() -> None:
-    # GLM/zai, DeepSeek, etc. auto-cache reliably; do not perturb their path.
+    # A generic provider with default cache (no session_keyed) stays key-less;
+    # the routing pin is opt-in so a provider that rejects unknown body fields,
+    # or whose cache already works, is left untouched.
     p = ProviderConfig(name="zai", api_base="https://api.z.ai/api/coding/paas/v4")
     hint = build_cache_hint(
         p, [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
     )
     assert hint is not None
     assert "prompt_cache_key" not in hint
+
+
+def test_session_keyed_provider_prefers_session_id() -> None:
+    # An OpenAI-compatible provider that opts in via cache.session_keyed gets the
+    # same per-conversation pin as OpenAI (zai/GLM, whose cache scatters under
+    # concurrency). session_id is the routing key when threaded through.
+    p = ProviderConfig(
+        name="zai",
+        api_base="https://api.z.ai/api/coding/paas/v4",
+        cache=ProviderCacheConfig(session_keyed=True),
+    )
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    hint = build_cache_hint(p, msgs, session_id="sess-zai-1")
+    assert hint is not None
+    assert hint["prompt_cache_key"] == "sess-zai-1"
+    # No session id (one-shot caller) => stable content-hash pin instead.
+    fallback = build_cache_hint(p, msgs)
+    assert fallback is not None
+    assert fallback["prompt_cache_key"].startswith("vibe-")
 
 
 def test_openai_prefers_session_id_over_content_hash() -> None:
@@ -90,8 +111,8 @@ def test_openai_prefers_session_id_over_content_hash() -> None:
 
 
 def test_non_openai_provider_ignores_session_id() -> None:
-    # The session-id pin is OpenAI-only; non-OpenAI providers stay key-less even
-    # when a session id is threaded through.
+    # Without session_keyed, a non-OpenAI provider stays key-less even when a
+    # session id is threaded through (the opt-in path is covered above).
     p = ProviderConfig(name="zai", api_base="https://api.z.ai/api/coding/paas/v4")
     hint = build_cache_hint(
         p,

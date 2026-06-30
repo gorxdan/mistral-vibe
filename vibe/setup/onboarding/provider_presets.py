@@ -6,7 +6,12 @@ from vibe.core.auth.openai_oauth import (
     OPENAI_CHATGPT_API_BASE,
     OPENAI_CHATGPT_API_STYLE,
 )
-from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
+from vibe.core.config import (
+    ModelConfig,
+    ProviderCacheConfig,
+    ProviderConfig,
+    VibeConfig,
+)
 
 ZAI_API_BASE = "https://api.z.ai/api/coding/paas/v4"
 KIMI_API_BASE = "https://api.kimi.com/coding/v1"
@@ -67,6 +72,10 @@ PRESETS: list[ProviderPreset] = [
             api_base=ZAI_API_BASE,
             api_key_env_var="ZAI_API_KEY",
             discover_models=False,
+            # ZAI's prefix cache load-balances across nodes; pin each
+            # conversation to one partition so concurrent sessions stop evicting
+            # each other's history tail.
+            cache=ProviderCacheConfig(session_keyed=True),
         ),
         model=ModelConfig(
             name="glm-5.2",

@@ -1,12 +1,13 @@
 """Prompt-cache hints for the generic / OpenAI-compatible path.
 
-Non-OpenAI generic providers (DeepSeek, GLM/zai, Together, Groq) auto-cache
-prefixes reliably and get no hint — ``build_cache_hint`` returns an inert empty
-fragment unless a provider sets an explicit ``provider.cache`` knob. OpenAI is
-the exception: its prefix cache load-balances across machines and misses without
-a ``prompt_cache_key`` to pin a conversation to one partition, so OpenAI
-providers auto-get a stable per-conversation key (see ``_auto_openai_cache_key``
-/ ``prefix_cache_key``; the Responses backend uses the same derivation).
+Generic providers get no hint by default — ``build_cache_hint`` returns an inert
+empty fragment unless a provider sets an explicit ``provider.cache`` knob. The
+exception is prefix caches that load-balance across machines and miss without a
+``prompt_cache_key`` to pin a conversation to one partition. OpenAI/sakana
+auto-get a stable per-conversation key by endpoint; any other OpenAI-compatible
+provider opts in with ``provider.cache.session_keyed`` (e.g. zai/GLM, whose cache
+scatters under concurrency). See ``_auto_cache_key`` / ``prefix_cache_key``; the
+Responses backend uses the same derivation.
 """
 
 from __future__ import annotations
@@ -42,8 +43,11 @@ def build_cache_hint(
 
     if cache.style == "passthrough":
         fragment = copy.deepcopy(cache.extra_body)
-        key = cache.cache_key or _auto_openai_cache_key(
-            provider, converted_messages, session_id
+        key = cache.cache_key or _auto_cache_key(
+            provider,
+            converted_messages,
+            session_id,
+            session_keyed=cache.session_keyed,
         )
         if key:
             fragment.setdefault("prompt_cache_key", key)
@@ -65,18 +69,22 @@ def _is_openai_provider(provider: ProviderConfig) -> bool:
     )
 
 
-def _auto_openai_cache_key(
+def _auto_cache_key(
     provider: ProviderConfig,
     converted_messages: list[dict[str, Any]],
     session_id: str | None = None,
+    *,
+    session_keyed: bool = False,
 ) -> str | None:
-    """Stable per-conversation ``prompt_cache_key`` for OpenAI.
+    """Stable per-conversation ``prompt_cache_key`` for a load-balanced prefix cache.
 
-    OpenAI's prefix auto-cache load-balances requests across machines and misses
-    unless ``prompt_cache_key`` pins a conversation to one cache partition — the
-    codex reference client sends one (its thread id) for exactly this reason.
-    Other generic providers (GLM/zai, DeepSeek, Groq, Together) cache reliably
-    without it, so this is OpenAI-only to avoid perturbing their working path.
+    Such a cache load-balances requests across machines and misses unless
+    ``prompt_cache_key`` pins a conversation to one partition — the codex
+    reference client sends one (its thread id) for exactly this reason. Enabled
+    for OpenAI/sakana by endpoint, and for any other OpenAI-compatible provider
+    that opts in via ``provider.cache.session_keyed``; off by default so a
+    provider whose cache already works (or rejects unknown body fields) is left
+    untouched.
 
     Prefer the conversation's ``session_id`` (codex keys on its thread_id, a
     per-session UUID): unique per conversation so concurrent sessions spread
@@ -85,7 +93,7 @@ def _auto_openai_cache_key(
     fall back to a content hash of the stable prefix (system + first user turn),
     which is identical across a conversation's turns and distinct across openings.
     """
-    if not _is_openai_provider(provider):
+    if not (session_keyed or _is_openai_provider(provider)):
         return None
     return session_id or prefix_cache_key(converted_messages)
 
