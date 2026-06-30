@@ -249,6 +249,10 @@ def _get_adapter(api_style: str) -> APIAdapter:
             from vibe.core.llm.backend.vertex import VertexAnthropicAdapter
 
             _ADAPTERS["vertex-anthropic"] = VertexAnthropicAdapter()
+        elif api_style == "bedrock-anthropic":
+            from vibe.core.llm.backend.bedrock import BedrockAnthropicAdapter
+
+            _ADAPTERS["bedrock-anthropic"] = BedrockAnthropicAdapter()
         else:
             raise KeyError(api_style)
     return _ADAPTERS[api_style]

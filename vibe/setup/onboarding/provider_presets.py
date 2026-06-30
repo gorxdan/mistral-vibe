@@ -28,6 +28,13 @@ LONGCAT_API_BASE = "https://api.longcat.chat/openai/v1"
 LONGCAT_HELP_URL = "https://longcat.chat/platform/api_keys"
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_HELP_URL = "https://openrouter.ai/keys"
+# Bedrock Mantle serves Claude through the Anthropic Messages API shape; the
+# region is part of the host. us-east-1 is the default region; users override
+# `region` (and api_base) in config to target another region.
+BEDROCK_API_BASE = "https://bedrock-mantle.us-east-1.api.aws/anthropic"
+BEDROCK_HELP_URL = (
+    "https://docs.aws.amazon.com/bedrock/latest/userguide/getting-started-api-keys.html"
+)
 
 CUSTOM_PROVIDER_NAME = "custom"
 
@@ -321,6 +328,39 @@ PRESETS: list[ProviderPreset] = [
             # 1.05M-token context window; compact well before the ceiling,
             # matching the other ~1M-window presets.
             auto_compact_threshold=880000,
+        ),
+    ),
+    ProviderPreset(
+        key="bedrock",
+        label="Amazon Bedrock (Claude)",
+        description=(
+            "Claude models on Amazon Bedrock via the Mantle endpoint, using an "
+            "AWS Bedrock API key (AWS_BEARER_TOKEN_BEDROCK). Runs on "
+            "AWS-managed infrastructure; other open Claude models (Opus, Fable) "
+            "are selectable by editing the model name in config."
+        ),
+        requires_api_key=True,
+        help_url=BEDROCK_HELP_URL,
+        provider=ProviderConfig(
+            name="bedrock",
+            api_base=BEDROCK_API_BASE,
+            api_key_env_var="AWS_BEARER_TOKEN_BEDROCK",
+            # Bedrock Mantle speaks the Anthropic Messages API; the adapter pins
+            # the region-aware base URL from `region`.
+            api_style="bedrock-anthropic",
+            region="us-east-1",
+            # Bedrock's model catalog lives behind a separate ListFoundationModels
+            # endpoint with its own auth; users add models in config.
+            discover_models=False,
+        ),
+        model=ModelConfig(
+            # anthropic.<family> model IDs; default to the open Haiku 4.5. Other
+            # open models: anthropic.claude-opus-4-8, anthropic.claude-fable-5.
+            name="anthropic.claude-haiku-4-5",
+            provider="bedrock",
+            alias="bedrock",
+            supports_images=True,
+            auto_compact_threshold=200000,
         ),
     ),
     ProviderPreset(

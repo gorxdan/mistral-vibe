@@ -283,3 +283,61 @@ def test_openrouter_preset_resolvable_by_provider_name() -> None:
     preset = preset_for_provider_name("openrouter")
     assert preset is not None
     assert preset.key == "openrouter"
+
+
+def test_bedrock_preset_present_and_keyed() -> None:
+    preset = next((p for p in PRESETS if p.key == "bedrock"), None)
+    assert preset is not None
+    assert preset.requires_api_key is True
+    assert preset.provider is not None
+    assert preset.model is not None
+
+
+def test_bedrock_preset_provider_config() -> None:
+    preset = next(p for p in PRESETS if p.key == "bedrock")
+    provider = preset.provider
+    assert provider is not None
+    assert provider.name == "bedrock"
+    assert provider.api_base == "https://bedrock-mantle.us-east-1.api.aws/anthropic"
+    assert provider.api_key_env_var == "AWS_BEARER_TOKEN_BEDROCK"
+    # Bedrock Mantle speaks the Anthropic Messages API; the adapter pins the
+    # region-aware base URL from `region`.
+    assert provider.api_style == "bedrock-anthropic"
+    assert provider.region == "us-east-1"
+    # Bedrock's model catalog lives behind a separate endpoint; models are
+    # added in config.
+    assert provider.discover_models is False
+
+
+def test_bedrock_preset_model_config() -> None:
+    preset = next(p for p in PRESETS if p.key == "bedrock")
+    model = preset.model
+    assert model is not None
+    # anthropic.<family> model ID; Haiku 4.5 is the default open model.
+    assert model.name == "anthropic.claude-haiku-4-5"
+    assert model.provider == "bedrock"
+    assert model.alias == "bedrock"
+    assert model.supports_images is True
+
+
+def test_apply_bedrock_preset_persists_provider_and_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-test-key")
+    preset = next(p for p in PRESETS if p.key == "bedrock")
+    assert preset.provider is not None and preset.model is not None
+
+    apply_provider_config(preset.provider, preset.model)
+
+    from vibe.core.config import VibeConfig
+
+    config = VibeConfig.get_persisted_config()
+    provider_names = {p["name"] for p in config["providers"]}
+    assert "bedrock" in provider_names
+    assert config["active_model"] == preset.model.alias
+
+
+def test_bedrock_preset_resolvable_by_provider_name() -> None:
+    preset = preset_for_provider_name("bedrock")
+    assert preset is not None
+    assert preset.key == "bedrock"
