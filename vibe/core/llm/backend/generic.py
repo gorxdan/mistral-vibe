@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from http import HTTPStatus
-import os
 import re
 import types
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
@@ -11,6 +10,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 import httpx
 import orjson
 
+from vibe.core.config import resolve_api_key
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
 from vibe.core.llm.backend.adapter_port import (
     APIAdapter,
@@ -372,7 +372,7 @@ class GenericBackend:
             return creds.access_token, creds.auth_headers()
 
         api_key = (
-            os.getenv(self._provider.api_key_env_var)
+            resolve_api_key(self._provider.api_key_env_var)
             if self._provider.api_key_env_var
             else None
         )
