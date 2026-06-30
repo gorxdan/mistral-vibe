@@ -53,6 +53,7 @@ from vibe.core.agent_loop._errors import (
 from vibe.core.agent_loop.failover_mixin import AgentLoopFailoverMixin
 from vibe.core.agent_loop.memory_mixin import AgentLoopMemoryMixin
 from vibe.core.agent_loop.safety_mixin import AgentLoopSafetyMixin
+from vibe.core.baseline_scaling import baseline_tier_for, trim_tool_descriptions
 from vibe.core.compaction import truncate_compaction_context_for_backend
 from vibe.core.llm.backend.factory import create_backend
 from vibe.core.llm.types import BackendLike, CompletionRequest
@@ -66,6 +67,7 @@ from vibe.core.tracing import (
 )
 from vibe.core.types import (
     AgentStats,
+    AvailableTool,
     InjectedMessageKind,
     LLMChunk,
     LLMChunkAccumulator,
@@ -221,6 +223,17 @@ class AgentLoopBackendMixin(
             ],
         )
 
+    def _available_tools(self, active_model: ModelConfig) -> list[AvailableTool]:
+        # Tool subset is tier-invariant (no tool removed); only the schema-text
+        # description is trimmed on a small-window tier. Keyed on the per-turn
+        # effective model so a failover to a small window trims consistently.
+        tier = baseline_tier_for(active_model, self.config)
+        return self.format_handler.get_available_tools(
+            self.tool_manager,
+            trim_descriptions=trim_tool_descriptions(tier, self.config),
+            description_max_chars=self.config.baseline_scaling.tool_description_max_chars,
+        )
+
     async def _chat(
         self,
         max_tokens: int | None = None,
@@ -248,7 +261,7 @@ class AgentLoopBackendMixin(
             backend = create_backend(provider=provider, timeout=self.config.api_timeout)
         backend_metadata = self._build_backend_metadata()
 
-        available_tools = self.format_handler.get_available_tools(self.tool_manager)
+        available_tools = self._available_tools(active_model)
         tool_choice = self.format_handler.get_tool_choice()
 
         last_user_message = self._last_user_message()
@@ -337,7 +350,7 @@ class AgentLoopBackendMixin(
         active_model, provider = self._resolve_active_model()
         backend_metadata = self._build_backend_metadata()
 
-        available_tools = self.format_handler.get_available_tools(self.tool_manager)
+        available_tools = self._available_tools(active_model)
         tool_choice = self.format_handler.get_tool_choice()
 
         last_user_message = self._last_user_message()

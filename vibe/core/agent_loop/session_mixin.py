@@ -65,6 +65,7 @@ from vibe.core.agent_loop._errors import (
 )
 from vibe.core.agent_loop._init_guard import requires_init
 from vibe.core.agent_loop.backend_mixin import AgentLoopBackendMixin
+from vibe.core.baseline_scaling import BaselineTier
 from vibe.core.compaction import (
     build_extractive_summary,
     build_summary_input,
@@ -149,6 +150,10 @@ class AgentLoopSessionMixin(AgentLoopBackendMixin):
     async def initialize_experiments(self) -> Any: ...
 
     async def refresh_system_prompt(self) -> None: ...
+
+    def _current_baseline_tier(self) -> BaselineTier: ...
+
+    _system_prompt_tier: BaselineTier
 
     def emit_new_session_telemetry(self) -> None: ...
 
@@ -588,6 +593,7 @@ class AgentLoopSessionMixin(AgentLoopBackendMixin):
         )
         self.skill_manager = SkillManager(lambda: self.config)
 
+        self._system_prompt_tier = self._current_baseline_tier()
         new_system_prompt = get_universal_system_prompt(
             self.tool_manager,
             self.config,
@@ -596,6 +602,7 @@ class AgentLoopSessionMixin(AgentLoopBackendMixin):
             scratchpad_dir=self.scratchpad_dir,
             headless=self._headless,
             experiment_manager=self.experiment_manager,
+            tier=self._system_prompt_tier,
         )
 
         self.messages.update_system_prompt(new_system_prompt)

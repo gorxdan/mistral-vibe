@@ -24,17 +24,46 @@ if TYPE_CHECKING:
     from vibe.core.tools.manager import ToolManager
 
 
+def _trim_description(description: str, max_chars: int) -> str:
+    """Shorten a tool description to its first sentence, falling back to a
+    max_chars word-boundary cut. Keeps the lead intent the model needs to choose
+    the tool while dropping the elaboration that bloats a small-window prompt.
+    """
+    text = description.strip()
+    first_period = text.find(". ")
+    if 0 <= first_period < max_chars:
+        return text[: first_period + 1]
+    if len(text) <= max_chars:
+        return text
+    head = text[:max_chars]
+    space = head.rfind(" ")
+    return (head[:space] if space > 0 else head).rstrip() + "…"
+
+
 class APIToolFormatHandler:
     @property
     def name(self) -> str:
         return "api"
 
-    def get_available_tools(self, tool_manager: ToolManager) -> list[AvailableTool]:
+    def get_available_tools(
+        self,
+        tool_manager: ToolManager,
+        *,
+        trim_descriptions: bool = False,
+        description_max_chars: int = 220,
+    ) -> list[AvailableTool]:
+        # The param schema (names/types/enums) is always sent verbatim — only the
+        # prose description is shortened, and only on small-window tiers, so tool
+        # selection stays accurate while the per-turn schema cost drops.
         return [
             AvailableTool(
                 function=AvailableFunction(
                     name=tool_class.get_name(),
-                    description=tool_class.description,
+                    description=_trim_description(
+                        tool_class.description, description_max_chars
+                    )
+                    if trim_descriptions
+                    else tool_class.description,
                     parameters=tool_class.get_parameters(),
                 )
             )

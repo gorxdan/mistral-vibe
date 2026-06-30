@@ -34,6 +34,7 @@ from vibe.core.agent_loop._limits import (
 from vibe.core.agent_loop.session_mixin import AgentLoopSessionMixin
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
+from vibe.core.baseline_scaling import BaselineTier, baseline_tier_for
 from vibe.core.cache_store import InMemoryVibeCodeCacheStore, VibeCodeCacheStore
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.experiments import ExperimentManager
@@ -292,6 +293,7 @@ class AgentLoop(AgentLoopSessionMixin):
         self._files_read_reconstructed: bool = False
         self._agents_md_fingerprint: str | None = None
 
+        self._system_prompt_tier = self._current_baseline_tier()
         system_prompt = get_universal_system_prompt(
             self.tool_manager,
             self.config,
@@ -300,6 +302,7 @@ class AgentLoop(AgentLoopSessionMixin):
             include_git_status=not defer_heavy_init,
             scratchpad_dir=self.scratchpad_dir,
             headless=self._headless,
+            tier=self._system_prompt_tier,
         )
         system_message = LLMMessage(role=Role.SYSTEM, content=system_prompt)
         self.messages = MessageList(initial=[system_message], observer=message_observer)
@@ -460,6 +463,7 @@ class AgentLoop(AgentLoopSessionMixin):
         try:
             self._ensure_remote_registries()
             self.tool_manager.integrate_all(raise_on_mcp_failure=True)
+            self._system_prompt_tier = self._current_baseline_tier()
             system_prompt = get_universal_system_prompt(
                 self.tool_manager,
                 self.config,
@@ -468,6 +472,7 @@ class AgentLoop(AgentLoopSessionMixin):
                 scratchpad_dir=self.scratchpad_dir,
                 headless=self._headless,
                 experiment_manager=self.experiment_manager,
+                tier=self._system_prompt_tier,
             )
             self.messages.update_system_prompt(system_prompt)
         except Exception as exc:
@@ -707,7 +712,24 @@ class AgentLoop(AgentLoopSessionMixin):
             self.tool_manager.set_connector_registry(self.connector_registry)
 
     @requires_init
-    async def refresh_system_prompt(self) -> None:
+    def _current_baseline_tier(self) -> BaselineTier:
+        try:
+            model = self.effective_model()
+        except Exception:
+            try:
+                model = self.config.get_active_model()
+            except Exception:
+                return BaselineTier.LARGE
+        return baseline_tier_for(model, self.config)
+
+    def _sync_baseline_tier(self) -> None:
+        # Rebuild messages[0] when the effective model's baseline tier drifts
+        # (e.g. a failover from a small-window to a large-window model), so the
+        # system prompt, tool schemas, and tier all describe the same model.
+        tier = self._current_baseline_tier()
+        if tier == self._system_prompt_tier:
+            return
+        self._system_prompt_tier = tier
         system_prompt = get_universal_system_prompt(
             self.tool_manager,
             self.config,
@@ -716,6 +738,21 @@ class AgentLoop(AgentLoopSessionMixin):
             scratchpad_dir=self.scratchpad_dir,
             headless=self._headless,
             experiment_manager=self.experiment_manager,
+            tier=tier,
+        )
+        self.messages.update_system_prompt(system_prompt)
+
+    async def refresh_system_prompt(self) -> None:
+        self._system_prompt_tier = self._current_baseline_tier()
+        system_prompt = get_universal_system_prompt(
+            self.tool_manager,
+            self.config,
+            self.skill_manager,
+            self.agent_manager,
+            scratchpad_dir=self.scratchpad_dir,
+            headless=self._headless,
+            experiment_manager=self.experiment_manager,
+            tier=self._system_prompt_tier,
         )
         self.messages.update_system_prompt(system_prompt)
 
@@ -1338,6 +1375,9 @@ class AgentLoop(AgentLoopSessionMixin):
             self._response_too_long_attempts = 0
             while not should_break_loop:
                 self._is_user_prompt_call = False
+                # Re-tier the system prompt BEFORE the shapers measure context,
+                # so a mid-turn failover's baseline is reflected this turn.
+                self._sync_baseline_tier()
                 result = await self.middleware_pipeline.run_before_turn(
                     self._get_context()
                 )
