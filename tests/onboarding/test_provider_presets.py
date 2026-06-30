@@ -288,7 +288,9 @@ def test_openrouter_preset_resolvable_by_provider_name() -> None:
 def test_bedrock_preset_present_and_keyed() -> None:
     preset = next((p for p in PRESETS if p.key == "bedrock"), None)
     assert preset is not None
-    assert preset.requires_api_key is True
+    # Bearer token OR the AWS SDK credential chain both work, so the preset is
+    # not strictly key-gated (no API-key entry screen forced on install).
+    assert preset.requires_api_key is False
     assert preset.provider is not None
     assert preset.model is not None
 
@@ -301,11 +303,11 @@ def test_bedrock_preset_provider_config() -> None:
     assert provider.api_base == "https://bedrock-mantle.us-east-1.api.aws/anthropic"
     assert provider.api_key_env_var == "AWS_BEARER_TOKEN_BEDROCK"
     # Bedrock Mantle speaks the Anthropic Messages API; the adapter pins the
-    # region-aware base URL from `region`.
+    # region-aware base URL from `region` and falls back to AWS SDK SigV4.
     assert provider.api_style == "bedrock-anthropic"
     assert provider.region == "us-east-1"
-    # Bedrock's model catalog lives behind a separate endpoint; models are
-    # added in config.
+    # Bedrock's model catalog lives behind a separate endpoint; the open Claude
+    # lineup ships as static extra_models instead of via discovery.
     assert provider.discover_models is False
 
 
@@ -313,14 +315,29 @@ def test_bedrock_preset_model_config() -> None:
     preset = next(p for p in PRESETS if p.key == "bedrock")
     model = preset.model
     assert model is not None
-    # anthropic.<family> model ID; Haiku 4.5 is the default open model.
-    assert model.name == "anthropic.claude-haiku-4-5"
+    # Default to the flagship Opus 4.8; the rest ship as extra_models.
+    assert model.name == "anthropic.claude-opus-4-8"
     assert model.provider == "bedrock"
     assert model.alias == "bedrock"
     assert model.supports_images is True
 
 
-def test_apply_bedrock_preset_persists_provider_and_model(
+def test_bedrock_preset_ships_open_claude_lineup() -> None:
+    preset = next(p for p in PRESETS if p.key == "bedrock")
+    names = {m.name for m in preset.extra_models}
+    # The four open Bedrock Claude models are reachable from the picker without
+    # hand-editing config.
+    assert names == {
+        "anthropic.claude-haiku-4-5",
+        "anthropic.claude-opus-4-7",
+        "anthropic.claude-fable-5",
+    }
+    for model in preset.extra_models:
+        assert model.provider == "bedrock"
+        assert model.supports_images is True
+
+
+def test_apply_bedrock_preset_persists_provider_and_models(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-test-key")
@@ -335,6 +352,14 @@ def test_apply_bedrock_preset_persists_provider_and_model(
     provider_names = {p["name"] for p in config["providers"]}
     assert "bedrock" in provider_names
     assert config["active_model"] == preset.model.alias
+    # All extra_models persist so a user can switch from the picker.
+    persisted_aliases = {m["alias"] for m in config["models"]}
+    assert {
+        "bedrock",
+        "bedrock-haiku",
+        "bedrock-opus-4-7",
+        "bedrock-fable",
+    } <= persisted_aliases
 
 
 def test_bedrock_preset_resolvable_by_provider_name() -> None:

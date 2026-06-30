@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 
 from vibe.core.config import ProviderConfig
 from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.bedrock import (
+    BEDROCK_MANTLE_SERVICE,
     DEFAULT_BEDROCK_REGION,
     BedrockAnthropicAdapter,
+    BedrockAuthError,
     build_bedrock_base_url,
 )
 from vibe.core.llm.backend.generic import _get_adapter
@@ -152,3 +155,55 @@ class TestGetAdapterRegistration:
         first = _get_adapter("bedrock-anthropic")
         second = _get_adapter("bedrock-anthropic")
         assert first is second
+
+
+class _FakeFrozenCreds:
+    def __init__(self) -> None:
+        self.access_key = "AKIATEST"
+        self.secret_key = "secret"
+        self.token = "sessiontok"
+
+
+class _FakeCreds:
+    def get_frozen_credentials(self) -> _FakeFrozenCreds:
+        return _FakeFrozenCreds()
+
+
+class TestSigV4Fallback:
+    def test_no_api_key_signs_with_sigv4(self, adapter, provider) -> None:
+        # No api_key -> adapter must produce a SigV4 Authorization header.
+        with patch(
+            "vibe.core.llm.backend.bedrock._BEDROCK_CREDS.resolve",
+            return_value=_FakeCreds(),
+        ):
+            req = adapter.prepare_request(_params(provider, api_key=None))
+
+        assert req.base_url == "https://bedrock-mantle.eu-west-1.api.aws/anthropic"
+        auth = req.headers.get("Authorization", "")
+        assert auth.startswith("AWS4-HMAC-SHA256 ")
+        # Session token forwarded; region + service come from the SigV4 scope.
+        assert req.headers.get("X-Amz-Security-Token") == "sessiontok"
+        # Bearer path header must NOT be present.
+        assert "x-api-key" not in req.headers
+
+    def test_no_api_key_no_credentials_raises(self, adapter, provider) -> None:
+        with patch(
+            "vibe.core.llm.backend.bedrock._BEDROCK_CREDS.resolve", return_value=None
+        ):
+            with pytest.raises(BedrockAuthError, match="No Amazon Bedrock credentials"):
+                adapter.prepare_request(_params(provider, api_key=None))
+
+    def test_api_key_takes_precedence_over_sigv4(self, adapter, provider) -> None:
+        # When the bearer token resolves, x-api-key is set and SigV4 is skipped.
+        with patch(
+            "vibe.core.llm.backend.bedrock._BEDROCK_CREDS.resolve", return_value=None
+        ) as mock_resolve:
+            req = adapter.prepare_request(_params(provider, api_key="bearer-tok"))
+
+        assert req.headers.get("x-api-key") == "bearer-tok"
+        assert not req.headers.get("Authorization", "").startswith("AWS4-HMAC-SHA256")
+        # SigV4 resolution never runs on the bearer path.
+        mock_resolve.assert_not_called()
+
+    def test_bedrock_mantle_service_constant(self) -> None:
+        assert BEDROCK_MANTLE_SERVICE == "bedrock-mantle"

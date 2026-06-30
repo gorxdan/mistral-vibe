@@ -334,33 +334,58 @@ PRESETS: list[ProviderPreset] = [
         key="bedrock",
         label="Amazon Bedrock (Claude)",
         description=(
-            "Claude models on Amazon Bedrock via the Mantle endpoint, using an "
-            "AWS Bedrock API key (AWS_BEARER_TOKEN_BEDROCK). Runs on "
-            "AWS-managed infrastructure; other open Claude models (Opus, Fable) "
-            "are selectable by editing the model name in config."
+            "Claude models on Amazon Bedrock via the Mantle endpoint (Anthropic "
+            "Messages API, standard SSE). Authenticate either with a Bedrock API "
+            "key (AWS_BEARER_TOKEN_BEDROCK) or the standard AWS SDK credential "
+            "chain (aws configure / SSO / IAM roles). Runs on AWS-managed "
+            "infrastructure."
         ),
-        requires_api_key=True,
+        # Bearer token OR AWS SDK chain both work; not strictly key-required.
+        requires_api_key=False,
         help_url=BEDROCK_HELP_URL,
         provider=ProviderConfig(
             name="bedrock",
             api_base=BEDROCK_API_BASE,
             api_key_env_var="AWS_BEARER_TOKEN_BEDROCK",
             # Bedrock Mantle speaks the Anthropic Messages API; the adapter pins
-            # the region-aware base URL from `region`.
+            # the region-aware base URL from `region` and falls back to AWS SDK
+            # SigV4 when the bearer token is absent.
             api_style="bedrock-anthropic",
             region="us-east-1",
             # Bedrock's model catalog lives behind a separate ListFoundationModels
-            # endpoint with its own auth; users add models in config.
+            # endpoint; the open Claude lineup ships as static extra_models below.
             discover_models=False,
         ),
         model=ModelConfig(
-            # anthropic.<family> model IDs; default to the open Haiku 4.5. Other
-            # open models: anthropic.claude-opus-4-8, anthropic.claude-fable-5.
-            name="anthropic.claude-haiku-4-5",
+            # anthropic.<family> model IDs; default to Opus 4.8, the flagship.
+            name="anthropic.claude-opus-4-8",
             provider="bedrock",
             alias="bedrock",
             supports_images=True,
             auto_compact_threshold=200000,
+        ),
+        extra_models=(
+            ModelConfig(
+                name="anthropic.claude-haiku-4-5",
+                provider="bedrock",
+                alias="bedrock-haiku",
+                supports_images=True,
+                auto_compact_threshold=200000,
+            ),
+            ModelConfig(
+                name="anthropic.claude-opus-4-7",
+                provider="bedrock",
+                alias="bedrock-opus-4-7",
+                supports_images=True,
+                auto_compact_threshold=200000,
+            ),
+            ModelConfig(
+                name="anthropic.claude-fable-5",
+                provider="bedrock",
+                alias="bedrock-fable",
+                supports_images=True,
+                auto_compact_threshold=200000,
+            ),
         ),
     ),
     ProviderPreset(
