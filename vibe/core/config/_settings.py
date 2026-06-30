@@ -1059,6 +1059,18 @@ def resolve_api_key(env_key: str) -> str | None:
         return None
     value = os.environ.get(env_key)
     if value:
+        from vibe.core.utils.keyring import get_api_key_from_keyring
+
+        try:
+            keyring_value = get_api_key_from_keyring(env_key)
+        except Exception:
+            keyring_value = None
+        if keyring_value and keyring_value != value:
+            logger.warning(
+                "%s in your environment shadows the keyring value; the env var is used. "
+                "If auth fails, unset the env var to fall back to the keyring key.",
+                env_key,
+            )
         return value
     from vibe.core.utils.keyring import get_api_key_from_keyring
 
