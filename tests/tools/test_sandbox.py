@@ -59,6 +59,21 @@ def test_detect_backend_skips_unusable_bwrap(monkeypatch) -> None:
         _detect_auto_backend.cache_clear()
 
 
+def test_sandbox_e2e_marker_predicate_tracks_usable_backend(monkeypatch) -> None:
+    # The conftest marker predicate reuses detect_backend, so an unshare/none
+    # result (userns unavailable) disables sandbox e2e; bwrap/seatbelt enables it.
+    from tests.conftest import sandbox_e2e_available
+
+    monkeypatch.setattr(
+        "vibe.core.tools.sandbox.detect_backend", lambda override="auto": "unshare"
+    )
+    assert sandbox_e2e_available() is False
+    monkeypatch.setattr(
+        "vibe.core.tools.sandbox.detect_backend", lambda override="auto": "bwrap"
+    )
+    assert sandbox_e2e_available() is True
+
+
 def test_detect_backend_uses_bwrap_when_probe_succeeds(monkeypatch) -> None:
     import vibe.core.tools.sandbox as sbmod
 
@@ -626,10 +641,9 @@ def test_isolated_subagent_still_scrubs_git_gh_creds(tmp_path, monkeypatch) -> N
 # End-to-end (requires a real sandbox backend, e.g. bwrap on Linux)           #
 # --------------------------------------------------------------------------- #
 
-_HAS_BACKEND = detect_backend("auto") != "none"
-_skip_no_backend = pytest.mark.skipif(
-    not _HAS_BACKEND, reason="no sandbox backend (bwrap/sandbox-exec) available"
-)
+# The conftest `sandbox_e2e` marker skips these when user namespaces are
+# unavailable (reusing the bwrap capability probe), which un-reds CI runners.
+_skip_no_backend = pytest.mark.sandbox_e2e
 
 
 async def _run(bash: Bash, command: str):

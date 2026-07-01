@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from tests.mock.utils import collect_result
+from vibe.core.config import SandboxConfig
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory
 
 if TYPE_CHECKING:
@@ -769,12 +770,14 @@ async def test_stop_reaps_grandchild_process_tree(tmp_path):
     The command writes a grandchild's PID to a file, then waits. After stop,
     that PID must no longer be alive.
     """
-    bash = _bash()
+    # Sandbox disabled: bwrap --unshare-pid namespaces $$, so the reported PID
+    # would be an in-namespace number that _pid_alive checks on the host (false RED).
+    bash = _bash(BashToolConfig(sandbox=SandboxConfig(enabled=False)))
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
     pid_file = tmp_path / "child.pid"
-    # sh -c 'sleep 300 & echo $! > pidfile; wait' — the sleep is a grandchild
-    # of the backgrounded shell. `wait` keeps the shell alive until killed.
+    # sh -c 'sleep 300 & echo $$ > pidfile; wait' — the inner sh is a grandchild
+    # of the backgrounded shell. `wait` keeps it alive until killed.
     cmd = f"sh -c 'sleep 300 & echo $$ > {pid_file} ; wait' "
 
     result = await collect_result(

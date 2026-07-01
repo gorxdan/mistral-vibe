@@ -405,7 +405,11 @@ class BashToolConfig(BaseToolConfig):
     )
     sandbox: SandboxConfig = Field(
         default_factory=SandboxConfig,
-        description="OS-level sandbox for spawned commands (opt-in; default off).",
+        description=(
+            "OS-level sandbox for spawned commands (default on where a backend "
+            "exists): confines writes to the workspace and keeps .git hooks and "
+            "config read-only. Set enabled=false to opt out."
+        ),
     )
 
 
