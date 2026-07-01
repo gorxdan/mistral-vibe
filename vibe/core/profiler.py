@@ -100,22 +100,30 @@ def stop_and_print() -> None:
     from vibe.core.paths import LOG_DIR
 
     # LOG_DIR, not CWD: profiling a session must not litter the user's project.
+    # Fail-soft on report I/O: a broken LOG_DIR must not crash act() nor leave a
+    # stopped profiler stuck in _state (which would refuse every later section).
     out_dir = LOG_DIR.path
-    out_dir.mkdir(parents=True, exist_ok=True)
-    output_path = out_dir / f"{_state.label}-profile.html"
-    output_path.write_text(_state.profiler.output_html(), encoding="utf-8")
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_path = out_dir / f"{_state.label}-profile.html"
+        output_path.write_text(_state.profiler.output_html(), encoding="utf-8")
 
-    text_path = out_dir / f"{_state.label}-profile.txt"
-    text_path.write_text(_state.profiler.output_text(color=False), encoding="utf-8")
-
-    print(
-        f"\n[profiler:{_state.label}] Saved HTML profile to {output_path.resolve()}",
-        file=sys.stderr,
-    )
-    print(
-        f"[profiler:{_state.label}] Saved text profile to {text_path.resolve()}",
-        file=sys.stderr,
-    )
+        text_path = out_dir / f"{_state.label}-profile.txt"
+        text_path.write_text(_state.profiler.output_text(color=False), encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"\n[profiler:{_state.label}] could not write reports under {out_dir}: {exc}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"\n[profiler:{_state.label}] Saved HTML profile to {output_path.resolve()}",
+            file=sys.stderr,
+        )
+        print(
+            f"[profiler:{_state.label}] Saved text profile to {text_path.resolve()}",
+            file=sys.stderr,
+        )
     print(_state.profiler.output_text(color=True), file=sys.stderr)
 
     _state.profiler = None

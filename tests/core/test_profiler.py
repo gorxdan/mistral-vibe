@@ -50,3 +50,18 @@ def test_nested_section_keeps_outer_profile_running(
     assert profiler._state.profiler is None
     assert (LOG_DIR.path / "outer-profile.html").exists()
     assert not (LOG_DIR.path / "inner-profile.html").exists()
+
+
+def test_stop_and_print_fail_soft_when_log_dir_unwritable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("pyinstrument")
+    monkeypatch.setenv("VIBE_PROFILE", "1")
+    LOG_DIR.path.parent.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.path.write_text("not a dir", encoding="utf-8")
+
+    assert profiler.start("doomed")
+    profiler.stop_and_print()
+
+    assert profiler._state.profiler is None
+    assert profiler._state.label == "default"
