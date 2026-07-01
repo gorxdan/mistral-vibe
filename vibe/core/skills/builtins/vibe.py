@@ -204,7 +204,7 @@ extra_headers = { "X-Custom-Header" = "value" }  # optional per-provider HTTP he
 name = "mistral-vibe-cli-latest"
 provider = "mistral"
 alias = "mistral-medium-3.5"
-temperature = 1.0
+temperature = 1.0                 # or "omit": never send it (for providers that reject it)
 input_price = 1.5
 output_price = 7.5
 thinking = "high"                 # "off", "low", "medium", "high", "max"

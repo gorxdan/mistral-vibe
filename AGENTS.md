@@ -6,13 +6,13 @@ Layout: `vibe/core` (engine: agent loop, tools, LLM backends, config, workflows,
 
 ## Rules
 
-Retrieval over recall | Read before edit (runtime-enforced) | Always `uv run` (never bare `python`/`pip`; git through `uv run` for pre-commit) | Strict pyright (no `# type: ignore`, no `# noqa`, no relative imports; fix at source) | Modern Python (built-in generics + `|` unions, `match`/`case`, early returns, `pathlib.Path`/`anyio.Path`, f-strings, never `Optional`/`Union`/`Dict`/`List`) | Pydantic (`model_validate`/validators, `ConfigDict(extra=...)` always set, no `from_sdk`) | Tests (`pytest`+`pytest-asyncio`+`respx`, no docstrings, autouse fixtures) | Lint (`ruff check --fix . && ruff format .` after changes, `pyright` gates CI) | File I/O (`read_safe`/`read_safe_async`/`write_safe`/`atomic_replace` over raw `Path.read_text()`/`.write_text()`/`open()`) | Logging (`logger.error("msg %s", val)` not f-strings, `raise ... from e`)
+Retrieval over recall | Read before edit (runtime-enforced) | Always `uv run` (never bare `python`/`pip`; git through `uv run` for pre-commit) | Pyright standard mode, pinned in pyproject (no `# type: ignore`, no `# noqa`, no relative imports; fix at source) | Modern Python (built-in generics + `|` unions, `match`/`case`, early returns, `pathlib.Path`/`anyio.Path`, f-strings, never `Optional`/`Union`/`Dict`/`List`) | Pydantic (`model_validate`/validators, `ConfigDict(extra=...)` always set, no `from_sdk`) | Tests (`pytest`+`pytest-asyncio`+`respx`, no docstrings, autouse fixtures) | Lint (`ruff check --fix . && ruff format .` after changes, `pyright` gates CI) | File I/O (`read_safe`/`read_safe_async`/`write_safe`/`atomic_replace` over raw `Path.read_text()`/`.write_text()`/`open()`) | Logging (`logger.error("msg %s", val)` not f-strings, `raise ... from e`)
 
 ## Commands
 
 `uv run vibe` | `uv run vibe-acp` — entry points
 `uv run pytest` — full suite (parallel via xdist)
-`uv run pyright` — strict type check
+`uv run pyright` — type check (standard mode, pinned in pyproject)
 `uv run ruff check --fix . && uv run ruff format .` — after every change
 `uv run pre-commit run --all-files` — full lint pass
 
