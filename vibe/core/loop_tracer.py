@@ -29,23 +29,17 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 import logging
-from logging.handlers import RotatingFileHandler
 import os
-from pathlib import Path
 import time
 import traceback
 from typing import Any
 
-from vibe.core.logger import StructuredLogFormatter, logger
-from vibe.core.paths import LOG_DIR
-from vibe.core.utils import utc_now
+from vibe.core.logger import logger
+from vibe.core.perf_log import perf_handler
 
 _ORIG_RUN: Any = None
 
-# High-volume loop-block events go to a dedicated per-PID perf log so concurrent
-# instrumented sessions do not interleave in the shared vibe.log (and do not race
-# its RotatingFileHandler on rollover). propagate=False keeps these events out of
-# the shared file entirely; the tracer attaches a PID-scoped handler in install().
+# propagate=False: loop-block events go only to the shared per-PID perf log.
 _perf_log = logging.getLogger("vibe.perf.loop")
 _perf_log.propagate = False
 _perf_log.setLevel(logging.WARNING)
@@ -55,28 +49,6 @@ _THRESHOLD = 0.0
 # installed; report() summarizes so a benchmark can emit a clean top-N rather
 # than grepping occurrence lines.
 _BLOCKERS: dict[tuple[str, str], list[float]] = defaultdict(lambda: [0.0, 0.0])
-# Rotation caps each file's size, but every instrumented PID adds a new file to
-# LOG_DIR forever — reap by mtime at install, like the other startup sweepers.
-_PERF_LOG_MAX_AGE_S = 7 * 24 * 3600
-
-
-def _gc_stale_perf_logs(
-    directory: Path, max_age_s: float = _PERF_LOG_MAX_AGE_S
-) -> None:
-    """Delete ``vibe-perf-*`` logs (incl. rotation backups) older than *max_age_s*.
-
-    Best effort — never raises.
-    """
-    try:
-        cutoff = time.time() - max_age_s
-        for f in directory.glob("vibe-perf-*.log*"):
-            try:
-                if f.stat().st_mtime < cutoff:
-                    f.unlink()
-            except OSError:
-                pass
-    except Exception:
-        logger.debug("perf log gc skipped", exc_info=True)
 
 
 def _basename(path: str) -> str:
@@ -163,24 +135,13 @@ def install() -> None:
     if threshold <= 0:
         return
 
-    _gc_stale_perf_logs(LOG_DIR.path)
-    # PID-scoped handler (attributable concurrent sessions), attached before any
-    # global mutation: an unopenable LOG_DIR must no-op, not crash act().
-    # Timestamp in the name so a reused PID never appends to a dead session's log.
-    ts = utc_now().strftime("%Y%m%d_%H%M%S")
-    perf_path = LOG_DIR.path / f"vibe-perf-{ts}-{os.getpid()}.log"
-    try:
-        perf_path.parent.mkdir(parents=True, exist_ok=True)
-        handler = RotatingFileHandler(
-            perf_path, maxBytes=10 * 1024 * 1024, backupCount=2, encoding="utf-8"
-        )
-    except OSError:
-        logger.warning(
-            "perf loop-block tracer disabled: cannot open %s", perf_path, exc_info=True
-        )
+    # Handler before any global mutation: a bad LOG_DIR must no-op, not crash act().
+    handler = perf_handler()
+    if handler is None:
+        logger.warning("perf loop-block tracer disabled: perf log unavailable")
         return
-    handler.setFormatter(StructuredLogFormatter())
-    _perf_log.addHandler(handler)
+    if handler not in _perf_log.handlers:
+        _perf_log.addHandler(handler)
 
     # Debug mode populates Handle._source_traceback (scheduled-from attribution).
     # slow_callback_duration is raised to infinity so asyncio's own built-in
@@ -199,7 +160,7 @@ def install() -> None:
     logger.info(
         "perf loop-block tracer installed: threshold=%.0fms perf-log=%s",
         threshold * 1000.0,
-        perf_path,
+        handler.baseFilename,
     )
 
 
