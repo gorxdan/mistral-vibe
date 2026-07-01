@@ -391,7 +391,8 @@ class AgentLoopSessionMixin(AgentLoopBackendMixin):
         self.stats.trigger_listeners()
 
         try:
-            active_model = self.config.get_active_model()
+            # /clear keeps a live failover override -> price the effective model.
+            active_model = self.effective_model()
             self.stats.update_pricing(
                 active_model.input_price, active_model.output_price
             )
@@ -625,7 +626,9 @@ class AgentLoopSessionMixin(AgentLoopBackendMixin):
             self.stats.reset_context_state()
 
         try:
-            active_model = self.config.get_active_model()
+            # Effective-model rule: a surviving failover override, not the
+            # configured primary, is what requests route to.
+            active_model = self.effective_model()
             self.stats.update_pricing(
                 active_model.input_price, active_model.output_price
             )

@@ -387,3 +387,57 @@ async def test_switch_agent_drops_override_whose_provider_left_config() -> None:
     assert loop._tried_fallback_aliases == set()
     model, _ = loop._resolve_active_model()
     assert model.alias == "primary", "orphaned override dropped -> config default"
+
+
+def _priced_model(
+    alias: str, *, input_price: float, output_price: float, threshold: int
+) -> ModelConfig:
+    return ModelConfig(
+        name=alias,
+        provider="local",
+        alias=alias,
+        temperature=0.2,
+        thinking="off",
+        input_price=input_price,
+        output_price=output_price,
+        auto_compact_threshold=threshold,
+    )
+
+
+class TestStatsFollowFailover:
+    def test_activate_model_updates_pricing_and_bounds(self) -> None:
+        primary = _priced_model(
+            "primary", input_price=1.0, output_price=2.0, threshold=200_000
+        )
+        backup = _priced_model(
+            "backup", input_price=5.0, output_price=9.0, threshold=50_000
+        )
+        loop = _loop(["backup"], models=[primary, backup])
+        loop.stats.update_pricing(primary.input_price, primary.output_price)
+        loop.stats.update_model_bounds(primary.auto_compact_threshold)
+
+        loop._activate_model(backup)
+
+        assert loop.stats.input_price_per_million == backup.input_price
+        assert loop.stats.output_price_per_million == backup.output_price
+        assert loop.stats.auto_compact_threshold == backup.auto_compact_threshold
+
+    @pytest.mark.asyncio
+    async def test_reload_keeps_stats_on_surviving_failover_override(self) -> None:
+        primary = _priced_model(
+            "primary", input_price=1.0, output_price=2.0, threshold=200_000
+        )
+        backup = _priced_model(
+            "backup", input_price=5.0, output_price=9.0, threshold=50_000
+        )
+        loop = _loop(["backup"], models=[primary, backup])
+        loop._activate_model(backup)
+
+        # Same active model -> the override survives; stats must keep
+        # describing the model requests actually route to.
+        await loop.reload_with_initial_messages()
+
+        assert loop._fallback_model_override is not None
+        assert loop.stats.input_price_per_million == backup.input_price
+        assert loop.stats.output_price_per_million == backup.output_price
+        assert loop.stats.auto_compact_threshold == backup.auto_compact_threshold

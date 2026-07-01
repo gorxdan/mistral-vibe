@@ -10,6 +10,7 @@ Implicit dependencies on the host class (AgentLoop):
 Attributes (set by AgentLoop.__init__):
     backend                  (BackendLike — settable; _activate_model reassigns it)
     rate_limit_callback      (RateLimitCallback | None)
+    stats                    (AgentStats — _activate_model re-prices it)
 
 Properties (defined on AgentLoop):
     config                   (VibeConfig)
@@ -27,6 +28,7 @@ from vibe.core.llm.backend.factory import create_backend
 from vibe.core.llm.types import BackendLike
 from vibe.core.logger import logger
 from vibe.core.types import (
+    AgentStats,
     ContentFilterError,
     RateLimitCallback,
     RateLimitError,
@@ -49,6 +51,7 @@ class AgentLoopFailoverMixin:
     _tried_fallback_aliases: set[str]
     backend: BackendLike
     rate_limit_callback: RateLimitCallback | None
+    stats: AgentStats
 
     @property
     def config(self) -> VibeConfig: ...
@@ -80,6 +83,8 @@ class AgentLoopFailoverMixin:
         self.backend = create_backend(
             provider=provider, timeout=self.config.api_timeout
         )
+        self.stats.update_pricing(model.input_price, model.output_price)
+        self.stats.update_model_bounds(model.auto_compact_threshold)
         return model
 
     def _switchable_model_aliases(self) -> list[str]:
