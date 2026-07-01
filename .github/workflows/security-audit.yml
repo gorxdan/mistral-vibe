@@ -44,7 +44,7 @@ jobs:
 
       # --no-emit-project: the local file:// project has no PyPI advisory entry
       - name: Export locked requirements
-        run: uv export --format requirements.txt --all-extras --no-emit-project --no-hashes -o requirements-audit.txt
+        run: uv export --frozen --format requirements.txt --all-extras --no-emit-project --no-hashes -o requirements-audit.txt
 
       - name: Audit locked dependencies
         run: uvx pip-audit@2.10.1 --strict --no-deps --disable-pip -r requirements-audit.txt
