@@ -341,6 +341,54 @@ def test_resolve_sandbox_bwrap_seccomp_disabled(monkeypatch) -> None:
     assert "--seccomp" not in argv
 
 
+def test_resolve_sandbox_isolated_forces_confine(tmp_path, monkeypatch) -> None:
+    # An isolated subagent (VIBE_ISOLATED_WORKTREE_ROOT set) OS-confines bash to
+    # its worktree even when the global sandbox is DISABLED — mirroring the file
+    # tools' enforce_isolated_confine.
+    import os
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+    )
+    bash = _bash(SandboxConfig(enabled=False))  # user never enabled the sandbox
+    argv, _profile, _env, fd = bash._resolve_sandbox(None, "echo hi")
+    try:
+        assert argv is not None  # forced on by isolation
+        bind_i = argv.index("--bind")
+        assert argv[bind_i + 1] == str(wt.resolve())  # worktree is the write root
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def test_resolve_sandbox_isolated_no_outside_widening(tmp_path, monkeypatch) -> None:
+    # Confinement is the point: an out-of-tree dir referenced by the command is
+    # NOT added as a writable bind (unlike the non-isolated permission-widened path).
+    import os
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+    )
+    bash = _bash(SandboxConfig(enabled=False))
+    argv, _profile, _env, fd = bash._resolve_sandbox(
+        None, f"echo x > {outside}/f.txt"
+    )
+    try:
+        assert argv is not None
+        assert str(outside.resolve()) not in argv  # never widened out of the worktree
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def test_scrub_env_drops_secrets_keeps_allowlist() -> None:
     base = {
         "PATH": "/bin",
@@ -453,6 +501,28 @@ async def test_seccomp_blocks_ptrace() -> None:
     off = _bash(SandboxConfig(enabled=True, backend="bwrap", seccomp=False))
     res_off = await _run(off, probe)
     assert res_off is not None and "ptrace_errno 0" in res_off.stdout  # allowed
+
+
+@_skip_no_backend
+@pytest.mark.asyncio
+async def test_isolated_bash_confined_even_when_sandbox_disabled(
+    tmp_path, monkeypatch
+) -> None:
+    # End-to-end: with the global sandbox OFF but VIBE_ISOLATED_WORKTREE_ROOT set,
+    # bash writes inside the worktree but is OS-blocked from writing outside it.
+    if detect_backend("auto") != "bwrap":
+        pytest.skip("worktree bind confinement needs the bwrap backend")
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    monkeypatch.chdir(wt)
+    monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
+    bash = _bash(SandboxConfig(enabled=False))  # not globally enabled
+
+    await _run(bash, "echo ok > inside.txt")
+    assert (wt / "inside.txt").exists()  # worktree write allowed
+
+    with pytest.raises(ToolError):  # /etc is read-only under bwrap
+        await _run(bash, "echo x > /etc/vibe_isolated_probe")
 
 
 @_skip_no_backend

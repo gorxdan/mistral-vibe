@@ -531,11 +531,10 @@ WORKER = AgentProfile(
         "that need to act, not just read. MUST run with isolation='worktree' in "
         "a workflow — it then executes as a `vibe -p` subprocess in its own git "
         "worktree. write/edit/read are auto-approved and confined to the "
-        "worktree (no headless skip, no parent-tree races); bash runs with the "
-        "worktree as cwd but is not path-confined, so enable the OS bash sandbox "
-        "when that matters. In a plain `task` call it routes to the same "
-        "isolated worktree under the tool's default, with write/edit/read "
-        "auto-approved there too."
+        "worktree (no headless skip, no parent-tree races); bash is auto-confined "
+        "to the worktree by the OS sandbox (bwrap) when one is available. In a "
+        "plain `task` call it routes to the same isolated worktree under the "
+        "tool's default, with write/edit/read auto-approved there too."
     ),
     # No enabled_tools override -> the full tool set (incl. MCP in the subprocess).
     safety=AgentSafety.NEUTRAL,

@@ -43,7 +43,7 @@ from vibe.core.tools.sandbox import (
 )
 from vibe.core.tools.sandbox_seccomp import build_seccomp_bpf, open_seccomp_fd
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
-from vibe.core.tools.utils import is_path_within_workdir
+from vibe.core.tools.utils import is_path_within_workdir, isolated_worktree_root
 from vibe.core.types import ToolResultEvent, ToolStreamEvent
 from vibe.core.utils import is_windows, kill_async_subprocess
 from vibe.core.utils.io import decode_safe
@@ -681,17 +681,31 @@ class Bash(
         self, ctx: InvokeContext | None, command: str
     ) -> tuple[list[str] | None, Path | None, dict[str, str], int | None]:
         sb = self.config.sandbox
-        if not sb.enabled:
+        iso_root = isolated_worktree_root()
+        if not sb.enabled and iso_root is None:
             return None, None, _get_base_env(), None
 
-        write_roots: list[Path] = [Path.cwd()]
+        if iso_root is not None:
+            # An isolated subagent must OS-confine bash to its worktree — the same
+            # boundary the file tools enforce via enforce_isolated_confine — even
+            # when the user never enabled the global sandbox. Scope writes to the
+            # worktree only (no _collect_outside_dirs widening: confinement is the
+            # point). Scrub the env only when the user actually opted into the
+            # sandbox; a bare isolation confine adds FS bounds without touching
+            # command env (git/gh creds keep working).
+            write_roots: list[Path] = [iso_root]
+            env = _build_sandbox_env(sb) if sb.enabled else _get_base_env()
+        else:
+            write_roots = [Path.cwd()]
+            write_roots += [Path(d) for d in sb.write_dirs]
+            # Widen writes to any out-of-tree dir the command references — those
+            # were already surfaced to (and approved by) the permission gate.
+            for d in _collect_outside_dirs(_extract_commands(command)):
+                write_roots.append(Path(d))
+            env = _build_sandbox_env(sb)
+
         if ctx is not None and ctx.scratchpad_dir is not None:
             write_roots.append(Path(ctx.scratchpad_dir))
-        write_roots += [Path(d) for d in sb.write_dirs]
-        # Widen writes to any out-of-tree dir the command references — those were
-        # already surfaced to (and approved by) the permission gate.
-        for d in _collect_outside_dirs(_extract_commands(command)):
-            write_roots.append(Path(d))
 
         backend = detect_backend(sb.backend)
         if backend == "none":
@@ -706,9 +720,8 @@ class Bash(
                     "bash sandbox enabled but no backend available; running unsandboxed"
                 )
                 _sandbox_unavailable_warned = True
-            return None, None, _get_base_env(), None
+            return None, None, env, None
 
-        env = _build_sandbox_env(sb)
         spec = SandboxSpec(
             write_roots=write_roots,
             allow_network=sb.allow_network,
@@ -717,7 +730,7 @@ class Bash(
         )
         argv, _name, profile = build_sandbox_command(spec, backend)
         if argv is None:
-            return None, None, _get_base_env(), None
+            return None, None, env, None
         seccomp_fd = self._maybe_seccomp_fd(sb, backend, argv)
         return argv, profile, env, seccomp_fd
 

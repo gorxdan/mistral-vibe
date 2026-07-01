@@ -893,8 +893,8 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
 - **editor**: workflow-only subagent for surgical file edits (read/grep/lsp + write/edit,
   no bash/MCP). Requires `isolation="worktree"`.
 - **worker**: full-capability workflow subagent (all builtin tools + MCP, no allowlist).
-  Requires `isolation="worktree"`; bash runs with the worktree as cwd but is not
-  path-confined — enable the OS bash sandbox when confinement matters.
+  Requires `isolation="worktree"`; bash is auto-confined to the worktree by the OS
+  sandbox (bwrap) when one is available.
 - **grunt**: write-capable subagent for bulk/mechanical work (renames, codemods,
   repetitive edits). Full tool surface like worker but routes onto a cheap model
   by default (`grunt_model`, falling back to `subagent_model` then the host) and
