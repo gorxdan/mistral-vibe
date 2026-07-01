@@ -270,11 +270,9 @@ async def test_safety_judge_fails_closed_on_backend_error(monkeypatch) -> None:
 async def test_judge_forwards_model_temperature_verbatim(
     monkeypatch, model_temperature: float | None
 ) -> None:
-    # The judge forwards the model's temperature unchanged — no override layer.
-    # temperature=None keeps the wire-omission contract (kimi rejects an explicit
-    # value), so the request must carry None, not the CompletionRequest default
-    # of 0.2. Regression for the dropped SafetyJudgeConfig.temperature override
-    # that replaced None with a concrete value and 400'd every kimi judge call.
+    # The judge forwards the model's temperature unchanged. temperature=None
+    # keeps the wire-omission contract (kimi rejects an explicit value), so the
+    # request must carry None, not the CompletionRequest default of 0.2.
     model = ModelConfig(
         name="kimi-k2.7-code",
         provider="kimi",
@@ -309,10 +307,21 @@ async def test_judge_forwards_model_temperature_verbatim(
         "vibe.core.tools.safety_judge.BACKEND_FACTORY", {"generic": _CapturingBackend}
     )
 
+    # Regression: the user's TOML config had safety_judge.temperature = 1.0 (the
+    # stale value that 400'd every kimi judge call). Load via model_validate —
+    # the real config-loading path — so the stale key is dropped by extra="ignore"
+    # and the model's temperature wins. On the old code the field existed, the
+    # override populated to 1.0, the None case would have sent 1.0, and this test
+    # would have failed.
+    config = SafetyJudgeConfig.model_validate({
+        "enabled": True,
+        "model": model.alias,
+        "temperature": 1.0,
+    })
     judge = SafetyJudge(
         model=model,
         provider=fake_provider,  # type: ignore[arg-type]
-        config=SafetyJudgeConfig(enabled=True, model=model.alias),
+        config=config,
     )
     verdict = await judge.judge("bash", '{"command":"ls"}', ["network access"])
     assert verdict.safe is True
