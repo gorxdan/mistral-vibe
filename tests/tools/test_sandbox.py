@@ -35,6 +35,52 @@ def test_detect_backend_windows_is_none(monkeypatch) -> None:
     _detect_auto_backend.cache_clear()  # avoid polluting later tests with "none"
 
 
+def test_detect_backend_skips_unusable_bwrap(monkeypatch) -> None:
+    # Existence isn't enough: when namespace creation is denied (Docker/CI) a
+    # failing probe must make auto detection skip bwrap like a missing backend.
+    import vibe.core.tools.sandbox as sbmod
+
+    monkeypatch.setattr(sbmod, "is_windows", lambda: False)
+    monkeypatch.setattr(sbmod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sbmod.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"bwrap", "unshare"} else None,
+    )
+
+    class _FailedProbe:
+        returncode = 1
+
+    monkeypatch.setattr(sbmod.subprocess, "run", lambda *a, **k: _FailedProbe())
+    _detect_auto_backend.cache_clear()
+    try:
+        assert detect_backend("auto") == "unshare"  # unusable bwrap skipped
+    finally:
+        _detect_auto_backend.cache_clear()
+
+
+def test_detect_backend_uses_bwrap_when_probe_succeeds(monkeypatch) -> None:
+    import vibe.core.tools.sandbox as sbmod
+
+    monkeypatch.setattr(sbmod, "is_windows", lambda: False)
+    monkeypatch.setattr(sbmod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sbmod.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"bwrap", "unshare"} else None,
+    )
+
+    class _OkProbe:
+        returncode = 0
+
+    monkeypatch.setattr(sbmod.subprocess, "run", lambda *a, **k: _OkProbe())
+    _detect_auto_backend.cache_clear()
+    try:
+        assert detect_backend("auto") == "bwrap"
+    finally:
+        _detect_auto_backend.cache_clear()
+
+
 def test_bwrap_argv_network_and_binds(tmp_path) -> None:
     spec = SandboxSpec(write_roots=[tmp_path], allow_network=False, extra_args=["--x"])
     argv, name, profile = build_sandbox_command(spec, "bwrap")
@@ -116,6 +162,20 @@ def test_bwrap_git_hooks_stay_readonly(tmp_path) -> None:
     ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
     assert f"{r}/.git/hooks" in ro_targets
     assert f"{r}/.git" not in ro_targets  # whole gitdir not read-only
+
+
+def test_bwrap_skips_nonexistent_write_root(tmp_path) -> None:
+    # A write_root that doesn't exist must be skipped, not passed to bwrap --bind
+    # (a missing source explodes with "Can't find source path").
+    real = tmp_path / "real"
+    real.mkdir()
+    missing = tmp_path / "does-not-exist"
+
+    spec = SandboxSpec(write_roots=[real, missing], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    assert str(real.resolve()) in argv
+    assert str(missing.resolve()) not in argv  # skipped, not bound
 
 
 def test_bwrap_git_config_stays_readonly(tmp_path) -> None:

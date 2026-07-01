@@ -19,6 +19,7 @@ import functools
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -70,6 +71,41 @@ class SandboxSpec:
     extra_args: list[str] = field(default_factory=list)
 
 
+def _bwrap_usable() -> bool:
+    """Whether bwrap can actually create namespaces here, not just exist.
+
+    Docker/CI often deny unprivileged user-namespace creation, so a present
+    bwrap dies with a cryptic 'bwrap:' error on every invocation. Probe once
+    with a trivial sandbox; the result is cached by _detect_auto_backend.
+    """
+    exe = shutil.which("bwrap")
+    if exe is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                exe,
+                "--ro-bind",
+                "/",
+                "/",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "--unshare-pid",
+                "--",
+                "true",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
 @functools.lru_cache(maxsize=1)
 def _detect_auto_backend() -> str:
     """Resolve the auto-detected sandbox backend. Process-stable, so cached.
@@ -80,8 +116,9 @@ def _detect_auto_backend() -> str:
         return "none"
     if sys.platform == "darwin":
         return "sandbox-exec" if shutil.which("sandbox-exec") else "none"
-    # Linux / other POSIX
-    if shutil.which("bwrap"):
+    # Linux / other POSIX. bwrap must be usable, not merely present: a present
+    # but namespace-denied bwrap is treated exactly like a missing backend.
+    if _bwrap_usable():
         return "bwrap"
     if shutil.which("unshare"):
         return "unshare"
@@ -143,10 +180,14 @@ def scrub_env(base: dict[str, str], passthrough: list[str]) -> dict[str, str]:
 
 
 def _canonical_roots(roots: list[Path]) -> list[str]:
+    # Skip roots that aren't existing dirs: bwrap --bind on a missing source
+    # aborts the whole sandbox with "Can't find source path".
     seen: set[str] = set()
     for r in roots:
         try:
-            seen.add(str(Path(r).expanduser().resolve()))
+            resolved = Path(r).expanduser().resolve()
+            if resolved.is_dir():
+                seen.add(str(resolved))
         except (OSError, RuntimeError):
             continue
     return sorted(seen)
