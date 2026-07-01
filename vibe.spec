@@ -30,9 +30,9 @@ datas += [("vibe/core/tools/builtins/*.py", "vibe/core/tools/builtins")]
 datas += collect_data_files(
     "vibe.core.skills.builtins", includes=["*.py"], include_py_files=True
 )
-# Ship the installed dist-info so importlib.metadata.version("chaton") resolves
+# Ship the installed dist-info so importlib.metadata.version("mistral-vibe") resolves
 # in the frozen binary (hatch-vcs derives the version at build time).
-datas += copy_metadata("chaton")
+datas += copy_metadata("mistral-vibe")
 
 a = Analysis(
     ["vibe/cli/entrypoint.py"],

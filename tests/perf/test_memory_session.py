@@ -1,4 +1,4 @@
-"""Memory profiling harness for a long chaton session (headless).
+"""Memory profiling harness for a long Mistral Vibe session (headless).
 
 Drives the real ``VibeApp`` (TUI widgets, agent loop, message history) over
 many turns using an in-process fake backend, and reports per-turn memory growth

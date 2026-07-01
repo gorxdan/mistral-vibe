@@ -1,8 +1,8 @@
-"""CPU profiling harness for a chaton session (headless).
+"""CPU profiling harness for a Mistral Vibe session (headless).
 
 Drives the real ``VibeApp`` over many turns with an in-process fake backend and
 profiles the per-turn work (event handling, Textual render/dispatch, tool
-dispatch) — i.e. the CPU chaton spends around the model call, excluding network
+dispatch) — i.e. the CPU Mistral Vibe spends around the model call, excluding network
 and model time. Two profilers:
 
   * pyinstrument (default) — statistical wall-clock sampler; writes a flamegraph

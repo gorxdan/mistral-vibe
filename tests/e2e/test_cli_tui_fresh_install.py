@@ -31,7 +31,7 @@ def _build_wheel(dist_dir: Path) -> Path:
         cwd=TESTS_ROOT.parent,
         check=True,
     )
-    wheels = sorted(dist_dir.glob("chaton-*.whl"))
+    wheels = sorted(dist_dir.glob("mistral_vibe-*.whl"))
     assert len(wheels) == 1
     return wheels[0]
 

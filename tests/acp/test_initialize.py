@@ -25,7 +25,9 @@ from vibe.core.types import Backend
 from vibe.setup.onboarding.context import OnboardingContext
 
 BROWSER_AUTH_NAME = "Sign in through Mistral AI Studio"
-BROWSER_AUTH_DESCRIPTION = "Sign into Chaton through your Mistral AI Studio account."
+BROWSER_AUTH_DESCRIPTION = (
+    "Sign into Mistral Vibe through your Mistral AI Studio account."
+)
 
 
 def build_mistral_provider() -> ProviderConfig:
@@ -71,7 +73,7 @@ class TestACPInitialize:
             ),
         )
         assert response.agent_info == Implementation(
-            name="chaton", title="Chaton", version=__version__
+            name="@mistralai/mistral-vibe", title="Mistral Vibe", version=__version__
         )
 
         assert response.auth_methods is not None
@@ -171,7 +173,7 @@ class TestACPInitialize:
             ),
         )
         assert response.agent_info == Implementation(
-            name="chaton", title="Chaton", version=__version__
+            name="@mistralai/mistral-vibe", title="Mistral Vibe", version=__version__
         )
 
         assert response.auth_methods is not None
@@ -185,7 +187,7 @@ class TestACPInitialize:
         auth_method = response.auth_methods[1]
         assert auth_method.id == "vibe-setup"
         assert auth_method.name == "Register your API Key"
-        assert auth_method.description == "Register your API Key inside Chaton"
+        assert auth_method.description == "Register your API Key inside Mistral Vibe"
         assert auth_method.args is not None
         assert auth_method.args[-1:] == ["--setup"]
         assert auth_method.field_meta is not None
@@ -194,7 +196,7 @@ class TestACPInitialize:
         assert "command" in terminal_auth_meta
         assert "args" in terminal_auth_meta
         assert terminal_auth_meta["args"][-1:] == ["--setup"]
-        assert terminal_auth_meta["label"] == "Chaton Setup"
+        assert terminal_auth_meta["label"] == "Mistral Vibe Setup"
 
     @pytest.mark.asyncio
     async def test_initialize_with_delegated_browser_auth(

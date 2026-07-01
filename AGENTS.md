@@ -69,7 +69,7 @@ In Cursor / Pyright the "Add import" quick fix is missing — use the workspace 
 
 ## Versioning
 
-hatch-vcs derives the version from `vX.Y.Z` git tags (`dynamic = ["version"]` in `pyproject.toml`). Never hand-edit a version literal: no `version =` in pyproject, no `__version__ =` string in `vibe/__init__.py` (it reads `importlib.metadata.version("chaton")`). A tag = a release; commits past a tag auto-produce a PEP 440 dev version. Cut releases with `uv run scripts/release.py <major|minor|patch>` (creates the tag); dev runs reflect the last `uv sync`.
+hatch-vcs derives the version from `vX.Y.Z` git tags (`dynamic = ["version"]` in `pyproject.toml`). Never hand-edit a version literal: no `version =` in pyproject, no `__version__ =` string in `vibe/__init__.py` (it reads `importlib.metadata.version("mistral-vibe")`). A tag = a release; commits past a tag auto-produce a PEP 440 dev version. Cut releases with `uv run scripts/release.py <major|minor|patch>` (creates the tag); dev runs reflect the last `uv sync`.
 
 ## Workflows & Teams
 

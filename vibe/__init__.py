@@ -8,7 +8,7 @@ VIBE_ROOT = Path(__file__).parent
 
 def _resolve_version() -> str:
     try:
-        return version("chaton")
+        return version("mistral-vibe")
     except PackageNotFoundError:
         return "0.0.0+unknown"
 

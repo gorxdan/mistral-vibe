@@ -336,8 +336,8 @@ def _show_update_prompt(
             sys.exit(0)
         case UpdatePromptResult.UPDATED:
             rprint(
-                f"[green]✔ Chaton was updated from {__version__} to "
-                f"{latest_version}.[/]\n  Run [bold]chaton[/] to start using the "
+                f"[green]✔ Mistral Vibe was updated from {__version__} to "
+                f"{latest_version}.[/]\n  Run [bold]vibe[/] to start using the "
                 "new version."
             )
             sys.exit(0)

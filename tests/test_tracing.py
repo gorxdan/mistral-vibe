@@ -182,7 +182,7 @@ class TestJsonlSpanExporter:
         # single-line mock hid the bug where the exporter wrote the blob raw and
         # broke the one-record-per-line JSONL contract.
         span.to_json.return_value = json.dumps(
-            {"name": "invoke_agent chaton"}, indent=4
+            {"name": "invoke_agent mistral-vibe"}, indent=4
         )
         exporter = _JsonlSpanExporter(tmp_path / "traces.jsonl")
 
@@ -191,7 +191,7 @@ class TestJsonlSpanExporter:
         assert result == SpanExportResult.SUCCESS
         lines = (tmp_path / "traces.jsonl").read_text().splitlines()
         assert len(lines) == 2
-        assert json.loads(lines[0])["name"] == "invoke_agent chaton"
+        assert json.loads(lines[0])["name"] == "invoke_agent mistral-vibe"
 
     def test_export_failure_returns_success(self, tmp_path) -> None:
         from vibe.core.tracing import _JsonlSpanExporter
@@ -213,12 +213,12 @@ class TestAgentSpan:
 
         assert len(_otel_provider.spans) == 1
         span = _otel_provider.spans[0]
-        assert span.name == "invoke_agent chaton"
+        assert span.name == "invoke_agent mistral-vibe"
         assert span.status.status_code == StatusCode.OK
         attrs = dict(span.attributes)
         assert attrs["gen_ai.operation.name"] == "invoke_agent"
         assert attrs["gen_ai.provider.name"] == "mistral_ai"
-        assert attrs["gen_ai.agent.name"] == "chaton"
+        assert attrs["gen_ai.agent.name"] == "mistral-vibe"
         assert attrs["gen_ai.request.model"] == "devstral"
         assert attrs["gen_ai.conversation.id"] == "s1"
 
@@ -249,7 +249,7 @@ class TestAgentSpan:
             pass
 
         attrs = dict(_otel_provider.spans[0].attributes)
-        assert attrs["gen_ai.agent.name"] == "chaton"
+        assert attrs["gen_ai.agent.name"] == "mistral-vibe"
         assert attrs["vibe.agent.profile"] == "Explore"
 
     @pytest.mark.asyncio
@@ -477,12 +477,12 @@ class TestIntegration:
         assert tool.parent.span_id == agent.context.span_id
 
         # -- Agent span: name, status, and every attribute set by agent_span() --
-        assert agent.name == "invoke_agent chaton"
+        assert agent.name == "invoke_agent mistral-vibe"
         assert agent.status.status_code == StatusCode.OK
         agent_attrs = dict(agent.attributes)
         assert agent_attrs["gen_ai.operation.name"] == "invoke_agent"
         assert agent_attrs["gen_ai.provider.name"] == "mistral_ai"
-        assert agent_attrs["gen_ai.agent.name"] == "chaton"
+        assert agent_attrs["gen_ai.agent.name"] == "mistral-vibe"
         assert agent_attrs["gen_ai.request.model"] == "mistral-vibe-cli-latest"
         assert agent_attrs["gen_ai.conversation.id"] == agent_loop.session_id
 

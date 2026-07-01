@@ -73,7 +73,7 @@ class WebSearchScreen(OnboardingScreen):
                         classes="onboarding-heading",
                     )
                     yield NoMarkupStatic(
-                        "How should Chaton search the web? You can change this later "
+                        "How should Mistral Vibe search the web? You can change this later "
                         "in config.",
                         id="web-search-subtitle",
                     )

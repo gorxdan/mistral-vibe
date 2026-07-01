@@ -40,7 +40,7 @@ class TestBuiltinSkills:
         # The summary is the one line the model sees at decision time, so it
         # must carry the high-value trigger words a config/MCP/setup question
         # actually contains. Without it the index line advertised only the
-        # "Chaton" codename and shared zero vocabulary with such queries.
+        # "Mistral Vibe" codename and shared zero vocabulary with such queries.
         summary = BUILTIN_SKILLS["vibe"].summary
         assert summary is not None
         lowered = summary.lower()

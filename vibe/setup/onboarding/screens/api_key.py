@@ -24,7 +24,7 @@ from vibe.setup.onboarding.base import OnboardingScreen
 from vibe.setup.onboarding.provider_presets import apply_provider_config
 
 MISTRAL_PROVIDER_NAME = "mistral"
-MISTRAL_PROVIDER_HELP_NAME = "Chaton"
+MISTRAL_PROVIDER_HELP_NAME = "Mistral Vibe"
 CONFIG_DOCS_URL = (
     "https://github.com/mistralai/mistral-vibe?tab=readme-ov-file#configuration"
 )
@@ -70,7 +70,7 @@ class ApiKeyScreen(OnboardingScreen):
 
     def _compose_config_docs(self) -> ComposeResult:
         yield NoMarkupStatic(
-            "Learn more about Chaton configurations", id="config-docs-label"
+            "Learn more about Mistral Vibe configurations", id="config-docs-label"
         )
         yield Link(CONFIG_DOCS_URL, url=CONFIG_DOCS_URL, id="config-docs-link")
 

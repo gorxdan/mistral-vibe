@@ -29,8 +29,8 @@ from vibe.core.logger import logger
 from vibe.core.paths import TRACE_LOG_DIR
 from vibe.core.utils import utc_now
 
-VIBE_TRACER_NAME = "chaton"
-VIBE_AGENT_NAME = "chaton"
+VIBE_TRACER_NAME = "mistral_vibe"
+VIBE_AGENT_NAME = "mistral-vibe"
 
 _PROVIDER_ALIASES = {
     "mistral": gen_ai_attributes.GenAiProviderNameValues.MISTRAL_AI.value,
@@ -355,7 +355,7 @@ async def agent_span(
         gen_ai_attributes.GEN_AI_OPERATION_NAME: gen_ai_attributes.GenAiOperationNameValues.INVOKE_AGENT.value,
         gen_ai_attributes.GEN_AI_AGENT_NAME: VIBE_AGENT_NAME,
     }
-    # gen_ai.agent.name stays the app identity ("chaton"); the actual profile
+    # gen_ai.agent.name stays the app identity ("mistral-vibe"); the actual profile
     # (host vs a subagent like "Explore"/"worker") rides a separate attribute so
     # in-process subagent turns are attributable in a trace.
     if agent_profile:

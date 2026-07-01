@@ -352,7 +352,7 @@ class TestBuildOAuthProvider:
         )
         md = provider.context.client_metadata
         assert md.scope == "read write"
-        assert md.client_name == "Chaton"
+        assert md.client_name == "Mistral Vibe"
         assert md.token_endpoint_auth_method == "none"
         assert md.grant_types == ["authorization_code", "refresh_token"]
         assert md.redirect_uris is not None
@@ -776,7 +776,7 @@ class TestNonInteractiveHandlers:
     ) -> None:
         srv = _oauth_server(name="demo")
         provider = build_non_interactive_provider(srv)
-        assert provider.context.client_metadata.client_name == "Chaton"
+        assert provider.context.client_metadata.client_name == "Mistral Vibe"
 
 
 def _mcp_responses(

@@ -167,7 +167,7 @@ class LanguageServer:
         assert self._conn is not None
         params: dict[str, Any] = {
             "processId": os.getpid(),
-            "clientInfo": {"name": "chaton", "version": __version__},
+            "clientInfo": {"name": "mistral-vibe", "version": __version__},
             "locale": "en",
             "rootUri": self.config.root_uri,
             "capabilities": self._client_capabilities(),

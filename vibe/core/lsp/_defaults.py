@@ -18,10 +18,10 @@ class ServerPreset:
     """A ready-made language server definition users can opt into.
 
     ``install_hint`` is the human-facing command a user runs to put the binary
-    on PATH. ``install_command`` is the machine-runnable argv chaton's
+    on PATH. ``install_command`` is the machine-runnable argv Mistral Vibe's
     bootstrap installer executes after consent, when its first token matches a
     supported channel (npm/pip/go/rustup/brew/dotnet/gem). An empty
-    ``install_command`` (or one whose channel chaton does not bootstrap) falls
+    ``install_command`` (or one whose channel Mistral Vibe does not bootstrap) falls
     back to hint-only — the user installs manually.
     """
 

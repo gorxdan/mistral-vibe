@@ -38,17 +38,17 @@ UrlCallback = Callable[[str], None]
 
 _SUCCESS_BODY = (
     b"<!DOCTYPE html><html><head><meta charset='utf-8'>"
-    b"<title>Chaton - signed in</title></head>"
+    b"<title>Mistral Vibe - signed in</title></head>"
     b"<body style='font-family:system-ui;text-align:center;margin-top:4rem'>"
     b"<h1>Signed in to ChatGPT</h1>"
-    b"<p>You can close this tab and return to Chaton.</p></body></html>"
+    b"<p>You can close this tab and return to Mistral Vibe.</p></body></html>"
 )
 _ERROR_BODY = (
     b"<!DOCTYPE html><html><head><meta charset='utf-8'>"
-    b"<title>Chaton - sign-in failed</title></head>"
+    b"<title>Mistral Vibe - sign-in failed</title></head>"
     b"<body style='font-family:system-ui;text-align:center;margin-top:4rem'>"
     b"<h1>Sign-in failed</h1>"
-    b"<p>No authorization code was returned. Return to Chaton and try again.</p>"
+    b"<p>No authorization code was returned. Return to Mistral Vibe and try again.</p>"
     b"</body></html>"
 )
 

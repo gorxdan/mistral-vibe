@@ -49,7 +49,7 @@ def _interactive_splash(enabled: bool) -> Iterator[None]:
     from rich.console import Console
 
     console = Console()
-    console.print(_gradient_banner("Chaton"), style=None, highlight=False)
+    console.print(_gradient_banner("Mistral Vibe"), style=None, highlight=False)
     console.print(f"[dim]{_SPLASH_MASCOT}[/]")
     with console.status("[dim]Loading harness…[/]", spinner="dots"):
         yield
@@ -57,7 +57,7 @@ def _interactive_splash(enabled: bool) -> Iterator[None]:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the Chaton interactive CLI",
+        description="Run the Mistral Vibe interactive CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Environment variables:\n"
@@ -234,7 +234,7 @@ def _handle_zai_callback(uri: str) -> None:
     except ZaiSignInError as err:
         rprint(f"[red]Could not capture Z.ai callback: {err}[/]")
         sys.exit(1)
-    rprint("[green]Z.ai callback captured. Return to Chaton setup.[/]")
+    rprint("[green]Z.ai callback captured. Return to Mistral Vibe setup.[/]")
     sys.exit(0)
 
 

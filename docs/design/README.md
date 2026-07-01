@@ -1,6 +1,6 @@
 # Architecture Gap-Closure Design Specs
 
-Design specs for closing the remaining gaps between vibe/chaton and the
+Design specs for closing the remaining gaps between Mistral Vibe and the
 Claude Code reference architecture. Each spec was produced by a deep design
 pass over the real codebase and then adversarially verified against it
 (feasibility, integration points, wrong assumptions). All six came back

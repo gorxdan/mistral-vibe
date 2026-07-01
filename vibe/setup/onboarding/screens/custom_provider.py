@@ -86,7 +86,7 @@ class CustomProviderScreen(OnboardingScreen):
                         classes="onboarding-heading",
                     )
                     yield NoMarkupStatic(
-                        "Point Chaton at any OpenAI-compatible /chat/completions"
+                        "Point Mistral Vibe at any OpenAI-compatible /chat/completions"
                         " endpoint.",
                         id="custom-provider-subtitle",
                     )

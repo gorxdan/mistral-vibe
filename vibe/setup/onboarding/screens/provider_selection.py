@@ -72,7 +72,7 @@ class ProviderSelectionScreen(OnboardingScreen):
                         classes="onboarding-heading",
                     )
                     yield NoMarkupStatic(
-                        "Pick the model provider you want to use with Chaton.",
+                        "Pick the model provider you want to use with Mistral Vibe.",
                         id="provider-selection-subtitle",
                     )
                     with Vertical(id="provider-selection-options"):

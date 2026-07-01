@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# post-commit: reinstall the global `chaton` tool so the `chaton` command
+# post-commit: reinstall the global `mistral-vibe` tool so the `vibe` command
 # reflects the latest commit. Tracked under .githooks/ and activated via
 # `git config core.hooksPath .githooks`, so the automation is version-controlled
 # and shared across clones (each clone must set core.hooksPath once).
@@ -12,7 +12,7 @@
 #     (setsid), so the commit returns immediately and never blocks the agent.
 #   - flock-serialized, non-blocking: the tool venv is shared; if a reinstall is
 #     already in flight this run skips (the in-flight one covers the tree).
-#   - source-guarded: only reinstalls when `chaton` is installed FROM this repo
+#   - source-guarded: only reinstalls when `mistral-vibe` is installed FROM this repo
 #     (per the uv receipt); a PyPI install or different fork is never clobbered.
 #   - non-fatal: failures are logged to the cache file; git ignores the exit code.
 
@@ -20,25 +20,25 @@ set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 
-LOCK_DIR="${HOME}/.cache/chaton-reinstall"
+LOCK_DIR="${HOME}/.cache/mistral-vibe-reinstall"
 mkdir -p "$LOCK_DIR" 2>/dev/null || exit 0
-export CHATON_REINSTALL_LOCK="$LOCK_DIR/reinstall.lock"
-export CHATON_REINSTALL_LOG="$LOCK_DIR/reinstall.log"
-export CHATON_REINSTALL_REPO="$REPO_ROOT"
-export CHATON_REINSTALL_RECEIPT="${HOME}/.local/share/uv/tools/chaton/uv-receipt.toml"
+export VIBE_REINSTALL_LOCK="$LOCK_DIR/reinstall.lock"
+export VIBE_REINSTALL_LOG="$LOCK_DIR/reinstall.log"
+export VIBE_REINSTALL_REPO="$REPO_ROOT"
+export VIBE_REINSTALL_RECEIPT="${HOME}/.local/share/uv/tools/mistral-vibe/uv-receipt.toml"
 
 setsid bash -c '
-    exec 9>"$CHATON_REINSTALL_LOCK"
+    exec 9>"$VIBE_REINSTALL_LOCK"
     flock -n 9 || exit 0
-    [[ -f "$CHATON_REINSTALL_RECEIPT" ]] || exit 0
-    grep -q "directory = \"$CHATON_REINSTALL_REPO\"" "$CHATON_REINSTALL_RECEIPT" 2>/dev/null || exit 0
-    if uv tool install --force "$CHATON_REINSTALL_REPO" >>"$CHATON_REINSTALL_LOG" 2>&1; then
-        echo "[post-commit] chaton reinstalled to latest" >>"$CHATON_REINSTALL_LOG"
+    [[ -f "$VIBE_REINSTALL_RECEIPT" ]] || exit 0
+    grep -q "directory = \"$VIBE_REINSTALL_REPO\"" "$VIBE_REINSTALL_RECEIPT" 2>/dev/null || exit 0
+    if uv tool install --force "$VIBE_REINSTALL_REPO" >>"$VIBE_REINSTALL_LOG" 2>&1; then
+        echo "[post-commit] mistral-vibe reinstalled to latest" >>"$VIBE_REINSTALL_LOG"
     else
-        echo "[post-commit] chaton reinstall failed" >>"$CHATON_REINSTALL_LOG"
+        echo "[post-commit] mistral-vibe reinstall failed" >>"$VIBE_REINSTALL_LOG"
     fi
 ' </dev/null >/dev/null 2>&1 &
 disown 2>/dev/null || true
 
-echo "[post-commit] chaton reinstall started in background" >&2
+echo "[post-commit] mistral-vibe reinstall started in background" >&2
 exit 0

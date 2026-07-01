@@ -513,7 +513,7 @@ class VibeApp(App):
         self._terminal_notifier = terminal_notifier or TextualNotificationAdapter(
             self,
             get_enabled=lambda: self.config.enable_notifications,
-            default_title="Chaton",
+            default_title="Mistral Vibe",
         )
         self._narrator_manager: NarratorManagerPort = (
             narrator_manager or self._make_default_narrator_manager()
@@ -5407,7 +5407,7 @@ class VibeApp(App):
             return
         with self.suspend():
             rprint(
-                "Chaton has been suspended. Run [bold cyan]fg[/bold cyan] to bring Chaton back."
+                "Mistral Vibe has been suspended. Run [bold cyan]fg[/bold cyan] to bring Mistral Vibe back."
             )
             os.kill(os.getpid(), signal.SIGTSTP)
 
@@ -5453,7 +5453,7 @@ def run_textual_ui(
 ) -> None:
     from vibe.cli.stderr_guard import stderr_guard
 
-    update_notifier = GitHubUpdateGateway(owner="dan-campos", repository="chaton")
+    update_notifier = GitHubUpdateGateway(owner="gorxdan", repository="mistral-vibe")
     plan_offer_gateway = HttpWhoAmIGateway(base_url=agent_loop.config.console_base_url)
     vscode_extension_promo_repository = FileSystemVscodeExtensionPromoRepository()
     vscode_extension_promo = VscodeExtensionPromo(

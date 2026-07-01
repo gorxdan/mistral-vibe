@@ -1,8 +1,8 @@
 # Proxy Setup
 
-Chaton supports proxy configuration for environments that require network traffic to go through a proxy server. Proxy settings are shared between the CLI and ACP — configuring them in one will apply to both.
+Mistral Vibe supports proxy configuration for environments that require network traffic to go through a proxy server. Proxy settings are shared between the CLI and ACP — configuring them in one will apply to both.
 
-## Using Chaton CLI
+## Using Mistral Vibe CLI
 
 Configure proxy settings through the interactive form:
 
@@ -22,7 +22,7 @@ Once all variables are configured, **restart the conversation** for changes to t
 
 ## Supported Environment Variables
 
-Chaton uses [httpx](https://www.python-httpx.org/environment_variables/) for HTTP requests and supports the same environment variables:
+Mistral Vibe uses [httpx](https://www.python-httpx.org/environment_variables/) for HTTP requests and supports the same environment variables:
 
 | Variable | Description |
 |----------|-------------|

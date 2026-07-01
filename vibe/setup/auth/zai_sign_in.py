@@ -18,7 +18,7 @@ ZAI_OAUTH_CLIENT_ID: Final = "client_P8X5CMWmlaRO9gyO-KSqtg"
 ZAI_OAUTH_REDIRECT_URI: Final = "zcode://zai-auth/callback"
 ZAI_BIZ_HOST: Final = "https://api.z.ai"
 ZAI_LOGIN_URL: Final = f"{ZAI_BIZ_HOST}/api/auth/z/login"
-ZAI_API_KEY_NAME: Final = "chaton-api-key"
+ZAI_API_KEY_NAME: Final = "mistral-vibe-api-key"
 _DEFAULT_ORG_MARKER: Final = "默认机构"
 _DEFAULT_PROJECT_MARKER: Final = "默认项目"
 

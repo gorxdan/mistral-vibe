@@ -108,7 +108,7 @@ jobs:
           # `uv version` errors on dynamic (hatch-vcs) versions; read the version
           # that hatch-vcs baked into the installed dist-info instead, and fail
           # hard if it is empty so artifacts are never mislabeled without a version.
-          version="$(uv run python -c "from importlib.metadata import version; print(version('chaton'))")"
+          version="$(uv run python -c "from importlib.metadata import version; print(version('mistral-vibe'))")"
           if [ -z "$version" ]; then
             echo "::error::Could not resolve package version" >&2
             exit 1

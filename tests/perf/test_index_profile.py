@@ -90,7 +90,7 @@ def test_index_profile() -> None:
     root = _resolve_root()
 
     # Warm up via the real driver: get_index blocks until the background
-    # rebuild completes, exercising the same path chaton uses.
+    # rebuild completes, exercising the same path Mistral Vibe uses.
     indexer = FileIndexer()
     try:
         warm = indexer.get_index(root)

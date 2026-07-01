@@ -1,6 +1,6 @@
 ---
-name: Chaton
-description: "Download, install, and run Chaton"
+name: Mistral Vibe
+description: "Download, install, and run Mistral Vibe"
 author: Mistral AI
 
 inputs:
@@ -40,13 +40,13 @@ runs:
     - name: Install uv
       uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
-    - name: Install Chaton
+    - name: Install Mistral Vibe
       shell: bash
       working-directory: ${{ github.action_path }}
       run: |
         uv sync --locked --all-extras --dev
 
-    - name: Run Chaton
+    - name: Run Mistral Vibe
       id: run-mistral-vibe
       shell: bash
       working-directory: ${{ github.action_path }}

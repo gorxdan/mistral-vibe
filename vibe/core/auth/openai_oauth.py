@@ -62,8 +62,8 @@ OPENAI_CHATGPT_API_BASE: Final = "https://chatgpt.com/backend-api/codex"
 # Identity headers the ChatGPT backend expects. originator must be a known Codex
 # originator; the backend may reject unknown values, so we present as codex_cli_rs.
 # Overridable for forward-compat when OpenAI bumps the accepted version.
-OPENAI_ORIGINATOR: Final = os.getenv("CHATON_CODEX_ORIGINATOR", "codex_cli_rs")
-OPENAI_CODEX_VERSION: Final = os.getenv("CHATON_CODEX_VERSION", "0.142.0")
+OPENAI_ORIGINATOR: Final = os.getenv("VIBE_CODEX_ORIGINATOR", "codex_cli_rs")
+OPENAI_CODEX_VERSION: Final = os.getenv("VIBE_CODEX_VERSION", "0.142.0")
 
 
 class OpenAIOAuthError(RuntimeError): ...
@@ -72,7 +72,7 @@ class OpenAIOAuthError(RuntimeError): ...
 class OpenAINotAuthenticatedError(OpenAIOAuthError):
     def __init__(self) -> None:
         super().__init__(
-            "Not signed in to ChatGPT. Run `chaton --setup` and pick "
+            "Not signed in to ChatGPT. Run `vibe --setup` and pick "
             "'Sign in with ChatGPT', or remove the openai-chatgpt provider."
         )
 
@@ -82,7 +82,7 @@ class OpenAIRefreshError(OpenAIOAuthError):
         self.reason = reason
         super().__init__(
             f"Could not refresh ChatGPT credentials: {reason}. "
-            "Run `chaton --setup` and sign in with ChatGPT again."
+            "Run `vibe --setup` and sign in with ChatGPT again."
         )
 
 

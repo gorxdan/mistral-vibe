@@ -2409,7 +2409,7 @@ def test_apply_verification_stamps_and_strips_stale_tags(tmp_path) -> None:
     store.upsert(
         MemoryEntry(
             metadata=MemoryMetadata(
-                id="m", title="t", tags=["known-issue", "test-failure", "chaton"]
+                id="m", title="t", tags=["known-issue", "test-failure", "vibe"]
             ),
             body="b",
         )
@@ -2423,14 +2423,14 @@ def test_apply_verification_stamps_and_strips_stale_tags(tmp_path) -> None:
     # Stale-signal tags removed; neutral tags kept.
     assert "known-issue" not in out.metadata.tags
     assert "test-failure" not in out.metadata.tags
-    assert "chaton" in out.metadata.tags
+    assert "vibe" in out.metadata.tags
 
 
 def test_apply_verification_keeps_tags_when_verified(tmp_path) -> None:
     store = MemoryStore(user_dir=tmp_path)
     store.upsert(
         MemoryEntry(
-            metadata=MemoryMetadata(id="m", title="t", tags=["known-issue", "chaton"]),
+            metadata=MemoryMetadata(id="m", title="t", tags=["known-issue", "vibe"]),
             body="b",
         )
     )
@@ -2439,7 +2439,7 @@ def test_apply_verification_keeps_tags_when_verified(tmp_path) -> None:
     assert out is not None
     assert out.metadata.verification_state.value == "verified"
     # A passing check does not rewrite history: tags stay.
-    assert out.metadata.tags == ["known-issue", "chaton"]
+    assert out.metadata.tags == ["known-issue", "vibe"]
 
 
 def test_apply_verification_returns_false_for_missing_id(tmp_path) -> None:

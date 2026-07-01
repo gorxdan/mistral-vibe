@@ -32,7 +32,7 @@ a = Analysis(
         # This is necessary because tools are dynamically called in vibe, meaning there is no static reference to those files
         ('vibe/core/tools/builtins/*.py', 'vibe/core/tools/builtins'),
         ('vibe/acp/tools/builtins/*.py', 'vibe/acp/tools/builtins'),
-    ] + copy_metadata("chaton"),  # dist-info so importlib.metadata.version() resolves
+    ] + copy_metadata("mistral-vibe"),  # dist-info so importlib.metadata.version() resolves
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},

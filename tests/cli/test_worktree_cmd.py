@@ -53,8 +53,7 @@ def test_list_shows_unmerged_branch(tmp_path: Path, capsys) -> None:
     assert run_worktree_command(["list"]) == 0
     out = capsys.readouterr().out
     assert "vibe/orphan" in out
-    assert "chaton worktree merge vibe/orphan" in out
-    assert "vibe worktree" not in out
+    assert "vibe worktree merge vibe/orphan" in out
 
 
 def test_list_empty(tmp_path: Path, capsys) -> None:

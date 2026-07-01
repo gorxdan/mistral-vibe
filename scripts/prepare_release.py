@@ -66,11 +66,11 @@ def get_version_from_pyproject() -> str:
     from importlib.metadata import PackageNotFoundError, version as md_version
 
     try:
-        return md_version("chaton")
+        return md_version("mistral-vibe")
     except PackageNotFoundError as e:
         raise ValueError(
             "Version not found: pyproject.toml has no static `version` field "
-            "and the chaton distribution is not installed"
+            "and the mistral-vibe distribution is not installed"
         ) from e
 
 

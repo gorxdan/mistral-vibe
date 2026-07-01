@@ -15,13 +15,13 @@ ZaiProtocolHandlerStatus = Literal[
     "installed",
     "already_configured",
     "existing_handler",
-    "missing_chaton",
+    "missing_vibe",
     "missing_xdg_mime",
     "unsupported",
     "failed",
 ]
 
-_DESKTOP_FILE_NAME = "chaton-zcode-handler.desktop"
+_DESKTOP_FILE_NAME = "vibe-zcode-handler.desktop"
 _MIME_TYPE = "x-scheme-handler/zcode"
 
 
@@ -39,9 +39,9 @@ def install_zai_protocol_handler() -> ZaiProtocolHandlerInstallResult:
     xdg_mime = shutil.which("xdg-mime")
     if xdg_mime is None:
         return ZaiProtocolHandlerInstallResult(status="missing_xdg_mime")
-    chaton = _resolve_chaton_binary()
-    if chaton is None:
-        return ZaiProtocolHandlerInstallResult(status="missing_chaton")
+    vibe = _resolve_vibe_binary()
+    if vibe is None:
+        return ZaiProtocolHandlerInstallResult(status="missing_vibe")
 
     current = _query_current_handler(xdg_mime)
     if current and current != _DESKTOP_FILE_NAME:
@@ -49,7 +49,7 @@ def install_zai_protocol_handler() -> ZaiProtocolHandlerInstallResult:
             status="existing_handler", handler=current
         )
 
-    desktop_path = _write_desktop_file(chaton)
+    desktop_path = _write_desktop_file(vibe)
     return _register_handler(xdg_mime, current, desktop_path)
 
 
@@ -83,12 +83,12 @@ def _register_handler(
     )
 
 
-def _resolve_chaton_binary() -> str | None:
+def _resolve_vibe_binary() -> str | None:
     argv0 = Path(sys.argv[0]).expanduser()
-    if argv0.exists() and argv0.name == "chaton":
+    if argv0.exists() and argv0.name == "vibe":
         return str(argv0.resolve())
-    if chaton := shutil.which("chaton"):
-        return chaton
+    if vibe := shutil.which("vibe"):
+        return vibe
     return None
 
 
@@ -110,11 +110,11 @@ def _query_current_handler(xdg_mime: str) -> str | None:
     return handler or None
 
 
-def _write_desktop_file(chaton: str) -> Path:
+def _write_desktop_file(vibe: str) -> Path:
     applications_dir = _applications_dir()
     applications_dir.mkdir(parents=True, exist_ok=True)
     desktop_path = applications_dir / _DESKTOP_FILE_NAME
-    write_safe(desktop_path, _desktop_entry(chaton))
+    write_safe(desktop_path, _desktop_entry(vibe))
     return desktop_path
 
 
@@ -122,12 +122,12 @@ def _applications_dir() -> Path:
     return _data_home() / "applications"
 
 
-def _desktop_entry(chaton: str) -> str:
+def _desktop_entry(vibe: str) -> str:
     return "\n".join([
         "[Desktop Entry]",
         "Type=Application",
-        "Name=Chaton Z.ai Callback",
-        f"Exec={_desktop_exec_arg(chaton)} --zai-callback %u",
+        "Name=Mistral Vibe Z.ai Callback",
+        f"Exec={_desktop_exec_arg(vibe)} --zai-callback %u",
         f"MimeType={_MIME_TYPE};",
         "NoDisplay=true",
         "Terminal=false",

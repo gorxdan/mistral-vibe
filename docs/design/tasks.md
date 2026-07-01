@@ -4,7 +4,7 @@
 
 ## Current state
 
-Chaton has five distinct "background thing" subsystems, each with bespoke state ownership, bespoke cancellation, and **no unified visibility or control**:
+Mistral Vibe has five distinct "background thing" subsystems, each with bespoke state ownership, bespoke cancellation, and **no unified visibility or control**:
 
 | Subsystem | State owner | Cancel path | TUI visibility |
 |---|---|---|---|

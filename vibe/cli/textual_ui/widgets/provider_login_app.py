@@ -687,7 +687,7 @@ class ProviderLoginApp(Container):
         self._detail_widget.update(message)
 
     def _update_browser_detail(self) -> None:
-        parts = ["Complete sign-in in your browser, then return to Chaton."]
+        parts = ["Complete sign-in in your browser, then return to Mistral Vibe."]
         if self._auth_url_visible and self._auth_url:
             parts.extend(["", self._auth_url])
         self._detail_widget.update("\n".join(parts))

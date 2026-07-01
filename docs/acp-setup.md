@@ -1,20 +1,20 @@
 # ACP Setup
 
-Chaton can be used in text editors and IDEs that support [Agent Client Protocol](https://agentclientprotocol.com/overview/clients). Chaton includes the `chaton-acp` tool.
-Once you have set up `chaton` with the API keys, you are ready to use `chaton-acp` in your editor. Below are the setup instructions for some editors that support ACP.
+Mistral Vibe can be used in text editors and IDEs that support [Agent Client Protocol](https://agentclientprotocol.com/overview/clients). Mistral Vibe includes the `vibe-acp` tool.
+Once you have set up `vibe` with the API keys, you are ready to use `vibe-acp` in your editor. Below are the setup instructions for some editors that support ACP.
 
 ## Zed
 
 For usage in Zed, we recommend using the [Mistral Vibe Zed's extension](https://zed.dev/extensions/mistral-vibe). Alternatively, you can set up a local install as follows:
 
-1. Go to `~/.config/zed/settings.json` and, under the `agent_servers` JSON object, add the following key-value pair to invoke the `chaton-acp` command. Here is the snippet:
+1. Go to `~/.config/zed/settings.json` and, under the `agent_servers` JSON object, add the following key-value pair to invoke the `vibe-acp` command. Here is the snippet:
 
 ```json
 {
    "agent_servers": {
-      "Chaton": {
+      "Mistral Vibe": {
          "type": "custom",
-         "command": "chaton-acp",
+         "command": "vibe-acp",
          "args": [],
          "env": {}
       }
@@ -22,7 +22,7 @@ For usage in Zed, we recommend using the [Mistral Vibe Zed's extension](https://
 }
 ```
 
-1. In the `New Thread` pane on the right, select the `chaton` agent and start the conversation.
+1. In the `New Thread` pane on the right, select the `vibe` agent and start the conversation.
 
 ## JetBrains IDEs
 
@@ -41,8 +41,8 @@ For using Mistral Vibe in JetBrains IDEs, you'll need to have the [Jetbrains AI 
 ```json
 {
   "agent_servers": {
-    "Chaton": {
-      "command": "chaton-acp",
+    "Mistral Vibe": {
+      "command": "vibe-acp",
     }
   }
 }
@@ -57,10 +57,10 @@ Add Mistral Vibe in the acp_providers section of your configuration
 ```lua
 {
   acp_providers = {
-    ["chaton"] = {
-      command = "chaton-acp",
+    ["mistral-vibe"] = {
+      command = "vibe-acp",
       env = {
-         MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY"), -- necessary if you setup Chaton manually
+         MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY"), -- necessary if you setup Mistral Vibe manually
       },
     }
   }

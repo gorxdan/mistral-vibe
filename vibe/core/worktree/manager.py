@@ -283,15 +283,15 @@ class WorktreeManager:
             print(
                 f"\nYour work is kept on branch {handle.branch} but couldn't merge "
                 "automatically (it conflicts with another session's changes).\n"
-                f"  Land it later: chaton worktree merge {handle.branch}\n"
-                f"  Or discard:    chaton worktree discard {handle.branch}\n",
+                f"  Land it later: vibe worktree merge {handle.branch}\n"
+                f"  Or discard:    vibe worktree discard {handle.branch}\n",
                 file=sys.stdout,
             )
         else:
             print(
                 f"\nYour work is kept on branch {handle.branch}.\n"
-                f"  Land it:    chaton worktree merge {handle.branch}\n"
-                f"  Or discard: chaton worktree discard {handle.branch}\n",
+                f"  Land it:    vibe worktree merge {handle.branch}\n"
+                f"  Or discard: vibe worktree discard {handle.branch}\n",
                 file=sys.stdout,
             )
 
@@ -556,9 +556,9 @@ class WorktreeManager:
             lines.append(f"  {b.branch}  ({b.ahead} commit(s), {b.age})")
             lines.append(
                 f"    merge:  git merge {b.branch}"
-                f"   (or: chaton worktree merge {b.branch})"
+                f"   (or: vibe worktree merge {b.branch})"
             )
-        lines.append("  review/clean up:  chaton worktree list")
+        lines.append("  review/clean up:  vibe worktree list")
         print("\n".join(lines), file=sys.stderr)
 
     def _is_ancestor(self, repo: Repo, rev: str, ancestor_of: str) -> bool:

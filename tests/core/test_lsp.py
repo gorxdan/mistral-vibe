@@ -1969,7 +1969,7 @@ def test_install_for_preset_no_command_returns_hint_only_error() -> None:
 
 
 def test_install_for_preset_unsupported_channel_returns_hint_only_error() -> None:
-    """A preset whose install_command uses a tool chaton does not bootstrap
+    """A preset whose install_command uses a tool vibe does not bootstrap
     (e.g. a hand-rolled curl) stays hint-only — the user installs manually.
     """
     from vibe.core.config import LSPServer

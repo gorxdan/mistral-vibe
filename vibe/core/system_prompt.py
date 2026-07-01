@@ -564,7 +564,7 @@ def _get_lsp_priority_section(config: VibeConfig) -> str:
 def _get_config_reference_section() -> str:
     return """## Configuring Vibe (quick reference)
 
-You run inside Vibe (codename Chaton). This quick reference covers the facts you
+You run inside Vibe (codename Mistral Vibe). This quick reference covers the facts you
 need for most "how do I configure X" questions; for the complete detail (every
 key, flag, slash command, hook, workflow, env var, and file location) load the
 `vibe` skill — it is the source of truth.
@@ -766,7 +766,7 @@ def get_universal_system_prompt(
                 f"## Worktree isolation\n\nIsolated git worktree; writes land on "
                 f"branch `{wt.branch}` (use relative paths). Commit your work as "
                 f"the last step; the branch is kept for an explicit "
-                f"`chaton worktree merge {wt.branch}` — it is NOT merged on exit."
+                f"`vibe worktree merge {wt.branch}` — it is NOT merged on exit."
             )
         else:
             sections.append(
@@ -787,7 +787,7 @@ def get_universal_system_prompt(
                 f"for the user.\n\n"
                 f"Your branch is NOT merged automatically on exit — it is kept so "
                 f"the user reviews and lands it explicitly with "
-                f"`chaton worktree merge {wt.branch}` (or `git merge {wt.branch}`) "
+                f"`vibe worktree merge {wt.branch}` (or `git merge {wt.branch}`) "
                 f"from the original checkout."
             )
 

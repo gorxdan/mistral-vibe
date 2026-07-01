@@ -9,7 +9,7 @@ from vibe.setup.auth.zai_callback import consume_zai_callback
 def test_hidden_zai_callback_flag_does_not_show_in_help(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr("sys.argv", ["chaton", "--help"])
+    monkeypatch.setattr("sys.argv", ["vibe", "--help"])
 
     with pytest.raises(SystemExit) as exc_info:
         entrypoint_mod.parse_arguments()
@@ -23,11 +23,11 @@ def test_main_captures_hidden_zai_callback_before_cli_start(
 ) -> None:
     monkeypatch.setenv("VIBE_HOME", str(tmp_path))
     uri = "zcode://zai-auth/callback?code=abc&state=current"
-    monkeypatch.setattr("sys.argv", ["chaton", "--zai-callback", uri])
+    monkeypatch.setattr("sys.argv", ["vibe", "--zai-callback", uri])
     monkeypatch.setattr(
         entrypoint_mod,
         "init_harness_files_manager",
-        lambda *_args, **_kwargs: pytest.fail("callback must not start Chaton"),
+        lambda *_args, **_kwargs: pytest.fail("callback must not start Mistral Vibe"),
     )
 
     with pytest.raises(SystemExit) as exc_info:
@@ -43,7 +43,7 @@ def test_main_captures_bare_zcode_callback_before_argument_parse(
 ) -> None:
     monkeypatch.setenv("VIBE_HOME", str(tmp_path))
     uri = "zcode://zai-auth/callback?code=abc&state=current"
-    monkeypatch.setattr("sys.argv", ["chaton", uri])
+    monkeypatch.setattr("sys.argv", ["vibe", uri])
     monkeypatch.setattr(
         entrypoint_mod,
         "parse_arguments",

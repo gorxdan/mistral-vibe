@@ -1,4 +1,4 @@
-"""The ``chaton worktree`` maintenance subcommand.
+"""The ``vibe worktree`` maintenance subcommand.
 
 Lists, merges, and discards the throwaway worktree branches created by worktree
 isolation. Dispatched from :func:`vibe.cli.entrypoint.main` *before* the main
@@ -24,7 +24,7 @@ _FLAGS = {"-f", "--force"}
 
 
 def run_worktree_command(argv: list[str]) -> int:
-    """Handle ``chaton worktree <action> [branch]``. *argv* is ``sys.argv[2:]``."""
+    """Handle ``vibe worktree <action> [branch]``. *argv* is ``sys.argv[2:]``."""
     force = any(a in _FLAGS for a in argv)
     rest = [a for a in argv if a not in _FLAGS]
     action = rest[0] if rest else "list"
@@ -40,19 +40,19 @@ def run_worktree_command(argv: list[str]) -> int:
     if action == "discard":
         return _cmd_discard(arg, force=force) if arg else _usage_error("discard")
 
-    print(f"chaton worktree: unknown action {action!r}", file=sys.stderr)
+    print(f"vibe worktree: unknown action {action!r}", file=sys.stderr)
     _print_usage()
     return 2
 
 
 def _usage_error(action: str) -> int:
-    print(f"usage: chaton worktree {action} <branch>", file=sys.stderr)
+    print(f"usage: vibe worktree {action} <branch>", file=sys.stderr)
     return 2
 
 
 def _print_usage() -> None:
     print(
-        "usage: chaton worktree {list | merge <branch> | discard <branch>}\n"
+        "usage: vibe worktree {list | merge <branch> | discard <branch>}\n"
         "  list              show worktree branches holding unmerged work\n"
         "  merge <branch>    rebase-then-fast-forward a worktree branch into HEAD\n"
         "  discard <branch>  delete a worktree branch and its directory "
@@ -79,7 +79,7 @@ def _repo() -> Repo | None:
     try:
         return Repo(str(Path.cwd()), search_parent_directories=True)
     except Exception:
-        print("chaton worktree: not inside a git repository.", file=sys.stderr)
+        print("vibe worktree: not inside a git repository.", file=sys.stderr)
         return None
 
 
@@ -111,7 +111,7 @@ def _cmd_list() -> int:
     try:
         stranded = worktree_manager.list_stranded_branches(cfg)
     except Exception as exc:
-        print(f"chaton worktree: {exc}", file=sys.stderr)
+        print(f"vibe worktree: {exc}", file=sys.stderr)
         return 1
     if not stranded:
         print("No worktree branches with unmerged work.")
@@ -119,8 +119,8 @@ def _cmd_list() -> int:
     print(f"{len(stranded)} worktree branch(es) hold unmerged work:")
     for b in stranded:
         print(f"  {b.branch}  ({b.ahead} commit(s), {b.age})")
-        print(f"    merge:   chaton worktree merge {b.branch}")
-        print(f"    discard: chaton worktree discard {b.branch}")
+        print(f"    merge:   vibe worktree merge {b.branch}")
+        print(f"    discard: vibe worktree discard {b.branch}")
     return 0
 
 
@@ -130,7 +130,7 @@ def _cmd_merge(branch: str) -> int:
         return 1
     if repo.is_dirty(untracked_files=False):
         print(
-            "chaton worktree: working tree is dirty; commit or stash before merging.",
+            "vibe worktree: working tree is dirty; commit or stash before merging.",
             file=sys.stderr,
         )
         return 1
@@ -138,7 +138,7 @@ def _cmd_merge(branch: str) -> int:
         # `git merge --ff-only` of an already-merged branch exits 0 with
         # "Already up to date" and moves nothing — do not claim a merge.
         print(
-            f"chaton worktree: {branch} is already merged into HEAD; nothing to merge.",
+            f"vibe worktree: {branch} is already merged into HEAD; nothing to merge.",
             file=sys.stdout,
         )
         return 0
@@ -148,8 +148,8 @@ def _cmd_merge(branch: str) -> int:
         # HEAD diverged: rebase the branch onto HEAD, then fast-forward.
         if not _rebase_then_ff(repo, branch):
             print(
-                f"chaton worktree: {branch} conflicts with HEAD and can't auto-merge; "
-                f"resolve manually or `chaton worktree discard {branch}`.",
+                f"vibe worktree: {branch} conflicts with HEAD and can't auto-merge; "
+                f"resolve manually or `vibe worktree discard {branch}`.",
                 file=sys.stderr,
             )
             return 1
@@ -202,14 +202,14 @@ def _cmd_discard(branch: str, *, force: bool) -> int:
             repo.git.worktree("remove", "--force", dir_path)
         except GitCommandError as exc:
             print(
-                f"chaton worktree: could not remove worktree dir {dir_path}: {exc}",
+                f"vibe worktree: could not remove worktree dir {dir_path}: {exc}",
                 file=sys.stderr,
             )
     try:
         repo.git.branch("-D", branch)
     except GitCommandError as exc:
         print(
-            f"chaton worktree: could not delete branch {branch}: {exc}", file=sys.stderr
+            f"vibe worktree: could not delete branch {branch}: {exc}", file=sys.stderr
         )
         return 1
     try:

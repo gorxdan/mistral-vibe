@@ -432,7 +432,7 @@ class VibeAcpAgentLoop(AcpAgent):
         return AuthMethodAgent(
             id=method_id,
             name="Sign in through Mistral AI Studio",
-            description="Sign into Chaton through your Mistral AI Studio account.",
+            description="Sign into Mistral Vibe through your Mistral AI Studio account.",
         )
 
     def _build_terminal_auth_method(
@@ -442,13 +442,13 @@ class VibeAcpAgentLoop(AcpAgent):
             type="terminal",
             id="vibe-setup",
             name="Register your API Key",
-            description="Register your API Key inside Chaton",
+            description="Register your API Key inside Mistral Vibe",
             args=args,
             field_meta={
                 "terminal-auth": {
                     "command": command,
                     "args": args,
-                    "label": "Chaton Setup",
+                    "label": "Mistral Vibe Setup",
                 }
             },
         )
@@ -565,7 +565,7 @@ class VibeAcpAgentLoop(AcpAgent):
             ),
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(
-                name="chaton", title="Chaton", version=__version__
+                name="@mistralai/mistral-vibe", title="Mistral Vibe", version=__version__
             ),
             auth_methods=auth_methods,
         )

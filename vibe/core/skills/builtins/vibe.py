@@ -7,7 +7,7 @@ from vibe.core.workflows.runtime import DEFAULT_MAX_CONCURRENT
 
 _PROMPT_TEMPLATE = """# Vibe CLI Self-Awareness
 
-You are running inside **Chaton**, a CLI coding agent built by Mistral AI.
+You are running inside **Mistral Vibe**, a CLI coding agent built by Mistral AI.
 This skill gives you full knowledge of the application internals so you can help
 the user understand, configure, and troubleshoot their Vibe installation.
 
@@ -75,10 +75,10 @@ press. `Ctrl+Z` suspends on POSIX (resume with `fg`).
 
 ### Update
 
-In this fork (`chaton`), in-app update checks are off by default
-(`enable_update_checks = false`). The `mistral-vibe` and `chaton` PyPI names
-are unrelated to this fork, so never run `uv tool upgrade mistral-vibe` or
-`uv tool upgrade chaton`. Updates are pulled from the `mistralai/mistral-vibe`
+In this fork, in-app update checks are off by default
+(`enable_update_checks = false`). The `mistral-vibe` PyPI package is the upstream
+release, not this fork, so never run `uv tool upgrade mistral-vibe`. Updates are
+pulled from the `mistralai/mistral-vibe`
 upstream via the `upstream` git remote and verified by the `upstream-sync` CI
 workflow; apply them with `git pull upstream <tag> && uv sync --all-extras`.
 
@@ -467,7 +467,7 @@ languages = { ".rs" = "rust" }
 `request_timeout_sec` (default 10.0). See `vibe/core/config/_settings.py` (LSPServer).
 
 Auto-discovery (default `lsp_auto_discover = true`): when LSP is installed,
-Chaton probes the builtin preset list (pyright, typescript-language-server,
+Mistral Vibe probes the builtin preset list (pyright, typescript-language-server,
 rust-analyzer, gopls, clangd), keeps those whose binary is on `PATH`, and
 filters them by project manifest markers — so a Python-only repo spawns only
 pyright, a Rust workspace spawns only rust-analyzer, etc. Each preset's
@@ -822,22 +822,22 @@ writes land on a throwaway branch that is merged back into the original HEAD on
 clean exit — rebased onto the latest HEAD first (so concurrent sessions don't
 strand it), then fast-forwarded, including when the original tree was dirty at
 start. The branch is kept for recovery only if it genuinely conflicts with
-another session's changes; land it with `chaton worktree merge <branch>` (or
-discard with `chaton worktree discard <branch>`). Set `worktree.mode = "off"` in
+another session's changes; land it with `vibe worktree merge <branch>` (or
+discard with `vibe worktree discard <branch>`). Set `worktree.mode = "off"` in
 config to disable persistently, or `"auto-by-entrypoint"` for the legacy
 programmatic-only split. ACP is not isolated (multi-session-per-process; tracked
 as a follow-up).
 
-The `chaton worktree` subcommand manages stranded branches outside the TUI
+The `vibe worktree` subcommand manages stranded branches outside the TUI
 (dispatched before the main parser, so it works on a fresh checkout):
 
-- `chaton worktree list` — show worktrees and any `vibe/*` branches holding
+- `vibe worktree list` — show worktrees and any `vibe/*` branches holding
   unmerged work from prior sessions (also printed as a startup notice when
   stranded work exists).
-- `chaton worktree merge <branch>` — land a branch into HEAD. Rebases onto HEAD
+- `vibe worktree merge <branch>` — land a branch into HEAD. Rebases onto HEAD
   first, then fast-forwards; aborts cleanly (keeping the branch) on a real
   conflict.
-- `chaton worktree discard <branch>` — delete a branch that is no longer wanted
+- `vibe worktree discard <branch>` — delete a branch that is no longer wanted
   (forces deletion of unmerged work; prompts unless `--force`).
 
 ## Built-in Agents
@@ -1437,11 +1437,11 @@ project root (the folder must be trusted first)."""
 VIBE_DOC_CAPSULE = SkillDocCapsule(
     name="vibe",
     description=(
-        "Authoritative reference for Chaton, the CLI agent you (the model) run "
+        "Authoritative reference for Mistral Vibe, the CLI agent you (the model) run "
         "inside. Loading this is the default, not a last resort: cheaper to "
         "load and be right than to answer from memory and be wrong.\n\n"
         "LOAD THIS SKILL — do not answer from memory — when the user:\n"
-        '- asks anything about Vibe/Chaton, even indirectly ("this CLI", '
+        '- asks anything about Vibe/Mistral Vibe, even indirectly ("this CLI", '
         '"this tool", "you", "the agent", "the harness");\n'
         "- asks why you did or did not act, how you decide, or any meta "
         "question about your behavior, instructions, tools, skills, or "
@@ -1458,7 +1458,7 @@ VIBE_DOC_CAPSULE = SkillDocCapsule(
         "teams, structured output."
     ),
     summary=(
-        "MUST LOAD for any question about Vibe/Chaton itself, the agent's own "
+        "MUST LOAD for any question about Vibe/Mistral Vibe itself, the agent's own "
         "behavior, or how this CLI works. Covers config, MCP, providers, "
         "commands, flags, hooks, workflows, ~/.vibe — the source of truth."
     ),

@@ -1,7 +1,7 @@
 """Consent-gated bootstrap installer for language-server binaries.
 
 Reverses ``_defaults.py``'s longstanding "never install" stance for the
-common channels (npm/pip/go/rustup/brew/dotnet/gem). Chaton runs the user's
+common channels (npm/pip/go/rustup/brew/dotnet/gem). Mistral Vibe runs the user's
 existing toolchain to install a server, never managing binaries itself.
 
 Consent is mandatory. Callers pass a ``consent_callback`` invoked with the
@@ -55,7 +55,7 @@ class InstallResult:
 def channel_for_command(command0: str) -> str | None:
     """Map an install_command's first token to its bootstrap channel.
 
-    Returns None when the command uses a tool chaton does not bootstrap (e.g.
+    Returns None when the command uses a tool Mistral Vibe does not bootstrap (e.g.
     a hand-rolled curl|tar pipeline). Those presets stay hint-only.
     """
     return _CHANNELS.get(command0)
@@ -91,7 +91,7 @@ def _install_error(preset: ServerPreset) -> str:
         return f"{preset.display_name} has no install_command; install manually."
     tool = preset.install_command[0]
     if channel_for_command(tool) is None:
-        return f"{preset.display_name} uses {tool} which chaton does not bootstrap."
+        return f"{preset.display_name} uses {tool} which Mistral Vibe does not bootstrap."
     return f"{tool} not on PATH; install {tool} first."
 
 
