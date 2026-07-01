@@ -361,7 +361,12 @@ class MemoryConfig(BaseSettings):
 class SandboxConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    enabled: bool = False
+    # Defense-in-depth default: on. Where an OS backend (bwrap/seatbelt) exists,
+    # bash runs inside it (writes confined to cwd + scratchpad + permission-
+    # approved dirs; network stays on via allow_network). Where none exists, the
+    # bash tool soft-falls-back to unsandboxed with a one-time warning (see
+    # _resolve_sandbox). Set false to opt out entirely.
+    enabled: bool = True
     write_dirs: list[str] = Field(default_factory=list)
     allow_network: bool = True
     scrub_env: bool = True

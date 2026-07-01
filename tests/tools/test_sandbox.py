@@ -419,6 +419,12 @@ def _bash(sandbox: SandboxConfig) -> Bash:
     )
 
 
+def test_sandbox_enabled_default_is_on() -> None:
+    # Defense-in-depth default: on. Where a backend exists bash is sandboxed;
+    # where none does it soft-falls-back (still enabled, warns once).
+    assert SandboxConfig().enabled is True
+
+
 def test_resolve_sandbox_disabled_runs_plain() -> None:
     argv, profile, env, fd = _bash(SandboxConfig(enabled=False))._resolve_sandbox(
         None, "echo hi"
@@ -478,6 +484,25 @@ async def test_sandbox_blocks_write_outside_workspace(tmp_path, monkeypatch) -> 
     # Writing to a read-only root (/etc) must fail (command returns nonzero).
     with pytest.raises(ToolError):
         await _run(bash, "echo x > /etc/vibe_sandbox_probe")
+
+
+@_skip_no_backend
+@pytest.mark.asyncio
+async def test_default_config_bash_is_sandboxed(tmp_path, monkeypatch) -> None:
+    # The flipped default (enabled=True) means a plain default config sandboxes
+    # bash on a backend host, with no explicit opt-in.
+    if detect_backend("auto") != "bwrap":
+        pytest.skip("default-on sandbox visible as a bwrap wrapper only on Linux")
+    import os
+
+    monkeypatch.chdir(tmp_path)
+    bash = _bash(SandboxConfig())  # all defaults
+    argv, _profile, _env, fd = bash._resolve_sandbox(None, "echo hi")
+    try:
+        assert argv is not None and argv[0] == "bwrap"
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 @_skip_no_backend
