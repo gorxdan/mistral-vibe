@@ -34,6 +34,7 @@ from vibe.core.config._settings import (
     MaxOutputEscalationConfig,
     MemoryConfig,
     SafetyJudgeConfig,
+    ToolManifestConfig,
     WorktreeConfig,
     _skip_api_key_check,
     resolve_api_key,
@@ -88,6 +89,9 @@ class VibeConfigSchema(ConfigSchema):
     )
     context_shaping: Annotated[ContextShapingConfig, WithReplaceMerge()] = Field(
         default_factory=ContextShapingConfig
+    )
+    tool_manifest: Annotated[ToolManifestConfig, WithReplaceMerge()] = Field(
+        default_factory=ToolManifestConfig
     )
     baseline_scaling: Annotated[BaselineScalingConfig, WithReplaceMerge()] = Field(
         default_factory=BaselineScalingConfig
