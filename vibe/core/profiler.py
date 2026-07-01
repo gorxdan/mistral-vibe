@@ -92,13 +92,17 @@ def stop_and_print() -> None:
         return
     _state.profiler.stop()
 
-    from pathlib import Path
     import sys
 
-    output_path = Path(f"{_state.label}-profile.html")
+    from vibe.core.paths import LOG_DIR
+
+    # LOG_DIR, not CWD: profiling a session must not litter the user's project.
+    out_dir = LOG_DIR.path
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output_path = out_dir / f"{_state.label}-profile.html"
     output_path.write_text(_state.profiler.output_html(), encoding="utf-8")
 
-    text_path = Path(f"{_state.label}-profile.txt")
+    text_path = out_dir / f"{_state.label}-profile.txt"
     text_path.write_text(_state.profiler.output_text(color=False), encoding="utf-8")
 
     print(
