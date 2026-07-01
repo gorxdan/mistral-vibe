@@ -292,69 +292,28 @@ def test_unshare_backend_silent_when_no_containment_requested(caplog) -> None:
     )
 
 
-def test_unshare_confinement_nudge_only_when_unshare_with_containment(
-    monkeypatch,
-) -> None:
-    # The startup nudge fires only when the resolved backend is `unshare` AND
-    # the user asked for containment it cannot enforce. It must stay silent when
-    # the sandbox is off, when a real backend (bwrap) is selected, or when no
-    # containment was requested (bare namespace isolation is honest).
+def test_unshare_nudge_fires_whenever_backend_is_unshare(monkeypatch) -> None:
+    # Fires whenever sandbox is enabled and resolves to unshare, not only on explicit containment.
     monkeypatch.setattr(
         "vibe.core.tools.sandbox.detect_backend",
         lambda override: override if override != "auto" else "unshare",
     )
 
-    # Containment requested + unshare -> nudge.
-    msg = unshare_confinement_nudge(
-        sandbox_enabled=True,
-        backend_override="auto",
-        write_dirs=["/tmp/work"],
-        allow_network=True,
-    )
+    # Default config (enabled, no explicit containment) resolves to unshare -> nudge.
+    msg = unshare_confinement_nudge(sandbox_enabled=True, backend_override="auto")
     assert msg == BUBBLEWRAP_INSTALL_NUDGE
     assert "sudo apt install bubblewrap" in msg
 
     # Sandbox disabled -> no nudge.
     assert (
-        unshare_confinement_nudge(
-            sandbox_enabled=False,
-            backend_override="auto",
-            write_dirs=["/tmp/work"],
-            allow_network=True,
-        )
+        unshare_confinement_nudge(sandbox_enabled=False, backend_override="auto")
         is None
     )
 
-    # Explicit bwrap override -> no nudge (user gets what they asked for, and
-    # detect_backend honors the override without consulting the filesystem).
+    # A real backend (bwrap) -> no nudge (the override is honored without a probe).
     assert (
-        unshare_confinement_nudge(
-            sandbox_enabled=True,
-            backend_override="bwrap",
-            write_dirs=["/tmp/work"],
-            allow_network=True,
-        )
+        unshare_confinement_nudge(sandbox_enabled=True, backend_override="bwrap")
         is None
-    )
-
-    # No containment requested -> no nudge (unshare's namespace isolation is
-    # honestly what the user gets).
-    assert (
-        unshare_confinement_nudge(
-            sandbox_enabled=True,
-            backend_override="auto",
-            write_dirs=[],
-            allow_network=True,
-        )
-        is None
-    )
-
-    # Network denial alone counts as containment unshare can't enforce -> nudge.
-    assert unshare_confinement_nudge(
-        sandbox_enabled=True,
-        backend_override="auto",
-        write_dirs=[],
-        allow_network=False,
     )
 
 
@@ -807,3 +766,21 @@ def test_create_subprocess_exec_not_called_when_disabled(monkeypatch) -> None:
     bash = _bash(SandboxConfig(enabled=False))
     asyncio.run(_run(bash, "echo plain"))
     assert called["exec"] == 0  # disabled path uses create_subprocess_shell
+
+
+def test_headless_nudge_emits_to_stderr_on_unshare(capsys) -> None:
+    # Headless (`vibe -p`) has no TUI toast, so the unshare-only nudge goes to
+    # stderr. Explicit backend='unshare' means detect_backend honors it, no probe.
+    from vibe.core.programmatic import _emit_headless_sandbox_nudge
+
+    _emit_headless_sandbox_nudge(SandboxConfig(enabled=True, backend="unshare"))
+    err = capsys.readouterr().err
+    assert "bubblewrap" in err
+
+
+def test_headless_nudge_silent_when_disabled_or_no_config(capsys) -> None:
+    from vibe.core.programmatic import _emit_headless_sandbox_nudge
+
+    _emit_headless_sandbox_nudge(SandboxConfig(enabled=False, backend="unshare"))
+    _emit_headless_sandbox_nudge(None)
+    assert capsys.readouterr().err == ""

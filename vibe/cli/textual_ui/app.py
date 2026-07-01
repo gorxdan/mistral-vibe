@@ -863,10 +863,8 @@ class VibeApp(App):
                 markup=False,
                 timeout=10,
             )
-        # One-time nudge to install bubblewrap when the sandbox is enabled with
-        # containment but only the weaker `unshare` backend is available — the
-        # unshare fallback provides namespace isolation but no filesystem write
-        # confinement, which is almost certainly not what the user opted into.
+        # One-time nudge: sandbox enabled but only the unshare backend is
+        # available (namespace isolation, no filesystem write confinement).
         try:
             from vibe.core.tools.sandbox import unshare_confinement_nudge
 
@@ -874,10 +872,7 @@ class VibeApp(App):
             sb = getattr(bash_cfg, "sandbox", None)
             if sb is not None:
                 nudge = unshare_confinement_nudge(
-                    sandbox_enabled=sb.enabled,
-                    backend_override=sb.backend,
-                    write_dirs=sb.write_dirs,
-                    allow_network=sb.allow_network,
+                    sandbox_enabled=sb.enabled, backend_override=sb.backend
                 )
                 if nudge:
                     self.notify(nudge, severity="warning", markup=False, timeout=15)

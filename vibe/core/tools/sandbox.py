@@ -150,25 +150,20 @@ BUBBLEWRAP_INSTALL_NUDGE = (
 
 
 def unshare_confinement_nudge(
-    *,
-    sandbox_enabled: bool,
-    backend_override: str,
-    write_dirs: list[str],
-    allow_network: bool,
+    *, sandbox_enabled: bool, backend_override: str
 ) -> str | None:
-    """Return the install-bubblewrap nudge message when the resolved backend is
-    `unshare` and the user asked for containment it cannot enforce; else None.
+    """Return the install-bubblewrap nudge when the sandbox is enabled but the
+    resolved backend is `unshare`; else None.
 
-    Pure (no side effects) so callers can invoke it freely to decide whether to
-    surface a UI prompt. Mirrors the runtime WARNING in build_sandbox_command,
-    but lifted to a one-time startup/first-use prompt instead of a per-command
-    log line.
+    Fires regardless of explicit write_dirs/allow_network: with the sandbox
+    default-on, even a plain config confines writes to cwd+scratchpad, and the
+    unshare backend cannot enforce that — so an unshare-only host would otherwise
+    run silently with weaker confinement than the user believes. Pure (no side
+    effects) so callers can invoke it freely to decide whether to surface a prompt.
     """
     if not sandbox_enabled:
         return None
     if detect_backend(backend_override) != "unshare":
-        return None
-    if not write_dirs and allow_network:
         return None
     return BUBBLEWRAP_INSTALL_NUDGE
 

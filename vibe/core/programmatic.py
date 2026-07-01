@@ -20,7 +20,7 @@ _STATS_SENTINEL = "__VIBE_WORKFLOW_STATS__"
 from vibe import __version__
 from vibe.core.agent_loop import AgentLoop, AgentLoopParams, TeleportError
 from vibe.core.agents.models import BuiltinAgentName
-from vibe.core.config import VibeConfig
+from vibe.core.config import SandboxConfig, VibeConfig
 from vibe.core.hooks.models import HookConfigResult
 from vibe.core.logger import logger
 from vibe.core.loop import LoopManager
@@ -189,6 +189,20 @@ async def _run_session(
         await _teardown_lsp_and_loop(agent_loop)
 
 
+def _emit_headless_sandbox_nudge(sandbox: SandboxConfig | None) -> None:
+    # Headless has no TUI toast, so surface the unshare-only nudge on stderr.
+    if sandbox is None:
+        return
+    from vibe.core.tools.sandbox import unshare_confinement_nudge
+
+    nudge = unshare_confinement_nudge(
+        sandbox_enabled=sandbox.enabled, backend_override=sandbox.backend
+    )
+    if nudge:
+        sys.stderr.write(nudge + "\n")
+        sys.stderr.flush()
+
+
 def run_programmatic(
     config: VibeConfig, prompt: str, *, options: ProgrammaticOptions | None = None
 ) -> str | None:
@@ -237,6 +251,9 @@ def run_programmatic(
     # the `background` tool and async subagent completions still work.
     background_registry = BackgroundRegistry()
     agent_loop.background_registry = background_registry
+    if opts.headless:
+        bash_cfg = agent_loop.tool_manager.get_tool_config("bash")
+        _emit_headless_sandbox_nudge(getattr(bash_cfg, "sandbox", None))
     logger.info("USER: %s", prompt)
 
     try:
