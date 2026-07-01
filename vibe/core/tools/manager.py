@@ -17,7 +17,6 @@ from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.logger import logger
 from vibe.core.paths import DEFAULT_TOOL_DIR
 from vibe.core.tools.base import BaseTool, BaseToolConfig, ToolInfo, ToolPermission
-from vibe.core.tools.mcp import MCPRegistry
 from vibe.core.utils import name_matches, run_sync
 
 _TOOL_SEARCH_FUZZY_MATCH_THRESHOLD = 0.25
@@ -25,6 +24,7 @@ _TOOL_SEARCH_FUZZY_MATCH_THRESHOLD = 0.25
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
     from vibe.core.tools.connectors import ConnectorRegistry
+    from vibe.core.tools.mcp import MCPRegistry
     from vibe.core.tools.mcp.tools import MCPTool
 
 
@@ -99,7 +99,9 @@ class ToolManager:
     ) -> None:
         self._config_getter = config_getter
         self._permission_getter = permission_getter
-        self._mcp_registry = mcp_registry or MCPRegistry()
+        # None until MCP is actually needed: constructing MCPRegistry imports
+        # the mcp SDK (~100ms), which must stay off the interactive cold start.
+        self._mcp_registry: MCPRegistry | None = mcp_registry
         self._connector_registry = connector_registry
         self._instances: dict[str, BaseTool] = {}
         self._manifest_pins: list[str] = []
@@ -267,6 +269,10 @@ class ToolManager:
 
     @staticmethod
     def _is_dynamic_remote_tool(tool_cls: type[BaseTool]) -> bool:
+        # MCPTool subclasses can only exist once the proxy module is loaded;
+        # skip the import so lazy startup never pulls it just to answer "no".
+        if "vibe.core.tools.mcp.tools" not in sys.modules:
+            return False
         return (
             issubclass(tool_cls, _mcp_tool_base())
             and tool_cls.get_name() != "tool_search"
@@ -400,7 +406,7 @@ class ToolManager:
             return
 
         try:
-            mcp_tools = await self._mcp_registry.get_tools_async(
+            mcp_tools = await self._get_mcp_registry().get_tools_async(
                 self._config.mcp_servers
             )
         except Exception as exc:
@@ -473,7 +479,8 @@ class ToolManager:
     async def refresh_remote_tools_async(self) -> None:
         """Force MCP and connector re-discovery for the current config."""
         with self._lock:
-            self._mcp_registry.clear()
+            if self._mcp_registry is not None:
+                self._mcp_registry.clear()
             self._purge_mcp_state()
             self._mcp_integrated = False
             self._purge_connector_state()
@@ -493,6 +500,13 @@ class ToolManager:
         inside a single ``run_sync`` call.
         """
         run_sync(self._integrate_all_async(raise_on_mcp_failure=raise_on_mcp_failure))
+
+    def _get_mcp_registry(self) -> MCPRegistry:
+        if self._mcp_registry is None:
+            from vibe.core.tools.mcp import MCPRegistry
+
+            self._mcp_registry = MCPRegistry()
+        return self._mcp_registry
 
     def set_mcp_registry(self, mcp_registry: MCPRegistry) -> None:
         self._mcp_registry = mcp_registry
