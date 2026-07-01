@@ -96,9 +96,7 @@ def test_default_tier_is_large() -> None:
         AgentManager(lambda: config),
     )
     default = get_universal_system_prompt(tm, config, sm, am)
-    large = get_universal_system_prompt(
-        tm, config, sm, am, tier=BaselineTier.LARGE
-    )
+    large = get_universal_system_prompt(tm, config, sm, am, tier=BaselineTier.LARGE)
     assert default == large
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -89,9 +90,7 @@ def _make_add_app(**values: str) -> MCPAddApp:
 
 
 @pytest.mark.asyncio
-async def test_mcp_add_opens_interactive_form(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_mcp_add_opens_interactive_form(monkeypatch: pytest.MonkeyPatch) -> None:
     app = build_test_vibe_app(config=build_test_vibe_config())
     switch = AsyncMock()
     monkeypatch.setattr(app, "_switch_from_input", switch)
@@ -99,6 +98,7 @@ async def test_mcp_add_opens_interactive_form(
     await app._mcp_add()
 
     switch.assert_awaited_once()
+    assert switch.await_args is not None
     assert isinstance(switch.await_args.args[0], MCPAddApp)
 
 
@@ -114,6 +114,7 @@ async def test_dispatch_mcp_subcommand_routes_add_to_form(
 
     assert handled is True
     switch.assert_awaited_once()
+    assert switch.await_args is not None
     assert isinstance(switch.await_args.args[0], MCPAddApp)
 
 
@@ -141,7 +142,7 @@ def test_mcp_add_form_saves_oauth_streamable_http_server() -> None:
     assert server.name == "linear"
     assert isinstance(server.auth, MCPOAuth)
     assert server.auth.scopes == []
-    closed = app.post_message.call_args.args[0]
+    closed = cast(MagicMock, app.post_message).call_args.args[0]
     assert isinstance(closed, MCPAddApp.MCPAddClosed)
     assert closed.added is True
     assert closed.name == "linear"
@@ -167,10 +168,7 @@ def test_mcp_add_form_saves_name_and_scopes() -> None:
 
 def test_mcp_add_form_saves_http_transport() -> None:
     app = _make_add_app(
-        name="docs",
-        transport="http",
-        url="https://mcp.example.com/mcp",
-        auth="oauth",
+        name="docs", transport="http", url="https://mcp.example.com/mcp", auth="oauth"
     )
 
     app._save_and_close()
@@ -182,15 +180,11 @@ def test_mcp_add_form_saves_http_transport() -> None:
 
 
 def test_mcp_add_form_requires_name() -> None:
-    app = _make_add_app(
-        name="",
-        transport="http",
-        url="https://mcp.example.com/mcp",
-    )
+    app = _make_add_app(name="", transport="http", url="https://mcp.example.com/mcp")
 
     app._save_and_close()
 
     assert VibeConfig.load().mcp_servers == []
-    closed = app.post_message.call_args.args[0]
+    closed = cast(MagicMock, app.post_message).call_args.args[0]
     assert closed.added is False
     assert closed.error == "Server name is required."

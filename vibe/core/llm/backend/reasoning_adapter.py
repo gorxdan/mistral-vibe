@@ -98,10 +98,7 @@ class ReasoningAdapter(APIAdapter):
         thinking: str,
         response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": model_name,
-            "messages": messages,
-        }
+        payload: dict[str, Any] = {"model": model_name, "messages": messages}
         if temperature is not None:
             payload["temperature"] = temperature
 

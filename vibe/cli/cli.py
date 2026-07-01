@@ -414,7 +414,7 @@ def _run_check_upgrade(
     )
 
 
-def run_cli(
+def run_cli(  # noqa: PLR0912
     args: argparse.Namespace,
     *,
     resolve_trusted_folder: Callable[[], None] | None = None,

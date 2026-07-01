@@ -341,7 +341,9 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
     per turn to keep the provider cache stable. No LLM call.
     """
 
-    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
+    async def before_turn(  # noqa: PLR0914
+        self, context: ConversationContext
+    ) -> MiddlewareResult:
         from vibe.core.utils.tokens import approx_token_count, truncate_middle_to_tokens
 
         cfg = context.config.context_shaping.microcompact

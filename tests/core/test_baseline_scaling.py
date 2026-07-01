@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from tests.conftest import build_test_vibe_config, make_test_models
 from vibe.core.baseline_scaling import (
     BaselineTier,
@@ -16,7 +18,7 @@ def _cfg(models, **kw):
 
 
 def _model(**kw) -> ModelConfig:
-    base = {"name": "m", "provider": "mistral", "alias": "m"}
+    base: dict[str, Any] = {"name": "m", "provider": "mistral", "alias": "m"}
     base.update(kw)
     return ModelConfig(**base)
 
@@ -65,7 +67,12 @@ def test_medium_sheds_only_largest_blocks():
 
 
 def test_small_drops_all_gated_but_keeps_unknown():
-    for s in ("config_reference", "model_routing_list", "humanizer", "skills_summaries"):
+    for s in (
+        "config_reference",
+        "model_routing_list",
+        "humanizer",
+        "skills_summaries",
+    ):
         assert section_enabled(BaselineTier.SMALL, s) is False
     assert section_enabled(BaselineTier.SMALL, "core_instructions") is True
 

@@ -101,7 +101,6 @@ from vibe.core.tools.base import (
     ToolPermissionError,
 )
 from vibe.core.tools.manager import ToolManager
-from vibe.core.tools.mcp import MCPRegistry
 from vibe.core.tools.mcp_sampling import MCPSamplingHandler
 from vibe.core.tools.permissions import (
     ApprovedRule,
@@ -193,6 +192,7 @@ if TYPE_CHECKING:
     from vibe.core.teleport.types import TeleportPushResponseEvent, TeleportYieldEvent
     from vibe.core.tools.background import BackgroundRegistry
     from vibe.core.tools.connectors import ConnectorRegistry
+    from vibe.core.tools.mcp import MCPRegistry
     from vibe.core.tools.safety_judge import JudgeVerdict
 from vibe.core.agent_loop._models import ToolDecision, ToolExecutionResponse
 
@@ -771,6 +771,10 @@ class AgentLoop(AgentLoopSessionMixin):
 
     @staticmethod
     def _create_mcp_registry() -> MCPRegistry:
+        # Local import: keeps the external MCP SDK (pulled transitively by the
+        # registry) off the CLI import path so cold start stays lazy.
+        from vibe.core.tools.mcp import MCPRegistry
+
         return MCPRegistry()
 
     def _ensure_remote_registries(self) -> None:

@@ -36,6 +36,7 @@ __all__ = [
 # rebase -> ff), so a simultaneous exit never ff's against a moved HEAD.
 _MERGE_LOCK_NAME = "vibe-merge.lock"
 _MERGE_LOCK_TIMEOUT_S = 30.0
+_WORKTREE_LEAF_FIELD_COUNT = 3  # "<label>-<pid>-<time_ns>"
 
 
 class WorktreeError(RuntimeError):
@@ -407,7 +408,7 @@ class WorktreeManager:
     def _pid_from_leaf(leaf: str) -> int | None:
         # leaf == "<label>-<pid>-<time_ns>"; pid is the second field from the end.
         parts = leaf.rsplit("-", 2)
-        if len(parts) != 3:
+        if len(parts) != _WORKTREE_LEAF_FIELD_COUNT:
             return None
         try:
             return int(parts[1])

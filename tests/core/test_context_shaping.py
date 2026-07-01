@@ -371,7 +371,9 @@ async def test_microcompact_skips_capped_gist_and_processes_new_block() -> None:
 
     cfg = _config(
         cache_prefix_guard_tokens=0,
-        microcompact=MicrocompactConfig(per_message_cap_tokens=100, max_blocks_per_turn=1),
+        microcompact=MicrocompactConfig(
+            per_message_cap_tokens=100, max_blocks_per_turn=1
+        ),
     )
     capped = f"{_MC_OPEN} " + _content(100)  # body already at the cap
     msgs = [

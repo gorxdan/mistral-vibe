@@ -149,7 +149,9 @@ class _TreeAccumulator:
             write = self._first_io(cur.disk_write_bytes, is_read=False)
         else:
             self.cpu_seconds += max(0.0, cur.cpu_seconds - prev.cpu_seconds)
-            read = self._fold_io(prev.disk_read_bytes, cur.disk_read_bytes, is_read=True)
+            read = self._fold_io(
+                prev.disk_read_bytes, cur.disk_read_bytes, is_read=True
+            )
             write = self._fold_io(
                 prev.disk_write_bytes, cur.disk_write_bytes, is_read=False
             )
@@ -393,8 +395,7 @@ class ResourceMonitor:
                     (cur.disk_write_bytes - prev.disk_write_bytes) / elapsed
                 )
                 logger.info(
-                    "perf %sheartbeat: cpu=%.0f%% rss=%s procs=%d "
-                    "disk_r=%s disk_w=%s",
+                    "perf %sheartbeat: cpu=%.0f%% rss=%s procs=%d disk_r=%s disk_w=%s",
                     self._tag(),
                     100.0 * cpu_delta / elapsed,
                     _human_bytes(cur.rss_bytes),

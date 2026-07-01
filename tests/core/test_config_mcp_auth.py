@@ -182,8 +182,7 @@ def test_oauth_scopes_empty_list_allowed() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("cls", "transport"), HTTP_TRANSPORTS)
 async def test_registry_oauth_not_logged_in_marks_needs_auth_and_is_retryable(
-    cls: type[MCPHttp | MCPStreamableHttp],
-    transport: str,
+    cls: type[MCPHttp | MCPStreamableHttp], transport: str
 ) -> None:
     srv = cls.model_validate({
         "name": "linear",

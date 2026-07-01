@@ -148,8 +148,10 @@ def test_turn_logs_perf_delta(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.INFO, logger="vibe"):
         with monitor.turn("unit"):
             sum(i * i for i in range(200_000))
-    assert any("perf" in rec.getMessage() and "unit" in rec.getMessage()
-               for rec in caplog.records)
+    assert any(
+        "perf" in rec.getMessage() and "unit" in rec.getMessage()
+        for rec in caplog.records
+    )
 
 
 def test_turn_is_noop_without_psutil() -> None:
@@ -223,8 +225,10 @@ async def test_heartbeat_lifecycle(caplog: pytest.LogCaptureFixture) -> None:
         await asyncio.sleep(0.13)
         await monitor.aclose()
     assert monitor._task is None
-    assert any("perf" in rec.getMessage() and "heartbeat" in rec.getMessage()
-               for rec in caplog.records)
+    assert any(
+        "perf" in rec.getMessage() and "heartbeat" in rec.getMessage()
+        for rec in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -246,9 +250,7 @@ async def test_only_one_heartbeat_per_process() -> None:
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_survives_sample_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_heartbeat_survives_sample_error(monkeypatch: pytest.MonkeyPatch) -> None:
     # A transient error in the heartbeat body must not kill the loop for the
     # rest of the session.
     monitor = ResourceMonitor(interval_seconds=0.03)

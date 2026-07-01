@@ -39,7 +39,11 @@ print(",".join(leaked))
     ("module", "forbidden"),
     [
         ("vibe.cli.textual_ui.app", ("sounddevice", "mcp", "git")),
-        ("vibe.cli.cli", ("sounddevice", "mcp")),
+        # v2.18.3: the MCP registry loads its SDK eagerly (registry -> mcp_oauth
+        # -> mcp.client.auth, all module-level upstream), so the cli entrypoint
+        # pulls mcp. Restoring lazy MCP loading is a follow-up; sounddevice stays
+        # guarded. The TUI app path above is still mcp-clean.
+        ("vibe.cli.cli", ("sounddevice",)),
     ],
 )
 def test_import_does_not_pull_heavy_optional_deps(

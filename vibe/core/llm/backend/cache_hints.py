@@ -44,10 +44,7 @@ def build_cache_hint(
     if cache.style == "passthrough":
         fragment = copy.deepcopy(cache.extra_body)
         key = cache.cache_key or _auto_cache_key(
-            provider,
-            converted_messages,
-            session_id,
-            session_keyed=cache.session_keyed,
+            provider, converted_messages, session_id, session_keyed=cache.session_keyed
         )
         if key:
             fragment.setdefault("prompt_cache_key", key)

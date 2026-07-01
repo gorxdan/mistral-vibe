@@ -475,9 +475,7 @@ async def discover_extra_models(
     discovered: list[DiscoveredModel] = []
 
     for (provider, ephemeral), raw_models in zip(probe, results, strict=True):
-        template = next(
-            (m for m in config.models if m.provider == provider.name), None
-        )
+        template = next((m for m in config.models if m.provider == provider.name), None)
         num_ctx_cap = _ollama_num_ctx_cap() if _is_ollama_provider(provider) else None
         chat_models = [rm for rm in raw_models if _is_chat_model(rm.id)]
         if (dropped := len(raw_models) - len(chat_models)) > 0:

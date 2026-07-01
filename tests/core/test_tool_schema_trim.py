@@ -38,9 +38,7 @@ def test_get_available_tools_trims_only_when_requested():
     by_name_trim = {t.function.name: t.function.description for t in trimmed}
     assert by_name_full.keys() == by_name_trim.keys()
     # Every trimmed description is <= full and capped; at least one is shortened.
-    assert any(
-        len(by_name_trim[n]) < len(by_name_full[n]) for n in by_name_full
-    )
+    assert any(len(by_name_trim[n]) < len(by_name_full[n]) for n in by_name_full)
     for n in by_name_full:
         assert len(by_name_trim[n]) <= max(len(by_name_full[n]), 121)
     # Param schemas are untouched by trimming.

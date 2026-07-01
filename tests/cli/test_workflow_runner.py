@@ -6,13 +6,10 @@ from typing import Any
 
 import pytest
 
-from vibe.cli.textual_ui.app import (
-    _WORKFLOW_CONTINUE_PROMPT,
-    VibeApp,
-)
-from vibe.core.types import Role
+from vibe.cli.textual_ui.app import _WORKFLOW_CONTINUE_PROMPT, VibeApp
 from vibe.cli.textual_ui.widgets.messages import ErrorMessage, UserCommandMessage
 from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
+from vibe.core.types import Role
 from vibe.core.workflows.models import WorkflowResult, WorkflowRun, WorkflowStatus
 from vibe.core.workflows.runtime import WorkflowRuntime
 
@@ -195,7 +192,7 @@ async def test_handle_command_stop_not_found() -> None:
     runner = WorkflowRunner(mount=mount)
     widget = await runner.handle_command("stop wf-99")
     assert isinstance(widget, ErrorMessage)
-    assert "not found" in widget._error or "Could not stop" in widget._error
+    assert "not found" in str(widget._error) or "Could not stop" in str(widget._error)
 
 
 async def test_handle_command_unknown() -> None:
@@ -205,7 +202,7 @@ async def test_handle_command_unknown() -> None:
     runner = WorkflowRunner(mount=mount)
     widget = await runner.handle_command("bogus")
     assert isinstance(widget, ErrorMessage)
-    assert "Unknown" in widget._error
+    assert "Unknown" in str(widget._error)
 
 
 async def test_multiple_runs_increment_id() -> None:
@@ -433,7 +430,6 @@ async def test_on_workflow_complete_no_flush_when_turn_consumes() -> None:
     # result normally (history ends with the agent's assistant reply, not an
     # unacted injected user message).
     from tests.conftest import build_test_vibe_app
-
     from vibe.core.types import LLMMessage
 
     app = build_test_vibe_app()
@@ -453,9 +449,7 @@ async def test_on_workflow_complete_no_flush_when_turn_consumes() -> None:
     async def _launching() -> None:
         # Live loop drained + acted: result folded in, then an assistant reply.
         app.agent_loop._drain_pending_injections()
-        app.agent_loop.messages.append(
-            LLMMessage(role=Role.ASSISTANT, content="done")
-        )
+        app.agent_loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="done"))
         app._agent_running = False
 
     app._agent_task = asyncio.create_task(_launching())
@@ -581,7 +575,7 @@ async def test_resume_without_snapshot_is_an_error() -> None:
     )
     widget = await runner.handle_command("resume wf-missing")
     assert isinstance(widget, ErrorMessage)
-    assert "No persisted snapshot" in widget._error
+    assert "No persisted snapshot" in str(widget._error)
 
 
 async def test_finished_runs_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:

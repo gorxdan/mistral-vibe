@@ -845,13 +845,9 @@ class TestMCPRegistry:
         storage.get_tokens = AsyncMock(return_value=None)
         with (
             patch(
-                "vibe.core.tools.mcp.registry.KeyringTokenStorage",
-                return_value=storage,
+                "vibe.core.tools.mcp.registry.KeyringTokenStorage", return_value=storage
             ),
-            patch(
-                "vibe.core.tools.mcp.registry.Fingerprint.compute",
-                return_value=fp,
-            ),
+            patch("vibe.core.tools.mcp.registry.Fingerprint.compute", return_value=fp),
             patch(
                 "vibe.core.tools.mcp.registry.Fingerprint.load",
                 new=AsyncMock(return_value=fp),
@@ -883,13 +879,9 @@ class TestMCPRegistry:
         storage.get_tokens = AsyncMock(return_value=MagicMock())
         with (
             patch(
-                "vibe.core.tools.mcp.registry.KeyringTokenStorage",
-                return_value=storage,
+                "vibe.core.tools.mcp.registry.KeyringTokenStorage", return_value=storage
             ),
-            patch(
-                "vibe.core.tools.mcp.registry.Fingerprint.compute",
-                return_value=fp,
-            ),
+            patch("vibe.core.tools.mcp.registry.Fingerprint.compute", return_value=fp),
             patch(
                 "vibe.core.tools.mcp.registry.Fingerprint.load",
                 new=AsyncMock(return_value=fp),

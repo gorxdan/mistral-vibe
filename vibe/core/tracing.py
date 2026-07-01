@@ -494,9 +494,7 @@ def set_finish_reason(span: trace.Span, reason: str | None) -> None:
     if not reason:
         return
     try:
-        span.set_attribute(
-            gen_ai_attributes.GEN_AI_RESPONSE_FINISH_REASONS, (reason,)
-        )
+        span.set_attribute(gen_ai_attributes.GEN_AI_RESPONSE_FINISH_REASONS, (reason,))
     except Exception:
         pass
 
@@ -628,8 +626,6 @@ def set_context_shaping_result(
         # Whether elided assistant turns kept reasoning_content (Preserved
         # Thinking). False here is the signal that snip stripped it.
         if reasoning_preserved is not None:
-            span.set_attribute(
-                "vibe.context.reasoning_preserved", reasoning_preserved
-            )
+            span.set_attribute("vibe.context.reasoning_preserved", reasoning_preserved)
     except Exception:
         pass

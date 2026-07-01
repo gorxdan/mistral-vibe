@@ -155,11 +155,7 @@ _OMNISHARP = ServerPreset(
         name="omnisharp",
         command="OmniSharp",
         languages={".cs": "csharp"},
-        manifest_markers=(
-            "*.csproj",
-            "*.sln",
-            "Directory.Build.props",
-        ),
+        manifest_markers=("*.csproj", "*.sln", "Directory.Build.props"),
     ),
     install_hint="dotnet tool install --global OmniSharp",
     detection_command=("OmniSharp", "--version"),
@@ -275,9 +271,7 @@ def _resolve_binary(binary_name: str, root_path: Path | None) -> str | None:
     return shutil.which(binary_name)
 
 
-def _probe(
-    preset: ServerPreset, root_path: Path | None = None
-) -> PresetProbe:
+def _probe(preset: ServerPreset, root_path: Path | None = None) -> PresetProbe:
     resolved = _resolve_binary(preset.detection_command[0], root_path)
     if resolved is None:
         return PresetProbe(preset=preset, status="absent")

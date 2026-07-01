@@ -715,12 +715,7 @@ def get_universal_system_prompt(
     if config.include_prompt_detail:
         sections.extend(
             _build_prompt_detail_sections(
-                tool_manager,
-                skill_manager,
-                agent_manager,
-                scratchpad_dir,
-                config,
-                tier,
+                tool_manager, skill_manager, agent_manager, scratchpad_dir, config, tier
             )
         )
 

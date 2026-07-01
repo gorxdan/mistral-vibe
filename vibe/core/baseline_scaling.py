@@ -68,7 +68,10 @@ def section_enabled(tier: BaselineTier, section: str) -> bool:
 
 def trim_tool_descriptions(tier: BaselineTier, config: VibeConfig) -> bool:
     """Whether builtin tool-schema descriptions are trimmed at this tier."""
-    return tier is BaselineTier.SMALL and config.baseline_scaling.trim_tool_descriptions_small
+    return (
+        tier is BaselineTier.SMALL
+        and config.baseline_scaling.trim_tool_descriptions_small
+    )
 
 
 def agents_md_byte_budget(tier: BaselineTier, config: VibeConfig) -> int | None:

@@ -12,13 +12,7 @@ from typing import Any, ClassVar, Literal, get_args
 from urllib.parse import urljoin
 
 from dotenv import dotenv_values
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 from pydantic_settings import (
@@ -30,7 +24,6 @@ import tomli_w
 
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config._defaults import (
-    DEFAULT_API_RETRY_MAX_ELAPSED_TIME,
     DEFAULT_API_TIMEOUT,
     DEFAULT_AUTO_COMPACT_THRESHOLD,
     DEFAULT_CONSOLE_BASE_URL,
@@ -1139,9 +1132,7 @@ class VibeConfig(BaseSettings):
             else:
                 threshold = self.auto_compact_threshold
             if threshold != model.auto_compact_threshold:
-                model = model.model_copy(
-                    update={"auto_compact_threshold": threshold}
-                )
+                model = model.model_copy(update={"auto_compact_threshold": threshold})
             updated.append(model)
         self.models = updated
         return self

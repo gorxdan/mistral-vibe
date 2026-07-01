@@ -177,7 +177,9 @@ async def handle_clipboard_image_paste(
 _PASTED_IMAGE_GC_AGE_S = 24 * 3600
 
 
-def _gc_stale_pasted_images(target_dir: Path, max_age_s: int = _PASTED_IMAGE_GC_AGE_S) -> None:
+def _gc_stale_pasted_images(
+    target_dir: Path, max_age_s: int = _PASTED_IMAGE_GC_AGE_S
+) -> None:
     try:
         cutoff = time.time() - max_age_s
         for f in target_dir.glob("clipboard-*"):

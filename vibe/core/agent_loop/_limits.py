@@ -51,8 +51,11 @@ def tool_result_hard_cap(threshold_tokens: int) -> int:
     """
     budget_chars = threshold_tokens * TOOL_RESULT_CHARS_PER_TOKEN
     scaled = int(budget_chars * TOOL_RESULT_WINDOW_FRACTION)
-    floor = min(MAX_TOOL_RESULT_CHARS, int(budget_chars * TOOL_RESULT_FLOOR_MAX_FRACTION))
+    floor = min(
+        MAX_TOOL_RESULT_CHARS, int(budget_chars * TOOL_RESULT_FLOOR_MAX_FRACTION)
+    )
     return max(floor, scaled)
+
 
 # Safety-judge input window. _serialize_args hands the judge only this many
 # chars of the serialized tool args. A destructive tail hidden past the cut is

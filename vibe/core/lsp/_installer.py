@@ -134,7 +134,10 @@ def install_for_preset(
     output = (result.stdout or "") + (result.stderr or "")
     if result.returncode != 0:
         return InstallResult(
-            preset=preset, success=False, output=output, error=f"exit {result.returncode}"
+            preset=preset,
+            success=False,
+            output=output,
+            error=f"exit {result.returncode}",
         )
     from pathlib import Path
 
