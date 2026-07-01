@@ -503,6 +503,60 @@ def test_resolve_sandbox_none_backend_falls_back_unsandboxed() -> None:
     assert argv is None and profile is None and fd is None  # runs unsandboxed
 
 
+def test_host_session_keeps_git_gh_creds_through_scrub(monkeypatch) -> None:
+    # The host session's scrubbed bash env keeps authenticated git/gh working
+    # (ssh/https push, gh CLI, signing) while still dropping model API keys.
+    import os
+
+    monkeypatch.delenv("VIBE_ISOLATED_WORKTREE_ROOT", raising=False)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+    )
+    monkeypatch.setenv("GH_TOKEN", "ghp_host")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/run/ssh-agent.sock")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /home/x/.ssh/id")
+    monkeypatch.setenv("GPG_TTY", "/dev/pts/0")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+
+    _argv, _profile, env, fd = _bash(
+        SandboxConfig(enabled=True, scrub_env=True)
+    )._resolve_sandbox(None, "git push")
+    try:
+        assert env["GH_TOKEN"] == "ghp_host"  # gh CLI + https push keep working
+        assert env["SSH_AUTH_SOCK"] == "/run/ssh-agent.sock"  # ssh push keeps working
+        assert env["GIT_SSH_COMMAND"] == "ssh -i /home/x/.ssh/id"
+        assert env["GPG_TTY"] == "/dev/pts/0"  # commit signing
+        assert "OPENAI_API_KEY" not in env  # model secrets still scrubbed
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def test_isolated_subagent_still_scrubs_git_gh_creds(tmp_path, monkeypatch) -> None:
+    # The host-only cred passthrough must NOT leak into an isolated subagent —
+    # that strict scrub is the security boundary between host and worker.
+    import os
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+    )
+    monkeypatch.setenv("GH_TOKEN", "ghp_should_not_leak")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/run/ssh-agent.sock")
+
+    _argv, _profile, env, fd = _bash(
+        SandboxConfig(enabled=True, scrub_env=True)
+    )._resolve_sandbox(None, "git push")
+    try:
+        assert "GH_TOKEN" not in env  # boundary: worker never gets host creds
+        assert "SSH_AUTH_SOCK" not in env
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 # --------------------------------------------------------------------------- #
 # End-to-end (requires a real sandbox backend, e.g. bwrap on Linux)           #
 # --------------------------------------------------------------------------- #

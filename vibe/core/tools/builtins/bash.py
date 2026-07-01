@@ -36,6 +36,7 @@ from vibe.core.tools.permissions import (
     RequiredPermission,
 )
 from vibe.core.tools.sandbox import (
+    HOST_GIT_ENV_PASSTHROUGH,
     SandboxSpec,
     build_sandbox_command,
     detect_backend,
@@ -66,11 +67,16 @@ def _close_fd_quietly(fd: int | None) -> None:
         pass
 
 
-def _build_sandbox_env(config: SandboxConfig) -> dict[str, str]:
+def _build_sandbox_env(config: SandboxConfig, *, host_session: bool) -> dict[str, str]:
     base = _get_base_env()
     if not config.scrub_env:
         return base
-    return scrub_env(base, config.env_passthrough)
+    passthrough = list(config.env_passthrough)
+    if host_session:
+        # Keep authenticated git/gh working for the user's own session; the
+        # worker (isolated) branch passes host_session=False to stay strict.
+        passthrough += sorted(HOST_GIT_ENV_PASSTHROUGH)
+    return scrub_env(base, passthrough)
 
 
 @lru_cache(maxsize=64)
@@ -694,7 +700,11 @@ class Bash(
             # sandbox; a bare isolation confine adds FS bounds without touching
             # command env (git/gh creds keep working).
             write_roots: list[Path] = [iso_root]
-            env = _build_sandbox_env(sb) if sb.enabled else _get_base_env()
+            env = (
+                _build_sandbox_env(sb, host_session=False)
+                if sb.enabled
+                else _get_base_env()
+            )
         else:
             write_roots = [Path.cwd()]
             write_roots += [Path(d) for d in sb.write_dirs]
@@ -702,7 +712,7 @@ class Bash(
             # were already surfaced to (and approved by) the permission gate.
             for d in _collect_outside_dirs(_extract_commands(command)):
                 write_roots.append(Path(d))
-            env = _build_sandbox_env(sb)
+            env = _build_sandbox_env(sb, host_session=True)
 
         if ctx is not None and ctx.scratchpad_dir is not None:
             write_roots.append(Path(ctx.scratchpad_dir))

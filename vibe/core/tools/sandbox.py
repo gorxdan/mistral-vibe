@@ -48,6 +48,19 @@ _ENV_ALLOWLIST = frozenset({
     "LESS",
 })
 
+# Kept through the scrub for the HOST session's bash only (ssh/https push, gh
+# CLI, commit signing); NOT for isolated subagents — that scrub is the boundary.
+HOST_GIT_ENV_PASSTHROUGH = frozenset({
+    "SSH_AUTH_SOCK",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GIT_SSH_COMMAND",
+    "GNUPGHOME",
+    "GPG_TTY",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+})
+
 
 @dataclass
 class SandboxSpec:
