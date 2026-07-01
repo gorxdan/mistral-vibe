@@ -4,10 +4,11 @@ import asyncio
 from collections.abc import AsyncGenerator
 from enum import StrEnum, auto
 from pathlib import Path
+import re
 import shutil
 from typing import TYPE_CHECKING, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from vibe.core.paths import VIBE_HOME
 from vibe.core.tools.base import (
@@ -187,6 +188,12 @@ class GrepResult(BaseModel):
         description="True if output was cut short by max_matches or max_output_bytes."
     )
     output_mode: GrepOutputMode = GrepOutputMode.CONTENT
+    # Set by run() when the searched pattern is symbol-shaped and lsp is
+    # available; emitted via get_result_extra. Private so it stays out of
+    # model_dump() (no "hint:" clutter on every result) and per-call (the
+    # singleton tool instance serves concurrent greps — instance state would
+    # cross-contaminate, a private attr on this result instance does not).
+    _hint: str = PrivateAttr(default="")
 
     @property
     def parsed_matches(self) -> list[GrepMatch]:
@@ -226,6 +233,30 @@ def _ripgrep_regex_hint(cmd: list[str], stderr: str) -> str:
             "are unsupported. Rewrite the pattern without them."
         )
     return ""
+
+
+# A bare identifier — no regex metacharacters, operators, dots, or whitespace.
+# This is the signature of a symbol lookup that lsp answers more completely than
+# text search (grep misses imports, re-exports, aliases, overloads).
+_SYMBOL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Single-char patterns (e.g. "x", "_") are not meaningful symbol lookups.
+_MIN_SYMBOL_LEN = 2
+
+
+def _is_symbol_shaped(pattern: str) -> bool:
+    return len(pattern) >= _MIN_SYMBOL_LEN and _SYMBOL_RE.fullmatch(pattern) is not None
+
+
+def _lsp_available() -> bool:
+    # Same gate the lsp tool and the system-prompt section use: opted in via
+    # installed_components. If a language has no server configured, the lsp call
+    # itself reports that and the agent falls back — the hint just opens the door.
+    try:
+        from vibe.core.config import VibeConfig
+
+        return "lsp" in VibeConfig.load().installed_components
+    except Exception:
+        return False
 
 
 class Grep(
@@ -281,12 +312,22 @@ class Grep(
         cmd = self._build_command(args, exclude_patterns, backend)
         stdout = await self._execute_search(cmd)
 
-        yield self._parse_output(
+        result = self._parse_output(
             stdout,
             args.max_matches or self.config.default_max_matches,
             output_mode=args.output_mode,
             head_limit=args.head_limit,
         )
+        if _is_symbol_shaped(args.pattern) and _lsp_available():
+            result._hint = (
+                f"'{args.pattern}' looks like a symbol — lsp "
+                "go_to_definition / find_references resolves it, including "
+                "imports and re-exports that grep misses."
+            )
+        yield result
+
+    def get_result_extra(self, result: GrepResult) -> str | None:
+        return result._hint or None
 
     def _validate_args(self, args: GrepArgs) -> None:
         if not args.pattern.strip():

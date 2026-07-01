@@ -523,41 +523,36 @@ def _get_headless_section() -> str:
     )
 
 
-def _get_lsp_priority_section(config: VibeConfig) -> str:
-    """Availability-conditional LSP-mandatory guidance.
+def _get_lsp_priority_section(tool_manager: ToolManager) -> str:
+    """Symbol-level routing, gated on the ``lsp`` tool being registered.
 
-    Emitted only when the user has opted into LSP (``/lspstall``), so it never
-    advertises a tool that isn't running. Marks LSP as a hard requirement for
-    symbol-level work: every code analysis, review, and exploration task MUST
-    resolve symbols through ``lsp`` rather than text search, and edits are
-    gated on a prior ``lsp`` lookup. A static "prefer LSP" rule is noise when
-    LSP isn't installed; this carries the emphasis only when it can be acted on.
+    Gate is ``"lsp" in tool_manager.manifest_tools`` — the precondition for
+    teaching lsp routing is that the tool is present and callable, which the
+    manifest reflects. LSP enters the manifest only once the user opts in via
+    ``/lspstall`` (``Lsp.is_available`` checks ``installed_components``), so the
+    two gates coincide today; gating on the manifest stays correct if that
+    contract ever decouples and avoids advertising a tool that isn't there.
+    Trigger→action pairs over emphasis prose: the "hard requirement" layer did
+    not move usage, but pairing the question to the operation does.
     """
-    if "lsp" not in getattr(config, "installed_components", []):
+    if "lsp" not in tool_manager.manifest_tools:
         return ""
     return (
-        "## LSP is available — you MUST use it for symbol-level work\n\n"
-        "A language server is running for this project's languages. This is a "
-        "hard requirement, not a preference. On every code analysis, review, "
-        "and exploration task you MUST resolve symbols through `lsp` before "
-        "reasoning about them. `grep` and `read` only see raw text and will "
-        "give you wrong call sites and stale signatures, because they miss "
-        "imports, re-exports, aliases, overloads, and generated code.\n\n"
-        "- Symbol question (definition, type, callers, callees, "
-        "implementations)? `lsp` is mandatory — "
-        "`go_to_definition`/`find_references`/`hover`/`incoming_calls`/"
-        "`outgoing_calls`/`go_to_implementation`. Never grep for a "
-        "function/method/class name that LSP can resolve.\n"
-        "- Reviewing or analyzing code? Trace the real call graph and types "
-        "with `lsp` instead of grepping identifiers and guessing how they "
-        "connect.\n"
-        "- Before editing a symbol you have not resolved this session, run "
-        "`lsp hover` (and `find_references`) on it first. Do not guess its "
-        "signature or call sites — wrong edits come from guessed shapes.\n\n"
+        "## LSP is available — use it for symbol-level work\n\n"
+        "A language server is running for this project's languages. `grep` and "
+        "`read` only see raw text; `lsp` resolves imports, re-exports, aliases, "
+        "overloads, and generated code they miss. Before reasoning about a "
+        "symbol, use the `lsp` operation that answers the question:\n\n"
+        "- where is X defined / what type is X → `go_to_definition` / `hover`\n"
+        "- who calls X / what does X call → `find_references` / "
+        "`incoming_calls` / `outgoing_calls`\n"
+        "- renaming or editing a symbol you have not resolved this session → "
+        "`find_references` first; do not guess its call sites\n"
+        "- implementations of an interface → `go_to_implementation`\n\n"
         "`grep` stays for literal text (error messages, log lines, string "
-        "literals, config values, regex); `glob` stays for finding files by "
-        "name. If `lsp` reports no server for an extension, that language "
-        "isn't supported there — fall back to `grep` only then."
+        "literals, config values, regex); `glob` finds files by name. If `lsp` "
+        "reports no server for an extension, that language isn't configured — "
+        "fall back to `grep` only then."
     )
 
 
@@ -608,7 +603,7 @@ def _build_prompt_detail_sections(
     tier: BaselineTier = BaselineTier.LARGE,
 ) -> list[str]:
     sections = [_get_os_system_prompt()]
-    if lsp_section := _get_lsp_priority_section(config):
+    if lsp_section := _get_lsp_priority_section(tool_manager):
         sections.append(lsp_section)
     tool_prompts = []
     for tool_class in tool_manager.manifest_tools.values():

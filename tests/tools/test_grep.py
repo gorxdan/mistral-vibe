@@ -12,7 +12,9 @@ from vibe.core.tools.builtins.grep import (
     GrepArgs,
     GrepBackend,
     GrepOutputMode,
+    GrepResult,
     GrepToolConfig,
+    _is_symbol_shaped,
 )
 
 
@@ -642,3 +644,74 @@ async def test_lookaround_regex_error_hints_unsupported(grep):
     msg = str(err.value).lower()
     assert "look-around" in msg
     assert "rewrite" in msg or "unsupported" in msg
+
+
+# --- lsp symbol-nudge on the success path ---
+
+
+def test_is_symbol_shaped_classifies_patterns():
+    # Bare identifiers (snake_case, camelCase, PascalCase, CONSTANTS) qualify.
+    assert _is_symbol_shaped("FooBar")
+    assert _is_symbol_shaped("find_references")
+    assert _is_symbol_shaped("_private")
+    assert _is_symbol_shaped("CONSTANT_VALUE")
+    # Regex metacharacters, operators, dots, whitespace, or too short do not.
+    assert not _is_symbol_shaped("foo.bar")
+    assert not _is_symbol_shaped("foo bar")
+    assert not _is_symbol_shaped("foo(")
+    assert not _is_symbol_shaped("x")
+    assert not _is_symbol_shaped("a.b.c")
+    assert not _is_symbol_shaped("")
+
+
+def test_hint_private_attr_excluded_from_model_dump():
+    result = GrepResult(matches="", match_count=0, was_truncated=False)
+    result._hint = "some nudge"
+    dumped = result.model_dump()
+    # Private attr stays out of the serialized fields — no "hint:" clutter.
+    assert "_hint" not in dumped
+    assert "hint" not in dumped
+
+
+@pytest.mark.asyncio
+async def test_symbol_grep_sets_hint_when_lsp_available(grep, tmp_path, monkeypatch):
+    (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda: True
+    )
+
+    result = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
+
+    assert result._hint
+    assert "FooBar" in result._hint
+    assert "lsp" in result._hint
+    # get_result_extra surfaces it for the model-visible text.
+    assert grep is not None
+    extra = grep.get_result_extra(result)
+    assert extra is not None and "FooBar" in extra
+
+
+@pytest.mark.asyncio
+async def test_non_symbol_grep_sets_no_hint(grep, tmp_path, monkeypatch):
+    (tmp_path / "test.py").write_text("error: boom\n")
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda: True
+    )
+
+    result = await collect_result(grep.run(GrepArgs(pattern="error: boom")))
+
+    assert result._hint == ""
+    assert grep.get_result_extra(result) is None
+
+
+@pytest.mark.asyncio
+async def test_symbol_grep_no_hint_when_lsp_unavailable(grep, tmp_path, monkeypatch):
+    (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda: False
+    )
+
+    result = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
+
+    assert result._hint == ""
+    assert grep.get_result_extra(result) is None

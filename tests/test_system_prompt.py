@@ -378,7 +378,7 @@ def test_lsp_priority_section_absent_unless_lsp_installed() -> None:
         "include_commit_signature": False,
         "include_humanizer_guidance": False,
     }
-    heading = "## LSP is available — you MUST use it for symbol-level work"
+    heading = "## LSP is available — use it for symbol-level work"
 
     off = build_test_vibe_config(**common)
     prompt_off = get_universal_system_prompt(
@@ -394,10 +394,13 @@ def test_lsp_priority_section_absent_unless_lsp_installed() -> None:
         ToolManager(lambda: on), on, SkillManager(lambda: on), AgentManager(lambda: on)
     )
     assert heading in prompt_on
-    # Strongly worded: a hard requirement, mandatory on analysis/review/exploration.
-    assert "hard requirement, not a preference" in prompt_on
-    assert "MUST resolve symbols through `lsp`" in prompt_on
-    assert "Do not guess its signature or call sites" in prompt_on
+    # Trigger→action pairs: the question names the lsp operation, not emphasis.
+    assert "who calls X / what does X call" in prompt_on
+    assert "where is X defined / what type is X" in prompt_on
+    assert "find_references" in prompt_on
+    # The emphasis layer that did not move usage is gone.
+    assert "hard requirement, not a preference" not in prompt_on
+    assert "MUST resolve symbols through `lsp`" not in prompt_on
 
 
 def _config_reference_common() -> dict[str, object]:

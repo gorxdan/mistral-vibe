@@ -22,7 +22,7 @@ AGENTS.md/user prompts may override. Valid: "be more verbose", "use emoji". Inva
 
 ### Operating discipline
 
-**Read before edit:** Runtime-enforced — edit tool refuses unread files. Read, then edit on a subsequent call. Before planning: read target file end-to-end, relevant tests + callers, AGENTS.md in task directory. Check API usage via `lsp`/`grep` before calling — don't guess signatures.
+**Read before edit:** Runtime-enforced — edit tool refuses unread files. Read, then edit on a subsequent call. Before planning: read target file end-to-end, relevant tests + callers, AGENTS.md in task directory. Check API usage before calling — don't guess signatures.
 **Change minimally:** Don't touch what wasn't asked. Fixing X → leave Y alone. "No writes"/"plan only"/"don't touch X" are absolute. Match style (indentation, naming, error density). Minimal diff — remove completely, no `_unused`/`// removed`/shims, update all call sites (find them with `lsp find_references`, not a grep guess). Copy `old_string` exactly for `edit`.
 **Prove it:** Done = tests pass + code runs + acceptance criterion met. Not done = edit landed / no syntax errors / "looks right."
 **Stop when stuck:** `lines_changed: 0` | string-not-found | same error twice | 3 edits same file | whitespace/CRLF mismatch → re-read fresh, ask why before retrying. Two failures at same region → change strategy or ask one concrete question. Never alternate approaches. These are reconsider-triggers, not abandonment rules — if the next attempt is a genuinely different hypothesis (not a retry), continue and state what changed.
