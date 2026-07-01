@@ -81,15 +81,14 @@ def test_seatbelt_rejects_quoted_roots(tmp_path) -> None:
     assert 'a"b' not in profile  # never injected into the SBPL string
 
 
-def test_bwrap_overlays_protected_metadata_readonly(tmp_path) -> None:
-    # A writable root with .git/.env present must get read-only --ro-bind
-    # overlays AFTER the writable --bind, so a sandboxed command can read but
-    # not rewrite git history or secrets.
+def test_bwrap_env_readonly_but_git_writable(tmp_path) -> None:
+    # A writable root with .git/.env: .env is re-layered read-only, but .git is
+    # NOT (a sandboxed command must be able to commit). src/ stays writable.
     root = tmp_path / "repo"
     root.mkdir()
     (root / ".git").mkdir()
     (root / ".env").write_text("SECRET=1")
-    (root / "src").mkdir()  # not protected
+    (root / "src").mkdir()
 
     spec = SandboxSpec(write_roots=[root], allow_network=True)
     argv, _n, _p = build_sandbox_command(spec, "bwrap")
@@ -97,13 +96,47 @@ def test_bwrap_overlays_protected_metadata_readonly(tmp_path) -> None:
     r = str(root.resolve())
     bind_idx = argv.index("--bind")
     assert argv[bind_idx + 1] == r and argv[bind_idx + 2] == r
-    # --ro-bind for .git and .env must follow the --bind (left-to-right wins).
-    git_ro = argv.index("--ro-bind", bind_idx)
-    assert argv[git_ro + 1] == f"{r}/.git"
-    env_ro = argv.index("--ro-bind", git_ro + 1)
-    assert argv[env_ro + 1] == f"{r}/.env"
-    # src/ is not protected: no ro-bind for it.
-    assert f"{r}/src" not in [a for a in argv[bind_idx:]]
+    ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert f"{r}/.env" in ro_targets  # secrets read-only
+    assert f"{r}/.git" not in ro_targets  # git writable so commit works
+    assert f"{r}/src" not in ro_targets
+
+
+def test_bwrap_git_hooks_stay_readonly(tmp_path) -> None:
+    # .git is writable for commits, but .git/hooks is re-layered read-only so a
+    # command can't drop a hook that runs outside the sandbox later.
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".git" / "hooks").mkdir(parents=True)
+
+    spec = SandboxSpec(write_roots=[root], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    r = str(root.resolve())
+    ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert f"{r}/.git/hooks" in ro_targets
+    assert f"{r}/.git" not in ro_targets  # whole gitdir not read-only
+
+
+def test_bwrap_worktree_external_gitdir_writable(tmp_path) -> None:
+    # A linked worktree: root/.git is a FILE pointing to the main repo's
+    # .git/worktrees/<name>. The shared .git (objects/refs + the worktree gitdir)
+    # lives outside the checkout and must be bound writable so commits succeed.
+    main = tmp_path / "main"
+    (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    (main / ".git" / "hooks").mkdir()
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
+
+    spec = SandboxSpec(write_roots=[wt], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    binds = [argv[i + 1] for i, a in enumerate(argv) if a == "--bind"]
+    ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
+    common = f"{main}/.git"
+    assert common in binds  # external git common-dir bound writable
+    assert f"{common}/hooks" in ro_targets  # its hooks still read-only
 
 
 def test_bwrap_skips_symlinked_protected_metadata(tmp_path) -> None:
@@ -118,18 +151,19 @@ def test_bwrap_skips_symlinked_protected_metadata(tmp_path) -> None:
     assert f"{root.resolve()}/.git" not in argv
 
 
-def test_seatbelt_denies_protected_metadata(tmp_path) -> None:
+def test_seatbelt_denies_secrets_and_hooks_not_gitdir(tmp_path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
-    (root / ".git").mkdir()
+    (root / ".git" / "hooks").mkdir(parents=True)
     (root / ".env").write_text("SECRET=1")
 
     spec = SandboxSpec(write_roots=[root], allow_network=True)
     profile = build_seatbelt_profile(spec)
     r = str(root.resolve())
     assert f'(allow file-write* (subpath "{r}"))' in profile
-    assert f'(deny file-write* (subpath "{r}/.git"))' in profile
     assert f'(deny file-write* (subpath "{r}/.env"))' in profile
+    assert f'(deny file-write* (subpath "{r}/.git/hooks"))' in profile
+    assert f'(deny file-write* (subpath "{r}/.git"))' not in profile  # gitdir writable
 
 
 def test_bwrap_no_overlay_when_no_protected_metadata(tmp_path) -> None:
@@ -503,6 +537,34 @@ async def test_default_config_bash_is_sandboxed(tmp_path, monkeypatch) -> None:
     finally:
         if fd is not None:
             os.close(fd)
+
+
+@_skip_no_backend
+@pytest.mark.asyncio
+async def test_sandboxed_git_commit_works(tmp_path, monkeypatch) -> None:
+    # Regression: the sandbox must not read-only-mount .git, or `git commit`
+    # fails with "Unable to create .git/index.lock: Read-only file system".
+    if detect_backend("auto") != "bwrap":
+        pytest.skip("git-metadata bind confinement needs the bwrap backend")
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(
+        "git init -q && git config user.email t@t && git config user.name t "
+        "&& git commit --allow-empty -qm init",
+        cwd=repo,
+        shell=True,
+        check=True,
+    )
+    monkeypatch.chdir(repo)
+    bash = _bash(SandboxConfig(enabled=True))
+
+    res = await _run(bash, "git commit --allow-empty -m sbx -q && echo done")
+    assert res is not None and res.returncode == 0 and "done" in res.stdout
+
+    with pytest.raises(ToolError):  # hooks stay read-only
+        await _run(bash, "echo x > .git/hooks/pre-commit")
 
 
 @_skip_no_backend

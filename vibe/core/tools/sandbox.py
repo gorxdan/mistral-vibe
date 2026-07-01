@@ -140,10 +140,60 @@ def _canonical_roots(roots: list[Path]) -> list[str]:
 
 
 # Sensitive subpaths layered read-only over each writable root so a sandboxed
-# command can read repo metadata but not rewrite git history, hooks, agent
-# config, or secrets. Applied AFTER the writable --bind (bwrap is left-to-right,
-# so the later mount wins) and as explicit seatbelt denies after the write-allow.
-_PROTECTED_SUBPATHS = (".git", ".vibe", ".env")
+# command can read them but not rewrite agent config or secrets. Applied AFTER
+# the writable --bind (bwrap is left-to-right, so the later mount wins) and as
+# explicit seatbelt denies after the write-allow. NB: `.git` is deliberately NOT
+# here — a coding agent must be able to `git commit` (see _git_bind_dirs, which
+# keeps the repo's git metadata writable but re-protects `hooks/`).
+_PROTECTED_SUBPATHS = (".vibe", ".env")
+
+
+def _worktree_gitdir(root: Path) -> Path | None:
+    """The external gitdir a linked-worktree ``.git`` file points to, else None.
+
+    A normal checkout has a ``.git`` *directory* (returns None — it lives under
+    the already-writable root). A linked worktree has a ``.git`` *file* holding
+    ``gitdir: <abs>/.git/worktrees/<name>``; return that path resolved.
+    """
+    dotgit = root / ".git"
+    try:
+        if not dotgit.is_file():
+            return None
+        for line in dotgit.read_text().splitlines():
+            if line.startswith("gitdir:"):
+                p = Path(line.split(":", 1)[1].strip())
+                return p if p.is_absolute() else (root / p).resolve()
+    except OSError:
+        return None
+    return None
+
+
+def _git_bind_dirs(root: Path) -> tuple[list[str], list[str]]:
+    """(writable_git_dirs, readonly_hook_dirs) for one write root.
+
+    A sandboxed command must be able to commit (write index/refs/objects/logs),
+    so git metadata stays writable — but ``hooks/`` is re-layered read-only so a
+    command can't drop a hook that later runs *outside* the sandbox. For a linked
+    worktree the real gitdir and shared object store live outside the checkout
+    under the main repo's ``.git``, so that dir is bound writable explicitly.
+    """
+    writable: list[str] = []
+    readonly: list[str] = []
+    gitdir = _worktree_gitdir(root)
+    if gitdir is not None:
+        # gitdir == <common>/worktrees/<name>; <common> holds objects + refs and
+        # contains the gitdir, so binding it writable covers the whole commit.
+        common = gitdir.parent.parent
+        if common.is_dir():
+            writable.append(str(common))
+        hooks = common / "hooks"
+        if hooks.is_dir():
+            readonly.append(str(hooks))
+    else:
+        hooks = root / ".git" / "hooks"
+        if hooks.is_dir():
+            readonly.append(str(hooks))
+    return writable, readonly
 
 
 def build_sandbox_command(
@@ -224,11 +274,17 @@ def _bwrap_argv(spec: SandboxSpec) -> list[str]:
     if not spec.allow_network:
         argv.append("--unshare-net")
     for root in _canonical_roots(spec.write_roots):
-        # Writable bind first, then layer read-only over sensitive metadata
-        # (bwrap is left-to-right, so the later --ro-bind wins for that subpath).
+        # Writable bind first, then the (possibly external) git metadata writable,
+        # then layer read-only over sensitive metadata + git hooks last (bwrap is
+        # left-to-right, so the later --ro-bind wins for that subpath).
         argv += ["--bind", root, root]
+        writable_git, readonly_hooks = _git_bind_dirs(Path(root))
+        for gitdir in writable_git:
+            argv += ["--bind", gitdir, gitdir]
         for sub in _protected_subpaths_for(root):
             argv += ["--ro-bind", sub, sub]
+        for hooks in readonly_hooks:
+            argv += ["--ro-bind", hooks, hooks]
     argv += ["--chdir", str(Path.cwd())]
     argv += spec.extra_args
     argv.append("--")
@@ -258,9 +314,14 @@ def build_seatbelt_profile(spec: SandboxSpec) -> str:
         if '"' in root or "\n" in root:
             continue  # never inject into the profile string
         lines.append(f'(allow file-write* (subpath "{root}"))')
-        # Re-deny sensitive metadata so a sandboxed command can read but not
-        # rewrite git history, hooks, agent config, or secrets under the root.
-        for sub in _protected_subpaths_for(root):
+        writable_git, readonly_hooks = _git_bind_dirs(Path(root))
+        for gitdir in writable_git:
+            if '"' not in gitdir and "\n" not in gitdir:
+                lines.append(f'(allow file-write* (subpath "{gitdir}"))')
+        # Re-deny sensitive metadata + git hooks (last match wins) so a sandboxed
+        # command can commit and read config but not rewrite secrets, agent
+        # config, or install a hook that runs outside the sandbox.
+        for sub in [*_protected_subpaths_for(root), *readonly_hooks]:
             if '"' in sub or "\n" in sub:
                 continue
             lines.append(f'(deny file-write* (subpath "{sub}"))')
