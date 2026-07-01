@@ -7,6 +7,7 @@ from vibe.core.auth.openai_oauth import (
     OPENAI_CHATGPT_API_STYLE,
 )
 from vibe.core.config import (
+    KNOWN_MODEL_CONTEXT_WINDOWS,
     ModelConfig,
     ProviderCacheConfig,
     ProviderConfig,
@@ -94,6 +95,7 @@ PRESETS: list[ProviderPreset] = [
             input_price=0.0,
             output_price=0.0,
             auto_compact_threshold=880000,
+            context_window=KNOWN_MODEL_CONTEXT_WINDOWS["glm-5.2"],
         ),
     ),
     ProviderPreset(
@@ -247,6 +249,7 @@ PRESETS: list[ProviderPreset] = [
             supports_images=True,
             # 1M-token context window; compact well before the ceiling.
             auto_compact_threshold=880000,
+            context_window=KNOWN_MODEL_CONTEXT_WINDOWS["fugu"],
         ),
         extra_models=(
             ModelConfig(
@@ -260,6 +263,7 @@ PRESETS: list[ProviderPreset] = [
                 supports_images=True,
                 # Same 1M-token context window as fugu; compact before the ceiling.
                 auto_compact_threshold=880000,
+                context_window=KNOWN_MODEL_CONTEXT_WINDOWS["fugu-ultra"],
             ),
         ),
     ),
@@ -289,6 +293,7 @@ PRESETS: list[ProviderPreset] = [
             # 1M-token context window (128K output). Compact well before the
             # ceiling, matching the other 1M-window presets.
             auto_compact_threshold=880000,
+            context_window=KNOWN_MODEL_CONTEXT_WINDOWS["LongCat-2.0"],
         ),
     ),
     ProviderPreset(
