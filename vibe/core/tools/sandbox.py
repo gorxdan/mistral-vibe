@@ -260,9 +260,28 @@ def _git_bind_dirs(root: Path) -> tuple[list[str], list[str]]:
         # (the `git config --worktree` target) lives under the worktree's gitdir.
         readonly += _readonly_git_targets(common)
         readonly += _readonly_git_targets(gitdir)
+        readonly += _sibling_worktree_readonly_targets(common, skip=gitdir)
     else:
         readonly += _readonly_git_targets(root / ".git")
+        readonly += _sibling_worktree_readonly_targets(root / ".git", skip=None)
     return writable, readonly
+
+
+def _sibling_worktree_readonly_targets(common: Path, skip: Path | None) -> list[str]:
+    """Metadata of OTHER worktrees under ``<common>/worktrees`` — a writable
+    sibling ``config.worktree`` is a cross-worktree hooksPath escape.
+    """
+    worktrees = common / "worktrees"
+    found: list[str] = []
+    try:
+        entries = list(worktrees.iterdir()) if worktrees.is_dir() else []
+    except OSError:
+        return found
+    for entry in entries:
+        if entry == skip or entry.is_symlink() or not entry.is_dir():
+            continue
+        found += _readonly_git_targets(entry)
+    return found
 
 
 def build_sandbox_command(

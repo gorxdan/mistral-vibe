@@ -859,3 +859,37 @@ def test_headless_nudge_silent_when_disabled_or_no_config(capsys) -> None:
     _emit_headless_sandbox_nudge(SandboxConfig(enabled=False, backend="unshare"))
     _emit_headless_sandbox_nudge(None)
     assert capsys.readouterr().err == ""
+
+
+def test_bwrap_sibling_worktree_configs_readonly(tmp_path) -> None:
+    # extensions.worktreeConfig: a sibling worktree's config.worktree is a
+    # cross-worktree hooksPath escape if left writable under the shared .git.
+    main = tmp_path / "main"
+    (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    (main / ".git" / "worktrees" / "other").mkdir(parents=True)
+    (main / ".git" / "config").write_text("[core]\n")
+    (main / ".git" / "worktrees" / "other" / "config.worktree").write_text("[core]\n")
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
+
+    spec = SandboxSpec(write_roots=[wt], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert f"{main}/.git/worktrees/other/config.worktree" in ro_targets
+
+
+def test_bwrap_main_checkout_linked_worktree_configs_readonly(tmp_path) -> None:
+    # Sandboxed in the MAIN checkout: linked worktrees' config.worktree files
+    # under .git/worktrees/* must not be writable either.
+    root = tmp_path / "repo"
+    (root / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    (root / ".git" / "config").write_text("[core]\n")
+    (root / ".git" / "worktrees" / "wt" / "config.worktree").write_text("[core]\n")
+
+    spec = SandboxSpec(write_roots=[root], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert f"{root}/.git/worktrees/wt/config.worktree" in ro_targets
