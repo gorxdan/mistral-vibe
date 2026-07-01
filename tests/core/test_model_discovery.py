@@ -294,11 +294,11 @@ async def test_fetch_model_ids_ignores_api_tags() -> None:
     assert await fetch_model_ids(_provider()) == ["m"]
 
 
-# --- discover_extra_models: context budget ---------------------------------
+# --- discover_extra_models: context window ----------------------------------
 
 
 @pytest.mark.asyncio
-async def test_discover_budget_capped_by_default_num_ctx(
+async def test_discover_window_capped_by_default_num_ctx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("OLLAMA_CONTEXT_LENGTH", raising=False)
@@ -310,12 +310,13 @@ async def test_discover_budget_capped_by_default_num_ctx(
     monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
     out = await discover_extra_models(config)
 
-    # served window defaults to 4096 -> floor(0.85 * 4096) = 3481
-    assert out[0].model.auto_compact_threshold == 3481
+    # ollama serves 4096 tokens by default regardless of the trained 131072.
+    assert out[0].model.context_window == 4096
+    assert "auto_compact_threshold" not in out[0].model.model_fields_set
 
 
 @pytest.mark.asyncio
-async def test_discover_budget_honors_ollama_context_length_env(
+async def test_discover_window_honors_ollama_context_length_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OLLAMA_CONTEXT_LENGTH", "131072")
@@ -327,12 +328,11 @@ async def test_discover_budget_honors_ollama_context_length_env(
     monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
     out = await discover_extra_models(config)
 
-    # min(131072, 131072) -> floor(0.85 * 131072) = 111411
-    assert out[0].model.auto_compact_threshold == 111411
+    assert out[0].model.context_window == 131072
 
 
 @pytest.mark.asyncio
-async def test_discover_generic_budget_uncapped(
+async def test_discover_generic_window_uncapped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = build_test_vibe_config(
@@ -346,12 +346,11 @@ async def test_discover_generic_budget_uncapped(
     monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
     out = await discover_extra_models(config)
 
-    # non-ollama: no num_ctx cap -> floor(0.85 * 32768) = 27852
-    assert out[0].model.auto_compact_threshold == 27852
+    assert out[0].model.context_window == 32768
 
 
 @pytest.mark.asyncio
-async def test_discover_no_context_leaves_default_unset(
+async def test_discover_no_context_leaves_fields_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _mistral_only_config()
@@ -362,7 +361,8 @@ async def test_discover_no_context_leaves_default_unset(
     monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
     out = await discover_extra_models(config)
 
-    # No detection -> field left unset so the global default still applies.
+    # No detection -> fields left unset so the global default still applies.
+    assert out[0].model.context_window is None
     assert "auto_compact_threshold" not in out[0].model.model_fields_set
     assert out[0].model.auto_compact_threshold == 200_000
 
@@ -638,6 +638,41 @@ def test_persist_discovered_model_writes_temperature_explicitly(
     for alias in ("kimi", "kimi-sibling"):
         assert "temperature" in by_alias[alias]
         assert ModelConfig.model_validate(by_alias[alias]).temperature is None
+
+
+@pytest.mark.asyncio
+async def test_persisted_discovered_model_round_trips_context_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # discover -> persist -> reload: context_window survives and the validator
+    # derives the threshold (85% of the window); no threshold is persisted.
+    provider = _provider(name="vllm", api_base="http://vllm-test/v1")
+    config = build_test_vibe_config(
+        providers=[provider], models=[ModelConfig(name="x", provider="vllm", alias="x")]
+    )
+
+    async def _fake(prov: ProviderConfig, **_k: object) -> list[RawModel]:
+        return [RawModel("big", 32768)] if prov.name == "vllm" else []
+
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
+    monkeypatch.setattr(
+        VibeConfig, "get_persisted_config", classmethod(lambda _cls: {})
+    )
+    dm = (await discover_extra_models(config))[0]
+
+    upd = build_persisted_updates(config, dm)
+
+    entry = next(m for m in upd["models"] if m["alias"] == "big")
+    assert entry["context_window"] == 32768
+    assert "auto_compact_threshold" not in entry
+
+    reloaded = build_test_vibe_config(
+        providers=[provider],
+        models=[ModelConfig.model_validate(m) for m in upd["models"]],
+    )
+    big = next(m for m in reloaded.models if m.alias == "big")
+    assert big.context_window == 32768
+    assert big.auto_compact_threshold == int(32768 * 0.85)
 
 
 def test_persist_does_not_duplicate_existing_provider(
