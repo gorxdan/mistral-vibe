@@ -38,6 +38,17 @@ def test_new_agent_prompts_load_and_are_nonempty() -> None:
         assert "Never:" in sp or "Never " in sp
 
 
+def test_lsp_enabled_agents_get_concrete_lsp_guidance_in_their_prompt() -> None:
+    # An enabled tool the role prompt never names goes unused in practice.
+    for profile in BUILTIN_AGENTS.values():
+        if "lsp" not in profile.overrides.get("enabled_tools", []):
+            continue
+        prompt_id = profile.overrides["system_prompt_id"]
+        assert "lsp" in load_system_prompt(str(prompt_id)), (
+            f"{profile.name}: prompt {prompt_id!r} never mentions lsp"
+        )
+
+
 def test_editor_is_write_capable_others_read_only() -> None:
     editor = BUILTIN_AGENTS[BuiltinAgentName.EDITOR].overrides["enabled_tools"]
     assert "write_file" in editor and "edit" in editor and "bash" not in editor

@@ -145,3 +145,21 @@ def test_discard_unmerged_aborts_without_tty(tmp_path: Path) -> None:
 def test_unknown_action(tmp_path: Path) -> None:
     os.chdir(str(tmp_path))
     assert run_worktree_command(["bogus"]) == 2
+
+
+def test_merge_strands_gracefully_when_merge_lock_busy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CLI merge must honor the same per-repo lock as the session-exit auto-ff.
+    from filelock import FileLock
+
+    monkeypatch.setattr("vibe.core.worktree.manager._MERGE_LOCK_TIMEOUT_S", 0.2)
+    root, branch = _repo_with_orphan_branch(tmp_path)
+
+    lock_path = _wt_dir(root) / ".git" / "vibe-merge.lock"
+    with FileLock(str(lock_path)):
+        assert run_worktree_command(["merge", branch]) == 1
+
+    # Nothing landed while the lock was held; branch kept for retry.
+    assert not (_wt_dir(root) / "work.txt").exists()
+    assert branch in [b.name for b in root.branches]
