@@ -966,3 +966,23 @@ def test_pid_alive_distinguishes_live_from_dead() -> None:
     assert WorktreeManager._pid_alive(0) is False
     # A pid at the top of the range is essentially never live.
     assert WorktreeManager._pid_alive(2**31 - 1) is False
+
+
+def test_merge_lock_from_linked_worktree_uses_common_gitdir(tmp_path: Path) -> None:
+    # Linked worktree .git is a pointer FILE: the lock must resolve to the shared
+    # gitdir (same file for all worktrees; FileLock mkdir must not hit the pointer).
+    from vibe.core.worktree.manager import merge_lock
+
+    main = tmp_path / "main"
+    main.mkdir()
+    repo = Repo.init(str(main))
+    (main / "a.txt").write_text("x\n")
+    repo.git.add("-A")
+    repo.git.commit("-m", "init")
+    wt = tmp_path / "wt"
+    repo.git.worktree("add", "-b", "wt-branch", str(wt))
+
+    lock = merge_lock(wt)
+    with lock:
+        pass
+    assert Path(lock.lock_file).parent == (main / ".git").resolve()

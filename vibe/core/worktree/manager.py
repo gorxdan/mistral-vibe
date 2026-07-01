@@ -41,9 +41,13 @@ _MERGE_LOCK_TIMEOUT_S = 30.0
 
 def merge_lock(repo_root: Path) -> FileLock:
     """The per-repo lock every merge-back path must hold (exit auto-ff, CLI)."""
-    return FileLock(
-        str(repo_root / ".git" / _MERGE_LOCK_NAME), timeout=_MERGE_LOCK_TIMEOUT_S
-    )
+    gitdir = repo_root / ".git"
+    if gitdir.is_file():
+        # Linked worktree: .git is a pointer file; lock in the shared gitdir so
+        # all worktrees of the repo serialize on the same file.
+        common = Repo(str(repo_root)).git.rev_parse("--git-common-dir")
+        gitdir = (repo_root / common).resolve()
+    return FileLock(str(gitdir / _MERGE_LOCK_NAME), timeout=_MERGE_LOCK_TIMEOUT_S)
 
 
 _WORKTREE_LEAF_FIELD_COUNT = 3  # "<label>-<pid>-<time_ns>"
