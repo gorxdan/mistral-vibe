@@ -10,15 +10,24 @@ from vibe.core import perf_log, stream_tracer
 from vibe.core.types import AssistantEvent, ReasoningEvent
 
 
-@pytest.fixture(autouse=True)
-def _reset_tracer() -> Iterator[None]:
-    yield
+def _reset_state() -> None:
     stream_tracer._enabled = None
     stream_tracer._turn = None
     for handler in list(stream_tracer._perf_log.handlers):
         stream_tracer._perf_log.removeHandler(handler)
         handler.close()
+    if perf_log._HANDLER is not None:
+        perf_log._HANDLER.close()
     perf_log._HANDLER = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_tracer() -> Iterator[None]:
+    # Reset before too: an earlier act() test in this worker may have cached
+    # _enabled=False (env unset) or a handler bound to a dead tmp LOG_DIR.
+    _reset_state()
+    yield
+    _reset_state()
 
 
 def _make_handler() -> EventHandler:

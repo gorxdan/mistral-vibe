@@ -10,12 +10,17 @@ from vibe.core import perf_log
 from vibe.core.paths import LOG_DIR
 
 
-@pytest.fixture(autouse=True)
-def _reset_perf_log() -> Iterator[None]:
-    yield
+def _reset_state() -> None:
     if perf_log._HANDLER is not None:
         perf_log._HANDLER.close()
     perf_log._HANDLER = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_perf_log() -> Iterator[None]:
+    _reset_state()
+    yield
+    _reset_state()
 
 
 def test_perf_handler_creates_missing_log_dir() -> None:
