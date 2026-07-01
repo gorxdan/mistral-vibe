@@ -61,17 +61,19 @@ def turn_limit() -> int:
         return 1
 
 
-def start(label: str = "default") -> None:
+def start(label: str = "default") -> bool:
     """Start profiling. The label names the output file.
 
-    No-op if pyinstrument is missing or ``VIBE_PROFILE`` is unset.
+    Returns True only when a profiler actually started: no-op (False) if
+    pyinstrument is missing, ``VIBE_PROFILE`` is unset, or one is already
+    running — callers must not stop a profile they didn't start.
     """
     if not is_enabled():
-        return
+        return False
     try:
         from pyinstrument import Profiler
     except ImportError:
-        return
+        return False
 
     if _state.profiler is not None:
         import warnings
@@ -79,11 +81,12 @@ def start(label: str = "default") -> None:
         warnings.warn(
             "Profiler already running; stop it before starting a new one.", stacklevel=2
         )
-        return
+        return False
 
     _state.label = label
     _state.profiler = Profiler()
     _state.profiler.start()
+    return True
 
 
 def stop_and_print() -> None:
@@ -92,13 +95,17 @@ def stop_and_print() -> None:
         return
     _state.profiler.stop()
 
-    from pathlib import Path
     import sys
 
-    output_path = Path(f"{_state.label}-profile.html")
+    from vibe.core.paths import LOG_DIR
+
+    # LOG_DIR, not CWD: profiling a session must not litter the user's project.
+    out_dir = LOG_DIR.path
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output_path = out_dir / f"{_state.label}-profile.html"
     output_path.write_text(_state.profiler.output_html(), encoding="utf-8")
 
-    text_path = Path(f"{_state.label}-profile.txt")
+    text_path = out_dir / f"{_state.label}-profile.txt"
     text_path.write_text(_state.profiler.output_text(color=False), encoding="utf-8")
 
     print(
@@ -128,7 +135,11 @@ def section(label: str, *, turn: int | None = None) -> Iterator[None]:
     if turn is not None and turn_limit() and turn >= turn_limit():
         yield
         return
-    start(label)
+    # A refused start (e.g. concurrent act() already profiling) must not stop
+    # the owner's in-flight profile on exit.
+    if not start(label):
+        yield
+        return
     try:
         yield
     finally:
