@@ -17,6 +17,11 @@ which coroutine hogged the loop thread.
 Install is idempotent and fail-soft; a complete no-op unless the env var is set,
 so production paths are untouched. When enabled it wraps ``asyncio.Handle._run``
 (affects both Handle and TimerHandle) — opt-in eval tooling only.
+
+Observer effect: install() turns on ``loop.set_debug(True)`` for scheduled-from
+attribution, which makes asyncio capture a traceback for every scheduled handle
+and enables its debug checks. Traced runs are measurably slower than untraced
+ones — compare traced runs only against other traced runs.
 """
 
 from __future__ import annotations
