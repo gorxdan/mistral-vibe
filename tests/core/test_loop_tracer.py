@@ -7,13 +7,11 @@ import time
 
 import pytest
 
-from vibe.core import loop_tracer
+from vibe.core import loop_tracer, perf_log
 from vibe.core.paths import LOG_DIR
 
 
-@pytest.fixture(autouse=True)
-def _reset_tracer() -> Iterator[None]:
-    yield
+def _reset_state() -> None:
     if loop_tracer._ORIG_RUN is not None:
         asyncio.Handle._run = loop_tracer._ORIG_RUN
     loop_tracer._ORIG_RUN = None
@@ -23,6 +21,16 @@ def _reset_tracer() -> Iterator[None]:
     for handler in list(loop_tracer._perf_log.handlers):
         loop_tracer._perf_log.removeHandler(handler)
         handler.close()
+    if perf_log._HANDLER is not None:
+        perf_log._HANDLER.close()
+    perf_log._HANDLER = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_tracer() -> Iterator[None]:
+    _reset_state()
+    yield
+    _reset_state()
 
 
 @pytest.mark.asyncio

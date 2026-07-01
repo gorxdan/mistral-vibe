@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
 
+from vibe.core import stream_tracer
 from vibe.core.agent_loop._errors import (
     _STREAM_DEGENERATE_RETRIES,
     AgentLoopLLMResponseError,
@@ -383,6 +384,7 @@ class AgentLoopBackendMixin(
                     # message every delta -> O(n^2) over a response).
                     chunk_acc = LLMChunkAccumulator()
                     extra_headers, turn_state_sink = self._codex_routing(provider)
+                    stream_tracer.stream_started(self)
                     async for chunk in self.backend.complete_streaming(
                         CompletionRequest(
                             model=active_model,
@@ -397,6 +399,7 @@ class AgentLoopBackendMixin(
                         ),
                         response_headers_sink=turn_state_sink,
                     ):
+                        stream_tracer.chunk_received(self)
                         if chunk.correlation_id:
                             self.telemetry_client.last_correlation_id = (
                                 chunk.correlation_id

@@ -19,6 +19,7 @@ from vibe.cli.textual_ui.widgets.messages import (
 )
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.cli.textual_ui.widgets.tools import ToolCallMessage, ToolResultMessage
+from vibe.core import stream_tracer
 from vibe.core.hooks.models import (
     HookEndEvent,
     HookEvent,
@@ -308,6 +309,8 @@ class EventHandler:
             await self.mount_callback(msg)
         else:
             await self.current_streaming_message.append_content(event.content)
+        # After the widget holds the text (TTFR probe; paints on the next frame).
+        stream_tracer.assistant_rendered()
 
     async def _handle_reasoning_message(self, event: ReasoningEvent) -> None:
         if self.current_streaming_message is not None:
