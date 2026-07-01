@@ -1250,3 +1250,16 @@ async def test_searxng_title_newlines_collapsed(monkeypatch):
     # title cannot break out of the bold wrapper onto its own line.
     bold_line = [ln for ln in result.answer.splitlines() if "safe" in ln][0]
     assert "breakout" in bold_line  # both on the same line
+
+
+def test_resolve_clients_plants_sdkerror_when_getattr_planted_mistral_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import vibe.core.tools.builtins.websearch as ws
+
+    monkeypatch.delitem(ws.__dict__, "Mistral", raising=False)
+    monkeypatch.delitem(ws.__dict__, "SDKError", raising=False)
+    assert ws.Mistral is not None
+    assert "SDKError" not in ws.__dict__
+    ws._resolve_mistral_clients()
+    assert "SDKError" in ws.__dict__

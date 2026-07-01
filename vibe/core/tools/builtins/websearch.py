@@ -76,11 +76,15 @@ def __getattr__(name: str) -> object:
 
 
 def _resolve_mistral_clients() -> None:
+    # Plant each name independently: module __getattr__ can plant Mistral alone,
+    # and `except SDKError` is a plain global lookup __getattr__ never serves.
     if "Mistral" not in globals():
         from mistralai.client import Mistral
-        from mistralai.client.errors import SDKError
 
         globals()["Mistral"] = Mistral
+    if "SDKError" not in globals():
+        from mistralai.client.errors import SDKError
+
         globals()["SDKError"] = SDKError
 
 
