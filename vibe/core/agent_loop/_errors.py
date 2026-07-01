@@ -20,6 +20,7 @@ from vibe.core.types import (
     RefusalError,
     ResponseTooLongError,
     ServerError,
+    TransportError,
 )
 
 
@@ -94,6 +95,8 @@ def _raise_for_backend_error(
         raise ContentFilterError(provider_name, model_name) from e
     if _is_non_retryable_error(e):
         raise
+    if _is_transport_error(e):
+        raise TransportError(provider_name, model_name) from e
     if _is_server_error(e):
         raise ServerError(provider_name, model_name) from e
     raise RuntimeError(
@@ -115,6 +118,17 @@ def _is_server_error(e: Exception) -> bool:
         and backend.status is not None
         and HTTPStatus.INTERNAL_SERVER_ERROR <= backend.status <= _MAX_SERVER_STATUS
     )
+
+
+def _is_transport_error(e: Exception) -> bool:
+    # A dropped connection / transport failure reaches the loop as
+    # BackendError(status=None): build_request_error (exceptions.py) sets no
+    # status because there is no HTTP response to classify. status=None is the
+    # unique signal — any HTTP status means a response arrived and is routed by
+    # the server / rate-limit / context classifiers above. Mutually exclusive
+    # with _is_server_error (which requires a 5xx status).
+    backend = e if isinstance(e, BackendError) else getattr(e, "__cause__", None)
+    return isinstance(backend, BackendError) and backend.status is None
 
 
 def _is_context_too_long_error(e: Exception) -> bool:

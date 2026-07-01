@@ -13,6 +13,8 @@ from vibe.core.agent_loop._errors import (
     _is_non_retryable_error,
     _is_response_too_long_error,
     _is_server_error,
+    _is_transport_error,
+    _raise_for_backend_error,
     _should_raise_rate_limit_error,
 )
 from vibe.core.agents.models import BuiltinAgentName
@@ -29,6 +31,7 @@ from vibe.core.types import (
     ServerError,
     ToolCall,
     ToolResultEvent,
+    TransportError,
 )
 
 
@@ -129,6 +132,34 @@ def test_is_server_error_matches_5xx_direct_and_via_cause() -> None:
     )
     assert _is_server_error(_backend_error(status=None)) is False
     assert _is_server_error(RuntimeError("plain")) is False
+
+
+def test_is_transport_error_matches_no_status_direct_and_via_cause() -> None:
+    # A dropped connection reaches the loop as BackendError(status=None,
+    # parsed_error="Network error") (exceptions.build_request_error). status=None
+    # is the signal: a transport failure has no HTTP response to classify.
+    assert _is_transport_error(_backend_error(status=None)) is True
+
+    wrapped = RuntimeError("upstream")
+    wrapped.__cause__ = _backend_error(status=None)
+    assert _is_transport_error(wrapped) is True
+
+    # An HTTP status — any status — means we got a response, so it is not a
+    # transport error (it's server/rate-limit/context/etc.).
+    assert _is_transport_error(_backend_error(status=500)) is False
+    assert _is_transport_error(_backend_error(status=HTTPStatus.BAD_REQUEST)) is False
+    assert _is_transport_error(RuntimeError("plain")) is False
+
+
+def test_raise_for_backend_error_classifies_transport() -> None:
+    # The turn-loop recovery catches typed exceptions, not bare RuntimeError.
+    # A status=None BackendError must surface as TransportError so the loop's
+    # except TransportError clause fires (failover), instead of the dropped
+    # connection terminating the turn.
+    with pytest.raises(TransportError):
+        _raise_for_backend_error(
+            _backend_error(status=None), "mistral", "devstral-latest"
+        )
 
 
 def test_is_non_retryable_error_walks_cause_chain_and_detects_flag() -> None:

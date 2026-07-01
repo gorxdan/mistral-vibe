@@ -31,6 +31,7 @@ from vibe.core.types import (
     RateLimitCallback,
     RateLimitError,
     ServerError,
+    TransportError,
 )
 
 if TYPE_CHECKING:
@@ -130,7 +131,7 @@ class AgentLoopFailoverMixin:
 
     def _apply_failover(
         self,
-        exc: RateLimitError | ContentFilterError | ServerError,
+        exc: RateLimitError | ContentFilterError | ServerError | TransportError,
         fallback: ModelConfig | None,
         *,
         error_type: str,

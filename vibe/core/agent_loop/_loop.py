@@ -149,6 +149,7 @@ from vibe.core.types import (
     ToolCallEvent,
     ToolResultEvent,
     ToolStreamEvent,
+    TransportError,
     UserInputCallback,
     UserMessageEvent,
 )
@@ -1537,6 +1538,23 @@ class AgentLoop(AgentLoopSessionMixin):
                         error_type="server_error",
                         unavailable_reason=f"{e.provider!r} backend server error",
                         log_template="%r backend server error; falling back to %r",
+                        log_prefix_args=(e.provider,),
+                    )
+                    continue
+                except TransportError as e:
+                    # A dropped connection (no HTTP response) reaches here after
+                    # the backend's own connection-error retries are exhausted
+                    # (mistral.py RetryConfig, retry_connection_errors=True). The
+                    # loop-level response is failover to a different backend's
+                    # connection, not another in-place retry on the same dead
+                    # socket. Without this clause the bare RuntimeError fallthrough
+                    # in _raise_for_backend_error terminated the turn.
+                    self._apply_failover(
+                        e,
+                        self._switch_to_fallback_model(),
+                        error_type="transport",
+                        unavailable_reason=f"{e.provider!r} backend dropped the connection",
+                        log_template="%r backend dropped the connection; falling back to %r",
                         log_prefix_args=(e.provider,),
                     )
                     continue
