@@ -17,6 +17,9 @@ def init_sentry(
 ) -> bool:
     if not config.enable_telemetry:
         return False
+    # DSN only exists in release builds; init(dsn=None) still "initializes".
+    if _SENTRY_DSN is None:
+        return False
 
     import sentry_sdk
     from sentry_sdk.integrations.asyncio import AsyncioIntegration
