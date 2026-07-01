@@ -475,6 +475,59 @@ Markdown {
     }
 }
 
+.subagent-response-message {
+    margin-top: 1;
+    width: 100%;
+    height: auto;
+}
+
+.subagent-response-wrapper {
+    width: 100%;
+    height: auto;
+}
+
+.subagent-response-header {
+    width: 100%;
+    height: auto;
+    pointer: pointer;
+}
+
+.subagent-response-label {
+    width: auto;
+    height: auto;
+    color: $text-muted;
+    text-style: italic;
+
+    &:ansi {
+        text-style: dim;
+    }
+}
+
+.subagent-response-triangle {
+    width: auto;
+    height: auto;
+    margin-left: 1;
+    color: $text-muted;
+    text-style: italic;
+
+    &:ansi {
+        text-style: dim;
+    }
+}
+
+.subagent-response-content {
+    layout: stream;
+    width: 100%;
+    height: auto;
+    padding: 0 2 0 2;
+    margin: 0;
+    color: $text-muted;
+
+    & > MarkdownBlock:last-child {
+        margin-bottom: 0;
+    }
+}
+
 .interrupt-message,
 .error-message,
 .warning-message,

@@ -468,6 +468,55 @@ class ReasoningMessage(ClickWithoutDragMixin, SpinnerMixin, StreamingMessageBase
                 self._to_write_buffer = ""
 
 
+class SubagentResponseMessage(ClickWithoutDragMixin, Static):
+    # Collapsible, markdown-rendered block for a completed sub-agent / workflow
+    # result. Mirrors ReasoningMessage's toggle+markdown shape without the
+    # spinner/streaming machinery — the content is final at mount time, so a
+    # single Markdown parse suffices and toggling only flips `display`. Without
+    # this, BackgroundTaskCompletedEvent fell through to the unknown-event
+    # fallback (NoMarkupStatic(str(event))) and rendered the whole response as
+    # a raw plain-text dump — no markdown, no way to hide a long report.
+    def __init__(self, content: str, *, label: str, collapsed: bool = True) -> None:
+        super().__init__()
+        self.add_class("subagent-response-message")
+        self._content = content
+        self._label = label
+        self.collapsed = collapsed
+        self._triangle_widget: Static | None = None
+        self._header_widget: Horizontal | None = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="subagent-response-wrapper"):
+            self._header_widget = Horizontal(classes="subagent-response-header")
+            with self._header_widget:
+                yield NoMarkupStatic(self._label, classes="subagent-response-label")
+                self._triangle_widget = NonSelectableStatic(
+                    "▶" if self.collapsed else "▼", classes="subagent-response-triangle"
+                )
+                yield self._triangle_widget
+            markdown = Markdown(self._content, classes="subagent-response-content")
+            markdown.display = not self.collapsed
+            yield markdown
+
+    def _is_click_on_toggle(self, event: events.Click) -> bool:
+        return self._is_click_within(event, self._header_widget)
+
+    async def on_click(self, event: events.Click) -> None:
+        if self._click_is_passive(event):
+            return
+        self._toggle_collapsed()
+
+    def _toggle_collapsed(self) -> None:
+        self.collapsed = not self.collapsed
+        if self._triangle_widget:
+            self._triangle_widget.update("▶" if self.collapsed else "▼")
+        try:
+            markdown = self.query_one(".subagent-response-content", Markdown)
+        except Exception:
+            return
+        markdown.display = not self.collapsed
+
+
 class UserCommandMessage(Static):
     def __init__(self, content: str) -> None:
         super().__init__()

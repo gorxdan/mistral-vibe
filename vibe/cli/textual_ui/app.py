@@ -3855,10 +3855,7 @@ class VibeApp(App):
         )
 
     async def _on_workflow_complete(self, result: Any) -> None:
-        from vibe.cli.textual_ui.widgets.messages import (
-            ErrorMessage,
-            UserCommandMessage,
-        )
+        from vibe.cli.textual_ui.widgets.messages import SubagentResponseMessage
         from vibe.core.workflows.models import WorkflowStatus
 
         summary = result.summary
@@ -3868,10 +3865,15 @@ class VibeApp(App):
         # (cancelled by the user) is neither success nor error — render it as a
         # neutral note so it isn't styled red like a crash.
         status = getattr(result.run, "status", None)
+        run_id = getattr(result.run, "run_id", "workflow")
         if status == WorkflowStatus.FAILED:
-            await self._mount_and_scroll(ErrorMessage(summary))
+            label = f"Workflow Result — {run_id} (failed)"
+            await self._mount_and_scroll(
+                SubagentResponseMessage(summary, label=label, collapsed=False)
+            )
         else:
-            await self._mount_and_scroll(UserCommandMessage(summary))
+            label = f"Workflow Result — {run_id} (completed)"
+            await self._mount_and_scroll(SubagentResponseMessage(summary, label=label))
 
         # Deliver the outcome + return value to the host agent's context. The
         # UserCommandMessage above is a UI-only note for the human; without this

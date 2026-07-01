@@ -14,6 +14,7 @@ from vibe.cli.textual_ui.widgets.messages import (
     HookSystemMessageLine,
     PlanFileMessage,
     ReasoningMessage,
+    SubagentResponseMessage,
     UserMessage,
 )
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
@@ -30,6 +31,7 @@ from vibe.core.tools.ui import ToolUIDataAdapter
 from vibe.core.types import (
     AgentProfileChangedEvent,
     AssistantEvent,
+    BackgroundTaskCompletedEvent,
     BaseEvent,
     CompactEndEvent,
     CompactStartEvent,
@@ -145,6 +147,18 @@ class EventHandler:
             await container.remove()
 
     async def handle_event(
+        self, event: BaseEvent, loading_widget: LoadingWidget | None = None
+    ) -> ToolCallMessage | None:
+        # Background sub-agent completion mounts a dedicated collapsible widget
+        # (see _handle_subagent_response); dispatch it before the match so the
+        # big event-match stays under ruff's PLR0912 branch budget.
+        if isinstance(event, BackgroundTaskCompletedEvent):
+            await self.finalize_streaming()
+            await self._handle_subagent_response(event)
+            return None
+        return await self._dispatch_matched_event(event, loading_widget)
+
+    async def _dispatch_matched_event(
         self, event: BaseEvent, loading_widget: LoadingWidget | None = None
     ) -> ToolCallMessage | None:
         match event:
@@ -324,6 +338,26 @@ class EventHandler:
 
     async def _handle_unknown_event(self, event: BaseEvent) -> None:
         await self.mount_callback(NoMarkupStatic(str(event), classes="unknown-event"))
+
+    async def _handle_subagent_response(
+        self, event: BackgroundTaskCompletedEvent
+    ) -> None:
+        # A background sub-agent's full response (verifier report, research
+        # digest, etc.). Without this it fell to _handle_unknown_event and was
+        # rendered as a flat str(event) dump — no markdown, no way to collapse a
+        # long report. Default-collapsed: the header label carries the agent and
+        # status; expanding reveals the formatted response.
+        response = event.response or (
+            f"[{event.agent} produced no output]"
+            if not event.error
+            else f"[{event.agent} failed]"
+        )
+        if event.error:
+            response = f"{response}\n[error: {event.error}]"
+        status = "completed" if event.completed else "failed"
+        label = f"Subagent Response — {event.agent} ({status})"
+        widget = SubagentResponseMessage(response, label=label)
+        await self.mount_callback(widget)
 
     async def finalize_streaming(self) -> None:
         if self.current_streaming_reasoning is not None:
