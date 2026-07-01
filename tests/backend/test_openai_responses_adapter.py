@@ -1282,6 +1282,7 @@ class TestParseStreamingEvents:
         assert chunk.message.reasoning_state == ["enc:streamed"]
         assert chunk.usage.prompt_tokens == 50
         assert chunk.usage.completion_tokens == 25
+        assert chunk.stop is None
 
     def test_response_incomplete_uses_terminal_usage(self, adapter, provider):
         data = {
@@ -1297,6 +1298,46 @@ class TestParseStreamingEvents:
         assert chunk.message.content == ""
         assert chunk.usage.prompt_tokens == 50
         assert chunk.usage.completion_tokens == 25
+        assert chunk.stop is not None
+        assert chunk.stop.is_truncated
+
+    def test_response_incomplete_content_filter_maps_to_refusal(
+        self, adapter, provider
+    ):
+        data = {
+            "type": "response.incomplete",
+            "response": {
+                "id": "resp_123",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+                "usage": {"input_tokens": 50, "output_tokens": 25},
+            },
+        }
+        chunk = adapter.parse_response(data, provider)
+        assert chunk.stop is not None
+        assert chunk.stop.is_refusal
+        assert not chunk.stop.is_truncated
+
+    def test_non_streaming_incomplete_response_sets_truncated_stop(
+        self, adapter, provider
+    ):
+        data = {
+            "id": "resp_123",
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "partial..."}],
+                    "role": "assistant",
+                }
+            ],
+            "usage": {"input_tokens": 50, "output_tokens": 25},
+        }
+        chunk = adapter.parse_response(data, provider)
+        assert chunk.message.content == "partial..."
+        assert chunk.stop is not None
+        assert chunk.stop.is_truncated
 
     def test_commentary_deltas_become_reasoning_content(self, adapter, provider):
         adapter.parse_response(
