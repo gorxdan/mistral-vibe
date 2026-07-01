@@ -23,14 +23,25 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 import time
 import traceback
 from typing import Any
 
-from vibe.core.logger import logger
+from vibe.core.logger import StructuredLogFormatter, logger
+from vibe.core.paths import LOG_DIR
 
 _ORIG_RUN: Any = None
+
+# High-volume loop-block events go to a dedicated per-PID perf log so concurrent
+# instrumented sessions do not interleave in the shared vibe.log (and do not race
+# its RotatingFileHandler on rollover). propagate=False keeps these events out of
+# the shared file entirely; the tracer attaches a PID-scoped handler in install().
+_perf_log = logging.getLogger("vibe.perf.loop")
+_perf_log.propagate = False
+_perf_log.setLevel(logging.WARNING)
 _INSTALLED = False
 _THRESHOLD = 0.0
 # (task label, handle module) -> [count, total_ms]. Populated only while
@@ -88,7 +99,7 @@ def _wrap_run(orig: Any) -> Any:
                     bucket = _BLOCKERS[(label, where)]
                     bucket[0] += 1
                     bucket[1] += dt * 1000.0
-                    logger.warning(
+                    _perf_log.warning(
                         "perf loop-block: %.0fms task=%s where=%s%s",
                         dt * 1000.0,
                         label,
@@ -137,8 +148,18 @@ def install() -> None:
     _ORIG_RUN = asyncio.Handle._run
     asyncio.Handle._run = _wrap_run(_ORIG_RUN)
     _INSTALLED = True
+    # PID-scoped handler: each instrumented process gets its own perf log so
+    # concurrent sessions stay attributable and never contend on the shared file.
+    perf_path = LOG_DIR.path / f"vibe-perf-{os.getpid()}.log"
+    handler = RotatingFileHandler(
+        perf_path, maxBytes=10 * 1024 * 1024, backupCount=2, encoding="utf-8"
+    )
+    handler.setFormatter(StructuredLogFormatter())
+    _perf_log.addHandler(handler)
     logger.info(
-        "perf loop-block tracer installed: threshold=%.0fms", threshold * 1000.0
+        "perf loop-block tracer installed: threshold=%.0fms perf-log=%s",
+        threshold * 1000.0,
+        perf_path,
     )
 
 
@@ -147,11 +168,11 @@ def report(top: int = 15) -> None:
     if not _INSTALLED or not _BLOCKERS:
         return
     ranked = sorted(_BLOCKERS.items(), key=lambda kv: kv[1][1], reverse=True)
-    logger.warning(
+    _perf_log.warning(
         "perf loop-block summary (top %d by total ms):", min(top, len(ranked))
     )
     for (label, mod), (count, total_ms) in ranked[:top]:
-        logger.warning(
+        _perf_log.warning(
             "perf loop-block: %6.0fms / %3d calls  avg=%4.0fms  task=%s  where=%s",
             total_ms,
             int(count),
