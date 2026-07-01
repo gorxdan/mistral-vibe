@@ -14,6 +14,7 @@ restricted enabled_tools allowlist filters them out — no subprocess, no networ
 from __future__ import annotations
 
 import shlex
+import subprocess
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -118,3 +119,22 @@ def test_restricted_allowlist_filters_out_mcp_tool() -> None:
     config = build_test_vibe_config(mcp_servers=[mcp_server], enabled_tools=["read"])
     loop = build_test_agent_loop(config=config, mcp_registry=FakeMCPRegistry())
     assert "srv_fake_tool" not in loop.tool_manager.available_tools
+
+
+def test_default_executor_module_is_runnable() -> None:
+    # Regression guard for the isolated-executor default command: the `-m` target
+    # must actually resolve as a runnable module. The `vibe` package has no
+    # __main__, so `python -m vibe` (an earlier default) failed with
+    # "No module named vibe.__main__" and broke every write-capable isolated
+    # spawn (grunt/worker/editor) and teammate subprocess. The override test
+    # above fakes the executor, so it never exercised this default.
+    from vibe.core.workflows.runtime import _DEFAULT_EXECUTOR_MODULE
+
+    result = subprocess.run(
+        [sys.executable, "-m", _DEFAULT_EXECUTOR_MODULE, "--help"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "No module named" not in result.stderr

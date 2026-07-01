@@ -425,6 +425,14 @@ def _reap_on_failure(wt: Any) -> None:
         logger.warning("isolated worktree cleanup failed: %s", e)
 
 
+# Module invoked by the default isolated-executor command (`python -m <module>`).
+# Must expose __main__ and parse the programmatic-mode flags
+# (-p/--agent/--trust/--output/--max-turns/--model). The `vibe` package has no
+# __main__, so spawning `-m vibe` fails with "No module named vibe.__main__";
+# target the CLI entrypoint instead.
+_DEFAULT_EXECUTOR_MODULE = "vibe.cli.entrypoint"
+
+
 async def _spawn_isolated(
     wt: Any,
     prompt: str,
@@ -444,7 +452,9 @@ async def _spawn_isolated(
     from vibe.core.worktree.ephemeral import deliver_ephemeral_worktree
 
     base = os.environ.get("VIBE_ISOLATED_EXECUTOR_CMD")
-    prefix = shlex.split(base) if base else [sys.executable, "-m", "vibe"]
+    prefix = (
+        shlex.split(base) if base else [sys.executable, "-m", _DEFAULT_EXECUTOR_MODULE]
+    )
     cmd = [
         *prefix,
         "-p",

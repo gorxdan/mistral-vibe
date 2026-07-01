@@ -197,7 +197,7 @@ class TeamManager:
             cmd = [
                 sys.executable,
                 "-m",
-                "vibe",
+                "vibe.cli.entrypoint",
                 "-p",
                 prompt,
                 "--agent",
