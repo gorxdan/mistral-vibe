@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from opentelemetry import trace
 
+from vibe.core import loop_tracer, profiler
 from vibe.core.agent_loop._errors import (
     AgentLoopError,
     ImagesNotSupportedError,
@@ -906,6 +907,8 @@ class AgentLoop(AgentLoopSessionMixin):
     ) -> AsyncGenerator[BaseEvent, None]:
         self._response_format = response_format
         self.resource_monitor.start()
+        # No-op unless VIBE_TRACE_LOOP is set; covers the shared Textual loop.
+        loop_tracer.install()
         try:
             try:
                 active_model = self.effective_model()
@@ -955,7 +958,13 @@ class AgentLoop(AgentLoopSessionMixin):
                 completion0 = self.stats.session_completion_tokens
                 cached0 = self.stats.session_cached_tokens
                 try:
-                    with self.resource_monitor.turn():
+                    with (
+                        profiler.section(
+                            f"turn-{self.session_id[:8]}-{self.stats.steps}",
+                            turn=self.stats.steps,
+                        ),
+                        self.resource_monitor.turn(),
+                    ):
                         async for event in self._conversation_loop(
                             msg,
                             client_message_id=client_message_id,
