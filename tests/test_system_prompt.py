@@ -214,6 +214,11 @@ def test_planner_security_editor_registered() -> None:
     assert "not a security sandbox" in ed
     assert "auto-isolate" in ed.lower()
 
+    # Grunt shares worker's write surface and auto-isolation behavior.
+    gr = load_system_prompt("grunt")
+    assert "auto-isolate" in gr.lower()
+    assert "approval-gated and skipped" not in gr
+
 
 def test_orchestration_map_includes_planner_security_not_editor() -> None:
     config = build_test_vibe_config(
