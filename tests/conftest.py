@@ -38,6 +38,27 @@ from vibe.core.llm.types import BackendLike
 from vibe.core.utils import keyring as keyring_utils
 
 
+def sandbox_e2e_available() -> bool:
+    # detect_backend only returns 'bwrap' when the capability probe passes, so an
+    # unshare/none result means user namespaces are unavailable (skip sandbox e2e).
+    from vibe.core.tools.sandbox import detect_backend
+
+    return detect_backend("auto") in {"bwrap", "sandbox-exec"}
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "sandbox_e2e: needs a usable OS sandbox backend; skipped when user "
+        "namespaces are unavailable",
+    )
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    if item.get_closest_marker("sandbox_e2e") and not sandbox_e2e_available():
+        pytest.skip("no usable OS sandbox backend (user namespaces unavailable)")
+
+
 class _EmptyKeyring(KeyringBackend):
     """A keyring backend that stores nothing, used to keep tests off the real OS keyring."""
 

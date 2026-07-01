@@ -19,6 +19,7 @@ import functools
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -48,6 +49,19 @@ _ENV_ALLOWLIST = frozenset({
     "LESS",
 })
 
+# Kept through the scrub for the HOST session's bash only (ssh/https push, gh
+# CLI, commit signing); NOT for isolated subagents — that scrub is the boundary.
+HOST_GIT_ENV_PASSTHROUGH = frozenset({
+    "SSH_AUTH_SOCK",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GIT_SSH_COMMAND",
+    "GNUPGHOME",
+    "GPG_TTY",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+})
+
 
 @dataclass
 class SandboxSpec:
@@ -55,6 +69,41 @@ class SandboxSpec:
     allow_network: bool = True
     env: dict[str, str] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
+
+
+def _bwrap_usable() -> bool:
+    """Whether bwrap can actually create namespaces here, not just exist.
+
+    Docker/CI often deny unprivileged user-namespace creation, so a present
+    bwrap dies with a cryptic 'bwrap:' error on every invocation. Probe once
+    with a trivial sandbox; the result is cached by _detect_auto_backend.
+    """
+    exe = shutil.which("bwrap")
+    if exe is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                exe,
+                "--ro-bind",
+                "/",
+                "/",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "--unshare-pid",
+                "--",
+                "true",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
 
 
 @functools.lru_cache(maxsize=1)
@@ -67,8 +116,9 @@ def _detect_auto_backend() -> str:
         return "none"
     if sys.platform == "darwin":
         return "sandbox-exec" if shutil.which("sandbox-exec") else "none"
-    # Linux / other POSIX
-    if shutil.which("bwrap"):
+    # Linux / other POSIX. bwrap must be usable, not merely present: a present
+    # but namespace-denied bwrap is treated exactly like a missing backend.
+    if _bwrap_usable():
         return "bwrap"
     if shutil.which("unshare"):
         return "unshare"
@@ -100,25 +150,20 @@ BUBBLEWRAP_INSTALL_NUDGE = (
 
 
 def unshare_confinement_nudge(
-    *,
-    sandbox_enabled: bool,
-    backend_override: str,
-    write_dirs: list[str],
-    allow_network: bool,
+    *, sandbox_enabled: bool, backend_override: str
 ) -> str | None:
-    """Return the install-bubblewrap nudge message when the resolved backend is
-    `unshare` and the user asked for containment it cannot enforce; else None.
+    """Return the install-bubblewrap nudge when the sandbox is enabled but the
+    resolved backend is `unshare`; else None.
 
-    Pure (no side effects) so callers can invoke it freely to decide whether to
-    surface a UI prompt. Mirrors the runtime WARNING in build_sandbox_command,
-    but lifted to a one-time startup/first-use prompt instead of a per-command
-    log line.
+    Fires regardless of explicit write_dirs/allow_network: with the sandbox
+    default-on, even a plain config confines writes to cwd+scratchpad, and the
+    unshare backend cannot enforce that — so an unshare-only host would otherwise
+    run silently with weaker confinement than the user believes. Pure (no side
+    effects) so callers can invoke it freely to decide whether to surface a prompt.
     """
     if not sandbox_enabled:
         return None
     if detect_backend(backend_override) != "unshare":
-        return None
-    if not write_dirs and allow_network:
         return None
     return BUBBLEWRAP_INSTALL_NUDGE
 
@@ -130,10 +175,14 @@ def scrub_env(base: dict[str, str], passthrough: list[str]) -> dict[str, str]:
 
 
 def _canonical_roots(roots: list[Path]) -> list[str]:
+    # Skip roots that aren't existing dirs: bwrap --bind on a missing source
+    # aborts the whole sandbox with "Can't find source path".
     seen: set[str] = set()
     for r in roots:
         try:
-            seen.add(str(Path(r).expanduser().resolve()))
+            resolved = Path(r).expanduser().resolve()
+            if resolved.is_dir():
+                seen.add(str(resolved))
         except (OSError, RuntimeError):
             continue
     return sorted(seen)
@@ -168,14 +217,35 @@ def _worktree_gitdir(root: Path) -> Path | None:
     return None
 
 
+# Git metadata kept read-only over the writable gitdir: hooks/ blocks a planted
+# hook; config/config.worktree block a core.hooksPath (or sibling) escape.
+_GIT_READONLY_METADATA = ("hooks", "config", "config.worktree")
+
+
+def _readonly_git_targets(base: Path) -> list[str]:
+    """Existing git metadata under *base* that must stay read-only. Skips
+    symlinks (a link could point outside and be mounted through).
+    """
+    found: list[str] = []
+    for name in _GIT_READONLY_METADATA:
+        target = base / name
+        try:
+            if target.exists() and not target.is_symlink():
+                found.append(str(target))
+        except OSError:
+            continue
+    return found
+
+
 def _git_bind_dirs(root: Path) -> tuple[list[str], list[str]]:
-    """(writable_git_dirs, readonly_hook_dirs) for one write root.
+    """(writable_git_dirs, readonly_git_metadata) for one write root.
 
     A sandboxed command must be able to commit (write index/refs/objects/logs),
-    so git metadata stays writable — but ``hooks/`` is re-layered read-only so a
-    command can't drop a hook that later runs *outside* the sandbox. For a linked
-    worktree the real gitdir and shared object store live outside the checkout
-    under the main repo's ``.git``, so that dir is bound writable explicitly.
+    so git metadata stays writable — but ``hooks/`` and ``config`` are re-layered
+    read-only so a command can't drop a hook or repoint ``core.hooksPath`` to run
+    code *outside* the sandbox later. For a linked worktree the real gitdir and
+    shared object store live outside the checkout under the main repo's ``.git``,
+    so that dir is bound writable explicitly.
     """
     writable: list[str] = []
     readonly: list[str] = []
@@ -186,13 +256,12 @@ def _git_bind_dirs(root: Path) -> tuple[list[str], list[str]]:
         common = gitdir.parent.parent
         if common.is_dir():
             writable.append(str(common))
-        hooks = common / "hooks"
-        if hooks.is_dir():
-            readonly.append(str(hooks))
+        # Shared hooks/config live under <common>; the per-worktree config.worktree
+        # (the `git config --worktree` target) lives under the worktree's gitdir.
+        readonly += _readonly_git_targets(common)
+        readonly += _readonly_git_targets(gitdir)
     else:
-        hooks = root / ".git" / "hooks"
-        if hooks.is_dir():
-            readonly.append(str(hooks))
+        readonly += _readonly_git_targets(root / ".git")
     return writable, readonly
 
 
@@ -278,13 +347,13 @@ def _bwrap_argv(spec: SandboxSpec) -> list[str]:
         # then layer read-only over sensitive metadata + git hooks last (bwrap is
         # left-to-right, so the later --ro-bind wins for that subpath).
         argv += ["--bind", root, root]
-        writable_git, readonly_hooks = _git_bind_dirs(Path(root))
+        writable_git, readonly_git = _git_bind_dirs(Path(root))
         for gitdir in writable_git:
             argv += ["--bind", gitdir, gitdir]
         for sub in _protected_subpaths_for(root):
             argv += ["--ro-bind", sub, sub]
-        for hooks in readonly_hooks:
-            argv += ["--ro-bind", hooks, hooks]
+        for meta in readonly_git:
+            argv += ["--ro-bind", meta, meta]
     argv += ["--chdir", str(Path.cwd())]
     argv += spec.extra_args
     argv.append("--")
@@ -314,14 +383,13 @@ def build_seatbelt_profile(spec: SandboxSpec) -> str:
         if '"' in root or "\n" in root:
             continue  # never inject into the profile string
         lines.append(f'(allow file-write* (subpath "{root}"))')
-        writable_git, readonly_hooks = _git_bind_dirs(Path(root))
+        writable_git, readonly_git = _git_bind_dirs(Path(root))
         for gitdir in writable_git:
             if '"' not in gitdir and "\n" not in gitdir:
                 lines.append(f'(allow file-write* (subpath "{gitdir}"))')
-        # Re-deny sensitive metadata + git hooks (last match wins) so a sandboxed
-        # command can commit and read config but not rewrite secrets, agent
-        # config, or install a hook that runs outside the sandbox.
-        for sub in [*_protected_subpaths_for(root), *readonly_hooks]:
+        # Re-deny secrets + git hooks/config (last match wins): a command can
+        # commit but not plant a hook or repoint core.hooksPath outside.
+        for sub in [*_protected_subpaths_for(root), *readonly_git]:
             if '"' in sub or "\n" in sub:
                 continue
             lines.append(f'(deny file-write* (subpath "{sub}"))')

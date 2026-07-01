@@ -35,6 +35,67 @@ def test_detect_backend_windows_is_none(monkeypatch) -> None:
     _detect_auto_backend.cache_clear()  # avoid polluting later tests with "none"
 
 
+def test_detect_backend_skips_unusable_bwrap(monkeypatch) -> None:
+    # Existence isn't enough: when namespace creation is denied (Docker/CI) a
+    # failing probe must make auto detection skip bwrap like a missing backend.
+    import vibe.core.tools.sandbox as sbmod
+
+    monkeypatch.setattr(sbmod, "is_windows", lambda: False)
+    monkeypatch.setattr(sbmod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sbmod.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"bwrap", "unshare"} else None,
+    )
+
+    class _FailedProbe:
+        returncode = 1
+
+    monkeypatch.setattr(sbmod.subprocess, "run", lambda *a, **k: _FailedProbe())
+    _detect_auto_backend.cache_clear()
+    try:
+        assert detect_backend("auto") == "unshare"  # unusable bwrap skipped
+    finally:
+        _detect_auto_backend.cache_clear()
+
+
+def test_sandbox_e2e_marker_predicate_tracks_usable_backend(monkeypatch) -> None:
+    # The conftest marker predicate reuses detect_backend, so an unshare/none
+    # result (userns unavailable) disables sandbox e2e; bwrap/seatbelt enables it.
+    from tests.conftest import sandbox_e2e_available
+
+    monkeypatch.setattr(
+        "vibe.core.tools.sandbox.detect_backend", lambda override="auto": "unshare"
+    )
+    assert sandbox_e2e_available() is False
+    monkeypatch.setattr(
+        "vibe.core.tools.sandbox.detect_backend", lambda override="auto": "bwrap"
+    )
+    assert sandbox_e2e_available() is True
+
+
+def test_detect_backend_uses_bwrap_when_probe_succeeds(monkeypatch) -> None:
+    import vibe.core.tools.sandbox as sbmod
+
+    monkeypatch.setattr(sbmod, "is_windows", lambda: False)
+    monkeypatch.setattr(sbmod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        sbmod.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"bwrap", "unshare"} else None,
+    )
+
+    class _OkProbe:
+        returncode = 0
+
+    monkeypatch.setattr(sbmod.subprocess, "run", lambda *a, **k: _OkProbe())
+    _detect_auto_backend.cache_clear()
+    try:
+        assert detect_backend("auto") == "bwrap"
+    finally:
+        _detect_auto_backend.cache_clear()
+
+
 def test_bwrap_argv_network_and_binds(tmp_path) -> None:
     spec = SandboxSpec(write_roots=[tmp_path], allow_network=False, extra_args=["--x"])
     argv, name, profile = build_sandbox_command(spec, "bwrap")
@@ -118,6 +179,37 @@ def test_bwrap_git_hooks_stay_readonly(tmp_path) -> None:
     assert f"{r}/.git" not in ro_targets  # whole gitdir not read-only
 
 
+def test_bwrap_skips_nonexistent_write_root(tmp_path) -> None:
+    # A write_root that doesn't exist must be skipped, not passed to bwrap --bind
+    # (a missing source explodes with "Can't find source path").
+    real = tmp_path / "real"
+    real.mkdir()
+    missing = tmp_path / "does-not-exist"
+
+    spec = SandboxSpec(write_roots=[real, missing], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    assert str(real.resolve()) in argv
+    assert str(missing.resolve()) not in argv  # skipped, not bound
+
+
+def test_bwrap_git_config_stays_readonly(tmp_path) -> None:
+    # .git/config must be read-only or a sandboxed command can set core.hooksPath
+    # (or diff.external/core.fsmonitor/pager) to plant a hook that runs outside it.
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".git" / "hooks").mkdir(parents=True)
+    (root / ".git" / "config").write_text("[core]\n")
+
+    spec = SandboxSpec(write_roots=[root], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    r = str(root.resolve())
+    ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert f"{r}/.git/config" in ro_targets  # config read-only -> no hooksPath escape
+    assert f"{r}/.git" not in ro_targets  # whole gitdir still writable for commits
+
+
 def test_bwrap_worktree_external_gitdir_writable(tmp_path) -> None:
     # A linked worktree: root/.git is a FILE pointing to the main repo's
     # .git/worktrees/<name>. The shared .git (objects/refs + the worktree gitdir)
@@ -125,6 +217,8 @@ def test_bwrap_worktree_external_gitdir_writable(tmp_path) -> None:
     main = tmp_path / "main"
     (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
     (main / ".git" / "hooks").mkdir()
+    (main / ".git" / "config").write_text("[core]\n")
+    (main / ".git" / "worktrees" / "wt" / "config.worktree").write_text("[core]\n")
     wt = tmp_path / "wt"
     wt.mkdir()
     (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
@@ -137,6 +231,9 @@ def test_bwrap_worktree_external_gitdir_writable(tmp_path) -> None:
     common = f"{main}/.git"
     assert common in binds  # external git common-dir bound writable
     assert f"{common}/hooks" in ro_targets  # its hooks still read-only
+    assert f"{common}/config" in ro_targets  # shared config read-only
+    # The per-worktree config.worktree (git config --worktree target) too.
+    assert f"{common}/worktrees/wt/config.worktree" in ro_targets
 
 
 def test_bwrap_skips_symlinked_protected_metadata(tmp_path) -> None:
@@ -155,6 +252,7 @@ def test_seatbelt_denies_secrets_and_hooks_not_gitdir(tmp_path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
     (root / ".git" / "hooks").mkdir(parents=True)
+    (root / ".git" / "config").write_text("[core]\n")
     (root / ".env").write_text("SECRET=1")
 
     spec = SandboxSpec(write_roots=[root], allow_network=True)
@@ -163,6 +261,9 @@ def test_seatbelt_denies_secrets_and_hooks_not_gitdir(tmp_path) -> None:
     assert f'(allow file-write* (subpath "{r}"))' in profile
     assert f'(deny file-write* (subpath "{r}/.env"))' in profile
     assert f'(deny file-write* (subpath "{r}/.git/hooks"))' in profile
+    assert (
+        f'(deny file-write* (subpath "{r}/.git/config"))' in profile
+    )  # no hooksPath escape
     assert f'(deny file-write* (subpath "{r}/.git"))' not in profile  # gitdir writable
 
 
@@ -206,69 +307,28 @@ def test_unshare_backend_silent_when_no_containment_requested(caplog) -> None:
     )
 
 
-def test_unshare_confinement_nudge_only_when_unshare_with_containment(
-    monkeypatch,
-) -> None:
-    # The startup nudge fires only when the resolved backend is `unshare` AND
-    # the user asked for containment it cannot enforce. It must stay silent when
-    # the sandbox is off, when a real backend (bwrap) is selected, or when no
-    # containment was requested (bare namespace isolation is honest).
+def test_unshare_nudge_fires_whenever_backend_is_unshare(monkeypatch) -> None:
+    # Fires whenever sandbox is enabled and resolves to unshare, not only on explicit containment.
     monkeypatch.setattr(
         "vibe.core.tools.sandbox.detect_backend",
         lambda override: override if override != "auto" else "unshare",
     )
 
-    # Containment requested + unshare -> nudge.
-    msg = unshare_confinement_nudge(
-        sandbox_enabled=True,
-        backend_override="auto",
-        write_dirs=["/tmp/work"],
-        allow_network=True,
-    )
+    # Default config (enabled, no explicit containment) resolves to unshare -> nudge.
+    msg = unshare_confinement_nudge(sandbox_enabled=True, backend_override="auto")
     assert msg == BUBBLEWRAP_INSTALL_NUDGE
     assert "sudo apt install bubblewrap" in msg
 
     # Sandbox disabled -> no nudge.
     assert (
-        unshare_confinement_nudge(
-            sandbox_enabled=False,
-            backend_override="auto",
-            write_dirs=["/tmp/work"],
-            allow_network=True,
-        )
+        unshare_confinement_nudge(sandbox_enabled=False, backend_override="auto")
         is None
     )
 
-    # Explicit bwrap override -> no nudge (user gets what they asked for, and
-    # detect_backend honors the override without consulting the filesystem).
+    # A real backend (bwrap) -> no nudge (the override is honored without a probe).
     assert (
-        unshare_confinement_nudge(
-            sandbox_enabled=True,
-            backend_override="bwrap",
-            write_dirs=["/tmp/work"],
-            allow_network=True,
-        )
+        unshare_confinement_nudge(sandbox_enabled=True, backend_override="bwrap")
         is None
-    )
-
-    # No containment requested -> no nudge (unshare's namespace isolation is
-    # honestly what the user gets).
-    assert (
-        unshare_confinement_nudge(
-            sandbox_enabled=True,
-            backend_override="auto",
-            write_dirs=[],
-            allow_network=True,
-        )
-        is None
-    )
-
-    # Network denial alone counts as containment unshare can't enforce -> nudge.
-    assert unshare_confinement_nudge(
-        sandbox_enabled=True,
-        backend_override="auto",
-        write_dirs=[],
-        allow_network=False,
     )
 
 
@@ -457,6 +517,52 @@ def test_sandbox_enabled_default_is_on() -> None:
     assert SandboxConfig().enabled is True
 
 
+def test_build_result_appends_sandbox_hint_on_bwrap_error() -> None:
+    # A sandbox-caused failure (bwrap: prefix / fs / permission error) must carry
+    # a one-line attribution so the user knows to widen write_dirs or disable it.
+    bash = _bash(SandboxConfig(enabled=True))
+    with pytest.raises(ToolError) as ei:
+        bash._build_result(
+            command="echo x > /etc/foo",
+            stdout="",
+            stderr="bwrap: Can't find source path /nope",
+            returncode=1,
+            sandbox_active=True,
+        )
+    assert "OS sandbox may have blocked this" in str(ei.value)
+    assert "sandbox.write_dirs" in str(ei.value)
+
+
+def test_build_result_no_hint_when_unsandboxed() -> None:
+    # A failure that ran WITHOUT the sandbox must not be blamed on it, even when
+    # stderr happens to mention permission errors.
+    bash = _bash(SandboxConfig(enabled=True))
+    with pytest.raises(ToolError) as ei:
+        bash._build_result(
+            command="false",
+            stdout="",
+            stderr="Permission denied",
+            returncode=1,
+            sandbox_active=False,
+        )
+    assert "OS sandbox may have blocked" not in str(ei.value)
+
+
+def test_build_result_no_hint_when_failure_unrelated() -> None:
+    # A sandboxed command that fails for its own reasons (nonzero, no fs/perm
+    # marker) gets no misleading sandbox attribution.
+    bash = _bash(SandboxConfig(enabled=True))
+    with pytest.raises(ToolError) as ei:
+        bash._build_result(
+            command="grep missing file",
+            stdout="",
+            stderr="no match",
+            returncode=1,
+            sandbox_active=True,
+        )
+    assert "OS sandbox may have blocked" not in str(ei.value)
+
+
 def test_resolve_sandbox_disabled_runs_plain() -> None:
     argv, profile, env, fd = _bash(SandboxConfig(enabled=False))._resolve_sandbox(
         None, "echo hi"
@@ -477,14 +583,67 @@ def test_resolve_sandbox_none_backend_falls_back_unsandboxed() -> None:
     assert argv is None and profile is None and fd is None  # runs unsandboxed
 
 
+def test_host_session_keeps_git_gh_creds_through_scrub(monkeypatch) -> None:
+    # The host session's scrubbed bash env keeps authenticated git/gh working
+    # (ssh/https push, gh CLI, signing) while still dropping model API keys.
+    import os
+
+    monkeypatch.delenv("VIBE_ISOLATED_WORKTREE_ROOT", raising=False)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+    )
+    monkeypatch.setenv("GH_TOKEN", "ghp_host")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/run/ssh-agent.sock")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /home/x/.ssh/id")
+    monkeypatch.setenv("GPG_TTY", "/dev/pts/0")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+
+    _argv, _profile, env, fd = _bash(
+        SandboxConfig(enabled=True, scrub_env=True)
+    )._resolve_sandbox(None, "git push")
+    try:
+        assert env["GH_TOKEN"] == "ghp_host"  # gh CLI + https push keep working
+        assert env["SSH_AUTH_SOCK"] == "/run/ssh-agent.sock"  # ssh push keeps working
+        assert env["GIT_SSH_COMMAND"] == "ssh -i /home/x/.ssh/id"
+        assert env["GPG_TTY"] == "/dev/pts/0"  # commit signing
+        assert "OPENAI_API_KEY" not in env  # model secrets still scrubbed
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def test_isolated_subagent_still_scrubs_git_gh_creds(tmp_path, monkeypatch) -> None:
+    # The host-only cred passthrough must NOT leak into an isolated subagent —
+    # that strict scrub is the security boundary between host and worker.
+    import os
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+    )
+    monkeypatch.setenv("GH_TOKEN", "ghp_should_not_leak")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/run/ssh-agent.sock")
+
+    _argv, _profile, env, fd = _bash(
+        SandboxConfig(enabled=True, scrub_env=True)
+    )._resolve_sandbox(None, "git push")
+    try:
+        assert "GH_TOKEN" not in env  # boundary: worker never gets host creds
+        assert "SSH_AUTH_SOCK" not in env
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 # --------------------------------------------------------------------------- #
 # End-to-end (requires a real sandbox backend, e.g. bwrap on Linux)           #
 # --------------------------------------------------------------------------- #
 
-_HAS_BACKEND = detect_backend("auto") != "none"
-_skip_no_backend = pytest.mark.skipif(
-    not _HAS_BACKEND, reason="no sandbox backend (bwrap/sandbox-exec) available"
-)
+# The conftest `sandbox_e2e` marker skips these when user namespaces are
+# unavailable (reusing the bwrap capability probe), which un-reds CI runners.
+_skip_no_backend = pytest.mark.sandbox_e2e
 
 
 async def _run(bash: Bash, command: str):
@@ -516,6 +675,21 @@ async def test_sandbox_blocks_write_outside_workspace(tmp_path, monkeypatch) -> 
     # Writing to a read-only root (/etc) must fail (command returns nonzero).
     with pytest.raises(ToolError):
         await _run(bash, "echo x > /etc/vibe_sandbox_probe")
+
+
+@_skip_no_backend
+@pytest.mark.asyncio
+async def test_sandbox_blocked_write_gets_attribution_hint(
+    tmp_path, monkeypatch
+) -> None:
+    # When the OS sandbox is what blocked the command, the ToolError must say so.
+    if detect_backend("auto") != "bwrap":
+        pytest.skip("filesystem confinement needs the bwrap backend")
+    monkeypatch.chdir(tmp_path)
+    bash = _bash(SandboxConfig(enabled=True))
+    with pytest.raises(ToolError) as ei:
+        await _run(bash, "echo x > /etc/vibe_sandbox_hint_probe")
+    assert "OS sandbox may have blocked this" in str(ei.value)
 
 
 @_skip_no_backend
@@ -563,6 +737,33 @@ async def test_sandboxed_git_commit_works(tmp_path, monkeypatch) -> None:
 
     with pytest.raises(ToolError):  # hooks stay read-only
         await _run(bash, "echo x > .git/hooks/pre-commit")
+
+
+@_skip_no_backend
+@pytest.mark.asyncio
+async def test_sandboxed_cannot_repoint_hookspath(tmp_path, monkeypatch) -> None:
+    # Hook-persistence escape: .git/config must be read-only so a command can't
+    # set core.hooksPath to a writable dir and plant a hook that runs outside it.
+    if detect_backend("auto") != "bwrap":
+        pytest.skip("git-config bind confinement needs the bwrap backend")
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(
+        "git init -q && git config user.email t@t && git config user.name t "
+        "&& git commit --allow-empty -qm init",
+        cwd=repo,
+        shell=True,
+        check=True,
+    )
+    monkeypatch.chdir(repo)
+    bash = _bash(SandboxConfig(enabled=True))
+
+    with pytest.raises(ToolError):  # config is read-only inside the sandbox
+        await _run(bash, "git config core.hooksPath /tmp/evil-hooks")
+    # The on-disk config was never modified.
+    assert "hooksPath" not in (repo / ".git" / "config").read_text()
 
 
 @_skip_no_backend
@@ -640,3 +841,21 @@ def test_create_subprocess_exec_not_called_when_disabled(monkeypatch) -> None:
     bash = _bash(SandboxConfig(enabled=False))
     asyncio.run(_run(bash, "echo plain"))
     assert called["exec"] == 0  # disabled path uses create_subprocess_shell
+
+
+def test_headless_nudge_emits_to_stderr_on_unshare(capsys) -> None:
+    # Headless (`vibe -p`) has no TUI toast, so the unshare-only nudge goes to
+    # stderr. Explicit backend='unshare' means detect_backend honors it, no probe.
+    from vibe.core.programmatic import _emit_headless_sandbox_nudge
+
+    _emit_headless_sandbox_nudge(SandboxConfig(enabled=True, backend="unshare"))
+    err = capsys.readouterr().err
+    assert "bubblewrap" in err
+
+
+def test_headless_nudge_silent_when_disabled_or_no_config(capsys) -> None:
+    from vibe.core.programmatic import _emit_headless_sandbox_nudge
+
+    _emit_headless_sandbox_nudge(SandboxConfig(enabled=False, backend="unshare"))
+    _emit_headless_sandbox_nudge(None)
+    assert capsys.readouterr().err == ""
