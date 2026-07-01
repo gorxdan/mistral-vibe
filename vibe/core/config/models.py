@@ -52,6 +52,7 @@ class ExperimentsConfig(BaseSettings):
 
 
 class SessionLoggingConfig(BaseSettings):
+    model_config = SettingsConfigDict(extra="ignore")
     save_dir: str = ""
     session_prefix: str = "session"
     enabled: bool = True
@@ -85,6 +86,7 @@ class ProviderCacheConfig(BaseModel):
 
 
 class ProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     api_base: str
     api_key_env_var: str = ""
@@ -139,6 +141,7 @@ class TranscribeClient(StrEnum):
 
 
 class TranscribeProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     api_base: str = "wss://api.mistral.ai"
     api_key_env_var: str = ""
@@ -146,6 +149,7 @@ class TranscribeProviderConfig(BaseModel):
 
 
 class _MCPBase(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str = Field(description="Short alias used to prefix tool names")
     prompt: str | None = Field(
         default=None, description="Optional usage hint appended to tool descriptions"
@@ -281,6 +285,7 @@ def _promote_legacy_auth(data: Any) -> Any:
 
 
 class _MCPHttpFields(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     url: str = Field(description="Base URL of the MCP HTTP server")
     auth: MCPAuth = Field(default_factory=MCPStaticAuth)
 
@@ -329,6 +334,7 @@ MCPServer = Annotated[
 
 
 class ConnectorConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str = Field(description="Normalized connector alias to match against.")
     disabled: bool = Field(
         default=False,
@@ -356,6 +362,7 @@ Verbosity = Literal["low", "medium", "high"]
 
 
 class ModelConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     provider: str
     alias: str
@@ -381,6 +388,7 @@ class ModelConfig(BaseModel):
 
 
 class TranscribeModelConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     provider: str
     alias: str
@@ -397,6 +405,7 @@ class TTSClient(StrEnum):
 
 
 class TTSProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     api_base: str = "https://api.mistral.ai"
     api_key_env_var: str = ""
@@ -404,6 +413,7 @@ class TTSProviderConfig(BaseModel):
 
 
 class TTSModelConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     name: str
     provider: str
     alias: str
@@ -414,7 +424,7 @@ class TTSModelConfig(BaseModel):
 
 
 class OtelSpanExporterConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     endpoint: str
     headers: dict[str, str] | None = None
