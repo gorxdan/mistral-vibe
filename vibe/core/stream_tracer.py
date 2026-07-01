@@ -86,15 +86,17 @@ def _enable() -> bool:
     return True
 
 
-def turn_started(owner: object, turn_id: str) -> None:
+def turn_started(owner: object, turn_id: str, *, is_subagent: bool = False) -> None:
     """Open a trace for *owner*'s turn. No-op when disabled or nested.
 
-    A turn already owned by another object (an in-process subagent starting
-    under the host's turn) is ignored; the same owner restarting replaces its
-    own stale trace.
+    Subagent turns never open a trace: a background subagent starting while no
+    host turn is open would otherwise claim the single slot, leaving host turns
+    untraced and latching host renders onto the subagent's numbers. A turn
+    already owned by another object is likewise ignored; the same owner
+    restarting replaces its own stale trace.
     """
     global _turn
-    if not _is_enabled():
+    if not _is_enabled() or is_subagent:
         return
     if _turn is not None and _turn.owner_id != id(owner):
         return

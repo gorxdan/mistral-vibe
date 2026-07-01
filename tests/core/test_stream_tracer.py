@@ -206,3 +206,21 @@ def test_fail_soft_when_log_dir_is_a_file(monkeypatch: pytest.MonkeyPatch) -> No
     stream_tracer.assistant_rendered()
     stream_tracer.turn_finished(owner)
     assert not stream_tracer._perf_log.handlers
+
+
+def test_background_subagent_turn_never_claims_the_slot(
+    monkeypatch: pytest.MonkeyPatch, clock: _FakeTime
+) -> None:
+    monkeypatch.setenv("VIBE_TRACE_STREAM", "1")
+    host, subagent = object(), object()
+    # In-process BACKGROUND subagent: starts while no host turn is open.
+    stream_tracer.turn_started(subagent, "sub-1", is_subagent=True)
+    assert stream_tracer._turn is None
+    stream_tracer.turn_started(host, "host-1")
+    clock.now = 10.3
+    stream_tracer.chunk_received(host)
+    stream_tracer.assistant_rendered()
+    stream_tracer.turn_finished(host)
+    text = _perf_log_text()
+    assert "turn=host-1" in text
+    assert "ttfb=300ms" in text

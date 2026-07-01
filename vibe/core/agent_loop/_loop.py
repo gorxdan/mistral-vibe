@@ -910,7 +910,11 @@ class AgentLoop(AgentLoopSessionMixin):
         # No-op unless VIBE_TRACE_LOOP is set; covers the shared Textual loop.
         loop_tracer.install()
         # No-op unless VIBE_TRACE_STREAM is set; turn id matches profiler.section.
-        stream_tracer.turn_started(self, f"{self.session_id[:8]}-{self.stats.steps}")
+        stream_tracer.turn_started(
+            self,
+            f"{self.session_id[:8]}-{self.stats.steps}",
+            is_subagent=self._is_subagent,
+        )
         try:
             try:
                 active_model = self.effective_model()
