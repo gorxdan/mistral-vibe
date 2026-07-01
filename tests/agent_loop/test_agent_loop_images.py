@@ -94,6 +94,24 @@ async def test_act_raises_when_model_lacks_vision(
 
 
 @pytest.mark.asyncio
+async def test_act_image_check_uses_failover_override_not_config(
+    png_attachment: ImageAttachment,
+) -> None:
+    config = _config_with_both_models()
+    backend = FakeBackend([mock_llm_chunk(content="ok")])
+    agent = build_test_agent_loop(config=config, backend=backend)
+    agent._fallback_model_override = next(
+        m for m in config.models if m.alias == "text-alias"
+    )
+
+    with pytest.raises(ImagesNotSupportedError):
+        async for _ in agent.act("look", images=[png_attachment]):
+            pass
+
+    assert backend.requests_extra_headers == []
+
+
+@pytest.mark.asyncio
 async def test_act_attaches_images_to_user_message(
     png_attachment: ImageAttachment,
 ) -> None:
