@@ -4217,13 +4217,16 @@ class VibeApp(App):
                 )
             )
         elif sub == "merge":
+            # Not wired to the merge itself: the live session still has the
+            # branch checked out, so the rebase-then-ff must run after exit.
             await self._mount_and_scroll(
                 UserCommandMessage(
-                    f"**To merge the worktree branch:**\n"
+                    f"**To merge the worktree branch:** exit the session — "
+                    f"it auto-merges when possible. To merge manually:\n"
                     f"```\ncd {wt.original_repo_root}\n"
-                    f"git merge {wt.branch}\n```\n\n"
-                    f"Or if the original tree is clean and HEAD hasn't moved:\n"
-                    f"```\ngit merge --ff-only {wt.branch}\n```"
+                    f"vibe worktree merge {wt.branch}\n```\n"
+                    f"(rebases onto HEAD then fast-forwards, under the "
+                    f"per-repo merge lock)"
                 )
             )
         else:
