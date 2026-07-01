@@ -340,6 +340,27 @@ def _forbidden_control_char_reason(command: str) -> str | None:
     )
 
 
+# stderr fragments that mark a failure the OS sandbox likely caused (bwrap's own
+# error prefix, or the errno strings a confined write/exec produces).
+_SANDBOX_FAILURE_MARKERS = (
+    "bwrap:",
+    "read-only file system",
+    "permission denied",
+    "operation not permitted",
+)
+_SANDBOX_BLOCKED_HINT = (
+    "the OS sandbox may have blocked this; set sandbox.enabled=false or add the "
+    "path to sandbox.write_dirs"
+)
+
+
+def _sandbox_failure_hint(stderr: str) -> str | None:
+    low = stderr.lower()
+    if any(marker in low for marker in _SANDBOX_FAILURE_MARKERS):
+        return _SANDBOX_BLOCKED_HINT
+    return None
+
+
 def _auto_approval_blocker(command: str) -> str | None:
     for op in _SIDE_EFFECTING_OPERATORS:
         if op in command:
@@ -668,7 +689,13 @@ class Bash(
 
     @final
     def _build_result(
-        self, *, command: str, stdout: str, stderr: str, returncode: int
+        self,
+        *,
+        command: str,
+        stdout: str,
+        stderr: str,
+        returncode: int,
+        sandbox_active: bool = False,
     ) -> BashResult:
         if returncode != 0:
             error_msg = f"Command failed: {command!r}\n"
@@ -677,6 +704,8 @@ class Bash(
                 error_msg += f"\nStderr: {stderr}"
             if stdout:
                 error_msg += f"\nStdout: {stdout}"
+            if sandbox_active and (hint := _sandbox_failure_hint(stderr)):
+                error_msg += f"\nHint: {hint}"
             raise ToolError(error_msg.strip())
 
         return BashResult(
@@ -890,6 +919,7 @@ class Bash(
         proc = None
         profile_path: Path | None = None
         seccomp_fd: int | None = None
+        ran_sandboxed = False
         try:
             kwargs: dict[Literal["start_new_session"], bool] = (
                 {} if is_windows() else {"start_new_session": True}
@@ -911,6 +941,7 @@ class Bash(
                         pass_fds=(seccomp_fd,) if seccomp_fd is not None else (),
                         **kwargs,
                     )
+                    ran_sandboxed = True
                 except (FileNotFoundError, OSError) as exc:
                     if self.config.sandbox.require_backend:
                         raise ToolError(
@@ -964,13 +995,12 @@ class Bash(
                 else ""
             )
 
-            returncode = proc.returncode or 0
-
             yield self._build_result(
                 command=args.command,
                 stdout=stdout,
                 stderr=stderr,
-                returncode=returncode,
+                returncode=proc.returncode or 0,
+                sandbox_active=ran_sandboxed,
             )
 
         except (ToolError, asyncio.CancelledError):

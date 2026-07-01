@@ -502,6 +502,52 @@ def test_sandbox_enabled_default_is_on() -> None:
     assert SandboxConfig().enabled is True
 
 
+def test_build_result_appends_sandbox_hint_on_bwrap_error() -> None:
+    # A sandbox-caused failure (bwrap: prefix / fs / permission error) must carry
+    # a one-line attribution so the user knows to widen write_dirs or disable it.
+    bash = _bash(SandboxConfig(enabled=True))
+    with pytest.raises(ToolError) as ei:
+        bash._build_result(
+            command="echo x > /etc/foo",
+            stdout="",
+            stderr="bwrap: Can't find source path /nope",
+            returncode=1,
+            sandbox_active=True,
+        )
+    assert "OS sandbox may have blocked this" in str(ei.value)
+    assert "sandbox.write_dirs" in str(ei.value)
+
+
+def test_build_result_no_hint_when_unsandboxed() -> None:
+    # A failure that ran WITHOUT the sandbox must not be blamed on it, even when
+    # stderr happens to mention permission errors.
+    bash = _bash(SandboxConfig(enabled=True))
+    with pytest.raises(ToolError) as ei:
+        bash._build_result(
+            command="false",
+            stdout="",
+            stderr="Permission denied",
+            returncode=1,
+            sandbox_active=False,
+        )
+    assert "OS sandbox may have blocked" not in str(ei.value)
+
+
+def test_build_result_no_hint_when_failure_unrelated() -> None:
+    # A sandboxed command that fails for its own reasons (nonzero, no fs/perm
+    # marker) gets no misleading sandbox attribution.
+    bash = _bash(SandboxConfig(enabled=True))
+    with pytest.raises(ToolError) as ei:
+        bash._build_result(
+            command="grep missing file",
+            stdout="",
+            stderr="no match",
+            returncode=1,
+            sandbox_active=True,
+        )
+    assert "OS sandbox may have blocked" not in str(ei.value)
+
+
 def test_resolve_sandbox_disabled_runs_plain() -> None:
     argv, profile, env, fd = _bash(SandboxConfig(enabled=False))._resolve_sandbox(
         None, "echo hi"
@@ -615,6 +661,21 @@ async def test_sandbox_blocks_write_outside_workspace(tmp_path, monkeypatch) -> 
     # Writing to a read-only root (/etc) must fail (command returns nonzero).
     with pytest.raises(ToolError):
         await _run(bash, "echo x > /etc/vibe_sandbox_probe")
+
+
+@_skip_no_backend
+@pytest.mark.asyncio
+async def test_sandbox_blocked_write_gets_attribution_hint(
+    tmp_path, monkeypatch
+) -> None:
+    # When the OS sandbox is what blocked the command, the ToolError must say so.
+    if detect_backend("auto") != "bwrap":
+        pytest.skip("filesystem confinement needs the bwrap backend")
+    monkeypatch.chdir(tmp_path)
+    bash = _bash(SandboxConfig(enabled=True))
+    with pytest.raises(ToolError) as ei:
+        await _run(bash, "echo x > /etc/vibe_sandbox_hint_probe")
+    assert "OS sandbox may have blocked this" in str(ei.value)
 
 
 @_skip_no_backend
