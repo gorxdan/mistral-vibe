@@ -1353,15 +1353,22 @@ class AgentLoop(AgentLoopSessionMixin):
             pass
 
     def _escalate_max_output(self) -> int | None:
+        from vibe.core.llm.backend.generic import adapter_supports_max_output_escalation
+
         esc = self.config.max_output_escalation
         if not esc.enabled:
-            return None
-        self._response_too_long_attempts += 1
-        if self._response_too_long_attempts > esc.max_attempts:
             return None
         # Streaming model resolution ignores the fallback override, so clamp
         # against the plain active model (matches _chat_streaming).
         model = self.config.get_active_model()
+        provider = self.config.get_provider_for_model(model)
+        # Codex strips max_output_tokens, so an escalated retry would be
+        # byte-identical: go straight to the terminal path instead.
+        if not adapter_supports_max_output_escalation(provider.api_style):
+            return None
+        self._response_too_long_attempts += 1
+        if self._response_too_long_attempts > esc.max_attempts:
+            return None
         cap = model.max_output_tokens or esc.cap
         current = self._max_output_override or esc.base
         next_val = min(int(current * esc.factor), cap)

@@ -40,6 +40,9 @@ class RequestParams:
 
 class APIAdapter(Protocol):
     endpoint: ClassVar[str]
+    # False when the adapter can't put a larger max_tokens on the wire (codex
+    # rejects the param), so the agent loop must skip the escalation retries.
+    supports_max_output_escalation: ClassVar[bool] = True
 
     def prepare_request(self, params: RequestParams) -> PreparedRequest: ...
 

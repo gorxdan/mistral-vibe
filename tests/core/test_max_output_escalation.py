@@ -5,8 +5,22 @@ from collections.abc import AsyncGenerator
 import pytest
 
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
-from vibe.core.config import MaxOutputEscalationConfig
-from vibe.core.types import BaseEvent, ResponseTooLongError
+from tests.stubs.fake_backend import FakeBackend
+from vibe.core.config import (
+    MaxOutputEscalationConfig,
+    ModelConfig,
+    ProviderConfig,
+    VibeConfig,
+)
+from vibe.core.types import (
+    BaseEvent,
+    LLMChunk,
+    LLMMessage,
+    LLMUsage,
+    ResponseTooLongError,
+    Role,
+    StopInfo,
+)
 
 # --------------------------------------------------------------------------- #
 # _escalate_max_output numeric behavior                                        #
@@ -228,3 +242,60 @@ async def test_chat_raises_on_openai_responses_incomplete_max_output_tokens() ->
     with pytest.raises(ResponseTooLongError):
         await loop._chat()
     assert len(loop.messages) == before, "truncated turn must not enter history"
+
+
+# --- Adapter capability: codex cannot raise the output cap ------------------ #
+
+
+def _truncated_chunk() -> LLMChunk:
+    return LLMChunk(
+        message=LLMMessage(role=Role.ASSISTANT, content="partial..."),
+        usage=LLMUsage(prompt_tokens=1, completion_tokens=1),
+        stop=StopInfo(reason="length"),
+    )
+
+
+def _single_provider_config(api_style: str) -> VibeConfig:
+    provider = ProviderConfig(
+        name="prov",
+        api_base="https://api.example.com/v1",
+        api_key_env_var="",
+        api_style=api_style,
+    )
+    model = ModelConfig(name="test-model", provider="prov", alias="test-model")
+    return build_test_vibe_config(providers=[provider], models=[model])
+
+
+@pytest.mark.asyncio
+async def test_codex_truncation_goes_terminal_without_retrying() -> None:
+    backend = FakeBackend([[_truncated_chunk()] for _ in range(5)])
+    loop = build_test_agent_loop(
+        config=_single_provider_config("openai-chatgpt"), backend=backend
+    )
+    with pytest.raises(ResponseTooLongError):
+        _ = [e async for e in loop._conversation_loop("hi")]
+    # Codex strips max_output_tokens from the wire, so an escalated retry would
+    # re-send an identical request: exactly one attempt, then terminal.
+    assert backend.requests_max_tokens == [None]
+    assert loop._max_output_override is None
+
+
+@pytest.mark.asyncio
+async def test_escalation_capable_adapter_still_retries_with_larger_caps() -> None:
+    backend = FakeBackend([[_truncated_chunk()] for _ in range(5)])
+    loop = build_test_agent_loop(
+        config=_single_provider_config("openai-responses"), backend=backend
+    )
+    with pytest.raises(ResponseTooLongError):
+        _ = [e async for e in loop._conversation_loop("hi")]
+    assert backend.requests_max_tokens == [None, 16384, 32768, 65536]
+
+
+def test_adapter_capability_flags() -> None:
+    from vibe.core.llm.backend.openai_responses import (
+        ChatGPTResponsesAdapter,
+        OpenAIResponsesAdapter,
+    )
+
+    assert OpenAIResponsesAdapter.supports_max_output_escalation
+    assert not ChatGPTResponsesAdapter.supports_max_output_escalation

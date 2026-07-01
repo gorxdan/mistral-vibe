@@ -258,6 +258,14 @@ def _get_adapter(api_style: str) -> APIAdapter:
     return _ADAPTERS[api_style]
 
 
+def adapter_supports_max_output_escalation(api_style: str) -> bool:
+    try:
+        adapter = _get_adapter(api_style)
+    except KeyError:
+        return True
+    return adapter.supports_max_output_escalation
+
+
 # Bound connect/write/pool so a dead endpoint fails fast (failover can engage);
 # `read` keeps the full generation timeout so slow reasoning isn't killed.
 _CONNECT_TIMEOUT = 15.0
