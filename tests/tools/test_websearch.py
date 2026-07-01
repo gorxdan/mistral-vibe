@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import keyring
 from mistralai.client import Mistral
 from mistralai.client.errors import SDKError
 from mistralai.client.models import (
@@ -324,6 +325,20 @@ def test_is_available_uses_mistral_provider_api_key_env_var(monkeypatch):
     assert WebSearch.is_available(config) is False
 
     monkeypatch.setenv("TEST_API_KEY", "provider-key")
+    assert WebSearch.is_available(config) is True
+
+
+def test_is_available_accepts_keyring_only_provider_key(monkeypatch):
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("SEARXNG_URL", raising=False)
+    monkeypatch.delenv("TEST_API_KEY", raising=False)
+
+    def _get_password(service: str, username: str) -> str | None:
+        return "keyring-key" if username == "TEST_API_KEY" else None
+
+    monkeypatch.setattr(keyring, "get_password", _get_password)
+    config = build_test_vibe_config(providers=[_mistral_provider("TEST_API_KEY")])
+
     assert WebSearch.is_available(config) is True
 
 

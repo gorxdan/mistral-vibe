@@ -7,6 +7,7 @@ import tomllib
 from typing import Literal, TypedDict, Unpack
 from unittest.mock import MagicMock, patch
 
+import keyring
 import pytest
 import tomli_w
 
@@ -1695,8 +1696,41 @@ class TestConnectorRegistryActiveProviderGate:
 
         assert loop.connector_registry is None
 
+    def test_builds_registry_from_keyring_only_auth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Connector registry should use keyring-stored keys, not just env vars."""
+        env_key = "KEYRING_ONLY_CONNECTOR_API_KEY"
 
-class TestMigrateRenamedTools:
+        def _get_password(service: str, username: str) -> str | None:
+            return "keyring-key" if username == env_key else None
+
+        monkeypatch.delenv(env_key, raising=False)
+        monkeypatch.setattr(keyring, "get_password", _get_password)
+        cfg = build_test_vibe_config(
+            enable_connectors=True,
+            providers=[
+                ProviderConfig(
+                    name="mistral",
+                    api_base="https://api.mistral.ai/v1",
+                    api_key_env_var=env_key,
+                    backend=Backend.MISTRAL,
+                )
+            ],
+            models=[
+                ModelConfig(
+                    name="mistral-large-latest",
+                    provider="mistral",
+                    alias="mistral-large",
+                )
+            ],
+            active_model="mistral-large",
+        )
+
+        loop = build_test_agent_loop(config=cfg)
+
+        assert loop.connector_registry is not None
+
     def test_renames_read_file_and_search_replace_keys(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

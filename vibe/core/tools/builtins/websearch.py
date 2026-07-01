@@ -10,7 +10,7 @@ import unicodedata
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from vibe.core.config import DEFAULT_MISTRAL_API_ENV_KEY, VibeConfig
+from vibe.core.config import DEFAULT_MISTRAL_API_ENV_KEY, VibeConfig, resolve_api_key
 from vibe.core.search import (
     BROWSER_USER_AGENT,
     DEFAULT_CONTAINER_NAME as DEFAULT_SEARXNG_CONTAINER_NAME,
@@ -264,13 +264,13 @@ class WebSearch(
             return True
 
         if config is None:
-            return bool(os.getenv(DEFAULT_MISTRAL_API_ENV_KEY))
+            return bool(resolve_api_key(DEFAULT_MISTRAL_API_ENV_KEY))
 
         provider = config.get_mistral_provider()
         if provider is None:
-            return bool(os.getenv(DEFAULT_MISTRAL_API_ENV_KEY))
+            return bool(resolve_api_key(DEFAULT_MISTRAL_API_ENV_KEY))
 
-        return bool(os.getenv(cls._api_key_env_var(config)))
+        return bool(resolve_api_key(cls._api_key_env_var(config)))
 
     def resolve_permission(self, args: WebSearchArgs) -> PermissionContext | None:
         if self.config.permission == ToolPermission.NEVER:
@@ -292,7 +292,7 @@ class WebSearch(
                     return
 
             api_key_env_var = self._api_key_env_var(config)
-            api_key = os.getenv(api_key_env_var)
+            api_key = resolve_api_key(api_key_env_var)
             if not api_key:
                 raise ToolError(f"{api_key_env_var} environment variable not set.")
 

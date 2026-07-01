@@ -37,7 +37,7 @@ from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
 from vibe.core.baseline_scaling import BaselineTier, baseline_tier_for
 from vibe.core.cache_store import InMemoryVibeCodeCacheStore, VibeCodeCacheStore
-from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
+from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig, resolve_api_key
 from vibe.core.experiments import ExperimentManager
 from vibe.core.experiments.client import RemoteEvalClient
 from vibe.core.experiments.session import (
@@ -761,7 +761,7 @@ class AgentLoop(AgentLoopSessionMixin):
 
         provider = self._base_config.get_active_provider()
         api_key_env = provider.api_key_env_var or "MISTRAL_API_KEY"
-        api_key = os.getenv(api_key_env, "")
+        api_key = resolve_api_key(api_key_env) or ""
         if not api_key:
             return None
 
