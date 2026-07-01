@@ -95,7 +95,7 @@ PRESETS: list[ProviderPreset] = [
             input_price=0.0,
             output_price=0.0,
             auto_compact_threshold=880000,
-            context_window=KNOWN_MODEL_CONTEXT_WINDOWS["glm-5.2"],
+            context_window=KNOWN_MODEL_CONTEXT_WINDOWS[("zai", "glm-5.2")],
         ),
     ),
     ProviderPreset(
@@ -249,7 +249,7 @@ PRESETS: list[ProviderPreset] = [
             supports_images=True,
             # 1M-token context window; compact well before the ceiling.
             auto_compact_threshold=880000,
-            context_window=KNOWN_MODEL_CONTEXT_WINDOWS["fugu"],
+            context_window=KNOWN_MODEL_CONTEXT_WINDOWS[("sakana", "fugu")],
         ),
         extra_models=(
             ModelConfig(
@@ -263,7 +263,7 @@ PRESETS: list[ProviderPreset] = [
                 supports_images=True,
                 # Same 1M-token context window as fugu; compact before the ceiling.
                 auto_compact_threshold=880000,
-                context_window=KNOWN_MODEL_CONTEXT_WINDOWS["fugu-ultra"],
+                context_window=KNOWN_MODEL_CONTEXT_WINDOWS[("sakana", "fugu-ultra")],
             ),
         ),
     ),
@@ -293,7 +293,7 @@ PRESETS: list[ProviderPreset] = [
             # 1M-token context window (128K output). Compact well before the
             # ceiling, matching the other 1M-window presets.
             auto_compact_threshold=880000,
-            context_window=KNOWN_MODEL_CONTEXT_WINDOWS["LongCat-2.0"],
+            context_window=KNOWN_MODEL_CONTEXT_WINDOWS[("longcat", "LongCat-2.0")],
         ),
     ),
     ProviderPreset(

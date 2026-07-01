@@ -160,13 +160,13 @@ def test_apply_sakana_preset_persists_provider_and_model(
 def test_presets_declare_known_context_windows() -> None:
     from vibe.core.config import KNOWN_MODEL_CONTEXT_WINDOWS
 
-    by_name = {
-        m.name: m
+    by_key = {
+        (m.provider, m.name): m
         for p in PRESETS
         for m in (*([p.model] if p.model else []), *p.extra_models)
     }
-    for name, window in KNOWN_MODEL_CONTEXT_WINDOWS.items():
-        assert by_name[name].context_window == window
+    for key, window in KNOWN_MODEL_CONTEXT_WINDOWS.items():
+        assert by_key[key].context_window == window
 
 
 def test_zai_preset_declares_glm_window_and_keeps_threshold() -> None:

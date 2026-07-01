@@ -730,6 +730,27 @@ class TestMigrateContextWindowBackfill:
         assert "context_window" not in by_alias["mystery"]
         assert VibeConfig._CONTEXT_WINDOW_MIGRATION in result["applied_migrations"]
 
+    def test_skips_known_name_on_foreign_provider(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "models": [
+                {"name": "glm-5.2", "provider": "someproxy", "alias": "glm-proxy"}
+            ]
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        assert "context_window" not in result["models"][0]
+
     def test_idempotent_and_respects_user_removal(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

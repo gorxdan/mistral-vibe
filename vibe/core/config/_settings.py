@@ -609,11 +609,13 @@ DEFAULT_MODELS = [
 
 # Windows the bundled presets document (880k-threshold presets target 1M).
 # Consumed by onboarding presets + the context_window backfill migration.
-KNOWN_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "glm-5.2": 1_000_000,
-    "fugu": 1_000_000,
-    "fugu-ultra": 1_000_000,
-    "LongCat-2.0": 1_000_000,
+# Keyed (provider, name): the same model name re-served through a proxy
+# provider may have a smaller real window — never backfill those.
+KNOWN_MODEL_CONTEXT_WINDOWS: dict[tuple[str, str], int] = {
+    ("zai", "glm-5.2"): 1_000_000,
+    ("sakana", "fugu"): 1_000_000,
+    ("sakana", "fugu-ultra"): 1_000_000,
+    ("longcat", "LongCat-2.0"): 1_000_000,
 }
 
 DEFAULT_TRANSCRIBE_PROVIDERS = [
@@ -1511,7 +1513,10 @@ class VibeConfig(BaseSettings):
             return False
         migrated = False
         for model in data.get("models", []):
-            window = KNOWN_MODEL_CONTEXT_WINDOWS.get(model.get("name"))
+            window = KNOWN_MODEL_CONTEXT_WINDOWS.get((
+                model.get("provider"),
+                model.get("name"),
+            ))
             if window is None or "context_window" in model:
                 continue
             model["context_window"] = window
