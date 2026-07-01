@@ -565,7 +565,9 @@ class VibeAcpAgentLoop(AcpAgent):
             ),
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(
-                name="@mistralai/mistral-vibe", title="Mistral Vibe", version=__version__
+                name="@mistralai/mistral-vibe",
+                title="Mistral Vibe",
+                version=__version__,
             ),
             auth_methods=auth_methods,
         )

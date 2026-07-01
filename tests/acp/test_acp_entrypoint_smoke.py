@@ -17,7 +17,9 @@ from tests import TESTS_ROOT
 from tests.e2e.common import ansi_tolerant_pattern
 
 BROWSER_AUTH_NAME = "Sign in through Mistral AI Studio"
-BROWSER_AUTH_DESCRIPTION = "Sign into Mistral Vibe through your Mistral AI Studio account."
+BROWSER_AUTH_DESCRIPTION = (
+    "Sign into Mistral Vibe through your Mistral AI Studio account."
+)
 
 
 class _AcpSmokeClient(Client):

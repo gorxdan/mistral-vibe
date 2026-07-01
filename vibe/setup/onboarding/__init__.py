@@ -277,4 +277,6 @@ def run_onboarding(
                 f"You may need to set it manually in {GLOBAL_ENV_FILE.path}[/]\n"
             )
         case "completed":
-            rprint('\nSetup complete. Run "vibe" to start using the Mistral Vibe CLI.\n')
+            rprint(
+                '\nSetup complete. Run "vibe" to start using the Mistral Vibe CLI.\n'
+            )

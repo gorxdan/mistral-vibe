@@ -40,8 +40,7 @@ def test_install_zai_protocol_handler_registers_when_unclaimed(
     assert result.status == "installed"
     assert result.handler == "vibe-zcode-handler.desktop"
     assert (
-        result.path
-        == tmp_path / "data" / "applications" / "vibe-zcode-handler.desktop"
+        result.path == tmp_path / "data" / "applications" / "vibe-zcode-handler.desktop"
     )
     desktop_path = result.path
     assert desktop_path is not None
@@ -133,8 +132,7 @@ def test_install_zai_protocol_handler_reports_already_configured(
 
     assert result.status == "already_configured"
     assert (
-        result.path
-        == tmp_path / "data" / "applications" / "vibe-zcode-handler.desktop"
+        result.path == tmp_path / "data" / "applications" / "vibe-zcode-handler.desktop"
     )
     assert "x-scheme-handler/zcode=vibe-zcode-handler.desktop;" in (
         tmp_path / "config" / "mimeapps.list"
@@ -218,9 +216,7 @@ def test_install_zai_protocol_handler_ignores_snap_scoped_xdg_dirs(
         env["XDG_DATA_HOME"] == str(home / ".local" / "share") for env in seen_envs
     )
     assert all(env["XDG_CONFIG_HOME"] == str(home / ".config") for env in seen_envs)
-    assert not (
-        snap_data_home / "applications" / "vibe-zcode-handler.desktop"
-    ).exists()
+    assert not (snap_data_home / "applications" / "vibe-zcode-handler.desktop").exists()
     assert not (snap_config_home / "mimeapps.list").exists()
 
 

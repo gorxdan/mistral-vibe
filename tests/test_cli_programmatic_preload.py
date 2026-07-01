@@ -97,7 +97,8 @@ def test_run_programmatic_preload_streaming_is_batched(
         assert session_closed[0]["properties"]["agent_entrypoint"] == "programmatic"
 
         assert (
-            spy.emitted[0][1] == "You are Mistral Vibe, a super useful programming assistant."
+            spy.emitted[0][1]
+            == "You are Mistral Vibe, a super useful programming assistant."
         )
         assert spy.emitted[1][1] == "Previously, you told me about decorators."
         assert spy.emitted[2][1] == "Sure, decorators allow you to wrap functions."
@@ -156,7 +157,8 @@ def test_run_programmatic_ignores_system_messages_in_previous(
         roles = [r for r, _ in spy.emitted]
         assert roles == [Role.SYSTEM, Role.USER, Role.USER, Role.ASSISTANT]
         assert (
-            spy.emitted[0][1] == "You are Mistral Vibe, a super useful programming assistant."
+            spy.emitted[0][1]
+            == "You are Mistral Vibe, a super useful programming assistant."
         )
         assert spy.emitted[1][1] == "Continue our previous discussion."
         assert spy.emitted[2][1] == "Let's move on to practical examples."

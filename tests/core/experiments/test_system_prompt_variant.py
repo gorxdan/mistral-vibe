@@ -74,7 +74,9 @@ async def test_system_prompt_uses_assigned_variant() -> None:
     prompt = get_universal_system_prompt(
         tool_manager, config, skill_manager, agent_manager, experiment_manager=manager
     )
-    assert prompt.startswith("You are Mistral Vibe, a super useful programming assistant.")
+    assert prompt.startswith(
+        "You are Mistral Vibe, a super useful programming assistant."
+    )
 
 
 @pytest.mark.asyncio

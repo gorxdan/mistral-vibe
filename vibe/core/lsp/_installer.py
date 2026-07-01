@@ -91,7 +91,9 @@ def _install_error(preset: ServerPreset) -> str:
         return f"{preset.display_name} has no install_command; install manually."
     tool = preset.install_command[0]
     if channel_for_command(tool) is None:
-        return f"{preset.display_name} uses {tool} which Mistral Vibe does not bootstrap."
+        return (
+            f"{preset.display_name} uses {tool} which Mistral Vibe does not bootstrap."
+        )
     return f"{tool} not on PATH; install {tool} first."
 
 

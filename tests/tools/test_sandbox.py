@@ -412,9 +412,7 @@ def test_resolve_sandbox_isolated_no_outside_widening(tmp_path, monkeypatch) -> 
         "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
     )
     bash = _bash(SandboxConfig(enabled=False))
-    argv, _profile, _env, fd = bash._resolve_sandbox(
-        None, f"echo x > {outside}/f.txt"
-    )
+    argv, _profile, _env, fd = bash._resolve_sandbox(None, f"echo x > {outside}/f.txt")
     try:
         assert argv is not None
         assert str(outside.resolve()) not in argv  # never widened out of the worktree
