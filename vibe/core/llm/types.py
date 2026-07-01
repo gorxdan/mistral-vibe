@@ -15,7 +15,8 @@ if TYPE_CHECKING:
 class CompletionRequest:
     model: ModelConfig
     messages: Sequence[LLMMessage]
-    temperature: float | None = 0.2
+    # None = omit on the wire (fail-safe: Moonshot 400s on any explicit value).
+    temperature: float | None = None
     tools: list[AvailableTool] | None = None
     max_tokens: int | None = None
     tool_choice: StrToolChoice | AvailableTool | None = None

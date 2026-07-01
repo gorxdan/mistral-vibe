@@ -954,6 +954,31 @@ async def test_client_bounds_network_timeouts_but_keeps_long_read() -> None:
     assert t.read == 720.0
 
 
+@pytest.mark.asyncio
+async def test_completion_request_default_temperature_stays_off_the_wire() -> None:
+    # Omitting temperature must fail safe (no wire value), not resurrect the
+    # stale 0.2 default that providers like Moonshot reject.
+    with respx.mock(base_url="https://api.fireworks.ai") as mock_api:
+        route = mock_api.post(CHAT_COMPLETIONS_PATH).mock(
+            return_value=httpx.Response(
+                status_code=200, json=FIREWORKS_SIMPLE_CONVERSATION_PARAMS[0][1]
+            )
+        )
+        provider = ProviderConfig(
+            name="p", api_base="https://api.fireworks.ai/v1", api_key_env_var="API_KEY"
+        )
+        backend = GenericBackend(provider=provider)
+        request = CompletionRequest(
+            model=ModelConfig(name="m", provider="p", alias="m"),
+            messages=[LLMMessage(role=Role.USER, content="hi")],
+        )
+        assert request.temperature is None
+        await backend.complete(request)
+
+    sent = json.loads(route.calls.last.request.content)
+    assert "temperature" not in sent
+
+
 class TestTtftCap:
     @pytest.mark.asyncio
     async def test_open_hang_aborts_within_ttft_budget(self, monkeypatch):
