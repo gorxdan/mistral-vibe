@@ -474,6 +474,10 @@ def test_verification_contract_section_present_when_subsystem_enabled() -> None:
     )
     assert "## Verification contract" in prompt_on
     assert "spawn the `verifier`" in prompt_on.lower()
+    # The contract covers a verifier that itself errors (no VERDICT line) —
+    # distinct from PASS/FAIL/PARTIAL, so the host doesn't treat a dead
+    # verifier as a pass.
+    assert "no verdict (verifier errored)" in prompt_on.lower()
     # The verifier profile appears in the subagents picker.
     assert "- `verifier` —" in prompt_on
 
