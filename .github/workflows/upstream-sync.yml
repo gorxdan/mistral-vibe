@@ -78,8 +78,21 @@ jobs:
       - name: Fetch upstream tag
         run: git fetch upstream "refs/tags/$TAG:refs/tags/$TAG" --no-tags
 
+      # Without this guard the daily run re-merges an already-landed tag and
+      # exits red every day until upstream cuts a new release.
+      - name: Skip when tag already merged
+        id: ancestry
+        run: |
+          if git merge-base --is-ancestor "$TAG" origin/main; then
+            echo "::notice::$TAG is already merged into origin/main; nothing to sync."
+            echo "already_merged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_merged=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Merge upstream tag
         id: merge
+        if: steps.ancestry.outputs.already_merged != 'true'
         continue-on-error: true
         run: git merge --no-ff --no-edit "$TAG"
 
@@ -112,7 +125,7 @@ jobs:
         run: uv run pytest --ignore tests/snapshots
 
       - name: Report result (PR or issue)
-        if: always()
+        if: always() && steps.ancestry.outputs.already_merged != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Pin gh to THIS fork. With an `upstream` remote present, gh's repo
