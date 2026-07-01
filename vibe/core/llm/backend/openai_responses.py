@@ -801,6 +801,9 @@ class OpenAIResponsesAdapter(APIAdapter):
 
 
 class ChatGPTResponsesAdapter(OpenAIResponsesAdapter):
+    # prepare_request strips max_output_tokens (codex 400s on it), so an
+    # escalated retry cannot change the request.
+    supports_max_output_escalation: ClassVar[bool] = False
     _DEFAULT_INSTRUCTIONS: ClassVar[str] = (
         "You are a coding assistant operating in a terminal-based coding harness."
     )
