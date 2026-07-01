@@ -35,3 +35,18 @@ def test_section_writes_reports_under_log_dir(
     assert not list(tmp_working_directory.glob("*-profile.*"))
     assert (LOG_DIR.path / "turn-abc-0-profile.html").exists()
     assert (LOG_DIR.path / "turn-abc-0-profile.txt").exists()
+
+
+def test_nested_section_keeps_outer_profile_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("pyinstrument")
+    monkeypatch.setenv("VIBE_PROFILE", "1")
+    with profiler.section("outer"):
+        with pytest.warns(UserWarning), profiler.section("inner"):
+            _burn()
+        assert profiler._state.profiler is not None
+        _burn()
+    assert profiler._state.profiler is None
+    assert (LOG_DIR.path / "outer-profile.html").exists()
+    assert not (LOG_DIR.path / "inner-profile.html").exists()
