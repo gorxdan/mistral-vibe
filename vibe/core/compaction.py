@@ -15,8 +15,18 @@ _COMPACTION_SUMMARY_OPEN = "<compaction_summary>"
 _COMPACTION_SUMMARY_CLOSE = "</compaction_summary>"
 _PERSISTED_OUTPUTS_OPEN = "<persisted_tool_outputs>"
 _PERSISTED_OUTPUTS_CLOSE = "</persisted_tool_outputs>"
+_PREVIOUS_USER_MESSAGE_OPEN = "<previous_user_message>"
+_PREVIOUS_USER_MESSAGE_CLOSE = "</previous_user_message>"
+_RESERVED_PREVIOUS_USER_MESSAGE_TAGS = (
+    _PREVIOUS_USER_MESSAGES_OPEN,
+    _PREVIOUS_USER_MESSAGES_CLOSE,
+    _PREVIOUS_USER_MESSAGE_OPEN,
+    _PREVIOUS_USER_MESSAGE_CLOSE,
+)
 _PREVIOUS_USER_MESSAGE_RE = re.compile(
-    r"<previous_user_message_(\d+)>(.*?)</previous_user_message_\1>", re.DOTALL
+    rf"{re.escape(_PREVIOUS_USER_MESSAGE_OPEN)}\n(.*?)\n"
+    rf"{re.escape(_PREVIOUS_USER_MESSAGE_CLOSE)}",
+    re.DOTALL,
 )
 # Matches the persisted-output path marker written by ToolResultStore.shape and
 # carried forward by SnipMiddleware. The path sits between "persisted to " and
@@ -38,10 +48,10 @@ def render_compaction_context(
         "",
         _PREVIOUS_USER_MESSAGES_OPEN,
     ]
-    for idx, message in enumerate(previous_user_messages):
-        content = escape(message.content or "", quote=False)
+    for message in previous_user_messages:
+        content = _escape_reserved_previous_user_message_tags(message.content or "")
         lines.append(
-            f"<previous_user_message_{idx}>{content}</previous_user_message_{idx}>"
+            f"{_PREVIOUS_USER_MESSAGE_OPEN}\n{content}\n{_PREVIOUS_USER_MESSAGE_CLOSE}"
         )
     lines.extend([
         _PREVIOUS_USER_MESSAGES_CLOSE,
@@ -49,7 +59,7 @@ def render_compaction_context(
         "Here is a summary of what has happened so far:",
         "",
         _COMPACTION_SUMMARY_OPEN,
-        escape(summary, quote=False),
+        summary,
         _COMPACTION_SUMMARY_CLOSE,
     ])
     if persisted_tool_outputs:
@@ -66,6 +76,12 @@ def render_compaction_context(
     return "\n".join(lines)
 
 
+def _escape_reserved_previous_user_message_tags(content: str) -> str:
+    for tag in _RESERVED_PREVIOUS_USER_MESSAGE_TAGS:
+        content = content.replace(tag, escape(tag, quote=False))
+    return content
+
+
 def parse_previous_user_messages(content: str) -> list[str]:
     block_start = content.find(_PREVIOUS_USER_MESSAGES_OPEN)
     if block_start < 0:
@@ -77,16 +93,7 @@ def parse_previous_user_messages(content: str) -> list[str]:
         return []
 
     block = content[block_start:block_end]
-    matches = list(_PREVIOUS_USER_MESSAGE_RE.finditer(block))
-    if not matches:
-        return []
-
-    previous_user_messages: list[str] = []
-    for expected_idx, match in enumerate(matches):
-        if int(match.group(1)) != expected_idx:
-            return []
-        previous_user_messages.append(unescape(match.group(2)))
-    return previous_user_messages
+    return [match.group(1) for match in _PREVIOUS_USER_MESSAGE_RE.finditer(block)]
 
 
 def extract_persisted_output_path(content: str) -> str | None:

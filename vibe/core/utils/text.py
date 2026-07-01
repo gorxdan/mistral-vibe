@@ -14,28 +14,33 @@ _EDIT_SMART_MAP: dict[str, str] = {
 }
 
 
-def snippet_start_line(content: str, snippet: str) -> int | None:
-    if not snippet.strip("\n"):
-        return None
-    if (pos := content.find(snippet)) == -1:
-        return None
-    # Skip leading newlines so the reported line is the first content line,
-    # aligning the gutter with the diff (which renders the snippet stripped).
-    leading = len(snippet) - len(snippet.lstrip("\n"))
-    return content.count("\n", 0, pos + leading) + 1
+def line_contexts(content: str, snippet: str) -> list[tuple[int, str, str]]:
+    """``(start_line, prefix, suffix)`` per match, completing it to whole lines.
 
-
-def snippet_start_lines(content: str, snippet: str) -> list[int]:
-    """Return the 1-based start line of every non-overlapping occurrence of snippet."""
+    The prefix/suffix expand each match to its full source lines so a caller can
+    diff whole lines instead of just the changed snippet. ``start_line`` is the
+    file line of the match's first row, keeping the diff gutter offset correct.
+    """
     if not snippet.strip("\n"):
         return []
-    leading = len(snippet) - len(snippet.lstrip("\n"))
-    lines: list[int] = []
+    results: list[tuple[int, str, str]] = []
     pos = content.find(snippet)
     while pos != -1:
-        lines.append(content.count("\n", 0, pos + leading) + 1)
-        pos = content.find(snippet, pos + len(snippet))
-    return lines
+        start_line = content.count("\n", 0, pos) + 1
+        line_start = content.rfind("\n", 0, pos) + 1
+        prefix = content[line_start:pos]
+        match_end = pos + len(snippet)
+        # A match ending on a line boundary has no partial trailing line.
+        if match_end > 0 and content[match_end - 1] == "\n":
+            suffix = ""
+        else:
+            line_end = content.find("\n", match_end)
+            if line_end == -1:
+                line_end = len(content)
+            suffix = content[match_end:line_end]
+        results.append((start_line, prefix, suffix))
+        pos = content.find(snippet, match_end)
+    return results
 
 
 def _normalize_with_map(s: str) -> tuple[str, list[int]]:

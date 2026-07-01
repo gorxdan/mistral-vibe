@@ -413,6 +413,18 @@ class VibeConfigSchema(ConfigSchema):
             seen_aliases.add(model.alias)
         return self
 
+    @model_validator(mode="after")
+    def _validate_mcp_server_uniqueness(self) -> VibeConfigSchema:
+        seen_names: set[str] = set()
+        for server in self.mcp_servers:
+            if server.name in seen_names:
+                raise ValueError(
+                    f"Duplicate MCP server name '{server.name}' in mcp_servers; "
+                    "MCP server names must be unique."
+                )
+            seen_names.add(server.name)
+        return self
+
     def get_active_model(self) -> ModelConfig:
         if model := next(
             (m for m in self.models if m.alias == self.active_model), None

@@ -987,6 +987,19 @@ StatusMessage {
     }
 }
 
+.diff-scroll {
+    width: 1fr;
+    height: auto;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-size-horizontal: 1;
+
+    .collapsible-section,
+    VerticalGroup {
+        width: auto;
+    }
+}
+
 .todo-empty,
 .todo-cancelled {
     height: auto;

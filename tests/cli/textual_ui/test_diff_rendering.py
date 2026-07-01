@@ -5,6 +5,7 @@ from textual.highlight import HighlightTheme
 from textual.widget import Widget
 
 from vibe.cli.textual_ui.widgets.diff_rendering import (
+    DiffOccurrence,
     _build_diff_line,
     diff_border_colors,
     language_for_path,
@@ -23,10 +24,19 @@ def _build(
 def _render(*args, **kwargs):
     kwargs.setdefault("dark", True)
     args = list(args)
-    # Tests pass a single start line as an int for readability; the renderer
-    # expects a list of occurrences.
-    if len(args) >= 4 and isinstance(args[3], int):
-        args[3] = [args[3]]
+    # Tests pass (old_string, new_string, language, start_line) where start_line
+    # may be an int, a list of ints, or None. Wrap into DiffOccurrence(s).
+    if len(args) >= 2 and not isinstance(args[0], DiffOccurrence | list):
+        old_string, new_string = args[0], args[1]
+        language = args[2] if len(args) >= 3 else "py"
+        start = args[3] if len(args) >= 4 else None
+        if isinstance(start, list):
+            occurrences = [DiffOccurrence(s, old_string, new_string) for s in start]
+        elif start is not None:
+            occurrences = [DiffOccurrence(start, old_string, new_string)]
+        else:
+            occurrences = [DiffOccurrence(None, old_string, new_string)]
+        return render_edit_diff(occurrences, language, **kwargs)
     return render_edit_diff(*args, **kwargs)
 
 
@@ -164,29 +174,29 @@ class TestRenderEditDiff:
         assert any(_plain(w).rstrip().endswith("Z") for w in added)
 
     def test_replace_all_renders_each_occurrence(self) -> None:
-        widgets = render_edit_diff(
-            "foo", "bar", "py", [3, 10, 25], ansi=False, dark=True
-        )
+        occurrences = [DiffOccurrence(s, "foo", "bar") for s in (3, 10, 25)]
+        widgets = render_edit_diff(occurrences, "py", ansi=False, dark=True)
         removed = [w for w in widgets if "diff-removed" in w.classes]
         added = [w for w in widgets if "diff-added" in w.classes]
         assert len(removed) == 3
         assert len(added) == 3
 
     def test_replace_all_uses_each_start_line(self) -> None:
-        widgets = render_edit_diff(
-            "foo", "bar", "py", [3, 10, 25], ansi=False, dark=True
-        )
+        occurrences = [DiffOccurrence(s, "foo", "bar") for s in (3, 10, 25)]
+        widgets = render_edit_diff(occurrences, "py", ansi=False, dark=True)
         joined = "\n".join(_plain(w) for w in widgets)
         assert "3" in joined
         assert "10" in joined
         assert "25" in joined
 
     def test_replace_all_separates_occurrences_with_gap(self) -> None:
-        widgets = render_edit_diff("foo", "bar", "py", [3, 10], ansi=False, dark=True)
+        occurrences = [DiffOccurrence(s, "foo", "bar") for s in (3, 10)]
+        widgets = render_edit_diff(occurrences, "py", ansi=False, dark=True)
         assert sum("diff-gap" in w.classes for w in widgets) == 1
 
     def test_single_occurrence_has_no_gap(self) -> None:
-        widgets = render_edit_diff("foo", "bar", "py", [3], ansi=False, dark=True)
+        occurrences = [DiffOccurrence(3, "foo", "bar")]
+        widgets = render_edit_diff(occurrences, "py", ansi=False, dark=True)
         assert all("diff-gap" not in w.classes for w in widgets)
 
 

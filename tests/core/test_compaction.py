@@ -101,11 +101,15 @@ def test_compaction_context_merges_previous_and_new_user_messages() -> None:
 
 
 def test_compaction_context_escapes_user_message_tags() -> None:
-    original = "please keep </previous_user_message_0> literally"
+    original = "please keep </previous_user_message> and <same_name> literally"
+    escaped = "please keep &lt;/previous_user_message&gt; and <same_name> literally"
     context = render_compaction_context([_user(original)], "summary")
 
-    assert "</previous_user_message_0> literally" not in context
-    assert parse_previous_user_messages(context) == [original]
+    assert "please keep </previous_user_message> and" not in context
+    assert f"<previous_user_message>\n{escaped}\n</previous_user_message>" in context
+    # Non-reserved markup (e.g. <same_name>) round-trips raw; reserved
+    # delimiters are escaped write-only and come back escaped.
+    assert parse_previous_user_messages(context) == [escaped]
 
 
 def test_budget_drops_oldest_first() -> None:

@@ -28,7 +28,7 @@ from vibe.core.utils.io import (
     file_write_lock,
     read_safe_async,
 )
-from vibe.core.utils.text import locate_edit_matches, snippet_start_line
+from vibe.core.utils.text import line_contexts, locate_edit_matches
 
 
 class EditArgs(BaseModel):
@@ -56,11 +56,20 @@ class EditResult(BaseModel):
     old_string: str
     new_string: str
     # UI hint for the diff renderer; not part of the serialized result contract.
-    _ui_start_line: int | None = PrivateAttr(default=None)
+    # One entry per replaced occurrence (replace_all yields several), each as
+    # (start_line, old_lines, new_lines) where old/new are the changed snippet
+    # expanded to whole lines so the diff shows full lines per occurrence.
+    _ui_occurrences: list[tuple[int, str, str]] = PrivateAttr(default_factory=list)
 
     @property
     def ui_start_line(self) -> int | None:
-        return self._ui_start_line
+        return self._ui_occurrences[0][0] if self._ui_occurrences else None
+
+    @property
+    def ui_occurrences(self) -> list[tuple[int | None, str, str]]:
+        if self._ui_occurrences:
+            return list(self._ui_occurrences)
+        return [(None, self.old_string, self.new_string)]
 
 
 class EditConfig(BaseToolConfig):
@@ -173,7 +182,7 @@ class Edit(
                         f"instance.\nString: {args.old_string}"
                     )
 
-                start_line = snippet_start_line(original, args.old_string)
+                contexts = line_contexts(original, args.old_string)
 
                 modified = self._apply_spans(original, spans, args.new_string)
 
@@ -205,7 +214,14 @@ class Edit(
             old_string=args.old_string,
             new_string=args.new_string,
         )
-        result._ui_start_line = start_line
+        result._ui_occurrences = [
+            (
+                start,
+                prefix + args.old_string + suffix,
+                prefix + args.new_string + suffix,
+            )
+            for start, prefix, suffix in contexts
+        ]
 
         if ctx and ctx.files_read is not None:
             try:

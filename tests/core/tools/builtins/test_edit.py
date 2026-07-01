@@ -277,11 +277,11 @@ def test_get_result_display() -> None:
 
 def test_ui_start_line_not_part_of_model_contract() -> None:
     result = EditResult(file="/x", message="m", old_string="a", new_string="b")
-    result._ui_start_line = 42
+    result._ui_occurrences = [(42, "a", "b")]
 
     assert result.ui_start_line == 42
     assert "ui_start_line" not in result.model_dump()
-    assert "_ui_start_line" not in result.model_dump()
+    assert "_ui_occurrences" not in result.model_dump()
     assert "ui_start_line" not in result.model_dump_json()
     assert "ui_start_line" not in EditResult.model_fields
     assert "ui_start_line" not in EditResult.model_json_schema().get("properties", {})

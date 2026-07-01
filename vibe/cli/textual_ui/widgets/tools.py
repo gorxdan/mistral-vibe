@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from rich.markup import escape
 from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.content import Content
 from textual.widgets import Static
 
 from vibe.cli.textual_ui.widgets.collapsible import (
@@ -182,6 +182,11 @@ class ToolResultMessage(ClickWithoutDragMixin, Static):
             if self._event is not None and self._event.error:
                 # Start muted; the verdict (recoverable vs terminal) lands later.
                 self._call_widget.show_muted()
+            elif self._event is not None and self._event.skipped:
+                # A declined/denied call is the user's choice, not a failure.
+                self._call_widget.show_muted()
+                result_text, result_suffix = self._get_result_text()
+                self._call_widget.set_result_text(result_text, result_suffix)
             else:
                 success = self._determine_success()
                 self._call_widget.stop_spinning(success=success)
@@ -256,7 +261,9 @@ class ToolResultMessage(ClickWithoutDragMixin, Static):
             # Only the inline "Error" span is ever colored; escalation changes the
             # call icon to a red cross but leaves this folded body untouched.
             line_count = len(self._event.error.strip("\n").split("\n"))
-            detail = Static(f"[$error]Error[/]: {escape(self._event.error)}")
+            detail = Static(
+                Content.from_markup("[$error]Error[/]: ") + Content(self._event.error)
+            )
             await self._content_container.mount(
                 CollapsibleSection(detail, collapsed_label=lines_label(line_count))
             )

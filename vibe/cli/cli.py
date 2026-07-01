@@ -24,7 +24,6 @@ from vibe.cli.update_notifier import (
     mark_update_as_dismissed,
 )
 from vibe.core.agent_loop import AgentLoop, AgentLoopParams, TeleportError
-from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import MissingAPIKeyError, VibeConfig, load_dotenv_values
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.hooks.config import HookConfigResult, load_hooks_from_fs
@@ -59,9 +58,6 @@ def _build_cli_entrypoint_metadata() -> EntrypointMetadata:
 
 
 def get_initial_agent_name(args: argparse.Namespace, config: VibeConfig) -> str:
-    if args.auto_approve:
-        return BuiltinAgentName.AUTO_APPROVE
-
     return args.agent or config.default_agent
 
 
@@ -127,6 +123,8 @@ def _apply_cli_overrides(args: argparse.Namespace, config: VibeConfig) -> None:
             )
             sys.exit(1)
         config.active_model = args.model
+    if args.auto_approve:
+        config.bypass_tool_permissions = True
 
 
 def warn_if_workdir_trust_is_unset() -> None:

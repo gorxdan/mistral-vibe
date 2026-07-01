@@ -119,7 +119,7 @@ from vibe.acp.utils import (
     make_thinking_response,
 )
 from vibe.core.agent_loop import AgentLoop, AgentLoopParams, CompactionFailedError
-from vibe.core.agents.models import CHAT as CHAT_AGENT, BuiltinAgentName
+from vibe.core.agents.models import CHAT as CHAT_AGENT
 from vibe.core.autocompletion.path_prompt_adapter import render_path_prompt
 from vibe.core.config import (
     MissingAPIKeyError,
@@ -1018,7 +1018,7 @@ class VibeAcpAgentLoop(AcpAgent):
 
         try:
             agent_loop = self._create_agent_loop(
-                config, BuiltinAgentName.DEFAULT, hook_config_result=hook_config_result
+                config, config.default_agent, hook_config_result=hook_config_result
             )
             session = await self._create_acp_session(agent_loop.session_id, agent_loop)
         except Exception as e:
@@ -1303,7 +1303,7 @@ class VibeAcpAgentLoop(AcpAgent):
             raise SessionLoadError(session_id, str(e)) from e
 
         agent_loop = self._create_agent_loop(
-            config, BuiltinAgentName.DEFAULT, hook_config_result=hook_config_result
+            config, config.default_agent, hook_config_result=hook_config_result
         )
         loaded_session_id = metadata.get("session_id", agent_loop.session_id)
         agent_loop.session_id = loaded_session_id
