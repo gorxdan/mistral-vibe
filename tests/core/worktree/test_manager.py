@@ -104,13 +104,14 @@ class TestWorktreeEnabled:
         assert worktree_enabled(config, programmatic=False)  # interactive CLI
         assert worktree_enabled(config, programmatic=True)  # vibe -p
 
-    def test_default_merge_is_auto_ff(self):
-        # Companion to the mode flip: clean sessions should auto-ff-merge on
-        # exit rather than leaving a throwaway branch for manual merge.
+    def test_default_merge_is_manual(self):
+        # Sessions do NOT auto-ff-merge into the original checkout on exit; work
+        # is kept on the branch for an explicit `chaton worktree merge`. Opt into
+        # auto-ff via worktree.merge = "auto-ff".
         from vibe.core.config import VibeConfig
 
         config = VibeConfig.load()
-        assert config.worktree.merge == "auto-ff"
+        assert config.worktree.merge == "manual"
 
 
 # ---------------------------------------------------------------------------

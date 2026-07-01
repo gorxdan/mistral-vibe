@@ -765,7 +765,8 @@ def get_universal_system_prompt(
             sections.append(
                 f"## Worktree isolation\n\nIsolated git worktree; writes land on "
                 f"branch `{wt.branch}` (use relative paths). Commit your work as "
-                f"the last step; it merges back on exit."
+                f"the last step; the branch is kept for an explicit "
+                f"`chaton worktree merge {wt.branch}` — it is NOT merged on exit."
             )
         else:
             sections.append(
@@ -781,14 +782,13 @@ def get_universal_system_prompt(
                 f"**Commit your finished work** if you have a shell: a real "
                 f'`git commit -m "<summary>"` as your last step is how it is '
                 f"delivered and reviewed, and report the branch name. Uncommitted "
-                f"work still merges back via an anonymous `WIP` auto-save, but a "
-                f"real commit message is far clearer for the user.\n\n"
-                f"On exit your branch is merged back into the original HEAD "
-                f"automatically — rebased onto the latest HEAD first (so concurrent "
-                f"sessions don't strand it), then fast-forwarded, including when the "
-                f"original tree was dirty at start. The branch is kept for recovery "
-                f"(`chaton worktree merge {wt.branch}`) only if it genuinely "
-                f"conflicts with another session's changes."
+                f"work is still saved to the branch via an anonymous `WIP` "
+                f"auto-commit on exit, but a real commit message is far clearer "
+                f"for the user.\n\n"
+                f"Your branch is NOT merged automatically on exit — it is kept so "
+                f"the user reviews and lands it explicitly with "
+                f"`chaton worktree merge {wt.branch}` (or `git merge {wt.branch}`) "
+                f"from the original checkout."
             )
 
     return "\n\n".join(sections)

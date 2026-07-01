@@ -254,7 +254,8 @@ class WorktreeManager:
             wip_ok = self._wip_commit(wt_repo, handle)
 
         merged = False
-        if handle.config.merge == "auto-ff" and wip_ok:
+        attempted_ff = handle.config.merge == "auto-ff" and wip_ok
+        if attempted_ff:
             merged = self._try_auto_ff(handle)
 
         # chdir back BEFORE worktree remove (removing cwd leaves stale cwd).
@@ -278,12 +279,19 @@ class WorktreeManager:
                 "\n✓ Your changes were merged into the original checkout.\n",
                 file=sys.stdout,
             )
-        else:
+        elif attempted_ff:
             print(
                 f"\nYour work is kept on branch {handle.branch} but couldn't merge "
                 "automatically (it conflicts with another session's changes).\n"
                 f"  Land it later: chaton worktree merge {handle.branch}\n"
                 f"  Or discard:    chaton worktree discard {handle.branch}\n",
+                file=sys.stdout,
+            )
+        else:
+            print(
+                f"\nYour work is kept on branch {handle.branch}.\n"
+                f"  Land it:    chaton worktree merge {handle.branch}\n"
+                f"  Or discard: chaton worktree discard {handle.branch}\n",
                 file=sys.stdout,
             )
 

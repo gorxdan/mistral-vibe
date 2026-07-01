@@ -422,7 +422,7 @@ class WorktreeConfig(BaseSettings):
     mode: Literal["off", "on", "auto-by-entrypoint"] = "on"
     base_dir: str = ""
     branch_prefix: str = "vibe/"
-    merge: Literal["manual", "auto-ff"] = "auto-ff"
+    merge: Literal["manual", "auto-ff"] = "manual"
     cleanup: Literal["remove", "keep"] = "remove"
     carry_dirty: bool = True
     carry_ignored: list[str] = Field(
