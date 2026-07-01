@@ -27,15 +27,25 @@ __all__ = [
     "WorktreeError",
     "WorktreeHandle",
     "WorktreeManager",
+    "merge_lock",
     "original_working_directory",
     "worktree_enabled",
     "worktree_manager",
 ]
 
-# Serializes concurrent session-exit merges into the root repo (read-head ->
-# rebase -> ff), so a simultaneous exit never ff's against a moved HEAD.
+# Serializes concurrent merges into the root repo (read-head -> rebase -> ff)
+# so no merge path ever ff's against a HEAD another one just moved.
 _MERGE_LOCK_NAME = "vibe-merge.lock"
 _MERGE_LOCK_TIMEOUT_S = 30.0
+
+
+def merge_lock(repo_root: Path) -> FileLock:
+    """The per-repo lock every merge-back path must hold (exit auto-ff, CLI)."""
+    return FileLock(
+        str(repo_root / ".git" / _MERGE_LOCK_NAME), timeout=_MERGE_LOCK_TIMEOUT_S
+    )
+
+
 _WORKTREE_LEAF_FIELD_COUNT = 3  # "<label>-<pid>-<time_ns>"
 
 
@@ -661,8 +671,7 @@ class WorktreeManager:
     def _try_auto_ff(self, handle: WorktreeHandle) -> bool:
         try:
             root_repo = self._get_repo(handle.original_repo_root)
-            lock_path = Path(handle.original_repo_root) / ".git" / _MERGE_LOCK_NAME
-            with FileLock(str(lock_path), timeout=_MERGE_LOCK_TIMEOUT_S):
+            with merge_lock(Path(handle.original_repo_root)):
                 return self._merge_under_lock(root_repo, handle)
         except Timeout:
             logger.info(

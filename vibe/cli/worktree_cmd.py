@@ -12,10 +12,11 @@ from pathlib import Path
 import sys
 from typing import TYPE_CHECKING
 
+from filelock import Timeout
 from git import Repo
 from git.exc import GitCommandError
 
-from vibe.core.worktree.manager import worktree_manager
+from vibe.core.worktree.manager import merge_lock, worktree_manager
 
 if TYPE_CHECKING:
     from vibe.core.config import WorktreeConfig
@@ -128,6 +129,22 @@ def _cmd_merge(branch: str) -> int:
     repo = _repo()
     if repo is None:
         return 1
+    root = Path(repo.working_tree_dir) if repo.working_tree_dir else Path.cwd()
+    try:
+        # Same per-repo lock as the session-exit auto-ff: two simultaneous
+        # merges would otherwise rebase/ff against a HEAD the other just moved.
+        with merge_lock(root):
+            return _cmd_merge_locked(repo, branch)
+    except Timeout:
+        print(
+            "vibe worktree: another merge is in progress (merge lock busy); "
+            "retry shortly.",
+            file=sys.stderr,
+        )
+        return 1
+
+
+def _cmd_merge_locked(repo: Repo, branch: str) -> int:
     if repo.is_dirty(untracked_files=False):
         print(
             "vibe worktree: working tree is dirty; commit or stash before merging.",
