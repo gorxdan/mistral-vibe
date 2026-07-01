@@ -1358,9 +1358,9 @@ class AgentLoop(AgentLoopSessionMixin):
         esc = self.config.max_output_escalation
         if not esc.enabled:
             return None
-        # Streaming model resolution ignores the fallback override, so clamp
-        # against the plain active model (matches _chat_streaming).
-        model = self.config.get_active_model()
+        # Gate and clamp against the model actually on the wire: the failover
+        # override wins (matches _resolve_active_model in the backend mixin).
+        model = self.effective_model()
         provider = self.config.get_provider_for_model(model)
         # Codex strips max_output_tokens, so an escalated retry would be
         # byte-identical: go straight to the terminal path instead.

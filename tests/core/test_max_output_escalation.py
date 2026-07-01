@@ -299,3 +299,39 @@ def test_adapter_capability_flags() -> None:
 
     assert OpenAIResponsesAdapter.supports_max_output_escalation
     assert not ChatGPTResponsesAdapter.supports_max_output_escalation
+
+
+def _two_provider_failover_loop(active_style: str, override_style: str):
+    providers = [
+        ProviderConfig(
+            name="prov-a",
+            api_base="https://a.example.com/v1",
+            api_key_env_var="",
+            api_style=active_style,
+        ),
+        ProviderConfig(
+            name="prov-b",
+            api_base="https://b.example.com/v1",
+            api_key_env_var="",
+            api_style=override_style,
+        ),
+    ]
+    models = [
+        ModelConfig(name="model-a", provider="prov-a", alias="model-a"),
+        ModelConfig(name="model-b", provider="prov-b", alias="model-b"),
+    ]
+    cfg = build_test_vibe_config(providers=providers, models=models)
+    cfg.active_model = "model-a"
+    loop = build_test_agent_loop(config=cfg)
+    loop._fallback_model_override = models[1]
+    return loop
+
+
+def test_escalation_follows_failover_onto_capable_model() -> None:
+    loop = _two_provider_failover_loop("openai-chatgpt", "openai-responses")
+    assert loop._escalate_max_output() == 16384
+
+
+def test_escalation_skipped_when_failover_lands_on_codex() -> None:
+    loop = _two_provider_failover_loop("openai-responses", "openai-chatgpt")
+    assert loop._escalate_max_output() is None
