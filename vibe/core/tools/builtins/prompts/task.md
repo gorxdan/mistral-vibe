@@ -12,7 +12,7 @@ Context offload (work that would bloat main context) | specialized work (match t
 
 ## Capabilities & limits
 - Investigation profiles are **read-only**: `explore`/`research`/`planner`/`reviewer`/`debugger`/`security` read, search, and report — no writes. `reviewer`/`debugger`/`security` may run approval-gated `bash` (skipped in a headless run).
-- `worker`/`grunt` have the full tool set but are meant for `isolation='worktree'` workflows (auto-approved subprocess). In a plain `task` call their write/exec tools are approval-gated — don't rely on a `task`-spawned `worker`/`grunt` to mutate files; do edits yourself.
+- `worker`/`grunt` have the full tool set. Under the task tool's default (`isolation='auto'`) they route to an isolated worktree subprocess — auto-approved writes, confined to that worktree — the same as in an `isolation='worktree'` workflow. Only `isolation='off'` runs them in-process, where their writes are approval-gated.
 - Subagents can't ask the user — each brief must be self-contained.
 
 ## Background by default

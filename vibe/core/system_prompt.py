@@ -302,6 +302,30 @@ def _get_available_skills_section(
     return "\n".join(lines)
 
 
+# Co-located with the catalog so the routing map survives window tiers that
+# trim the orchestration prose.
+_SUBAGENT_TRIGGERS: dict[str, str] = {
+    "explore": "codebase questions and searches: where/how is X done, trace a "
+    "flow, gather all call sites, multi-file reads.",
+    "research": "anything outside the repo: docs, library/API behavior, "
+    "version checks, web lookups.",
+    "reviewer": "adversarial review of a diff, branch, or file; runs targeted "
+    "checks and tests to find what breaks.",
+    "debugger": "a specific failure or flaky test: reproduce, isolate, and "
+    "trace the root cause; returns the cause + minimal fix (it diagnoses, "
+    "you apply).",
+    "planner": "design an approach before building: returns a code-grounded, "
+    "phased plan with risks and the files to touch (it plans, you decide).",
+    "security": "defensive vuln audit of a change or area: traces untrusted "
+    "input to sinks and returns severity-ranked findings with fixes.",
+    "verifier": "gate a *completed* implementation: proves it works by trying "
+    "to break it, then emits a PASS/FAIL/PARTIAL verdict with command evidence.",
+    "grunt": "mechanical execution of a *fully-specified* change: renames, "
+    "codemods, repetitive edits across many files. Routes onto a cheap model by "
+    "default (`grunt_model`); give it a concrete task with no design decisions.",
+}
+
+
 def _get_available_subagents_section(agent_manager: AgentManager) -> str:
     agents = agent_manager.get_subagents()
     if not agents:
@@ -311,6 +335,13 @@ def _get_available_subagents_section(agent_manager: AgentManager) -> str:
     lines.append("The following subagents can be spawned via the Task tool:")
     for agent in agents:
         lines.append(f"- **{agent.name}**: {agent.description}")
+    present = {a.name for a in agents}
+    triggers = [(n, t) for n, t in _SUBAGENT_TRIGGERS.items() if n in present]
+    if triggers:
+        lines.append("")
+        lines.append("Pick by the question:")
+        for name, trigger in triggers:
+            lines.append(f"- `{name}` — {trigger}")
 
     return "\n".join(lines)
 
@@ -328,39 +359,24 @@ not a substitute for reconnaissance. Use read-only subagents for independent \
 questions or a review that would otherwise require reading 10+ files. Keep the main \
 context for synthesis, decisions, and edits.
 
-Pick the profile by the question:
-- `explore` — codebase questions and searches: where/how is X done, trace a \
-flow, gather all call sites, multi-file reads.
-- `research` — anything outside the repo: docs, library/API behavior, version \
-checks, web lookups.
-- `reviewer` — adversarial review of a diff, branch, or file; runs targeted \
-checks and tests to find what breaks.
-- `debugger` — a specific failure or flaky test: reproduce, isolate, and trace \
-the root cause; returns the cause + minimal fix (it diagnoses, you apply).
-- `planner` — design an approach before building: returns a code-grounded, \
-phased plan with risks and the files to touch (it plans, you decide).
-- `security` — defensive vuln audit of a change or area: traces untrusted input \
-to sinks and returns severity-ranked findings with fixes.
-- `verifier` — gate a *completed* implementation: proves it works by trying to \
-break it, then emits a PASS/FAIL/PARTIAL verdict with command evidence.
-- `grunt` — mechanical execution of a *fully-specified* change: renames, \
-codemods, repetitive edits across many files. Routes onto a cheap model by \
-default (`grunt_model`), so it's the grunt in a thinker-plan / grunt-execute / \
-verifier-gate split. Give it a concrete task with no design decisions.
+Match the question to a profile using the triggers in the Available Subagents \
+section above.
 
 Fan out: issue several `task` calls in one turn so independent sub-questions \
-run in parallel. Give each a self-contained brief and ask for findings and \
-conclusions, not raw file dumps; each runs in its own context, so a wide \
-investigation costs you only the returned conclusions.
+run in parallel. Breadth comes from the count of parallel briefs, not the size \
+of any one — scope each per the `task` tool's guidance. Each subagent runs in \
+its own context, so a wide investigation costs you only the returned \
+conclusions.
 
 Don't delegate trivia. For a single known lookup — you already have the file \
 path or symbol — just `read`/`grep` it directly. Delegate breadth and \
 uncertainty; handle pinpoints yourself. The read-only profiles (explore, \
 research, reviewer, debugger, planner, security, verifier) can't write files or \
 ask the user — you own every edit and all user interaction. `editor`, `worker`, \
-and `grunt` are write-capable but only function inside a workflow worktree; \
-in a plain `task` call their writes are approval-gated and skipped, so treat \
-every edit as yours."""
+and `grunt` are write-capable: under the `task` tool's default they auto-isolate \
+in their own worktree, so a delegated edit lands on a branch you then merge. \
+They are still primarily workflow profiles — for a one-off edit, do it yourself \
+unless the isolation is the point."""
 
 
 def _get_orchestration_section() -> str:

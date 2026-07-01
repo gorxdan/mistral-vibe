@@ -533,7 +533,9 @@ WORKER = AgentProfile(
         "worktree. write/edit/read are auto-approved and confined to the "
         "worktree (no headless skip, no parent-tree races); bash runs with the "
         "worktree as cwd but is not path-confined, so enable the OS bash sandbox "
-        "when that matters."
+        "when that matters. In a plain `task` call it routes to the same "
+        "isolated worktree under the tool's default, with write/edit/read "
+        "auto-approved there too."
     ),
     # No enabled_tools override -> the full tool set (incl. MCP in the subprocess).
     safety=AgentSafety.NEUTRAL,

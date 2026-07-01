@@ -207,11 +207,12 @@ def test_planner_security_editor_registered() -> None:
     sec = load_system_prompt("security")
     assert "DEFENSIVE" in sec and "do NOT write exploits" in sec
     # Editor prompt is honest about its write reality: worktree = git isolation,
-    # NOT a security sandbox; plain-task writes are approval-gated/skipped.
+    # NOT a security sandbox; under the task default it auto-isolates, so a
+    # plain-task call auto-approves its writes (not skipped).
     ed = load_system_prompt("editor")
     assert "isolation='worktree'" in ed
     assert "not a security sandbox" in ed
-    assert "approval-gated" in ed
+    assert "auto-isolate" in ed.lower()
 
 
 def test_orchestration_map_includes_planner_security_not_editor() -> None:
@@ -229,11 +230,11 @@ def test_orchestration_map_includes_planner_security_not_editor() -> None:
         SkillManager(lambda: config),
         AgentManager(lambda: config),
     )
-    # planner + security are delegable read-only investigators → in the map.
+    # planner + security are delegable read-only investigators → in the picker.
     assert "- `planner` —" in prompt
     assert "- `security` —" in prompt
-    # editor is workflow-only (writes skipped in a plain task) → NOT in the map,
-    # but still listed in the available-subagents inventory.
+    # editor is write-capable (auto-isolates), not an investigator → not in the
+    # picker, but still listed in the available-subagents inventory.
     assert "- `editor` —" not in prompt
     assert "**editor**" in prompt
 
@@ -473,7 +474,7 @@ def test_verification_contract_section_present_when_subsystem_enabled() -> None:
     )
     assert "## Verification contract" in prompt_on
     assert "spawn the `verifier`" in prompt_on.lower()
-    # The verifier profile appears in the orchestration map.
+    # The verifier profile appears in the subagents picker.
     assert "- `verifier` —" in prompt_on
 
 
