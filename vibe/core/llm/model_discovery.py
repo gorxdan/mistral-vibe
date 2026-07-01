@@ -426,7 +426,7 @@ def _synth_model(
         output_price=0.0,
         thinking=template.thinking if template else "off",
         preserve_reasoning=template.preserve_reasoning if template else False,
-        temperature=template.temperature if template else 0.2,
+        temperature=template.temperature if template else 1.0,
     )
     if auto_compact_threshold is not None:
         kwargs["auto_compact_threshold"] = auto_compact_threshold

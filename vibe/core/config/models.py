@@ -360,8 +360,10 @@ class ModelConfig(BaseModel):
     provider: str
     alias: str
     # None omits temperature from the wire (Moonshot k2.7-code rejects an explicit
-    # value); omission is enforced in OpenAIAdapter.build_payload.
-    temperature: float | None = 0.2
+    # value); omission is enforced in OpenAIAdapter.build_payload. The default
+    # matches the active model's 1.0 so secondary models (devstral-small, local)
+    # and the safety judge (which forwards this verbatim) stay consistent.
+    temperature: float | None = 1.0
     input_price: float = 0.0  # Price per million input tokens
     output_price: float = 0.0  # Price per million output tokens
     thinking: ThinkingLevel = "off"
