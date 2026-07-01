@@ -242,9 +242,6 @@ class SafetyJudgeConfig(BaseSettings):
     enabled: bool = True
     model: str | None = None
     max_tokens: int = 512
-    # None → use the judge model's own configured temperature (some providers
-    # reject anything but their fixed value, e.g. Kimi requires 1).
-    temperature: float | None = None
     # Generous default: reasoning judge models (e.g. GLM with thinking=max) can
     # take >15s on large tool args before emitting the verdict. On timeout the
     # judge fails closed (the user is prompted).

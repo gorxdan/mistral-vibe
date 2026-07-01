@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from vibe.core.agent_loop import AgentLoop, ToolExecutionResponse
-from vibe.core.config import DEFAULT_MODELS, SafetyJudgeConfig
+from vibe.core.config import DEFAULT_MODELS, ModelConfig, SafetyJudgeConfig
 from vibe.core.tools.base import BaseToolState
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
 from vibe.core.tools.safety_judge import (
@@ -262,6 +263,60 @@ async def test_safety_judge_fails_closed_on_backend_error(monkeypatch) -> None:
     verdict = await judge.judge("bash", '{"command":"rm -rf /"}', ["rm -rf /"])
     assert verdict.safe is False
     assert verdict.failed is True
+
+
+@pytest.mark.parametrize("model_temperature", [None, 0.0, 0.5, 1.0])
+@pytest.mark.asyncio
+async def test_judge_forwards_model_temperature_verbatim(
+    monkeypatch, model_temperature: float | None
+) -> None:
+    # The judge forwards the model's temperature unchanged — no override layer.
+    # temperature=None keeps the wire-omission contract (kimi rejects an explicit
+    # value), so the request must carry None, not the CompletionRequest default
+    # of 0.2. Regression for the dropped SafetyJudgeConfig.temperature override
+    # that replaced None with a concrete value and 400'd every kimi judge call.
+    model = ModelConfig(
+        name="kimi-k2.7-code",
+        provider="kimi",
+        alias="kimi",
+        temperature=model_temperature,
+    )
+
+    captured: list[float | None] = []
+
+    class _CapturingBackend:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _CapturingBackend:
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+        async def complete(self, request: Any, **kwargs: Any) -> Any:
+            captured.append(request.temperature)
+            return SimpleNamespace(
+                message=SimpleNamespace(content='{"safe": true, "reason": "read-only"}')
+            )
+
+    fake_provider = type(
+        "P",
+        (),
+        {"backend": "generic", "extra_headers": {}, "api_base": "", "name": "p"},
+    )()
+    monkeypatch.setattr(
+        "vibe.core.tools.safety_judge.BACKEND_FACTORY", {"generic": _CapturingBackend}
+    )
+
+    judge = SafetyJudge(
+        model=model,
+        provider=fake_provider,  # type: ignore[arg-type]
+        config=SafetyJudgeConfig(enabled=True, model=model.alias),
+    )
+    verdict = await judge.judge("bash", '{"command":"ls"}', ["network access"])
+    assert verdict.safe is True
+    assert captured == [model_temperature]
 
 
 # --------------------------------------------------------------------------- #

@@ -188,11 +188,8 @@ class SafetyJudge:
             LLMMessage(role=Role.SYSTEM, content=_system_prompt_for(tool_name)),
             LLMMessage(role=Role.USER, content=user_content),
         ]
-        temperature = (
-            self._config.temperature
-            if self._config.temperature is not None
-            else self._model.temperature
-        )
+        # No override: forward the model's temperature verbatim so a
+        # temperature=None model keeps its wire-omission contract (kimi).
         backend_cls = BACKEND_FACTORY[self._provider.backend]
         async with backend_cls(
             provider=self._provider, timeout=self._timeout
@@ -201,7 +198,7 @@ class SafetyJudge:
                 CompletionRequest(
                     model=self._model,
                     messages=messages,
-                    temperature=temperature,
+                    temperature=self._model.temperature,
                     tools=None,
                     tool_choice=None,
                     max_tokens=self._config.max_tokens,
