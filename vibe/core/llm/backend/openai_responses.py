@@ -21,6 +21,8 @@ from vibe.core.types import (
     LLMMessage,
     LLMUsage,
     Role,
+    StopInfo,
+    StopReason,
     StrToolChoice,
     ToolCall,
 )
@@ -85,9 +87,30 @@ class _ResponsesReasoningItem(TypedDict, total=False):
     summary: list[_ResponsesSummaryBlock]
 
 
+class _ResponsesIncompleteDetails(TypedDict, total=False):
+    reason: str
+
+
 class _ResponsesObject(TypedDict, total=False):
     usage: _ResponsesUsageData | None
     output: list[dict[str, Any]]
+    status: str
+    incomplete_details: _ResponsesIncompleteDetails | None
+
+
+# Responses API signals truncation via status/incomplete_details, not finish_reason;
+# map to chat-completions StopInfo so backend_mixin's self-heal and refusal fire.
+def _stop_info_from_response(response_obj: _ResponsesObject) -> StopInfo | None:
+    if response_obj.get("status") != "incomplete":
+        return None
+    reason = (response_obj.get("incomplete_details") or {}).get("reason")
+    match reason:
+        case "max_output_tokens":
+            return StopInfo(reason=StopReason.LENGTH)
+        case "content_filter":
+            return StopInfo(reason=StopReason.REFUSAL)
+        case _:
+            return StopInfo(reason=reason)
 
 
 class _ResponsesErrorData(TypedDict, total=False):
@@ -411,6 +434,7 @@ class _OpenAIResponsesStreamParser:
                 reasoning_state=self._reasoning_state_from_output(output),
             ),
             usage=self._usage_from_response(response_obj.get("usage")),
+            stop=_stop_info_from_response(response_obj),
         )
 
     def _on_error(self, data: _ResponsesStreamEvent) -> LLMChunk:
@@ -768,6 +792,7 @@ class OpenAIResponsesAdapter(APIAdapter):
                 usage=self._stream_parser._usage_from_response(
                     response_data.get("usage")
                 ),
+                stop=_stop_info_from_response(response_data),
             )
 
         return self._stream_parser.parse(

@@ -185,3 +185,46 @@ async def test_chat_raises_on_truncated_finish_reason_without_committing() -> No
     with pytest.raises(ResponseTooLongError):
         await loop._chat()
     assert len(loop.messages) == before, "truncated turn must not enter history"
+
+
+@pytest.mark.asyncio
+async def test_chat_raises_on_openai_responses_incomplete_max_output_tokens() -> None:
+    from vibe.core.config import ProviderConfig
+    from vibe.core.llm.backend.openai_responses import OpenAIResponsesAdapter
+
+    loop = build_test_agent_loop()
+    provider = ProviderConfig(
+        name="openai",
+        api_base="https://api.openai.com/v1",
+        api_key_env_var="OPENAI_API_KEY",
+        api_style="openai-responses",
+    )
+    incomplete_body = {
+        "id": "resp_123",
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "partial..."}],
+                "role": "assistant",
+            }
+        ],
+        "usage": {"input_tokens": 50, "output_tokens": 25},
+    }
+
+    class _ResponsesTrunc:
+        async def __aenter__(self) -> _ResponsesTrunc:
+            return self
+
+        async def __aexit__(self, *a: object) -> None:
+            return None
+
+        async def complete(self, request, *, response_headers_sink=None):
+            return OpenAIResponsesAdapter().parse_response(incomplete_body, provider)
+
+    loop.backend = _ResponsesTrunc()  # type: ignore[assignment]
+    before = len(loop.messages)
+    with pytest.raises(ResponseTooLongError):
+        await loop._chat()
+    assert len(loop.messages) == before, "truncated turn must not enter history"
