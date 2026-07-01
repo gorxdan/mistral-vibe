@@ -34,6 +34,8 @@ def _explore_subagent_factory(
             arguments={
                 "agent": "explore",
                 "task": f"Find the marker {SUBAGENT_MARKER}.",
+                # inline path: background default would race parent/subagent requests
+                "async_run": False,
             },
             created=90,
         )
@@ -74,7 +76,7 @@ def test_explore_subagent_returns_result_to_parent_model(
         send_ctrl_c_until_quit_confirmation(child, captured, timeout=5)
         child.expect(pexpect.EOF, timeout=10)
 
-    assert streaming_mock_server.requests[1].get("stream") is not True
+    assert streaming_mock_server.requests[1].get("stream") is True
     assert_message_content_present(
         streaming_mock_server.requests[1],
         role="user",

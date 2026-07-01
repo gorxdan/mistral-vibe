@@ -33,7 +33,8 @@ from vibe.core.teleport.types import (
 
 
 def _reimport_agent_loop() -> Any:
-    to_clear = ("vibe.core.agent_loop", "git", "vibe.core.teleport")
+    # never evict "git": gitpython half-reload poisons later tests in-worker
+    to_clear = ("vibe.core.agent_loop", "vibe.core.teleport")
     for k in [k for k in sys.modules if any(k.startswith(m) for m in to_clear)]:
         del sys.modules[k]
     return importlib.import_module("vibe.core.agent_loop")
@@ -370,6 +371,12 @@ class TestTeleportServiceContextManager:
 
 
 class TestTeleportAvailability:
+    def test_reimport_does_not_evict_gitpython(self) -> None:
+        import git
+
+        _reimport_agent_loop()
+        assert sys.modules.get("git") is git
+
     def test_teleport_available_is_false_when_git_not_installed(self) -> None:
         with patch.dict(os.environ, {"GIT_PYTHON_GIT_EXECUTABLE": "/nonexistent/git"}):
             agent_loop = _reimport_agent_loop()
