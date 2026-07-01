@@ -9,7 +9,7 @@ from tests import TESTS_ROOT
 VIBE_PKG = TESTS_ROOT.parent / "vibe"
 CONFIG_PKG = VIBE_PKG / "core" / "config"
 MODEL_ROOTS = {"BaseModel", "BaseSettings"}
-TYPE_IGNORE_BUDGET = 1
+TYPE_IGNORE_BUDGET = 0
 NOQA_BUDGET = 3
 
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 import os
 import threading
 import time
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from vibe.core.logger import logger
 
@@ -15,10 +15,14 @@ _KB = 1024
 _MB = _KB * 1024
 _GB = _MB * 1024
 
-try:
+# TYPE_CHECKING split keeps psutil typed while frozen builds fall back to None.
+if TYPE_CHECKING:
     import psutil
-except ImportError:  # pragma: no cover - optional dep / frozen builds
-    psutil = None  # type: ignore[assignment]
+else:  # pragma: no cover - optional dep / frozen builds
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
 
 # Exception tuples hoisted so the tree walk can reference psutil's classes
 # without pyright flagging member access on the optional (possibly-None) module.
