@@ -54,6 +54,7 @@ from vibe.setup.auth.zai_sign_in import ZaiSignInError, ZaiSignInService
 import vibe.setup.onboarding as onboarding_module
 from vibe.setup.onboarding import OnboardingApp
 from vibe.setup.onboarding.context import OnboardingContext
+from vibe.setup.onboarding.provider_presets import PRESETS
 from vibe.setup.onboarding.screens.api_key import ApiKeyScreen
 from vibe.setup.onboarding.screens.auth_method import AuthMethodScreen
 from vibe.setup.onboarding.screens.browser_sign_in import (
@@ -271,6 +272,10 @@ def _build_unexpected_browser_sign_in_service_factory(
         )
 
     return build_service
+
+
+def _preset_row(key: str) -> int:
+    return next(i for i, preset in enumerate(PRESETS) if preset.key == key)
 
 
 async def _pass_welcome_screen(pilot: Pilot) -> None:
@@ -1476,9 +1481,7 @@ async def test_provider_selection_ollama_without_server_stays_on_screen(
     async with app.run_test() as pilot:
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
-        # Presets: mistral, zai, kimi, minimax, openai, openai-chatgpt, sakana,
-        # longcat, openrouter, ollama, custom -> ollama is row 9.
-        await pilot.press(*(["down"] * 9), "enter")
+        await pilot.press(*(["down"] * _preset_row("ollama")), "enter")
 
         await _wait_for(
             lambda: (
@@ -1511,9 +1514,7 @@ async def test_provider_selection_custom_routes_to_api_key_and_persists(
     async with app.run_test() as pilot:
         await _pass_welcome_screen(pilot)
         await _pass_theme_selection_screen(pilot)
-        # Presets: mistral, zai, kimi, minimax, openai, openai-chatgpt, sakana,
-        # longcat, openrouter, ollama, custom -> custom is row 10.
-        await pilot.press(*(["down"] * 10), "enter")
+        await pilot.press(*(["down"] * _preset_row("custom")), "enter")
         await _wait_for(
             lambda: isinstance(pilot.app.screen, CustomProviderScreen), pilot
         )
