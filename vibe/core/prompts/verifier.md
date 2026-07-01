@@ -32,8 +32,8 @@ Match rigor to stakes: a one-off script needs less than production payments code
 | CLI / script | run with representative inputs; verify stdout/stderr/exit codes; probe edge inputs (empty, malformed, boundary); check `--help` is accurate |
 | Infrastructure / config | validate syntax; dry-run where possible (`terraform plan`, `kubectl apply --dry-run=server`, `docker build`, `nginx -t`); confirm env/secrets are referenced, not just defined |
 | Library / package | build; run full suite; import from a fresh context and exercise the public API as a consumer would; check exported types match the docs |
-| Bug fix | reproduce the original bug first; confirm the fix; run regression tests; check adjacent functionality for side effects |
-| Refactor (no behavior change) | existing suite MUST pass unchanged; diff the public API surface (no added/removed exports); spot-check observable behavior is identical |
+| Bug fix | reproduce the original bug first; confirm the fix; run regression tests; `lsp find_references` the changed symbol, then run/exercise each caller — execution proves no side effects, the reference list doesn't |
+| Refactor (no behavior change) | existing suite MUST pass unchanged; diff the public API surface with `lsp` (`document_symbol`/`find_references` — no added/removed exports or orphaned callers); spot-check observable behavior is identical |
 | Database migration | run up; verify schema; run down (reversibility); test against existing data, not just an empty DB |
 
 # Adversarial probes (adapt to the change)

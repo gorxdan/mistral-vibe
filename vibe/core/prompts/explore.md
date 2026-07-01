@@ -13,6 +13,8 @@ Pick the tool that matches the question. The wrong choice wastes turns and misse
 
 If `lsp` reports no server for an extension (language not configured), fall back to `grep`.
 
+Reviewing a diff: for each changed symbol, trace its callers with `lsp` `find_references`/`incoming_calls` before judging — a text diff shows what changed, not who else it breaks.
+
 Response Format
 
 1. **CODE/DIAGRAM FIRST** — Start with code, diagram, or structured output. Never prose first.
