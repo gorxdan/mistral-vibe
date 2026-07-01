@@ -1748,7 +1748,7 @@ def test_out_of_range_position_fails_soft(monkeypatch, tmp_path) -> None:
     try:
         asyncio.run(_inner())
     except ToolError as exc:  # pragma: no cover - asserts the bug, must not fire
-        raise AssertionError(f"expected fail-soft, got hard ToolError: {exc}")
+        raise AssertionError(f"expected fail-soft, got hard ToolError: {exc}") from exc
 
     result = events[-1]
     assert isinstance(result, LspResult)
