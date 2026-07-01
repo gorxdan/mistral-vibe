@@ -526,8 +526,10 @@ def build_persisted_updates(config: VibeConfig, dm: DiscoveredModel) -> dict[str
 
     base_models = persisted.get("models")
     if not isinstance(base_models, list):
-        base_models = [m.model_dump(exclude_none=True) for m in config.models]
-    updates["models"] = [*base_models, dm.model.model_dump(exclude_none=True)]
+        base_models = [m.model_dump(mode="json") for m in config.models]
+    # No exclude_none: it drops temperature=None on the raw value, bypassing the
+    # "omit" sentinel serializer; dump_config strips the remaining Nones anyway.
+    updates["models"] = [*base_models, dm.model.model_dump(mode="json")]
 
     if dm.ephemeral:
         base_providers = persisted.get("providers")

@@ -1,8 +1,17 @@
 from __future__ import annotations
 
-import pytest
+import json
 
+import httpx
+import pytest
+import respx
+
+from vibe.core.config import VibeConfig
+from vibe.core.llm.backend.factory import create_backend
+from vibe.core.llm.types import CompletionRequest
+from vibe.core.types import LLMMessage, Role
 from vibe.setup.onboarding.provider_presets import (
+    KIMI_API_BASE,
     PRESETS,
     apply_provider_config,
     preset_for_provider_name,
@@ -73,6 +82,10 @@ def test_apply_openai_preset_persists_provider_and_model(
     provider_names = {p["name"] for p in config["providers"]}
     assert "openai" in provider_names
     assert config["active_model"] == preset.model.alias
+    # Temperature is persisted explicitly so a future ModelConfig default
+    # change cannot silently retune models written by onboarding.
+    persisted = {m["alias"]: m for m in config["models"]}
+    assert persisted[preset.model.alias]["temperature"] == 1.0
 
 
 def test_sakana_preset_present_and_keyed() -> None:
@@ -165,6 +178,53 @@ def test_kimi_preset_does_not_discover_models() -> None:
     assert preset is not None
     assert preset.provider is not None
     assert preset.provider.discover_models is False
+
+
+_KIMI_CHAT_RESPONSE = {
+    "id": "cmpl-1",
+    "object": "chat.completion",
+    "created": 0,
+    "model": "kimi-k2.7-code",
+    "choices": [
+        {
+            "index": 0,
+            "message": {"role": "assistant", "content": "hi"},
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+}
+
+
+@pytest.mark.asyncio
+async def test_kimi_preset_temperature_none_survives_round_trip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test")
+    preset = next(p for p in PRESETS if p.key == "kimi")
+    assert preset.provider is not None and preset.model is not None
+    assert preset.model.temperature is None
+
+    apply_provider_config(preset.provider, preset.model)
+    config = VibeConfig.load()
+
+    kimi_model = next(m for m in config.models if m.alias == "kimi")
+    assert kimi_model.temperature is None
+
+    backend = create_backend(provider=config.get_provider_for_model(kimi_model))
+    with respx.mock(base_url=KIMI_API_BASE) as mock_api:
+        route = mock_api.post("/chat/completions").mock(
+            return_value=httpx.Response(status_code=200, json=_KIMI_CHAT_RESPONSE)
+        )
+        await backend.complete(
+            CompletionRequest(
+                model=kimi_model,
+                messages=[LLMMessage(role=Role.USER, content="hi")],
+                temperature=kimi_model.temperature,
+            )
+        )
+    sent = json.loads(route.calls.last.request.content)
+    assert "temperature" not in sent
 
 
 def test_minimax_preset_discovers_models() -> None:

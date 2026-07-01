@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     HttpUrl,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -354,6 +355,9 @@ ThinkingLevel = Literal["off", "low", "medium", "high", "max"]
 THINKING_LEVELS: list[str] = list(get_args(ThinkingLevel))
 Verbosity = Literal["low", "medium", "high"]
 
+# TOML has no null; persists temperature=None past dump_config's None-stripping.
+TEMPERATURE_OMIT_SENTINEL = "omit"
+
 
 class ModelConfig(BaseModel):
     name: str
@@ -374,6 +378,15 @@ class ModelConfig(BaseModel):
     max_output_tokens: int | None = None
     preserve_reasoning: bool = False
     _default_alias_to_name = model_validator(mode="before")(_default_alias_to_name)
+
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def _temperature_sentinel_to_none(cls, value: Any) -> Any:
+        return None if value == TEMPERATURE_OMIT_SENTINEL else value
+
+    @field_serializer("temperature", when_used="json")
+    def _temperature_none_to_sentinel(self, value: float | None) -> float | str:
+        return TEMPERATURE_OMIT_SENTINEL if value is None else value
 
     @property
     def effective_context_window(self) -> int:

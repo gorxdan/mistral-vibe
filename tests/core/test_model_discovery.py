@@ -607,6 +607,39 @@ def test_persist_non_ephemeral_writes_only_model(
     assert "providers" not in upd
 
 
+def test_persist_discovered_model_writes_temperature_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A discovered kimi sibling inherits temperature=None from its template;
+    # the persisted entry must survive a reload as None, not the field default.
+    kimi_provider = _provider(name="kimi", api_base="https://api.kimi.com/coding/v1")
+    config = build_test_vibe_config(
+        providers=[kimi_provider],
+        models=[
+            ModelConfig(
+                name="kimi-k2.7-code", provider="kimi", alias="kimi", temperature=None
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        VibeConfig, "get_persisted_config", classmethod(lambda _cls: {})
+    )
+    dm = DiscoveredModel(
+        model=ModelConfig(
+            name="kimi-sibling", provider="kimi", alias="kimi-sibling", temperature=None
+        ),
+        provider=kimi_provider,
+        ephemeral=False,
+    )
+
+    upd = build_persisted_updates(config, dm)
+
+    by_alias = {m["alias"]: m for m in upd["models"]}
+    for alias in ("kimi", "kimi-sibling"):
+        assert "temperature" in by_alias[alias]
+        assert ModelConfig.model_validate(by_alias[alias]).temperature is None
+
+
 def test_persist_does_not_duplicate_existing_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
