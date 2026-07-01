@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# pre-commit: run the pre-commit framework gates on staged files.
+# Lives here (not .git/hooks) because this repo pins core.hooksPath=.githooks
+# for the version-controlled post-commit automation; `pre-commit install`
+# refuses to coexist with hooksPath, so we delegate manually.
+# Skip during merge-conflict resolution like the framework's own stub does.
+
+set -uo pipefail
+
+[[ -e "$(git rev-parse --git-path MERGE_MSG 2>/dev/null)" ]] && exit 0
+
+if command -v pre-commit >/dev/null 2>&1; then
+    exec pre-commit run --hook-stage pre-commit
+fi
+exec uv run pre-commit run --hook-stage pre-commit
