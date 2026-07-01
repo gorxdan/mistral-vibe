@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+import os
+import time
 
 import pytest
 
@@ -31,6 +33,36 @@ async def test_install_creates_missing_log_dir(monkeypatch: pytest.MonkeyPatch) 
     assert loop_tracer._INSTALLED
     assert loop_tracer._perf_log.handlers
     assert LOG_DIR.path.is_dir()
+
+
+@pytest.mark.asyncio
+async def test_install_gcs_stale_perf_logs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VIBE_TRACE_LOOP", "0.05")
+    log_dir = LOG_DIR.path
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stale_mtime = time.time() - 8 * 86400
+    stale = log_dir / "vibe-perf-12345.log"
+    stale_backup = log_dir / "vibe-perf-12345.log.1"
+    other = log_dir / "vibe.log"
+    for f in (stale, stale_backup, other):
+        f.write_text("x", encoding="utf-8")
+        os.utime(f, (stale_mtime, stale_mtime))
+    fresh = log_dir / "vibe-perf-99999.log"
+    fresh.write_text("x", encoding="utf-8")
+    loop_tracer.install()
+    assert not stale.exists()
+    assert not stale_backup.exists()
+    assert fresh.exists()
+    assert other.exists()
+
+
+@pytest.mark.asyncio
+async def test_perf_log_name_has_timestamp_and_pid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIBE_TRACE_LOOP", "0.05")
+    loop_tracer.install()
+    assert list(LOG_DIR.path.glob(f"vibe-perf-*-{os.getpid()}.log"))
 
 
 @pytest.mark.asyncio

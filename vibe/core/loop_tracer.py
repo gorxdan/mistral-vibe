@@ -26,12 +26,14 @@ from collections import defaultdict
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+from pathlib import Path
 import time
 import traceback
 from typing import Any
 
 from vibe.core.logger import StructuredLogFormatter, logger
 from vibe.core.paths import LOG_DIR
+from vibe.core.utils import utc_now
 
 _ORIG_RUN: Any = None
 
@@ -48,6 +50,28 @@ _THRESHOLD = 0.0
 # installed; report() summarizes so a benchmark can emit a clean top-N rather
 # than grepping occurrence lines.
 _BLOCKERS: dict[tuple[str, str], list[float]] = defaultdict(lambda: [0.0, 0.0])
+# Rotation caps each file's size, but every instrumented PID adds a new file to
+# LOG_DIR forever — reap by mtime at install, like the other startup sweepers.
+_PERF_LOG_MAX_AGE_S = 7 * 24 * 3600
+
+
+def _gc_stale_perf_logs(
+    directory: Path, max_age_s: float = _PERF_LOG_MAX_AGE_S
+) -> None:
+    """Delete ``vibe-perf-*`` logs (incl. rotation backups) older than *max_age_s*.
+
+    Best effort — never raises.
+    """
+    try:
+        cutoff = time.time() - max_age_s
+        for f in directory.glob("vibe-perf-*.log*"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+    except Exception:
+        logger.debug("perf log gc skipped", exc_info=True)
 
 
 def _basename(path: str) -> str:
@@ -134,9 +158,12 @@ def install() -> None:
     if threshold <= 0:
         return
 
+    _gc_stale_perf_logs(LOG_DIR.path)
     # PID-scoped handler (attributable concurrent sessions), attached before any
     # global mutation: an unopenable LOG_DIR must no-op, not crash act().
-    perf_path = LOG_DIR.path / f"vibe-perf-{os.getpid()}.log"
+    # Timestamp in the name so a reused PID never appends to a dead session's log.
+    ts = utc_now().strftime("%Y%m%d_%H%M%S")
+    perf_path = LOG_DIR.path / f"vibe-perf-{ts}-{os.getpid()}.log"
     try:
         perf_path.parent.mkdir(parents=True, exist_ok=True)
         handler = RotatingFileHandler(
