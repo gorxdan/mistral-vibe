@@ -68,4 +68,4 @@ async def test_model_badges_show_initial_models_on_startup() -> None:
 
     async with app.run_test():
         assert str(app.query_one(ModelStatusBadge).render()) == "· host"
-        assert str(app.query_one(SubModelBadge).render()) == "· sub"
+        assert str(app.query_one(SubModelBadge).render()) == "· sub sub"
