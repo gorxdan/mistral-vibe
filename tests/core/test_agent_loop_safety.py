@@ -328,7 +328,9 @@ async def test_tool_permission_error_rolls_back_agreed_and_emits_failure(
 
     # The tool manager validates tool_class is a BaseTool subclass, so register
     # the class (not an instance) and arm its class-level exception flag.
-    FakeTool._exception_to_raise = ToolPermissionError("denied")  # type: ignore[attr-defined]
+    # monkeypatch restores it: a bare assignment leaks into every later
+    # FakeTool test in the same worker.
+    monkeypatch.setattr(FakeTool, "_exception_to_raise", ToolPermissionError("denied"))
     loop.tool_manager._all_tools["stub_tool"] = FakeTool  # type: ignore[attr-defined]
 
     events: list[Any] = []
