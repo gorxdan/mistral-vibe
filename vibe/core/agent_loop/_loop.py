@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from opentelemetry import trace
 
-from vibe.core import loop_tracer, profiler
+from vibe.core import loop_tracer, profiler, stream_tracer
 from vibe.core.agent_loop._errors import (
     AgentLoopError,
     ImagesNotSupportedError,
@@ -909,6 +909,8 @@ class AgentLoop(AgentLoopSessionMixin):
         self.resource_monitor.start()
         # No-op unless VIBE_TRACE_LOOP is set; covers the shared Textual loop.
         loop_tracer.install()
+        # No-op unless VIBE_TRACE_STREAM is set; turn id matches profiler.section.
+        stream_tracer.turn_started(self, f"{self.session_id[:8]}-{self.stats.steps}")
         try:
             try:
                 active_model = self.effective_model()
@@ -982,6 +984,7 @@ class AgentLoop(AgentLoopSessionMixin):
                     )
         finally:
             self._response_format = None
+            stream_tracer.turn_finished(self)
 
     @property
     def teleport_service(self) -> TeleportService:

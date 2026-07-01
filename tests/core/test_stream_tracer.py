@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import re
 
 import pytest
 
+from tests.conftest import build_test_agent_loop
+from tests.mock.utils import mock_llm_chunk
+from tests.stubs.fake_backend import FakeBackend
 from vibe.core import perf_log, stream_tracer
 from vibe.core.paths import LOG_DIR
 
@@ -149,6 +153,36 @@ def test_same_owner_restart_replaces_stale_turn(
     text = _perf_log_text()
     assert text.count("perf stream:") == 1
     assert "turn=t-2" in text
+
+
+@pytest.mark.asyncio
+async def test_act_emits_stream_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VIBE_TRACE_STREAM", "1")
+    backend = FakeBackend(
+        chunks=[[mock_llm_chunk(content="hel"), mock_llm_chunk(content="lo")]]
+    )
+    loop = build_test_agent_loop(backend=backend, enable_streaming=True)
+    async for _event in loop.act("hi"):
+        pass
+    text = _perf_log_text()
+    assert text.count("perf stream:") == 1
+    assert f"turn={loop.session_id[:8]}-" in text
+    assert re.search(r"ttfb=\d+ms", text)
+    assert "chunks=2" in text
+
+
+@pytest.mark.asyncio
+async def test_act_when_disabled_writes_no_perf_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VIBE_TRACE_STREAM", raising=False)
+    monkeypatch.delenv("VIBE_TRACE_LOOP", raising=False)
+    backend = FakeBackend(chunks=[[mock_llm_chunk(content="hi")]])
+    loop = build_test_agent_loop(backend=backend, enable_streaming=True)
+    async for _event in loop.act("hi"):
+        pass
+    if LOG_DIR.path.exists():
+        assert not list(LOG_DIR.path.glob("vibe-perf-*.log"))
 
 
 def test_fail_soft_when_log_dir_is_a_file(monkeypatch: pytest.MonkeyPatch) -> None:
