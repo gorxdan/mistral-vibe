@@ -560,6 +560,85 @@ class TestMigrateStripsBashAllowlistWildcardSuffix:
         assert result["tools"]["bash"]["allowlist"] == ["echo", "find", "ls"]
 
 
+class TestMigrateKimiTemperatureOmit:
+    def test_normalizes_kimi_explicit_temperature_to_omit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "applied_migrations": [VibeConfig._KIMI_GLM_REASONING_MIGRATION],
+            "models": [
+                {"name": "kimi-k2.7-code", "provider": "kimi", "temperature": 1.0},
+                {"name": "glm-5.2", "provider": "zai", "temperature": 1.0},
+            ],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        kimi, glm = result["models"]
+        assert kimi["temperature"] == "omit"
+        # Non-kimi providers untouched (GLM keeps its 1.0 from the prior migration).
+        assert glm["temperature"] == 1.0
+        assert VibeConfig._KIMI_TEMPERATURE_MIGRATION in result["applied_migrations"]
+
+    def test_noop_when_kimi_already_omitting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "applied_migrations": [],
+            "models": [
+                {"name": "kimi-k2.7-code", "provider": "kimi", "temperature": "omit"}
+            ],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        assert result["models"][0]["temperature"] == "omit"
+        # Nothing to migrate -> id not recorded.
+        assert (
+            VibeConfig._KIMI_TEMPERATURE_MIGRATION not in result["applied_migrations"]
+        )
+
+    def test_one_shot_does_not_re_normalize_after_id_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Guard: a kimi model re-edited back to an explicit value after the
+        # migration ran is left alone (the user owns the post-migration state).
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "applied_migrations": [VibeConfig._KIMI_TEMPERATURE_MIGRATION],
+            "models": [
+                {"name": "kimi-k2.7-code", "provider": "kimi", "temperature": 0.6}
+            ],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        assert result["models"][0]["temperature"] == 0.6
+
+
 class TestMigrateBashReadOnlyDefaults:
     def test_merges_read_only_commands_into_existing_allowlist(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

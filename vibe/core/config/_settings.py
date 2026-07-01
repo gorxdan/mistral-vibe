@@ -1462,6 +1462,9 @@ class VibeConfig(BaseSettings):
         if cls._migrate_context_window_backfill(data):
             changed = True
 
+        if cls._migrate_kimi_temperature(data):
+            changed = True
+
         if changed:
             cls.dump_config(data)
 
@@ -1490,6 +1493,23 @@ class VibeConfig(BaseSettings):
         if not migrated:
             return False
         data["applied_migrations"] = [*applied, cls._KIMI_GLM_REASONING_MIGRATION]
+        return True
+
+    @classmethod
+    def _migrate_kimi_temperature(cls, data: dict[str, Any]) -> bool:
+        # kimi/k2.7-code 400s on any explicit temperature; it must omit it on the
+        # wire ("omit" -> None). The safety judge forwards this verbatim.
+        applied = data.get("applied_migrations", [])
+        if cls._KIMI_TEMPERATURE_MIGRATION in applied:
+            return False
+        migrated = False
+        for model in data.get("models", []):
+            if model.get("provider") == "kimi" and model.get("temperature") != "omit":
+                model["temperature"] = "omit"
+                migrated = True
+        if not migrated:
+            return False
+        data["applied_migrations"] = [*applied, cls._KIMI_TEMPERATURE_MIGRATION]
         return True
 
     # One-shot id: syncs an existing bash allowlist up to the current default
@@ -1525,6 +1545,10 @@ class VibeConfig(BaseSettings):
             return False
         data["applied_migrations"] = [*applied, cls._CONTEXT_WINDOW_MIGRATION]
         return True
+
+    # One-shot id: normalizes kimi provider models to temperature="omit" so they
+    # stop 400ing on the explicit default 1.0 (Moonshot only accepts omission).
+    _KIMI_TEMPERATURE_MIGRATION: ClassVar[str] = "kimi_temperature_omit_v1"
 
     # Old tool name -> new tool name. The new tools replaced these in-place, so
     # existing user configs keyed by the old names need their settings moved over.
