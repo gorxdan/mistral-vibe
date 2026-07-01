@@ -55,8 +55,18 @@ def test_programmatic_mode_keeps_explicit_agent_arg() -> None:
     assert get_initial_agent_name(args, config) == "accept-edits"
 
 
-def test_auto_approve_flag_selects_auto_approve_agent() -> None:
-    config = VibeConfig.model_construct(default_agent=BuiltinAgentName.PLAN)
-    args = _make_args(agent=None, prompt="hello", auto_approve=True)
+def test_auto_approve_flag_keeps_agent_and_bypasses_permissions() -> None:
+    # v2.18.4 port (9095d33): --auto-approve no longer swaps the agent; it
+    # sets bypass_tool_permissions on the config instead.
+    from vibe.cli.cli import _apply_cli_overrides
 
-    assert get_initial_agent_name(args, config) == BuiltinAgentName.AUTO_APPROVE
+    config = VibeConfig.model_construct(
+        default_agent=BuiltinAgentName.PLAN, bypass_tool_permissions=False
+    )
+    args = _make_args(agent=None, prompt="hello", auto_approve=True)
+    args.model = None
+    args.enabled_tools = None
+
+    assert get_initial_agent_name(args, config) == BuiltinAgentName.PLAN
+    _apply_cli_overrides(args, config)
+    assert config.bypass_tool_permissions is True
