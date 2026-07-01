@@ -182,6 +182,12 @@ class BackgroundRegistry:
     def attach_team_manager(self, ref: Callable[[], TeamManager | None]) -> None:
         self._team_manager_ref = ref
 
+    def team_manager(self) -> TeamManager | None:
+        """Read-only access for surfaces that need richer team data than the
+        flat TaskEntry carries (inbox depth, task counts).
+        """
+        return self._team_manager_ref()
+
     def attach_loop_manager(self, ref: Callable[[], LoopManager | None]) -> None:
         self._loop_manager_ref = ref
 

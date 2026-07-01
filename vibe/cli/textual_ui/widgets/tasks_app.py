@@ -17,14 +17,18 @@ import json
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
+from textual.css.query import NoMatches, WrongType
 from textual.message import Message
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
+from vibe.cli.clipboard import copy_text_to_clipboard
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
+from vibe.core.logger import logger
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory, TaskEntry
 
 if TYPE_CHECKING:
@@ -33,24 +37,30 @@ if TYPE_CHECKING:
 _POLL_INTERVAL = 1.0
 _TRUNCATE_LEN = 70
 _TOKEN_K = 1_000
+_SMALL_COST_THRESHOLD = 0.1
 
 _STATUS_COLORS: dict[str, str] = {
     "running": "yellow",
     "completed": "green",
+    "completed_with_failures": "dark_orange",
     "failed": "red",
     "paused": "blue",
     "stopped": "magenta",
     "waiting": "cyan",
 }
 
-# Filter order for the header row + number-key bindings (1=All ... 6=Subagents).
-_FILTERS: list[tuple[str, TaskCategory | None]] = [
+# Filter order for the header row + number-key bindings (1=All ... 6=Agents).
+# Filter 6 ("Agents") is a composite: in-flight workflow agents (AGENT) plus
+# task()-spawned background subagents (ASYNC_AGENT) — the two "running agent"
+# concepts a user wants in one place. Live workflow agents are otherwise only
+# visible under "All".
+_FILTERS: list[tuple[str, tuple[TaskCategory, ...] | None]] = [
     ("All", None),
-    ("Processes", TaskCategory.PROCESS),
-    ("Workflows", TaskCategory.WORKFLOW),
-    ("Teams", TaskCategory.TEAM),
-    ("Loops", TaskCategory.LOOP),
-    ("Subagents", TaskCategory.ASYNC_AGENT),
+    ("Processes", (TaskCategory.PROCESS,)),
+    ("Workflows", (TaskCategory.WORKFLOW,)),
+    ("Teams", (TaskCategory.TEAM,)),
+    ("Loops", (TaskCategory.LOOP,)),
+    ("Agents", (TaskCategory.AGENT, TaskCategory.ASYNC_AGENT)),
 ]
 
 
@@ -61,6 +71,16 @@ def _truncate(text: str, max_len: int = _TRUNCATE_LEN) -> str:
 
 def _fmt_tokens(n: int) -> str:
     return f"{n / _TOKEN_K:.1f}k" if n >= _TOKEN_K else str(n)
+
+
+def _fmt_cost(cost: float) -> str:
+    if cost <= 0:
+        return "$0"
+    return f"${cost:.4f}" if cost < _SMALL_COST_THRESHOLD else f"${cost:.2f}"
+
+
+def run_cost(run: Any) -> float:
+    return sum(p.cost_total for p in getattr(run, "phase_reports", []))
 
 
 _SECONDS_PER_HOUR = 3600
@@ -89,6 +109,14 @@ def _build_row_text(entry: TaskEntry) -> Text:
         text.append(f"fires in {_fmt_seconds(entry.elapsed):>6}", style="cyan")
     else:
         text.append(f"{_fmt_seconds(entry.elapsed):>6}", style="dim")
+    # Magnitude: workflows carry agent count + token total so a user can rank
+    # runs at a glance without drilling into each. Other categories omit it.
+    if entry.category == TaskCategory.WORKFLOW:
+        ac = entry.detail.get("agent_count", 0)
+        tk = _fmt_tokens(entry.detail.get("tokens_total", 0))
+        text.append(f"  {ac}a {tk:>7}", style="cyan")
+    else:
+        text.append("  ")
     text.append("  ")
     text.append(_truncate(entry.label), style="white")
     return text
@@ -97,6 +125,9 @@ def _build_row_text(entry: TaskEntry) -> Text:
 # Snippet caps for the inline agent summary in the detail view.
 _AGENT_PROMPT_SNIPPET = 280
 _AGENT_RESPONSE_SNIPPET = 700
+_ASYNC_AGENT_PROMPT_SNIPPET = 1_200
+_ASYNC_AGENT_RESPONSE_SNIPPET = 4_000
+_ASYNC_AGENT_TAIL_LINES = 120
 
 
 @dataclass
@@ -217,21 +248,25 @@ class _WorkflowScriptRef:
 class TasksApp(Container):
     """Unified background-task monitor with drill-down per category."""
 
+    can_focus = True
     can_focus_children = True
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "back", "Back", show=False),
+        Binding("q", "back", "Back", show=False),
+        Binding("b", "back", "Back", show=False),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("x", "stop", "Stop", show=True),
         Binding("p", "toggle_pause", "Pause/Resume", show=True),
         Binding("s", "save", "Save", show=True),
         Binding("o", "script", "Script", show=True),
+        Binding("c", "copy", "Copy", show=True),
         Binding("1", "filter_all", "All", show=False),
         Binding("2", "filter_processes", "Processes", show=False),
         Binding("3", "filter_workflows", "Workflows", show=False),
         Binding("4", "filter_teams", "Teams", show=False),
         Binding("5", "filter_loops", "Loops", show=False),
-        Binding("6", "filter_subagents", "Subagents", show=False),
+        Binding("6", "filter_subagents", "Agents", show=False),
     ]
 
     class Closed(Message):
@@ -305,6 +340,11 @@ class TasksApp(Container):
             self._refresh_agent_view()
         # "script" view is static.
 
+    def on_key(self, event: events.Key) -> None:
+        if event.key in {"b", "q"}:
+            event.stop()
+            self.action_back()
+
     async def _render_view(self) -> None:
         body = self.query_one("#tasks-body", Vertical)
         await body.remove_children()
@@ -318,8 +358,12 @@ class TasksApp(Container):
             await self._render_agent_view(body)
         self._update_header()
         self._update_help()
+        if self._view != "list" and (
+            self.app.focused is None or self.app.focused is self
+        ):
+            self.focus()
 
-    def _current_filter(self) -> TaskCategory | None:
+    def _current_filter(self) -> tuple[TaskCategory, ...] | None:
         return _FILTERS[self._filter_idx][1]
 
     def _update_header(self) -> None:
@@ -343,25 +387,40 @@ class TasksApp(Container):
             joined.append("\nBackground Tasks", style="bold")
             header.update(joined)
         elif self._view == "detail":
-            header.update(Text(f"Task: {self._selected_task_id}", style="bold cyan"))
+            header.update(
+                Text(f"Tasks \u203a {self._selected_task_id}", style="bold cyan")
+            )
         elif self._view == "script":
             header.update(
-                Text(f"{self._selected_task_id} \u2192 Script", style="bold cyan")
+                Text(
+                    f"Tasks \u203a {self._selected_task_id} \u203a Script",
+                    style="bold cyan",
+                )
             )
         elif self._view == "agent":
             title = self._agent_view_data.title if self._agent_view_data else "Agent"
-            header.update(Text(f"Agent: {title}", style="bold cyan"))
+            run_id = self._agent_view_data.run_id if self._agent_view_data else ""
+            prefix = f"Tasks \u203a {run_id} \u203a " if run_id else "Tasks \u203a "
+            header.update(Text(f"{prefix}{title}", style="bold cyan"))
 
     def _entries(self) -> list[TaskEntry]:
-        return self._registry.list_tasks(category=self._current_filter())
+        cats = self._current_filter()
+        if cats is None:
+            return self._registry.list_tasks()
+        # Composite filters (e.g. "Agents" = AGENT + ASYNC_AGENT) — the registry
+        # takes one category per call, so gather each and union.
+        out: list[TaskEntry] = []
+        for cat in cats:
+            out.extend(self._registry.list_tasks(category=cat))
+        return out
 
     async def _render_list_view(self, body: Vertical) -> None:
         entries = self._entries()
         if not entries:
             await body.mount(
                 NoMarkupStatic(
-                    "No background tasks. Launch a server with bash "
-                    "background=true, or /<workflow-name>.",
+                    "No background tasks. Launch background bash, workflows, "
+                    "agents, teams, or scheduled loops to see them here.",
                     classes="tasks-empty",
                 )
             )
@@ -374,7 +433,7 @@ class TasksApp(Container):
     def _refresh_list_view(self) -> None:
         try:
             option_list = self.query_one("#tasks-list", OptionList)
-        except Exception:
+        except (NoMatches, WrongType):
             return
         entries = self._entries()
         highlighted = option_list.highlighted
@@ -414,17 +473,16 @@ class TasksApp(Container):
             return
         try:
             self.query_one("#tasks-detail", VerticalScroll)
-        except Exception:
+        except (NoMatches, WrongType):
             return
         # Update widgets IN PLACE — do NOT remove + re-mount each tick. remove()
         # is deferred in Textual, so a re-mounted fixed-id widget (tasks-agent-
         # list) collides with the not-yet-removed old one -> DuplicateIds crash.
         try:
-            self.query_one("#tasks-detail-text", NoMarkupStatic).update(
-                self._build_detail_text(entry)
-            )
-        except Exception:
-            pass
+            detail_text = self.query_one("#tasks-detail-text", NoMarkupStatic)
+        except (NoMatches, WrongType):
+            return
+        detail_text.update(self._build_detail_text(entry))
 
         agents = (
             _gather_workflow_agents(self._workflow_runner, entry.task_id)
@@ -433,7 +491,7 @@ class TasksApp(Container):
         )
         try:
             agent_list = self.query_one("#tasks-agent-list", OptionList)
-        except Exception:
+        except (NoMatches, WrongType):
             agent_list = None
 
         if agents:
@@ -477,11 +535,10 @@ class TasksApp(Container):
         # _refresh_detail_view).
         self._refresh_agent_view_data()
         try:
-            self.query_one("#tasks-agent-text", NoMarkupStatic).update(
-                self._build_agent_view_text()
-            )
-        except Exception:
-            pass
+            agent_text = self.query_one("#tasks-agent-text", NoMarkupStatic)
+        except (NoMatches, WrongType):
+            return
+        agent_text.update(self._build_agent_view_text())
 
     def _refresh_agent_view_data(self) -> None:
         """Re-read a live agent's streaming response into the view data.
@@ -547,27 +604,13 @@ class TasksApp(Container):
                 style="dim",
             )
             text.append(f"\nCWD: {d.get('cwd')}", style="dim")
+            if d.get("log_path"):
+                text.append(f"\nLog file: {d['log_path']}", style="dim")
             log_tail = self._registry.read_log_tail(entry.task_id, lines=80)
             text.append("\n\n--- Log (last 80 lines) ---", style="bold")
             text.append(f"\n{log_tail}" if log_tail else "\n(no output yet)")
         elif entry.category == TaskCategory.WORKFLOW:
-            text.append(f"\nPhases: {entry.label}", style="white")
-            text.append(
-                f"\nAgents: {d.get('agent_count', 0)} "
-                f"({d.get('live_agent_count', 0)} live)  "
-                f"Tokens: {_fmt_tokens(d.get('tokens_total', 0))}",
-                style="dim",
-            )
-            text.append(f"\nElapsed: {_fmt_seconds(entry.elapsed)}", style="dim")
-            agents = _gather_workflow_agents(self._workflow_runner, entry.task_id)
-            if agents:
-                text.append(
-                    f"\n\nAgents ({len(agents)}):  "
-                    "\u2191\u2193 select, Enter to view prompt + response",
-                    style="bold",
-                )
-            else:
-                text.append("\n\n(no agents yet)", style="dim")
+            text.append_text(self._workflow_detail(entry, d))
         elif entry.category == TaskCategory.AGENT:
             text.append(f"\nAgent: {entry.label}", style="white")
             text.append(
@@ -597,12 +640,72 @@ class TasksApp(Container):
         elif entry.category == TaskCategory.ASYNC_AGENT:
             text.append_text(self._async_agent_detail(entry, d))
         elif entry.category == TaskCategory.TEAM:
-            text.append(f"\nName: {d.get('name')}", style="white")
-            text.append(f"\nType: {entry.label}", style="dim")
-            text.append(f"\nPID: {d.get('pid')}", style="dim")
-            text.append(f"\nStatus: {d.get('raw_status')}", style="dim")
+            text.append_text(self._team_detail(d, entry))
         elif entry.category == TaskCategory.LOOP:
             text.append_text(self._loop_detail(d, entry))
+        return text
+
+    def _workflow_detail(self, entry: TaskEntry, d: dict[str, Any]) -> Text:
+        """Detail body for a workflow run. Extracted from ``_build_detail_text``
+        to keep that method under ruff's branch/statement caps. Surfaces budget
+        (total/reserved/spent/remaining), a per-phase breakdown (agents, tokens,
+        cost, elapsed), and the navigable agent list.
+        """
+        text = Text()
+        text.append(f"\nPhases: {entry.label}", style="white")
+        text.append(
+            f"\nAgents: {d.get('agent_count', 0)} "
+            f"({d.get('live_agent_count', 0)} live)  "
+            f"Tokens: {_fmt_tokens(d.get('tokens_total', 0))}",
+            style="dim",
+        )
+        text.append(f"\nElapsed: {_fmt_seconds(entry.elapsed)}", style="dim")
+        # Budget: WorkflowRunEntry exposes a live BudgetSnapshot. Burn vs. limit
+        # is the single most useful status field for a long-running run.
+        run = self._workflow_runner.find_run(entry.task_id)
+        if run is not None:
+            snap = getattr(run, "budget_snapshot", None)
+            if snap is not None:
+                spent = snap.spent
+                if snap.total is None:
+                    text.append(
+                        f"  Budget: {_fmt_tokens(spent)} spent (unlimited)", style="dim"
+                    )
+                else:
+                    remaining = snap.total - snap.reserved - spent
+                    pct = (spent / snap.total * 100) if snap.total else 0.0
+                    text.append(
+                        f"  Budget: {_fmt_tokens(spent)}/{_fmt_tokens(snap.total)} "
+                        f"({pct:.0f}%)  {_fmt_tokens(remaining)} left",
+                        style="dim",
+                    )
+            cost = run_cost(run)
+            if cost > 0:
+                text.append(f"  Cost: {_fmt_cost(cost)}", style="dim")
+            # Per-phase breakdown — PhaseReport groups each phase's agents with
+            # its own token/cost/elapsed totals. A 3-phase/30-agent run becomes
+            # scannable instead of an undifferentiated wall.
+            phases = getattr(run, "phase_reports", [])
+            if phases:
+                text.append("\n\nPhases:", style="bold")
+                for p in phases:
+                    text.append(
+                        f"\n  {p.name}: {len(p.agent_results)} agent(s)  "
+                        f"{_fmt_tokens(p.tokens_total)} tokens"
+                    )
+                    if p.cost_total > 0:
+                        text.append(f"  {_fmt_cost(p.cost_total)}")
+                    if p.elapsed_s:
+                        text.append(f"  {_fmt_seconds(p.elapsed_s)}", style="dim")
+        agents = _gather_workflow_agents(self._workflow_runner, entry.task_id)
+        if agents:
+            text.append(
+                f"\n\nAgents ({len(agents)}):  "
+                "\u2191\u2193 select, Enter to view prompt + response",
+                style="bold",
+            )
+        else:
+            text.append("\n\n(no agents yet)", style="dim")
         return text
 
     def _async_agent_detail(self, entry: TaskEntry, d: dict[str, Any]) -> Text:
@@ -630,10 +733,12 @@ class TasksApp(Container):
         prompt = d.get("prompt") or ""
         if prompt:
             text.append("\n\n--- Prompt ---", style="bold")
-            text.append(f"\n{_truncate(prompt, _AGENT_PROMPT_SNIPPET)}")
+            text.append(f"\n{_truncate(prompt, _ASYNC_AGENT_PROMPT_SNIPPET)}")
         # Isolated agents: tail the live log file. In-process: show the
         # streaming partial response the collector keeps current.
-        tail = self._registry.read_async_tail(entry.task_id, lines=40)
+        tail = self._registry.read_async_tail(
+            entry.task_id, lines=_ASYNC_AGENT_TAIL_LINES
+        )
         if tail:
             label = (
                 "--- Output (live log) ---"
@@ -641,7 +746,7 @@ class TasksApp(Container):
                 else "--- Response (streaming) ---"
             )
             text.append(f"\n\n{label}", style="bold")
-            text.append(f"\n{_truncate(tail, _AGENT_RESPONSE_SNIPPET)}")
+            text.append(f"\n{_truncate(tail, _ASYNC_AGENT_RESPONSE_SNIPPET)}")
         elif entry.status == "running":
             text.append(
                 "\n\n(Streaming — output appears here as the agent produces it.)",
@@ -649,7 +754,7 @@ class TasksApp(Container):
             )
         elif rec_response := d.get("response_so_far") or "":
             text.append("\n\n--- Response ---", style="bold")
-            text.append(f"\n{_truncate(rec_response, _AGENT_RESPONSE_SNIPPET)}")
+            text.append(f"\n{_truncate(rec_response, _ASYNC_AGENT_RESPONSE_SNIPPET)}")
         else:
             text.append("\n\n(No output captured.)", style="dim")
         return text
@@ -668,6 +773,40 @@ class TasksApp(Container):
         )
         return text
 
+    def _team_detail(self, d: dict[str, Any], entry: TaskEntry) -> Text:
+        """Detail body for a teammate. Surfaces inbox depth and task counts from
+        the TeamManager (TaskStore + Mailbox), which the flat TaskEntry doesn't
+        carry.
+        """
+        text = Text()
+        name = d.get("name") or entry.task_id.removeprefix("team:")
+        text.append(f"\nName: {name}", style="white")
+        text.append(f"\nType: {entry.label}", style="dim")
+        text.append(f"\nPID: {d.get('pid')}", style="dim")
+        text.append(f"\nStatus: {d.get('raw_status')}", style="dim")
+        manager = self._registry.team_manager()
+        if manager is not None:
+            try:
+                inbox = manager.mailbox.get_unread(name)
+                if inbox:
+                    text.append(f"\nInbox: {len(inbox)} unread", style="cyan")
+            except Exception:
+                logger.debug("team inbox read failed for %s", name, exc_info=True)
+            try:
+                tasks = manager.task_store.get_all_tasks()
+                mine = [t for t in tasks if getattr(t, "assignee", None) == name]
+                if mine:
+                    in_prog = sum(
+                        1 for t in mine if str(t.status).lower() == "in_progress"
+                    )
+                    text.append(
+                        f"\nTasks: {len(mine)} assigned ({in_prog} in progress)",
+                        style="dim",
+                    )
+            except Exception:
+                logger.debug("team task read failed for %s", name, exc_info=True)
+        return text
+
     def _find_selected(self) -> TaskEntry | None:
         if self._selected_task_id is None:
             return None
@@ -683,7 +822,7 @@ class TasksApp(Container):
     def _highlighted_task_id(self) -> str | None:
         try:
             option_list = self.query_one("#tasks-list", OptionList)
-        except Exception:
+        except (NoMatches, WrongType):
             return None
         option = option_list.highlighted_option
         if option is None or option.id is None:
@@ -751,7 +890,7 @@ class TasksApp(Container):
         help_widget = self.query_one("#tasks-help", NoMarkupStatic)
         if self._view == "list":
             help_widget.update(
-                "1-5 Filter  \u2191\u2193 Navigate  Enter Detail  x Stop  "
+                "1-6 Filter  \u2191\u2193 Navigate  Enter Detail  x Stop  "
                 "p Pause  s Save  r Refresh  Esc Back"
             )
         elif self._view == "detail":
@@ -809,6 +948,26 @@ class TasksApp(Container):
     def action_refresh(self) -> None:
         self._refresh_current_view()
 
+    def action_copy(self) -> None:
+        text = self._copy_text()
+        if text:
+            copy_text_to_clipboard(
+                self.app, text, success_message="Task view copied to clipboard"
+            )
+
+    def _copy_text(self) -> str:
+        if self._view == "agent":
+            return self._build_agent_view_text().plain
+        if self._view == "script":
+            ref = self._workflow_script_ref()
+            return ref.script_source if ref else ""
+        entry = self._find_selected() if self._view == "detail" else None
+        if entry is not None:
+            return self._build_detail_text(entry).plain
+        if self._view == "list":
+            return "\n".join(_build_row_text(e).plain for e in self._entries())
+        return ""
+
     def _set_filter(self, idx: int) -> None:
         if idx == self._filter_idx:
             return
@@ -844,7 +1003,12 @@ class TasksApp(Container):
         self, event: OptionList.OptionSelected
     ) -> None:
         if self._view == "list" and event.option.id:
-            self._selected_task_id = str(event.option.id)
+            task_id = str(event.option.id)
+            self._selected_task_id = task_id
+            if task_id.startswith("wf-") and "/live-" in task_id:
+                if self._open_agent_view(task_id):
+                    await self._render_view()
+                    return
             self._view = "detail"
             await self._render_view()
         elif (

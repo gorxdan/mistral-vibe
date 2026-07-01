@@ -46,6 +46,7 @@ class _FakeRunEntry:
     phases: list[str] = field(default_factory=lambda: ["audit"])
     phase_reports: list[Any] = field(default_factory=list)
     live_agents: list[Any] = field(default_factory=list)
+    budget_snapshot: Any = None
     is_paused: bool = False
     result: Any = None
     script_source: str = "async def main():\n    pass"
@@ -262,6 +263,69 @@ async def test_drill_down_shows_workflow_detail():
 
 
 @pytest.mark.asyncio
+async def test_workflow_detail_shows_budget_phase_breakdown_and_cost():
+    from textual.app import App, ComposeResult
+    from textual.containers import Container
+
+    from vibe.core.workflows.models import AgentResult, BudgetSnapshot, PhaseReport
+
+    runner = _FakeWorkflowRunner()
+    result = AgentResult(
+        label="auditor",
+        agent="explore",
+        phase="audit",
+        prompt="p",
+        response="r",
+        tokens_in=120,
+        tokens_out=80,
+        cost=0.0123,
+    )
+    runner.runs.append(
+        _FakeRunEntry(
+            run_id="wf-1",
+            status=_WorkflowStatus("running"),
+            phases=["audit"],
+            phase_reports=[
+                PhaseReport(name="audit", agent_results=[result], elapsed_s=3)
+            ],
+            agent_count=1,
+            tokens_total=200,
+            budget_snapshot=BudgetSnapshot(total=1_000, reserved=100, spent=250),
+        )
+    )
+    reg = _registry(runner)
+
+    class _Harness(App):
+        def compose(self) -> ComposeResult:
+            yield Container(
+                TasksApp(registry=reg, workflow_runner=cast("WorkflowRunner", runner))
+            )
+
+        async def key_escape(self) -> None:
+            pass
+
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        tasks = app.query_one(TasksApp)
+        tasks._selected_task_id = "wf-1"
+        tasks._view = "detail"
+        await tasks._render_view()
+        await pilot.pause()
+        body = str(
+            app
+            .query_one("#tasks-detail", VerticalScroll)
+            .query_one(NoMarkupStatic)
+            .render()
+        )
+        assert "Budget: 250/1.0k" in body
+        assert "650 left" in body
+        assert "Cost: $0.0123" in body
+        assert "audit: 1 agent(s)" in body
+        await app.action_quit()
+
+
+@pytest.mark.asyncio
 async def test_workflow_detail_lists_agents_and_drill_down_shows_prompt_response():
     """A workflow's agents render as a navigable list, and drilling into one
     shows its prompt + response (the gap this change closes: previously the
@@ -455,6 +519,118 @@ async def test_live_agent_detail_shows_prompt_and_streaming_preview():
         )
         assert "Audit the login flow." in body
         assert "partial findings..." in body
+        await app.action_quit()
+
+
+@pytest.mark.asyncio
+async def test_agents_filter_includes_live_workflow_agents():
+    from textual.app import App, ComposeResult
+    from textual.containers import Container
+
+    @dataclass
+    class _LiveAgent:
+        agent_id: str = "la-0"
+        agent: str = "explore"
+        label: str | None = "live-auditor"
+        phase: str | None = "audit"
+        model: str | None = None
+        status: str = "running"
+        tokens_total: int = 50
+        prompt: str = "Audit the login flow."
+        response_so_far: str = "partial findings..."
+
+    runner = _FakeWorkflowRunner()
+    runner.runs.append(
+        _FakeRunEntry(
+            run_id="wf-1",
+            status=_WorkflowStatus("running"),
+            phases=["audit"],
+            live_agents=[_LiveAgent()],
+        )
+    )
+    reg = _registry(runner)
+
+    class _Harness(App):
+        def compose(self) -> ComposeResult:
+            yield Container(
+                TasksApp(registry=reg, workflow_runner=cast("WorkflowRunner", runner))
+            )
+
+        async def key_escape(self) -> None:
+            pass
+
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("6")
+        await pilot.pause()
+        option_list = app.query_one("#tasks-list", OptionList)
+        assert [o.id for o in option_list.options] == ["wf-1/live-la-0"]
+        await app.action_quit()
+
+
+@pytest.mark.asyncio
+async def test_flat_list_live_workflow_agent_drills_into_full_agent_view():
+    from textual.app import App, ComposeResult
+    from textual.containers import Container
+
+    @dataclass
+    class _LiveAgent:
+        agent_id: str = "la-0"
+        agent: str = "explore"
+        label: str | None = "live-auditor"
+        phase: str | None = "audit"
+        model: str | None = None
+        status: str = "running"
+        tokens_total: int = 50
+        prompt: str = "Audit the login flow."
+        response_so_far: str = "partial findings..."
+
+    runner = _FakeWorkflowRunner()
+    runner.runs.append(
+        _FakeRunEntry(
+            run_id="wf-1",
+            status=_WorkflowStatus("running"),
+            phases=["audit"],
+            live_agents=[_LiveAgent()],
+        )
+    )
+    reg = _registry(runner)
+
+    class _Harness(App):
+        def compose(self) -> ComposeResult:
+            yield Container(
+                TasksApp(registry=reg, workflow_runner=cast("WorkflowRunner", runner))
+            )
+
+        async def key_escape(self) -> None:
+            pass
+
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("6")
+        await pilot.pause()
+        option_list = app.query_one("#tasks-list", OptionList)
+        option_list.highlighted = 0
+        await pilot.press("enter")
+        await pilot.pause()
+        app.query_one("#tasks-agent", VerticalScroll)
+        body = str(
+            app
+            .query_one("#tasks-agent", VerticalScroll)
+            .query_one(NoMarkupStatic)
+            .render()
+        )
+        assert "Audit the login flow." in body
+        assert "partial findings..." in body
+        await pilot.press("b")
+        await pilot.pause()
+        tasks = app.query_one(TasksApp)
+        assert tasks._view == "detail"
+        await pilot.press("q")
+        await pilot.pause()
+        assert tasks._view == "list"
         await app.action_quit()
 
 
