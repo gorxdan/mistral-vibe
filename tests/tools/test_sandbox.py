@@ -118,6 +118,23 @@ def test_bwrap_git_hooks_stay_readonly(tmp_path) -> None:
     assert f"{r}/.git" not in ro_targets  # whole gitdir not read-only
 
 
+def test_bwrap_git_config_stays_readonly(tmp_path) -> None:
+    # .git/config must be read-only or a sandboxed command can set core.hooksPath
+    # (or diff.external/core.fsmonitor/pager) to plant a hook that runs outside it.
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".git" / "hooks").mkdir(parents=True)
+    (root / ".git" / "config").write_text("[core]\n")
+
+    spec = SandboxSpec(write_roots=[root], allow_network=True)
+    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    assert argv is not None
+    r = str(root.resolve())
+    ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert f"{r}/.git/config" in ro_targets  # config read-only -> no hooksPath escape
+    assert f"{r}/.git" not in ro_targets  # whole gitdir still writable for commits
+
+
 def test_bwrap_worktree_external_gitdir_writable(tmp_path) -> None:
     # A linked worktree: root/.git is a FILE pointing to the main repo's
     # .git/worktrees/<name>. The shared .git (objects/refs + the worktree gitdir)
@@ -125,6 +142,8 @@ def test_bwrap_worktree_external_gitdir_writable(tmp_path) -> None:
     main = tmp_path / "main"
     (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
     (main / ".git" / "hooks").mkdir()
+    (main / ".git" / "config").write_text("[core]\n")
+    (main / ".git" / "worktrees" / "wt" / "config.worktree").write_text("[core]\n")
     wt = tmp_path / "wt"
     wt.mkdir()
     (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
@@ -137,6 +156,9 @@ def test_bwrap_worktree_external_gitdir_writable(tmp_path) -> None:
     common = f"{main}/.git"
     assert common in binds  # external git common-dir bound writable
     assert f"{common}/hooks" in ro_targets  # its hooks still read-only
+    assert f"{common}/config" in ro_targets  # shared config read-only
+    # The per-worktree config.worktree (git config --worktree target) too.
+    assert f"{common}/worktrees/wt/config.worktree" in ro_targets
 
 
 def test_bwrap_skips_symlinked_protected_metadata(tmp_path) -> None:
@@ -155,6 +177,7 @@ def test_seatbelt_denies_secrets_and_hooks_not_gitdir(tmp_path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
     (root / ".git" / "hooks").mkdir(parents=True)
+    (root / ".git" / "config").write_text("[core]\n")
     (root / ".env").write_text("SECRET=1")
 
     spec = SandboxSpec(write_roots=[root], allow_network=True)
@@ -163,6 +186,9 @@ def test_seatbelt_denies_secrets_and_hooks_not_gitdir(tmp_path) -> None:
     assert f'(allow file-write* (subpath "{r}"))' in profile
     assert f'(deny file-write* (subpath "{r}/.env"))' in profile
     assert f'(deny file-write* (subpath "{r}/.git/hooks"))' in profile
+    assert (
+        f'(deny file-write* (subpath "{r}/.git/config"))' in profile
+    )  # no hooksPath escape
     assert f'(deny file-write* (subpath "{r}/.git"))' not in profile  # gitdir writable
 
 
@@ -412,9 +438,7 @@ def test_resolve_sandbox_isolated_no_outside_widening(tmp_path, monkeypatch) -> 
         "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
     )
     bash = _bash(SandboxConfig(enabled=False))
-    argv, _profile, _env, fd = bash._resolve_sandbox(
-        None, f"echo x > {outside}/f.txt"
-    )
+    argv, _profile, _env, fd = bash._resolve_sandbox(None, f"echo x > {outside}/f.txt")
     try:
         assert argv is not None
         assert str(outside.resolve()) not in argv  # never widened out of the worktree
@@ -565,6 +589,33 @@ async def test_sandboxed_git_commit_works(tmp_path, monkeypatch) -> None:
 
     with pytest.raises(ToolError):  # hooks stay read-only
         await _run(bash, "echo x > .git/hooks/pre-commit")
+
+
+@_skip_no_backend
+@pytest.mark.asyncio
+async def test_sandboxed_cannot_repoint_hookspath(tmp_path, monkeypatch) -> None:
+    # Hook-persistence escape: .git/config must be read-only so a command can't
+    # set core.hooksPath to a writable dir and plant a hook that runs outside it.
+    if detect_backend("auto") != "bwrap":
+        pytest.skip("git-config bind confinement needs the bwrap backend")
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(
+        "git init -q && git config user.email t@t && git config user.name t "
+        "&& git commit --allow-empty -qm init",
+        cwd=repo,
+        shell=True,
+        check=True,
+    )
+    monkeypatch.chdir(repo)
+    bash = _bash(SandboxConfig(enabled=True))
+
+    with pytest.raises(ToolError):  # config is read-only inside the sandbox
+        await _run(bash, "git config core.hooksPath /tmp/evil-hooks")
+    # The on-disk config was never modified.
+    assert "hooksPath" not in (repo / ".git" / "config").read_text()
 
 
 @_skip_no_backend

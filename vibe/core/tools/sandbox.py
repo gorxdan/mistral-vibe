@@ -168,14 +168,35 @@ def _worktree_gitdir(root: Path) -> Path | None:
     return None
 
 
+# Git metadata kept read-only over the writable gitdir: hooks/ blocks a planted
+# hook; config/config.worktree block a core.hooksPath (or sibling) escape.
+_GIT_READONLY_METADATA = ("hooks", "config", "config.worktree")
+
+
+def _readonly_git_targets(base: Path) -> list[str]:
+    """Existing git metadata under *base* that must stay read-only. Skips
+    symlinks (a link could point outside and be mounted through).
+    """
+    found: list[str] = []
+    for name in _GIT_READONLY_METADATA:
+        target = base / name
+        try:
+            if target.exists() and not target.is_symlink():
+                found.append(str(target))
+        except OSError:
+            continue
+    return found
+
+
 def _git_bind_dirs(root: Path) -> tuple[list[str], list[str]]:
-    """(writable_git_dirs, readonly_hook_dirs) for one write root.
+    """(writable_git_dirs, readonly_git_metadata) for one write root.
 
     A sandboxed command must be able to commit (write index/refs/objects/logs),
-    so git metadata stays writable — but ``hooks/`` is re-layered read-only so a
-    command can't drop a hook that later runs *outside* the sandbox. For a linked
-    worktree the real gitdir and shared object store live outside the checkout
-    under the main repo's ``.git``, so that dir is bound writable explicitly.
+    so git metadata stays writable — but ``hooks/`` and ``config`` are re-layered
+    read-only so a command can't drop a hook or repoint ``core.hooksPath`` to run
+    code *outside* the sandbox later. For a linked worktree the real gitdir and
+    shared object store live outside the checkout under the main repo's ``.git``,
+    so that dir is bound writable explicitly.
     """
     writable: list[str] = []
     readonly: list[str] = []
@@ -186,13 +207,12 @@ def _git_bind_dirs(root: Path) -> tuple[list[str], list[str]]:
         common = gitdir.parent.parent
         if common.is_dir():
             writable.append(str(common))
-        hooks = common / "hooks"
-        if hooks.is_dir():
-            readonly.append(str(hooks))
+        # Shared hooks/config live under <common>; the per-worktree config.worktree
+        # (the `git config --worktree` target) lives under the worktree's gitdir.
+        readonly += _readonly_git_targets(common)
+        readonly += _readonly_git_targets(gitdir)
     else:
-        hooks = root / ".git" / "hooks"
-        if hooks.is_dir():
-            readonly.append(str(hooks))
+        readonly += _readonly_git_targets(root / ".git")
     return writable, readonly
 
 
@@ -278,13 +298,13 @@ def _bwrap_argv(spec: SandboxSpec) -> list[str]:
         # then layer read-only over sensitive metadata + git hooks last (bwrap is
         # left-to-right, so the later --ro-bind wins for that subpath).
         argv += ["--bind", root, root]
-        writable_git, readonly_hooks = _git_bind_dirs(Path(root))
+        writable_git, readonly_git = _git_bind_dirs(Path(root))
         for gitdir in writable_git:
             argv += ["--bind", gitdir, gitdir]
         for sub in _protected_subpaths_for(root):
             argv += ["--ro-bind", sub, sub]
-        for hooks in readonly_hooks:
-            argv += ["--ro-bind", hooks, hooks]
+        for meta in readonly_git:
+            argv += ["--ro-bind", meta, meta]
     argv += ["--chdir", str(Path.cwd())]
     argv += spec.extra_args
     argv.append("--")
@@ -314,14 +334,13 @@ def build_seatbelt_profile(spec: SandboxSpec) -> str:
         if '"' in root or "\n" in root:
             continue  # never inject into the profile string
         lines.append(f'(allow file-write* (subpath "{root}"))')
-        writable_git, readonly_hooks = _git_bind_dirs(Path(root))
+        writable_git, readonly_git = _git_bind_dirs(Path(root))
         for gitdir in writable_git:
             if '"' not in gitdir and "\n" not in gitdir:
                 lines.append(f'(allow file-write* (subpath "{gitdir}"))')
-        # Re-deny sensitive metadata + git hooks (last match wins) so a sandboxed
-        # command can commit and read config but not rewrite secrets, agent
-        # config, or install a hook that runs outside the sandbox.
-        for sub in [*_protected_subpaths_for(root), *readonly_hooks]:
+        # Re-deny secrets + git hooks/config (last match wins): a command can
+        # commit but not plant a hook or repoint core.hooksPath outside.
+        for sub in [*_protected_subpaths_for(root), *readonly_git]:
             if '"' in sub or "\n" in sub:
                 continue
             lines.append(f'(deny file-write* (subpath "{sub}"))')
