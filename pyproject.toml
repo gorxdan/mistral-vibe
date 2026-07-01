@@ -197,6 +197,9 @@ build = [
 ]
 
 [tool.pyright]
+# Pinned to the mode the repo actually passes (0 errors). "strict" currently
+# fails: ~1.9k errors in vibe/, ~13.6k in tests/ (pyright 1.1.410).
+typeCheckingMode = "standard"
 pythonVersion = "3.12"
 reportMissingTypeStubs = false
 reportPrivateImportUsage = false
