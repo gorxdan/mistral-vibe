@@ -82,6 +82,10 @@ def test_apply_openai_preset_persists_provider_and_model(
     provider_names = {p["name"] for p in config["providers"]}
     assert "openai" in provider_names
     assert config["active_model"] == preset.model.alias
+    # Temperature is persisted explicitly so a future ModelConfig default
+    # change cannot silently retune models written by onboarding.
+    persisted = {m["alias"]: m for m in config["models"]}
+    assert persisted[preset.model.alias]["temperature"] == 1.0
 
 
 def test_sakana_preset_present_and_keyed() -> None:
