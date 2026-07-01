@@ -698,6 +698,144 @@ class TestMigrateKimiGlmPreservedThinking:
         assert glm["temperature"] == 0.2  # marker present -> no rerun/clobber
 
 
+class TestMigrateContextWindowBackfill:
+    def test_backfills_known_models_and_preserves_threshold(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "models": [
+                {
+                    "name": "glm-5.2",
+                    "provider": "zai",
+                    "alias": "glm",
+                    "auto_compact_threshold": 880000,
+                },
+                {"name": "mystery-model", "provider": "custom", "alias": "mystery"},
+            ]
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        by_alias = {m["alias"]: m for m in result["models"]}
+        assert by_alias["glm"]["context_window"] == 1_000_000
+        assert by_alias["glm"]["auto_compact_threshold"] == 880000
+        assert "context_window" not in by_alias["mystery"]
+        assert VibeConfig._CONTEXT_WINDOW_MIGRATION in result["applied_migrations"]
+
+    def test_idempotent_and_respects_user_removal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "applied_migrations": [VibeConfig._CONTEXT_WINDOW_MIGRATION],
+            "models": [{"name": "glm-5.2", "provider": "zai", "alias": "glm"}],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+        first = config_file.read_bytes()
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        # marker present -> user's deletion of context_window is respected
+        assert "context_window" not in result["models"][0]
+        assert config_file.read_bytes() == first
+
+    def test_loaded_glm_keeps_explicit_threshold_under_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "models": [
+                {
+                    "name": "glm-5.2",
+                    "provider": "zai",
+                    "alias": "glm",
+                    "auto_compact_threshold": 880000,
+                }
+            ]
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        cfg = VibeConfig.load()
+
+        glm = next(m for m in cfg.models if m.alias == "glm")
+        assert glm.context_window == 1_000_000
+        # 880k <= 95% of 1M -> the user's threshold is kept verbatim.
+        assert glm.auto_compact_threshold == 880000
+
+    def test_loaded_threshold_above_cap_is_clamped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "models": [
+                {
+                    "name": "glm-5.2",
+                    "provider": "zai",
+                    "alias": "glm",
+                    "auto_compact_threshold": 999_999,
+                }
+            ]
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        cfg = VibeConfig.load()
+
+        glm = next(m for m in cfg.models if m.alias == "glm")
+        assert glm.auto_compact_threshold == 950_000
+
+    def test_migrated_model_classifies_by_window_not_large_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from vibe.core.baseline_scaling import BaselineTier, baseline_tier_for
+
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "baseline_scaling": {"medium_max": 2_000_000},
+            "models": [
+                {
+                    "name": "glm-5.2",
+                    "provider": "zai",
+                    "alias": "glm",
+                    "auto_compact_threshold": 880000,
+                }
+            ],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        cfg = VibeConfig.load()
+
+        glm = next(m for m in cfg.models if m.alias == "glm")
+        # A None window would pin the tier at LARGE regardless of medium_max.
+        assert baseline_tier_for(glm, cfg) is BaselineTier.MEDIUM
+
+
 class TestMigrateMistralVibeCliLatestDefaults:
     def test_updates_alias_temperature_and_thinking_for_default_model(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

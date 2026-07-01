@@ -209,6 +209,7 @@ input_price = 1.5
 output_price = 7.5
 thinking = "high"                 # "off", "low", "medium", "high", "max"
 auto_compact_threshold = 200000
+# context_window = 262144         # optional: model's real window; derives (85%) or clamps (95%) auto_compact_threshold
 supports_images = true            # vision-capable; allows @-mentioned images
 
 [[models]]
