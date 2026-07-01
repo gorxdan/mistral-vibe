@@ -568,6 +568,18 @@ class AgentLoopSessionMixin(AgentLoopBackendMixin):
             self._fallback_model_override = None
             self._tried_fallback_aliases.clear()
 
+        # An agent switch rebinds self.config to the new agent's overrides, which
+        # can drop the surviving override's provider (e.g. a rate-limit switch to
+        # gpt-5.5/openai-chatgpt, then cycling to an agent whose providers omit
+        # openai-chatgpt). get_provider_for_model would raise and crash the reload
+        # worker; drop the orphaned override and fall back to the configured
+        # backend instead. Same reset semantics as the model_changed branch above.
+        if self._fallback_model_override is not None and (
+            not self.config.is_model_available(self._fallback_model_override)
+        ):
+            self._fallback_model_override = None
+            self._tried_fallback_aliases.clear()
+
         # Build the backend for whatever model is now effective: a surviving
         # override keeps its own provider, so build for it rather than letting the
         # config-default backend mismatch the overridden model.

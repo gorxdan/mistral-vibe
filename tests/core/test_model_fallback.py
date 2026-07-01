@@ -325,3 +325,65 @@ async def test_reload_clears_override_when_active_model_changes() -> None:
     assert loop._tried_fallback_aliases == set()
     model, _ = loop._resolve_active_model()
     assert model.alias == "backup", "resolution follows the new config"
+
+
+@pytest.mark.asyncio
+async def test_switch_agent_drops_override_whose_provider_left_config() -> None:
+    # Regression: a rate-limit switch sets _fallback_model_override to a model on
+    # provider B. Switching to an agent whose overrides REPLACE providers
+    # (dropping B) orphans the override — get_provider_for_model would raise and
+    # crash the switch worker (the live crash: glm rate-limited -> override set to
+    # gpt-5.5/openai-chatgpt -> cycle to lean whose providers drop openai-chatgpt
+    # -> ValueError). The orphaned override must be dropped, not crash.
+    from vibe.core.agents.models import AgentProfile, AgentSafety
+
+    alpha = ProviderConfig(
+        name="alpha",
+        api_base="http://alpha/v1",
+        api_key_env_var="",
+        api_style="openai",
+        backend=Backend.GENERIC,
+    )
+    beta = ProviderConfig(
+        name="beta",
+        api_base="http://beta/v1",
+        api_key_env_var="",
+        api_style="openai",
+        backend=Backend.GENERIC,
+    )
+    primary = ModelConfig(
+        name="primary",
+        provider="alpha",
+        alias="primary",
+        temperature=0.2,
+        thinking="off",
+    )
+    backup = ModelConfig(
+        name="backup", provider="beta", alias="backup", temperature=0.2, thinking="off"
+    )
+    config = build_test_vibe_config(
+        providers=[alpha, beta], models=[primary, backup], active_model="primary"
+    )
+    loop = build_test_agent_loop(config=config)
+    loop._fallback_model_override = backup  # set during a rate-limit switch
+    loop._tried_fallback_aliases.add("primary")
+
+    alpha_only = AgentProfile(
+        name="alpha-only",
+        display_name="Alpha Only",
+        description="drops the beta provider",
+        safety=AgentSafety.NEUTRAL,
+        overrides={
+            "providers": [alpha.model_dump()],
+            "models": [primary.model_dump()],
+            "active_model": "primary",
+        },
+    )
+    loop.agent_manager.register_agent(alpha_only)
+
+    await loop.switch_agent("alpha-only")  # crashed before the fix
+
+    assert loop._fallback_model_override is None
+    assert loop._tried_fallback_aliases == set()
+    model, _ = loop._resolve_active_model()
+    assert model.alias == "primary", "orphaned override dropped -> config default"
