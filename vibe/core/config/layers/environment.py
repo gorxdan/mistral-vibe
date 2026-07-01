@@ -6,8 +6,7 @@ from pydantic import BaseModel, create_model
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from vibe.core.config.fingerprint import create_dict_fingerprint
-from vibe.core.config.layer import ConfigLayer
-from vibe.core.config.models import RawConfig
+from vibe.core.config.layer import ConfigLayer, RawConfig
 from vibe.core.config.types import LayerConfigSnapshot
 
 

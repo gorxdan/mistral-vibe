@@ -6,8 +6,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from vibe.core.config.layer import ConfigLayer, EmptyLayerError, UntrustedLayerError
-from vibe.core.config.models import RawConfig
+from vibe.core.config.layer import (
+    ConfigLayer,
+    EmptyLayerError,
+    RawConfig,
+    UntrustedLayerError,
+)
 from vibe.core.config.schema import ConfigFragment, ConfigSchema, MergeFieldMetadata
 
 

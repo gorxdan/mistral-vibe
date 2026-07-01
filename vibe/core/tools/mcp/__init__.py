@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from vibe.core.tools.mcp.pool import MCPSessionPool
-    from vibe.core.tools.mcp.registry import MCPRegistry
+    from vibe.core.tools.mcp.registry import AuthStatus, MCPRegistry
     from vibe.core.tools.mcp.tools import (
         MCPToolResult,
         RemoteTool,
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "AuthStatus",
     "MCPRegistry",
     "MCPSessionPool",
     "MCPToolResult",
@@ -41,11 +42,12 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    if name == "MCPRegistry":
-        from vibe.core.tools.mcp.registry import MCPRegistry
+    if name in {"AuthStatus", "MCPRegistry"}:
+        from vibe.core.tools.mcp.registry import AuthStatus, MCPRegistry
 
+        globals()["AuthStatus"] = AuthStatus
         globals()["MCPRegistry"] = MCPRegistry
-        return MCPRegistry
+        return globals()[name]
     if name == "MCPSessionPool":
         from vibe.core.tools.mcp.pool import MCPSessionPool
 

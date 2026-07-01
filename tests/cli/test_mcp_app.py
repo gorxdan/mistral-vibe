@@ -5,9 +5,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from textual.content import Content
 from textual.widgets.option_list import Option
 
 from tests.stubs.fake_connector_registry import FakeConnectorRegistry
+from vibe.cli.textual_ui.shortcut_hints import SHORTCUT_STYLE
 from vibe.cli.textual_ui.widgets.mcp_app import (
     _LIST_VIEW_HELP_AUTH,
     _LIST_VIEW_HELP_TOOLS,
@@ -431,9 +433,10 @@ class TestConnectorAuthRequested:
 
         app.post_message.assert_not_called()
         option_list.add_option.assert_called_once()
-        assert "press R to refresh" in str(
-            option_list.add_option.call_args.args[0].prompt
-        )
+        prompt = option_list.add_option.call_args.args[0].prompt
+        assert isinstance(prompt, Content)
+        assert "press r to refresh" in prompt.plain
+        assert any(span.style == SHORTCUT_STYLE for span in prompt.spans)
 
     def test_connected_connector_with_no_indexed_tools_shows_message(self) -> None:
         registry = MagicMock()

@@ -190,7 +190,8 @@ class CommandRegistry:
                     "Display available MCP servers and connectors. "
                     "Pass a name to list its tools. "
                     "Subcommands: /mcp status, /mcp login <alias>, "
-                    "/mcp logout <alias>, /mcp refresh, /mcp add"
+                    "/mcp logout <alias>, /mcp refresh, "
+                    "/mcp add <url> [--transport http|streamable-http]"
                 ),
                 handler="_show_mcp",
                 safe_while_busy=True,

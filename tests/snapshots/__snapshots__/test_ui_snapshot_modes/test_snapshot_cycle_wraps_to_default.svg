@@ -37,7 +37,7 @@
 .terminal-r3 { fill: #68a0b3 }
 .terminal-r4 { fill: #98a84b }
 .terminal-r5 { fill: #868887 }
-.terminal-r6 { fill: #6b753d }
+.terminal-r6 { fill: #ff8205 }
     </style>
 
     <defs>
@@ -196,7 +196,7 @@
 </text><text class="terminal-r1" x="1464" y="800.8" textLength="12.2" clip-path="url(#terminal-line-32)">
 </text><text class="terminal-r1" x="1464" y="825.2" textLength="12.2" clip-path="url(#terminal-line-33)">
 </text><text class="terminal-r4" x="0" y="849.6" textLength="1464" clip-path="url(#terminal-line-34)">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text><text class="terminal-r1" x="1464" y="849.6" textLength="12.2" clip-path="url(#terminal-line-34)">
-</text><text class="terminal-r5" x="0" y="874" textLength="158.6" clip-path="url(#terminal-line-35)">/test/workdir</text><text class="terminal-r6" x="183" y="874" textLength="183" clip-path="url(#terminal-line-35)">⟦●&#160;coordinator⟧</text><text class="terminal-r5" x="1244.4" y="874" textLength="219.6" clip-path="url(#terminal-line-35)">0/200k&#160;tokens&#160;(0%)</text>
+</text><text class="terminal-r5" x="0" y="874" textLength="158.6" clip-path="url(#terminal-line-35)">/test/workdir</text><text class="terminal-r6" x="170.8" y="874" textLength="207.4" clip-path="url(#terminal-line-35)">·&#160;devstral-latest</text><text class="terminal-r5" x="1207.8" y="874" textLength="244" clip-path="url(#terminal-line-35)">0/200k&#160;░░░░░░░░░░&#160;0%</text>
     </g>
     </g>
 </svg>

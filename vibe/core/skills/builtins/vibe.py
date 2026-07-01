@@ -69,7 +69,9 @@ When in a trusted folder, Vibe also looks for project-local configuration:
 Chat input (case-insensitive): `/exit`, `exit`, `quit`, `:q`, `:quit`.
 Keyboard: `Ctrl+C` / `Ctrl+D` — press twice within ~1s to quit. For `Ctrl+C`,
 the first press instead interrupts the running job or clears the input if either
-is present. `Ctrl+Z` suspends on POSIX (resume with `fg`).
+is present. Set `ask_confirmation_on_exit = false` to make `Ctrl+D` quit on the
+first press (also toggleable in `/config`); `Ctrl+C` always requires a second
+press. `Ctrl+Z` suspends on POSIX (resume with `fg`).
 
 ### Update
 
@@ -120,10 +122,10 @@ prompts.
 active_model = "mistral-medium-3.5"  # Model alias to use (see [[models]])
 
 # UI preferences
-vim_keybindings = false
 disable_welcome_banner_animation = false
 autocopy_to_clipboard = true
 file_watcher_for_autocomplete = true   # default: on
+ask_confirmation_on_exit = true  # Require a second Ctrl+D to quit (Ctrl+C always confirms)
 
 # Behavior
 bypass_tool_permissions = false    # Skip tool approval prompts
@@ -374,6 +376,21 @@ Shared per-server fields (all transports): `name` (tool prefix; normalized to
 tools, without the prefix), `startup_timeout_sec` (default 10), `tool_timeout_sec`
 (default 60), `sampling_enabled` (default true; lets the server request LLM
 completions via createMessage).
+
+Hosted OAuth MCP servers can be added from inside Vibe with the `/mcp add`
+shortcut:
+
+```text
+/mcp add https://mcp.linear.app/mcp
+/mcp add https://mcp.example.com/mcp --name docs --scope read --transport http --no-login
+```
+
+`/mcp add` is OAuth-only. It writes `auth.type = "oauth"` with optional
+scopes and starts login by default. It uses `transport = "streamable-http"`
+unless you pass `--transport http`. Pass `--no-login` to add the server without
+starting OAuth login. The shortcut supports `streamable-http` and `http`
+transports. For API-key/static auth, edit `config.toml` using the static auth
+example below.
 
 ```toml
 # Local subprocess (stdio).
@@ -919,7 +936,16 @@ background agent is observable, not a blind `asub-N` row.
 - `/rename` - Rename the current session
 - `/voice` - Configure voice settings
 - `/mcp` (or `/connectors`) - Display available MCP servers and connectors. Pass a name
-  to list its tools. Subcommands: `/mcp login|logout <name>`, `/mcp refresh`, `/mcp add`.
+  to list its tools or open its auth panel when authentication is required.
+  Subcommands: `/mcp login|logout <name>`, `/mcp refresh`, `/mcp add`.
+- `/mcp add <url>` - Add a hosted OAuth MCP server. Supports `--name <alias>`,
+  repeatable `--scope <scope>`, `--transport <http|streamable-http>`, and
+  `--no-login`. Starts OAuth login by default. OAuth-only; use `config.toml`
+  for API-key/static auth.
+- `/mcp status` - Display MCP auth state (`ok`, `needs_auth`, `static`, `stdio`)
+- `/mcp login <alias>` - Start OAuth login for an MCP server
+- `/mcp logout <alias>` - Log out from an MCP server and delete stored OAuth
+  secrets
 - `/resume` (or `/continue`) - Browse and resume past sessions for the current
   folder (plus active remote sessions when Vibe Code is enabled). The picker
   header shows the folder being listed. Press `D` twice to delete a local saved

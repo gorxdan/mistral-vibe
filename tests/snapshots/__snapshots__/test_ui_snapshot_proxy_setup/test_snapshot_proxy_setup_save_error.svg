@@ -37,6 +37,7 @@
 .terminal-r3 { fill: #68a0b3 }
 .terminal-r4 { fill: #cc555a;font-weight: bold }
 .terminal-r5 { fill: #868887 }
+.terminal-r6 { fill: #ff8205 }
     </style>
 
     <defs>
@@ -195,7 +196,7 @@
 </text><text class="terminal-r1" x="1220" y="800.8" textLength="12.2" clip-path="url(#terminal-line-32)">
 </text><text class="terminal-r1" x="1220" y="825.2" textLength="12.2" clip-path="url(#terminal-line-33)">
 </text><text class="terminal-r1" x="0" y="849.6" textLength="1220" clip-path="url(#terminal-line-34)">────────────────────────────────────────────────────────────────────────────────────────────────────</text><text class="terminal-r1" x="1220" y="849.6" textLength="12.2" clip-path="url(#terminal-line-34)">
-</text><text class="terminal-r5" x="0" y="874" textLength="158.6" clip-path="url(#terminal-line-35)">/test/workdir</text><text class="terminal-r5" x="183" y="874" textLength="134.2" clip-path="url(#terminal-line-35)">⟦●&#160;default⟧</text>
+</text><text class="terminal-r5" x="0" y="874" textLength="158.6" clip-path="url(#terminal-line-35)">/test/workdir</text><text class="terminal-r6" x="170.8" y="874" textLength="207.4" clip-path="url(#terminal-line-35)">·&#160;devstral-latest</text>
     </g>
     </g>
 </svg>

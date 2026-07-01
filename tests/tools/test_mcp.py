@@ -773,7 +773,9 @@ class TestMCPRegistry:
         srv = self._make_http_server("demo", url="http://demo:9090")
         remote = RemoteTool(name="hello", description="Hi")
 
-        with patch("vibe.core.tools.mcp.tools.list_tools_http", return_value=[remote]):
+        with patch(
+            "vibe.core.tools.mcp.registry.list_tools_http", return_value=[remote]
+        ):
             tools = await registry._discover_http(srv)
 
         assert tools is not None
@@ -789,7 +791,9 @@ class TestMCPRegistry:
         srv = self._make_http_server("demo", url="http://demo:9090")
         remote = RemoteTool(name="hello")
 
-        with patch("vibe.core.tools.mcp.tools.list_tools_http", return_value=[remote]):
+        with patch(
+            "vibe.core.tools.mcp.registry.list_tools_http", return_value=[remote]
+        ):
             tools = await registry._discover_http(srv)
 
         assert tools is not None
@@ -812,7 +816,7 @@ class TestMCPRegistry:
         srv = self._make_http_server("fail", url="http://fail:1")
 
         with patch(
-            "vibe.core.tools.mcp.tools.list_tools_http",
+            "vibe.core.tools.mcp.registry.list_tools_http",
             side_effect=ConnectionError("down"),
         ):
             tools = await registry._discover_http(srv)
@@ -834,10 +838,29 @@ class TestMCPRegistry:
         registry = MCPRegistry()
         srv = self._make_oauth_server("demo")
 
-        with patch("vibe.core.auth.is_logged_in", return_value=False):
+        # No stored tokens means the user has not logged in: discovery returns
+        # None (retryable, not cached) and the server is flagged as needs-auth.
+        fp = MagicMock()
+        storage = MagicMock()
+        storage.get_tokens = AsyncMock(return_value=None)
+        with (
+            patch(
+                "vibe.core.tools.mcp.registry.KeyringTokenStorage",
+                return_value=storage,
+            ),
+            patch(
+                "vibe.core.tools.mcp.registry.Fingerprint.compute",
+                return_value=fp,
+            ),
+            patch(
+                "vibe.core.tools.mcp.registry.Fingerprint.load",
+                new=AsyncMock(return_value=fp),
+            ),
+        ):
             tools = await registry._discover_http(srv)
 
         assert tools is None
+        assert "demo" in registry.needs_auth
 
     @pytest.mark.asyncio
     async def test_discover_oauth_logged_in_threads_auth_provider(self):
@@ -851,17 +874,39 @@ class TestMCPRegistry:
             captured.update(kwargs)
             return [remote]
 
+        # Stored tokens present and the saved fingerprint matches the current
+        # config, so discovery builds an OAuth provider and threads it as `auth=`
+        # into both tool listing and the generated proxy class.
+        fp = MagicMock()
+        provider = object()
+        storage = MagicMock()
+        storage.get_tokens = AsyncMock(return_value=MagicMock())
         with (
-            patch("vibe.core.auth.is_logged_in", return_value=True),
-            patch("vibe.core.tools.mcp.tools.list_tools_http", side_effect=_capture),
+            patch(
+                "vibe.core.tools.mcp.registry.KeyringTokenStorage",
+                return_value=storage,
+            ),
+            patch(
+                "vibe.core.tools.mcp.registry.Fingerprint.compute",
+                return_value=fp,
+            ),
+            patch(
+                "vibe.core.tools.mcp.registry.Fingerprint.load",
+                new=AsyncMock(return_value=fp),
+            ),
+            patch(
+                "vibe.core.tools.mcp.registry.build_oauth_provider",
+                return_value=provider,
+            ),
+            patch("vibe.core.tools.mcp.registry.list_tools_http", side_effect=_capture),
         ):
             tools = await registry._discover_http(srv)
 
         assert tools is not None
         assert "demo_hello" in tools
         # The OAuth provider is attached as `auth=` for both discovery and proxy.
-        assert captured.get("auth") is not None
-        assert tools["demo_hello"]._auth is not None  # type: ignore[attr-defined]
+        assert captured.get("auth") is provider
+        assert tools["demo_hello"]._auth is provider  # type: ignore[attr-defined]
         assert captured["auth"] is tools["demo_hello"]._auth  # type: ignore[attr-defined]
 
     @pytest.mark.asyncio
@@ -870,7 +915,9 @@ class TestMCPRegistry:
         srv = self._make_stdio_server("local", command="python -m local_srv")
         remote = RemoteTool(name="run", description="Run it")
 
-        with patch("vibe.core.tools.mcp.tools.list_tools_stdio", return_value=[remote]):
+        with patch(
+            "vibe.core.tools.mcp.registry.list_tools_stdio", return_value=[remote]
+        ):
             tools = await registry._discover_stdio(srv)
 
         assert tools is not None
@@ -884,7 +931,7 @@ class TestMCPRegistry:
         srv = self._make_stdio_server("broken")
 
         with patch(
-            "vibe.core.tools.mcp.tools.list_tools_stdio",
+            "vibe.core.tools.mcp.registry.list_tools_stdio",
             side_effect=OSError("no binary"),
         ):
             tools = await registry._discover_stdio(srv)
@@ -906,7 +953,7 @@ class TestMCPRegistry:
 
         new_remote = RemoteTool(name="nt")
         with patch(
-            "vibe.core.tools.mcp.tools.list_tools_http", return_value=[new_remote]
+            "vibe.core.tools.mcp.registry.list_tools_http", return_value=[new_remote]
         ):
             tools = registry.get_tools([cached_srv, new_srv])
 
@@ -997,7 +1044,7 @@ class TestMCPStdioCwd:
         remote = RemoteTool(name="run", description="Run it")
 
         with patch(
-            "vibe.core.tools.mcp.tools.list_tools_stdio", return_value=[remote]
+            "vibe.core.tools.mcp.registry.list_tools_stdio", return_value=[remote]
         ) as mock_list:
             await registry._discover_stdio(srv)
 
@@ -1020,9 +1067,11 @@ class TestMCPStdioCwd:
         remote = RemoteTool(name="run", description="Run it")
 
         with (
-            patch("vibe.core.tools.mcp.tools.list_tools_stdio", return_value=[remote]),
             patch(
-                "vibe.core.tools.mcp.tools.create_mcp_stdio_proxy_tool_class",
+                "vibe.core.tools.mcp.registry.list_tools_stdio", return_value=[remote]
+            ),
+            patch(
+                "vibe.core.tools.mcp.registry.create_mcp_stdio_proxy_tool_class",
                 wraps=create_mcp_stdio_proxy_tool_class,
             ) as mock_create,
         ):

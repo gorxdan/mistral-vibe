@@ -21,6 +21,7 @@ class StatusMessage(SpinnerMixin, NoMarkupStatic):
         self._indicator_widget: Static | None = None
         self._text_widget: Static | None = None
         self.success = True
+        self.muted = False
         self.init_spinner()
         super().__init__(**kwargs)
 
@@ -57,14 +58,22 @@ class StatusMessage(SpinnerMixin, NoMarkupStatic):
             self._indicator_widget.update(self._spinner.next_frame())
             self._indicator_widget.remove_class("success")
             self._indicator_widget.remove_class("error")
+            self._indicator_widget.remove_class("muted")
+        elif self.muted:
+            self._indicator_widget.update("□")
+            self._indicator_widget.add_class("muted")
+            self._indicator_widget.remove_class("success")
+            self._indicator_widget.remove_class("error")
         elif self.success:
             self._indicator_widget.update("✓")
             self._indicator_widget.add_class("success")
             self._indicator_widget.remove_class("error")
+            self._indicator_widget.remove_class("muted")
         else:
             self._indicator_widget.update("✕")
             self._indicator_widget.add_class("error")
             self._indicator_widget.remove_class("success")
+            self._indicator_widget.remove_class("muted")
 
     def update_display(self) -> None:
         if not self._indicator_widget or not self._text_widget:
