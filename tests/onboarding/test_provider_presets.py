@@ -157,6 +157,27 @@ def test_apply_sakana_preset_persists_provider_and_model(
     assert persisted["fugu-ultra"]["auto_compact_threshold"] == 880000
 
 
+def test_presets_declare_known_context_windows() -> None:
+    from vibe.core.config import KNOWN_MODEL_CONTEXT_WINDOWS
+
+    by_name = {
+        m.name: m
+        for p in PRESETS
+        for m in (*([p.model] if p.model else []), *p.extra_models)
+    }
+    for name, window in KNOWN_MODEL_CONTEXT_WINDOWS.items():
+        assert by_name[name].context_window == window
+
+
+def test_zai_preset_declares_glm_window_and_keeps_threshold() -> None:
+    preset = next(p for p in PRESETS if p.key == "zai")
+    model = preset.model
+    assert model is not None
+    assert model.context_window == 1_000_000
+    # 880k <= 95% of the declared window, so the validator keeps it verbatim.
+    assert model.auto_compact_threshold == 880000
+
+
 def test_zai_preset_does_not_discover_models() -> None:
     preset = next((p for p in PRESETS if p.key == "zai"), None)
     assert preset is not None

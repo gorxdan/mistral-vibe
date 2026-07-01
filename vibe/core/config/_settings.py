@@ -607,6 +607,15 @@ DEFAULT_MODELS = [
     ),
 ]
 
+# Windows the bundled presets document (880k-threshold presets target 1M).
+# Consumed by onboarding presets + the context_window backfill migration.
+KNOWN_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "glm-5.2": 1_000_000,
+    "fugu": 1_000_000,
+    "fugu-ultra": 1_000_000,
+    "LongCat-2.0": 1_000_000,
+}
+
 DEFAULT_TRANSCRIBE_PROVIDERS = [
     TranscribeProviderConfig(
         name="mistral",
@@ -1448,6 +1457,9 @@ class VibeConfig(BaseSettings):
         if cls._migrate_kimi_glm_reasoning(data):
             changed = True
 
+        if cls._migrate_context_window_backfill(data):
+            changed = True
+
         if changed:
             cls.dump_config(data)
 
@@ -1485,6 +1497,29 @@ class VibeConfig(BaseSettings):
     # One-shot id: backfills preserve_reasoning + GLM temperature on configs
     # written before the Kimi/GLM Preserved-Thinking fix.
     _KIMI_GLM_REASONING_MIGRATION: ClassVar[str] = "kimi_glm_preserve_reasoning_v1"
+
+    # One-shot id: backfills context_window for models with a repo-known window
+    # on configs written before windows were persisted.
+    _CONTEXT_WINDOW_MIGRATION: ClassVar[str] = "context_window_backfill_v1"
+
+    @classmethod
+    def _migrate_context_window_backfill(cls, data: dict[str, Any]) -> bool:
+        # An explicit auto_compact_threshold is never touched; the validator
+        # clamps it against the new window at load time.
+        applied = data.get("applied_migrations", [])
+        if cls._CONTEXT_WINDOW_MIGRATION in applied:
+            return False
+        migrated = False
+        for model in data.get("models", []):
+            window = KNOWN_MODEL_CONTEXT_WINDOWS.get(model.get("name"))
+            if window is None or "context_window" in model:
+                continue
+            model["context_window"] = window
+            migrated = True
+        if not migrated:
+            return False
+        data["applied_migrations"] = [*applied, cls._CONTEXT_WINDOW_MIGRATION]
+        return True
 
     # Old tool name -> new tool name. The new tools replaced these in-place, so
     # existing user configs keyed by the old names need their settings moved over.

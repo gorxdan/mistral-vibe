@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-import math
 import os
 from typing import TYPE_CHECKING, Any
 import urllib.parse
@@ -41,9 +40,6 @@ DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 # model's trained context_length can be far larger, but ollama only serves this
 # many tokens unless told otherwise, silently truncating beyond it.
 DEFAULT_OLLAMA_NUM_CTX = 4096
-# Fraction of the effective context window used as the token budget, so context
-# shaping/compaction fires before the server's real limit is hit.
-CONTEXT_BUDGET_SAFETY = 0.85
 
 
 @dataclass(frozen=True)
@@ -96,8 +92,9 @@ class RawModel:
 
     ``context_length`` is the model's own maximum (ollama's
     ``details.context_length`` or vLLM's ``max_model_len`` and friends); it is
-    None when the server advertises nothing. The token budget is derived from it
-    later (capped by ollama's served window) — see :func:`_budget_from_context`.
+    None when the server advertises nothing. It becomes the synthesized model's
+    ``context_window`` (capped by ollama's served window); the compaction
+    threshold is then derived from that window by the config validator.
     """
 
     id: str
@@ -350,7 +347,7 @@ def _ollama_num_ctx_cap() -> int:
 
     A model's trained context_length (e.g. 131072) is only served in full when
     ollama is configured for it; otherwise ollama serves this many tokens and
-    silently truncates history. The budget is capped here to avoid that.
+    silently truncates history. The window is capped here to avoid that.
     """
     raw = os.getenv("OLLAMA_CONTEXT_LENGTH", "").strip()
     if raw:
@@ -361,18 +358,6 @@ def _ollama_num_ctx_cap() -> int:
         if v > 0:
             return v
     return DEFAULT_OLLAMA_NUM_CTX
-
-
-def _budget_from_context(context_length: int, *, num_ctx_cap: int | None) -> int:
-    """Token budget (``auto_compact_threshold``) from a model's context window.
-
-    Sized to :data:`CONTEXT_BUDGET_SAFETY` of the effective window. For ollama
-    the effective window is capped by the served ``num_ctx``.
-    """
-    effective = (
-        min(context_length, num_ctx_cap) if num_ctx_cap is not None else context_length
-    )
-    return max(1, math.floor(CONTEXT_BUDGET_SAFETY * effective))
 
 
 # Substrings (matched case-insensitively against a model id) that mark a model
@@ -412,12 +397,14 @@ def _synth_model(
     model_id: str,
     alias: str,
     *,
-    auto_compact_threshold: int | None = None,
+    context_window: int | None = None,
     template: ModelConfig | None = None,
 ) -> ModelConfig:
     # Inherit reasoning behaviour from the provider's configured model so a
     # discovered sibling of a thinking model (Moonshot/GLM/OpenAI) is not
     # silently labelled thinking="off" and keeps Preserved Thinking + temperature.
+    # auto_compact_threshold stays unset: the config validator derives it from
+    # context_window when the window is known.
     kwargs: dict[str, Any] = dict(
         name=model_id,
         provider=provider_name,
@@ -428,8 +415,8 @@ def _synth_model(
         preserve_reasoning=template.preserve_reasoning if template else False,
         temperature=template.temperature if template else 1.0,
     )
-    if auto_compact_threshold is not None:
-        kwargs["auto_compact_threshold"] = auto_compact_threshold
+    if context_window is not None:
+        kwargs["context_window"] = context_window
     return ModelConfig(**kwargs)
 
 
@@ -491,10 +478,10 @@ async def discover_extra_models(
                 if alias in seen_aliases:
                     continue
             seen_aliases.add(alias)
-            budget = (
-                _budget_from_context(rm.context_length, num_ctx_cap=num_ctx_cap)
-                if rm.context_length
-                else None
+            window = (
+                min(rm.context_length, num_ctx_cap)
+                if rm.context_length and num_ctx_cap is not None
+                else rm.context_length
             )
             discovered.append(
                 DiscoveredModel(
@@ -502,7 +489,7 @@ async def discover_extra_models(
                         provider.name,
                         rm.id,
                         alias,
-                        auto_compact_threshold=budget,
+                        context_window=window,
                         template=template,
                     ),
                     provider=provider,
@@ -529,7 +516,12 @@ def build_persisted_updates(config: VibeConfig, dm: DiscoveredModel) -> dict[str
         base_models = [m.model_dump(mode="json") for m in config.models]
     # No exclude_none: it drops temperature=None on the raw value, bypassing the
     # "omit" sentinel serializer; dump_config strips the remaining Nones anyway.
-    updates["models"] = [*base_models, dm.model.model_dump(mode="json")]
+    entry = dm.model.model_dump(mode="json")
+    if "auto_compact_threshold" not in dm.model.model_fields_set:
+        # model_dump emits the field default; persisting it would read back as
+        # an explicit threshold and block window-based derivation on reload.
+        entry.pop("auto_compact_threshold", None)
+    updates["models"] = [*base_models, entry]
 
     if dm.ephemeral:
         base_providers = persisted.get("providers")
