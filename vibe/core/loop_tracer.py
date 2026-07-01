@@ -134,6 +134,22 @@ def install() -> None:
     if threshold <= 0:
         return
 
+    # PID-scoped handler (attributable concurrent sessions), attached before any
+    # global mutation: an unopenable LOG_DIR must no-op, not crash act().
+    perf_path = LOG_DIR.path / f"vibe-perf-{os.getpid()}.log"
+    try:
+        perf_path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            perf_path, maxBytes=10 * 1024 * 1024, backupCount=2, encoding="utf-8"
+        )
+    except OSError:
+        logger.warning(
+            "perf loop-block tracer disabled: cannot open %s", perf_path, exc_info=True
+        )
+        return
+    handler.setFormatter(StructuredLogFormatter())
+    _perf_log.addHandler(handler)
+
     # Debug mode populates Handle._source_traceback (scheduled-from attribution).
     # slow_callback_duration is raised to infinity so asyncio's own built-in
     # slow-callback logger never fires alongside ours (we are the single source).
@@ -148,14 +164,6 @@ def install() -> None:
     _ORIG_RUN = asyncio.Handle._run
     asyncio.Handle._run = _wrap_run(_ORIG_RUN)
     _INSTALLED = True
-    # PID-scoped handler: each instrumented process gets its own perf log so
-    # concurrent sessions stay attributable and never contend on the shared file.
-    perf_path = LOG_DIR.path / f"vibe-perf-{os.getpid()}.log"
-    handler = RotatingFileHandler(
-        perf_path, maxBytes=10 * 1024 * 1024, backupCount=2, encoding="utf-8"
-    )
-    handler.setFormatter(StructuredLogFormatter())
-    _perf_log.addHandler(handler)
     logger.info(
         "perf loop-block tracer installed: threshold=%.0fms perf-log=%s",
         threshold * 1000.0,
