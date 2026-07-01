@@ -1,0 +1,50 @@
+name: Security Audit
+
+# Advisory scan, deliberately NOT a required check: red on a new CVE without
+# blocking unrelated pushes.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "uv.lock"
+      - ".github/workflows/security-audit.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "uv.lock"
+      - ".github/workflows/security-audit.yml"
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pip-audit:
+    name: pip-audit (uv.lock)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install uv with caching
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      # --no-emit-project: the local file:// project has no PyPI advisory entry
+      - name: Export locked requirements
+        run: uv export --format requirements.txt --all-extras --no-emit-project --no-hashes -o requirements-audit.txt
+
+      - name: Audit locked dependencies
+        run: uvx pip-audit@2.10.1 --strict --no-deps --disable-pip -r requirements-audit.txt
