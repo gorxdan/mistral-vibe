@@ -368,6 +368,10 @@ class SandboxConfig(BaseModel):
     env_passthrough: list[str] = Field(default_factory=list)
     require_backend: bool = False
     backend: str = "auto"  # auto | bwrap | unshare | sandbox-exec | none
+    # Load a seccomp-BPF syscall filter into the bwrap sandbox (ptrace/io_uring
+    # denied, arch-mismatch killed). Disable if a workload legitimately needs
+    # those syscalls (strace, some runtimes). No effect off the bwrap backend.
+    seccomp: bool = True
     extra_args: list[str] = Field(default_factory=list)
 
 

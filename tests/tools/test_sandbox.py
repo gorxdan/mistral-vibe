@@ -238,6 +238,109 @@ def test_unshare_confinement_nudge_only_when_unshare_with_containment(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Seccomp-BPF filter (pure byte-layout; no OS dependency)                      #
+# --------------------------------------------------------------------------- #
+
+
+def _decode_bpf(prog: bytes) -> list[tuple[int, int, int, int]]:
+    import struct
+
+    assert len(prog) % 8 == 0
+    return [struct.unpack_from("<HBBI", prog, i) for i in range(0, len(prog), 8)]
+
+
+def test_seccomp_bpf_unsupported_arch_is_none() -> None:
+    from vibe.core.tools.sandbox_seccomp import build_seccomp_bpf
+
+    assert build_seccomp_bpf("riscv64") is None
+    assert build_seccomp_bpf("s390x") is None
+
+
+def test_seccomp_bpf_x86_64_layout() -> None:
+    from vibe.core.tools.sandbox_seccomp import build_seccomp_bpf
+
+    prog = build_seccomp_bpf("x86_64")
+    assert prog is not None
+    insts = _decode_bpf(prog)
+    # 4 fixed (LD arch, JEQ arch, RET kill, LD nr) + 6 denials + 2 terminal rets.
+    assert len(insts) == 12
+
+    LD, JEQ, RET = 0x20, 0x15, 0x06
+    KILL, ALLOW, EPERM = 0x80000000, 0x7FFF0000, 0x00050001
+
+    # [0] load arch @off 4, [1] JEQ AUDIT_ARCH_X86_64 skip-kill, [2] RET KILL.
+    assert insts[0] == (LD, 0, 0, 4)
+    assert insts[1][0] == JEQ and insts[1][1:] == (1, 0, 0xC000003E)
+    assert insts[2] == (RET, 0, 0, KILL)
+    # [3] load nr @off 0.
+    assert insts[3] == (LD, 0, 0, 0)
+    # [4] first denial is ptrace (x86_64 nr 101), jumping to the EPERM ret (idx 11).
+    assert insts[4][0] == JEQ and insts[4][3] == 101
+    assert 4 + insts[4][1] + 1 == 11  # jt lands on the EPERM instruction
+    # io_uring_setup/enter/register present.
+    denied_nrs = {insts[i][3] for i in range(4, 10)}
+    assert {101, 310, 311, 425, 426, 427} == denied_nrs
+    # [10] default ALLOW, [11] EPERM landing pad.
+    assert insts[10] == (RET, 0, 0, ALLOW)
+    assert insts[11] == (RET, 0, 0, EPERM)
+
+
+def test_seccomp_bpf_aarch64_uses_generic_numbers() -> None:
+    from vibe.core.tools.sandbox_seccomp import build_seccomp_bpf
+
+    prog = build_seccomp_bpf("arm64")  # alias of aarch64
+    assert prog is not None
+    insts = _decode_bpf(prog)
+    assert insts[1][3] == 0xC00000B7  # AUDIT_ARCH_AARCH64
+    denied_nrs = {insts[i][3] for i in range(4, 10)}
+    assert denied_nrs == {117, 270, 271, 425, 426, 427}  # ptrace=117 on aarch64
+
+
+def test_open_seccomp_fd_roundtrips_bytes() -> None:
+    import os
+
+    from vibe.core.tools.sandbox_seccomp import build_seccomp_bpf, open_seccomp_fd
+
+    bpf = build_seccomp_bpf("x86_64")
+    assert bpf is not None
+    fd = open_seccomp_fd(bpf)
+    try:
+        assert os.read(fd, len(bpf) + 8) == bpf  # readable from offset 0
+    finally:
+        os.close(fd)
+
+
+def test_resolve_sandbox_bwrap_injects_seccomp(monkeypatch) -> None:
+    # With the bwrap backend + seccomp on, _resolve_sandbox loads a filter and
+    # wires `--seccomp <fd>` into the argv immediately before the trailing `--`.
+    import os
+
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+    )
+    bash = _bash(SandboxConfig(enabled=True, backend="bwrap", seccomp=True))
+    argv, _profile, _env, fd = bash._resolve_sandbox(None, "echo hi")
+    try:
+        assert argv is not None and fd is not None
+        assert "--seccomp" in argv
+        assert argv[argv.index("--seccomp") + 1] == str(fd)
+        assert argv.index("--seccomp") < argv.index("--")  # before the terminator
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def test_resolve_sandbox_bwrap_seccomp_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+    )
+    bash = _bash(SandboxConfig(enabled=True, backend="bwrap", seccomp=False))
+    argv, _profile, _env, fd = bash._resolve_sandbox(None, "echo hi")
+    assert argv is not None and fd is None
+    assert "--seccomp" not in argv
+
+
 def test_scrub_env_drops_secrets_keeps_allowlist() -> None:
     base = {
         "PATH": "/bin",
@@ -269,10 +372,10 @@ def _bash(sandbox: SandboxConfig) -> Bash:
 
 
 def test_resolve_sandbox_disabled_runs_plain() -> None:
-    argv, profile, env = _bash(SandboxConfig(enabled=False))._resolve_sandbox(
+    argv, profile, env, fd = _bash(SandboxConfig(enabled=False))._resolve_sandbox(
         None, "echo hi"
     )
-    assert argv is None and profile is None
+    assert argv is None and profile is None and fd is None
     assert "OPENAI_API_KEY" not in env or env  # plain base env (unscrubbed)
 
 
@@ -284,8 +387,8 @@ def test_resolve_sandbox_require_backend_raises_when_none() -> None:
 
 def test_resolve_sandbox_none_backend_falls_back_unsandboxed() -> None:
     bash = _bash(SandboxConfig(enabled=True, backend="none", require_backend=False))
-    argv, profile, _env = bash._resolve_sandbox(None, "echo hi")
-    assert argv is None and profile is None  # runs unsandboxed
+    argv, profile, _env, fd = bash._resolve_sandbox(None, "echo hi")
+    assert argv is None and profile is None and fd is None  # runs unsandboxed
 
 
 # --------------------------------------------------------------------------- #
@@ -327,6 +430,29 @@ async def test_sandbox_blocks_write_outside_workspace(tmp_path, monkeypatch) -> 
     # Writing to a read-only root (/etc) must fail (command returns nonzero).
     with pytest.raises(ToolError):
         await _run(bash, "echo x > /etc/vibe_sandbox_probe")
+
+
+@_skip_no_backend
+@pytest.mark.asyncio
+async def test_seccomp_blocks_ptrace() -> None:
+    # The seccomp filter must make ptrace fail with EPERM inside the bwrap
+    # sandbox. PTRACE_TRACEME (request 0) normally returns 0; under the filter it
+    # returns -1 / errno 1. Only the bwrap backend carries a seccomp filter.
+    if detect_backend("auto") != "bwrap":
+        pytest.skip("seccomp filter only applies to the bwrap backend")
+    probe = (
+        'python3 -c "import ctypes; '
+        "libc = ctypes.CDLL(None, use_errno=True); "
+        "libc.ptrace(0, 0, 0, 0); "
+        "print('ptrace_errno', ctypes.get_errno())\""
+    )
+    on = _bash(SandboxConfig(enabled=True, backend="bwrap", seccomp=True))
+    res = await _run(on, probe)
+    assert res is not None and "ptrace_errno 1" in res.stdout  # EPERM
+
+    off = _bash(SandboxConfig(enabled=True, backend="bwrap", seccomp=False))
+    res_off = await _run(off, probe)
+    assert res_off is not None and "ptrace_errno 0" in res_off.stdout  # allowed
 
 
 @_skip_no_backend

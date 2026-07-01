@@ -41,6 +41,7 @@ from vibe.core.tools.sandbox import (
     detect_backend,
     scrub_env,
 )
+from vibe.core.tools.sandbox_seccomp import build_seccomp_bpf, open_seccomp_fd
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from vibe.core.tools.utils import is_path_within_workdir
 from vibe.core.types import ToolResultEvent, ToolStreamEvent
@@ -54,6 +55,15 @@ def _get_parser() -> Parser:
 
 
 _sandbox_unavailable_warned = False
+
+
+def _close_fd_quietly(fd: int | None) -> None:
+    if fd is None:
+        return
+    try:
+        os.close(fd)
+    except OSError:
+        pass
 
 
 def _build_sandbox_env(config: SandboxConfig) -> dict[str, str]:
@@ -669,10 +679,10 @@ class Bash(
 
     def _resolve_sandbox(
         self, ctx: InvokeContext | None, command: str
-    ) -> tuple[list[str] | None, Path | None, dict[str, str]]:
+    ) -> tuple[list[str] | None, Path | None, dict[str, str], int | None]:
         sb = self.config.sandbox
         if not sb.enabled:
-            return None, None, _get_base_env()
+            return None, None, _get_base_env(), None
 
         write_roots: list[Path] = [Path.cwd()]
         if ctx is not None and ctx.scratchpad_dir is not None:
@@ -696,7 +706,7 @@ class Bash(
                     "bash sandbox enabled but no backend available; running unsandboxed"
                 )
                 _sandbox_unavailable_warned = True
-            return None, None, _get_base_env()
+            return None, None, _get_base_env(), None
 
         env = _build_sandbox_env(sb)
         spec = SandboxSpec(
@@ -707,8 +717,40 @@ class Bash(
         )
         argv, _name, profile = build_sandbox_command(spec, backend)
         if argv is None:
-            return None, None, _get_base_env()
-        return argv, profile, env
+            return None, None, _get_base_env(), None
+        seccomp_fd = self._maybe_seccomp_fd(sb, backend, argv)
+        return argv, profile, env, seccomp_fd
+
+    def _maybe_seccomp_fd(
+        self, sb: SandboxConfig, backend: str, argv: list[str]
+    ) -> int | None:
+        """Load a seccomp filter into a bwrap argv, mutating it in place.
+
+        Inserts ``--seccomp <fd>`` before the trailing ``--`` and returns the fd
+        (the caller lists it in ``pass_fds`` and closes it after spawn). Returns
+        None when seccomp is off, the backend isn't bwrap, or the arch is
+        unsupported — bwrap then runs with namespace isolation only.
+        """
+        if backend != "bwrap" or not sb.seccomp:
+            return None
+        bpf = build_seccomp_bpf()
+        if bpf is None:
+            return None
+        try:
+            fd = open_seccomp_fd(bpf)
+        except (OSError, AttributeError) as exc:
+            # AttributeError: os.memfd_create missing (non-Linux); OSError: memfd
+            # unsupported by the kernel. Either way, run without the filter.
+            logger.warning(
+                "seccomp filter unavailable (%s); bwrap sandbox running without "
+                "a syscall filter",
+                exc,
+            )
+            return None
+        # _bwrap_argv always terminates with "--"; keep --seccomp before it.
+        insert_at = argv.index("--") if "--" in argv else len(argv)
+        argv[insert_at:insert_at] = ["--seccomp", str(fd)]
+        return fd
 
     async def _run_background(
         self, args: BashArgs, ctx: InvokeContext | None
@@ -743,7 +785,9 @@ class Bash(
         kwargs: dict[Literal["start_new_session"], bool] = (
             {} if is_windows() else {"start_new_session": True}
         )
-        sandbox_argv, _profile_path, run_env = self._resolve_sandbox(ctx, args.command)
+        sandbox_argv, _profile_path, run_env, seccomp_fd = self._resolve_sandbox(
+            ctx, args.command
+        )
         shell_exe = _get_shell_executable()
         try:
             if sandbox_argv is not None:
@@ -754,6 +798,7 @@ class Bash(
                     stderr=asyncio.subprocess.STDOUT,
                     stdin=asyncio.subprocess.DEVNULL,
                     env=run_env,
+                    pass_fds=(seccomp_fd,) if seccomp_fd is not None else (),
                     **kwargs,
                 )
             else:
@@ -768,9 +813,12 @@ class Bash(
                 )
         except (FileNotFoundError, OSError) as exc:
             log_handle.close()
+            _close_fd_quietly(seccomp_fd)
             raise ToolError(
                 f"Failed to start background command {args.command!r}: {exc}"
             ) from exc
+        # Child has inherited the seccomp fd during spawn; the parent copy is done.
+        _close_fd_quietly(seccomp_fd)
 
         # NOTE: on macOS with sandbox enabled, _profile_path is a temp SBPL file
         # that sandbox-exec must keep for the process's lifetime, so it is NOT
@@ -818,12 +866,13 @@ class Bash(
 
         proc = None
         profile_path: Path | None = None
+        seccomp_fd: int | None = None
         try:
             kwargs: dict[Literal["start_new_session"], bool] = (
                 {} if is_windows() else {"start_new_session": True}
             )
 
-            sandbox_argv, profile_path, run_env = self._resolve_sandbox(
+            sandbox_argv, profile_path, run_env, seccomp_fd = self._resolve_sandbox(
                 ctx, args.command
             )
             if sandbox_argv is not None:
@@ -836,6 +885,7 @@ class Bash(
                         stderr=asyncio.subprocess.PIPE,
                         stdin=asyncio.subprocess.DEVNULL,
                         env=run_env,
+                        pass_fds=(seccomp_fd,) if seccomp_fd is not None else (),
                         **kwargs,
                     )
                 except (FileNotFoundError, OSError) as exc:
@@ -912,3 +962,4 @@ class Bash(
                     profile_path.unlink()
                 except OSError:
                     pass
+            _close_fd_quietly(seccomp_fd)
