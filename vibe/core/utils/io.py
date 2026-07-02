@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 import contextlib
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -144,6 +144,41 @@ def write_safe(path: Path, content: str, *, encoding: str = "utf-8") -> None:
         with contextlib.suppress(FileNotFoundError):
             Path(tmp).unlink()
         raise
+
+
+def write_durable(path: Path, payload: bytes, *, suffix: str = ".tmp") -> None:
+    """Atomic :func:`write_safe` variant with crash durability.
+
+    fsync before ``os.replace`` so the rename can never publish a tmp whose
+    bytes are still in the page cache (a crash would leave a truncated target).
+    ``suffix`` names the tmp so callers' cleanup sweeps can find strays.
+    """
+    target = Path(path)
+    tmp: Path | None = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(suffix=suffix, dir=target.parent)
+        tmp = Path(tmp_name)
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    finally:
+        if tmp and tmp.exists() and tmp.is_file():
+            tmp.unlink()
+
+
+def append_durable(path: Path, chunks: Iterable[bytes]) -> None:
+    """Append ``chunks`` to ``path`` with flush+fsync after each chunk.
+
+    Per-chunk fsync is the crash-durability contract for append-only logs:
+    every chunk already yielded survives a crash mid-iteration.
+    """
+    with path.open("ab") as f:
+        for chunk in chunks:
+            f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
 
 
 async def read_safe_async(

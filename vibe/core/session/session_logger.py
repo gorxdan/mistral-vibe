@@ -26,7 +26,7 @@ from vibe.core.session.session_loader import (
 from vibe.core.session.title_format import MAX_TITLE_LENGTH
 from vibe.core.types import AgentStats, LLMMessage, Role, SessionMetadata
 from vibe.core.utils import is_windows, utc_now
-from vibe.core.utils.io import read_safe_async
+from vibe.core.utils.io import append_durable, read_safe_async, write_durable
 
 if TYPE_CHECKING:
     from vibe.core.agents.models import AgentProfile
@@ -392,29 +392,14 @@ class SessionLogger:
         )
 
     @staticmethod
-    def _atomic_fsync_write_sync(payload: bytes, target: Path) -> None:
-        temp_filepath = None
-        try:
-            # write_safe doesn't fit: the .json.tmp suffix (cleanup_tmp_files
-            # contract) and fsync-before-rename are both required here.
-            fd, tmp_name = tempfile.mkstemp(suffix=".json.tmp", dir=target.parent)
-            temp_filepath = Path(tmp_name)
-            with os.fdopen(fd, "wb") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-
-            os.replace(temp_filepath, target)
-        finally:
-            if temp_filepath and temp_filepath.exists() and temp_filepath.is_file():
-                temp_filepath.unlink()
-
-    @staticmethod
     def _persist_metadata_sync(metadata: Any, session_dir: Path) -> None:
         metadata_filepath = session_dir / METADATA_FILENAME
         try:
-            SessionLogger._atomic_fsync_write_sync(
-                orjson.dumps(metadata, option=orjson.OPT_INDENT_2), metadata_filepath
+            # .json.tmp keeps stray tmps visible to cleanup_tmp_files.
+            write_durable(
+                metadata_filepath,
+                orjson.dumps(metadata, option=orjson.OPT_INDENT_2),
+                suffix=".json.tmp",
             )
         except Exception as e:
             raise RuntimeError(
@@ -434,7 +419,7 @@ class SessionLogger:
             return
         try:
             await asyncio.to_thread(
-                SessionLogger._atomic_fsync_write_sync, payload, context_filepath
+                write_durable, context_filepath, payload, suffix=".json.tmp"
             )
         except Exception as e:
             raise RuntimeError(
@@ -452,11 +437,10 @@ class SessionLogger:
     def _persist_messages_sync(messages: list[dict], session_dir: Path) -> None:
         messages_filepath = session_dir / MESSAGES_FILENAME
         try:
-            with open(messages_filepath, "ab") as f:
-                for message in messages:
-                    f.write(orjson.dumps(message) + b"\n")
-                    f.flush()
-                    os.fsync(f.fileno())
+            append_durable(
+                messages_filepath,
+                (orjson.dumps(message) + b"\n" for message in messages),
+            )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to persist session messages to {messages_filepath}: {e}"

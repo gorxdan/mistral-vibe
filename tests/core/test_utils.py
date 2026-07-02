@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+import os
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -9,12 +12,14 @@ from vibe.core.utils import compact_complete_display, get_server_url_from_api_ba
 import vibe.core.utils.io as io_utils
 from vibe.core.utils.io import (
     _FILE_WRITE_LOCKS,
+    append_durable,
     decode_safe,
     file_write_lock,
     read_lines_safe,
     read_lines_safe_async,
     read_safe,
     read_safe_async,
+    write_durable,
 )
 
 
@@ -356,3 +361,84 @@ class TestFileWriteLock:
         release.set()
         await asyncio.gather(t1, t2)
         assert order == ["first-acquired", "first-released", "second-acquired"]
+
+
+class TestWriteDurable:
+    def test_writes_payload_and_leaves_no_tmp(self, tmp_path: Path) -> None:
+        target = tmp_path / "meta.json"
+        write_durable(target, b'{"a": 1}', suffix=".json.tmp")
+        assert target.read_bytes() == b'{"a": 1}'
+        assert list(tmp_path.iterdir()) == [target]
+
+    def test_overwrites_existing_target(self, tmp_path: Path) -> None:
+        target = tmp_path / "meta.json"
+        target.write_bytes(b"old")
+        write_durable(target, b"new")
+        assert target.read_bytes() == b"new"
+
+    def test_tmp_uses_suffix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[str] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def spy(suffix: str, dir: Path) -> tuple[int, str]:
+            fd, name = real_mkstemp(suffix=suffix, dir=dir)
+            seen.append(name)
+            return fd, name
+
+        monkeypatch.setattr(io_utils.tempfile, "mkstemp", spy)
+        write_durable(tmp_path / "f.json", b"x", suffix=".json.tmp")
+        assert seen and seen[0].endswith(".json.tmp")
+        assert Path(seen[0]).parent == tmp_path
+
+    def test_tmp_removed_on_replace_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def boom(src: object, dst: object) -> None:
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(io_utils.os, "replace", boom)
+        target = tmp_path / "f.json"
+        with pytest.raises(OSError, match="replace failed"):
+            write_durable(target, b"x", suffix=".json.tmp")
+        assert not target.exists()
+        assert list(tmp_path.iterdir()) == []
+
+
+class TestAppendDurable:
+    def test_creates_missing_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "log.jsonl"
+        append_durable(f, [b"a\n"])
+        assert f.read_bytes() == b"a\n"
+
+    def test_preserves_prior_content_and_appends_in_order(self, tmp_path: Path) -> None:
+        f = tmp_path / "log.jsonl"
+        f.write_bytes(b"first\n")
+        append_durable(f, [b"second\n", b"third\n"])
+        assert f.read_bytes() == b"first\nsecond\nthird\n"
+
+    def test_fsyncs_each_chunk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[int] = []
+        real_fsync = os.fsync
+
+        def spy(fd: int) -> None:
+            calls.append(fd)
+            real_fsync(fd)
+
+        monkeypatch.setattr(io_utils.os, "fsync", spy)
+        append_durable(tmp_path / "f", [b"a", b"b", b"c"])
+        assert len(calls) == 3
+
+    def test_earlier_chunks_survive_failing_iterable(self, tmp_path: Path) -> None:
+        f = tmp_path / "log.jsonl"
+
+        def chunks() -> Iterator[bytes]:
+            yield b"a\n"
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            append_durable(f, chunks())
+        assert f.read_bytes() == b"a\n"
