@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 import getpass
+import hashlib
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tarfile
-from threading import Lock
+import tempfile
+from threading import Lock, Thread
 from typing import TYPE_CHECKING, Any, Literal
 
-from anyio import NamedTemporaryFile, Path as AsyncPath
 import orjson
 
 from vibe.core.logger import logger
@@ -34,8 +36,11 @@ if TYPE_CHECKING:
 
 
 TMP_CLEANUP_INTERVAL = timedelta(seconds=5)
-# Cap dirs archived per startup so the (synchronous) tar never noticeably delays
-# session start; any backlog drains over the next few sessions.
+# Static session context (tools schema, config dump, system prompt): ~100KB of
+# analysis-only data no resume/picker reader consumes — kept out of the per-round meta.json.
+CONTEXT_FILENAME = "context.json"
+# Cap dirs archived per background run to bound startup-adjacent IO; any
+# backlog drains over the next few sessions.
 _ARCHIVE_MAX_PER_RUN = 25
 
 
@@ -43,7 +48,7 @@ def archive_old_session_dirs(
     save_dir: Path,
     prefix: str,
     archive_after_days: int,
-    keep: Path | None = None,
+    keep: Path | Callable[[], Path | None] | None = None,
     max_per_run: int = _ARCHIVE_MAX_PER_RUN,
 ) -> None:
     """Tar+gzip session dirs untouched > *archive_after_days* into save_dir/archive/.
@@ -53,9 +58,18 @@ def archive_old_session_dirs(
     now-redundant loose dir, which also speeds the live list/--continue scan. The
     tarball is written to a temp name and atomically renamed before the dir is
     removed, so a crash mid-archive never loses the dir. Best-effort; 0 disables.
+
+    Runs on a background thread, so two guards protect a session resumed while
+    it works: *keep* may be a callable re-resolved around each dir (the live
+    session_dir can change after init via resume), and a dir whose mtime moved
+    while it was being tarred is left in place with its stale tarball discarded.
     """
     if archive_after_days <= 0:
         return
+
+    def keep_dir() -> Path | None:
+        return keep() if callable(keep) else keep
+
     try:
         cutoff = utc_now().timestamp() - archive_after_days * 86400
         archive_dir = save_dir / "archive"
@@ -64,7 +78,10 @@ def archive_old_session_dirs(
             if done >= max_per_run:
                 break
             try:
-                if not d.is_dir() or d == keep or d.stat().st_mtime >= cutoff:
+                if not d.is_dir() or d == keep_dir():
+                    continue
+                mtime_before = d.stat().st_mtime
+                if mtime_before >= cutoff:
                     continue
                 tarball = archive_dir / f"{d.name}.tar.gz"
                 if tarball.exists():
@@ -73,6 +90,9 @@ def archive_old_session_dirs(
                 tmp = tarball.with_name(tarball.name + ".tmp")
                 with tarfile.open(tmp, "w:gz") as tar:
                     tar.add(d, arcname=d.name)
+                if d.stat().st_mtime != mtime_before or d == keep_dir():
+                    tmp.unlink(missing_ok=True)  # concurrent writer; tar is stale
+                    continue
                 tmp.replace(tarball)  # atomic; tarball complete before dir removed
                 shutil.rmtree(d, ignore_errors=True)
                 done += 1
@@ -88,6 +108,8 @@ class SessionLogger:
         self.enabled = session_config.enabled
         self._last_tmp_cleanup_at: datetime | None = None
         self._tmp_cleanup_lock = Lock()
+        self._static_context_fingerprint: str | None = None
+        self._archive_thread: Thread | None = None
 
         if not self.enabled:
             self.save_dir: Path | None = None
@@ -105,12 +127,20 @@ class SessionLogger:
 
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.session_dir = self.save_folder
-        archive_old_session_dirs(
-            self.save_dir,
-            self.session_prefix,
-            session_config.archive_after_days,
-            self.session_dir,
+        # Off the critical init path; keep=lambda tracks resume_existing_session
+        # retargeting session_dir after this thread starts.
+        self._archive_thread = Thread(
+            target=archive_old_session_dirs,
+            args=(
+                self.save_dir,
+                self.session_prefix,
+                session_config.archive_after_days,
+            ),
+            kwargs={"keep": lambda: self.session_dir},
+            name="session-archiver",
+            daemon=True,
         )
+        self._archive_thread.start()
         self.session_metadata = self._initialize_session_metadata()
 
     @property
@@ -267,52 +297,80 @@ class SessionLogger:
         self._set_title_state(title, source="auto")
         return title
 
+    # Both persist methods resolve only after write+fsync land (durability
+    # contract, incl. act()'s finally-save on cancel); sequential awaits keep append order.
     @staticmethod
     async def persist_metadata(metadata: Any, session_dir: Path) -> None:
-        temp_metadata_filepath = None
+        await asyncio.to_thread(
+            SessionLogger._persist_metadata_sync, metadata, session_dir
+        )
+
+    @staticmethod
+    def _atomic_fsync_write_sync(payload: bytes, target: Path) -> None:
+        temp_filepath = None
+        try:
+            # write_safe doesn't fit: the .json.tmp suffix (cleanup_tmp_files
+            # contract) and fsync-before-rename are both required here.
+            fd, tmp_name = tempfile.mkstemp(suffix=".json.tmp", dir=target.parent)
+            temp_filepath = Path(tmp_name)
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(temp_filepath, target)
+        finally:
+            if temp_filepath and temp_filepath.exists() and temp_filepath.is_file():
+                temp_filepath.unlink()
+
+    @staticmethod
+    def _persist_metadata_sync(metadata: Any, session_dir: Path) -> None:
         metadata_filepath = session_dir / METADATA_FILENAME
         try:
-            async with NamedTemporaryFile(
-                mode="w",
-                suffix=".json.tmp",
-                dir=str(session_dir),
-                delete=False,
-                encoding="utf-8",
-            ) as f:
-                temp_metadata_filepath = Path(str(f.name))
-                await f.write(
-                    orjson.dumps(metadata, option=orjson.OPT_INDENT_2).decode("utf-8")
-                )
-                await f.flush()
-                os.fsync(f.wrapped.fileno())
-
-            os.replace(temp_metadata_filepath, str(metadata_filepath))
+            SessionLogger._atomic_fsync_write_sync(
+                orjson.dumps(metadata, option=orjson.OPT_INDENT_2), metadata_filepath
+            )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to persist session metadata to {metadata_filepath}: {e}"
             ) from e
-        finally:
-            if (
-                temp_metadata_filepath
-                and temp_metadata_filepath.exists()
-                and temp_metadata_filepath.is_file()
-            ):
-                temp_metadata_filepath.unlink()
+
+    async def _persist_static_context(
+        self, context: dict[str, Any], session_dir: Path
+    ) -> None:
+        payload = orjson.dumps(context, option=orjson.OPT_INDENT_2)
+        fingerprint = hashlib.sha256(payload).hexdigest()
+        context_filepath = session_dir / CONTEXT_FILENAME
+        if (
+            fingerprint == self._static_context_fingerprint
+            and context_filepath.exists()
+        ):
+            return
+        try:
+            await asyncio.to_thread(
+                SessionLogger._atomic_fsync_write_sync, payload, context_filepath
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to persist session context to {context_filepath}: {e}"
+            ) from e
+        self._static_context_fingerprint = fingerprint
 
     @staticmethod
     async def persist_messages(messages: list[dict], session_dir: Path) -> None:
-        messages_filepath = session_dir / "messages.jsonl"
-        try:
-            if not messages_filepath.exists():
-                messages_filepath.touch()
+        await asyncio.to_thread(
+            SessionLogger._persist_messages_sync, messages, session_dir
+        )
 
-            async with await AsyncPath(messages_filepath).open(
-                "a", encoding="utf-8"
-            ) as f:
+    @staticmethod
+    def _persist_messages_sync(messages: list[dict], session_dir: Path) -> None:
+        messages_filepath = session_dir / MESSAGES_FILENAME
+        try:
+            with open(messages_filepath, "ab") as f:
                 for message in messages:
-                    await f.write(orjson.dumps(message).decode("utf-8") + "\n")
-                    await f.flush()
-                    os.fsync(f.wrapped.fileno())
+                    f.write(orjson.dumps(message) + b"\n")
+                    f.flush()
+                    os.fsync(f.fileno())
         except Exception as e:
             raise RuntimeError(
                 f"Failed to persist session messages to {messages_filepath}: {e}"
@@ -387,26 +445,32 @@ class SessionLogger:
             )
             total_messages = len(non_system_messages)
 
+            await self._persist_static_context(
+                {
+                    "tools_available": tools_available,
+                    "config": base_config.model_dump(mode="json"),
+                    "system_prompt": system_prompt,
+                },
+                session_dir,
+            )
+
             metadata_dump = {
                 **session_metadata.model_dump(),
                 "end_time": utc_now().isoformat(),
                 "stats": stats.model_dump(),
                 "title": title,
                 "total_messages": total_messages,
-                "tools_available": tools_available,
-                "config": base_config.model_dump(mode="json"),
                 "agent_profile": {
                     "name": agent_profile.name,
                     "overrides": agent_profile.overrides,
                 },
-                "system_prompt": system_prompt,
             }
 
             await SessionLogger.persist_metadata(metadata_dump, session_dir)
         except Exception as e:
             raise RuntimeError(f"Failed to save session to {session_dir}: {e}") from e
         finally:
-            self.maybe_cleanup_tmp_files()
+            await asyncio.to_thread(self.maybe_cleanup_tmp_files)
 
     async def persist_loops(self) -> None:
         session_info = self._get_session_info()
@@ -500,6 +564,7 @@ class SessionLogger:
         self.session_start_time = utc_now().isoformat()
         self.session_dir = self.save_folder
         self.session_metadata = self._initialize_session_metadata()
+        self._static_context_fingerprint = None
         if parent_session_id is not None:
             self.session_metadata.parent_session_id = parent_session_id
 
@@ -510,19 +575,28 @@ class SessionLogger:
         self.session_id = session_id
         self.session_dir = session_dir
         self.session_metadata = SessionLoader.load_metadata(session_dir)
+        self._static_context_fingerprint = None
 
         if self.session_metadata.start_time:
             self.session_start_time = self.session_metadata.start_time
 
     def cleanup_tmp_files(self) -> None:
-        """Delete temporary files created more than 5 minutes ago"""
-        if not self.enabled or not self.save_dir:
+        """Delete this session's temporary files created more than 5 minutes ago.
+
+        Scoped to the current session dir: temp files are only ever created
+        beside the file they replace, and sweeping every sibling session dir
+        made this a whole-tree walk on the save path. Strays in other dirs are
+        each session's own to clean (and get tarred by the archiver anyway).
+        """
+        if not self.enabled or self.session_dir is None:
+            return
+        if not self.session_dir.is_dir():
             return
 
         now = utc_now()
         ago = now - timedelta(minutes=5)
 
-        tmp_files = self.save_dir.glob("**/*.json.tmp")  # Recursive search
+        tmp_files = self.session_dir.glob("*.json.tmp")
 
         for file_path in tmp_files:
             if file_path.is_file():

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 import json
 import os
 from pathlib import Path
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -357,17 +360,16 @@ class TestSessionLoggerSaveInteraction:
             assert "title" in metadata
             assert metadata["title"] == "Hello"
             assert metadata["title_source"] == "auto"
-            assert "system_prompt" in metadata
+            assert "system_prompt" not in metadata
 
     @pytest.mark.asyncio
-    async def test_save_interaction_system_prompt_in_metadata(
+    async def test_save_interaction_system_prompt_in_context_file(
         self,
         session_config: SessionLoggingConfig,
         mock_vibe_config: VibeConfig,
         mock_tool_manager: ToolManager,
         mock_agent_profile: AgentProfile,
     ) -> None:
-        """Test that system prompt is saved in metadata and not in messages."""
         session_id = "test-session-123"
         logger = SessionLogger(session_config, session_id)
 
@@ -390,13 +392,14 @@ class TestSessionLoggerSaveInteraction:
         )
 
         assert logger.session_dir is not None
-        metadata_file = logger.session_dir / "meta.json"
-        assert metadata_file.exists()
-        with open(metadata_file) as f:
-            metadata = json.load(f)
-            assert "system_prompt" in metadata
-            assert metadata["system_prompt"]["content"] == "System prompt"
-            assert metadata["system_prompt"]["role"] == "system"
+        context_file = logger.session_dir / "context.json"
+        assert context_file.exists()
+        with open(context_file) as f:
+            context = json.load(f)
+            assert context["system_prompt"]["content"] == "System prompt"
+            assert context["system_prompt"]["role"] == "system"
+            assert "tools_available" in context
+            assert "config" in context
 
         messages_file = logger.session_dir / "messages.jsonl"
         assert messages_file.exists()
@@ -407,6 +410,90 @@ class TestSessionLoggerSaveInteraction:
             assert len(messages_data) == 2
             assert messages_data[0]["role"] == "user"
             assert messages_data[1]["role"] == "assistant"
+
+    @pytest.mark.asyncio
+    async def test_save_interaction_keeps_static_context_out_of_metadata(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+    ) -> None:
+        logger = SessionLogger(session_config, "test-session-123")
+        messages = [
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
+        ]
+
+        await logger.save_interaction(
+            messages=messages,
+            stats=AgentStats(steps=1),
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+
+        assert logger.session_dir is not None
+        with open(logger.session_dir / "meta.json") as f:
+            metadata = json.load(f)
+        assert "system_prompt" not in metadata
+        assert "tools_available" not in metadata
+        assert "config" not in metadata
+        assert metadata["total_messages"] == 2
+        assert metadata["agent_profile"]["name"] == "test-agent"
+
+    @pytest.mark.asyncio
+    async def test_static_context_written_once_until_it_changes(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+    ) -> None:
+        logger = SessionLogger(session_config, "test-session-123")
+        messages = [
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
+        ]
+
+        await logger.save_interaction(
+            messages=messages,
+            stats=AgentStats(steps=1),
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+        assert logger.session_dir is not None
+        context_file = logger.session_dir / "context.json"
+        first_mtime = context_file.stat().st_mtime_ns
+
+        messages.append(LLMMessage(role=Role.USER, content="Again"))
+        await logger.save_interaction(
+            messages=messages,
+            stats=AgentStats(steps=2),
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+        assert context_file.stat().st_mtime_ns == first_mtime
+
+        changed = [
+            LLMMessage(role=Role.SYSTEM, content="A different system prompt"),
+            *messages[1:],
+            LLMMessage(role=Role.ASSISTANT, content="More"),
+        ]
+        await logger.save_interaction(
+            messages=changed,
+            stats=AgentStats(steps=3),
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+        with open(context_file) as f:
+            context = json.load(f)
+        assert context["system_prompt"]["content"] == "A different system prompt"
 
     @pytest.mark.asyncio
     async def test_save_interaction_with_existing_messages(
@@ -763,6 +850,66 @@ class TestSessionLoggerSaveInteraction:
         assert cleanup_spy.call_count == 1
 
 
+class TestSessionLoggerLoopBlocking:
+    @pytest.mark.asyncio
+    async def test_save_interaction_keeps_event_loop_responsive(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        logger = SessionLogger(session_config, "loop-block-session")
+
+        fsync_threads: list[int] = []
+        real_fsync = os.fsync
+
+        def slow_fsync(fd: int) -> None:
+            fsync_threads.append(threading.get_ident())
+            time.sleep(0.1)
+            real_fsync(fd)
+
+        monkeypatch.setattr("vibe.core.session.session_logger.os.fsync", slow_fsync)
+
+        messages = [
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
+        ]
+
+        max_gap = 0.0
+
+        async def ticker() -> None:
+            nonlocal max_gap
+            last = time.perf_counter()
+            while True:
+                await asyncio.sleep(0.001)
+                now = time.perf_counter()
+                max_gap = max(max_gap, now - last)
+                last = now
+
+        ticker_task = asyncio.create_task(ticker())
+        await asyncio.sleep(0.01)
+        try:
+            await logger.save_interaction(
+                messages=messages,
+                stats=AgentStats(steps=1),
+                base_config=mock_vibe_config,
+                tool_manager=mock_tool_manager,
+                agent_profile=mock_agent_profile,
+            )
+        finally:
+            ticker_task.cancel()
+
+        loop_thread = threading.get_ident()
+        assert fsync_threads, "save_interaction never fsynced"
+        assert loop_thread not in fsync_threads, "fsync ran on the event-loop thread"
+        assert max_gap < 0.05, (
+            f"event loop blocked for {max_gap * 1000:.0f}ms during save_interaction"
+        )
+
+
 class TestSessionLoggerResetSession:
     def test_reset_session(self, session_config: SessionLoggingConfig) -> None:
         """Test that reset_session correctly resets session information."""
@@ -906,32 +1053,23 @@ class TestSessionLoggerCleanupTmpFiles:
         assert not old_tmp_file.exists()
         assert new_tmp_file.exists()
 
-    def test_cleanup_tmp_files_recursive(
+    def test_cleanup_tmp_files_scoped_to_current_session_dir(
         self, session_config: SessionLoggingConfig
     ) -> None:
-        """Test that cleanup_tmp_files works recursively in subdirectories."""
-        session_id = "test-session-123"
-        logger = SessionLogger(session_config, session_id)
+        logger = SessionLogger(session_config, "test-session-123")
 
         assert logger.session_dir is not None
         logger.session_dir.mkdir(parents=True, exist_ok=True)
+        own_old_tmp = create_temp_file_ago(logger.session_dir, "meta.json.tmp", 10)
 
-        subdir_1 = logger.session_dir / "session-123"
-        subdir_1.mkdir()
-
-        old_tmp_file = create_temp_file_ago(subdir_1, "meta.json.tmp", 10)
-        new_tmp_file = create_temp_file_ago(subdir_1, "meta.json")
-
-        subdir_2 = logger.session_dir / "session-456"
-        subdir_2.mkdir()
-
-        old_tmp_file_2 = create_temp_file_ago(subdir_2, "meta.json.tmp", 10)
+        other_session_dir = Path(session_config.save_dir) / "test_other_session"
+        other_session_dir.mkdir()
+        other_old_tmp = create_temp_file_ago(other_session_dir, "meta.json.tmp", 10)
 
         logger.cleanup_tmp_files()
 
-        assert not old_tmp_file.exists()
-        assert not old_tmp_file_2.exists()
-        assert new_tmp_file.exists()
+        assert not own_old_tmp.exists()
+        assert other_old_tmp.exists()
 
     def test_cleanup_tmp_files_handles_exceptions(
         self, session_config: SessionLoggingConfig
@@ -961,6 +1099,38 @@ class TestSessionLoggerCleanupTmpFiles:
 
         assert old_tmp_file.exists()
         assert not another_old_tmp_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_save_interaction_runs_tmp_cleanup_off_the_event_loop(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        logger = SessionLogger(session_config, "cleanup-thread-session")
+
+        cleanup_threads: list[int] = []
+        monkeypatch.setattr(
+            logger,
+            "cleanup_tmp_files",
+            lambda: cleanup_threads.append(threading.get_ident()),
+        )
+
+        await logger.save_interaction(
+            messages=[
+                LLMMessage(role=Role.SYSTEM, content="System prompt"),
+                LLMMessage(role=Role.USER, content="Hello"),
+            ],
+            stats=AgentStats(steps=1),
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+
+        assert cleanup_threads, "save_interaction never ran the tmp cleanup"
+        assert threading.get_ident() not in cleanup_threads
 
     def test_maybe_cleanup_tmp_files_throttles_calls(
         self, session_config: SessionLoggingConfig
@@ -1303,6 +1473,83 @@ async def test_persist_workflow_snapshots_merges_by_run_id(
 
 def test_archive_after_days_default_is_30() -> None:
     assert SessionLoggingConfig().archive_after_days == 30
+
+
+def test_init_does_not_block_on_archiver(
+    session_config: SessionLoggingConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    archive_threads: list[int] = []
+
+    def slow_archive(*args, **kwargs) -> None:
+        archive_threads.append(threading.get_ident())
+        started.set()
+        release.wait(timeout=1.5)
+
+    monkeypatch.setattr(
+        "vibe.core.session.session_logger.archive_old_session_dirs", slow_archive
+    )
+
+    t0 = time.perf_counter()
+    logger = SessionLogger(session_config, "bg-archive-session")
+    init_elapsed = time.perf_counter() - t0
+
+    try:
+        assert started.wait(timeout=5)
+        assert init_elapsed < 1.0, f"__init__ blocked {init_elapsed:.2f}s on archiver"
+        assert archive_threads[0] != threading.get_ident()
+    finally:
+        release.set()
+        thread = logger._archive_thread
+        if thread is not None:
+            thread.join(timeout=5)
+
+
+def test_archive_skips_live_keep_dir_resolved_per_dir(tmp_path: Path) -> None:
+    from vibe.core.session.session_logger import archive_old_session_dirs
+
+    old = tmp_path / "session_20200101_000000_aaa"
+    old.mkdir()
+    (old / "messages.jsonl").write_text("transcript")
+    os.utime(old, (1, 1))
+
+    archive_old_session_dirs(
+        tmp_path, "session", archive_after_days=30, keep=lambda: old
+    )
+
+    assert old.exists()
+    assert not (tmp_path / "archive" / f"{old.name}.tar.gz").exists()
+
+
+def test_archive_aborts_when_dir_written_during_tar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tarfile
+
+    from vibe.core.session.session_logger import archive_old_session_dirs
+
+    old = tmp_path / "session_20200101_000000_aaa"
+    old.mkdir()
+    (old / "messages.jsonl").write_text("transcript")
+    os.utime(old, (1, 1))
+
+    real_open = tarfile.open
+
+    def open_and_write_into_dir(name, mode, *args, **kwargs):
+        tar = real_open(name, mode, *args, **kwargs)
+        (old / "late-write.jsonl").write_text("resumed session wrote here")
+        return tar
+
+    monkeypatch.setattr(
+        "vibe.core.session.session_logger.tarfile.open", open_and_write_into_dir
+    )
+
+    archive_old_session_dirs(tmp_path, "session", archive_after_days=30)
+
+    assert old.exists(), "dir with a concurrent write was deleted"
+    assert (old / "late-write.jsonl").exists()
+    assert not (tmp_path / "archive" / f"{old.name}.tar.gz").exists()
 
 
 def test_archive_old_session_dirs_compresses_not_deletes(tmp_path: Path) -> None:
