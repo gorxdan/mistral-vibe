@@ -504,6 +504,30 @@ class WorktreeManager:
             return True  # exists but not signalable (e.g. owned by another user)
         return True
 
+    @staticmethod
+    def _dir_inhabited(path: Path) -> bool:
+        # F4: scan /proc/*/cwd for any process whose cwd is under *path*. The
+        # reaper runs in the host process (not bwrap), so /proc is real — this
+        # check works where a sandboxed agent's /proc scan was namespaced-blind.
+        proc = Path("/proc")
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return False
+        try:
+            for entry in proc.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    cwd = (entry / "cwd").readlink()
+                    if str(cwd).startswith(str(resolved)):
+                        return True
+                except (OSError, ValueError):
+                    continue
+        except OSError:
+            return False
+        return False
+
     def _reap_dead_pid_worktrees(self, repo: Repo, config: WorktreeConfig) -> None:
         """Force-remove worktree dirs left by dead sessions, older than the GC age.
 
@@ -536,6 +560,13 @@ class WorktreeManager:
                 if pid is None or pid == os.getpid() or self._pid_alive(pid):
                     continue  # unknown / self / still-running -> never touch
                 if not wt.exists() or wt.stat().st_mtime > cutoff:
+                    continue
+                if self._dir_inhabited(wt):
+                    logger.warning(
+                        "reap: skip %s (pid %d dead) — dir is a live process cwd",
+                        wt,
+                        pid,
+                    )
                     continue
                 self._unlock_worktree(repo, wt)
                 repo.git.worktree("remove", "--force", str(wt))

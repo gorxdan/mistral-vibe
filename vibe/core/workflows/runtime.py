@@ -487,6 +487,9 @@ async def _spawn_isolated(
     env.pop("VIBE_ISOLATED_SCRATCHPAD_DIR", None)
     if scratchpad_dir is not None:
         env["VIBE_ISOLATED_SCRATCHPAD_DIR"] = str(scratchpad_dir)
+    # F7: child lease — record parent pid so the child can self-terminate if
+    # orphaned (start_new_session=True means it outlives a dead parent by default).
+    env["VIBE_ISO_PARENT_PID"] = str(os.getpid())
     stdout_target, log_fh = _open_isolated_log(log_path)
     try:
         proc = await asyncio.create_subprocess_exec(

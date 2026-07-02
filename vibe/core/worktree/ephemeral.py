@@ -19,6 +19,7 @@ from git.exc import GitCommandError
 
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
+from vibe.core.worktree.manager import merge_lock
 
 _SAFE_LABEL_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -113,7 +114,8 @@ def deliver_ephemeral_worktree(wt: EphemeralWorktree) -> bool:
             wt_repo.git.add("-A")
             wt_repo.index.commit("workflow agent work")
         try:
-            parent.git.merge("--ff-only", wt.branch)
+            with merge_lock(wt.repo_root):
+                parent.git.merge("--ff-only", wt.branch)
         except GitCommandError as e:
             reason = str(e).strip().splitlines()[:1]
             logger.info(
