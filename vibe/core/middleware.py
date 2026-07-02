@@ -14,6 +14,7 @@ from vibe.core.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
     from vibe.core.config import ModelConfig, VibeConfig
+    from vibe.core.config._settings import MicrocompactConfig
     from vibe.core.tools.tool_result_store import ToolResultStore
     from vibe.core.types import AgentStats, LLMMessage, MessageList
 
@@ -128,14 +129,8 @@ _SNIP_OPEN = "<vibe_snipped>"
 _SNIP_CLOSE = "</vibe_snipped>"
 _MC_OPEN = "<vibe_microcompacted>"
 
-# Cap on the base that snip/microcompact watermarks scale off. Their thresholds
-# are fractions of the active model's auto_compact_threshold, which for a
-# giant-window model (glm/fugu at 880k, gpt-5.5/minimax at 400k) is pinned to the
-# nominal window — so without this cap proactive shaping would not start until
-# hundreds of k of tokens, hoarding stale context with no latency or recall gain.
-# Capping keeps every model trimming from the same absolute point. Full
-# auto-compaction (AutoCompactMiddleware) is deliberately NOT capped: it must
-# fire near the real window, so it keeps the raw auto_compact_threshold.
+# Flat cap on the base that snip/microcompact watermarks scale off; rationale
+# and the window-relative lift live in ContextShaperMiddleware._threshold.
 _SHAPING_TOKEN_CAP = 256_000
 
 
@@ -152,10 +147,26 @@ class ContextShaperMiddleware:
 
     @staticmethod
     def _threshold(context: ConversationContext) -> int:
-        threshold = (
-            context.active_model or context.config.get_active_model()
-        ).auto_compact_threshold
-        return min(threshold, _SHAPING_TOKEN_CAP)
+        """Base the snip/microcompact watermarks scale off.
+
+        min(auto_compact_threshold, cap) where cap is the flat _SHAPING_TOKEN_CAP
+        lifted to max(cap, cap_window_fraction * context_window) for models that
+        DECLARE a window. Traces (2026-07) showed the flat 256k cap was the sole
+        trigger for 95% of shaping events — glm-5.2 (1M window) shaped at 15-17%
+        of window, and each pass re-billed a 150-280k cached suffix at full price,
+        inverting the cap's hoarding-is-free-to-avoid rationale. The original
+        motive (glm forgetfulness, cause never proven) keeps its escape hatch:
+        cap_window_fraction = 0 restores the flat cap in one line. Models without
+        a declared context_window are unchanged, as is full auto-compaction
+        (AutoCompactMiddleware — deliberately uncapped, fires near the real
+        window).
+        """
+        model = context.active_model or context.config.get_active_model()
+        cap = _SHAPING_TOKEN_CAP
+        fraction = context.config.context_shaping.cap_window_fraction
+        if fraction > 0 and model.context_window:
+            cap = max(cap, int(fraction * model.context_window))
+        return min(model.auto_compact_threshold, cap)
 
     @staticmethod
     def _guard_tokens(context: ConversationContext) -> int:
@@ -190,7 +201,7 @@ class ContextShaperMiddleware:
         n = 1  # system prompt
         while n < len(messages) and _is_compaction_context_message(messages[n]):
             n += 1
-        acc = sum(approx_token_count(messages[i].content or "") for i in range(n))
+        acc = 0  # band counts tokens AFTER system/compaction, per the config doc
         while n < len(messages) and acc < guard_tokens:
             acc += approx_token_count(messages[n].content or "")
             n += 1
@@ -337,15 +348,35 @@ class SnipMiddleware(ContextShaperMiddleware):
 
 
 class MicrocompactMiddleware(ContextShaperMiddleware):
-    """Compress (head+tail truncate) the oldest oversized messages, rate-limited
-    per turn to keep the provider cache stable. No LLM call.
+    """Compress (head+tail truncate) the oldest oversized messages. No LLM call.
+
+    Batch-to-target with a min-shed floor and a no-progress cooldown. The old
+    rate-limited dribble (N blocks/turn) did NOT keep the provider cache
+    stable: every in-place edit busts the cached suffix past the edit point
+    (measured 2026-07: post-shape miss 50-90%, ~35:1 cost:benefit on dribbled
+    fires). So a firing pass sheds down to the watermark target in ONE cache
+    bust (max_blocks_per_turn=0), a pass projected to shed less than
+    min_shed_tokens is skipped outright, and a pool-exhausted pass that could
+    not reach target arms a cooldown. The cooldown keys on ``estimated_tokens``
+    RISING past the value seen at the failed fire: est is
+    max(stats.context_tokens, local sum), and stats is one LLM call behind and
+    includes tool schemas the local sum cannot see, so post-fire est often
+    does not visibly drop even after a real shed — only genuinely new
+    shed-able growth clears it. A pass stopped at a positive
+    max_blocks_per_turn never arms the cooldown (the user-chosen legacy
+    dribble keeps re-firing). ``emergency=True`` (the reactive hard-overflow
+    path) bypasses floor and cooldown so overflow shedding is never
+    suppressed.
     """
 
-    async def before_turn(  # noqa: PLR0914
-        self, context: ConversationContext
-    ) -> MiddlewareResult:
-        from vibe.core.utils.tokens import approx_token_count, truncate_middle_to_tokens
+    def __init__(self, *, emergency: bool = False) -> None:
+        self._emergency = emergency
+        self._cooldown_est: int | None = None
 
+    def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
+        self._cooldown_est = None
+
+    async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
         cfg = context.config.context_shaping.microcompact
         threshold = self._threshold(context)
         if not cfg.enabled or threshold <= 0:
@@ -353,74 +384,137 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
         est = self.estimated_tokens(context)
         if est < cfg.high_watermark * threshold:
             return MiddlewareResult()
+        if not self._emergency and self._cooldown_est is not None:
+            if est <= self._cooldown_est:
+                return MiddlewareResult()
+            self._cooldown_est = None
 
         messages = context.messages
-        active_model = context.active_model or context.config.get_active_model()
-        preserve_reasoning = active_model.preserve_reasoning
         prefix = self._protected_prefix_len(messages, self._guard_tokens(context))
         suffix = self._protected_suffix_len(
             messages, context.config.context_shaping.snip.keep_recent_turns, prefix
         )
         target = cfg.target * threshold
-        est_before = est
-        done = 0
+        plan, projected_shed, pool_exhausted = self._plan_pass(
+            messages, prefix, suffix, cfg, est, target
+        )
+        if not plan or (not self._emergency and projected_shed < cfg.min_shed_tokens):
+            if not self._emergency:
+                self._cooldown_est = est
+                logger.debug(
+                    "microcompact: skipped pass, projected shed ~%d < floor %d "
+                    "(est %d, threshold %d); cooldown armed",
+                    projected_shed,
+                    cfg.min_shed_tokens,
+                    est,
+                    threshold,
+                )
+            return MiddlewareResult()
+
+        active_model = context.active_model or context.config.get_active_model()
+        shed = self._execute_plan(
+            messages, plan, cfg, preserve_reasoning=active_model.preserve_reasoning
+        )
+        est_after = est - shed
+        if not self._emergency and pool_exhausted and est_after > target:
+            self._cooldown_est = est
+        logger.debug(
+            "microcompact: compressed %d block(s), ~%d->%d est tokens "
+            "(watermark %.2f, threshold %d)",
+            len(plan),
+            est,
+            est_after,
+            cfg.high_watermark,
+            threshold,
+        )
+        async with context_shaping_span(op="microcompact") as span:
+            set_context_shaping_result(
+                span,
+                tokens_before=est,
+                tokens_after=est_after,
+                threshold=threshold,
+                blocks=len(plan),
+                status="batched" if cfg.max_blocks_per_turn == 0 else None,
+            )
+        return MiddlewareResult()
+
+    @classmethod
+    def _plan_pass(
+        cls,
+        messages: MessageList,
+        prefix: int,
+        suffix: int,
+        cfg: MicrocompactConfig,
+        est: int,
+        target: float,
+    ) -> tuple[list[tuple[int, str]], int, bool]:
+        """Walk the editable band oldest-first and plan gists without mutating.
+
+        Returns ``(plan[(index, marker-stripped body)], projected_shed,
+        pool_exhausted)``; pool_exhausted means the walk ran off the band with
+        the projection still above target — nothing further to shed until new
+        eligible content arrives. Eligibility measures the marker-STRIPPED
+        body: a prior gist still above the cap is re-gisted smaller (reclaiming
+        the accumulated floor), but one already at the cap must be skipped,
+        else the marker pushes it just over and it is re-churned to no effect
+        every pass (a live session climbed unbounded this way, blocks=4
+        shed=0).
+        """
+        from vibe.core.utils.tokens import approx_token_count
+
+        plan: list[tuple[int, str]] = []
+        projected_shed = 0
         for i in range(prefix, len(messages) - suffix):  # oldest first
-            if done >= cfg.max_blocks_per_turn or est <= target:
-                break
+            if est - projected_shed <= target:
+                return plan, projected_shed, False
+            if cfg.max_blocks_per_turn > 0 and len(plan) >= cfg.max_blocks_per_turn:
+                return plan, projected_shed, False
             msg = messages[i]
             content = msg.content or ""
             if (
-                self._is_real_user_message(msg)
+                cls._is_real_user_message(msg)
                 or content.startswith(_SNIP_OPEN)
                 # recoverable blocks are snip's domain; leave them for the pointer.
-                or self._is_recoverable(content)
+                or cls._is_recoverable(content)
             ):
                 continue
-            # A prior gist still above the cap is re-gisted smaller (this is how
-            # the accumulated <vibe_microcompacted> floor gets reclaimed). Measure
-            # and truncate the marker-STRIPPED body: a block already gisted to the
-            # cap is body<=cap and must be skipped, else the marker pushes it just
-            # over the cap and it is re-churned to no effect every turn — wasting
-            # the per-turn block budget so new growth never gets gisted (a live
-            # session climbed unbounded this way, blocks=4 shed=0).
             body = content
             if body.startswith(_MC_OPEN):
                 body = body[len(_MC_OPEN) :].lstrip()
-            if approx_token_count(body) <= cfg.per_message_cap_tokens:
+            body_tokens = approx_token_count(body)
+            if body_tokens <= cfg.per_message_cap_tokens:
                 continue  # naturally small, or already gisted to the cap
+            plan.append((i, body))
+            projected_shed += body_tokens - cfg.per_message_cap_tokens
+        return plan, projected_shed, est - projected_shed > target
+
+    @staticmethod
+    def _execute_plan(
+        messages: MessageList,
+        plan: list[tuple[int, str]],
+        cfg: MicrocompactConfig,
+        *,
+        preserve_reasoning: bool,
+    ) -> int:
+        """Gist the planned blocks in place; returns the actual tokens shed."""
+        from vibe.core.utils.tokens import approx_token_count, truncate_middle_to_tokens
+
+        shed = 0
+        for i, body in plan:
+            msg = messages[i]
+            content = msg.content or ""
             new_content = f"{_MC_OPEN} " + truncate_middle_to_tokens(
                 body, cfg.per_message_cap_tokens
             )
             update: dict[str, object] = {"content": new_content}
-            # Mirror snip: a non-Preserved-Thinking model can shed the stale
-            # reasoning on a compressed turn too; Moonshot/GLM keep it to stay
-            # wire-valid. (Snip no longer reaches reasoning-bearing assistant
-            # turns — those are non-recoverable, so they land here.)
+            # Mirror snip: a non-Preserved-Thinking model sheds the stale
+            # reasoning on a compressed turn; Moonshot/GLM keep it, wire-valid.
             if not preserve_reasoning:
                 update["reasoning_content"] = None
                 update["reasoning_state"] = None
             messages.replace_at(i, msg.model_copy(update=update))
-            est -= approx_token_count(content) - approx_token_count(new_content)
-            done += 1
-        if done:
-            logger.debug(
-                "microcompact: compressed %d block(s), ~%d->%d est tokens "
-                "(watermark %.2f, threshold %d)",
-                done,
-                est_before,
-                est,
-                cfg.high_watermark,
-                threshold,
-            )
-            async with context_shaping_span(op="microcompact") as span:
-                set_context_shaping_result(
-                    span,
-                    tokens_before=est_before,
-                    tokens_after=est,
-                    threshold=threshold,
-                    blocks=done,
-                )
-        return MiddlewareResult()
+            shed += approx_token_count(content) - approx_token_count(new_content)
+        return shed
 
 
 class ToolResultBudgetMiddleware:

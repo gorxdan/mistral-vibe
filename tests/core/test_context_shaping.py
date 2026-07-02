@@ -93,6 +93,72 @@ def test_shaping_base_is_capped(threshold: int, expected: int) -> None:
     assert ContextShaperMiddleware._threshold(ctx) == expected
 
 
+@pytest.mark.parametrize(
+    ("context_window", "threshold", "expected"),
+    [
+        (None, 880_000, 256_000),  # undeclared window — flat cap unchanged
+        (1_000_000, 880_000, 500_000),  # glm/fugu — cap lifted to 0.5x window
+        (1_000_000, 400_000, 400_000),  # threshold binds; the cap no longer does
+        (400_000, 400_000, 256_000),  # declared small window — max floors at 256k
+        (262_144, 200_000, 200_000),  # small window AND threshold below the cap
+    ],
+)
+def test_shaping_cap_window_relative(
+    context_window: int | None, threshold: int, expected: int
+) -> None:
+    cfg = build_test_vibe_config()
+    cfg.models[0].auto_compact_threshold = threshold
+    cfg.models[0].context_window = context_window
+    cfg.active_model = cfg.models[0].alias
+    ctx = _ctx([LLMMessage(role=Role.SYSTEM, content="s")], cfg)
+    assert ContextShaperMiddleware._threshold(ctx) == expected
+
+
+def test_shaping_cap_fraction_zero_restores_flat_cap() -> None:
+    cfg = build_test_vibe_config(
+        context_shaping=ContextShapingConfig(cap_window_fraction=0.0)
+    )
+    cfg.models[0].auto_compact_threshold = 880_000
+    cfg.models[0].context_window = 1_000_000
+    cfg.active_model = cfg.models[0].alias
+    ctx = _ctx([LLMMessage(role=Role.SYSTEM, content="s")], cfg)
+    assert ContextShaperMiddleware._threshold(ctx) == 256_000
+
+
+def test_protected_prefix_band_extends_past_large_system_prompt() -> None:
+    # The guard band counts tokens AFTER the system prompt; a big system prompt
+    # must not consume the band and leave the first history messages editable.
+    msgs = MessageList([
+        LLMMessage(role=Role.SYSTEM, content=_content(200)),
+        LLMMessage(role=Role.ASSISTANT, content=_content(30)),
+        LLMMessage(role=Role.ASSISTANT, content=_content(30)),
+        LLMMessage(role=Role.ASSISTANT, content="tail"),
+    ])
+    assert ContextShaperMiddleware._protected_prefix_len(msgs, guard_tokens=50) == 3
+
+
+@pytest.mark.asyncio
+async def test_microcompact_respects_guard_band_after_large_system() -> None:
+    # With a prod-sized system prompt the eligible block right after it sits in
+    # the guard band (protected whole, crossing the boundary); edits start beyond.
+    cfg = _config(
+        microcompact=MicrocompactConfig(
+            enabled=True, per_message_cap_tokens=100, min_shed_tokens=0
+        )
+    )
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content=_content(2000)),
+        LLMMessage(role=Role.ASSISTANT, content=_content(300)),
+        LLMMessage(role=Role.ASSISTANT, content=_content(300)),
+        LLMMessage(role=Role.ASSISTANT, content="recent reply"),
+    ]
+    ctx = _ctx(msgs, cfg)
+    await MicrocompactMiddleware().before_turn(ctx)
+
+    assert ctx.messages[1].content == _content(300)  # in-band: survives verbatim
+    assert (ctx.messages[2].content or "").startswith("<vibe_microcompacted>")
+
+
 @pytest.mark.asyncio
 async def test_snip_elides_oldest_large_and_preserves_bookends() -> None:
     msgs = _history()
@@ -136,7 +202,9 @@ async def test_microcompact_strips_reasoning_by_default() -> None:
     # Reasoning-bearing assistant turns are non-recoverable -> microcompact's
     # domain. It inherits snip's rule: drop the stale reasoning by default.
     cfg = _config(
-        microcompact=MicrocompactConfig(enabled=True, per_message_cap_tokens=100)
+        microcompact=MicrocompactConfig(
+            enabled=True, per_message_cap_tokens=100, min_shed_tokens=0
+        )
     )
     ctx = _ctx(_history_with_reasoning(), cfg)
     await MicrocompactMiddleware().before_turn(ctx)
@@ -149,7 +217,9 @@ async def test_microcompact_strips_reasoning_by_default() -> None:
 @pytest.mark.asyncio
 async def test_microcompact_preserves_reasoning_when_model_requires_it() -> None:
     cfg = _config(
-        microcompact=MicrocompactConfig(enabled=True, per_message_cap_tokens=100)
+        microcompact=MicrocompactConfig(
+            enabled=True, per_message_cap_tokens=100, min_shed_tokens=0
+        )
     )
     cfg.models[0].preserve_reasoning = True  # Kimi/GLM Preserved Thinking
     ctx = _ctx(_history_with_reasoning(), cfg)
@@ -223,14 +293,18 @@ async def test_below_watermark_is_noop() -> None:
 async def test_microcompact_truncates_oldest_oversized() -> None:
     cfg = _config(
         microcompact=MicrocompactConfig(
-            enabled=True, high_watermark=0.6, target=0.5, per_message_cap_tokens=100
+            enabled=True,
+            high_watermark=0.6,
+            target=0.5,
+            per_message_cap_tokens=100,
+            min_shed_tokens=0,
         )
     )
     msgs = _history()
     ctx = _ctx(msgs, cfg)
     await MicrocompactMiddleware().before_turn(ctx)
-    # Exactly one block (default max_blocks_per_turn=1) compressed: the oldest
-    # oversized message now contains the truncation marker and is smaller.
+    # Exactly one block compressed (the band's only eligible message): the
+    # oldest oversized message now contains the truncation marker and is smaller.
     compressed = [m for m in ctx.messages if "[... truncated ...]" in (m.content or "")]
     assert len(compressed) == 1
     assert ctx.messages[-1].content == "recent reply"  # suffix untouched
@@ -240,7 +314,11 @@ async def test_microcompact_truncates_oldest_oversized() -> None:
 async def test_microcompact_tags_with_sentinel() -> None:
     cfg = _config(
         microcompact=MicrocompactConfig(
-            enabled=True, high_watermark=0.6, target=0.5, per_message_cap_tokens=100
+            enabled=True,
+            high_watermark=0.6,
+            target=0.5,
+            per_message_cap_tokens=100,
+            min_shed_tokens=0,
         )
     )
     ctx = _ctx(_history(), cfg)
@@ -259,6 +337,7 @@ async def test_microcompact_is_idempotent() -> None:
             high_watermark=0.6,
             target=0.5,
             per_message_cap_tokens=100,
+            min_shed_tokens=0,
             max_blocks_per_turn=10,  # exhaust the band in one pass
         )
     )
@@ -344,7 +423,7 @@ async def test_microcompact_regists_oversized_prior_gist() -> None:
 
     cfg = _config(
         cache_prefix_guard_tokens=0,
-        microcompact=MicrocompactConfig(per_message_cap_tokens=100),
+        microcompact=MicrocompactConfig(per_message_cap_tokens=100, min_shed_tokens=0),
     )
     msgs = [
         LLMMessage(role=Role.SYSTEM, content="sys"),
@@ -372,7 +451,7 @@ async def test_microcompact_skips_capped_gist_and_processes_new_block() -> None:
     cfg = _config(
         cache_prefix_guard_tokens=0,
         microcompact=MicrocompactConfig(
-            per_message_cap_tokens=100, max_blocks_per_turn=1
+            per_message_cap_tokens=100, min_shed_tokens=0, max_blocks_per_turn=1
         ),
     )
     capped = f"{_MC_OPEN} " + _content(100)  # body already at the cap
@@ -405,17 +484,22 @@ def test_microcompact_target_below_watermark_invariant() -> None:
     assert cfg.target == 0.6
 
 
-def test_microcompact_default_rate_raised() -> None:
-    # 1/turn treaded water at the watermark in prod; several blocks/turn lets
-    # microcompact actually reduce non-recoverable bloat.
-    assert MicrocompactConfig().max_blocks_per_turn == 4
+def test_microcompact_default_guards() -> None:
+    # Batch-to-target defaults: no per-turn rate limit (a firing pass sheds to
+    # target in one cache bust) plus a 5k min-shed floor on every pass.
+    cfg = MicrocompactConfig()
+    assert cfg.max_blocks_per_turn == 0
+    assert cfg.min_shed_tokens == 5000
 
 
 @pytest.mark.asyncio
-async def test_microcompact_compresses_up_to_rate_per_pass() -> None:
+async def test_microcompact_positive_rate_limits_pass() -> None:
+    # Legacy escape hatch: explicit positive N still dribbles N blocks/turn.
     cfg = _config(
         cache_prefix_guard_tokens=0,
-        microcompact=MicrocompactConfig(per_message_cap_tokens=100),  # default rate=4
+        microcompact=MicrocompactConfig(
+            per_message_cap_tokens=100, min_shed_tokens=0, max_blocks_per_turn=4
+        ),
     )
     msgs = [
         LLMMessage(role=Role.SYSTEM, content="sys"),
@@ -432,6 +516,117 @@ async def test_microcompact_compresses_up_to_rate_per_pass() -> None:
     assert n == 4  # bounded by max_blocks_per_turn, not all 6
 
 
+@pytest.mark.asyncio
+async def test_microcompact_min_shed_floor_skips_small_pass() -> None:
+    # Projected shed ~300 < the default 5000 floor: a tiny shed still busts the
+    # cached suffix, so the pass is skipped outright — zero mutations.
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(enabled=True, per_message_cap_tokens=100),
+    )
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.ASSISTANT, content=_content(400)),
+        LLMMessage(role=Role.ASSISTANT, content="recent"),
+    ]
+    ctx = _ctx(msgs, cfg, context_tokens=1000)  # stats pins the gate open
+    await MicrocompactMiddleware().before_turn(ctx)
+    assert ctx.messages[1].content == _content(400)
+    assert all("<vibe_microcompacted>" not in (m.content or "") for m in ctx.messages)
+
+
+@pytest.mark.asyncio
+async def test_microcompact_default_batches_to_target() -> None:
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(per_message_cap_tokens=100, min_shed_tokens=0),
+    )
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.USER, content="go"),
+    ]
+    for _ in range(6):
+        msgs.append(LLMMessage(role=Role.ASSISTANT, content=_content(400)))
+    msgs.append(LLMMessage(role=Role.ASSISTANT, content="recent"))
+    ctx = _ctx(msgs, cfg)
+    mw = MicrocompactMiddleware()
+    await mw.before_turn(ctx)
+    n = sum(
+        1 for m in ctx.messages if (m.content or "").startswith("<vibe_microcompacted>")
+    )
+    assert n == 6  # default max_blocks_per_turn=0: the whole pool in ONE pass
+    assert mw.estimated_tokens(ctx) < 0.65 * THRESHOLD  # back under the gate
+
+
+@pytest.mark.asyncio
+async def test_microcompact_cooldown_suppresses_until_est_rises() -> None:
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(per_message_cap_tokens=100, min_shed_tokens=0),
+    )
+    mw = MicrocompactMiddleware()
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.ASSISTANT, content=_content(400)),
+        LLMMessage(role=Role.ASSISTANT, content="recent"),
+    ]
+    # stats pins est at 1000 (one call behind, includes tool schemas): the pass
+    # fires, exhausts the pool above target, and cannot observe its own shed.
+    ctx = _ctx(msgs, cfg, context_tokens=1000)
+    await mw.before_turn(ctx)
+    assert (ctx.messages[1].content or "").startswith("<vibe_microcompacted>")
+
+    ctx.messages.insert(2, LLMMessage(role=Role.ASSISTANT, content=_content(400)))
+    await mw.before_turn(ctx)  # est still 1000 <= armed watermark: suppressed
+    assert ctx.messages[2].content == _content(400)
+
+    ctx.stats.context_tokens = 1500  # genuinely new growth clears the cooldown
+    await mw.before_turn(ctx)
+    assert (ctx.messages[2].content or "").startswith("<vibe_microcompacted>")
+
+
+@pytest.mark.asyncio
+async def test_microcompact_cooldown_cleared_on_reset() -> None:
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(per_message_cap_tokens=100, min_shed_tokens=0),
+    )
+    mw = MicrocompactMiddleware()
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.ASSISTANT, content=_content(400)),
+        LLMMessage(role=Role.ASSISTANT, content="recent"),
+    ]
+    ctx = _ctx(msgs, cfg, context_tokens=1000)
+    await mw.before_turn(ctx)  # pool-exhausted fire above target: arms cooldown
+    ctx.messages.insert(2, LLMMessage(role=Role.ASSISTANT, content=_content(400)))
+
+    mw.reset()
+    await mw.before_turn(ctx)  # same est, but reset cleared the cooldown
+    assert (ctx.messages[2].content or "").startswith("<vibe_microcompacted>")
+
+
+@pytest.mark.asyncio
+async def test_microcompact_emergency_bypasses_guards() -> None:
+    # The reactive hard-overflow path must never be floor- or cooldown-blocked.
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(
+            per_message_cap_tokens=100, min_shed_tokens=10_000
+        ),
+    )
+    mw = MicrocompactMiddleware(emergency=True)
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.ASSISTANT, content=_content(400)),
+        LLMMessage(role=Role.ASSISTANT, content="recent"),
+    ]
+    ctx = _ctx(msgs, cfg, context_tokens=1000)
+    await mw.before_turn(ctx)
+    assert (ctx.messages[1].content or "").startswith("<vibe_microcompacted>")
+    assert mw._cooldown_est is None  # emergency never arms the cooldown
+
+
 def test_microcompact_default_watermark_tightened() -> None:
     # Tightened to ~snip's 0.6 so the two shapers engage together, closing the
     # 51k unshaped band a live glm session climbed through (153.6k->204.8k).
@@ -444,7 +639,10 @@ async def test_microcompact_engages_in_old_gap_band() -> None:
     # this would NOT have fired before and must now.
     cfg = _config(
         cache_prefix_guard_tokens=0,
-        microcompact=MicrocompactConfig(per_message_cap_tokens=100),  # default 0.65
+        microcompact=MicrocompactConfig(
+            per_message_cap_tokens=100,
+            min_shed_tokens=0,  # default watermark 0.65
+        ),
     )
     msgs = [
         LLMMessage(role=Role.SYSTEM, content="sys"),
@@ -467,7 +665,10 @@ async def test_microcompact_targets_nonrecoverable_skips_recoverable() -> None:
     cfg = _config(
         cache_prefix_guard_tokens=0,
         microcompact=MicrocompactConfig(
-            enabled=True, per_message_cap_tokens=100, max_blocks_per_turn=5
+            enabled=True,
+            per_message_cap_tokens=100,
+            min_shed_tokens=0,
+            max_blocks_per_turn=5,
         ),
     )
     ctx = _ctx(msgs, cfg)
