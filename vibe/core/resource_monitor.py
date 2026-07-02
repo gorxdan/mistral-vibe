@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 import contextlib
 from dataclasses import dataclass, replace
 import os
@@ -217,6 +217,7 @@ class ResourceMonitor:
     ) -> None:
         self._interval = interval_seconds
         self._accum = _TreeAccumulator()
+        self._sample_lock = threading.Lock()
         self._task: asyncio.Task[None] | None = None
         self._is_heartbeat_owner = False
         self._label_getter = label_getter
@@ -290,22 +291,25 @@ class ResourceMonitor:
         # user turn (turn() calls this) or kill the heartbeat task. The whole
         # walk AND the accumulator fold are guarded so a malformed reading can't
         # escape either; on any error the prior totals are returned unchanged.
-        try:
-            walk = self._read_tree()
-            if walk is not None:
-                self._accum.update(walk)
-                self._last_rss = walk.rss_bytes
-                self._last_nb = walk.nb_procs
-        except Exception:
-            logger.debug("perf: sample failed", exc_info=True)
-        return ResourceTotals(
-            cpu_seconds=self._accum.cpu_seconds,
-            disk_read_bytes=self._accum.disk_read_bytes,
-            disk_write_bytes=self._accum.disk_write_bytes,
-            rss_bytes=self._last_rss,
-            nb_procs=self._last_nb,
-            disk_available=self._accum.io_seen,
-        )
+        # The lock serializes samples now offloaded to worker threads (turn vs
+        # heartbeat), so concurrent walks can't interleave accumulator folds.
+        with self._sample_lock:
+            try:
+                walk = self._read_tree()
+                if walk is not None:
+                    self._accum.update(walk)
+                    self._last_rss = walk.rss_bytes
+                    self._last_nb = walk.nb_procs
+            except Exception:
+                logger.debug("perf: sample failed", exc_info=True)
+            return ResourceTotals(
+                cpu_seconds=self._accum.cpu_seconds,
+                disk_read_bytes=self._accum.disk_read_bytes,
+                disk_write_bytes=self._accum.disk_write_bytes,
+                rss_bytes=self._last_rss,
+                nb_procs=self._last_nb,
+                disk_available=self._accum.io_seen,
+            )
 
     def start(self) -> None:
         if self._root is None or self._task is not None:
@@ -344,8 +348,33 @@ class ResourceMonitor:
             return "n/a"
         return _human_bytes(num_bytes) + ("/s" if rate else "")
 
+    def _log_turn(
+        self, label: str, before: ResourceTotals, after: ResourceTotals, elapsed: float
+    ) -> None:
+        cpu_delta = after.cpu_seconds - before.cpu_seconds
+        read_delta = after.disk_read_bytes - before.disk_read_bytes
+        write_delta = after.disk_write_bytes - before.disk_write_bytes
+        # cpu% = cpu-seconds / wall-seconds: >100% on a multicore tree, diluted
+        # by approval waits; raw wall= and cpu= keep the ratio recoverable.
+        logger.info(
+            "perf %s%s: wall=%.1fs cpu=%.2fs (%.0f%%) "
+            "disk_r=%s disk_w=%s rss=%s procs=%d",
+            self._tag(),
+            label,
+            elapsed,
+            cpu_delta,
+            100.0 * cpu_delta / elapsed,
+            self._disk(read_delta, available=after.disk_available),
+            self._disk(write_delta, available=after.disk_available),
+            _human_bytes(after.rss_bytes),
+            after.nb_procs,
+        )
+
     @contextlib.contextmanager
     def turn(self, label: str = "turn") -> Iterator[None]:
+        """Sync variant: samples inline, blocking the calling thread. Only for
+        contexts without a running event loop — inside one, use turn_async().
+        """
         if self._root is None:
             yield
             return
@@ -355,31 +384,29 @@ class ResourceMonitor:
             yield
         finally:
             with contextlib.suppress(Exception):
-                after = self.sample()
                 elapsed = max(time.monotonic() - t0, 1e-6)
-                cpu_delta = after.cpu_seconds - before.cpu_seconds
-                read_delta = after.disk_read_bytes - before.disk_read_bytes
-                write_delta = after.disk_write_bytes - before.disk_write_bytes
-                # cpu% is cpu-seconds over wall-seconds: it can exceed 100% on a
-                # multicore tree, and is diluted by any human-approval wait the
-                # turn blocks on. The raw wall= and cpu= are logged alongside so
-                # the ratio is always recoverable.
-                logger.info(
-                    "perf %s%s: wall=%.1fs cpu=%.2fs (%.0f%%) "
-                    "disk_r=%s disk_w=%s rss=%s procs=%d",
-                    self._tag(),
-                    label,
-                    elapsed,
-                    cpu_delta,
-                    100.0 * cpu_delta / elapsed,
-                    self._disk(read_delta, available=after.disk_available),
-                    self._disk(write_delta, available=after.disk_available),
-                    _human_bytes(after.rss_bytes),
-                    after.nb_procs,
+                self._log_turn(label, before, self.sample(), elapsed)
+
+    @contextlib.asynccontextmanager
+    async def turn_async(self, label: str = "turn") -> AsyncIterator[None]:
+        # The ~8ms /proc tree walk would stall every sibling coroutine if run
+        # on the loop thread, so both samples go through to_thread.
+        if self._root is None:
+            yield
+            return
+        before = await asyncio.to_thread(self.sample)
+        t0 = time.monotonic()
+        try:
+            yield
+        finally:
+            elapsed = max(time.monotonic() - t0, 1e-6)
+            with contextlib.suppress(Exception):
+                self._log_turn(
+                    label, before, await asyncio.to_thread(self.sample), elapsed
                 )
 
     async def _heartbeat_loop(self) -> None:
-        prev = self.sample()
+        prev = await asyncio.to_thread(self.sample)
         t_prev = time.monotonic()
         while True:
             try:
@@ -390,7 +417,7 @@ class ResourceMonitor:
             # for the rest of the session (sample() is already fail-soft, this
             # also covers the log/format path).
             try:
-                cur = self.sample()
+                cur = await asyncio.to_thread(self.sample)
                 now = time.monotonic()
                 elapsed = max(now - t_prev, 1e-6)
                 cpu_delta = cur.cpu_seconds - prev.cpu_seconds

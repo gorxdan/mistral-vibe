@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+import logging
 import os
 import time
 
@@ -71,6 +72,32 @@ async def test_perf_log_name_has_timestamp_and_pid(
     monkeypatch.setenv("VIBE_TRACE_LOOP", "0.05")
     loop_tracer.install()
     assert list(LOG_DIR.path.glob(f"vibe-perf-*-{os.getpid()}.log"))
+
+
+@pytest.mark.asyncio
+async def test_install_echoes_armed_threshold_into_perf_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIBE_TRACE_LOOP", "0.02")
+    loop_tracer.install()
+    assert loop_tracer._INSTALLED
+    files = list(LOG_DIR.path.glob(f"vibe-perf-*-{os.getpid()}.log"))
+    assert files
+    content = files[0].read_text(encoding="utf-8")
+    assert "armed" in content
+    assert "20ms" in content
+
+
+@pytest.mark.asyncio
+async def test_install_warns_on_unparseable_threshold(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("VIBE_TRACE_LOOP", "50ms")
+    with caplog.at_level(logging.WARNING, logger="vibe"):
+        loop_tracer.install()
+    assert loop_tracer._INSTALLED
+    assert loop_tracer._THRESHOLD == pytest.approx(0.05)
+    assert any("VIBE_TRACE_LOOP" in rec.getMessage() for rec in caplog.records)
 
 
 @pytest.mark.asyncio

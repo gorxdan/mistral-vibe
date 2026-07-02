@@ -1,4 +1,6 @@
-"""Event-loop blocking tracer. Env-gated: ``VIBE_TRACE_LOOP=<seconds>``.
+"""Event-loop blocking tracer. Env-gated: ``VIBE_TRACE_LOOP=<seconds>``
+(e.g. ``0.05`` logs callbacks blocking > 50ms; the armed threshold is echoed
+into the perf log so an empty blocker table is interpretable).
 
 The TUI process runs one asyncio loop (Textual's) that hosts the agent loop,
 tool fan-out, memory extraction, turn summaries, LSP jsonrpc dispatch,
@@ -132,6 +134,9 @@ def install() -> None:
         threshold = float(raw)
     except ValueError:
         threshold = 0.05
+        logger.warning(
+            "VIBE_TRACE_LOOP=%r is not a number of seconds; using 0.05 (50ms)", raw
+        )
     if threshold <= 0:
         return
 
@@ -157,6 +162,14 @@ def install() -> None:
     _ORIG_RUN = asyncio.Handle._run
     asyncio.Handle._run = _wrap_run(_ORIG_RUN)
     _INSTALLED = True
+    # Echo the armed threshold into the perf log itself so an EMPTY blocker
+    # table reads as "no blocks above threshold", not "tracer never ran".
+    _perf_log.warning(
+        "perf loop-block tracer armed: logging blocks > %.0fms "
+        "(VIBE_TRACE_LOOP=%s, in seconds)",
+        threshold * 1000.0,
+        raw,
+    )
     logger.info(
         "perf loop-block tracer installed: threshold=%.0fms perf-log=%s",
         threshold * 1000.0,

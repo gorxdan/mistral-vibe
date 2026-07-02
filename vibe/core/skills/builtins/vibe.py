@@ -1106,8 +1106,10 @@ dirs sit at the same precedence as the matching `*_paths` entry above.
 - `VIBE_TEAMMATE_NAME` - Teammate name (set by TeamManager when spawning teammates)
 - `VIBE_THEME` - Override the terminal theme name (same effect as `/theme`)
 - `VIBE_PROFILE` - Set to `1` to activate the per-request profiler
-- `VIBE_TRACE_LOOP` - Threshold in seconds; logs event-loop callbacks that block
-  longer than it to a per-PID perf log in the log dir
+- `VIBE_TRACE_LOOP` - Block threshold in seconds (`0.05` = 50ms; non-numeric
+  values fall back to `0.05`); logs event-loop callbacks that block longer than
+  it to a per-PID perf log in the log dir. The armed threshold is echoed at the
+  top of that log, so an empty blocker table means no callback exceeded it
 - `VIBE_TRACE_STREAM` - Set to `1` to log one streaming-responsiveness summary
   per turn (TTFB, TTFR, chunk gaps) to the per-PID perf log
 - `VIBE_ACP_LOGGING_ENABLED` - Set to `1`/`true`/`yes` to enable `vibe-acp` transport logging
