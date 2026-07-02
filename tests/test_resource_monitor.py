@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
+import time
 
 import pytest
 
@@ -211,6 +213,85 @@ def test_sample_never_raises_on_accumulator_error(
     with monitor.turn("safe2"):
         body_ran = True
     assert body_ran  # the wrapped body executed despite the fold error
+
+
+# ---- off-loop sampling ----
+
+
+def _record_walk_threads(
+    monitor: ResourceMonitor, monkeypatch: pytest.MonkeyPatch
+) -> list[int]:
+    real_read = monitor._read_tree
+    walk_threads: list[int] = []
+
+    def recording_read() -> _TreeWalk | None:
+        walk_threads.append(threading.get_ident())
+        return real_read()
+
+    monkeypatch.setattr(monitor, "_read_tree", recording_read)
+    return walk_threads
+
+
+@pytest.mark.asyncio
+async def test_turn_async_samples_off_loop_thread(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monitor = ResourceMonitor()
+    walk_threads = _record_walk_threads(monitor, monkeypatch)
+    with caplog.at_level(logging.INFO, logger="vibe"):
+        async with monitor.turn_async("offload"):
+            pass
+    assert walk_threads
+    assert threading.get_ident() not in walk_threads
+    assert any(
+        "perf" in rec.getMessage() and "offload" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_turn_async_is_noop_without_psutil() -> None:
+    monitor = ResourceMonitor()
+    monitor._root = None
+    async with monitor.turn_async("noop"):
+        pass  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_samples_off_loop_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monitor = ResourceMonitor(interval_seconds=0.02)
+    walk_threads = _record_walk_threads(monitor, monkeypatch)
+    monitor.start()
+    await asyncio.sleep(0.06)
+    await monitor.aclose()
+    assert walk_threads
+    assert threading.get_ident() not in walk_threads
+
+
+@pytest.mark.asyncio
+async def test_concurrent_samples_do_not_interleave(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monitor = ResourceMonitor()
+    real_read = monitor._read_tree
+    gate = threading.Semaphore(1)
+    overlaps: list[int] = []
+
+    def slow_read() -> _TreeWalk | None:
+        if not gate.acquire(blocking=False):
+            overlaps.append(threading.get_ident())
+            return real_read()
+        try:
+            time.sleep(0.02)
+            return real_read()
+        finally:
+            gate.release()
+
+    monkeypatch.setattr(monitor, "_read_tree", slow_read)
+    await asyncio.gather(*(asyncio.to_thread(monitor.sample) for _ in range(4)))
+    assert not overlaps
 
 
 # ---- heartbeat lifecycle ----

@@ -964,13 +964,16 @@ class AgentLoop(AgentLoopSessionMixin):
                 completion0 = self.stats.session_completion_tokens
                 cached0 = self.stats.session_cached_tokens
                 try:
-                    with (
-                        profiler.section(
-                            f"turn-{self.session_id[:8]}-{self.stats.steps}",
-                            turn=self.stats.steps,
-                        ),
-                        self.resource_monitor.turn(),
-                    ):
+                    async with contextlib.AsyncExitStack() as turn_stack:
+                        turn_stack.enter_context(
+                            profiler.section(
+                                f"turn-{self.session_id[:8]}-{self.stats.steps}",
+                                turn=self.stats.steps,
+                            )
+                        )
+                        await turn_stack.enter_async_context(
+                            self.resource_monitor.turn_async()
+                        )
                         async for event in self._conversation_loop(
                             msg,
                             client_message_id=client_message_id,
