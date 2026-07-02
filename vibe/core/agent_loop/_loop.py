@@ -788,7 +788,8 @@ class AgentLoop(AgentLoopSessionMixin):
             self.connector_registry = self._create_connector_registry()
             self.tool_manager.set_connector_registry(self.connector_registry)
 
-    @requires_init
+    # No @requires_init (async-only guard): runs during __init__ and inside
+    # _complete_init itself, where waiting on init would deadlock.
     def _current_baseline_tier(self) -> BaselineTier:
         try:
             model = self.effective_model()
