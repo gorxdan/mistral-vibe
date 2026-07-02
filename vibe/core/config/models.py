@@ -7,7 +7,6 @@ import re
 import shlex
 from typing import Annotated, Any, Literal, get_args
 
-from mistralai.client.models import SpeechOutputFormat
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -423,6 +422,11 @@ class TTSProviderConfig(BaseModel):
     api_base: str = "https://api.mistral.ai"
     api_key_env_var: str = ""
     client: TTSClient = TTSClient.MISTRAL
+
+
+# Pinned copy of mistralai.client.models.SpeechOutputFormat (the SDK import
+# costs ~83ms cold); tests/core/test_speech_output_format_sync.py guards drift.
+SpeechOutputFormat = Literal["pcm", "wav", "mp3", "flac", "opus"]
 
 
 class TTSModelConfig(BaseModel):
