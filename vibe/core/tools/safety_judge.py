@@ -20,12 +20,14 @@ Design constraints (security):
 from __future__ import annotations
 
 import asyncio
+from http import HTTPStatus
 
 import orjson
 from pydantic import BaseModel, ConfigDict
 
 from vibe.core.config import ModelConfig, ProviderConfig, SafetyJudgeConfig
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
+from vibe.core.llm.exceptions import BackendError
 from vibe.core.llm.types import CompletionRequest
 from vibe.core.logger import logger
 from vibe.core.types import LLMMessage, Role
@@ -114,6 +116,12 @@ _FAIL_CLOSED = JudgeVerdict(
 )
 
 
+def _is_temperature_rejection(e: BackendError) -> bool:
+    if e.status != HTTPStatus.BAD_REQUEST:
+        return False
+    return "temperature" in (e.parsed_error or e.body_text or "").lower()
+
+
 class SafetyJudge:
     """Evaluates whether an ASK-gated tool call may run without a human prompt."""
 
@@ -191,23 +199,39 @@ class SafetyJudge:
         # No override: forward the model's temperature verbatim so a
         # temperature=None model keeps its wire-omission contract (kimi).
         backend_cls = BACKEND_FACTORY[self._provider.backend]
+        temperature = self._model.temperature
         async with backend_cls(
             provider=self._provider, timeout=self._timeout
         ) as backend:
-            result = await backend.complete(
-                CompletionRequest(
-                    model=self._model,
-                    messages=messages,
-                    temperature=self._model.temperature,
-                    tools=None,
-                    tool_choice=None,
-                    max_tokens=self._config.max_tokens,
-                    extra_headers=self._extra_headers,
-                    response_format={"type": "json_object"},
-                    extra_body=self._config.extra_body or None,
+            try:
+                result = await backend.complete(self._request(messages, temperature))
+            except BackendError as e:
+                # Provider rejected the temperature itself (kimi 400): retry
+                # once omitting it instead of failing closed for the session.
+                if temperature is None or not _is_temperature_rejection(e):
+                    raise
+                logger.warning(
+                    "Safety judge temperature %s rejected by %s; retrying without it",
+                    temperature,
+                    self._provider.name,
                 )
-            )
+                result = await backend.complete(self._request(messages, None))
         return self._parse(result.message.content)
+
+    def _request(
+        self, messages: list[LLMMessage], temperature: float | None
+    ) -> CompletionRequest:
+        return CompletionRequest(
+            model=self._model,
+            messages=messages,
+            temperature=temperature,
+            tools=None,
+            tool_choice=None,
+            max_tokens=self._config.max_tokens,
+            extra_headers=self._extra_headers,
+            response_format={"type": "json_object"},
+            extra_body=self._config.extra_body or None,
+        )
 
     @staticmethod
     def _parse(content: str | None) -> JudgeVerdict:

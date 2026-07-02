@@ -1519,13 +1519,17 @@ class VibeConfig(BaseSettings):
         applied = data.get("applied_migrations", [])
         if cls._KIMI_TEMPERATURE_MIGRATION in applied:
             return False
-        migrated = False
+        has_kimi = False
         for model in data.get("models", []):
-            if model.get("provider") == "kimi" and model.get("temperature") != "omit":
+            if model.get("provider") != "kimi":
+                continue
+            has_kimi = True
+            if model.get("temperature") != "omit":
                 model["temperature"] = "omit"
-                migrated = True
-        if not migrated:
+        if not has_kimi:
             return False
+        # Mark even when every kimi model was already compliant (hand-edited
+        # config): an unmarked no-op re-ran on every load forever.
         data["applied_migrations"] = [*applied, cls._KIMI_TEMPERATURE_MIGRATION]
         return True
 

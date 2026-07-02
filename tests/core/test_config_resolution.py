@@ -609,10 +609,9 @@ class TestMigrateKimiTemperatureOmit:
         with config_file.open("rb") as f:
             result = tomllib.load(f)
         assert result["models"][0]["temperature"] == "omit"
-        # Nothing to migrate -> id not recorded.
-        assert (
-            VibeConfig._KIMI_TEMPERATURE_MIGRATION not in result["applied_migrations"]
-        )
+        # Already-compliant kimi models still record the id; the unmarked
+        # no-op used to re-run on every load forever.
+        assert VibeConfig._KIMI_TEMPERATURE_MIGRATION in result["applied_migrations"]
 
     def test_one_shot_does_not_re_normalize_after_id_recorded(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2104,3 +2103,11 @@ class TestLoadDotenvShadowWarning:
             load_dotenv_values(env_file, environ)
         assert environ["SAKANA_API_KEY"] == "from-file"
         log.warning.assert_not_called()
+
+
+class TestKimiTemperatureMigration:
+    def test_no_kimi_models_is_a_true_noop(self) -> None:
+        # Non-kimi configs must not be rewritten just to record the marker.
+        data = {"models": [{"name": "g", "provider": "zai", "temperature": 1.0}]}
+        assert VibeConfig._migrate_kimi_temperature(data) is False
+        assert "applied_migrations" not in data

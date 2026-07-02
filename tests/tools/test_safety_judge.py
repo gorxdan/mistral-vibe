@@ -657,3 +657,115 @@ def test_system_prompt_mentions_conversation_context() -> None:
     # The default prompt must guide the judge to use the transcript for intent.
     assert "Recent conversation" in _SYSTEM_PROMPT
     assert "intent" in _SYSTEM_PROMPT.lower()
+
+
+def _kimi_temp_error(model: str) -> Any:
+    from vibe.core.llm.exceptions import BackendError, PayloadSummary
+
+    return BackendError(
+        provider="kimi",
+        endpoint="https://api.kimi.com/coding/v1/chat/completions",
+        status=400,
+        reason="Bad Request",
+        headers=None,
+        body_text='{"error":{"message":"invalid temperature: only 0.6 is allowed'
+        ' for this model","type":"invalid_request_error"}}',
+        parsed_error="invalid temperature: only 0.6 is allowed for this model",
+        model=model,
+        payload_summary=PayloadSummary(
+            model=model,
+            message_count=2,
+            approx_chars=100,
+            temperature=1.0,
+            has_tools=False,
+            tool_choice=None,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_judge_retries_without_temperature_on_rejection(monkeypatch) -> None:
+    # 2026-07-02: every kimi judge call 400'd on temperature=1.0; the judge
+    # must self-heal by retrying with it omitted.
+    model = ModelConfig(
+        name="kimi-k2.7-code", provider="kimi", alias="kimi", temperature=1.0
+    )
+    captured: list[float | None] = []
+
+    class _RejectingBackend:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _RejectingBackend:
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+        async def complete(self, request: Any, **kwargs: Any) -> Any:
+            captured.append(request.temperature)
+            if request.temperature is not None:
+                raise _kimi_temp_error(request.model.name)
+            return SimpleNamespace(
+                message=SimpleNamespace(content='{"safe": true, "reason": "ok"}')
+            )
+
+    fake_provider = type(
+        "P",
+        (),
+        {"backend": "generic", "extra_headers": {}, "api_base": "", "name": "kimi"},
+    )()
+    monkeypatch.setattr(
+        "vibe.core.tools.safety_judge.BACKEND_FACTORY", {"generic": _RejectingBackend}
+    )
+    judge = SafetyJudge(
+        model=model,
+        provider=fake_provider,  # type: ignore[arg-type]
+        config=SafetyJudgeConfig(enabled=True, model=model.alias),
+    )
+    verdict = await judge.judge("write_file", '{"path":"x"}', ["flagged"])
+    assert captured == [1.0, None]
+    assert verdict.safe is True
+    assert verdict.failed is False
+
+
+@pytest.mark.asyncio
+async def test_judge_does_not_retry_non_temperature_400(monkeypatch) -> None:
+    model = ModelConfig(
+        name="kimi-k2.7-code", provider="kimi", alias="kimi", temperature=1.0
+    )
+    calls: list[float | None] = []
+
+    class _AlwaysRejecting:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _AlwaysRejecting:
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+        async def complete(self, request: Any, **kwargs: Any) -> Any:
+            calls.append(request.temperature)
+            e = _kimi_temp_error(request.model.name)
+            e.parsed_error = "model overloaded"
+            e.body_text = '{"error":{"message":"model overloaded"}}'
+            raise e
+
+    fake_provider = type(
+        "P",
+        (),
+        {"backend": "generic", "extra_headers": {}, "api_base": "", "name": "kimi"},
+    )()
+    monkeypatch.setattr(
+        "vibe.core.tools.safety_judge.BACKEND_FACTORY", {"generic": _AlwaysRejecting}
+    )
+    judge = SafetyJudge(
+        model=model,
+        provider=fake_provider,  # type: ignore[arg-type]
+        config=SafetyJudgeConfig(enabled=True, model=model.alias),
+    )
+    verdict = await judge.judge("write_file", '{"path":"x"}', ["flagged"])
+    assert calls == [1.0]
+    assert verdict.failed is True
