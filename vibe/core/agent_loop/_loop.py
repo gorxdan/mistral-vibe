@@ -293,9 +293,14 @@ class AgentLoop(AgentLoopSessionMixin):
     ) -> None:
         self._permission_store = permission_store or PermissionStore()
 
-        self.mcp_registry: MCPRegistry | None = (
-            None if defer_heavy_init else mcp_registry or self._create_mcp_registry()
-        )
+        # No servers -> no registry: MCPRegistry pulls the mcp SDK (~75ms),
+        # which must stay off cold start; reload -> _ensure_remote_registries.
+        self.mcp_registry: MCPRegistry | None = None
+        if not defer_heavy_init:
+            if mcp_registry is not None:
+                self.mcp_registry = mcp_registry
+            elif self._base_config.mcp_servers:
+                self.mcp_registry = self._create_mcp_registry()
         self.connector_registry: ConnectorRegistry | None = (
             None if defer_heavy_init else self._create_connector_registry()
         )
