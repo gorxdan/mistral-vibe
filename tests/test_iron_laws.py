@@ -92,3 +92,11 @@ def test_prod_noqa_ratchet() -> None:
         f"prod `noqa` count grew past the ratchet ({len(hits)} > {NOQA_BUDGET}); "
         f"fix at source:\n" + "\n".join(hits)
     )
+
+
+def test_prod_pyright_ignore_ratchet() -> None:
+    hits = _count_marker(r"#\s*pyright:\s*ignore")
+    assert not hits, (
+        "prod `# pyright: ignore` is banned (AGENTS.md: fix at source); "
+        "found:\n" + "\n".join(hits)
+    )
