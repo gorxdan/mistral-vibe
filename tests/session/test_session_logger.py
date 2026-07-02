@@ -1053,32 +1053,23 @@ class TestSessionLoggerCleanupTmpFiles:
         assert not old_tmp_file.exists()
         assert new_tmp_file.exists()
 
-    def test_cleanup_tmp_files_recursive(
+    def test_cleanup_tmp_files_scoped_to_current_session_dir(
         self, session_config: SessionLoggingConfig
     ) -> None:
-        """Test that cleanup_tmp_files works recursively in subdirectories."""
-        session_id = "test-session-123"
-        logger = SessionLogger(session_config, session_id)
+        logger = SessionLogger(session_config, "test-session-123")
 
         assert logger.session_dir is not None
         logger.session_dir.mkdir(parents=True, exist_ok=True)
+        own_old_tmp = create_temp_file_ago(logger.session_dir, "meta.json.tmp", 10)
 
-        subdir_1 = logger.session_dir / "session-123"
-        subdir_1.mkdir()
-
-        old_tmp_file = create_temp_file_ago(subdir_1, "meta.json.tmp", 10)
-        new_tmp_file = create_temp_file_ago(subdir_1, "meta.json")
-
-        subdir_2 = logger.session_dir / "session-456"
-        subdir_2.mkdir()
-
-        old_tmp_file_2 = create_temp_file_ago(subdir_2, "meta.json.tmp", 10)
+        other_session_dir = Path(session_config.save_dir) / "test_other_session"
+        other_session_dir.mkdir()
+        other_old_tmp = create_temp_file_ago(other_session_dir, "meta.json.tmp", 10)
 
         logger.cleanup_tmp_files()
 
-        assert not old_tmp_file.exists()
-        assert not old_tmp_file_2.exists()
-        assert new_tmp_file.exists()
+        assert not own_old_tmp.exists()
+        assert other_old_tmp.exists()
 
     def test_cleanup_tmp_files_handles_exceptions(
         self, session_config: SessionLoggingConfig
@@ -1108,6 +1099,38 @@ class TestSessionLoggerCleanupTmpFiles:
 
         assert old_tmp_file.exists()
         assert not another_old_tmp_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_save_interaction_runs_tmp_cleanup_off_the_event_loop(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        logger = SessionLogger(session_config, "cleanup-thread-session")
+
+        cleanup_threads: list[int] = []
+        monkeypatch.setattr(
+            logger,
+            "cleanup_tmp_files",
+            lambda: cleanup_threads.append(threading.get_ident()),
+        )
+
+        await logger.save_interaction(
+            messages=[
+                LLMMessage(role=Role.SYSTEM, content="System prompt"),
+                LLMMessage(role=Role.USER, content="Hello"),
+            ],
+            stats=AgentStats(steps=1),
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+
+        assert cleanup_threads, "save_interaction never ran the tmp cleanup"
+        assert threading.get_ident() not in cleanup_threads
 
     def test_maybe_cleanup_tmp_files_throttles_calls(
         self, session_config: SessionLoggingConfig

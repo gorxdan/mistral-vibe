@@ -446,7 +446,7 @@ class SessionLogger:
         except Exception as e:
             raise RuntimeError(f"Failed to save session to {session_dir}: {e}") from e
         finally:
-            self.maybe_cleanup_tmp_files()
+            await asyncio.to_thread(self.maybe_cleanup_tmp_files)
 
     async def persist_loops(self) -> None:
         session_info = self._get_session_info()
@@ -557,14 +557,22 @@ class SessionLogger:
             self.session_start_time = self.session_metadata.start_time
 
     def cleanup_tmp_files(self) -> None:
-        """Delete temporary files created more than 5 minutes ago"""
-        if not self.enabled or not self.save_dir:
+        """Delete this session's temporary files created more than 5 minutes ago.
+
+        Scoped to the current session dir: temp files are only ever created
+        beside the file they replace, and sweeping every sibling session dir
+        made this a whole-tree walk on the save path. Strays in other dirs are
+        each session's own to clean (and get tarred by the archiver anyway).
+        """
+        if not self.enabled or self.session_dir is None:
+            return
+        if not self.session_dir.is_dir():
             return
 
         now = utc_now()
         ago = now - timedelta(minutes=5)
 
-        tmp_files = self.save_dir.glob("**/*.json.tmp")  # Recursive search
+        tmp_files = self.session_dir.glob("*.json.tmp")
 
         for file_path in tmp_files:
             if file_path.is_file():
