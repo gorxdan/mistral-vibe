@@ -1475,6 +1475,83 @@ def test_archive_after_days_default_is_30() -> None:
     assert SessionLoggingConfig().archive_after_days == 30
 
 
+def test_init_does_not_block_on_archiver(
+    session_config: SessionLoggingConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    archive_threads: list[int] = []
+
+    def slow_archive(*args, **kwargs) -> None:
+        archive_threads.append(threading.get_ident())
+        started.set()
+        release.wait(timeout=1.5)
+
+    monkeypatch.setattr(
+        "vibe.core.session.session_logger.archive_old_session_dirs", slow_archive
+    )
+
+    t0 = time.perf_counter()
+    logger = SessionLogger(session_config, "bg-archive-session")
+    init_elapsed = time.perf_counter() - t0
+
+    try:
+        assert started.wait(timeout=5)
+        assert init_elapsed < 1.0, f"__init__ blocked {init_elapsed:.2f}s on archiver"
+        assert archive_threads[0] != threading.get_ident()
+    finally:
+        release.set()
+        thread = logger._archive_thread
+        if thread is not None:
+            thread.join(timeout=5)
+
+
+def test_archive_skips_live_keep_dir_resolved_per_dir(tmp_path: Path) -> None:
+    from vibe.core.session.session_logger import archive_old_session_dirs
+
+    old = tmp_path / "session_20200101_000000_aaa"
+    old.mkdir()
+    (old / "messages.jsonl").write_text("transcript")
+    os.utime(old, (1, 1))
+
+    archive_old_session_dirs(
+        tmp_path, "session", archive_after_days=30, keep=lambda: old
+    )
+
+    assert old.exists()
+    assert not (tmp_path / "archive" / f"{old.name}.tar.gz").exists()
+
+
+def test_archive_aborts_when_dir_written_during_tar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tarfile
+
+    from vibe.core.session.session_logger import archive_old_session_dirs
+
+    old = tmp_path / "session_20200101_000000_aaa"
+    old.mkdir()
+    (old / "messages.jsonl").write_text("transcript")
+    os.utime(old, (1, 1))
+
+    real_open = tarfile.open
+
+    def open_and_write_into_dir(name, mode, *args, **kwargs):
+        tar = real_open(name, mode, *args, **kwargs)
+        (old / "late-write.jsonl").write_text("resumed session wrote here")
+        return tar
+
+    monkeypatch.setattr(
+        "vibe.core.session.session_logger.tarfile.open", open_and_write_into_dir
+    )
+
+    archive_old_session_dirs(tmp_path, "session", archive_after_days=30)
+
+    assert old.exists(), "dir with a concurrent write was deleted"
+    assert (old / "late-write.jsonl").exists()
+    assert not (tmp_path / "archive" / f"{old.name}.tar.gz").exists()
+
+
 def test_archive_old_session_dirs_compresses_not_deletes(tmp_path: Path) -> None:
     import tarfile
 

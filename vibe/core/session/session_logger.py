@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 import getpass
 import hashlib
@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
-from threading import Lock
+from threading import Lock, Thread
 from typing import TYPE_CHECKING, Any, Literal
 
 import orjson
@@ -39,8 +39,8 @@ TMP_CLEANUP_INTERVAL = timedelta(seconds=5)
 # Static session context (tools schema, config dump, system prompt): ~100KB of
 # analysis-only data no resume/picker reader consumes — kept out of the per-round meta.json.
 CONTEXT_FILENAME = "context.json"
-# Cap dirs archived per startup so the (synchronous) tar never noticeably delays
-# session start; any backlog drains over the next few sessions.
+# Cap dirs archived per background run to bound startup-adjacent IO; any
+# backlog drains over the next few sessions.
 _ARCHIVE_MAX_PER_RUN = 25
 
 
@@ -48,7 +48,7 @@ def archive_old_session_dirs(
     save_dir: Path,
     prefix: str,
     archive_after_days: int,
-    keep: Path | None = None,
+    keep: Path | Callable[[], Path | None] | None = None,
     max_per_run: int = _ARCHIVE_MAX_PER_RUN,
 ) -> None:
     """Tar+gzip session dirs untouched > *archive_after_days* into save_dir/archive/.
@@ -58,9 +58,18 @@ def archive_old_session_dirs(
     now-redundant loose dir, which also speeds the live list/--continue scan. The
     tarball is written to a temp name and atomically renamed before the dir is
     removed, so a crash mid-archive never loses the dir. Best-effort; 0 disables.
+
+    Runs on a background thread, so two guards protect a session resumed while
+    it works: *keep* may be a callable re-resolved around each dir (the live
+    session_dir can change after init via resume), and a dir whose mtime moved
+    while it was being tarred is left in place with its stale tarball discarded.
     """
     if archive_after_days <= 0:
         return
+
+    def keep_dir() -> Path | None:
+        return keep() if callable(keep) else keep
+
     try:
         cutoff = utc_now().timestamp() - archive_after_days * 86400
         archive_dir = save_dir / "archive"
@@ -69,7 +78,10 @@ def archive_old_session_dirs(
             if done >= max_per_run:
                 break
             try:
-                if not d.is_dir() or d == keep or d.stat().st_mtime >= cutoff:
+                if not d.is_dir() or d == keep_dir():
+                    continue
+                mtime_before = d.stat().st_mtime
+                if mtime_before >= cutoff:
                     continue
                 tarball = archive_dir / f"{d.name}.tar.gz"
                 if tarball.exists():
@@ -78,6 +90,9 @@ def archive_old_session_dirs(
                 tmp = tarball.with_name(tarball.name + ".tmp")
                 with tarfile.open(tmp, "w:gz") as tar:
                     tar.add(d, arcname=d.name)
+                if d.stat().st_mtime != mtime_before or d == keep_dir():
+                    tmp.unlink(missing_ok=True)  # concurrent writer; tar is stale
+                    continue
                 tmp.replace(tarball)  # atomic; tarball complete before dir removed
                 shutil.rmtree(d, ignore_errors=True)
                 done += 1
@@ -94,6 +109,7 @@ class SessionLogger:
         self._last_tmp_cleanup_at: datetime | None = None
         self._tmp_cleanup_lock = Lock()
         self._static_context_fingerprint: str | None = None
+        self._archive_thread: Thread | None = None
 
         if not self.enabled:
             self.save_dir: Path | None = None
@@ -111,12 +127,20 @@ class SessionLogger:
 
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.session_dir = self.save_folder
-        archive_old_session_dirs(
-            self.save_dir,
-            self.session_prefix,
-            session_config.archive_after_days,
-            self.session_dir,
+        # Off the critical init path; keep=lambda tracks resume_existing_session
+        # retargeting session_dir after this thread starts.
+        self._archive_thread = Thread(
+            target=archive_old_session_dirs,
+            args=(
+                self.save_dir,
+                self.session_prefix,
+                session_config.archive_after_days,
+            ),
+            kwargs={"keep": lambda: self.session_dir},
+            name="session-archiver",
+            daemon=True,
         )
+        self._archive_thread.start()
         self.session_metadata = self._initialize_session_metadata()
 
     @property
