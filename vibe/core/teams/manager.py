@@ -212,6 +212,9 @@ class TeamManager:
                 "text",
                 "--max-turns",
                 str(max_turns),
+                # Teams coordinate over a SHARED working tree (TaskStore/Mailbox
+                # + filelock); a private teammate worktree would strand its edits.
+                "--no-worktree",
             ]
 
             env = os.environ.copy()

@@ -345,6 +345,30 @@ async def test_teammate_spawned_in_new_session(
 
 
 @pytest.mark.asyncio
+async def test_teammate_cmd_includes_no_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    proc = _FakeProc()
+    captured_cmd: list[object] = []
+
+    async def fake_exec(*args: object, **kwargs: object) -> _FakeProc:
+        captured_cmd.extend(args)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    mgr = TeamManager("lead-session", team_name="test-no-worktree")
+    try:
+        await mgr.spawn_teammate("carol", "work", agent="explore", max_turns=1)
+        await asyncio.sleep(0.05)
+        assert "--no-worktree" in captured_cmd
+    finally:
+        await mgr.stop_teammate("carol")
+        mgr.cleanup()
+
+
+@pytest.mark.asyncio
 async def test_team_lifecycle_hooks_fire_on_task_events(tmp_path: Path) -> None:
     """teams-002: team lifecycle hooks must actually fire, not just be defined.
 
