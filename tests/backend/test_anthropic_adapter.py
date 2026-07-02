@@ -12,10 +12,20 @@ from vibe.core.types import (
     AvailableFunction,
     AvailableTool,
     FunctionCall,
+    InjectedMessageKind,
     LLMMessage,
     Role,
     ToolCall,
 )
+
+
+def _mem_tail() -> LLMMessage:
+    return LLMMessage(
+        role=Role.USER,
+        content="<memories>notes</memories>",
+        injected=True,
+        injected_kind=InjectedMessageKind.MEMORY,
+    )
 
 
 @pytest.fixture
@@ -564,3 +574,72 @@ class TestAdapterParseResponse:
         messages: list[dict] = []
         adapter._add_cache_control_to_last_user_message(messages)
         assert messages == []
+
+
+class TestCacheBreakpointSkipsMemoryTail:
+    def _prepare(self, adapter, provider, messages):
+        req = adapter.prepare_request(
+            RequestParams(
+                model_name="claude-sonnet-4-20250514",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
+            )
+        )
+        return json.loads(req.body)
+
+    def test_trailing_memory_message_carries_no_breakpoint(self, adapter, provider):
+        payload = self._prepare(
+            adapter,
+            provider,
+            [
+                LLMMessage(role=Role.SYSTEM, content="Be helpful."),
+                LLMMessage(role=Role.USER, content="Hello"),
+                _mem_tail(),
+            ],
+        )
+        wire = payload["messages"]
+        assert all("cache_control" not in block for block in wire[-1]["content"])
+        assert wire[-2]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert payload["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_trailing_memory_after_tool_result_tags_tool_result(
+        self, adapter, provider
+    ):
+        payload = self._prepare(
+            adapter,
+            provider,
+            [
+                LLMMessage(role=Role.USER, content="Do it"),
+                LLMMessage(
+                    role=Role.ASSISTANT,
+                    content="Running.",
+                    tool_calls=[
+                        ToolCall(
+                            id="tc_1",
+                            index=0,
+                            function=FunctionCall(name="search", arguments="{}"),
+                        )
+                    ],
+                ),
+                LLMMessage(role=Role.TOOL, content="result", tool_call_id="tc_1"),
+                _mem_tail(),
+            ],
+        )
+        wire = payload["messages"]
+        assert all("cache_control" not in block for block in wire[-1]["content"])
+        tagged = wire[-2]["content"][-1]
+        assert tagged["type"] == "tool_result"
+        assert tagged["cache_control"] == {"type": "ephemeral"}
+
+    def test_memory_only_request_gets_no_breakpoint_and_no_crash(
+        self, adapter, provider
+    ):
+        payload = self._prepare(adapter, provider, [_mem_tail()])
+        wire = payload["messages"]
+        assert len(wire) == 1
+        assert all("cache_control" not in block for block in wire[0]["content"])

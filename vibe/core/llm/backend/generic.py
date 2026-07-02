@@ -16,6 +16,7 @@ from vibe.core.llm.backend.adapter_port import (
     APIAdapter,
     PreparedRequest,
     RequestParams,
+    trailing_ephemeral_count,
 )
 from vibe.core.llm.backend.anthropic import AnthropicAdapter
 from vibe.core.llm.backend.openai_responses import (
@@ -102,6 +103,7 @@ class OpenAIAdapter(APIAdapter):
                 "reasoning_message_id",
                 "reasoning_state",
                 "injected",
+                "injected_kind",
                 "images",
             },
         )
@@ -153,7 +155,10 @@ class OpenAIAdapter(APIAdapter):
         from vibe.core.llm.backend.cache_hints import build_cache_hint
 
         hint = build_cache_hint(
-            provider, converted_messages, session_id=params.cache_session_id
+            provider,
+            converted_messages,
+            session_id=params.cache_session_id,
+            skip_trailing=trailing_ephemeral_count(messages),
         )
         if hint:
             merged = dict(extra_body or {})

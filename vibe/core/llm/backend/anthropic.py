@@ -12,6 +12,7 @@ from vibe.core.llm.backend.adapter_port import (
     APIAdapter,
     PreparedRequest,
     RequestParams,
+    trailing_ephemeral_count,
 )
 from vibe.core.types import (
     AvailableTool,
@@ -388,10 +389,13 @@ class AnthropicAdapter(APIAdapter):
         return blocks
 
     @staticmethod
-    def _add_cache_control_to_last_user_message(messages: list[dict[str, Any]]) -> None:
-        if not messages:
+    def _add_cache_control_to_last_user_message(
+        messages: list[dict[str, Any]], skip_trailing: int = 0
+    ) -> None:
+        idx = len(messages) - 1 - skip_trailing
+        if idx < 0:
             return
-        last_message = messages[-1]
+        last_message = messages[idx]
         if last_message.get("role") != "user":
             return
         content = last_message.get("content")
@@ -439,6 +443,7 @@ class AnthropicAdapter(APIAdapter):
         tool_choice: dict[str, Any] | None,
         stream: bool,
         thinking: str,
+        cache_skip_trailing: int = 0,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"model": model_name, "messages": messages}
 
@@ -458,7 +463,7 @@ class AnthropicAdapter(APIAdapter):
         if stream:
             payload["stream"] = True
 
-        self._add_cache_control_to_last_user_message(messages)
+        self._add_cache_control_to_last_user_message(messages, cache_skip_trailing)
 
         return payload
 
@@ -485,6 +490,7 @@ class AnthropicAdapter(APIAdapter):
             tool_choice=converted_tool_choice,
             stream=enable_streaming,
             thinking=params.thinking,
+            cache_skip_trailing=trailing_ephemeral_count(params.messages),
         )
 
         headers = {
