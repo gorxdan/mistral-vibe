@@ -878,6 +878,19 @@ class VibeApp(App):
                     self.notify(nudge, severity="warning", markup=False, timeout=15)
         except Exception:
             logger.debug("bubblewrap install nudge skipped", exc_info=True)
+        # One-time session-start nudge: a code project is detected but LSP is
+        # off. The edit-triggered nudge only fires on file edit, so a read-only
+        # session never learns LSP exists. This closes that gap at startup.
+        try:
+            from vibe.core.lsp._nudge import session_start_lsp_nudge
+
+            lsp_msg = session_start_lsp_nudge(
+                self.agent_loop.base_config, CACHE_FILE.path
+            )
+            if lsp_msg:
+                self.notify(lsp_msg, markup=False, timeout=12)
+        except Exception:
+            logger.debug("lsp session-start nudge skipped", exc_info=True)
 
     async def _watch_init_completion(self) -> None:
         init_widget = None

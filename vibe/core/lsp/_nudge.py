@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from vibe.core.lsp._defaults import (
+    PRESETS,
     ServerPreset,
     available_presets,
     broken_presets,
     preset_for_extension,
+    preset_matches_root,
 )
 
 if TYPE_CHECKING:
@@ -178,3 +180,33 @@ def reset_nudge_state(cache_path: Path) -> None:
     from vibe.cli.cache import write_cache
 
     write_cache(cache_path, _CACHE_SECTION, {"offered_once": True, "declined": False})
+
+
+def session_start_lsp_nudge(
+    config: VibeConfig, cache_path: Path, cwd: Path | None = None
+) -> str | None:
+    """One-time session-start nudge when a code project is detected but LSP is off.
+
+    Fires before the user edits anything: the edit-triggered nudge (``_maybe_nudge_lsp``)
+    only fires on file edit, so a read-only session never learns LSP exists. This
+    closes that gap with a one-line toast at startup, gated independently so it
+    does not consume the edit nudge's ``first_prompt`` opportunity. Returns the
+    nudge text, or None when LSP is on, the nudge was already shown, or no preset
+    matches the project root.
+    """
+    if "lsp" in getattr(config, "installed_components", []):
+        return None
+    state = _read_nudge_state(cache_path)
+    if state.get("session_start_shown"):
+        return None
+    root = cwd or Path.cwd()
+    has_code_project = any(
+        preset_matches_root(preset, root) for preset in PRESETS.values()
+    )
+    if not has_code_project:
+        return None
+    _write_nudge_state(cache_path, session_start_shown=True)
+    return (
+        "Symbol-accurate navigation available — run /lspstall for "
+        "go-to-definition, find-references, and hover."
+    )

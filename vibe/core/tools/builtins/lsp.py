@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.logger import logger
 from vibe.core.lsp import LSPNotConnectedError, get_lsp_manager
+from vibe.core.lsp._adherence import record_lsp_call
 from vibe.core.lsp._types import (
     LSPError,
     LSPProtocolError,
@@ -290,6 +291,7 @@ class Lsp(
                 args.operation.value,
                 (time.perf_counter() - server_t0) * 1000.0,
             )
+            record_lsp_call(args.operation.value)
             if cache_key is not None:
                 self._result_cache_put(cache_key, result)
         except LSPNotConnectedError as exc:

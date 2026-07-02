@@ -2083,3 +2083,75 @@ def test_preset_install_command_field_round_trips() -> None:
         }, f"{key} channel not in bootstrap set"
     for key in hint_only_keys:
         assert not PRESETS[key].install_command, f"{key} should stay hint-only"
+
+
+def test_session_start_nudge_fires_for_code_project_with_lsp_off(
+    monkeypatch, tmp_path
+) -> None:
+    """A session in a code-project root with LSP off gets the /lspstall hint."""
+    from vibe.core.lsp import _nudge as nudge
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    monkeypatch.setattr(nudge, "_read_nudge_state", lambda _: {})
+    msg = nudge.session_start_lsp_nudge(
+        _config_without_lsp(), tmp_path / "cache.json", cwd=tmp_path
+    )
+    assert msg is not None
+    assert "/lspstall" in msg
+
+
+def test_session_start_nudge_skips_when_lsp_installed(monkeypatch, tmp_path) -> None:
+    from vibe.core.lsp import _nudge as nudge
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    monkeypatch.setattr(nudge, "_read_nudge_state", lambda _: {})
+    msg = nudge.session_start_lsp_nudge(
+        _config_with_lsp(), tmp_path / "cache.json", cwd=tmp_path
+    )
+    assert msg is None
+
+
+def test_session_start_nudge_skips_when_already_shown(monkeypatch, tmp_path) -> None:
+    from vibe.core.lsp import _nudge as nudge
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    monkeypatch.setattr(
+        nudge, "_read_nudge_state", lambda _: {"session_start_shown": True}
+    )
+    msg = nudge.session_start_lsp_nudge(
+        _config_without_lsp(), tmp_path / "cache.json", cwd=tmp_path
+    )
+    assert msg is None
+
+
+def test_session_start_nudge_skips_when_no_code_project(monkeypatch, tmp_path) -> None:
+    from vibe.core.lsp import _nudge as nudge
+
+    # Empty dir — no manifest markers for any preset.
+    monkeypatch.setattr(nudge, "_read_nudge_state", lambda _: {})
+    msg = nudge.session_start_lsp_nudge(
+        _config_without_lsp(), tmp_path / "cache.json", cwd=tmp_path
+    )
+    assert msg is None
+
+
+def test_session_start_nudge_records_shown_state(monkeypatch, tmp_path) -> None:
+    """First call fires AND persists shown-state so the next call is a no-op."""
+    from vibe.core.lsp import _nudge as nudge
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    state: dict[str, object] = {}
+    monkeypatch.setattr(nudge, "_read_nudge_state", lambda _: state)
+
+    def fake_write(_path, **updates):
+        state.update(updates)
+
+    monkeypatch.setattr(nudge, "_write_nudge_state", fake_write)
+    msg1 = nudge.session_start_lsp_nudge(
+        _config_without_lsp(), tmp_path / "cache.json", cwd=tmp_path
+    )
+    assert msg1 is not None
+    msg2 = nudge.session_start_lsp_nudge(
+        _config_without_lsp(), tmp_path / "cache.json", cwd=tmp_path
+    )
+    assert msg2 is None

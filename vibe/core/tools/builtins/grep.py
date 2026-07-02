@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from vibe.core.lsp._adherence import record_symbol_grep_miss
 from vibe.core.paths import VIBE_HOME
 from vibe.core.tools.base import (
     BaseTool,
@@ -324,6 +325,7 @@ class Grep(
                 "go_to_definition / find_references resolves it, including "
                 "imports and re-exports that grep misses."
             )
+            record_symbol_grep_miss()
         yield result
 
     def get_result_extra(self, result: GrepResult) -> str | None:
