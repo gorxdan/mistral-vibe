@@ -360,17 +360,16 @@ class TestSessionLoggerSaveInteraction:
             assert "title" in metadata
             assert metadata["title"] == "Hello"
             assert metadata["title_source"] == "auto"
-            assert "system_prompt" in metadata
+            assert "system_prompt" not in metadata
 
     @pytest.mark.asyncio
-    async def test_save_interaction_system_prompt_in_metadata(
+    async def test_save_interaction_system_prompt_in_context_file(
         self,
         session_config: SessionLoggingConfig,
         mock_vibe_config: VibeConfig,
         mock_tool_manager: ToolManager,
         mock_agent_profile: AgentProfile,
     ) -> None:
-        """Test that system prompt is saved in metadata and not in messages."""
         session_id = "test-session-123"
         logger = SessionLogger(session_config, session_id)
 
@@ -393,13 +392,14 @@ class TestSessionLoggerSaveInteraction:
         )
 
         assert logger.session_dir is not None
-        metadata_file = logger.session_dir / "meta.json"
-        assert metadata_file.exists()
-        with open(metadata_file) as f:
-            metadata = json.load(f)
-            assert "system_prompt" in metadata
-            assert metadata["system_prompt"]["content"] == "System prompt"
-            assert metadata["system_prompt"]["role"] == "system"
+        context_file = logger.session_dir / "context.json"
+        assert context_file.exists()
+        with open(context_file) as f:
+            context = json.load(f)
+            assert context["system_prompt"]["content"] == "System prompt"
+            assert context["system_prompt"]["role"] == "system"
+            assert "tools_available" in context
+            assert "config" in context
 
         messages_file = logger.session_dir / "messages.jsonl"
         assert messages_file.exists()
@@ -410,6 +410,90 @@ class TestSessionLoggerSaveInteraction:
             assert len(messages_data) == 2
             assert messages_data[0]["role"] == "user"
             assert messages_data[1]["role"] == "assistant"
+
+    @pytest.mark.asyncio
+    async def test_save_interaction_keeps_static_context_out_of_metadata(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+    ) -> None:
+        logger = SessionLogger(session_config, "test-session-123")
+        messages = [
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
+        ]
+
+        await logger.save_interaction(
+            messages=messages,
+            stats=AgentStats(steps=1),
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+
+        assert logger.session_dir is not None
+        with open(logger.session_dir / "meta.json") as f:
+            metadata = json.load(f)
+        assert "system_prompt" not in metadata
+        assert "tools_available" not in metadata
+        assert "config" not in metadata
+        assert metadata["total_messages"] == 2
+        assert metadata["agent_profile"]["name"] == "test-agent"
+
+    @pytest.mark.asyncio
+    async def test_static_context_written_once_until_it_changes(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+    ) -> None:
+        logger = SessionLogger(session_config, "test-session-123")
+        messages = [
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
+        ]
+
+        await logger.save_interaction(
+            messages=messages,
+            stats=AgentStats(steps=1),
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+        assert logger.session_dir is not None
+        context_file = logger.session_dir / "context.json"
+        first_mtime = context_file.stat().st_mtime_ns
+
+        messages.append(LLMMessage(role=Role.USER, content="Again"))
+        await logger.save_interaction(
+            messages=messages,
+            stats=AgentStats(steps=2),
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+        assert context_file.stat().st_mtime_ns == first_mtime
+
+        changed = [
+            LLMMessage(role=Role.SYSTEM, content="A different system prompt"),
+            *messages[1:],
+            LLMMessage(role=Role.ASSISTANT, content="More"),
+        ]
+        await logger.save_interaction(
+            messages=changed,
+            stats=AgentStats(steps=3),
+            base_config=mock_vibe_config,
+            tool_manager=mock_tool_manager,
+            agent_profile=mock_agent_profile,
+        )
+        with open(context_file) as f:
+            context = json.load(f)
+        assert context["system_prompt"]["content"] == "A different system prompt"
 
     @pytest.mark.asyncio
     async def test_save_interaction_with_existing_messages(

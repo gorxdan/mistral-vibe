@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 import getpass
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -35,6 +36,9 @@ if TYPE_CHECKING:
 
 
 TMP_CLEANUP_INTERVAL = timedelta(seconds=5)
+# Static session context (tools schema, config dump, system prompt): ~100KB of
+# analysis-only data no resume/picker reader consumes — kept out of the per-round meta.json.
+CONTEXT_FILENAME = "context.json"
 # Cap dirs archived per startup so the (synchronous) tar never noticeably delays
 # session start; any backlog drains over the next few sessions.
 _ARCHIVE_MAX_PER_RUN = 25
@@ -89,6 +93,7 @@ class SessionLogger:
         self.enabled = session_config.enabled
         self._last_tmp_cleanup_at: datetime | None = None
         self._tmp_cleanup_lock = Lock()
+        self._static_context_fingerprint: str | None = None
 
         if not self.enabled:
             self.save_dir: Path | None = None
@@ -277,31 +282,55 @@ class SessionLogger:
         )
 
     @staticmethod
-    def _persist_metadata_sync(metadata: Any, session_dir: Path) -> None:
-        temp_metadata_filepath = None
-        metadata_filepath = session_dir / METADATA_FILENAME
+    def _atomic_fsync_write_sync(payload: bytes, target: Path) -> None:
+        temp_filepath = None
         try:
             # write_safe doesn't fit: the .json.tmp suffix (cleanup_tmp_files
             # contract) and fsync-before-rename are both required here.
-            fd, tmp_name = tempfile.mkstemp(suffix=".json.tmp", dir=session_dir)
-            temp_metadata_filepath = Path(tmp_name)
+            fd, tmp_name = tempfile.mkstemp(suffix=".json.tmp", dir=target.parent)
+            temp_filepath = Path(tmp_name)
             with os.fdopen(fd, "wb") as f:
-                f.write(orjson.dumps(metadata, option=orjson.OPT_INDENT_2))
+                f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
 
-            os.replace(temp_metadata_filepath, metadata_filepath)
+            os.replace(temp_filepath, target)
+        finally:
+            if temp_filepath and temp_filepath.exists() and temp_filepath.is_file():
+                temp_filepath.unlink()
+
+    @staticmethod
+    def _persist_metadata_sync(metadata: Any, session_dir: Path) -> None:
+        metadata_filepath = session_dir / METADATA_FILENAME
+        try:
+            SessionLogger._atomic_fsync_write_sync(
+                orjson.dumps(metadata, option=orjson.OPT_INDENT_2), metadata_filepath
+            )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to persist session metadata to {metadata_filepath}: {e}"
             ) from e
-        finally:
-            if (
-                temp_metadata_filepath
-                and temp_metadata_filepath.exists()
-                and temp_metadata_filepath.is_file()
-            ):
-                temp_metadata_filepath.unlink()
+
+    async def _persist_static_context(
+        self, context: dict[str, Any], session_dir: Path
+    ) -> None:
+        payload = orjson.dumps(context, option=orjson.OPT_INDENT_2)
+        fingerprint = hashlib.sha256(payload).hexdigest()
+        context_filepath = session_dir / CONTEXT_FILENAME
+        if (
+            fingerprint == self._static_context_fingerprint
+            and context_filepath.exists()
+        ):
+            return
+        try:
+            await asyncio.to_thread(
+                SessionLogger._atomic_fsync_write_sync, payload, context_filepath
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to persist session context to {context_filepath}: {e}"
+            ) from e
+        self._static_context_fingerprint = fingerprint
 
     @staticmethod
     async def persist_messages(messages: list[dict], session_dir: Path) -> None:
@@ -392,19 +421,25 @@ class SessionLogger:
             )
             total_messages = len(non_system_messages)
 
+            await self._persist_static_context(
+                {
+                    "tools_available": tools_available,
+                    "config": base_config.model_dump(mode="json"),
+                    "system_prompt": system_prompt,
+                },
+                session_dir,
+            )
+
             metadata_dump = {
                 **session_metadata.model_dump(),
                 "end_time": utc_now().isoformat(),
                 "stats": stats.model_dump(),
                 "title": title,
                 "total_messages": total_messages,
-                "tools_available": tools_available,
-                "config": base_config.model_dump(mode="json"),
                 "agent_profile": {
                     "name": agent_profile.name,
                     "overrides": agent_profile.overrides,
                 },
-                "system_prompt": system_prompt,
             }
 
             await SessionLogger.persist_metadata(metadata_dump, session_dir)
@@ -505,6 +540,7 @@ class SessionLogger:
         self.session_start_time = utc_now().isoformat()
         self.session_dir = self.save_folder
         self.session_metadata = self._initialize_session_metadata()
+        self._static_context_fingerprint = None
         if parent_session_id is not None:
             self.session_metadata.parent_session_id = parent_session_id
 
@@ -515,6 +551,7 @@ class SessionLogger:
         self.session_id = session_id
         self.session_dir = session_dir
         self.session_metadata = SessionLoader.load_metadata(session_dir)
+        self._static_context_fingerprint = None
 
         if self.session_metadata.start_time:
             self.session_start_time = self.session_metadata.start_time
