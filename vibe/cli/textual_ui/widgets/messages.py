@@ -380,15 +380,18 @@ class StreamingMessageBase(Static):
 
 
 class StreamingMarkdown(Markdown):
-    """A ``Markdown`` whose per-append re-layout stays O(1), not O(blocks).
+    """A ``Markdown`` whose per-append CSS re-style stays O(1), not O(blocks).
 
     Because ``MarkdownBlock:last-child`` in app.tcss is an order pseudo-class,
     Textual flags every block ``_has_order_style`` and its mount closure re-applies
-    CSS to *all* already-mounted blocks on each appended block — O(n^2) over a
-    streamed reply. A block that is no longer the tail (and, since we only append,
-    never will be again) is settled: its order styles are final, so clearing the
-    flag makes the closure skip it and only the tail re-styles. A full stylesheet
-    re-apply (theme reload) resets the flag, so this only trims the streaming path.
+    CSS to *all* already-mounted blocks on each appended block — O(n^2) restyle
+    churn over a streamed reply. A block that is no longer the tail (and, since we
+    only append, never will be again) is settled: its order styles are final, so
+    clearing the flag makes the closure skip it and only the tail re-styles.
+    Re-layout (compositor arrange/resolve_box_models) stays O(mounted blocks) per
+    flush, so the net effect is a large constant-factor CPU win, not a complexity
+    change; output is byte-identical. A full stylesheet re-apply (theme reload)
+    resets the flag, so this only trims the streaming path.
     """
 
     def __init__(self, markdown: str | None = None) -> None:
