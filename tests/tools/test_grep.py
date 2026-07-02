@@ -676,9 +676,7 @@ def test_hint_private_attr_excluded_from_model_dump():
 @pytest.mark.asyncio
 async def test_symbol_grep_sets_hint_when_lsp_available(grep, tmp_path, monkeypatch):
     (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
-    monkeypatch.setattr(
-        "vibe.core.tools.builtins.grep._lsp_available", lambda: True
-    )
+    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
 
     result = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
 
@@ -694,9 +692,7 @@ async def test_symbol_grep_sets_hint_when_lsp_available(grep, tmp_path, monkeypa
 @pytest.mark.asyncio
 async def test_non_symbol_grep_sets_no_hint(grep, tmp_path, monkeypatch):
     (tmp_path / "test.py").write_text("error: boom\n")
-    monkeypatch.setattr(
-        "vibe.core.tools.builtins.grep._lsp_available", lambda: True
-    )
+    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
 
     result = await collect_result(grep.run(GrepArgs(pattern="error: boom")))
 
@@ -707,9 +703,7 @@ async def test_non_symbol_grep_sets_no_hint(grep, tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_symbol_grep_no_hint_when_lsp_unavailable(grep, tmp_path, monkeypatch):
     (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
-    monkeypatch.setattr(
-        "vibe.core.tools.builtins.grep._lsp_available", lambda: False
-    )
+    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: False)
 
     result = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
 
