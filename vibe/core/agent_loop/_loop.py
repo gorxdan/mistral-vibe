@@ -9,7 +9,6 @@ import dataclasses
 import functools
 import hashlib
 import os
-from pathlib import Path
 import shutil
 import threading
 from threading import Thread
@@ -74,6 +73,7 @@ from vibe.core.middleware import (
     TurnLimitMiddleware,
     make_plan_agent_reminder,
 )
+from vibe.core.paths import safe_cwd
 from vibe.core.plan_session import PlanSession
 from vibe.core.resource_monitor import ResourceMonitor
 from vibe.core.rewind import RewindManager
@@ -702,7 +702,7 @@ class AgentLoop(AgentLoopSessionMixin):
             if self.entrypoint_metadata
             else None
         )
-        has_agents_md = has_agents_md_file(Path.cwd())
+        has_agents_md = has_agents_md_file(safe_cwd())
         nb_skills = len(self.skill_manager.available_skills)
         nb_mcp_servers = len(self.config.mcp_servers)
         nb_models = len(self.config.models)

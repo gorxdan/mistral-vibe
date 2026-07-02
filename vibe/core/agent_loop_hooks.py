@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from opentelemetry import trace
@@ -51,6 +50,7 @@ from vibe.core.hooks.models import (
 )
 from vibe.core.llm.models import ResolvedToolCall
 from vibe.core.logger import logger
+from vibe.core.paths import safe_cwd
 from vibe.core.types import ToolResultEvent
 from vibe.core.utils import (
     CANCELLATION_TAG,
@@ -110,7 +110,7 @@ class AgentLoopHooksMixin:
         return HookSessionContext(
             session_id=self.session_id,
             transcript_path=transcript,
-            cwd=str(Path.cwd().resolve()),
+            cwd=str(safe_cwd()),
             parent_session_id=self.parent_session_id,
         )
 

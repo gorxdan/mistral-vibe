@@ -7,6 +7,7 @@ from vibe.core.paths._local_config_files import (
     find_local_config_dirs,
     resolved_within,
 )
+from vibe.core.paths._safe_cwd import safe_cwd
 from vibe.core.paths._vibe_home import (
     CACHE_FILE,
     CONNECTOR_BOOTSTRAP_CACHE_FILE,
@@ -44,4 +45,5 @@ __all__ = [
     "dedup_paths",
     "find_local_config_dirs",
     "resolved_within",
+    "safe_cwd",
 ]

@@ -17,6 +17,7 @@ from git.exc import GitCommandError, InvalidGitRepositoryError
 
 from vibe.core.config import WorktreeConfig
 from vibe.core.logger import logger
+from vibe.core.paths import safe_cwd
 from vibe.core.tools.utils import isolated_worktree_root
 from vibe.core.trusted_folders import trusted_folders_manager
 from vibe.core.utils.io import read_safe
@@ -110,7 +111,7 @@ def original_working_directory() -> str:
 
 
 def _origin_repo_root_for_cwd() -> str:
-    cwd = Path.cwd()
+    cwd = safe_cwd()
     try:
         repo = Repo(str(cwd), search_parent_directories=True)
         # `rev-parse --git-common-dir` resolves a linked worktree's `.git` file
