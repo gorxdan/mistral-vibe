@@ -352,6 +352,37 @@ def test_run_cli_passes_max_tokens_to_run_programmatic(
     assert options.max_session_tokens == 123
 
 
+def test_run_cli_threads_no_worktree_flag_into_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = _make_args(no_worktree=True)
+    call: dict[str, object] = {}
+    config = build_test_vibe_config()
+
+    monkeypatch.setattr(cli_mod, "bootstrap_config_files", lambda: None)
+    monkeypatch.setattr(cli_mod, "load_config_or_exit", lambda interactive: config)
+    monkeypatch.setattr(cli_mod, "load_hooks_from_fs", lambda _config, **_kw: None)
+    monkeypatch.setattr(cli_mod, "setup_tracing", lambda _config: None)
+    monkeypatch.setattr(cli_mod, "load_session", lambda _args, _config: None)
+    monkeypatch.setattr(cli_mod, "get_prompt_from_stdin", lambda: None)
+    monkeypatch.setattr(cli_mod, "warn_if_workdir_trust_is_unset", lambda: None)
+    monkeypatch.setattr(cli_mod, "get_initial_agent_name", lambda _args, _config: "x")
+
+    def fake_run_programmatic(**kwargs: object) -> str:
+        call.update(kwargs)
+        return "done"
+
+    monkeypatch.setattr(cli_mod, "run_programmatic", fake_run_programmatic)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.run_cli(args)
+
+    assert exc_info.value.code == 0
+    options = call["options"]
+    assert isinstance(options, ProgrammaticOptions)
+    assert options.no_worktree is True
+
+
 def test_run_cli_runs_update_prompt_before_trust_resolver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -295,6 +295,7 @@ def _run_programmatic_mode(
                 # spawn inside an interactive session, so allow selecting a SUBAGENT
                 # profile (e.g. reviewer) as the primary agent via --agent.
                 allow_subagent=True,
+                no_worktree=args.no_worktree,
             ),
         )
         if final_response:

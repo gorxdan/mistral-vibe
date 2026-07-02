@@ -120,6 +120,7 @@ class ProgrammaticOptions:
     hook_config_result: HookConfigResult | None = None
     allow_subagent: bool = False
     keep_alive_seconds: int | None = None
+    no_worktree: bool = False
 
 
 async def _run_session(
@@ -217,7 +218,7 @@ def run_programmatic(
     # Worktree isolation: enter before AgentLoop so all Path.cwd() consumers
     # see the worktree. Auto-ON for programmatic (mode=auto-by-entrypoint).
     worktree_handle = None
-    if worktree_enabled(config, programmatic=True):
+    if not opts.no_worktree and worktree_enabled(config, programmatic=True):
         worktree_handle = worktree_manager.enter("programmatic", config.worktree)
         if worktree_handle is not None and not config.displayed_workdir:
             config.displayed_workdir = str(worktree_handle.original_repo_root)
