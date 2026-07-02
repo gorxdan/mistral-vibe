@@ -8,6 +8,10 @@ set, so this file is a fast no-op in normal CI and an evaluation harness under:
     VIBE_TRACE_LOOP=0.02 VIBE_PROFILE=1 \\
         uv run pytest tests/agent_loop/test_perf_benchmark.py -s
 
+``VIBE_TRACE_LOOP`` is in SECONDS: ``0.02`` arms the tracer at 20ms. The armed
+threshold is echoed into the per-PID perf log, so an empty blocker table means
+"no callback blocked past the threshold" — not that the tracer was off.
+
 Two scenarios exercise the async hot paths most likely to monopolize the shared
 event-loop thread (the "single-core heavy" hypothesis):
 
