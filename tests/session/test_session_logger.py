@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 import json
 import os
 from pathlib import Path
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -761,6 +764,66 @@ class TestSessionLoggerSaveInteraction:
         assert persist_messages_mock.await_count == 2
         assert persist_metadata_mock.await_count == 2
         assert cleanup_spy.call_count == 1
+
+
+class TestSessionLoggerLoopBlocking:
+    @pytest.mark.asyncio
+    async def test_save_interaction_keeps_event_loop_responsive(
+        self,
+        session_config: SessionLoggingConfig,
+        mock_vibe_config: VibeConfig,
+        mock_tool_manager: ToolManager,
+        mock_agent_profile: AgentProfile,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        logger = SessionLogger(session_config, "loop-block-session")
+
+        fsync_threads: list[int] = []
+        real_fsync = os.fsync
+
+        def slow_fsync(fd: int) -> None:
+            fsync_threads.append(threading.get_ident())
+            time.sleep(0.1)
+            real_fsync(fd)
+
+        monkeypatch.setattr("vibe.core.session.session_logger.os.fsync", slow_fsync)
+
+        messages = [
+            LLMMessage(role=Role.SYSTEM, content="System prompt"),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(role=Role.ASSISTANT, content="Hi there!"),
+        ]
+
+        max_gap = 0.0
+
+        async def ticker() -> None:
+            nonlocal max_gap
+            last = time.perf_counter()
+            while True:
+                await asyncio.sleep(0.001)
+                now = time.perf_counter()
+                max_gap = max(max_gap, now - last)
+                last = now
+
+        ticker_task = asyncio.create_task(ticker())
+        await asyncio.sleep(0.01)
+        try:
+            await logger.save_interaction(
+                messages=messages,
+                stats=AgentStats(steps=1),
+                base_config=mock_vibe_config,
+                tool_manager=mock_tool_manager,
+                agent_profile=mock_agent_profile,
+            )
+        finally:
+            ticker_task.cancel()
+
+        loop_thread = threading.get_ident()
+        assert fsync_threads, "save_interaction never fsynced"
+        assert loop_thread not in fsync_threads, "fsync ran on the event-loop thread"
+        assert max_gap < 0.05, (
+            f"event loop blocked for {max_gap * 1000:.0f}ms during save_interaction"
+        )
 
 
 class TestSessionLoggerResetSession:

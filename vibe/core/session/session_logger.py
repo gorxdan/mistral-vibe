@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 import getpass
@@ -8,10 +9,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+import tempfile
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Literal
 
-from anyio import NamedTemporaryFile, Path as AsyncPath
 import orjson
 
 from vibe.core.logger import logger
@@ -267,26 +268,29 @@ class SessionLogger:
         self._set_title_state(title, source="auto")
         return title
 
+    # Both persist methods resolve only after write+fsync land (durability
+    # contract, incl. act()'s finally-save on cancel); sequential awaits keep append order.
     @staticmethod
     async def persist_metadata(metadata: Any, session_dir: Path) -> None:
+        await asyncio.to_thread(
+            SessionLogger._persist_metadata_sync, metadata, session_dir
+        )
+
+    @staticmethod
+    def _persist_metadata_sync(metadata: Any, session_dir: Path) -> None:
         temp_metadata_filepath = None
         metadata_filepath = session_dir / METADATA_FILENAME
         try:
-            async with NamedTemporaryFile(
-                mode="w",
-                suffix=".json.tmp",
-                dir=str(session_dir),
-                delete=False,
-                encoding="utf-8",
-            ) as f:
-                temp_metadata_filepath = Path(str(f.name))
-                await f.write(
-                    orjson.dumps(metadata, option=orjson.OPT_INDENT_2).decode("utf-8")
-                )
-                await f.flush()
-                os.fsync(f.wrapped.fileno())
+            # write_safe doesn't fit: the .json.tmp suffix (cleanup_tmp_files
+            # contract) and fsync-before-rename are both required here.
+            fd, tmp_name = tempfile.mkstemp(suffix=".json.tmp", dir=session_dir)
+            temp_metadata_filepath = Path(tmp_name)
+            with os.fdopen(fd, "wb") as f:
+                f.write(orjson.dumps(metadata, option=orjson.OPT_INDENT_2))
+                f.flush()
+                os.fsync(f.fileno())
 
-            os.replace(temp_metadata_filepath, str(metadata_filepath))
+            os.replace(temp_metadata_filepath, metadata_filepath)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to persist session metadata to {metadata_filepath}: {e}"
@@ -301,18 +305,19 @@ class SessionLogger:
 
     @staticmethod
     async def persist_messages(messages: list[dict], session_dir: Path) -> None:
-        messages_filepath = session_dir / "messages.jsonl"
-        try:
-            if not messages_filepath.exists():
-                messages_filepath.touch()
+        await asyncio.to_thread(
+            SessionLogger._persist_messages_sync, messages, session_dir
+        )
 
-            async with await AsyncPath(messages_filepath).open(
-                "a", encoding="utf-8"
-            ) as f:
+    @staticmethod
+    def _persist_messages_sync(messages: list[dict], session_dir: Path) -> None:
+        messages_filepath = session_dir / MESSAGES_FILENAME
+        try:
+            with open(messages_filepath, "ab") as f:
                 for message in messages:
-                    await f.write(orjson.dumps(message).decode("utf-8") + "\n")
-                    await f.flush()
-                    os.fsync(f.wrapped.fileno())
+                    f.write(orjson.dumps(message) + b"\n")
+                    f.flush()
+                    os.fsync(f.fileno())
         except Exception as e:
             raise RuntimeError(
                 f"Failed to persist session messages to {messages_filepath}: {e}"

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from collections.abc import Callable
 from http import HTTPStatus
+from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, Mock
 
@@ -14,7 +16,7 @@ from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core.agents.models import BuiltinAgentName
-from vibe.core.config import VibeConfig
+from vibe.core.config import SessionLoggingConfig, VibeConfig
 from vibe.core.llm.exceptions import BackendError, BackendErrorBuilder
 from vibe.core.middleware import (
     ConversationContext,
@@ -447,6 +449,43 @@ async def test_act_flushes_and_logs_when_streaming_errors(observer_capture) -> N
 
     assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]
     assert agent.session_logger.save_interaction.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_act_persists_transcript_when_cancelled_mid_turn(tmp_path: Path) -> None:
+    class HangingBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+
+        async def complete(self, request, *, response_headers_sink=None):
+            self.entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    backend = HangingBackend()
+    config = build_test_vibe_config(
+        session_logging=SessionLoggingConfig(
+            enabled=True, save_dir=str(tmp_path / "sessions")
+        ),
+        enabled_tools=[],
+    )
+    agent = build_test_agent_loop(config=config, backend=backend)
+
+    async def consume() -> None:
+        async for _ in agent.act("save me on cancel"):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(backend.entered.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    session_dir = agent.session_logger.session_dir
+    assert session_dir is not None
+    transcript = (session_dir / "messages.jsonl").read_text()
+    assert "save me on cancel" in transcript
 
 
 @pytest.mark.asyncio
