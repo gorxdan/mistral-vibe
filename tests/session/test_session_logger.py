@@ -1587,3 +1587,201 @@ def test_archive_old_session_dirs_compresses_not_deletes(tmp_path: Path) -> None
     os.utime(old2, (1, 1))
     archive_old_session_dirs(tmp_path, "session", archive_after_days=0, keep=current)
     assert old2.exists()
+
+
+def test_archive_aborts_when_existing_file_appended_during_tar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tarfile
+
+    from vibe.core.session.session_logger import archive_old_session_dirs
+
+    old = tmp_path / "session_20200101_000000_aaa"
+    old.mkdir()
+    messages = old / "messages.jsonl"
+    messages.write_text("transcript\n")
+    os.utime(messages, (1, 1))
+    os.utime(old, (1, 1))
+
+    real_open = tarfile.open
+
+    def open_and_append(name, mode, *args, **kwargs):
+        tar = real_open(name, mode, *args, **kwargs)
+        # The prod save path: append to an existing file, which never bumps the
+        # parent dir's mtime — a dir-mtime staleness guard cannot see it.
+        with open(messages, "ab") as f:
+            f.write(b'{"role":"user","content":"resumed mid-tar"}\n')
+            f.flush()
+            os.fsync(f.fileno())
+        return tar
+
+    monkeypatch.setattr(
+        "vibe.core.session.session_logger.tarfile.open", open_and_append
+    )
+
+    archive_old_session_dirs(tmp_path, "session", archive_after_days=30)
+
+    assert old.exists(), "dir with a concurrent append was deleted"
+    assert "resumed mid-tar" in messages.read_text()
+    assert not (tmp_path / "archive" / f"{old.name}.tar.gz").exists()
+
+
+def test_archiver_skips_save_dir_when_archive_lock_held(tmp_path: Path) -> None:
+    fcntl = pytest.importorskip("fcntl")
+
+    from vibe.core.session.session_logger import archive_old_session_dirs
+
+    old = tmp_path / "session_20200101_000000_aaa"
+    old.mkdir()
+    (old / "messages.jsonl").write_text("transcript")
+    os.utime(old, (1, 1))
+
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    fd = os.open(archive_dir / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        archive_old_session_dirs(tmp_path, "session", archive_after_days=30)
+        assert old.exists()
+        assert not (archive_dir / f"{old.name}.tar.gz").exists()
+    finally:
+        os.close(fd)
+
+    archive_old_session_dirs(tmp_path, "session", archive_after_days=30)
+    assert not old.exists()
+    assert (archive_dir / f"{old.name}.tar.gz").exists()
+
+
+def test_archive_sweeps_stale_tmp_files(tmp_path: Path) -> None:
+    from vibe.core.session.session_logger import archive_old_session_dirs
+
+    old = tmp_path / "session_20200101_000000_aaa"
+    old.mkdir()
+    (old / "messages.jsonl").write_text("transcript")
+    os.utime(old, (1, 1))
+
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    stale = archive_dir / "tmpstale.tar.gz.tmp"
+    stale.write_bytes(b"orphaned by a crashed archiver")
+    os.utime(stale, (1, 1))
+    fresh = archive_dir / "tmpfresh.tar.gz.tmp"
+    fresh.write_bytes(b"another archiver's live tar")
+
+    archive_old_session_dirs(tmp_path, "session", archive_after_days=30)
+
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_resume_existing_session_marks_dir_live(
+    session_config: SessionLoggingConfig, temp_session_dir: Path
+) -> None:
+    from vibe.core.session.session_loader import METADATA_FILENAME
+
+    logger = SessionLogger(session_config, "resume-liveness")
+    thread = logger._archive_thread
+    if thread is not None:
+        thread.join(timeout=5)
+
+    old = temp_session_dir / "test_20200101_000000_aaa"
+    old.mkdir()
+    meta = SessionMetadata(
+        session_id="resumed",
+        start_time="2020-01-01T00:00:00",
+        end_time=None,
+        git_commit=None,
+        git_branch=None,
+        environment={},
+        username="tester",
+    )
+    (old / METADATA_FILENAME).write_text(meta.model_dump_json())
+    (old / "messages.jsonl").write_text("transcript\n")
+    os.utime(old, (1, 1))
+
+    logger.resume_existing_session("resumed", old)
+
+    # Resume must mark the dir live so a concurrent archiver's cutoff check
+    # (dir mtime) no longer classifies it as cold.
+    assert old.stat().st_mtime > time.time() - 60
+
+
+def test_concurrent_archivers_preserve_session_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import contextlib
+    import tarfile
+
+    from vibe.core.session.session_logger import archive_old_session_dirs
+
+    old = tmp_path / "session_20200101_000000_aaa"
+    old.mkdir()
+    payload = "x" * 50_000 + "\nEND\n"
+    (old / "messages.jsonl").write_text(payload)
+    (old / "meta.json").write_text("{}")
+    (old / "context.json").write_text("{}")
+    for f in old.iterdir():
+        os.utime(f, (1, 1))
+    os.utime(old, (1, 1))
+
+    real_open = tarfile.open
+    barrier = threading.Barrier(2)
+
+    def open_after_rendezvous(*args, **kwargs):
+        with contextlib.suppress(threading.BrokenBarrierError):
+            barrier.wait(timeout=1.0)
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "vibe.core.session.session_logger.tarfile.open", open_after_rendezvous
+    )
+
+    threads = [
+        threading.Thread(
+            target=archive_old_session_dirs, args=(tmp_path, "session", 30)
+        )
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    tarball = tmp_path / "archive" / f"{old.name}.tar.gz"
+    if old.exists():
+        assert (old / "messages.jsonl").read_text() == payload
+    else:
+        assert tarball.exists(), "source deleted without a surviving archive"
+        with tarfile.open(tarball) as tar:
+            member = tar.extractfile(f"{old.name}/messages.jsonl")
+            assert member is not None
+            assert member.read().decode() == payload
+    assert not list((tmp_path / "archive").glob("*.tar.gz.tmp"))
+
+
+def test_archive_aborts_when_dir_touched_during_tar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tarfile
+
+    from vibe.core.session.session_logger import archive_old_session_dirs
+
+    old = tmp_path / "session_20200101_000000_aaa"
+    old.mkdir()
+    (old / "messages.jsonl").write_text("transcript")
+    os.utime(old, (1, 1))
+
+    real_open = tarfile.open
+
+    def open_and_touch(*args, **kwargs):
+        tar = real_open(*args, **kwargs)
+        # A zero-write resume: only the liveness utime has happened so far.
+        os.utime(old)
+        return tar
+
+    monkeypatch.setattr("vibe.core.session.session_logger.tarfile.open", open_and_touch)
+
+    archive_old_session_dirs(tmp_path, "session", archive_after_days=30)
+
+    assert old.exists(), "dir resumed (utime only) during tar was deleted"
+    assert not (tmp_path / "archive" / f"{old.name}.tar.gz").exists()

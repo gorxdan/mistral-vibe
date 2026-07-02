@@ -42,6 +42,90 @@ CONTEXT_FILENAME = "context.json"
 # Cap dirs archived per background run to bound startup-adjacent IO; any
 # backlog drains over the next few sessions.
 _ARCHIVE_MAX_PER_RUN = 25
+_ARCHIVE_TMP_SUFFIX = ".tar.gz.tmp"
+# Orphaned tmp tars (crashed archiver) are swept past this age; a live tar keeps
+# its tmp mtime fresh, so age is a safe liveness proxy even for unlocked writers.
+_ARCHIVE_TMP_MAX_AGE_SECONDS = 3600
+
+# fcntl locking (POSIX) as in usage/_recorder.py; without it (Windows) concurrent
+# archivers only duplicate work — unique tmps + the snapshot recheck carry safety.
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
+
+
+def _try_lock_archive_dir(archive_dir: Path) -> int | None:
+    fd = os.open(archive_dir / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    if _fcntl is None:
+        return fd
+    try:
+        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _unlock_archive_dir(fd: int) -> None:
+    try:
+        if _fcntl is not None:
+            _fcntl.flock(fd, _fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _sweep_stale_archive_tmps(archive_dir: Path) -> None:
+    horizon = utc_now().timestamp() - _ARCHIVE_TMP_MAX_AGE_SECONDS
+    for tmp in archive_dir.glob(f"*{_ARCHIVE_TMP_SUFFIX}"):
+        try:
+            if tmp.stat().st_mtime < horizon:
+                tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _snapshot_dir_files(d: Path) -> tuple[int, dict[str, tuple[int, int]]] | None:
+    # Dir mtime is blind to in-place appends (moves only on entry changes), so
+    # staleness is per-file (mtime_ns, size) + dir mtime_ns for zero-write resume.
+    try:
+        files: dict[str, tuple[int, int]] = {}
+        for p in d.rglob("*"):
+            if p.is_file():
+                st = p.stat()
+                files[str(p.relative_to(d))] = (st.st_mtime_ns, st.st_size)
+        return d.stat().st_mtime_ns, files
+    except OSError:
+        return None
+
+
+def _prepare_archive_dir(archive_dir: Path) -> int | None:
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    lock_fd = _try_lock_archive_dir(archive_dir)
+    if lock_fd is not None:
+        _sweep_stale_archive_tmps(archive_dir)
+    return lock_fd
+
+
+def _archive_one_dir(
+    d: Path, tarball: Path, archive_dir: Path, keep_dir: Callable[[], Path | None]
+) -> bool:
+    before = _snapshot_dir_files(d)
+    if before is None:
+        return False
+    fd, tmp_name = tempfile.mkstemp(suffix=_ARCHIVE_TMP_SUFFIX, dir=archive_dir)
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        with tarfile.open(tmp, "w:gz") as tar:
+            tar.add(d, arcname=d.name)
+        if _snapshot_dir_files(d) != before or d == keep_dir():
+            return False  # concurrent writer; tar is stale
+        tmp.replace(tarball)  # atomic; complete before dir removed
+        shutil.rmtree(d, ignore_errors=True)
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def archive_old_session_dirs(
@@ -59,10 +143,12 @@ def archive_old_session_dirs(
     tarball is written to a temp name and atomically renamed before the dir is
     removed, so a crash mid-archive never loses the dir. Best-effort; 0 disables.
 
-    Runs on a background thread, so two guards protect a session resumed while
-    it works: *keep* may be a callable re-resolved around each dir (the live
-    session_dir can change after init via resume), and a dir whose mtime moved
-    while it was being tarred is left in place with its stale tarball discarded.
+    Concurrency: an exclusive flock on ``archive/.lock`` serializes archivers
+    per save_dir (a loser skips the run), and each tar writes to a mkstemp-unique
+    tmp so overlapping runs can never share an inode. A session resumed mid-run
+    is protected by *keep* (a callable re-resolved around each dir, tracking the
+    live session_dir) and by a per-file (mtime_ns, size) snapshot rechecked
+    after tar — dir mtime alone is blind to in-place transcript appends.
     """
     if archive_after_days <= 0:
         return
@@ -74,30 +160,30 @@ def archive_old_session_dirs(
         cutoff = utc_now().timestamp() - archive_after_days * 86400
         archive_dir = save_dir / "archive"
         done = 0
-        for d in sorted(save_dir.glob(f"{prefix}_*"), key=lambda p: p.name):
-            if done >= max_per_run:
-                break
-            try:
-                if not d.is_dir() or d == keep_dir():
-                    continue
-                mtime_before = d.stat().st_mtime
-                if mtime_before >= cutoff:
-                    continue
-                tarball = archive_dir / f"{d.name}.tar.gz"
-                if tarball.exists():
-                    continue
-                archive_dir.mkdir(parents=True, exist_ok=True)
-                tmp = tarball.with_name(tarball.name + ".tmp")
-                with tarfile.open(tmp, "w:gz") as tar:
-                    tar.add(d, arcname=d.name)
-                if d.stat().st_mtime != mtime_before or d == keep_dir():
-                    tmp.unlink(missing_ok=True)  # concurrent writer; tar is stale
-                    continue
-                tmp.replace(tarball)  # atomic; tarball complete before dir removed
-                shutil.rmtree(d, ignore_errors=True)
-                done += 1
-            except OSError:
-                pass
+        lock_fd: int | None = None
+        try:
+            for d in sorted(save_dir.glob(f"{prefix}_*"), key=lambda p: p.name):
+                if done >= max_per_run:
+                    break
+                try:
+                    if not d.is_dir() or d == keep_dir():
+                        continue
+                    if d.stat().st_mtime >= cutoff:
+                        continue
+                    tarball = archive_dir / f"{d.name}.tar.gz"
+                    if tarball.exists():
+                        continue
+                    if lock_fd is None:
+                        lock_fd = _prepare_archive_dir(archive_dir)
+                    if lock_fd is None:
+                        return  # another archiver owns this save_dir
+                    if _archive_one_dir(d, tarball, archive_dir, keep_dir):
+                        done += 1
+                except OSError:
+                    pass
+        finally:
+            if lock_fd is not None:
+                _unlock_archive_dir(lock_fd)
     except Exception:
         logger.debug("session dir archive skipped", exc_info=True)
 
@@ -574,6 +660,12 @@ class SessionLogger:
 
         self.session_id = session_id
         self.session_dir = session_dir
+        try:
+            # Mark the dir live before the first append (which never moves dir
+            # mtime), so a concurrent archiver's cutoff check sees the resume.
+            os.utime(session_dir)
+        except OSError:
+            pass
         self.session_metadata = SessionLoader.load_metadata(session_dir)
         self._static_context_fingerprint = None
 
