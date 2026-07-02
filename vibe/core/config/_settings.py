@@ -324,6 +324,9 @@ class MemoryConfig(BaseSettings):
     # just before the latest user turn, so only the small tail is reprocessed.
     # Live glm-5.2 A/B on a selection flip: 8.7% cached (system) -> 96.3% (late).
     inject_mode: Literal["system", "late"] = "late"
+    # "tail": memory block after the FINAL message — history stays a stable cache
+    # prefix (adapters skip the tail); "before-user": legacy placement (rollback).
+    late_anchor: Literal["tail", "before-user"] = "tail"
     max_entries_scanned: int = 200
     # Char cap per always-injected index line (id/tag/title/scope kept verbatim;
     # tags drop, description clips). 0 = uncapped. 63 entries: ~6.8k -> ~1.9k tok.

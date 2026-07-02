@@ -759,6 +759,7 @@ index_entry_max_chars = 120      # Per-line char cap for the injected index (0 =
 timeout = 20.0                   # Per-selection LLM timeout
 prefetch = true                  # Warm the selector before the turn needs it
 inject_mode = "late"             # "late" (ephemeral tail message) | "system"
+late_anchor = "tail"             # "tail" (request tail; cache-stable) | "before-user" (legacy)
 # Auto-extraction (write memories from conversation) and consolidation (merge
 # similar memories) families are also configurable: auto_extract,
 # auto_extract_model, auto_extract_max_writes, auto_extract_min_messages,

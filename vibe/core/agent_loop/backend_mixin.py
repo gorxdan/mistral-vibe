@@ -175,6 +175,11 @@ class AgentLoopBackendMixin(
             injected_kind=InjectedMessageKind.MEMORY,
         )
         msgs = list(self.messages)
+        if self.config.memory.late_anchor == "tail":
+            # Absolute tail: adapters rely on trailing MEMORY message(s) being the
+            # request's suffix when placing the history cache breakpoint.
+            msgs.append(mem_msg)
+            return msgs
         insert_at = next(
             (i for i in range(len(msgs) - 1, -1, -1) if msgs[i].role == Role.USER),
             len(msgs),
