@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from textual import events
 from textual.app import ComposeResult
+from textual.await_complete import AwaitComplete
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.css.query import NoMatches
@@ -23,7 +24,7 @@ from textual.reactive import reactive
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Button, Link, Markdown, Static
-from textual.widgets._markdown import MarkdownStream
+from textual.widgets._markdown import MarkdownBlock, MarkdownStream
 from watchfiles import awatch
 
 from vibe.cli.textual_ui.shortcut_hints import shortcut, shortcut_hint
@@ -378,13 +379,56 @@ class StreamingMessageBase(Static):
         return self._content.strip() == ""
 
 
+class StreamingMarkdown(Markdown):
+    """A ``Markdown`` whose per-append re-layout stays O(1), not O(blocks).
+
+    Because ``MarkdownBlock:last-child`` in app.tcss is an order pseudo-class,
+    Textual flags every block ``_has_order_style`` and its mount closure re-applies
+    CSS to *all* already-mounted blocks on each appended block — O(n^2) over a
+    streamed reply. A block that is no longer the tail (and, since we only append,
+    never will be again) is settled: its order styles are final, so clearing the
+    flag makes the closure skip it and only the tail re-styles. A full stylesheet
+    re-apply (theme reload) resets the flag, so this only trims the streaming path.
+    """
+
+    def __init__(self, markdown: str | None = None) -> None:
+        super().__init__(markdown)
+        self._settled_blocks = 0
+        self._prev_block_count = 0
+
+    def append(self, markdown: str) -> AwaitComplete:
+        base = super().append(markdown)
+        return AwaitComplete(self._append_then_settle(base))
+
+    def update(self, markdown: str) -> AwaitComplete:
+        self._settled_blocks = 0
+        self._prev_block_count = 0
+        return super().update(markdown)
+
+    async def _append_then_settle(self, base: AwaitComplete) -> None:
+        await base
+        self._settle_finalized_blocks()
+
+    def _settle_finalized_blocks(self) -> None:
+        blocks = [c for c in self.children if isinstance(c, MarkdownBlock)]
+        # Leave the previous tail styleable for this cycle's deferred mount closure
+        # (it strips that block's :last-child rule); settle everything before it.
+        settle_upto = max(0, self._prev_block_count - 1)
+        for block in blocks[self._settled_blocks : settle_upto]:
+            if hasattr(block, "_has_order_style"):
+                block._has_order_style = False
+                block._has_odd_or_even = False
+        self._settled_blocks = max(self._settled_blocks, settle_upto)
+        self._prev_block_count = len(blocks)
+
+
 class AssistantMessage(StreamingMessageBase):
     def __init__(self, content: str) -> None:
         super().__init__(content)
         self.add_class("assistant-message")
 
     def compose(self) -> ComposeResult:
-        markdown = Markdown("")
+        markdown = StreamingMarkdown("")
         self._markdown = markdown
         yield markdown
 
