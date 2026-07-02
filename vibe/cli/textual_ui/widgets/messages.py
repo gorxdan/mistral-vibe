@@ -391,8 +391,8 @@ class StreamingMarkdown(Markdown):
     re-apply (theme reload) resets the flag, so this only trims the streaming path.
     """
 
-    def __init__(self, markdown: str | None = None, **kwargs: object) -> None:
-        super().__init__(markdown, **kwargs)  # pyright: ignore[reportArgumentType]
+    def __init__(self, markdown: str | None = None) -> None:
+        super().__init__(markdown)
         self._settled_blocks = 0
         self._prev_block_count = 0
 
