@@ -801,6 +801,7 @@ class VibeApp(App):
             context_progress.tokens = TokenState(
                 max_tokens=self.config.get_active_model().auto_compact_threshold,
                 current_tokens=stats.context_tokens,
+                cached_tokens=stats.last_turn_cached_tokens,
             )
 
         self.agent_loop.stats.add_listener("context_tokens", update_context_progress)
