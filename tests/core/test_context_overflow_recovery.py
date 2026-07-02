@@ -103,6 +103,36 @@ async def test_try_reactive_shaping_compresses_old_history() -> None:
 
 
 @pytest.mark.asyncio
+async def test_try_reactive_shaping_resets_pipeline_shaper_cooldowns() -> None:
+    # A successful emergency shed clears the persistent shapers' cooldowns,
+    # else they suppress proactive shaping for the whole regrowth to overflow.
+    from vibe.core.config import ContextShapingConfig
+    from vibe.core.config._settings import SnipConfig
+    from vibe.core.middleware import MicrocompactMiddleware
+
+    cfg = build_test_vibe_config(
+        models=make_test_models(auto_compact_threshold=500),
+        context_shaping=ContextShapingConfig(
+            snip=SnipConfig(keep_recent_turns=1, min_message_tokens=50),
+            cache_prefix_guard_tokens=50,
+        ),
+    )
+    loop = build_test_agent_loop(config=cfg)
+    for _ in range(4):
+        loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="x" * 12000))
+    pipeline_mc = next(
+        mw
+        for mw in loop.middleware_pipeline.middlewares
+        if isinstance(mw, MicrocompactMiddleware)
+    )
+    pipeline_mc._cooldown_est = 10_000_000
+
+    assert await loop._try_reactive_shaping() is True
+
+    assert pipeline_mc._cooldown_est is None
+
+
+@pytest.mark.asyncio
 async def test_try_reactive_shaping_returns_false_when_nothing_to_shape() -> None:
     """When there is nothing to compress, shaping returns False so compaction
     fires as the fallback.

@@ -224,7 +224,8 @@ def run_programmatic(
     # enter before AgentLoop so Path.cwd() consumers see the worktree.
     worktree_handle: WorktreeHandle | None = None
     # An isolated spawn already runs inside a parent-created ephemeral worktree;
-    # entering another moves cwd outside enforce_isolated_confine's root (every file tool errors).
+    # entering another moves cwd outside enforce_isolated_confine's root (every
+    # file tool errors).
     if (
         not opts.no_worktree
         and isolated_worktree_root() is None

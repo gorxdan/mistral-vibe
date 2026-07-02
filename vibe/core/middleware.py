@@ -133,6 +133,10 @@ _MC_OPEN = "<vibe_microcompacted>"
 # and the window-relative lift live in ContextShaperMiddleware._threshold.
 _SHAPING_TOKEN_CAP = 256_000
 
+# Cap on how far past guard_tokens a band-crossing message may extend the
+# protected prefix (see _protected_prefix_len).
+_GUARD_CROSSING_MAX_FACTOR = 8
+
 
 class ContextShaperMiddleware:
     """Base for cheap, local, in-place context shapers run before AutoCompact.
@@ -180,13 +184,16 @@ class ContextShaperMiddleware:
         return scaled_guard_tokens(context.config, model, tier)
 
     @staticmethod
-    def estimated_tokens(context: ConversationContext) -> int:
+    def _local_tokens(context: ConversationContext) -> int:
         from vibe.core.utils.tokens import approx_token_count
 
-        local = sum(approx_token_count(m.content or "") for m in context.messages)
+        return sum(approx_token_count(m.content or "") for m in context.messages)
+
+    @classmethod
+    def estimated_tokens(cls, context: ConversationContext) -> int:
         # stats.context_tokens is one turn behind / 0 after compaction; take the
         # larger so a stale-low value never suppresses shaping.
-        return max(context.stats.context_tokens, local)
+        return max(context.stats.context_tokens, cls._local_tokens(context))
 
     @staticmethod
     def _protected_prefix_len(messages: MessageList, guard_tokens: int) -> int:
@@ -203,7 +210,12 @@ class ContextShaperMiddleware:
             n += 1
         acc = 0  # band counts tokens AFTER system/compaction, per the config doc
         while n < len(messages) and acc < guard_tokens:
-            acc += approx_token_count(messages[n].content or "")
+            size = approx_token_count(messages[n].content or "")
+            # A band-crossing message is protected whole, but only within reason:
+            # one giant block (e.g. a 200k tool result) must not become unshapeable.
+            if acc + size > guard_tokens * _GUARD_CROSSING_MAX_FACTOR:
+                break
+            acc += size
             n += 1
         return n
 
@@ -362,11 +374,15 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
     max(stats.context_tokens, local sum), and stats is one LLM call behind and
     includes tool schemas the local sum cannot see, so post-fire est often
     does not visibly drop even after a real shed — only genuinely new
-    shed-able growth clears it. A pass stopped at a positive
-    max_blocks_per_turn never arms the cooldown (the user-chosen legacy
-    dribble keeps re-firing). ``emergency=True`` (the reactive hard-overflow
-    path) bypasses floor and cooldown so overflow shedding is never
-    suppressed.
+    shed-able growth clears it. The floor and cooldown apply ONLY in batch
+    mode: a positive max_blocks_per_turn restores the legacy dribble exactly
+    (no floor, no cooldown), otherwise the same oldest-N small blocks would
+    fall under the floor every turn and starve shedding entirely.
+    ``emergency=True`` (the reactive hard-overflow path) bypasses floor and
+    cooldown so overflow shedding is never suppressed. Plans are sized from
+    the LOCAL message sum, not the stale stats side of est: right after a big
+    snip pass, stats still counts the just-shed tokens, and planning against
+    it would gist far past target (recall loss) in a single batch pass.
     """
 
     def __init__(self, *, emergency: bool = False) -> None:
@@ -384,7 +400,8 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
         est = self.estimated_tokens(context)
         if est < cfg.high_watermark * threshold:
             return MiddlewareResult()
-        if not self._emergency and self._cooldown_est is not None:
+        guarded = not self._emergency and cfg.max_blocks_per_turn == 0
+        if guarded and self._cooldown_est is not None:
             if est <= self._cooldown_est:
                 return MiddlewareResult()
             self._cooldown_est = None
@@ -395,11 +412,14 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
             messages, context.config.context_shaping.snip.keep_recent_turns, prefix
         )
         target = cfg.target * threshold
+        # Emergency = the provider rejected the real wire size; the local sum
+        # undercounts (schemas, reasoning) and planning to it may shed nothing.
+        plan_est = est if self._emergency else self._local_tokens(context)
         plan, projected_shed, pool_exhausted = self._plan_pass(
-            messages, prefix, suffix, cfg, est, target
+            messages, prefix, suffix, cfg, plan_est, target
         )
-        if not plan or (not self._emergency and projected_shed < cfg.min_shed_tokens):
-            if not self._emergency:
+        if not plan or (guarded and projected_shed < cfg.min_shed_tokens):
+            if guarded:
                 self._cooldown_est = est
                 logger.debug(
                     "microcompact: skipped pass, projected shed ~%d < floor %d "
@@ -416,7 +436,7 @@ class MicrocompactMiddleware(ContextShaperMiddleware):
             messages, plan, cfg, preserve_reasoning=active_model.preserve_reasoning
         )
         est_after = est - shed
-        if not self._emergency and pool_exhausted and est_after > target:
+        if guarded and pool_exhausted and est_after > target:
             self._cooldown_est = est
         logger.debug(
             "microcompact: compressed %d block(s), ~%d->%d est tokens "

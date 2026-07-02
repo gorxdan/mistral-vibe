@@ -243,6 +243,8 @@ def _loop_log_path(loop: Any) -> Path | None:
 
 DEFAULT_ISOLATED_MAX_TURNS = 300
 
+# A custom executor owns the whole spawn contract incl. the scratchpad grant
+# (VIBE_ISOLATED_SCRATCHPAD_DIR); without it children are worktree-confined only.
 IsolatedExecutor = Callable[
     [str, str, str | None, int], Awaitable["str | tuple[str, dict[str, int] | None]"]
 ]

@@ -172,6 +172,18 @@ def enforce_isolated_confine(path: Path) -> None:
     allowed = f"worktree ({root})"
     if scratch is not None:
         allowed += f" or its scratchpad ({scratch})"
+    hint = ""
+    stale_grant = os.environ.get("VIBE_ISOLATED_SCRATCHPAD_DIR")
+    if (
+        scratch is None
+        and stale_grant
+        and resolved.is_relative_to(Path(stale_grant).resolve())
+    ):
+        hint = (
+            " The granted scratchpad no longer exists (parent session ended);"
+            " do not retry scratchpad paths."
+        )
     raise ToolError(
-        f"Refusing to touch {resolved}: isolated subagent is confined to its {allowed}."
+        f"Refusing to touch {resolved}: isolated subagent is confined to its "
+        f"{allowed}.{hint}"
     )

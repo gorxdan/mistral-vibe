@@ -58,6 +58,7 @@ from vibe.core.middleware import (
     CHAT_AGENT_REMINDER,
     PLAN_AGENT_EXIT,
     AutoCompactMiddleware,
+    ContextShaperMiddleware,
     ContextWarningMiddleware,
     ConversationContext,
     LoopDetectionMiddleware,
@@ -1277,7 +1278,14 @@ class AgentLoop(AgentLoopSessionMixin):
             after = snip.estimated_tokens(ctx)
             if after >= before:
                 break
-        return snip.estimated_tokens(ctx) < start
+        if snip.estimated_tokens(ctx) >= start:
+            return False
+        # The persistent shapers' cooldown was armed near overflow-level est;
+        # left in place it suppresses proactive passes for the whole regrowth.
+        for mw in self.middleware_pipeline.middlewares:
+            if isinstance(mw, ContextShaperMiddleware):
+                mw.reset()
+        return True
 
     def _build_backend_metadata(
         self, call_type: TelemetryCallType | None = None

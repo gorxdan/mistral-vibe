@@ -160,6 +160,27 @@ async def test_microcompact_respects_guard_band_after_large_system() -> None:
 
 
 @pytest.mark.asyncio
+async def test_guard_band_crossing_message_bounded() -> None:
+    # Crossing messages are protected whole only within reason: one giant block
+    # after the system prompt must not become a permanently unshapeable prefix.
+    cfg = _config(
+        microcompact=MicrocompactConfig(
+            enabled=True, per_message_cap_tokens=100, min_shed_tokens=0
+        )
+    )  # cache_prefix_guard_tokens=50; crossing cap = 50 * 8 = 400
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.ASSISTANT, content=_content(600)),  # >8x band: editable
+        LLMMessage(role=Role.ASSISTANT, content=_content(300)),
+        LLMMessage(role=Role.ASSISTANT, content="recent reply"),
+    ]
+    ctx = _ctx(msgs, cfg)
+    await MicrocompactMiddleware().before_turn(ctx)
+
+    assert (ctx.messages[1].content or "").startswith("<vibe_microcompacted>")
+
+
+@pytest.mark.asyncio
 async def test_snip_elides_oldest_large_and_preserves_bookends() -> None:
     msgs = _history()
     ctx = _ctx(msgs, _config())
@@ -558,6 +579,17 @@ async def test_microcompact_default_batches_to_target() -> None:
     assert mw.estimated_tokens(ctx) < 0.65 * THRESHOLD  # back under the gate
 
 
+def _exhaustible_history() -> list[LLMMessage]:
+    # Ineligible bulk (real user message) + one small eligible block: a firing
+    # pass exhausts the pool while est stays above target -> arms the cooldown.
+    return [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.USER, content=_content(1000)),
+        LLMMessage(role=Role.ASSISTANT, content=_content(150)),
+        LLMMessage(role=Role.ASSISTANT, content="recent"),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_microcompact_cooldown_suppresses_until_est_rises() -> None:
     cfg = _config(
@@ -565,24 +597,20 @@ async def test_microcompact_cooldown_suppresses_until_est_rises() -> None:
         microcompact=MicrocompactConfig(per_message_cap_tokens=100, min_shed_tokens=0),
     )
     mw = MicrocompactMiddleware()
-    msgs = [
-        LLMMessage(role=Role.SYSTEM, content="sys"),
-        LLMMessage(role=Role.ASSISTANT, content=_content(400)),
-        LLMMessage(role=Role.ASSISTANT, content="recent"),
-    ]
-    # stats pins est at 1000 (one call behind, includes tool schemas): the pass
-    # fires, exhausts the pool above target, and cannot observe its own shed.
-    ctx = _ctx(msgs, cfg, context_tokens=1000)
-    await mw.before_turn(ctx)
-    assert (ctx.messages[1].content or "").startswith("<vibe_microcompacted>")
-
-    ctx.messages.insert(2, LLMMessage(role=Role.ASSISTANT, content=_content(400)))
-    await mw.before_turn(ctx)  # est still 1000 <= armed watermark: suppressed
-    assert ctx.messages[2].content == _content(400)
-
-    ctx.stats.context_tokens = 1500  # genuinely new growth clears the cooldown
-    await mw.before_turn(ctx)
+    # stats pinned far above local (one call behind, includes tool schemas):
+    # est is stats-dominated, so post-fire est cannot visibly drop.
+    ctx = _ctx(_exhaustible_history(), cfg, context_tokens=5000)
+    await mw.before_turn(ctx)  # pool-exhausted fire above target: arms cooldown
     assert (ctx.messages[2].content or "").startswith("<vibe_microcompacted>")
+    assert mw._cooldown_est == 5000
+
+    ctx.messages.insert(3, LLMMessage(role=Role.ASSISTANT, content=_content(150)))
+    await mw.before_turn(ctx)  # est still 5000 <= armed value: suppressed
+    assert ctx.messages[3].content == _content(150)
+
+    ctx.stats.context_tokens = 6000  # genuinely new growth clears the cooldown
+    await mw.before_turn(ctx)
+    assert (ctx.messages[3].content or "").startswith("<vibe_microcompacted>")
 
 
 @pytest.mark.asyncio
@@ -592,18 +620,62 @@ async def test_microcompact_cooldown_cleared_on_reset() -> None:
         microcompact=MicrocompactConfig(per_message_cap_tokens=100, min_shed_tokens=0),
     )
     mw = MicrocompactMiddleware()
+    ctx = _ctx(_exhaustible_history(), cfg, context_tokens=5000)
+    await mw.before_turn(ctx)  # pool-exhausted fire above target: arms cooldown
+    assert mw._cooldown_est == 5000
+    ctx.messages.insert(3, LLMMessage(role=Role.ASSISTANT, content=_content(150)))
+
+    mw.reset()
+    await mw.before_turn(ctx)  # same est, but reset cleared the cooldown
+    assert (ctx.messages[3].content or "").startswith("<vibe_microcompacted>")
+
+
+@pytest.mark.asyncio
+async def test_microcompact_dribble_mode_ignores_floor_and_cooldown() -> None:
+    # Legacy rollback (positive max_blocks_per_turn) must match the old dribble
+    # exactly: its fixed oldest-N plan would sit under the floor forever.
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(
+            per_message_cap_tokens=100, max_blocks_per_turn=4
+        ),  # default min_shed_tokens floor stays
+    )
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content="sys"),
+        LLMMessage(role=Role.USER, content="go"),
+    ]
+    for _ in range(6):
+        msgs.append(LLMMessage(role=Role.ASSISTANT, content=_content(150)))
+    msgs.append(LLMMessage(role=Role.ASSISTANT, content="recent"))
+    mw = MicrocompactMiddleware()
+    ctx = _ctx(msgs, cfg)
+    await mw.before_turn(ctx)
+    n = sum(
+        1 for m in ctx.messages if (m.content or "").startswith("<vibe_microcompacted>")
+    )
+    assert n == 4  # fired despite projected shed < floor
+    assert mw._cooldown_est is None  # dribble never arms the cooldown
+
+
+@pytest.mark.asyncio
+async def test_microcompact_plans_from_local_sum_not_stale_stats() -> None:
+    # Post-snip, stats still counts the shed tokens; planning against it would
+    # gist the whole pool far past target. The plan must see the local sum.
+    cfg = _config(
+        cache_prefix_guard_tokens=0,
+        microcompact=MicrocompactConfig(per_message_cap_tokens=100, min_shed_tokens=0),
+    )
     msgs = [
         LLMMessage(role=Role.SYSTEM, content="sys"),
         LLMMessage(role=Role.ASSISTANT, content=_content(400)),
         LLMMessage(role=Role.ASSISTANT, content="recent"),
     ]
-    ctx = _ctx(msgs, cfg, context_tokens=1000)
-    await mw.before_turn(ctx)  # pool-exhausted fire above target: arms cooldown
-    ctx.messages.insert(2, LLMMessage(role=Role.ASSISTANT, content=_content(400)))
-
-    mw.reset()
-    await mw.before_turn(ctx)  # same est, but reset cleared the cooldown
-    assert (ctx.messages[2].content or "").startswith("<vibe_microcompacted>")
+    ctx = _ctx(msgs, cfg, context_tokens=5000)  # stats stale-high: gate opens
+    mw = MicrocompactMiddleware()
+    await mw.before_turn(ctx)
+    # local (~410) is already under target (600): nothing gisted, cooldown armed.
+    assert ctx.messages[1].content == _content(400)
+    assert mw._cooldown_est is not None
 
 
 @pytest.mark.asyncio

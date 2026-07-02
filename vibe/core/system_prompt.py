@@ -787,7 +787,19 @@ def get_universal_system_prompt(
     ):
         sections.append(_get_le_chaton_section())
 
+    from vibe.core.tools.utils import isolated_worktree_root
     from vibe.core.worktree.manager import worktree_manager
+
+    if worktree_manager.active is None and isolated_worktree_root() is not None:
+        # Isolated spawns skip nested worktree entry, so worktree_manager.active
+        # is None here; without this they lose all isolation guidance.
+        sections.append(
+            "## Worktree isolation\n\nYou run inside an isolated git worktree "
+            "(already your cwd). **Use relative paths** for every read/edit/"
+            "write; paths outside the worktree are rejected. Commit finished "
+            'work with a real `git commit -m "<summary>"` as your last step — '
+            "uncommitted work is auto-committed with a generic message on exit."
+        )
 
     if worktree_manager.active is not None:
         wt = worktree_manager.active
