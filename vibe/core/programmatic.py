@@ -37,6 +37,7 @@ from vibe.core.teleport.types import (
 )
 from vibe.core.tools.background import BackgroundRegistry
 from vibe.core.tools.permissions import RequiredPermission
+from vibe.core.tools.utils import isolated_worktree_root
 from vibe.core.types import (
     ApprovalResponse,
     AssistantEvent,
@@ -46,7 +47,11 @@ from vibe.core.types import (
     ScheduledLoop,
 )
 from vibe.core.utils import ConversationLimitException
-from vibe.core.worktree.manager import worktree_enabled, worktree_manager
+from vibe.core.worktree.manager import (
+    WorktreeHandle,
+    worktree_enabled,
+    worktree_manager,
+)
 
 __all__ = ["ProgrammaticOptions", "TeleportError", "run_programmatic"]
 
@@ -215,10 +220,16 @@ def run_programmatic(
     opts = options or ProgrammaticOptions()
     formatter = create_formatter(opts.output_format)
 
-    # Worktree isolation: enter before AgentLoop so all Path.cwd() consumers
-    # see the worktree. Auto-ON for programmatic (mode=auto-by-entrypoint).
-    worktree_handle = None
-    if not opts.no_worktree and worktree_enabled(config, programmatic=True):
+    # Worktree isolation (on by default for programmatic, worktree.mode="on"):
+    # enter before AgentLoop so Path.cwd() consumers see the worktree.
+    worktree_handle: WorktreeHandle | None = None
+    # An isolated spawn already runs inside a parent-created ephemeral worktree;
+    # entering another moves cwd outside enforce_isolated_confine's root (every file tool errors).
+    if (
+        not opts.no_worktree
+        and isolated_worktree_root() is None
+        and worktree_enabled(config, programmatic=True)
+    ):
         worktree_handle = worktree_manager.enter("programmatic", config.worktree)
         if worktree_handle is not None and not config.displayed_workdir:
             config.displayed_workdir = str(worktree_handle.original_repo_root)

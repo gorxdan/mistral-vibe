@@ -17,6 +17,7 @@ from git.exc import GitCommandError, InvalidGitRepositoryError
 
 from vibe.core.config import WorktreeConfig
 from vibe.core.logger import logger
+from vibe.core.tools.utils import isolated_worktree_root
 from vibe.core.trusted_folders import trusted_folders_manager
 from vibe.core.utils.io import read_safe
 
@@ -99,6 +100,10 @@ def worktree_enabled(
 
 
 def original_working_directory() -> str:
+    # Isolated children attribute their session to the parent-created ephemeral
+    # worktree (pre-guard behavior) — never the main repo's resume namespace.
+    if (iso_root := isolated_worktree_root()) is not None:
+        return str(iso_root)
     if worktree_manager.active is not None:
         return str(worktree_manager.active.original_repo_root)
     return _origin_repo_root_for_cwd()

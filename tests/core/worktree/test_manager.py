@@ -152,6 +152,25 @@ class TestOriginalWorkingDirectory:
         assert result == str(tmp_path / "original")
         worktree_manager._active = None
 
+    def test_prefers_isolated_root_when_env_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        worktree_manager._active = None
+        iso_root = tmp_path / "iso-wt"
+        iso_root.mkdir()
+        monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(iso_root))
+        result = original_working_directory()
+        assert Path(result) == iso_root.resolve()
+
+    def test_falls_through_when_isolated_root_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        worktree_manager._active = None
+        monkeypatch.delenv("VIBE_ISOLATED_WORKTREE_ROOT", raising=False)
+        os.chdir(str(tmp_path))
+        result = original_working_directory()
+        assert Path(result) == tmp_path.resolve()
+
 
 # ---------------------------------------------------------------------------
 # enter() — basic lifecycle
