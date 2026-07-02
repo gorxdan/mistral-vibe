@@ -9,6 +9,7 @@ from vibe.core.types import (
     InjectedMessageKind,
     LLMChunk,
     LLMMessage,
+    Role,
     StrToolChoice,
 )
 
@@ -32,6 +33,30 @@ def trailing_ephemeral_count(messages: Sequence[LLMMessage]) -> int:
             break
         count += 1
     return count
+
+
+def memory_tail_relocated_before_user(
+    messages: Sequence[LLMMessage],
+) -> Sequence[LLMMessage]:
+    """Move a trailing MEMORY tail that follows a tool message back to the
+    legacy before-last-user slot.
+
+    For providers whose role grammar is unverified for user-after-tool and that
+    have no prompt caching to protect (Mistral La Plateforme): the legacy shape
+    is production-proven, and without caching the anchor position is free.
+    """
+    count = trailing_ephemeral_count(messages)
+    if count == 0:
+        return messages
+    body = list(messages[: len(messages) - count])
+    if not body or body[-1].role != Role.TOOL:
+        return messages
+    tail = list(messages[len(messages) - count :])
+    insert_at = next(
+        (i for i in range(len(body) - 1, -1, -1) if body[i].role == Role.USER),
+        len(body),
+    )
+    return body[:insert_at] + tail + body[insert_at:]
 
 
 class PreparedRequest(NamedTuple):

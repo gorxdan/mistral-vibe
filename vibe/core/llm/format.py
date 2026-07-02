@@ -136,10 +136,13 @@ class APIToolFormatHandler:
         for parsed_call in parsed.tool_calls:
             tool_class = active_tools.get(parsed_call.tool_name)
             if not tool_class:
+                # tool_search itself can be hidden (small MCP catalogs); the
+                # activation hint would then send the model in a circle.
                 hint = (
                     " — it exists but is not activated; call tool_search with "
                     "its name first"
-                    if parsed_call.tool_name in tool_manager.hidden_tool_names()
+                    if parsed_call.tool_name != "tool_search"
+                    and parsed_call.tool_name in tool_manager.hidden_tool_names()
                     else ""
                 )
                 failed_calls.append(

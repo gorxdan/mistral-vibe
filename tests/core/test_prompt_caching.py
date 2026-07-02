@@ -4,7 +4,11 @@ import json
 from typing import Any
 
 from vibe.core.config import ProviderCacheConfig, ProviderConfig
-from vibe.core.llm.backend.adapter_port import RequestParams, trailing_ephemeral_count
+from vibe.core.llm.backend.adapter_port import (
+    RequestParams,
+    memory_tail_relocated_before_user,
+    trailing_ephemeral_count,
+)
 from vibe.core.llm.backend.anthropic import AnthropicMapper
 from vibe.core.llm.backend.cache_hints import build_cache_hint
 from vibe.core.llm.backend.generic import OpenAIAdapter
@@ -269,6 +273,48 @@ def test_trailing_ephemeral_count_counts_only_trailing_memory() -> None:
     assert trailing_ephemeral_count([user, hook]) == 0
     assert trailing_ephemeral_count([user, _mem_msg()]) == 1
     assert trailing_ephemeral_count([_mem_msg(), user, _mem_msg(), _mem_msg()]) == 2
+
+
+def test_memory_tail_relocates_before_user_only_after_tool() -> None:
+    sys_msg = LLMMessage(role=Role.SYSTEM, content="sys")
+    user = LLMMessage(role=Role.USER, content="u")
+    assistant = LLMMessage(role=Role.ASSISTANT, content="", tool_calls=None)
+    tool = LLMMessage(role=Role.TOOL, content="result", tool_call_id="c1")
+    mem = _mem_msg()
+
+    mid_turn = [sys_msg, user, assistant, tool, mem]
+    relocated = list(memory_tail_relocated_before_user(mid_turn))
+    assert relocated == [sys_msg, mem, user, assistant, tool]
+
+    turn_start = [sys_msg, user, mem]
+    assert list(memory_tail_relocated_before_user(turn_start)) == turn_start
+
+    no_tail = [sys_msg, user, assistant, tool]
+    assert list(memory_tail_relocated_before_user(no_tail)) == no_tail
+    assert list(memory_tail_relocated_before_user([])) == []
+
+
+def test_memory_tail_relocation_preserves_tail_order() -> None:
+    sys_msg = LLMMessage(role=Role.SYSTEM, content="sys")
+    user = LLMMessage(role=Role.USER, content="u")
+    assistant = LLMMessage(role=Role.ASSISTANT, content="", tool_calls=None)
+    tool = LLMMessage(role=Role.TOOL, content="result", tool_call_id="c1")
+    mem_a, mem_b = (
+        _mem_msg("<memories>a</memories>"),
+        _mem_msg("<memories>b</memories>"),
+    )
+
+    relocated = list(
+        memory_tail_relocated_before_user([
+            sys_msg,
+            user,
+            assistant,
+            tool,
+            mem_a,
+            mem_b,
+        ])
+    )
+    assert relocated == [sys_msg, mem_a, mem_b, user, assistant, tool]
 
 
 def test_generic_anthropic_compat_prepare_request_skips_memory_tail() -> None:

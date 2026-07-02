@@ -604,6 +604,20 @@ def _get_model_routing_note(config: VibeConfig) -> str:
     )
 
 
+_SKILL_POINTER_SUFFIX = "`tool-guides` skill."
+
+
+def _strip_skill_pointers(prompt: str) -> str:
+    # Profiles without the skill tool can't follow the pointer line; dropping
+    # it beats advertising an uncallable tool.
+    lines = [
+        line
+        for line in prompt.splitlines()
+        if not line.rstrip().endswith(_SKILL_POINTER_SUFFIX)
+    ]
+    return "\n".join(lines).strip()
+
+
 def _build_prompt_detail_sections(
     tool_manager: ToolManager,
     skill_manager: SkillManager,
@@ -615,10 +629,14 @@ def _build_prompt_detail_sections(
     sections = [_get_os_system_prompt()]
     if lsp_section := _get_lsp_priority_section(tool_manager):
         sections.append(lsp_section)
+    skill_available = "skill" in tool_manager.manifest_tools
     tool_prompts = []
     for tool_class in tool_manager.manifest_tools.values():
         if prompt := tool_class.get_tool_prompt():
-            tool_prompts.append(prompt)
+            if not skill_available:
+                prompt = _strip_skill_pointers(prompt)
+            if prompt:
+                tool_prompts.append(prompt)
     # The routing list rides the task tool's prose block — its only consumer —
     # so task-less profiles never pay for it.
     if (
@@ -750,6 +768,12 @@ def get_universal_system_prompt(
                 tool_manager, skill_manager, agent_manager, scratchpad_dir, config, tier
             )
         )
+    elif section_enabled(tier, "model_routing_list") and (
+        note := _get_model_routing_note(config)
+    ):
+        # Legacy home of the routing note (pre task-prose relocation), kept so
+        # include_model_info keeps working with prompt detail off.
+        sections.append(note)
 
     if config.include_project_context:
         sections.extend(

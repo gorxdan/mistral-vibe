@@ -265,11 +265,34 @@ def test_model_routing_list_tier_gated_at_new_emission_site() -> None:
     )
 
 
-def test_model_routing_list_requires_prompt_detail() -> None:
+def test_model_routing_list_survives_prompt_detail_off() -> None:
+    # Legacy emission site: include_model_info users with prompt detail off
+    # kept the routing note before the task-prose relocation; still must.
     common = {**_routing_common(), "include_prompt_detail": False}
     config = build_test_vibe_config(**common)
 
-    assert "Models available for subagents" not in _prompt_for(config)
+    assert "Models available for subagents" in _prompt_for(config)
+
+
+def test_skill_pointer_lines_stripped_without_skill_tool() -> None:
+    config = build_test_vibe_config(
+        enabled_tools=["read", "grep", "todo", "ask_user_question"],
+        **{k: v for k, v in _routing_common().items() if k != "models"},
+    )
+
+    prompt = _prompt_for(config)
+
+    assert "skill" not in ToolManager(lambda: config).manifest_tools
+    assert "`tool-guides` skill." not in prompt
+
+
+def test_skill_pointer_lines_present_with_skill_tool() -> None:
+    config = build_test_vibe_config(
+        enabled_tools=["read", "grep", "todo", "skill"],
+        **{k: v for k, v in _routing_common().items() if k != "models"},
+    )
+
+    assert "`tool-guides` skill." in _prompt_for(config)
 
 
 def test_debugger_subagent_registered_with_systematic_prompt() -> None:

@@ -35,6 +35,7 @@ import orjson
 
 from vibe.core.config import resolve_api_key
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
+from vibe.core.llm.backend.adapter_port import memory_tail_relocated_before_user
 from vibe.core.llm.exceptions import BackendErrorBuilder
 from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import (
@@ -300,7 +301,7 @@ class MistralBackend:
         response_headers_sink: dict[str, str] | None = None,
     ) -> LLMChunk:
         model = request.model
-        messages = request.messages
+        messages = memory_tail_relocated_before_user(request.messages)
         temperature = request.temperature
         tools = request.tools
         max_tokens = request.max_tokens
@@ -389,7 +390,7 @@ class MistralBackend:
         response_headers_sink: dict[str, str] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         model = request.model
-        messages = request.messages
+        messages = memory_tail_relocated_before_user(request.messages)
         temperature = request.temperature
         tools = request.tools
         max_tokens = request.max_tokens

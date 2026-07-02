@@ -321,7 +321,7 @@ class MemoryConfig(BaseSettings):
     # system prompt (replaced each turn): a selection change then mutates the
     # prefix root and busts the cached history behind it. "late" (default) keeps
     # the system prompt byte-stable and rides recall on an ephemeral message
-    # just before the latest user turn, so only the small tail is reprocessed.
+    # placed per late_anchor below, so only the small tail is reprocessed.
     # Live glm-5.2 A/B on a selection flip: 8.7% cached (system) -> 96.3% (late).
     inject_mode: Literal["system", "late"] = "late"
     # "tail": memory block after the FINAL message — history stays a stable cache
