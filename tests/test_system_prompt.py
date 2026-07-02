@@ -161,6 +161,117 @@ def test_le_chaton_requires_local_reconnaissance_before_workflows() -> None:
     assert "File count alone is not a reason to delegate" in prompt
 
 
+def test_le_chaton_recovery_and_monitor_prose_moved_to_workflow_skill() -> None:
+    from vibe.core.skills.builtins import BUILTIN_SKILLS
+
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+        effort_mode="le-chaton",
+    )
+    prompt = get_universal_system_prompt(
+        ToolManager(lambda: config),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+    )
+
+    # The recovery ladder and the /workflows key map moved to the skill.
+    assert "Re-run that phase with `max_concurrency=1`" not in prompt
+    assert "`Retry-After` (honored up to 60s)" not in prompt
+    assert "x (stop), p (pause/resume)" not in prompt
+
+    guide = BUILTIN_SKILLS["workflow-authoring"].prompt
+    assert "Retries exhausted" in guide
+    assert "Re-run that phase with `max_concurrency=1`" in guide
+    assert "`Retry-After` (honored up to 60s)" in guide
+    assert "x (stop), p (pause/resume)" in guide
+
+    # The decision-time routing lines stay inline.
+    assert "**Deferral (pick by intent):**" in prompt
+    assert "**Don't poll.**" in prompt
+
+
+def _routing_common() -> dict[str, object]:
+    from vibe.core.config import ModelConfig
+
+    # The autouse test config ships a single model; the routing note needs 2+.
+    return {
+        "system_prompt_id": "tests",
+        "include_project_context": False,
+        "include_prompt_detail": True,
+        "include_commit_signature": False,
+        "include_humanizer_guidance": False,
+        "models": [
+            ModelConfig(name="model-a", provider="mistral", alias="alpha"),
+            ModelConfig(name="model-b", provider="mistral", alias="beta"),
+        ],
+    }
+
+
+def _prompt_for(config, **kwargs) -> str:
+    return get_universal_system_prompt(
+        ToolManager(lambda: config),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+        **kwargs,
+    )
+
+
+def test_model_routing_list_present_with_task_tool_and_multiple_models() -> None:
+    config = build_test_vibe_config(**_routing_common())
+    assert len(config.models) > 1
+
+    prompt = _prompt_for(config)
+
+    assert "Models available for subagents" in prompt
+    assert "`alpha` (mistral)" in prompt
+    assert "`beta` (mistral)" in prompt
+
+
+def test_model_routing_list_absent_when_profile_excludes_task() -> None:
+    config = build_test_vibe_config(enabled_tools=["read", "grep"], **_routing_common())
+
+    assert "Models available for subagents" not in _prompt_for(config)
+
+
+def test_model_routing_list_absent_with_single_model() -> None:
+    from vibe.core.config import ModelConfig
+
+    common = {
+        **_routing_common(),
+        "models": [ModelConfig(name="only", provider="mistral", alias="only")],
+    }
+    config = build_test_vibe_config(**common)
+
+    assert "Models available for subagents" not in _prompt_for(config)
+
+
+def test_model_routing_list_tier_gated_at_new_emission_site() -> None:
+    from vibe.core.baseline_scaling import BaselineTier
+
+    config = build_test_vibe_config(**_routing_common())
+
+    assert "Models available for subagents" in _prompt_for(
+        config, tier=BaselineTier.MEDIUM
+    )
+    assert "Models available for subagents" not in _prompt_for(
+        config, tier=BaselineTier.SMALL
+    )
+
+
+def test_model_routing_list_requires_prompt_detail() -> None:
+    common = {**_routing_common(), "include_prompt_detail": False}
+    config = build_test_vibe_config(**common)
+
+    assert "Models available for subagents" not in _prompt_for(config)
+
+
 def test_debugger_subagent_registered_with_systematic_prompt() -> None:
     from vibe.core.agents.models import BUILTIN_AGENTS, AgentType, BuiltinAgentName
     from vibe.core.prompts import load_system_prompt
@@ -414,8 +525,22 @@ def _config_reference_common() -> dict[str, object]:
     }
 
 
-def test_config_reference_section_present_by_default() -> None:
+def test_config_reference_section_absent_by_default() -> None:
     config = build_test_vibe_config(**_config_reference_common())
+    prompt = get_universal_system_prompt(
+        ToolManager(lambda: config),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+    )
+
+    assert "## Configuring Vibe (quick reference)" not in prompt
+
+
+def test_config_reference_section_present_when_explicitly_enabled() -> None:
+    config = build_test_vibe_config(
+        include_config_reference=True, **_config_reference_common()
+    )
     prompt = get_universal_system_prompt(
         ToolManager(lambda: config),
         config,

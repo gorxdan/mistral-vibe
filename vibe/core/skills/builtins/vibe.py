@@ -149,7 +149,7 @@ caveman_thinking = true            # Compress reasoning/thinking blocks (terse; 
 include_model_info = true         # Include model name in system prompt
 include_project_context = true    # Include project context (git info, cwd) in system prompt
 include_prompt_detail = true      # Include OS info, tool prompts, skills, and agents in system prompt
-include_config_reference = true   # Always-on condensed config/MCP/providers reference (this CLI's self-knowledge)
+include_config_reference = false  # Off by default; set true to inline the condensed config/MCP quick reference (the vibe skill is the source of truth)
 
 # Voice features
 voice_mode_enabled = false

@@ -27,6 +27,13 @@ def test_vibe_config_schema_covers_all_vibe_config_fields() -> None:
     )
 
 
+def test_include_config_reference_default_is_false_in_both_schemas() -> None:
+    # The two default literals are independent (_settings.py vs vibe_schema.py)
+    # and the name-only sync test above cannot catch one-sided default drift.
+    assert VibeConfig.model_fields["include_config_reference"].default is False
+    assert VibeConfigSchema.model_fields["include_config_reference"].default is False
+
+
 @pytest.mark.asyncio
 async def test_full_toml_to_vibe_config_schema(tmp_path: Path) -> None:
     toml_path = tmp_path / "config.toml"

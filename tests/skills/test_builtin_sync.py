@@ -47,6 +47,9 @@ class TestBuiltinSkills:
         for trigger in ("mcp", "config", "providers"):
             assert trigger in lowered
 
+    def test_vibe_skill_documents_config_reference_default_off(self) -> None:
+        assert "include_config_reference = false" in BUILTIN_SKILLS["vibe"].prompt
+
     def test_tool_guides_skill_is_registered_inline(self) -> None:
         assert "tool-guides" in BUILTIN_SKILLS
         assert BUILTIN_SKILLS["tool-guides"].skill_path is None

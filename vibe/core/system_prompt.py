@@ -28,7 +28,6 @@ from vibe.core.utils import (
     is_dangerous_directory,
     is_windows,
 )
-from vibe.core.workflows.runtime import DEFAULT_MAX_CONCURRENT
 
 if TYPE_CHECKING:
     from vibe.core.agents import AgentManager
@@ -594,6 +593,17 @@ Slash commands (run `/help` for the full list): `/config`, `/model`, `/mcp`,
 `/compact`, `/status`."""
 
 
+def _get_model_routing_note(config: VibeConfig) -> str:
+    if not config.include_model_info or len(config.models) <= 1:
+        return ""
+    routable = ", ".join(f"`{m.alias}` ({m.provider})" for m in config.models)
+    return (
+        "Models available for subagents (pass one as the `model` argument to "
+        f"the task tool to route a delegated task to it): {routable}. "
+        "The subagent inherits your model when `model` is omitted."
+    )
+
+
 def _build_prompt_detail_sections(
     tool_manager: ToolManager,
     skill_manager: SkillManager,
@@ -609,6 +619,14 @@ def _build_prompt_detail_sections(
     for tool_class in tool_manager.manifest_tools.values():
         if prompt := tool_class.get_tool_prompt():
             tool_prompts.append(prompt)
+    # The routing list rides the task tool's prose block — its only consumer —
+    # so task-less profiles never pay for it.
+    if (
+        "task" in tool_manager.manifest_tools
+        and section_enabled(tier, "model_routing_list")
+        and (note := _get_model_routing_note(config))
+    ):
+        tool_prompts.append(note)
     if tool_prompts:
         sections.append("\n---\n".join(tool_prompts))
 
@@ -722,13 +740,6 @@ def get_universal_system_prompt(
 
     if config.include_model_info:
         sections.append(f"Your model name is: `{config.active_model}`")
-        if len(config.models) > 1 and section_enabled(tier, "model_routing_list"):
-            routable = ", ".join(f"`{m.alias}` ({m.provider})" for m in config.models)
-            sections.append(
-                "Models available for subagents (pass one as the `model` argument "
-                f"to the task tool to route a delegated task to it): {routable}. "
-                "The subagent inherits your model when `model` is omitted."
-            )
 
     if config.include_config_reference and section_enabled(tier, "config_reference"):
         sections.append(_get_config_reference_section())
@@ -793,53 +804,26 @@ def _get_le_chaton_section() -> str:
     return (
         "## Le Chaton Mode\n\n"
         "Max thinking + workflow orchestration. For substantive tasks "
-        "(codebase audits, large migrations, cross-checked research, multi-file "
-        "refactors), write a workflow script that orchestrates parallel agents "
-        "instead of working turn-by-turn. Do not launch a workflow as the first "
-        "repository-discovery step. First use local `glob` and `lsp` to map the "
-        "repository, identify central symbols and callers, and read entry points. "
-        "A broad label such as 'analyze this repo' does not by itself justify a "
-        "workflow.\n\n"
-        "**Canonical reference:** load the `workflow-authoring` skill — it is "
-        "the single source of truth for the script API (`agent`/`parallel`/"
-        "`pipeline`/`phase`/`log`/`budget`/`workflow`/`args` + synthesis "
-        "helpers), sandbox rules (safelisted imports, no `asyncio`, "
-        "`str.format()` forbidden), launch semantics (pass source inline), and "
-        "result retrieval (`workflow_results(run_id)`, per-agent "
-        "`schema_errors`). Load it before writing a script; do not restate it "
-        "from memory.\n\n"
-        "**Deferral (pick by intent):**\n"
-        "| Intent | Mechanism |\n"
-        "|---|---|\n"
-        "| Run later / on a timer | `schedule` (a timer — executes nothing itself) |\n"
-        "| Delegate one subagent, keep working here | `task(async_run=true)` |\n"
-        "| Orchestrated fan-out (N agents, phases, budget, schema) | `launch_workflow` |\n\n"
-        "**Concurrency & rate limits:** Up to "
-        f"{DEFAULT_MAX_CONCURRENT} agents run concurrently per workflow (the "
-        "runtime's global cap). Pass `max_concurrency=N` on "
-        "`parallel`/`pipeline` only to throttle *below* that — prefer it over "
-        "hand-rolling chunked waves. Some providers throttle at 1–3 concurrent "
-        "requests, and retry is per-request and uncoordinated across agents, "
-        "so a saturated provider can fail several agents at once with "
-        "`Retries exhausted`.\n\n"
-        "**Recovery (agent died of `Retries exhausted`):** do not re-launch the "
-        "same fan-out. Re-run that phase with `max_concurrency=1`, or serialize "
-        "via `pipeline`, or `schedule` a retry after the provider's "
-        "`Retry-After` (honored up to 60s).\n\n"
-        "**Prefer workflows after reconnaissance when:** 3+ independent agents "
-        "| adversarial verification adds value | separable work can proceed "
-        "concurrently. File count alone is not a reason to delegate. Simple "
-        "tasks → work normally.\n\n"
-        "**Don't poll workflows.** Completion is auto-delivered to your "
-        "context as a user message — launching a workflow and then calling "
-        "`workflow_status` repeatedly to watch it is a turn-wasting anti-"
-        "pattern. Launch it, report the `run_id`, end your turn, and resume "
-        "when the result arrives. If you must revisit a long run, arm a "
-        '`schedule` timer (`schedule create interval=2m prompt="..."`) '
-        "instead of polling. `workflow_status` is a one-shot diagnostic for a "
-        "run you suspect is stuck or runaway, not a progress ticker.\n\n"
-        "**Monitor (TUI only):** `/workflows` — x (stop), p (pause/resume), "
-        "s (save script as `/<name>` command), o (view script), Enter (drill "
-        "into run/agent). In-flight agents show live token totals. This is for "
-        "the human watching the terminal, not a prompt for you to poll."
+        "(codebase audits, large migrations, cross-checked research, "
+        "multi-file refactors), write a workflow script that orchestrates "
+        "parallel agents instead of working turn-by-turn. Do not launch a "
+        "workflow as the first repository-discovery step. First use local "
+        "`glob` and `lsp` to map the repository, identify central symbols and "
+        "callers, and read entry points. A broad label such as 'analyze this "
+        "repo' does not by itself justify a workflow. File count alone is not "
+        "a reason to delegate; prefer a workflow after reconnaissance when 3+ "
+        "independent agents, adversarial verification, or separable "
+        "concurrent work applies — simple tasks → work normally.\n\n"
+        "**Canonical reference:** load the `workflow-authoring` skill before "
+        "writing a script — the single source of truth for the script API, "
+        "sandbox rules, launch semantics, result retrieval, concurrency/rate "
+        "limits, and `Retries exhausted` recovery. Do not restate it from "
+        "memory.\n\n"
+        "**Deferral (pick by intent):** run later / on a timer → `schedule`; "
+        "delegate one subagent and keep working → `task(async_run=true)`; "
+        "orchestrated fan-out (N agents, phases, budget, schema) → "
+        "`launch_workflow`.\n\n"
+        "**Don't poll.** Completion is auto-delivered to your context — "
+        "launch, report the `run_id`, end your turn. `workflow_status` is a "
+        "one-shot diagnostic, not a progress ticker."
     )

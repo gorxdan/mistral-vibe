@@ -96,6 +96,21 @@ async def main():
 5. **Guard loops with `budget.remaining()`** — stop when budget is exhausted
 6. **Keep scripts focused** — one workflow per task, not a general-purpose program
 
+## Concurrency & rate limits
+
+Up to __MAX_CONCURRENT_AGENTS__ agents run concurrently per workflow (the
+runtime's global cap). Some providers throttle at 1-3 concurrent requests, and
+retry is per-request and uncoordinated across agents, so a saturated provider
+can fail several agents at once with `Retries exhausted`. Cap concurrency with
+`max_concurrency=` on `parallel`/`pipeline` (Best Practice 3) instead of
+hand-rolling chunked waves.
+
+## Recovery (agent died of `Retries exhausted`)
+
+Do not re-launch the same fan-out. Re-run that phase with `max_concurrency=1`,
+or serialize via `pipeline`, or `schedule` a retry after the provider's
+`Retry-After` (honored up to 60s).
+
 ## Safety boundary
 
 `launch_workflow` is ASK-gated: each launch is reviewed by the safety judge (if
@@ -163,6 +178,13 @@ turns for nothing; completion is delivered automatically. Two correct patterns:
 
 `workflow_status` is a *diagnostic* tool — call it **once** when you suspect a run
 is stuck or runaway (before `workflow_stop`), not as routine progress checks.
+
+## Monitoring (TUI)
+
+`/workflows` — x (stop), p (pause/resume), s (save script as `/<name>`
+command), o (view script), Enter (drill into run/agent). In-flight agents show
+live token totals. This is for the human watching the terminal, not a prompt
+for you to poll.
 
 ## Limitations
 
