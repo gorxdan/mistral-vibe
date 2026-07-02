@@ -71,13 +71,23 @@ def create_ephemeral_worktree(
     root = Path(repo.working_tree_dir).resolve()
     base_sha = repo.head.commit.hexsha
 
+    # F2: derive the real repo name via the git common-dir (the pattern in
+    # manager.py:113-124), not root.name — inside a session worktree root.name
+    # is the worktree leaf (e.g. "cli-1830853-..."), which produces un-namespaced
+    # paths and permanent husk parents.
+    try:
+        common = repo.git.rev_parse("--git-common-dir")
+        common_dir = (root / common).resolve()
+        repo_name = common_dir.parent.name
+    except Exception:
+        repo_name = root.name
+
     safe = _SAFE_LABEL_RE.sub("-", label).strip("-")[:32] or "agent"
-    leaf = f"{safe}-{os.getpid()}-{time.monotonic_ns()}"
+    leaf = f"{safe}-{os.getpid()}-{time.time_ns()}"
     branch = f"vibe/iso/{leaf}"
-    if base_dir is None:
-        base_dir = VIBE_HOME.path / "worktrees" / root.name / "iso"
-    base_dir.mkdir(parents=True, exist_ok=True)
-    path = base_dir / leaf
+    resolved_base = base_dir or VIBE_HOME.path / "worktrees" / repo_name / "iso"
+    resolved_base.mkdir(parents=True, exist_ok=True)
+    path = resolved_base / leaf
 
     repo.git.worktree("add", str(path), "-b", branch, "HEAD")
     try:
