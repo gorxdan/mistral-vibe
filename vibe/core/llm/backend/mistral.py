@@ -27,6 +27,7 @@ from mistralai.client.models import (
     ToolChoice,
     ToolChoiceEnum,
     ToolMessage,
+    UsageInfo,
     UserMessage,
 )
 from mistralai.client.utils.retries import BackoffStrategy, RetryConfig
@@ -59,6 +60,24 @@ if TYPE_CHECKING:
 class ParsedContent(NamedTuple):
     content: Content
     reasoning_content: Content | None
+
+
+def cached_tokens_from_usage(usage: UsageInfo | None) -> int:
+    # SDK schema has no cache fields; provider-reported ones only surface in
+    # pydantic extras (OpenAI details / flat / DeepSeek shapes).
+    if usage is None:
+        return 0
+    extra = getattr(usage, "__pydantic_extra__", None) or {}
+    details = extra.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        cached = details.get("cached_tokens")
+        if isinstance(cached, int):
+            return cached
+    for key in ("cached_tokens", "prompt_cache_hit_tokens"):
+        cached = extra.get(key)
+        if isinstance(cached, int):
+            return cached
+    return 0
 
 
 class MistralMapper:
@@ -357,6 +376,7 @@ class MistralBackend:
                 usage=LLMUsage(
                     prompt_tokens=response.usage.prompt_tokens or 0,
                     completion_tokens=response.usage.completion_tokens or 0,
+                    cached_tokens=cached_tokens_from_usage(response.usage),
                 ),
             )
 
@@ -450,6 +470,7 @@ class MistralBackend:
                         completion_tokens=chunk.data.usage.completion_tokens or 0
                         if chunk.data.usage
                         else 0,
+                        cached_tokens=cached_tokens_from_usage(chunk.data.usage),
                     ),
                     correlation_id=correlation_id,
                 )
