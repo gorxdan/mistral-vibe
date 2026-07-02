@@ -14,7 +14,7 @@ from filelock import FileLock
 
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
-from vibe.core.teams.mailbox import Mailbox
+from vibe.core.teams.mailbox import Mailbox, validate_member_name
 from vibe.core.teams.models import Task, TeamConfig, TeamMember
 from vibe.core.teams.task_store import TaskStore
 from vibe.core.utils.io import read_safe, write_safe
@@ -182,6 +182,11 @@ class TeamManager:
         agent: str = "auto-approve",
         max_turns: int = 20,
     ) -> str:
+        # Validate the name at the boundary: it becomes a mailbox inbox path
+        # (via _safe_name) and a teammate env var, so a path-looking value like
+        # "../evil" would otherwise register a teammate that team_message later
+        # refuses to address. Apply the mailbox's rule here so both agree.
+        validate_member_name(name)
         member = TeamMember(name=name, agent_type=agent, status="running")
         await asyncio.to_thread(self.add_member, member)
 

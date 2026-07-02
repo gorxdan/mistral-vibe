@@ -257,6 +257,31 @@ class _FakeProc:
 
 
 @pytest.mark.asyncio
+async def test_spawn_teammate_rejects_path_looking_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """teams-006: spawn_teammate must reject names the mailbox would refuse.
+
+    A teammate name becomes a mailbox inbox path, so "../evil" or "/abs/x"
+    would otherwise register a teammate that team_message later rejects, leaving
+    a "spawned" member nobody can address. The spawn boundary applies the same
+    _safe_name rule so both agree.
+    """
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    mgr = TeamManager("lead-session", team_name="test-name-validation")
+    try:
+        with pytest.raises(ValueError, match="invalid team member name"):
+            await mgr.spawn_teammate("../evil", "p", agent="explore", max_turns=1)
+        with pytest.raises(ValueError, match="invalid team member name"):
+            await mgr.spawn_teammate("a/b", "p", agent="explore", max_turns=1)
+        # No member registered for the rejected names.
+        assert mgr.get_members() == []
+        assert mgr._teammate_tasks == {}
+    finally:
+        mgr.cleanup()
+
+
+@pytest.mark.asyncio
 async def test_stop_teammate_terminates_subprocess(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

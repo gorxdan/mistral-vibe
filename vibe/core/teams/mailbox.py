@@ -24,6 +24,15 @@ def _safe_name(name: str) -> str:
     return name
 
 
+def validate_member_name(name: str) -> None:
+    """Public boundary check shared with TeamManager.spawn_teammate.
+
+    The mailbox and the spawn path must apply the same rule so a teammate the
+    manager registers is always addressable through ``team_message``.
+    """
+    _safe_name(name)
+
+
 class Mailbox:
     def __init__(self, team_dir: Path) -> None:
         self._team_dir = team_dir
