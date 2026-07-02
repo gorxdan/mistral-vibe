@@ -760,9 +760,11 @@ model = ...                      # Alias; default unset (None) — falls back to
 max_selected = 5                 # Top-K injected
 max_inject_chars = 8000          # Hard cap on total injected body text
 max_entries_scanned = 200        # Cap on index lines sent to the selector
+index_entry_max_chars = 120      # Per-line char cap for the injected index (0 = uncapped)
 timeout = 20.0                   # Per-selection LLM timeout
 prefetch = true                  # Warm the selector before the turn needs it
-inject_mode = "append"           # How selected bodies are attached to the prompt
+inject_mode = "late"             # "late" (ephemeral tail message) | "system"
+late_anchor = "tail"             # "tail" (request tail; cache-stable) | "before-user" (legacy)
 # Auto-extraction (write memories from conversation) and consolidation (merge
 # similar memories) families are also configurable: auto_extract,
 # auto_extract_model, auto_extract_max_writes, auto_extract_min_messages,

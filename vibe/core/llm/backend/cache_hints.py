@@ -28,6 +28,7 @@ def build_cache_hint(
     converted_messages: list[dict[str, Any]],
     *,
     session_id: str | None = None,
+    skip_trailing: int = 0,
 ) -> dict[str, Any] | None:
     """Return a request-body fragment to merge, or None for no hint.
 
@@ -36,6 +37,10 @@ def build_cache_hint(
 
     ``session_id`` is the stable per-conversation routing pin; when given it is
     preferred over the content-hash fallback for OpenAI providers.
+
+    ``skip_trailing`` excludes that many trailing messages (the ephemeral
+    late-memory tail) from ``anthropic-compat`` breakpoint placement, so cache
+    entries end on the last persisted message and stay prefix-matchable.
     """
     cache = getattr(provider, "cache", None)
     if cache is None or cache.mode != "explicit" or cache.style == "off":
@@ -51,7 +56,7 @@ def build_cache_hint(
         return fragment
 
     if cache.style == "anthropic-compat":
-        _tag_anthropic_compat(converted_messages)
+        _tag_anthropic_compat(converted_messages, skip_trailing)
         return {}
 
     return None
@@ -123,26 +128,20 @@ def _first_content(messages: list[dict[str, Any]], role: str) -> str | None:
     return None
 
 
-def _tag_anthropic_compat(messages: list[dict[str, Any]]) -> None:
+def _tag_anthropic_compat(
+    messages: list[dict[str, Any]], skip_trailing: int = 0
+) -> None:
     """Tag the last system + last user message with an ephemeral cache breakpoint
     (<=2 breakpoints, mirroring the native Anthropic adapter), handling both
-    string and already-converted list content.
+    string and already-converted list content. ``skip_trailing`` messages at the
+    end (the ephemeral late-memory tail) are excluded from placement.
     """
+    end = len(messages) - 1 - skip_trailing
     sys_idx = next(
-        (
-            i
-            for i in range(len(messages) - 1, -1, -1)
-            if messages[i].get("role") == "system"
-        ),
-        None,
+        (i for i in range(end, -1, -1) if messages[i].get("role") == "system"), None
     )
     usr_idx = next(
-        (
-            i
-            for i in range(len(messages) - 1, -1, -1)
-            if messages[i].get("role") == "user"
-        ),
-        None,
+        (i for i in range(end, -1, -1) if messages[i].get("role") == "user"), None
     )
     for idx in {sys_idx, usr_idx}:
         if idx is None:

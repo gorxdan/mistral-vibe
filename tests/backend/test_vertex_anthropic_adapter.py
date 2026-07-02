@@ -14,7 +14,13 @@ from vibe.core.llm.backend.vertex import (
     build_vertex_base_url,
     build_vertex_endpoint,
 )
-from vibe.core.types import AvailableFunction, AvailableTool, LLMMessage, Role
+from vibe.core.types import (
+    AvailableFunction,
+    AvailableTool,
+    InjectedMessageKind,
+    LLMMessage,
+    Role,
+)
 
 
 @pytest.fixture
@@ -249,6 +255,45 @@ class TestPrepareRequest:
 
         payload = json.loads(req.body)
         assert payload["max_tokens"] == adapter.DEFAULT_MAX_TOKENS
+
+    def test_trailing_memory_tail_excluded_from_cache_breakpoint(
+        self, adapter, provider
+    ):
+        messages = [
+            LLMMessage(role=Role.SYSTEM, content="Be helpful."),
+            LLMMessage(role=Role.USER, content="Hello"),
+            LLMMessage(
+                role=Role.USER,
+                content="<memories>notes</memories>",
+                injected=True,
+                injected_kind=InjectedMessageKind.MEMORY,
+            ),
+        ]
+        req = adapter.prepare_request(
+            RequestParams(
+                model_name="claude-3-5-sonnet",
+                messages=messages,
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
+            )
+        )
+
+        wire = json.loads(req.body)["messages"]
+        assert all("cache_control" not in block for block in wire[-1]["content"])
+        assert wire[-2]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_cache_control_helper_skip_trailing(self, adapter):
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "persisted"}]},
+            {"role": "user", "content": [{"type": "text", "text": "mem tail"}]},
+        ]
+        adapter._add_cache_control_to_last_user_message(messages, 1)
+        assert messages[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in messages[1]["content"][-1]
 
 
 class TestParseFullResponse:

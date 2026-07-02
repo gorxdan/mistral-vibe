@@ -8,7 +8,11 @@ import google.auth.credentials
 from google.auth.transport.requests import Request
 import orjson
 
-from vibe.core.llm.backend.adapter_port import PreparedRequest, RequestParams
+from vibe.core.llm.backend.adapter_port import (
+    PreparedRequest,
+    RequestParams,
+    trailing_ephemeral_count,
+)
 from vibe.core.llm.backend.anthropic import AnthropicAdapter
 
 
@@ -102,7 +106,9 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         if enable_streaming:
             payload["stream"] = True
 
-        self._add_cache_control_to_last_user_message(converted_messages)
+        self._add_cache_control_to_last_user_message(
+            converted_messages, trailing_ephemeral_count(messages)
+        )
 
         headers = {
             "Content-Type": "application/json",

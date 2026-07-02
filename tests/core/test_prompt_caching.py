@@ -4,10 +4,11 @@ import json
 from typing import Any
 
 from vibe.core.config import ProviderCacheConfig, ProviderConfig
+from vibe.core.llm.backend.adapter_port import RequestParams, trailing_ephemeral_count
 from vibe.core.llm.backend.anthropic import AnthropicMapper
 from vibe.core.llm.backend.cache_hints import build_cache_hint
 from vibe.core.llm.backend.generic import OpenAIAdapter
-from vibe.core.types import AgentStats
+from vibe.core.types import AgentStats, InjectedMessageKind, LLMMessage, Role
 
 
 def _provider(cache: ProviderCacheConfig | None = None) -> ProviderConfig:
@@ -212,6 +213,104 @@ def test_anthropic_compat_handles_list_content() -> None:
     msgs = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
     build_cache_hint(_provider(cache), msgs)
     assert msgs[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_compat_skip_trailing_tags_below_tail_str_content() -> None:
+    cache = ProviderCacheConfig(mode="explicit", style="anthropic-compat")
+    msgs: list[dict[str, Any]] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "real question"},
+        {"role": "user", "content": "<memories>tail</memories>"},
+    ]
+    hint = build_cache_hint(_provider(cache), msgs, skip_trailing=1)
+    assert hint == {}
+    tagged = msgs[1]["content"]
+    assert isinstance(tagged, list)
+    assert tagged[0]["cache_control"] == {"type": "ephemeral"}
+    assert msgs[2]["content"] == "<memories>tail</memories>"  # tail untouched
+    sys_content = msgs[0]["content"]
+    assert isinstance(sys_content, list)
+    assert sys_content[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_compat_skip_trailing_list_content() -> None:
+    cache = ProviderCacheConfig(mode="explicit", style="anthropic-compat")
+    msgs: list[dict[str, Any]] = [
+        {"role": "user", "content": [{"type": "text", "text": "real"}]},
+        {"role": "user", "content": [{"type": "text", "text": "tail"}]},
+    ]
+    build_cache_hint(_provider(cache), msgs, skip_trailing=1)
+    assert msgs[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in msgs[1]["content"][-1]
+
+
+# trailing_ephemeral_count + generic wiring
+
+
+def _mem_msg(content: str = "<memories>m</memories>") -> LLMMessage:
+    return LLMMessage(
+        role=Role.USER,
+        content=content,
+        injected=True,
+        injected_kind=InjectedMessageKind.MEMORY,
+    )
+
+
+def test_trailing_ephemeral_count_counts_only_trailing_memory() -> None:
+    user = LLMMessage(role=Role.USER, content="u")
+    hook = LLMMessage(
+        role=Role.USER,
+        content="h",
+        injected=True,
+        injected_kind=InjectedMessageKind.USER_PROMPT_HOOK,
+    )
+    assert trailing_ephemeral_count([]) == 0
+    assert trailing_ephemeral_count([user]) == 0
+    assert trailing_ephemeral_count([user, hook]) == 0
+    assert trailing_ephemeral_count([user, _mem_msg()]) == 1
+    assert trailing_ephemeral_count([_mem_msg(), user, _mem_msg(), _mem_msg()]) == 2
+
+
+def test_generic_anthropic_compat_prepare_request_skips_memory_tail() -> None:
+    cache = ProviderCacheConfig(mode="explicit", style="anthropic-compat")
+    req = OpenAIAdapter().prepare_request(
+        RequestParams(
+            model_name="m",
+            messages=[
+                LLMMessage(role=Role.SYSTEM, content="sys"),
+                LLMMessage(role=Role.USER, content="question"),
+                _mem_msg(),
+            ],
+            temperature=0.2,
+            tools=None,
+            max_tokens=100,
+            tool_choice=None,
+            enable_streaming=False,
+            provider=_provider(cache),
+        )
+    )
+    wire = json.loads(req.body)["messages"]
+    assert wire[-1]["content"] == "<memories>m</memories>"  # tail untouched
+    assert wire[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert wire[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_generic_payload_excludes_injected_markers() -> None:
+    req = OpenAIAdapter().prepare_request(
+        RequestParams(
+            model_name="m",
+            messages=[LLMMessage(role=Role.USER, content="q"), _mem_msg()],
+            temperature=0.2,
+            tools=None,
+            max_tokens=100,
+            tool_choice=None,
+            enable_streaming=False,
+            provider=_provider(),
+        )
+    )
+    wire = json.loads(req.body)["messages"]
+    assert all("injected_kind" not in m for m in wire)
+    assert all("injected" not in m for m in wire)
 
 
 # --------------------------------------------------------------------------- #

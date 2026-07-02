@@ -4,10 +4,34 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol
 
-from vibe.core.types import AvailableTool, LLMChunk, LLMMessage, StrToolChoice
+from vibe.core.types import (
+    AvailableTool,
+    InjectedMessageKind,
+    LLMChunk,
+    LLMMessage,
+    StrToolChoice,
+)
 
 if TYPE_CHECKING:
     from vibe.core.config import ProviderConfig
+
+
+def trailing_ephemeral_count(messages: Sequence[LLMMessage]) -> int:
+    """Count the trailing ephemeral MEMORY messages (the late-memory tail).
+
+    The tail rides the absolute end of every request and is gone from that
+    position in the next one; a cache entry that includes it can never
+    prefix-match a later request, so history cache breakpoints must land on
+    the last persisted message instead. Invariant relied on by the adapters:
+    trailing MEMORY messages are user-role, non-empty string content, no
+    images — each maps 1:1 to one trailing converted dict in every adapter.
+    """
+    count = 0
+    for msg in reversed(messages):
+        if not (msg.injected and msg.injected_kind == InjectedMessageKind.MEMORY):
+            break
+        count += 1
+    return count
 
 
 class PreparedRequest(NamedTuple):

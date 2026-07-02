@@ -8,7 +8,13 @@ from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.compaction import render_compaction_context
 from vibe.core.config._settings import ContextShapingConfig, MemoryConfig
-from vibe.core.types import InjectedMessageKind, LLMMessage, Role
+from vibe.core.types import (
+    FunctionCall,
+    InjectedMessageKind,
+    LLMMessage,
+    Role,
+    ToolCall,
+)
 
 
 def _loop(mode: Literal["system", "late"]) -> AgentLoop:
@@ -44,18 +50,103 @@ def test_late_mode_keeps_system_stable_and_injects_ephemerally():
     # ... block absent from persisted history (self.messages) ...
     assert not any("RECALL-BODY" in (m.content or "") for m in loop.messages)
 
-    # ... but present in what the backend receives, right before the last user.
+    # ... but present in what the backend receives, at the absolute tail.
     sent = _sent(loop)
     assert len(sent) == len(loop.messages) + 1
-    mem_idx = next(i for i, m in enumerate(sent) if "RECALL-BODY" in (m.content or ""))
-    assert sent[mem_idx].role == Role.USER
-    assert sent[mem_idx + 1].content == "latest question"
+    assert "RECALL-BODY" in (sent[-1].content or "")
+    assert sent[-1].role == Role.USER
+    assert sent[-2].content == "latest question"
 
 
 def test_late_mode_empty_section_injects_nothing():
     loop = _loop("late")
     loop._set_memory_section("")
     assert len(_sent(loop)) == len(loop.messages)
+
+
+def test_tail_anchor_keeps_history_prefix_across_turns():
+    loop = _loop("late")
+    loop._set_memory_section("SELECTION-V1")
+    turn_n = _sent(loop)
+    assert turn_n[-1].injected_kind == InjectedMessageKind.MEMORY
+
+    loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="answer N"))
+    loop.messages.append(LLMMessage(role=Role.USER, content="question N+1"))
+    loop._set_memory_section("SELECTION-V2")
+    turn_n1 = _sent(loop)
+
+    # Turn N's request minus its final mem message is a verbatim prefix of
+    # turn N+1's request: no persisted message ever changes absolute position.
+    persisted = [(m.role, m.content) for m in turn_n[:-1]]
+    assert [(m.role, m.content) for m in turn_n1[: len(persisted)]] == persisted
+
+
+def test_tail_anchor_rides_after_tool_results_intra_turn():
+    loop = _loop("late")
+    loop._set_memory_section("RECALL-BODY")
+    loop.messages.append(
+        LLMMessage(
+            role=Role.ASSISTANT,
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id="tc1",
+                    index=0,
+                    function=FunctionCall(name="grep", arguments="{}"),
+                )
+            ],
+        )
+    )
+    loop.messages.append(LLMMessage(role=Role.TOOL, content="out", tool_call_id="tc1"))
+
+    sent = _sent(loop)
+    assert "RECALL-BODY" in (sent[-1].content or "")
+    assert sent[-1].role == Role.USER
+    assert sent[-2].role == Role.TOOL
+
+
+def test_before_user_anchor_restores_legacy_placement():
+    config = build_test_vibe_config(
+        memory=MemoryConfig(inject_mode="late", late_anchor="before-user")
+    )
+    loop = build_test_agent_loop(config=config)
+    loop.messages.append(LLMMessage(role=Role.USER, content="first question"))
+    loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="an answer"))
+    loop.messages.append(LLMMessage(role=Role.USER, content="latest question"))
+    loop._set_memory_section("RECALL-BODY")
+
+    sent = _sent(loop)
+    mem_idx = next(i for i, m in enumerate(sent) if "RECALL-BODY" in (m.content or ""))
+    assert sent[mem_idx].role == Role.USER
+    assert sent[mem_idx + 1].content == "latest question"
+    assert sent[-1].content == "latest question"
+
+
+def test_injected_index_clipped_while_selector_view_unclipped(tmp_path):
+    from vibe.core.memory.models import MemoryEntry, MemoryMetadata
+    from vibe.core.memory.store import MemoryStore
+
+    config = build_test_vibe_config(
+        memory=MemoryConfig(inject_mode="late", index_entry_max_chars=100)
+    )
+    loop = build_test_agent_loop(config=config)
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="wordy",
+                title="Wordy",
+                description="detail " * 30,
+                tags=["alpha", "beta"],
+            ),
+            body="b",
+        )
+    )
+
+    injected = loop._injected_index_markdown(store)
+    assert all(len(line) <= 100 for line in injected.splitlines())
+    selector_lines = store.index(loop.config.memory.max_entries_scanned)
+    assert any(len(line) > 100 for line in selector_lines)
 
 
 def _divergence_vs_system_len(loop: AgentLoop) -> tuple[int, int]:

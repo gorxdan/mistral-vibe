@@ -29,6 +29,8 @@ _WEEK_DAYS = 7
 _MONTH_DAYS = 30
 _YEAR_DAYS = 365
 
+_INDEX_ELLIPSIS = "…"
+
 
 class MemoryType(StrEnum):
     # Values are a serialization contract (persisted to/read from YAML
@@ -172,7 +174,7 @@ class MemoryEntry(BaseModel):
     def id(self) -> str:
         return self.metadata.id
 
-    def index_line(self, today: _dt.date | None = None) -> str:
+    def index_line(self, today: _dt.date | None = None, max_chars: int = 0) -> str:
         m = self.metadata
         tags = f" (tags: {', '.join(m.tags)})" if m.tags else ""
         desc = f": {m.description}" if m.description else ""
@@ -190,4 +192,13 @@ class MemoryEntry(BaseModel):
             p for p in (m.type.value if m.type is not None else None, age, state) if p
         ]
         type_tag = f" [{', '.join(parts)}]" if parts else ""
-        return f"- [{m.id}]{type_tag} {m.title}{desc}{tags}{scope}"
+        full = f"- [{m.id}]{type_tag} {m.title}{desc}{tags}{scope}"
+        if max_chars <= 0 or len(full) <= max_chars:
+            return full
+        # Over-budget: recall keys (id, bracket tag, title, scope) stay verbatim;
+        # tags drop first, then the description clips. The on-disk body is truth.
+        head = f"- [{m.id}]{type_tag} {m.title}"
+        room = max_chars - len(head) - len(scope) - 2 - len(_INDEX_ELLIPSIS)
+        if not m.description or room <= 0:
+            return f"{head}{scope}"
+        return f"{head}: {m.description[:room].rstrip()}{_INDEX_ELLIPSIS}{scope}"
