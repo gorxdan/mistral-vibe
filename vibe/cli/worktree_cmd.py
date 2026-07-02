@@ -40,6 +40,8 @@ def run_worktree_command(argv: list[str]) -> int:
         return _cmd_merge(arg) if arg else _usage_error("merge")
     if action == "discard":
         return _cmd_discard(arg, force=force) if arg else _usage_error("discard")
+    if action == "gc":
+        return _cmd_gc()
 
     print(f"vibe worktree: unknown action {action!r}", file=sys.stderr)
     _print_usage()
@@ -53,11 +55,12 @@ def _usage_error(action: str) -> int:
 
 def _print_usage() -> None:
     print(
-        "usage: vibe worktree {list | merge <branch> | discard <branch>}\n"
+        "usage: vibe worktree {list | merge <branch> | discard <branch> | gc}\n"
         "  list              show worktree branches holding unmerged work\n"
         "  merge <branch>    rebase-then-fast-forward a worktree branch into HEAD\n"
         "  discard <branch>  delete a worktree branch and its directory "
-        "(-f to skip the unmerged-work prompt)",
+        "(-f to skip the unmerged-work prompt)\n"
+        "  gc                prune stale worktrees and reclaim husk dirs",
         file=sys.stderr,
     )
 
@@ -259,4 +262,22 @@ def _cmd_discard(branch: str, *, force: bool) -> int:
     except GitCommandError:
         pass
     print(f"Discarded {branch}.")
+    return 0
+
+
+def _cmd_gc() -> int:
+    """Prune stale worktrees and reclaim husk dirs in the current repo."""
+    repo = _repo()
+    if repo is None:
+        return 1
+    cfg = _load_worktree_config()
+    try:
+        repo.git.worktree("prune")
+        print("vibe worktree: pruned stale worktree registrations.")
+    except GitCommandError as exc:
+        print(f"vibe worktree: prune failed: {exc}", file=sys.stderr)
+    worktree_manager._gc_abandoned_worktrees(repo, cfg)
+    worktree_manager._reap_dead_pid_worktrees(repo, cfg)
+    worktree_manager._reap_husk_dirs(repo, cfg)
+    print("vibe worktree: GC complete.")
     return 0

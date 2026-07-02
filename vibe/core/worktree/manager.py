@@ -480,6 +480,81 @@ class WorktreeManager:
             return
         self._gc_abandoned_worktrees(repo, config)
         self._reap_dead_pid_worktrees(repo, config)
+        self._reap_husk_dirs(repo, config)
+
+    def _reap_husk_dirs(self, repo: Repo, config: WorktreeConfig) -> None:
+        """F5-fs: reclaim unregistered worktree dirs (husks) by walking base_dir.
+
+        The registered-only reaper (`git worktree list`) cannot see dirs whose
+        admin entry was deleted by a partial `git worktree remove` (the husk
+        mechanism) or never-registered iso container parents. This walk finds
+        them and reclaims the empty ones; inhabited dirs and those with live
+        pid-in-leaf are skipped (defense in depth with F4).
+        """
+        if config.gc_age_days <= 0:
+            return
+        try:
+            base = Path(config.base_dir).resolve()
+        except OSError:
+            return
+        if not base.is_dir():
+            return
+        active = self._active.worktree_path.resolve() if self._active else None
+        registered = self._registered_worktree_paths(repo)
+        cutoff = time.time() - config.gc_age_days * 86400
+        for repo_dir in self._walk_repo_dirs(base):
+            for leaf_dir in repo_dir.iterdir():
+                try:
+                    if not leaf_dir.is_dir():
+                        continue
+                    rp = leaf_dir.resolve()
+                    if rp == active or rp in registered:
+                        continue
+                    if self._dir_inhabited(leaf_dir):
+                        logger.debug("husk-scan: skip %s (inhabited)", leaf_dir)
+                        continue
+                    pid = self._pid_from_leaf(leaf_dir.name)
+                    if pid is not None and (pid == os.getpid() or self._pid_alive(pid)):
+                        continue
+                    if leaf_dir.stat().st_mtime > cutoff:
+                        continue
+                    # Only rmdir empty dirs (no recursive rm); husk parents are
+                    # empty by the time they qualify.
+                    try:
+                        leaf_dir.rmdir()
+                        logger.info("husk-scan: reclaimed empty husk dir %s", leaf_dir)
+                    except OSError:
+                        pass
+                except OSError:
+                    continue
+
+    @staticmethod
+    def _walk_repo_dirs(base: Path) -> list[Path]:
+        dirs: list[Path] = []
+        try:
+            for entry in base.iterdir():
+                if entry.is_dir():
+                    dirs.append(entry)
+        except OSError:
+            pass
+        return dirs
+
+    @staticmethod
+    def _registered_worktree_paths(repo: Repo | None = None) -> set[Path]:
+        if repo is None:
+            return set()
+        try:
+            out = repo.git.worktree("list", "--porcelain")
+        except GitCommandError:
+            return set()
+        paths: set[Path] = set()
+        for line in out.splitlines():
+            if line.startswith("worktree "):
+                try:
+                    paths.add(Path(line[len("worktree ") :].strip()).resolve())
+                except OSError:
+                    continue
+        return paths
 
     @staticmethod
     def _pid_from_leaf(leaf: str) -> int | None:
