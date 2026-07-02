@@ -18,6 +18,9 @@ blocked = [
     "vibe.setup.trusted_folders.trust_folder_dialog",
     "textual",
     "git",
+    "vibe.core.config",
+    "rich",
+    "httpx",
 ]
 loaded = [name for name in blocked if name in sys.modules]
 if loaded:

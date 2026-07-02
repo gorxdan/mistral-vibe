@@ -7,16 +7,17 @@ import os
 from pathlib import Path
 import sys
 
-from rich import print as rprint
-
 from vibe import __version__
-from vibe.core.config.harness_files import init_harness_files_manager
-from vibe.core.trusted_folders import (
-    apply_workspace_trust_decision,
-    maybe_build_workspace_trust_prompt,
-    trusted_folders_manager,
-)
-from vibe.core.utils.paths import is_dangerous_directory
+
+# Module scope must stay argparse+stdlib: `vibe --help`/`--version` exit inside
+# parse_arguments(), so the config stack only loads after parsing (in main).
+
+
+def _rprint(*objects: object) -> None:
+    from rich import print as rich_print
+
+    rich_print(*objects)
+
 
 _SPLASH_GRADIENT = (
     "#ff6b00",
@@ -232,13 +233,18 @@ def _handle_zai_callback(uri: str) -> None:
     try:
         write_zai_callback(uri)
     except ZaiSignInError as err:
-        rprint(f"[red]Could not capture Z.ai callback: {err}[/]")
+        _rprint(f"[red]Could not capture Z.ai callback: {err}[/]")
         sys.exit(1)
-    rprint("[green]Z.ai callback captured. Return to Mistral Vibe setup.[/]")
+    _rprint("[green]Z.ai callback captured. Return to Mistral Vibe setup.[/]")
     sys.exit(0)
 
 
 def check_and_resolve_trusted_folder(cwd: Path) -> None:
+    from vibe.core.trusted_folders import (
+        apply_workspace_trust_decision,
+        maybe_build_workspace_trust_prompt,
+    )
+
     prompt = maybe_build_workspace_trust_prompt(cwd)
     if prompt is None:
         return
@@ -260,7 +266,7 @@ def check_and_resolve_trusted_folder(cwd: Path) -> None:
     except (KeyboardInterrupt, EOFError, TrustDialogQuitException):
         sys.exit(0)
     except Exception as e:
-        rprint(f"[yellow]Error showing trust dialog: {e}[/]")
+        _rprint(f"[yellow]Error showing trust dialog: {e}[/]")
         return
 
     if decision is not None:
@@ -287,7 +293,7 @@ def main() -> None:
     if args.workdir:
         workdir = args.workdir.expanduser().resolve()
         if not workdir.is_dir():
-            rprint(
+            _rprint(
                 f"[red]Error: --workdir does not exist or is not a directory: {workdir}[/]"
             )
             sys.exit(1)
@@ -296,13 +302,17 @@ def main() -> None:
     try:
         cwd = Path.cwd()
     except FileNotFoundError:
-        rprint(
+        _rprint(
             "[red]Error: Current working directory no longer exists.[/]\n"
             "[yellow]The directory you started vibe from has been deleted. "
             "Please change to an existing directory and try again, "
             "or use --workdir to specify a working directory.[/]"
         )
         sys.exit(1)
+
+    from vibe.core.config.harness_files import init_harness_files_manager
+    from vibe.core.trusted_folders import trusted_folders_manager
+    from vibe.core.utils.paths import is_dangerous_directory
 
     if args.trust:
         trusted_folders_manager.trust_for_session(cwd)
@@ -311,14 +321,14 @@ def main() -> None:
     for d in args.add_dir:
         resolved = Path(d).expanduser().resolve()
         if not resolved.is_dir():
-            rprint(
+            _rprint(
                 f"[red]Error: --add-dir path does not exist "
                 f"or is not a directory: {d}[/]"
             )
             sys.exit(1)
         is_dangerous, reason = is_dangerous_directory(resolved)
         if is_dangerous:
-            rprint(
+            _rprint(
                 f"[red]Error: --add-dir path is not allowed: {resolved} ({reason})[/]"
             )
             sys.exit(1)

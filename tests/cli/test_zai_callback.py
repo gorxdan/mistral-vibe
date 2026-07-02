@@ -25,8 +25,7 @@ def test_main_captures_hidden_zai_callback_before_cli_start(
     uri = "zcode://zai-auth/callback?code=abc&state=current"
     monkeypatch.setattr("sys.argv", ["vibe", "--zai-callback", uri])
     monkeypatch.setattr(
-        entrypoint_mod,
-        "init_harness_files_manager",
+        "vibe.core.config.harness_files.init_harness_files_manager",
         lambda *_args, **_kwargs: pytest.fail("callback must not start Mistral Vibe"),
     )
 
