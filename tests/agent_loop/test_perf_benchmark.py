@@ -24,6 +24,7 @@ event-loop thread (the "single-core heavy" hypothesis):
 
 from __future__ import annotations
 
+from pathlib import Path
 import time
 
 import pytest
@@ -31,6 +32,7 @@ import pytest
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
+from vibe.core.config import SessionLoggingConfig, VibeConfig
 from vibe.core.types import FunctionCall, ToolCall
 
 # Large payload size for the response scenario. Big enough to make any per-byte
@@ -40,6 +42,17 @@ _LARGE_CONTENT = "x" * 200_000
 # Fan-out width. Each glob is read-only and runs concurrently; 24 siblings is
 # enough to expose scheduling/queue contention without being a unit test.
 _FANOUT = 24
+
+
+def _bench_config(tmp_path: Path, **kwargs) -> VibeConfig:
+    # Session logging ON, scoped to this benchmark only (suite default is off,
+    # which hid per-round append+fsync/meta-rewrite/tmp-sweep from perf numbers).
+    return build_test_vibe_config(
+        session_logging=SessionLoggingConfig(
+            enabled=True, save_dir=str(tmp_path / "sessions"), session_prefix="bench"
+        ),
+        **kwargs,
+    )
 
 
 def _report_blockers() -> None:
@@ -60,10 +73,10 @@ def _report_blockers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_perf_large_response() -> None:
+async def test_perf_large_response(tmp_path: Path) -> None:
     backend = FakeBackend(mock_llm_chunk(content=_LARGE_CONTENT))
     agent = build_test_agent_loop(
-        config=build_test_vibe_config(enabled_tools=[]), backend=backend
+        config=_bench_config(tmp_path, enabled_tools=[]), backend=backend
     )
     t0 = time.perf_counter()
     events = [event async for event in agent.act("go")]
@@ -74,7 +87,7 @@ async def test_perf_large_response() -> None:
 
 
 @pytest.mark.asyncio
-async def test_perf_parallel_fanout() -> None:
+async def test_perf_parallel_fanout(tmp_path: Path) -> None:
     tool_calls = [
         ToolCall(
             id=f"call_glob_{i}",
@@ -91,7 +104,7 @@ async def test_perf_parallel_fanout() -> None:
         mock_llm_chunk("done"),
     ])
     agent = build_test_agent_loop(
-        config=build_test_vibe_config(enabled_tools=["glob"]), backend=backend
+        config=_bench_config(tmp_path, enabled_tools=["glob"]), backend=backend
     )
     t0 = time.perf_counter()
     events = [event async for event in agent.act("go")]
