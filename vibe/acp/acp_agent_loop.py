@@ -132,6 +132,7 @@ from vibe.core.config.harness_files import add_session_dirs
 from vibe.core.data_retention import DATA_RETENTION_MESSAGE
 from vibe.core.feedback import record_feedback_asked, should_show_feedback
 from vibe.core.hooks.config import load_hooks_from_fs
+from vibe.core.hooks.models import HookSessionContext
 from vibe.core.loop import LoopManager
 from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
 from vibe.core.paths import GLOBAL_ENV_FILE
@@ -151,6 +152,7 @@ from vibe.core.session.saved_sessions import (
 from vibe.core.session.session_loader import SessionLoader
 from vibe.core.session.title_format import format_session_title
 from vibe.core.skills.manager import SkillManager
+from vibe.core.teams import TeamManager
 from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
 from vibe.core.telemetry.send import TelemetryClient
 from vibe.core.telemetry.types import EntrypointMetadata
@@ -756,10 +758,58 @@ class VibeAcpAgentLoop(AcpAgent):
         )
         session.spawn(driver.poll_forever())
 
+        agent_loop.team_dir_callback = lambda: (
+            str(session.team_manager.team_dir)
+            if session.team_manager is not None
+            else None
+        )
+        agent_loop.team_spawn_callback = self._make_team_spawn_callback(session)
+        registry = agent_loop.background_registry
+        if registry is not None:
+            registry.attach_team_manager(lambda: session.team_manager)
+
         session.spawn(self._send_initial_available_commands(session))
         session.spawn(self._warm_up_agent_loop(agent_loop))
 
         return session
+
+    def _make_team_spawn_callback(
+        self, session: AcpSessionLoop
+    ) -> Callable[[str, str, str, int], Awaitable[dict[str, Any]]]:
+        def hook_context() -> HookSessionContext:
+            transcript = ""
+            logger = session.agent_loop.session_logger
+            if logger.enabled and logger.session_dir is not None:
+                transcript = str(logger.messages_filepath.resolve())
+            return HookSessionContext(
+                session_id=session.agent_loop.session_id,
+                transcript_path=transcript,
+                cwd=str(Path.cwd().resolve()),
+                parent_session_id=session.agent_loop.parent_session_id,
+            )
+
+        async def spawn(
+            name: str, prompt: str, agent: str, max_turns: int
+        ) -> dict[str, Any]:
+            if session.team_manager is None:
+                session.team_manager = TeamManager(
+                    session.agent_loop.session_id,
+                    hooks_manager=session.agent_loop.hooks_manager,
+                    hook_context=hook_context,
+                )
+                registry = session.agent_loop.background_registry
+                if registry is not None:
+                    registry.attach_team_manager(lambda: session.team_manager)
+            await session.team_manager.spawn_teammate(
+                name, prompt, agent=agent, max_turns=max_turns
+            )
+            return {
+                "name": name,
+                "team_dir": str(session.team_manager.team_dir),
+                "message": f"Spawned teammate `{name}`.",
+            }
+
+        return spawn
 
     def _make_loop_fire(
         self, session: AcpSessionLoop

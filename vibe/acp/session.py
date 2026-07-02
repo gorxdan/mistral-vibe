@@ -6,6 +6,7 @@ from typing import Any
 
 from vibe.acp.commands import AcpCommandRegistry
 from vibe.core.agent_loop import AgentLoop
+from vibe.core.teams import TeamManager
 
 
 class AcpSessionLoop:
@@ -22,6 +23,7 @@ class AcpSessionLoop:
         self.id = id
         self.agent_loop = agent_loop
         self.command_registry = command_registry
+        self.team_manager: TeamManager | None = None
         self._closed = False
         self._tasks: set[asyncio.Task[None]] = set()
         self._prompt_task: asyncio.Task[None] | None = None
@@ -65,6 +67,10 @@ class AcpSessionLoop:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         self._prompt_task = None
+        if self.team_manager is not None:
+            await self.team_manager.stop_all()
+            self.team_manager.cleanup()
+            self.team_manager = None
 
     def _clear_prompt_task(self, task: asyncio.Task[None]) -> None:
         if self._prompt_task is task:

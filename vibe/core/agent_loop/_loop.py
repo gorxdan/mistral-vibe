@@ -467,6 +467,9 @@ class AgentLoop(AgentLoopSessionMixin):
             Callable[[str | None, bool], Awaitable[dict[str, Any]]] | None
         ) = None
         self.team_dir_callback: Callable[[], str | None] | None = None
+        self.team_spawn_callback: (
+            Callable[[str, str, str, int], Awaitable[dict[str, Any]]] | None
+        ) = None
         # Unified background-task registry — owns bash-backgrounded processes
         # and aggregates workflows/teams/loops. None until wired by the entry
         # point (TUI VibeApp, run_programmatic, or ACP _create_agent_loop); the
@@ -2122,6 +2125,7 @@ class AgentLoop(AgentLoopSessionMixin):
                     workflow_results_callback=self.workflow_results_callback,
                     workflow_stop_callback=self.workflow_stop_callback,
                     team_dir_callback=self.team_dir_callback,
+                    team_spawn_callback=self.team_spawn_callback,
                     background_registry=self.background_registry,
                     files_read=self._files_read,
                     tool_manager=self.tool_manager,

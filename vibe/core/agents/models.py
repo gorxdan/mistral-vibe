@@ -615,6 +615,7 @@ _COORDINATOR_TOOLS = [
     "workflow_results",
     "workflow_stop",
     "team",
+    "team_spawn",
     "team_message",
     "read",
     "grep",

@@ -583,6 +583,7 @@ class VibeApp(App):
         self.agent_loop.workflow_results_callback = self._workflow_results_for_tool
         self.agent_loop.workflow_stop_callback = self._workflow_stop_for_tool
         self.agent_loop.team_dir_callback = self._team_dir_for_tool
+        self.agent_loop.team_spawn_callback = self._team_spawn_for_tool
         self._team_manager: TeamManager | None = None
         self._background_registry = BackgroundRegistry()
         self._background_registry.attach_workflow_runner(lambda: self._workflow_runner)
@@ -3823,6 +3824,20 @@ class VibeApp(App):
         if self._team_manager is None:
             return None
         return str(self._team_manager.team_dir)
+
+    async def _team_spawn_for_tool(
+        self, name: str, prompt: str, agent: str, max_turns: int
+    ) -> dict[str, Any]:
+        if self._team_manager is None:
+            self._team_manager = self._build_team_manager()
+        await self._team_manager.spawn_teammate(
+            name, prompt, agent=agent, max_turns=max_turns
+        )
+        return {
+            "name": name,
+            "team_dir": str(self._team_manager.team_dir),
+            "message": f"Spawned teammate `{name}`.",
+        }
 
     async def _run_workflow_command(self, cmd_args: str = "", **kwargs: Any) -> None:
         from vibe.cli.textual_ui.widgets.messages import (

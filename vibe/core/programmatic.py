@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 import os
@@ -21,12 +22,13 @@ from vibe import __version__
 from vibe.core.agent_loop import AgentLoop, AgentLoopParams, TeleportError
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import SandboxConfig, VibeConfig
-from vibe.core.hooks.models import HookConfigResult
+from vibe.core.hooks.models import HookConfigResult, HookSessionContext
 from vibe.core.logger import logger
 from vibe.core.loop import LoopManager
 from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
 from vibe.core.output_formatters import OutputFormatter, create_formatter
 from vibe.core.schedule_driver import ScheduleDriver
+from vibe.core.teams import TeamManager
 from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
 from vibe.core.telemetry.types import ClientMetadata
 from vibe.core.teleport.types import (
@@ -128,6 +130,7 @@ async def _run_session(
     opts: ProgrammaticOptions,
     prompt: str,
     background_registry: BackgroundRegistry,
+    team_cleanup: Callable[[], Awaitable[None]] | None = None,
 ) -> str | None:
     setup_lsp_for_config(config, lambda: config, Path.cwd(), warmup=True)
     try:
@@ -182,6 +185,8 @@ async def _run_session(
         return formatter.finalize()
     finally:
         agent_loop.emit_session_closed_telemetry()
+        if team_cleanup is not None:
+            await team_cleanup()
         # Reap backgrounded processes so a `vibe -p` that started a server
         # does not orphan it to init on exit. Aggregated categories own
         # their own shutdown; this only reaps registry-owned processes.
@@ -251,6 +256,51 @@ def run_programmatic(
     # the `background` tool and async subagent completions still work.
     background_registry = BackgroundRegistry()
     agent_loop.background_registry = background_registry
+    team_manager: TeamManager | None = None
+
+    def hook_context() -> HookSessionContext:
+        transcript = ""
+        if agent_loop.session_logger.enabled and agent_loop.session_logger.session_dir:
+            transcript = str(agent_loop.session_logger.messages_filepath.resolve())
+        return HookSessionContext(
+            session_id=agent_loop.session_id,
+            transcript_path=transcript,
+            cwd=str(Path.cwd().resolve()),
+            parent_session_id=agent_loop.parent_session_id,
+        )
+
+    def ensure_team_manager() -> TeamManager:
+        nonlocal team_manager
+        if team_manager is None:
+            team_manager = TeamManager(
+                agent_loop.session_id,
+                hooks_manager=agent_loop.hooks_manager,
+                hook_context=hook_context,
+            )
+            background_registry.attach_team_manager(lambda: team_manager)
+        return team_manager
+
+    async def spawn_team(
+        name: str, prompt: str, agent: str, max_turns: int
+    ) -> dict[str, Any]:
+        manager = ensure_team_manager()
+        await manager.spawn_teammate(name, prompt, agent=agent, max_turns=max_turns)
+        return {
+            "name": name,
+            "team_dir": str(manager.team_dir),
+            "message": f"Spawned teammate `{name}`.",
+        }
+
+    async def cleanup_team() -> None:
+        if team_manager is None:
+            return
+        await team_manager.stop_all()
+        await asyncio.to_thread(team_manager.cleanup)
+
+    agent_loop.team_dir_callback = lambda: (
+        str(team_manager.team_dir) if team_manager is not None else None
+    )
+    agent_loop.team_spawn_callback = spawn_team
     if opts.headless:
         bash_cfg = agent_loop.tool_manager.get_tool_config("bash")
         _emit_headless_sandbox_nudge(getattr(bash_cfg, "sandbox", None))
@@ -266,6 +316,7 @@ def run_programmatic(
                 opts,
                 prompt,
                 background_registry,
+                cleanup_team,
             )
         )
     finally:

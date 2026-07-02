@@ -1386,13 +1386,15 @@ builtin tool (available only inside a teammate, gated on `VIBE_TEAM_DIR`):
 
 ### Lead ↔ teammate messaging
 
-The lead (host) does **not** get the teammate `team` tool. To steer teammates
-and collect their replies, the lead uses the `team_message` tool against the
-same shared Mailbox: `send_message` (to a teammate by name),
-`read_messages` / `unread_messages` (the lead's own `lead` inbox). It is
-available only while a team is active (errors with "No active team" otherwise).
-Teammates reach the lead by addressing messages to `lead`. Task distribution
-remains available to the user via `/team task add|done|list`.
+The lead (host) does **not** get the teammate `team` tool. To create a team
+from a model/tool context, the lead uses `team_spawn` (the TUI slash-command
+form is `/team spawn <name> <prompt>`). To steer teammates and collect their
+replies, the lead uses the `team_message` tool against the same shared Mailbox:
+`send_message` (to a teammate by name), `read_messages` / `unread_messages`
+(the lead's own `lead` inbox). `team_message` is available only while a team is
+active (errors with "No active team" otherwise). Teammates reach the lead by
+addressing messages to `lead`. Task distribution remains available to the user
+via `/team task add|done|list`.
 
 ### Team Management
 
