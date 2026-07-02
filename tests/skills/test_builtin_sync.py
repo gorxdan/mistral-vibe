@@ -47,6 +47,11 @@ class TestBuiltinSkills:
         for trigger in ("mcp", "config", "providers"):
             assert trigger in lowered
 
+    def test_tool_guides_skill_is_registered_inline(self) -> None:
+        assert "tool-guides" in BUILTIN_SKILLS
+        assert BUILTIN_SKILLS["tool-guides"].skill_path is None
+        assert BUILTIN_SKILLS["tool-guides"].prompt
+
     def test_vibe_skill_documents_defer_builtin_tools(self) -> None:
         prompt = BUILTIN_SKILLS["vibe"].prompt
         assert "defer_builtin_tools = false" in prompt
