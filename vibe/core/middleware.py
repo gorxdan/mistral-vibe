@@ -128,14 +128,8 @@ _SNIP_OPEN = "<vibe_snipped>"
 _SNIP_CLOSE = "</vibe_snipped>"
 _MC_OPEN = "<vibe_microcompacted>"
 
-# Cap on the base that snip/microcompact watermarks scale off. Their thresholds
-# are fractions of the active model's auto_compact_threshold, which for a
-# giant-window model (glm/fugu at 880k, gpt-5.5/minimax at 400k) is pinned to the
-# nominal window — so without this cap proactive shaping would not start until
-# hundreds of k of tokens, hoarding stale context with no latency or recall gain.
-# Capping keeps every model trimming from the same absolute point. Full
-# auto-compaction (AutoCompactMiddleware) is deliberately NOT capped: it must
-# fire near the real window, so it keeps the raw auto_compact_threshold.
+# Flat cap on the base that snip/microcompact watermarks scale off; rationale
+# and the window-relative lift live in ContextShaperMiddleware._threshold.
 _SHAPING_TOKEN_CAP = 256_000
 
 
@@ -152,10 +146,26 @@ class ContextShaperMiddleware:
 
     @staticmethod
     def _threshold(context: ConversationContext) -> int:
-        threshold = (
-            context.active_model or context.config.get_active_model()
-        ).auto_compact_threshold
-        return min(threshold, _SHAPING_TOKEN_CAP)
+        """Base the snip/microcompact watermarks scale off.
+
+        min(auto_compact_threshold, cap) where cap is the flat _SHAPING_TOKEN_CAP
+        lifted to max(cap, cap_window_fraction * context_window) for models that
+        DECLARE a window. Traces (2026-07) showed the flat 256k cap was the sole
+        trigger for 95% of shaping events — glm-5.2 (1M window) shaped at 15-17%
+        of window, and each pass re-billed a 150-280k cached suffix at full price,
+        inverting the cap's hoarding-is-free-to-avoid rationale. The original
+        motive (glm forgetfulness, cause never proven) keeps its escape hatch:
+        cap_window_fraction = 0 restores the flat cap in one line. Models without
+        a declared context_window are unchanged, as is full auto-compaction
+        (AutoCompactMiddleware — deliberately uncapped, fires near the real
+        window).
+        """
+        model = context.active_model or context.config.get_active_model()
+        cap = _SHAPING_TOKEN_CAP
+        fraction = context.config.context_shaping.cap_window_fraction
+        if fraction > 0 and model.context_window:
+            cap = max(cap, int(fraction * model.context_window))
+        return min(model.auto_compact_threshold, cap)
 
     @staticmethod
     def _guard_tokens(context: ConversationContext) -> int:

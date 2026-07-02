@@ -93,6 +93,38 @@ def test_shaping_base_is_capped(threshold: int, expected: int) -> None:
     assert ContextShaperMiddleware._threshold(ctx) == expected
 
 
+@pytest.mark.parametrize(
+    ("context_window", "threshold", "expected"),
+    [
+        (None, 880_000, 256_000),  # undeclared window — flat cap unchanged
+        (1_000_000, 880_000, 500_000),  # glm/fugu — cap lifted to 0.5x window
+        (1_000_000, 400_000, 400_000),  # threshold binds; the cap no longer does
+        (400_000, 400_000, 256_000),  # declared small window — max floors at 256k
+        (262_144, 200_000, 200_000),  # small window AND threshold below the cap
+    ],
+)
+def test_shaping_cap_window_relative(
+    context_window: int | None, threshold: int, expected: int
+) -> None:
+    cfg = build_test_vibe_config()
+    cfg.models[0].auto_compact_threshold = threshold
+    cfg.models[0].context_window = context_window
+    cfg.active_model = cfg.models[0].alias
+    ctx = _ctx([LLMMessage(role=Role.SYSTEM, content="s")], cfg)
+    assert ContextShaperMiddleware._threshold(ctx) == expected
+
+
+def test_shaping_cap_fraction_zero_restores_flat_cap() -> None:
+    cfg = build_test_vibe_config(
+        context_shaping=ContextShapingConfig(cap_window_fraction=0.0)
+    )
+    cfg.models[0].auto_compact_threshold = 880_000
+    cfg.models[0].context_window = 1_000_000
+    cfg.active_model = cfg.models[0].alias
+    ctx = _ctx([LLMMessage(role=Role.SYSTEM, content="s")], cfg)
+    assert ContextShaperMiddleware._threshold(ctx) == 256_000
+
+
 def test_protected_prefix_band_extends_past_large_system_prompt() -> None:
     # The guard band counts tokens AFTER the system prompt; a big system prompt
     # must not consume the band and leave the first history messages editable.

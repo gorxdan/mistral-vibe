@@ -394,6 +394,9 @@ class ContextShapingConfig(BaseSettings):
     # Never edit messages within the first N estimated tokens after the system
     # prompt, to keep the provider's auto-cached prefix stable across edits.
     cache_prefix_guard_tokens: int = 4000
+    # Declared-window models lift the flat shaping cap to this fraction of
+    # context_window (floored at 256k). 0 restores the flat cap for all models.
+    cap_window_fraction: float = 0.5
 
 
 class BaselineScalingConfig(BaseSettings):
