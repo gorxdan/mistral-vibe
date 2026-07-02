@@ -509,6 +509,8 @@ class WorktreeManager:
         # F4: scan /proc/*/cwd for any process whose cwd is under *path*. The
         # reaper runs in the host process (not bwrap), so /proc is real — this
         # check works where a sandboxed agent's /proc scan was namespaced-blind.
+        # Use relative_to (not str.startswith) to avoid sibling-prefix false
+        # positives: /foo/cli-123 must not match /foo/cli-1234.
         proc = Path("/proc")
         try:
             resolved = path.resolve()
@@ -520,9 +522,11 @@ class WorktreeManager:
                     continue
                 try:
                     cwd = (entry / "cwd").readlink()
-                    if str(cwd).startswith(str(resolved)):
-                        return True
-                except (OSError, ValueError):
+                    cwd.relative_to(resolved)
+                    return True
+                except ValueError:
+                    continue
+                except OSError:
                     continue
         except OSError:
             return False
