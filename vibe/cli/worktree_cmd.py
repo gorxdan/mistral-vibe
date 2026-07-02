@@ -131,8 +131,8 @@ def _cmd_merge(branch: str) -> int:
         return 1
     root = Path(repo.working_tree_dir) if repo.working_tree_dir else Path.cwd()
     try:
-        # Same per-repo lock as the session-exit auto-ff: two simultaneous
-        # merges would otherwise rebase/ff against a HEAD the other just moved.
+        # Per-repo lock: two simultaneous merges would otherwise rebase/ff
+        # against a HEAD the other just moved.
         with merge_lock(root):
             return _cmd_merge_locked(repo, branch)
     except Timeout:

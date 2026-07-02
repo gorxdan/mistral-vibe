@@ -150,7 +150,7 @@ def test_unknown_action(tmp_path: Path) -> None:
 def test_merge_strands_gracefully_when_merge_lock_busy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # CLI merge must honor the same per-repo lock as the session-exit auto-ff.
+    # CLI merge must honor the per-repo merge lock.
     from filelock import FileLock
 
     monkeypatch.setattr("vibe.core.worktree.manager._MERGE_LOCK_TIMEOUT_S", 0.2)

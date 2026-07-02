@@ -11,7 +11,7 @@ import tempfile
 import time
 from typing import TYPE_CHECKING
 
-from filelock import FileLock, Timeout
+from filelock import FileLock
 from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError
 
@@ -40,7 +40,7 @@ _MERGE_LOCK_TIMEOUT_S = 30.0
 
 
 def merge_lock(repo_root: Path) -> FileLock:
-    """The per-repo lock every merge-back path must hold (exit auto-ff, CLI)."""
+    """The per-repo lock every merge path must hold (CLI ``vibe worktree merge``)."""
     gitdir = repo_root / ".git"
     if gitdir.is_file():
         # Linked worktree: .git is a pointer file; lock in the shared gitdir so
@@ -78,11 +78,6 @@ class WorktreeHandle:
     create_head_sha: str
     symlinks: list[Path] = field(default_factory=list)
     config: WorktreeConfig = field(default_factory=WorktreeConfig)
-    # Fingerprint of the original tree's dirty diff at enter() (sha256 of the
-    # carry patch), or None if the tree was clean. Used at exit to confirm the
-    # live dirty state still matches what was carried before auto-merging over
-    # it (see WorktreeManager._try_auto_ff).
-    entry_dirty_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -205,11 +200,7 @@ class WorktreeManager:
         logger.info("Created worktree at %s on branch %s", worktree_path, branch)
 
         symlinks: list[Path] = []
-        entry_dirty_fingerprint: str | None = None
         if config.carry_dirty:
-            entry_dirty_fingerprint = self._dirty_fingerprint(
-                repo, config.carry_ignored
-            )
             self._carry_dirty(repo, worktree_path, config.carry_ignored)
 
         symlinks = self._symlink_deps(original_root, worktree_path, config)
@@ -225,7 +216,6 @@ class WorktreeManager:
             create_head_sha=create_head_sha,
             symlinks=symlinks,
             config=config,
-            entry_dirty_fingerprint=entry_dirty_fingerprint,
         )
         self._active = handle
         self._register_cleanup_backstops()
@@ -267,11 +257,6 @@ class WorktreeManager:
         if self._is_dirty(wt_repo):
             wip_ok = self._wip_commit(wt_repo, handle)
 
-        merged = False
-        attempted_ff = handle.config.merge == "auto-ff" and wip_ok
-        if attempted_ff:
-            merged = self._try_auto_ff(handle)
-
         # chdir back BEFORE worktree remove (removing cwd leaves stale cwd).
         os.chdir(handle.original_repo_root)
 
@@ -288,24 +273,17 @@ class WorktreeManager:
                     handle.branch,
                 )
 
-        if merged:
-            print(
-                "\n✓ Your changes were merged into the original checkout.\n",
-                file=sys.stdout,
-            )
-        elif attempted_ff:
-            print(
-                f"\nYour work is kept on branch {handle.branch} but couldn't merge "
-                "automatically (it conflicts with another session's changes).\n"
-                f"  Land it later: vibe worktree merge {handle.branch}\n"
-                f"  Or discard:    vibe worktree discard {handle.branch}\n",
-                file=sys.stdout,
-            )
-        else:
+        if wip_ok:
             print(
                 f"\nYour work is kept on branch {handle.branch}.\n"
                 f"  Land it:    vibe worktree merge {handle.branch}\n"
                 f"  Or discard: vibe worktree discard {handle.branch}\n",
+                file=sys.stdout,
+            )
+        else:
+            print(
+                f"\nWork on branch {handle.branch} could not be WIP-committed; "
+                f"the worktree was kept for recovery. Inspect it before merging.\n",
                 file=sys.stdout,
             )
 
@@ -386,18 +364,6 @@ class WorktreeManager:
             )
         finally:
             patch_file.unlink(missing_ok=True)
-
-    def _dirty_fingerprint(self, repo: Repo, carry_ignored: list[str]) -> str | None:
-        import hashlib
-
-        try:
-            patch = self._compute_dirty_patch(repo, carry_ignored)
-        except (GitCommandError, OSError, RuntimeError) as exc:
-            logger.debug("Dirty fingerprint failed: %s", exc)
-            return None
-        if not patch.strip():
-            return None
-        return hashlib.sha256(patch).hexdigest()
 
     def _symlink_deps(
         self, original_root: Path, worktree_path: Path, config: WorktreeConfig
@@ -656,8 +622,8 @@ class WorktreeManager:
         except GitCommandError as exc:
             # repo.git.add("-A") is GitPython and raises GitCommandError (not
             # CalledProcessError), e.g. on index-lock contention. Treat it as a
-            # failed WIP commit so the caller skips auto-ff and falls through to
-            # the recovery handoff instead of letting it escape teardown.
+            # failed WIP commit so the caller reports the recovery branch
+            # instead of letting the failure escape teardown.
             logger.warning(
                 "WIP-commit staging failed: %s. Worktree kept for recovery.", exc
             )
@@ -670,144 +636,6 @@ class WorktreeManager:
                 )
                 return True
             logger.warning("WIP-commit failed: %s. Worktree kept for recovery.", err)
-            return False
-
-    def _try_auto_ff(self, handle: WorktreeHandle) -> bool:
-        try:
-            root_repo = self._get_repo(handle.original_repo_root)
-            with merge_lock(Path(handle.original_repo_root)):
-                return self._merge_under_lock(root_repo, handle)
-        except Timeout:
-            logger.info(
-                "Auto-ff: merge lock busy; branch %s kept for retry.", handle.branch
-            )
-            return False
-        except (GitCommandError, Exception) as exc:
-            logger.info("Auto-ff failed, manual merge needed: %s", exc)
-            return False
-
-    def _merge_under_lock(self, root_repo: Repo, handle: WorktreeHandle) -> bool:
-        current_head = root_repo.head.commit.hexsha
-        if current_head != handle.create_head_sha:
-            if not self._rebase_branch_onto(handle, current_head):
-                return False
-        # None == no carried dirt -> a plain ff is safe (carry_ignored never blocks).
-        now_fp = self._dirty_fingerprint(root_repo, handle.config.carry_ignored)
-        if now_fp is None:
-            root_repo.git.merge("--ff-only", handle.branch)
-            logger.info(
-                "Auto-ff merged branch %s into %s",
-                handle.branch,
-                handle.original_repo_root,
-            )
-            return True
-        if now_fp != handle.entry_dirty_fingerprint:
-            logger.info(
-                "Auto-ff skipped: original tree dirty and changed since enter "
-                "(concurrent edit?). Manual merge needed."
-            )
-            return False
-        return self._stash_ff_drop(root_repo, handle)
-
-    def _rebase_branch_onto(self, handle: WorktreeHandle, base_sha: str) -> bool:
-        wt_repo = self._get_repo(handle.worktree_path)
-        try:
-            wt_repo.git.rebase(base_sha)
-            logger.info(
-                "Rebased branch %s onto %s for merge-back.", handle.branch, base_sha[:8]
-            )
-            return True
-        except GitCommandError as exc:
-            logger.info(
-                "Rebase of %s onto %s conflicted (%s); aborting, branch kept.",
-                handle.branch,
-                base_sha[:8],
-                exc,
-            )
-            try:
-                wt_repo.git.rebase("--abort")
-            except GitCommandError:
-                pass
-            return False
-
-    def _stash_ref_for_message(self, repo: Repo, message: str) -> str | None:
-        # `git stash drop`/`pop` reject raw commit SHAs; concurrent stashes
-        # shift `stash@{0}`, so locate by unique message suffix instead.
-        try:
-            out = repo.git.stash("list", "--format=%gd %s")
-        except GitCommandError:
-            return None
-        for line in out.splitlines():
-            ref, _, msg = line.strip().partition(" ")
-            # `git stash list` formats the subject as "On <branch>: <message>",
-            # so match the unique message as a suffix, not by equality.
-            if msg.endswith(message):
-                return ref
-        return None
-
-    def _restore_stash(self, repo: Repo, message: str) -> None:
-        ref = self._stash_ref_for_message(repo, message)
-        if ref is None:
-            return
-        try:
-            repo.git.stash("pop", ref)
-        except GitCommandError as exc:
-            logger.warning(
-                "Could not restore live changes from %s (%s); they remain stashed "
-                "(`git stash list`).",
-                ref,
-                exc,
-            )
-
-    def _stash_ff_drop(self, root_repo: Repo, handle: WorktreeHandle) -> bool:
-        # Exclude the same untracked carry_ignored paths the carried diff did, so
-        # symlinked deps / an untracked .env are never swept into (and dropped
-        # with) the stash.
-        excludes = self._carry_exclude_pathspecs(root_repo, handle.config.carry_ignored)
-        message = f"vibe-mergeback {handle.branch} {os.getpid()} {time.time_ns()}"
-        pushed = False
-        try:
-            out = root_repo.git.stash(
-                "push", "--include-untracked", "-m", message, "--", ".", *excludes
-            )
-            if "No local changes to save" in out:
-                # Raced clean between the dirty check and here.
-                root_repo.git.merge("--ff-only", handle.branch)
-                return True
-            pushed = True
-            try:
-                root_repo.git.merge("--ff-only", handle.branch)
-            except GitCommandError as exc:
-                # ff refused after stashing: the dirt is only in the stash now and
-                # HEAD did not advance, so popping restores it cleanly.
-                logger.info(
-                    "Auto-ff refused after stash (%s); restoring live changes, "
-                    "keeping branch %s.",
-                    exc,
-                    handle.branch,
-                )
-                self._restore_stash(root_repo, message)
-                return False
-            ref = self._stash_ref_for_message(root_repo, message)
-            if ref is not None:
-                try:
-                    root_repo.git.stash("drop", ref)
-                except GitCommandError as exc:
-                    logger.info(
-                        "Redundant mergeback stash %s kept (%s); safe to drop.",
-                        ref,
-                        exc,
-                    )
-            logger.info(
-                "Auto-ff merged branch %s into %s (over dirty tree)",
-                handle.branch,
-                handle.original_repo_root,
-            )
-            return True
-        except GitCommandError as exc:
-            if pushed:
-                self._restore_stash(root_repo, message)
-            logger.info("Stash-bracketed auto-ff failed: %s. Manual merge needed.", exc)
             return False
 
     def _cleanup_partial(self) -> None:
