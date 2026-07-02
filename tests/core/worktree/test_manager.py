@@ -737,3 +737,113 @@ def test_merge_lock_from_linked_worktree_uses_common_gitdir(tmp_path: Path) -> N
     with lock:
         pass
     assert Path(lock.lock_file).parent == (main / ".git").resolve()
+
+
+# ---------------------------------------------------------------------------
+# F1: lock/unlock live worktrees
+# ---------------------------------------------------------------------------
+
+
+def test_enter_locks_worktree(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "myrepo"
+    repo_dir.mkdir()
+    repo = Repo.init(str(repo_dir))
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Test")
+        cw.set_value("user", "email", "test@test.com")
+    (repo_dir / "a.txt").write_text("x\n")
+    repo.git.add("-A")
+    repo.git.commit("-m", "init")
+
+    mgr = WorktreeManager()
+    os.chdir(str(repo_dir))
+    config = WorktreeConfig(mode="on", cleanup="remove")
+    handle = mgr.enter("test", config)
+    assert handle is not None
+
+    # git worktree list --porcelain shows 'locked' with a reason.
+    out = repo.git.worktree("list", "--porcelain")
+    assert "locked" in out
+    mgr.exit(handle)
+
+
+def test_locked_worktree_survives_external_remove(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "myrepo"
+    repo_dir.mkdir()
+    repo = Repo.init(str(repo_dir))
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Test")
+        cw.set_value("user", "email", "test@test.com")
+    (repo_dir / "a.txt").write_text("x\n")
+    repo.git.add("-A")
+    repo.git.commit("-m", "init")
+
+    wt = tmp_path / "wt"
+    repo.git.worktree("add", "-b", "wt-branch", str(wt))
+    repo.git.worktree("lock", str(wt), "--reason", "vibe-test")
+
+    admin_entries = list((repo_dir / ".git" / "worktrees").iterdir())
+    assert len(admin_entries) == 1
+
+    # External remove must refuse on a locked worktree.
+    with pytest.raises(Exception):
+        repo.git.worktree("remove", str(wt))
+
+    # Admin entry survives.
+    admin_after = list((repo_dir / ".git" / "worktrees").iterdir())
+    assert len(admin_after) == 1
+
+
+def test_exit_unlocks_then_removes(tmp_path: Path) -> None:
+    repo_dir = tmp_path / "myrepo"
+    repo_dir.mkdir()
+    repo = Repo.init(str(repo_dir))
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Test")
+        cw.set_value("user", "email", "test@test.com")
+    (repo_dir / "a.txt").write_text("x\n")
+    repo.git.add("-A")
+    repo.git.commit("-m", "init")
+
+    mgr = WorktreeManager()
+    os.chdir(str(repo_dir))
+    config = WorktreeConfig(mode="on", cleanup="remove")
+    handle = mgr.enter("test", config)
+    assert handle is not None
+    wt_path = handle.worktree_path
+
+    mgr.exit(handle)
+
+    assert not wt_path.exists()
+    # git worktree list no longer shows it.
+    out = repo.git.worktree("list", "--porcelain")
+    assert str(wt_path) not in out
+
+
+def test_exit_handles_already_deleted_dir(tmp_path: Path) -> None:
+    """F6: exit when the worktree dir was externally removed does not crash."""
+    repo_dir = tmp_path / "myrepo"
+    repo_dir.mkdir()
+    repo = Repo.init(str(repo_dir))
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Test")
+        cw.set_value("user", "email", "test@test.com")
+    (repo_dir / "a.txt").write_text("x\n")
+    repo.git.add("-A")
+    repo.git.commit("-m", "init")
+
+    mgr = WorktreeManager()
+    os.chdir(str(repo_dir))
+    config = WorktreeConfig(mode="on", cleanup="remove")
+    handle = mgr.enter("test", config)
+    assert handle is not None
+
+    # Simulate external deletion: unlock, force-remove the dir, leaving a husk.
+    repo.git.worktree("unlock", str(handle.worktree_path))
+    import shutil
+
+    shutil.rmtree(handle.worktree_path)
+
+    # exit() must not raise (the incident's teardown crash).
+    mgr.exit(handle)
+    assert mgr.active is None

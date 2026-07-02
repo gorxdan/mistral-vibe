@@ -107,6 +107,21 @@ def _worktree_dir_for_branch(repo: Repo, branch: str) -> str | None:
     return None
 
 
+def _worktree_locked_reason(repo: Repo, dir_path: str) -> str | None:
+    """Return the lock reason of a live worktree at *dir_path*, or None."""
+    try:
+        out = repo.git.worktree("list", "--porcelain")
+    except GitCommandError:
+        return None
+    cur_path: str | None = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            cur_path = line[len("worktree ") :].strip()
+        elif cur_path == dir_path and line.startswith("locked "):
+            return line[len("locked ") :].strip()
+    return None
+
+
 def _cmd_list() -> int:
     cfg = _load_worktree_config()
     try:
@@ -215,7 +230,17 @@ def _cmd_discard(branch: str, *, force: bool) -> int:
             return 1
     dir_path = _worktree_dir_for_branch(repo, branch)
     if dir_path:
+        lock_reason = _worktree_locked_reason(repo, dir_path)
+        if lock_reason is not None and not force:
+            print(
+                f"vibe worktree: {branch} is locked (live session: {lock_reason}). "
+                f"Use the owning session to exit, or `-f` to force-remove.",
+                file=sys.stderr,
+            )
+            return 1
         try:
+            if lock_reason is not None:
+                repo.git.worktree("unlock", dir_path)
             repo.git.worktree("remove", "--force", dir_path)
         except GitCommandError as exc:
             print(

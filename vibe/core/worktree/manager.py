@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 from dataclasses import dataclass, field
+import json
 import os
 from pathlib import Path
 import shutil
@@ -70,6 +71,36 @@ _MID_OPERATION_MARKERS = [
 
 _FALLBACK_GIT_NAME = "vibe"
 _FALLBACK_GIT_EMAIL = "vibe@local"
+
+
+def _read_boot_id() -> str:
+    try:
+        return (
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        )
+    except OSError:
+        return ""
+
+
+def _proc_start_time(pid: int) -> int:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
+        return int(stat[21])
+    except (OSError, IndexError, ValueError):
+        return 0
+
+
+def _build_lock_reason(*, purpose: str) -> str:
+    return json.dumps(
+        {
+            "pid": os.getpid(),
+            "boot_id": _read_boot_id(),
+            "proc_start_time": _proc_start_time(os.getpid()),
+            "purpose": purpose,
+            "created_at": time.time(),
+        },
+        separators=(",", ":"),
+    )
 
 
 @dataclass(frozen=True)
@@ -205,6 +236,18 @@ class WorktreeManager:
         repo.git.worktree("add", str(worktree_path), "-b", branch, "HEAD")
         logger.info("Created worktree at %s on branch %s", worktree_path, branch)
 
+        # F1: lock the live worktree so external `git worktree remove` refuses
+        # before touching the admin entry — closes the husk-creation vector.
+        try:
+            repo.git.worktree(
+                "lock",
+                str(worktree_path),
+                "--reason",
+                _build_lock_reason(purpose=label),
+            )
+        except GitCommandError as exc:
+            logger.warning("git worktree lock failed for %s: %s", worktree_path, exc)
+
         symlinks: list[Path] = []
         if config.carry_dirty:
             self._carry_dirty(repo, worktree_path, config.carry_ignored)
@@ -247,6 +290,17 @@ class WorktreeManager:
             self._active = None
 
     def _do_exit(self, handle: WorktreeHandle) -> None:
+        dir_exists = handle.worktree_path.is_dir()
+        if not dir_exists:
+            logger.warning(
+                "Worktree dir %s already removed externally; branch %s kept.",
+                handle.worktree_path,
+                handle.branch,
+            )
+            os.chdir(handle.original_repo_root)
+            self._try_unlock_from_root(handle)
+            return
+
         wt_repo = self._get_repo(handle.worktree_path)
 
         # Unlink dep symlinks BEFORE the WIP commit so the worktree
@@ -269,15 +323,11 @@ class WorktreeManager:
         if handle.config.cleanup == "remove":
             try:
                 root_repo = self._get_repo(handle.original_repo_root)
+                self._unlock_worktree(root_repo, handle.worktree_path)
                 root_repo.git.worktree("remove", str(handle.worktree_path))
                 logger.info("Removed worktree at %s", handle.worktree_path)
             except GitCommandError as exc:
-                logger.warning(
-                    "git worktree remove failed (keeping worktree): %s. "
-                    "Branch %s is safe. Run `git worktree prune` later.",
-                    exc,
-                    handle.branch,
-                )
+                self._report_remove_failure(handle, exc)
 
         if wip_ok:
             print(
@@ -291,6 +341,39 @@ class WorktreeManager:
                 f"\nWork on branch {handle.branch} could not be WIP-committed; "
                 f"the worktree was kept for recovery. Inspect it before merging.\n",
                 file=sys.stdout,
+            )
+
+    @staticmethod
+    def _unlock_worktree(repo: Repo, worktree_path: Path) -> None:
+        try:
+            repo.git.worktree("unlock", str(worktree_path))
+        except GitCommandError as exc:
+            logger.debug("worktree unlock (%s) no-op or failed: %s", worktree_path, exc)
+
+    def _try_unlock_from_root(self, handle: WorktreeHandle) -> None:
+        try:
+            root_repo = self._get_repo(handle.original_repo_root)
+            self._unlock_worktree(root_repo, handle.worktree_path)
+        except (InvalidGitRepositoryError, GitCommandError) as exc:
+            logger.debug("unlock from root failed for %s: %s", handle.branch, exc)
+
+    def _report_remove_failure(
+        self, handle: WorktreeHandle, exc: GitCommandError
+    ) -> None:
+        msg = str(exc)
+        if handle.worktree_path.is_dir():
+            logger.warning(
+                "git worktree remove failed (keeping worktree): %s. "
+                "Branch %s is safe. Run `vibe worktree list` to review.",
+                msg,
+                handle.branch,
+            )
+        else:
+            logger.warning(
+                "Worktree dir %s is gone; branch %s kept. %s",
+                handle.worktree_path,
+                handle.branch,
+                msg,
             )
 
     def _carry_exclude_pathspecs(
@@ -454,6 +537,7 @@ class WorktreeManager:
                     continue  # unknown / self / still-running -> never touch
                 if not wt.exists() or wt.stat().st_mtime > cutoff:
                     continue
+                self._unlock_worktree(repo, wt)
                 repo.git.worktree("remove", "--force", str(wt))
                 logger.info("reaped stranded worktree %s (pid %d dead)", wt, pid)
             except (OSError, GitCommandError) as exc:
