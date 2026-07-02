@@ -1032,6 +1032,16 @@ class WorkflowRuntime:
                         live.tokens_out = tokens_out + getattr(
                             loop.stats, "session_completion_tokens", 0
                         )
+            except FileNotFoundError as e:
+                # F5: cwd was deleted under us (worktree reap). Fail this agent
+                # with a named, actionable error instead of an opaque [Errno 2]
+                # that would fire once per in-process agent.
+                completed = False
+                error_msg = (
+                    f"session worktree deleted at runtime (cwd gone): {e}. "
+                    f"Switch to the original repo and restart the workflow."
+                )
+                break
             except asyncio.CancelledError:
                 # Whole-run stop re-raises; a targeted cancel_agent() or the i7
                 # timeout watchdog sets cancel_requested and we record this agent
