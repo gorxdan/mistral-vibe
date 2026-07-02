@@ -39,6 +39,32 @@ def test_snapshot_returns_copy():
     assert adherence.snapshot()["symbol_grep_miss"] == 1
 
 
+def test_configure_disabled_silences_emit(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(adherence, "_build_handler", lambda: calls.append("built"))
+    adherence.configure(enabled=False)
+    adherence.record_symbol_grep_miss()
+    adherence.record_lsp_call("hover")
+    assert calls == []
+    assert adherence.snapshot() == {"symbol_grep_miss": 1, "lsp_call": 1}
+
+
+def test_configure_reenable_restores_emit(tmp_path, monkeypatch):
+    monkeypatch.setattr(adherence.LOG_DIR, "_resolver", lambda: tmp_path)
+    adherence.configure(enabled=False)
+    adherence.record_symbol_grep_miss()
+    assert not (tmp_path / "vibe-adherence.log").exists()
+    adherence.configure(enabled=True)
+    adherence.record_symbol_grep_miss()
+    assert "symbol_grep" in (tmp_path / "vibe-adherence.log").read_text()
+
+
+def test_default_unconfigured_is_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(adherence.LOG_DIR, "_resolver", lambda: tmp_path)
+    adherence.record_lsp_call("hover")
+    assert "op=hover" in (tmp_path / "vibe-adherence.log").read_text()
+
+
 def test_reset_clears_counters():
     adherence.record_symbol_grep_miss()
     adherence.record_lsp_call("hover")

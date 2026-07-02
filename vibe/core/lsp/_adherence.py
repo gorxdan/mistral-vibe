@@ -5,13 +5,15 @@ The ratio lets prompt/routing changes be judged on data instead of
 introspection. "Agent X under-uses lsp" is only actionable once you can see
 *how often* it greps a symbol that lsp would have resolved.
 
-Always-on by design: events go to a dedicated rotating file
-(``vibe-adherence.log``) so the signal is captured without enabling
-``VIBE_TRACE_*`` or wiring an otel collector — both are off by default, and
-telemetry behind an opt-in switch is the failure mode this exists to fix. The
-file is separate from ``vibe.log`` (WARNING-floor would drop INFO events) and
-from the trace perf log (gated to instrumented runs). Fail-soft: if the log
-dir cannot be opened, recording is a silent no-op, never a crash.
+Default-on local diagnostics: events go to a dedicated rotating file
+(``vibe-adherence.log``, 2MB x2 backups, metadata-only counters, no egress)
+so the signal is captured without enabling ``VIBE_TRACE_*`` or wiring an otel
+collector. Gated by ``enable_telemetry``: entrypoints call :func:`configure`
+at startup, and ``enable_telemetry = false`` silences the log. Unwired paths
+(bare library use) keep today's default-on behavior. The file is separate
+from ``vibe.log`` (WARNING-floor would drop INFO events) and from the trace
+perf log (gated to instrumented runs). Fail-soft: if the log dir cannot be
+opened, recording is a silent no-op, never a crash.
 """
 
 from __future__ import annotations
@@ -30,6 +32,14 @@ _log.setLevel(logging.INFO)
 # None = not yet built; _handler_unavailable means "tried, could not open".
 _handler: RotatingFileHandler | None = None
 _handler_unavailable = False
+# Default True so unwired paths (bare library use) keep logging.
+_enabled = True
+
+
+def configure(enabled: bool) -> None:
+    """Wire the enable_telemetry config flag; called at entrypoint startup."""
+    global _enabled
+    _enabled = enabled
 
 
 def _build_handler() -> RotatingFileHandler | None:
@@ -55,7 +65,7 @@ def _build_handler() -> RotatingFileHandler | None:
 
 
 def _emit(message: str) -> None:
-    if _build_handler() is None:
+    if not _enabled or _build_handler() is None:
         return
     _log.info(message)
 
@@ -82,11 +92,12 @@ def snapshot() -> dict[str, int]:
 
 
 def reset_for_test() -> None:
-    """Reset counters and handler state for test isolation."""
-    global _handler, _handler_unavailable
+    """Reset counters, handler, and enabled state for test isolation."""
+    global _handler, _handler_unavailable, _enabled
     if _handler is not None:
         _log.removeHandler(_handler)
         _handler = None
     _handler_unavailable = False
+    _enabled = True
     for k in _COUNTS:
         _COUNTS[k] = 0

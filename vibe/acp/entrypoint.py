@@ -81,6 +81,7 @@ def main() -> None:
 
     from vibe.acp.acp_agent_loop import run_acp_server
     from vibe.core.config import VibeConfig, load_dotenv_values
+    from vibe.core.lsp._adherence import configure as configure_adherence
     from vibe.core.tracing import setup_tracing
     from vibe.setup.onboarding import run_onboarding
 
@@ -102,6 +103,7 @@ def main() -> None:
     try:
         config = VibeConfig.load()
         setup_tracing(config)
+        configure_adherence(config.enable_telemetry)
     except Exception:
         pass  # tracing disabled
 

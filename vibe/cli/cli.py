@@ -28,6 +28,7 @@ from vibe.core.config import MissingAPIKeyError, VibeConfig, load_dotenv_values
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.hooks.config import HookConfigResult, load_hooks_from_fs
 from vibe.core.logger import logger
+from vibe.core.lsp._adherence import configure as configure_adherence
 from vibe.core.paths import HISTORY_FILE
 from vibe.core.plugins.integration import load_and_apply_plugins
 from vibe.core.programmatic import ProgrammaticOptions, run_programmatic
@@ -456,6 +457,7 @@ def run_cli(  # noqa: PLR0912
             config, plugin_hooks=plugin_result.hooks
         )
         setup_tracing(config)
+        configure_adherence(config.enable_telemetry)
 
         _apply_cli_overrides(args, config)
 

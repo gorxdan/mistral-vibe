@@ -1153,6 +1153,8 @@ Mistral Vibe can be used in text editors and IDEs that support [Agent Client Pro
 
 Use of Vibe is subject to our [Privacy Policy](https://legal.mistral.ai/terms/privacy-policy) and may include the collection and processing of data related to your use of the service, such as usage data, to operate, maintain, and improve Vibe. You can disable telemetry and crash reporting in your `config.toml` by setting `enable_telemetry = false`.
 
+Vibe also keeps a local-only diagnostic log, `vibe-adherence.log`, with LSP-vs-grep routing counters (no file contents, paths, or prompts). It rotates at roughly 6MB total and is never sent anywhere; setting `enable_telemetry = false` disables it as well.
+
 
 ## License
 
