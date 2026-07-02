@@ -93,6 +93,38 @@ def test_shaping_base_is_capped(threshold: int, expected: int) -> None:
     assert ContextShaperMiddleware._threshold(ctx) == expected
 
 
+def test_protected_prefix_band_extends_past_large_system_prompt() -> None:
+    # The guard band counts tokens AFTER the system prompt; a big system prompt
+    # must not consume the band and leave the first history messages editable.
+    msgs = MessageList([
+        LLMMessage(role=Role.SYSTEM, content=_content(200)),
+        LLMMessage(role=Role.ASSISTANT, content=_content(30)),
+        LLMMessage(role=Role.ASSISTANT, content=_content(30)),
+        LLMMessage(role=Role.ASSISTANT, content="tail"),
+    ])
+    assert ContextShaperMiddleware._protected_prefix_len(msgs, guard_tokens=50) == 3
+
+
+@pytest.mark.asyncio
+async def test_microcompact_respects_guard_band_after_large_system() -> None:
+    # With a prod-sized system prompt the eligible block right after it sits in
+    # the guard band (protected whole, crossing the boundary); edits start beyond.
+    cfg = _config(
+        microcompact=MicrocompactConfig(enabled=True, per_message_cap_tokens=100)
+    )
+    msgs = [
+        LLMMessage(role=Role.SYSTEM, content=_content(2000)),
+        LLMMessage(role=Role.ASSISTANT, content=_content(300)),
+        LLMMessage(role=Role.ASSISTANT, content=_content(300)),
+        LLMMessage(role=Role.ASSISTANT, content="recent reply"),
+    ]
+    ctx = _ctx(msgs, cfg)
+    await MicrocompactMiddleware().before_turn(ctx)
+
+    assert ctx.messages[1].content == _content(300)  # in-band: survives verbatim
+    assert (ctx.messages[2].content or "").startswith("<vibe_microcompacted>")
+
+
 @pytest.mark.asyncio
 async def test_snip_elides_oldest_large_and_preserves_bookends() -> None:
     msgs = _history()

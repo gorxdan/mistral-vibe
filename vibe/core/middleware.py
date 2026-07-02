@@ -190,7 +190,7 @@ class ContextShaperMiddleware:
         n = 1  # system prompt
         while n < len(messages) and _is_compaction_context_message(messages[n]):
             n += 1
-        acc = sum(approx_token_count(messages[i].content or "") for i in range(n))
+        acc = 0  # band counts tokens AFTER system/compaction, per the config doc
         while n < len(messages) and acc < guard_tokens:
             acc += approx_token_count(messages[n].content or "")
             n += 1
