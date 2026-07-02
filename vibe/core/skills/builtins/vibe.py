@@ -826,15 +826,13 @@ vibe --no-worktree                  # Force worktree isolation OFF for this invo
 ```
 
 Worktree isolation is **on by default** for the interactive CLI and `vibe -p`:
-writes land on a throwaway branch that is merged back into the original HEAD on
-clean exit — rebased onto the latest HEAD first (so concurrent sessions don't
-strand it), then fast-forwarded, including when the original tree was dirty at
-start. The branch is kept for recovery only if it genuinely conflicts with
-another session's changes; land it with `vibe worktree merge <branch>` (or
-discard with `vibe worktree discard <branch>`). Set `worktree.mode = "off"` in
-config to disable persistently, or `"auto-by-entrypoint"` for the legacy
-programmatic-only split. ACP is not isolated (multi-session-per-process; tracked
-as a follow-up).
+writes land on a throwaway branch (`vibe/...`) and stay there — the harness does
+NOT auto-merge on exit. Uncommitted edits are WIP-committed to the branch so the
+work is recoverable; land it explicitly with `vibe worktree merge <branch>`
+(rebases onto HEAD, then fast-forwards; aborts cleanly on conflict) or discard
+with `vibe worktree discard <branch>`. Set `worktree.mode = "off"` in config to
+disable persistently, or `"auto-by-entrypoint"` for the legacy programmatic-only
+split. ACP is not isolated (multi-session-per-process; tracked as a follow-up).
 
 The `vibe worktree` subcommand manages stranded branches outside the TUI
 (dispatched before the main parser, so it works on a fresh checkout):
