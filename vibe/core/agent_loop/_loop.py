@@ -1266,10 +1266,11 @@ class AgentLoop(AgentLoopSessionMixin):
         if threshold <= 0:
             return False
         ctx = self._get_context()
+        # emergency: hard-overflow shedding must never be floor/cooldown-blocked.
         snip = SnipMiddleware()
-        microcompact = MicrocompactMiddleware()
+        microcompact = MicrocompactMiddleware(emergency=True)
         start = snip.estimated_tokens(ctx)
-        for _ in range(12):  # bounded; microcompact does ~1 block/call
+        for _ in range(12):  # bounded; a batch pass converges in ~1 iteration
             before = snip.estimated_tokens(ctx)
             await snip.before_turn(ctx)
             await microcompact.before_turn(ctx)

@@ -295,12 +295,12 @@ class MicrocompactConfig(BaseSettings):
     # barely exceeded it (tiny sheds) and a live session climbed to 250k. 1000
     # halves the floor and makes more blocks eligible per pass.
     per_message_cap_tokens: int = 1000
-    # Now that microcompact is the sole shaper for non-recoverable content, 1/turn
-    # treads water: a live session sat at ~204k for ~10 turns shedding 280-900
-    # tokens/turn while growth replaced them. Several blocks/turn lets it actually
-    # reduce. Measured 2026-07 (traces): every in-place edit busts the provider
-    # prefix cache past the edit point — post-shape miss 50-90%, so batch, don't dribble.
-    max_blocks_per_turn: int = 4
+    # Skip a pass projected to shed fewer tokens than this — a 28-token shed
+    # still re-bills a 160-300k cached suffix. 0 disables the floor.
+    min_shed_tokens: int = 5000
+    # 0 = no per-turn rate limit: a firing pass sheds to target in ONE cache bust.
+    # Positive N restores the legacy dribble (N blocks/turn; costly, see above).
+    max_blocks_per_turn: int = 0
 
 
 class MemoryConfig(BaseSettings):
