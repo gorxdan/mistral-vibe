@@ -1159,6 +1159,91 @@ def test_index_line_omits_brackets_without_type_or_age() -> None:
     assert e.index_line() == "- [x] X"
 
 
+# index_line per-line char cap (injected-index budget)
+
+
+def _long_entry(mid: str = "long-id", scope: Literal["user", "project"] = "user"):
+    return MemoryEntry(
+        metadata=MemoryMetadata(
+            id=mid,
+            title="A memorable title",
+            description="a very detailed description " * 10,
+            tags=["alpha", "beta", "gamma"],
+            type=MemoryType.PROJECT,
+            scope=scope,
+        ),
+        body="b",
+    )
+
+
+def test_index_line_cap_clips_and_keeps_recall_keys() -> None:
+    e = _long_entry()
+    line = e.index_line(max_chars=120)
+    assert len(line) <= 120
+    assert line.startswith("- [long-id]")
+    assert "[project]" in line
+    assert "A memorable title" in line
+    assert "…" in line
+    assert "(tags:" not in line  # tags drop first
+
+
+def test_index_line_cap_zero_is_uncapped_legacy() -> None:
+    e = _long_entry()
+    assert e.index_line(max_chars=0) == e.index_line()
+
+
+def test_index_line_under_cap_is_unchanged() -> None:
+    e = _entry("short", desc="tiny")
+    assert e.index_line(max_chars=200) == e.index_line()
+
+
+def test_index_line_cap_preserves_project_scope_marker() -> None:
+    line = _long_entry(scope="project").index_line(max_chars=120)
+    assert len(line) <= 120
+    assert line.endswith(" (project)")
+
+
+def test_index_line_cap_empty_description_head_and_scope_only() -> None:
+    e = MemoryEntry(
+        metadata=MemoryMetadata(
+            id="no-desc-with-a-rather-long-identifier",
+            title="A title that pushes the head over a small cap",
+            tags=["alpha", "beta"],
+            scope="project",
+        ),
+        body="b",
+    )
+    line = e.index_line(max_chars=90)
+    assert line == (
+        "- [no-desc-with-a-rather-long-identifier] "
+        "A title that pushes the head over a small cap (project)"
+    )
+
+
+def test_index_plumbs_entry_max_chars(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_long_entry("plumbed"))
+    lines = store.index(entry_max_chars=120)
+    assert all(len(line) <= 120 for line in lines)
+    assert store.index() != lines  # uncapped default unchanged
+
+
+def test_index_markdown_plumbs_entry_max_chars(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    store.upsert(_long_entry("plumbed"))
+    md = store.index_markdown(entry_max_chars=120)
+    assert all(len(line) <= 120 for line in md.splitlines())
+    assert "…" in md
+
+
+def test_index_markdown_cap_keeps_hidden_count_footer(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    for i in range(4):
+        store.upsert(_long_entry(f"m-{i}"))
+    md = store.index_markdown(limit=2, entry_max_chars=120)
+    assert "2 more memories not shown" in md
+
+
 # --------------------------------------------------------------------------- #
 # Non-blocking deep-recall prefetch (races the LLM loop)                       #
 # --------------------------------------------------------------------------- #

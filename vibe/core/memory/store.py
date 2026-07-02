@@ -104,13 +104,16 @@ class MemoryStore:
             self._entries().values(), key=lambda e: e.metadata.updated, reverse=True
         )
 
-    def index(self, limit: int = 200) -> list[str]:
-        return [e.index_line() for e in self._sorted_entries()[:limit]]
+    def index(self, limit: int = 200, entry_max_chars: int = 0) -> list[str]:
+        return [
+            e.index_line(max_chars=entry_max_chars)
+            for e in self._sorted_entries()[:limit]
+        ]
 
-    def index_markdown(self, limit: int = 200) -> str:
+    def index_markdown(self, limit: int = 200, entry_max_chars: int = 0) -> str:
         entries = self._sorted_entries()
         shown = entries[:limit]
-        lines = [e.index_line() for e in shown]
+        lines = [e.index_line(max_chars=entry_max_chars) for e in shown]
         hidden = len(entries) - len(shown)
         if hidden > 0:
             noun = "memory" if hidden == 1 else "memories"

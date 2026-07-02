@@ -325,6 +325,9 @@ class MemoryConfig(BaseSettings):
     # Live glm-5.2 A/B on a selection flip: 8.7% cached (system) -> 96.3% (late).
     inject_mode: Literal["system", "late"] = "late"
     max_entries_scanned: int = 200
+    # Char cap per always-injected index line (id/tag/title/scope kept verbatim;
+    # tags drop, description clips). 0 = uncapped. 63 entries: ~6.8k -> ~1.9k tok.
+    index_entry_max_chars: int = 120
     timeout: float = 20.0
     extra_body: dict[str, Any] = Field(default_factory=dict)
     auto_extract: bool = False
