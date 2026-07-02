@@ -487,6 +487,9 @@ async def _spawn_isolated(
     env.pop("VIBE_ISOLATED_SCRATCHPAD_DIR", None)
     if scratchpad_dir is not None:
         env["VIBE_ISOLATED_SCRATCHPAD_DIR"] = str(scratchpad_dir)
+    # F7: child lease — record parent pid so the child can self-terminate if
+    # orphaned (start_new_session=True means it outlives a dead parent by default).
+    env["VIBE_ISO_PARENT_PID"] = str(os.getpid())
     stdout_target, log_fh = _open_isolated_log(log_path)
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1032,6 +1035,16 @@ class WorkflowRuntime:
                         live.tokens_out = tokens_out + getattr(
                             loop.stats, "session_completion_tokens", 0
                         )
+            except FileNotFoundError as e:
+                # F5: cwd was deleted under us (worktree reap). Fail this agent
+                # with a named, actionable error instead of an opaque [Errno 2]
+                # that would fire once per in-process agent.
+                completed = False
+                error_msg = (
+                    f"session worktree deleted at runtime (cwd gone): {e}. "
+                    f"Switch to the original repo and restart the workflow."
+                )
+                break
             except asyncio.CancelledError:
                 # Whole-run stop re-raises; a targeted cancel_agent() or the i7
                 # timeout watchdog sets cancel_requested and we record this agent

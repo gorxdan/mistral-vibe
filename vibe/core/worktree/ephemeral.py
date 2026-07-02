@@ -19,8 +19,37 @@ from git.exc import GitCommandError
 
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
+from vibe.core.worktree.manager import merge_lock
 
 _SAFE_LABEL_RE = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _iso_lock_reason() -> str:
+    import json
+
+    boot_id = ""
+    try:
+        boot_id = (
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        )
+    except OSError:
+        pass
+    start_time = 0
+    try:
+        stat = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="utf-8").split()
+        start_time = int(stat[21])
+    except (OSError, IndexError, ValueError):
+        pass
+    return json.dumps(
+        {
+            "pid": os.getpid(),
+            "boot_id": boot_id,
+            "proc_start_time": start_time,
+            "purpose": "iso",
+            "created_at": time.time(),
+        },
+        separators=(",", ":"),
+    )
 
 
 @dataclass(frozen=True)
@@ -43,15 +72,29 @@ def create_ephemeral_worktree(
     root = Path(repo.working_tree_dir).resolve()
     base_sha = repo.head.commit.hexsha
 
+    # F2: derive the real repo name via the git common-dir (the pattern in
+    # manager.py:113-124), not root.name — inside a session worktree root.name
+    # is the worktree leaf (e.g. "cli-1830853-..."), which produces un-namespaced
+    # paths and permanent husk parents.
+    try:
+        common = repo.git.rev_parse("--git-common-dir")
+        common_dir = (root / common).resolve()
+        repo_name = common_dir.parent.name
+    except Exception:
+        repo_name = root.name
+
     safe = _SAFE_LABEL_RE.sub("-", label).strip("-")[:32] or "agent"
-    leaf = f"{safe}-{os.getpid()}-{time.monotonic_ns()}"
+    leaf = f"{safe}-{os.getpid()}-{time.time_ns()}"
     branch = f"vibe/iso/{leaf}"
-    if base_dir is None:
-        base_dir = VIBE_HOME.path / "worktrees" / root.name / "iso"
-    base_dir.mkdir(parents=True, exist_ok=True)
-    path = base_dir / leaf
+    resolved_base = base_dir or VIBE_HOME.path / "worktrees" / repo_name / "iso"
+    resolved_base.mkdir(parents=True, exist_ok=True)
+    path = resolved_base / leaf
 
     repo.git.worktree("add", str(path), "-b", branch, "HEAD")
+    try:
+        repo.git.worktree("lock", str(path), "--reason", _iso_lock_reason())
+    except GitCommandError as exc:
+        logger.warning("git worktree lock failed for %s: %s", path, exc)
     logger.info("Created isolated worktree %s on branch %s", path, branch)
     return EphemeralWorktree(
         path=path, branch=branch, repo_root=root, base_sha=base_sha
@@ -71,7 +114,8 @@ def deliver_ephemeral_worktree(wt: EphemeralWorktree) -> bool:
             wt_repo.git.add("-A")
             wt_repo.index.commit("workflow agent work")
         try:
-            parent.git.merge("--ff-only", wt.branch)
+            with merge_lock(wt.repo_root):
+                parent.git.merge("--ff-only", wt.branch)
         except GitCommandError as e:
             reason = str(e).strip().splitlines()[:1]
             logger.info(
@@ -86,6 +130,13 @@ def deliver_ephemeral_worktree(wt: EphemeralWorktree) -> bool:
     except (GitCommandError, OSError) as e:
         logger.warning("Failed to deliver isolated worktree %s: %s", wt.path, e)
         return False
+
+
+def _try_unlock(repo: Repo, wt_path: Path) -> None:
+    try:
+        repo.git.worktree("unlock", str(wt_path))
+    except GitCommandError as exc:
+        logger.debug("worktree unlock (%s) no-op or failed: %s", wt_path, exc)
 
 
 def remove_ephemeral_worktree(
@@ -133,6 +184,7 @@ def remove_ephemeral_worktree(
                     )
                     return False
             try:
+                _try_unlock(repo, wt.path)
                 repo.git.worktree("remove", "--force", str(wt.path))
                 logger.info(
                     "Reclaimed isolated worktree dir %s; work preserved on branch "
@@ -155,6 +207,7 @@ def remove_ephemeral_worktree(
         # already reclaimed on an earlier call): remove the directory if present
         # and delete the throwaway branch.
         if wt.path.exists():
+            _try_unlock(repo, wt.path)
             if keep_if_changed:
                 repo.git.worktree("remove", str(wt.path))
             else:
@@ -168,7 +221,8 @@ def remove_ephemeral_worktree(
         return True
     except (GitCommandError, OSError) as e:
         logger.warning(
-            "Failed to remove isolated worktree %s: %s. Run `git worktree prune`.",
+            "Failed to remove isolated worktree %s: %s. Run `vibe worktree list` "
+            "to review branches.",
             wt.path,
             e,
         )

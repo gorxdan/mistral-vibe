@@ -186,7 +186,7 @@ from vibe.core.hooks.models import HookStartEvent
 from vibe.core.log_reader import LogReader
 from vibe.core.logger import logger
 from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
-from vibe.core.paths import CACHE_FILE, HISTORY_FILE
+from vibe.core.paths import CACHE_FILE, HISTORY_FILE, safe_cwd
 from vibe.core.rewind import RewindError
 from vibe.core.search import (
     SearxngSettings,
@@ -750,7 +750,7 @@ class VibeApp(App):
             )
 
         with Horizontal(id="bottom-bar"):
-            yield PathDisplay(self.config.displayed_workdir or Path.cwd())
+            yield PathDisplay(self.config.displayed_workdir or safe_cwd())
             yield ModelStatusBadge()
             yield SubModelBadge()
             yield SubagentsBadge()
@@ -779,7 +779,7 @@ class VibeApp(App):
         setup_lsp_for_config(
             self.agent_loop.base_config,
             lambda: self.agent_loop.base_config,
-            Path.cwd(),
+            safe_cwd(),
             warmup=True,
         )
         self._apply_theme(self.config.theme)
@@ -1094,7 +1094,7 @@ class VibeApp(App):
     async def _enqueue_prompt_with_resources(
         self, content: str, *, skill_name: str | None = None
     ) -> bool:
-        payload = build_path_prompt_payload(content, base_dir=Path.cwd())
+        payload = build_path_prompt_payload(content, base_dir=safe_cwd())
         images = await self._prepare_images_or_abort(payload)
         if images is None:
             return False
@@ -1778,7 +1778,7 @@ class VibeApp(App):
         if existing_widget is not None:
             bash_msg = existing_widget
         else:
-            bash_msg = BashOutputMessage(command, str(Path.cwd()), pending=True)
+            bash_msg = BashOutputMessage(command, str(safe_cwd()), pending=True)
             await self._mount_and_scroll(bash_msg)
         await self._ensure_loading_widget("Running command")
         bash_loading_widget = self._loading_widget
@@ -1814,7 +1814,7 @@ class VibeApp(App):
                 await self.agent_loop.inject_user_context(
                     self._format_manual_command_context(
                         command=command,
-                        cwd=str(Path.cwd()),
+                        cwd=str(safe_cwd()),
                         stdout=stdout,
                         stderr=stderr,
                         status="timed out after 30 seconds",
@@ -1829,7 +1829,7 @@ class VibeApp(App):
             await self.agent_loop.inject_user_context(
                 self._format_manual_command_context(
                     command=command,
-                    cwd=str(Path.cwd()),
+                    cwd=str(safe_cwd()),
                     exit_code=exit_code,
                     stdout=stdout,
                     stderr=stderr,
@@ -1843,7 +1843,7 @@ class VibeApp(App):
             await self.agent_loop.inject_user_context(
                 self._format_manual_command_context(
                     command=command,
-                    cwd=str(Path.cwd()),
+                    cwd=str(safe_cwd()),
                     stdout=stdout,
                     stderr=stderr,
                     status="interrupted by user",
@@ -1860,7 +1860,7 @@ class VibeApp(App):
             await self.agent_loop.inject_user_context(
                 self._format_manual_command_context(
                     command=command,
-                    cwd=str(Path.cwd()),
+                    cwd=str(safe_cwd()),
                     stdout=stdout,
                     stderr=stderr,
                     status=f"failed before completion: {e}",
@@ -1925,7 +1925,7 @@ class VibeApp(App):
         self, message: str, *, title_source: str | None = None
     ) -> None:
         self._consecutive_auto_continues = 0
-        prompt_payload = build_path_prompt_payload(message, base_dir=Path.cwd())
+        prompt_payload = build_path_prompt_payload(message, base_dir=safe_cwd())
         images = await self._prepare_images_or_abort(prompt_payload)
         if images is None:
             input_widget = self.query_one(ChatInputContainer)
@@ -2197,7 +2197,7 @@ class VibeApp(App):
             await self._ensure_loading_widget()
             message_id = str(uuid4())
             prompt_payload = prebuilt_payload or build_path_prompt_payload(
-                prompt, base_dir=Path.cwd()
+                prompt, base_dir=safe_cwd()
             )
             self._send_at_mention_telemetry(prompt_payload, message_id)
             images = await self._resolve_turn_images(prompt_payload, prebuilt_images)
@@ -2211,7 +2211,7 @@ class VibeApp(App):
                 auto_title = (
                     format_session_title(
                         build_title_segments(
-                            title_source or prompt, base_dir=Path.cwd()
+                            title_source or prompt, base_dir=safe_cwd()
                         )
                     )
                     or None
@@ -2709,7 +2709,7 @@ class VibeApp(App):
                     version=CORE_VERSION,
                     model_name=model_name,
                     provider_name=provider_name,
-                    workdir=Path(self.config.displayed_workdir or Path.cwd()),
+                    workdir=Path(self.config.displayed_workdir or safe_cwd()),
                     session_id=self.agent_loop.session_id,
                     context_window=context_window,
                     rate_limits=self.agent_loop._rate_limit_store.all(),
@@ -2819,7 +2819,7 @@ class VibeApp(App):
             sessions=sessions,
             latest_messages=session_latest_messages(sessions, self.config),
             current_session_id=self.agent_loop.session_id,
-            cwd=str(Path.cwd()),
+            cwd=str(safe_cwd()),
         )
 
     async def _show_session_picker(self, **kwargs: Any) -> None:
@@ -2827,7 +2827,7 @@ class VibeApp(App):
 
         # Match how sessions are recorded: session_logger stores
         # original_working_directory(), not the worktree path that
-        # Path.cwd() resolves to under worktree isolation.
+        # safe_cwd() resolves to under worktree isolation.
         if not self.config.session_logging.enabled or not (
             local_sessions := list_local_resume_sessions(
                 self.config, original_working_directory()
@@ -2994,7 +2994,7 @@ class VibeApp(App):
             self._refresh_model_status_badge()
 
             setup_lsp_for_config(
-                base_config, lambda: self.agent_loop.base_config, Path.cwd()
+                base_config, lambda: self.agent_loop.base_config, safe_cwd()
             )
 
             # Re-discover workflows so new/changed/removed scripts (and the
@@ -3388,7 +3388,7 @@ class VibeApp(App):
             return HookSessionContext(
                 session_id=loop.session_id,
                 transcript_path=transcript,
-                cwd=str(Path.cwd().resolve()),
+                cwd=str(safe_cwd().resolve()),
                 parent_session_id=loop.parent_session_id,
             )
 
@@ -4244,16 +4244,20 @@ class VibeApp(App):
                 )
             )
         elif sub == "merge":
-            # Not wired to the merge itself: the live session still has the
-            # branch checked out, so the rebase-then-ff must run after exit.
+            # F10: 6740fdb removed exit-time auto-merge; the branch is kept
+            # and must be landed or discarded explicitly after the session.
             await self._mount_and_scroll(
                 UserCommandMessage(
-                    f"**To merge the worktree branch:** exit the session — "
-                    f"it auto-merges when possible. To merge manually:\n"
-                    f"```\ncd {wt.original_repo_root}\n"
-                    f"vibe worktree merge {wt.branch}\n```\n"
-                    f"(rebases onto HEAD then fast-forwards, under the "
-                    f"per-repo merge lock)"
+                    f"**Worktree branch:** `{wt.branch}`\n"
+                    f"The exit-time auto-merge was removed — the branch is kept "
+                    f"for explicit review.\n"
+                    f"```\n"
+                    f"# land it (rebase-then-ff, under the per-repo merge lock):\n"
+                    f"cd {wt.original_repo_root}\n"
+                    f"vibe worktree merge {wt.branch}\n"
+                    f"# or discard:\n"
+                    f"vibe worktree discard {wt.branch}\n"
+                    f"```"
                 )
             )
         else:

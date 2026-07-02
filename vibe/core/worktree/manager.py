@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 from dataclasses import dataclass, field
+import json
 import os
 from pathlib import Path
 import shutil
@@ -70,6 +71,36 @@ _MID_OPERATION_MARKERS = [
 
 _FALLBACK_GIT_NAME = "vibe"
 _FALLBACK_GIT_EMAIL = "vibe@local"
+
+
+def _read_boot_id() -> str:
+    try:
+        return (
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        )
+    except OSError:
+        return ""
+
+
+def _proc_start_time(pid: int) -> int:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
+        return int(stat[21])
+    except (OSError, IndexError, ValueError):
+        return 0
+
+
+def _build_lock_reason(*, purpose: str) -> str:
+    return json.dumps(
+        {
+            "pid": os.getpid(),
+            "boot_id": _read_boot_id(),
+            "proc_start_time": _proc_start_time(os.getpid()),
+            "purpose": purpose,
+            "created_at": time.time(),
+        },
+        separators=(",", ":"),
+    )
 
 
 @dataclass(frozen=True)
@@ -205,6 +236,18 @@ class WorktreeManager:
         repo.git.worktree("add", str(worktree_path), "-b", branch, "HEAD")
         logger.info("Created worktree at %s on branch %s", worktree_path, branch)
 
+        # F1: lock the live worktree so external `git worktree remove` refuses
+        # before touching the admin entry — closes the husk-creation vector.
+        try:
+            repo.git.worktree(
+                "lock",
+                str(worktree_path),
+                "--reason",
+                _build_lock_reason(purpose=label),
+            )
+        except GitCommandError as exc:
+            logger.warning("git worktree lock failed for %s: %s", worktree_path, exc)
+
         symlinks: list[Path] = []
         if config.carry_dirty:
             self._carry_dirty(repo, worktree_path, config.carry_ignored)
@@ -247,6 +290,17 @@ class WorktreeManager:
             self._active = None
 
     def _do_exit(self, handle: WorktreeHandle) -> None:
+        dir_exists = handle.worktree_path.is_dir()
+        if not dir_exists:
+            logger.warning(
+                "Worktree dir %s already removed externally; branch %s kept.",
+                handle.worktree_path,
+                handle.branch,
+            )
+            os.chdir(handle.original_repo_root)
+            self._try_unlock_from_root(handle)
+            return
+
         wt_repo = self._get_repo(handle.worktree_path)
 
         # Unlink dep symlinks BEFORE the WIP commit so the worktree
@@ -269,15 +323,11 @@ class WorktreeManager:
         if handle.config.cleanup == "remove":
             try:
                 root_repo = self._get_repo(handle.original_repo_root)
+                self._unlock_worktree(root_repo, handle.worktree_path)
                 root_repo.git.worktree("remove", str(handle.worktree_path))
                 logger.info("Removed worktree at %s", handle.worktree_path)
             except GitCommandError as exc:
-                logger.warning(
-                    "git worktree remove failed (keeping worktree): %s. "
-                    "Branch %s is safe. Run `git worktree prune` later.",
-                    exc,
-                    handle.branch,
-                )
+                self._report_remove_failure(handle, exc)
 
         if wip_ok:
             print(
@@ -291,6 +341,39 @@ class WorktreeManager:
                 f"\nWork on branch {handle.branch} could not be WIP-committed; "
                 f"the worktree was kept for recovery. Inspect it before merging.\n",
                 file=sys.stdout,
+            )
+
+    @staticmethod
+    def _unlock_worktree(repo: Repo, worktree_path: Path) -> None:
+        try:
+            repo.git.worktree("unlock", str(worktree_path))
+        except GitCommandError as exc:
+            logger.debug("worktree unlock (%s) no-op or failed: %s", worktree_path, exc)
+
+    def _try_unlock_from_root(self, handle: WorktreeHandle) -> None:
+        try:
+            root_repo = self._get_repo(handle.original_repo_root)
+            self._unlock_worktree(root_repo, handle.worktree_path)
+        except (InvalidGitRepositoryError, GitCommandError) as exc:
+            logger.debug("unlock from root failed for %s: %s", handle.branch, exc)
+
+    def _report_remove_failure(
+        self, handle: WorktreeHandle, exc: GitCommandError
+    ) -> None:
+        msg = str(exc)
+        if handle.worktree_path.is_dir():
+            logger.warning(
+                "git worktree remove failed (keeping worktree): %s. "
+                "Branch %s is safe. Run `vibe worktree list` to review.",
+                msg,
+                handle.branch,
+            )
+        else:
+            logger.warning(
+                "Worktree dir %s is gone; branch %s kept. %s",
+                handle.worktree_path,
+                handle.branch,
+                msg,
             )
 
     def _carry_exclude_pathspecs(
@@ -397,6 +480,81 @@ class WorktreeManager:
             return
         self._gc_abandoned_worktrees(repo, config)
         self._reap_dead_pid_worktrees(repo, config)
+        self._reap_husk_dirs(repo, config)
+
+    def _reap_husk_dirs(self, repo: Repo, config: WorktreeConfig) -> None:
+        """F5-fs: reclaim unregistered worktree dirs (husks) by walking base_dir.
+
+        The registered-only reaper (`git worktree list`) cannot see dirs whose
+        admin entry was deleted by a partial `git worktree remove` (the husk
+        mechanism) or never-registered iso container parents. This walk finds
+        them and reclaims the empty ones; inhabited dirs and those with live
+        pid-in-leaf are skipped (defense in depth with F4).
+        """
+        if config.gc_age_days <= 0:
+            return
+        try:
+            base = Path(config.base_dir).resolve()
+        except OSError:
+            return
+        if not base.is_dir():
+            return
+        active = self._active.worktree_path.resolve() if self._active else None
+        registered = self._registered_worktree_paths(repo)
+        cutoff = time.time() - config.gc_age_days * 86400
+        for repo_dir in self._walk_repo_dirs(base):
+            for leaf_dir in repo_dir.iterdir():
+                try:
+                    if not leaf_dir.is_dir():
+                        continue
+                    rp = leaf_dir.resolve()
+                    if rp == active or rp in registered:
+                        continue
+                    if self._dir_inhabited(leaf_dir):
+                        logger.debug("husk-scan: skip %s (inhabited)", leaf_dir)
+                        continue
+                    pid = self._pid_from_leaf(leaf_dir.name)
+                    if pid is not None and (pid == os.getpid() or self._pid_alive(pid)):
+                        continue
+                    if leaf_dir.stat().st_mtime > cutoff:
+                        continue
+                    # Only rmdir empty dirs (no recursive rm); husk parents are
+                    # empty by the time they qualify.
+                    try:
+                        leaf_dir.rmdir()
+                        logger.info("husk-scan: reclaimed empty husk dir %s", leaf_dir)
+                    except OSError:
+                        pass
+                except OSError:
+                    continue
+
+    @staticmethod
+    def _walk_repo_dirs(base: Path) -> list[Path]:
+        dirs: list[Path] = []
+        try:
+            for entry in base.iterdir():
+                if entry.is_dir():
+                    dirs.append(entry)
+        except OSError:
+            pass
+        return dirs
+
+    @staticmethod
+    def _registered_worktree_paths(repo: Repo | None = None) -> set[Path]:
+        if repo is None:
+            return set()
+        try:
+            out = repo.git.worktree("list", "--porcelain")
+        except GitCommandError:
+            return set()
+        paths: set[Path] = set()
+        for line in out.splitlines():
+            if line.startswith("worktree "):
+                try:
+                    paths.add(Path(line[len("worktree ") :].strip()).resolve())
+                except OSError:
+                    continue
+        return paths
 
     @staticmethod
     def _pid_from_leaf(leaf: str) -> int | None:
@@ -420,6 +578,34 @@ class WorktreeManager:
         except OSError:
             return True  # exists but not signalable (e.g. owned by another user)
         return True
+
+    @staticmethod
+    def _dir_inhabited(path: Path) -> bool:
+        # F4: scan /proc/*/cwd for any process whose cwd is under *path*. The
+        # reaper runs in the host process (not bwrap), so /proc is real — this
+        # check works where a sandboxed agent's /proc scan was namespaced-blind.
+        # Use relative_to (not str.startswith) to avoid sibling-prefix false
+        # positives: /foo/cli-123 must not match /foo/cli-1234.
+        proc = Path("/proc")
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return False
+        try:
+            for entry in proc.iterdir():
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    cwd = (entry / "cwd").readlink()
+                    cwd.relative_to(resolved)
+                    return True
+                except ValueError:
+                    continue
+                except OSError:
+                    continue
+        except OSError:
+            return False
+        return False
 
     def _reap_dead_pid_worktrees(self, repo: Repo, config: WorktreeConfig) -> None:
         """Force-remove worktree dirs left by dead sessions, older than the GC age.
@@ -454,6 +640,14 @@ class WorktreeManager:
                     continue  # unknown / self / still-running -> never touch
                 if not wt.exists() or wt.stat().st_mtime > cutoff:
                     continue
+                if self._dir_inhabited(wt):
+                    logger.warning(
+                        "reap: skip %s (pid %d dead) — dir is a live process cwd",
+                        wt,
+                        pid,
+                    )
+                    continue
+                self._unlock_worktree(repo, wt)
                 repo.git.worktree("remove", "--force", str(wt))
                 logger.info("reaped stranded worktree %s (pid %d dead)", wt, pid)
             except (OSError, GitCommandError) as exc:

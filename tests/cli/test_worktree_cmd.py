@@ -142,6 +142,49 @@ def test_discard_unmerged_aborts_without_tty(tmp_path: Path) -> None:
     assert branch in [b.name for b in root.branches]
 
 
+def test_discard_refuses_locked_worktree(tmp_path: Path, capsys) -> None:
+    # F8: discard on a locked (live) worktree must refuse without -f.
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    root = Repo.init(str(repo_dir))
+    with root.config_writer() as cw:
+        cw.set_value("user", "name", "T")
+        cw.set_value("user", "email", "t@t")
+    (repo_dir / "f.txt").write_text("base\n")
+    root.git.add("-A")
+    root.git.commit("-m", "base")
+
+    wt = tmp_path / "wt"
+    root.git.worktree("add", str(wt), "-b", "vibe/live", "HEAD")
+    root.git.worktree("lock", str(wt), "--reason", "vibe-test-live")
+    os.chdir(str(repo_dir))
+
+    assert run_worktree_command(["discard", "vibe/live"]) == 1
+    assert "locked" in capsys.readouterr().err.lower()
+    assert "vibe/live" in [b.name for b in root.branches]
+
+
+def test_discard_force_unlocks_and_removes(tmp_path: Path) -> None:
+    # F8: -f unlocks and removes a locked worktree.
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    root = Repo.init(str(repo_dir))
+    with root.config_writer() as cw:
+        cw.set_value("user", "name", "T")
+        cw.set_value("user", "email", "t@t")
+    (repo_dir / "f.txt").write_text("base\n")
+    root.git.add("-A")
+    root.git.commit("-m", "base")
+
+    wt = tmp_path / "wt"
+    root.git.worktree("add", str(wt), "-b", "vibe/live", "HEAD")
+    root.git.worktree("lock", str(wt), "--reason", "vibe-test-live")
+    os.chdir(str(repo_dir))
+
+    assert run_worktree_command(["discard", "vibe/live", "--force"]) == 0
+    assert "vibe/live" not in [b.name for b in root.branches]
+
+
 def test_unknown_action(tmp_path: Path) -> None:
     os.chdir(str(tmp_path))
     assert run_worktree_command(["bogus"]) == 2

@@ -73,6 +73,23 @@ def test_changed_worktree_branch_is_kept_dir_reclaimed(
     assert wt.branch not in [h.name for h in Repo(str(repo)).heads]
 
 
+def test_default_path_namespaced_by_real_repo(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F2: default base_dir must derive the repo name via git-common-dir, not
+    # root.name (which is the worktree leaf when called from inside a session
+    # worktree). Override VIBE_HOME so the path is deterministic.
+    fake_home = tmp_path / "vibehome"
+    fake_home.mkdir()
+    monkeypatch.setenv("VIBE_HOME", str(fake_home))
+    wt = create_ephemeral_worktree(repo, "iso")
+    try:
+        assert "repo" in str(wt.path)
+        assert str(wt.path).startswith(str(fake_home / "worktrees" / "repo" / "iso"))
+    finally:
+        remove_ephemeral_worktree(wt, keep_if_changed=False)
+
+
 def test_committed_worktree_branch_is_recoverable(repo: Path, base_dir: Path) -> None:
     wt = create_ephemeral_worktree(repo, "committed", base_dir=base_dir)
     wt_repo = Repo(str(wt.path))

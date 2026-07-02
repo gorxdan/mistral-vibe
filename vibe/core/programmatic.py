@@ -214,11 +214,35 @@ def _emit_headless_sandbox_nudge(sandbox: SandboxConfig | None) -> None:
         sys.stderr.flush()
 
 
+def _exit_if_orphaned_isolated_child() -> bool:
+    # F7: child lease — if this isolated spawn's parent has died, exit cleanly
+    # rather than running orphaned in a worktree whose owner no longer exists.
+    parent_pid_str = os.environ.get("VIBE_ISO_PARENT_PID")
+    if parent_pid_str is None:
+        return False
+    try:
+        parent_pid = int(parent_pid_str)
+        if parent_pid > 0:
+            os.kill(parent_pid, 0)
+    except (ValueError, ProcessLookupError):
+        logger.warning(
+            "Orphaned isolated spawn: parent pid %s is gone; exiting.",
+            parent_pid_str,
+        )
+        return True
+    except OSError:
+        pass  # exists but not signalable — assume alive
+    return False
+
+
 def run_programmatic(
     config: VibeConfig, prompt: str, *, options: ProgrammaticOptions | None = None
 ) -> str | None:
     opts = options or ProgrammaticOptions()
     formatter = create_formatter(opts.output_format)
+
+    if _exit_if_orphaned_isolated_child():
+        return None
 
     # Worktree isolation (on by default for programmatic, worktree.mode="on"):
     # enter before AgentLoop so Path.cwd() consumers see the worktree.

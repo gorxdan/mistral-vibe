@@ -488,6 +488,10 @@ def run_cli(  # noqa: PLR0912
                     sys.exit(1)
                 if worktree_handle is not None and not config.displayed_workdir:
                     config.displayed_workdir = str(worktree_handle.original_repo_root)
+                    rprint(
+                        f"[dim]Isolated on branch {worktree_handle.branch} "
+                        f"— changes land via vibe worktree merge after exit.[/]"
+                    )
                 # Surface any unmerged branches from prior sessions (the
                 # _prune_and_report orphan log is file-only and invisible).
                 worktree_manager.print_startup_report(config.worktree)
