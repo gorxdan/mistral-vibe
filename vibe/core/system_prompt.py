@@ -166,7 +166,12 @@ class ProjectContextProvider:
                 f"branch `{wt.branch}`, isolated until merged. Use relative paths "
                 f"so reads/edits/writes resolve against the worktree; do not "
                 f"write under the original repo root. Commit finished work with a "
-                f"clear message so it merges back cleanly."
+                f"clear message so it merges back cleanly.\n\n"
+                f"Sandbox PID namespace: `ps`/`/proc` inside a sandboxed bash "
+                f"show only that sandbox — process-liveness conclusions are "
+                f"invalid. Never classify a worktree as stale or empty based on "
+                f"a sandboxed process scan. The worktree is locked; only the "
+                f"owning session can remove it."
             )
         return context
 

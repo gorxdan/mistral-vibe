@@ -268,8 +268,13 @@ def _git_bind_dirs(root: Path) -> tuple[list[str], list[str]]:
 
 
 def _sibling_worktree_readonly_targets(common: Path, skip: Path | None) -> list[str]:
-    """Metadata of OTHER worktrees under ``<common>/worktrees`` — a writable
-    sibling ``config.worktree`` is a cross-worktree hooksPath escape.
+    """Metadata and admin dir of OTHER worktrees under ``<common>/worktrees``.
+
+    A writable sibling ``config.worktree`` is a cross-worktree hooksPath escape,
+    and a writable sibling admin dir lets a sandboxed ``git worktree remove``
+    delete another session's registration (the husk mechanism from the
+    2026-07-02 incident). Re-layer the entire sibling dir read-only; the
+    agent's own admin dir is excluded via *skip* and stays writable.
     """
     worktrees = common / "worktrees"
     found: list[str] = []
@@ -280,6 +285,7 @@ def _sibling_worktree_readonly_targets(common: Path, skip: Path | None) -> list[
     for entry in entries:
         if entry == skip or entry.is_symlink() or not entry.is_dir():
             continue
+        found.append(str(entry))
         found += _readonly_git_targets(entry)
     return found
 
