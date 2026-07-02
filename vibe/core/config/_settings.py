@@ -298,8 +298,8 @@ class MicrocompactConfig(BaseSettings):
     # Now that microcompact is the sole shaper for non-recoverable content, 1/turn
     # treads water: a live session sat at ~204k for ~10 turns shedding 280-900
     # tokens/turn while growth replaced them. Several blocks/turn lets it actually
-    # reduce. Cache stays ~95% even under heavy per-turn shaping, so the
-    # prefix-churn cost is small. Tune up if deep sessions still stall.
+    # reduce. Measured 2026-07 (traces): every in-place edit busts the provider
+    # prefix cache past the edit point — post-shape miss 50-90%, so batch, don't dribble.
     max_blocks_per_turn: int = 4
 
 
