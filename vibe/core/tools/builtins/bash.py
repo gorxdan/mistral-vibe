@@ -44,7 +44,11 @@ from vibe.core.tools.sandbox import (
 )
 from vibe.core.tools.sandbox_seccomp import build_seccomp_bpf, open_seccomp_fd
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
-from vibe.core.tools.utils import is_path_within_workdir, isolated_worktree_root
+from vibe.core.tools.utils import (
+    is_path_within_workdir,
+    isolated_scratchpad_root,
+    isolated_worktree_root,
+)
 from vibe.core.types import ToolResultEvent, ToolStreamEvent
 from vibe.core.utils import is_windows, kill_async_subprocess
 from vibe.core.utils.io import decode_safe
@@ -733,6 +737,8 @@ class Bash(
             # sandbox; a bare isolation confine adds FS bounds without touching
             # command env (git/gh creds keep working).
             write_roots: list[Path] = [iso_root]
+            if (iso_scratch := isolated_scratchpad_root()) is not None:
+                write_roots.append(iso_scratch)
             env = (
                 _build_sandbox_env(sb, host_session=False)
                 if sb.enabled

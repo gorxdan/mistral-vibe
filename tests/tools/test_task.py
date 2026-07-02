@@ -348,6 +348,76 @@ class TestTaskToolModelRouting:
         )
 
 
+class TestIsolatedScratchpadThreading:
+    @pytest.fixture
+    def ctx(self, tmp_path) -> InvokeContext:
+        config = build_test_vibe_config(
+            include_project_context=False, include_prompt_detail=False
+        )
+        manager = AgentManager(lambda: config)
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        return InvokeContext(
+            tool_call_id="test-call-id",
+            agent_manager=manager,
+            terminal_emulator=TerminalEmulator.VSCODE,
+            scratchpad_dir=scratch,
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_isolated_passes_scratchpad_dir(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        class _FakeIsolatedResult:
+            output = "done"
+            worktree_path = None
+            branch = None
+
+        async def fake_run(*a, **kw):
+            return _FakeIsolatedResult()
+
+        args = TaskArgs(task="build", agent="worker")
+        with (
+            patch(
+                "vibe.core.tools.builtins.task.profile_requires_isolation",
+                return_value=True,
+            ),
+            patch(
+                "vibe.core.tools.builtins.task.run_isolated_agent", side_effect=fake_run
+            ) as mock_run,
+        ):
+            await collect_result(task_tool.run(args, ctx))
+
+        assert mock_run.call_args.kwargs.get("scratchpad_dir") == ctx.scratchpad_dir
+
+    @pytest.mark.asyncio
+    async def test_async_isolated_passes_scratchpad_dir(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        from vibe.core.tools.background import BackgroundRegistry
+
+        registry = BackgroundRegistry()
+        ctx_with_registry = replace(ctx, background_registry=registry)
+
+        async def fake_run(*a, **kw):
+            return None
+
+        args = TaskArgs(task="build", agent="worker", async_run=True)
+        with (
+            patch(
+                "vibe.core.tools.builtins.task.profile_requires_isolation",
+                return_value=True,
+            ),
+            patch(
+                "vibe.core.tools.builtins.task.run_isolated_agent", side_effect=fake_run
+            ) as mock_run,
+        ):
+            await collect_result(task_tool.run(args, ctx_with_registry))
+
+        await asyncio.sleep(0.01)
+        assert mock_run.call_args.kwargs.get("scratchpad_dir") == ctx.scratchpad_dir
+
+
 class TestTaskToolResolvePermission:
     def test_explore_allowed_by_default(self, task_tool: Task) -> None:
         args = TaskArgs(task="do something", agent="explore")

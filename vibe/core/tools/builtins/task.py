@@ -307,6 +307,7 @@ class Task(
                 deliver=True,
                 model=effective_model,
                 log_path=log_path,
+                scratchpad_dir=ctx.scratchpad_dir,
             ),
             name=f"async-task-{args.agent}",
         )
@@ -371,6 +372,7 @@ class Task(
                     deliver=True,
                     # Inherit the parent's effective model (not the configured default).
                     model=_effective_subagent_model(args, ctx),
+                    scratchpad_dir=ctx.scratchpad_dir,
                 )
                 response_text = result.output
                 worktree_path = result.worktree_path

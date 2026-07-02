@@ -136,20 +136,42 @@ def isolated_worktree_root() -> Path | None:
     return Path(raw).resolve() if raw else None
 
 
+def isolated_scratchpad_root() -> Path | None:
+    """The parent-granted scratchpad dir when running as an isolated subprocess.
+
+    Set by ``_spawn_isolated`` via ``VIBE_ISOLATED_SCRATCHPAD_DIR``. None when
+    unset or when the dir no longer exists — a background spawn can outlive the
+    parent's scratchpad teardown, and a stale grant must degrade to a clean
+    confinement error rather than surface as ENOENT mid-run.
+    """
+    raw = os.environ.get("VIBE_ISOLATED_SCRATCHPAD_DIR")
+    if not raw:
+        return None
+    resolved = Path(raw).resolve()
+    return resolved if resolved.is_dir() else None
+
+
 def enforce_isolated_confine(path: Path) -> None:
     """Raise ``ToolError`` if *path* resolves outside the isolated worktree.
 
     No-op unless running as an isolated subprocess. When active, resolves *path*
-    (following symlinks) and rejects anything not under the worktree root — the
-    hard boundary that lets the subprocess auto-approve write/edit/read without
-    an absolute-path escape into the parent repo or ``~/.vibe``.
+    (following symlinks) and rejects anything not under the worktree root or the
+    parent-granted scratchpad — the hard boundary that lets the subprocess
+    auto-approve write/edit/read without an absolute-path escape into the parent
+    repo or ``~/.vibe``.
     """
     root = isolated_worktree_root()
     if root is None:
         return
     resolved = path.resolve()
-    if not resolved.is_relative_to(root):
-        raise ToolError(
-            f"Refusing to touch {resolved}: isolated subagent is confined to its "
-            f"worktree ({root})."
-        )
+    if resolved.is_relative_to(root):
+        return
+    scratch = isolated_scratchpad_root()
+    if scratch is not None and resolved.is_relative_to(scratch):
+        return
+    allowed = f"worktree ({root})"
+    if scratch is not None:
+        allowed += f" or its scratchpad ({scratch})"
+    raise ToolError(
+        f"Refusing to touch {resolved}: isolated subagent is confined to its {allowed}."
+    )

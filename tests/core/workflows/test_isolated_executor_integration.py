@@ -32,6 +32,7 @@ _FAKE_VIBE = """\
 import json, os, sys
 sys.stdout.write("ISO-OUTPUT-OK\\n")
 sys.stdout.write("CWD=" + os.getcwd() + "\\n")
+sys.stdout.write("SCRATCH=" + os.environ.get("VIBE_ISOLATED_SCRATCHPAD_DIR", "") + "\\n")
 if os.environ.get("VIBE_WORKFLOW_EMIT_STATS") == "1":
     sys.stderr.write(
         "\\n__VIBE_WORKFLOW_STATS__"
@@ -40,6 +41,10 @@ if os.environ.get("VIBE_WORKFLOW_EMIT_STATS") == "1":
     )
 sys.exit(0)
 """
+
+
+def _env_line(output: str, key: str) -> str:
+    return next(ln for ln in output.splitlines() if ln.startswith(f"{key}="))
 
 
 @pytest.mark.asyncio
@@ -96,6 +101,44 @@ async def test_default_isolated_executor_end_to_end(
 
     # Worktree was cleaned up (clean tree -> removed).
     assert not wt_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_spawn_threads_scratchpad_env(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pathlib import Path
+
+    from vibe.core.workflows.runtime import run_isolated_agent
+
+    repo = Repo.init(str(tmp_path))
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Test")
+        cw.set_value("user", "email", "t@t.com")
+    (tmp_path / "f.txt").write_text("base\n")
+    repo.index.add(["f.txt"])
+    repo.index.commit("init")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ephemeral, "VIBE_HOME", SimpleNamespace(path=tmp_path / "vh"))
+
+    fake_vibe = tmp_path / "fake_vibe.py"
+    fake_vibe.write_text(_FAKE_VIBE)
+    monkeypatch.setenv(
+        "VIBE_ISOLATED_EXECUTOR_CMD",
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_vibe))}",
+    )
+
+    # A stale grant inherited from a parent isolated spawn must be popped.
+    monkeypatch.setenv("VIBE_ISOLATED_SCRATCHPAD_DIR", "/stale/parent/grant")
+    result = await run_isolated_agent("hi", "auto-approve", label="l", max_turns=5)
+    assert _env_line(result.output, "SCRATCH") == "SCRATCH="
+
+    scratch = Path(tmp_path) / "scratch"
+    scratch.mkdir()
+    result = await run_isolated_agent(
+        "hi", "auto-approve", label="l", max_turns=5, scratchpad_dir=scratch
+    )
+    assert _env_line(result.output, "SCRATCH") == f"SCRATCH={scratch}"
 
 
 def test_programmatic_style_agentloop_exposes_configured_mcp_tool() -> None:

@@ -371,6 +371,7 @@ async def run_isolated_agent(
     keep_worktree: bool = False,
     model: str | None = None,
     log_path: Path | None = None,
+    scratchpad_dir: Path | None = None,
 ) -> IsolatedResult:
     from vibe.core.worktree.ephemeral import create_ephemeral_worktree
 
@@ -390,6 +391,7 @@ async def run_isolated_agent(
                 stamp_wt=wt,
                 model=model,
                 log_path=log_path,
+                scratchpad_dir=scratchpad_dir,
             )
         except BaseException:
             _reap_on_failure(wt)
@@ -403,6 +405,7 @@ async def run_isolated_agent(
             deliver=deliver,
             model=model,
             log_path=log_path,
+            scratchpad_dir=scratchpad_dir,
         )
         try:
             await asyncio.to_thread(
@@ -443,6 +446,7 @@ async def _spawn_isolated(
     stamp_wt: Any = None,
     model: str | None = None,
     log_path: Path | None = None,
+    scratchpad_dir: Path | None = None,
 ) -> IsolatedResult:
     import os
     import shlex
@@ -476,6 +480,11 @@ async def _spawn_isolated(
     # confines its file tools to this worktree (enforce_isolated_confine).
     env["VIBE_ISOLATED_AUTO_APPROVE"] = "1"
     env["VIBE_ISOLATED_WORKTREE_ROOT"] = str(wt.path)
+    # Never inherit a stale scratchpad grant from a parent isolated spawn;
+    # the grant is explicit per spawn (enforce_isolated_confine widens on it).
+    env.pop("VIBE_ISOLATED_SCRATCHPAD_DIR", None)
+    if scratchpad_dir is not None:
+        env["VIBE_ISOLATED_SCRATCHPAD_DIR"] = str(scratchpad_dir)
     stdout_target, log_fh = _open_isolated_log(log_path)
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1637,6 +1646,9 @@ class WorkflowRuntime:
             deliver=False,
             keep_worktree=True,
             model=model,
+            scratchpad_dir=(
+                self.parent_context.scratchpad_dir if self.parent_context else None
+            ),
         )
         wt = result.wt
         contract_report: ContractReport | None = None
