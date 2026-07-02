@@ -17,7 +17,7 @@ from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.logger import logger
 from vibe.core.paths import DEFAULT_TOOL_DIR
 from vibe.core.tools.base import BaseTool, BaseToolConfig, ToolInfo, ToolPermission
-from vibe.core.utils import name_matches, run_sync
+from vibe.core.utils import first_sentence, name_matches, run_sync
 
 _TOOL_SEARCH_FUZZY_MATCH_THRESHOLD = 0.25
 
@@ -105,6 +105,9 @@ class ToolManager:
         self._connector_registry = connector_registry
         self._instances: dict[str, BaseTool] = {}
         self._manifest_pins: list[str] = []
+        # Sticky, never LRU-capped: sharing dynamic_pinned_tool_limit would let
+        # a remote activation evict an in-use builtin. Bounded (≤5) by marking.
+        self._builtin_pins: set[str] = set()
         self._search_paths: list[Path] = self._compute_search_paths(self._config)
         self._lock = threading.Lock()
         self._mcp_integrated = False
@@ -218,28 +221,48 @@ class ToolManager:
     def available_tools(self) -> dict[str, type[BaseTool]]:
         return self._filtered_available_tools()
 
+    def _deferrable_builtin_names(self, tools: dict[str, type[BaseTool]]) -> set[str]:
+        if not self._config.tool_manifest.defer_builtin_tools:
+            return set()
+        return {
+            name
+            for name, cls in tools.items()
+            if cls.manifest_deferrable and not self._is_dynamic_remote_tool(cls)
+        }
+
     @property
     def manifest_tools(self) -> dict[str, type[BaseTool]]:
         tools = self._filtered_available_tools()
         manifest = self._config.tool_manifest
         if not manifest.dynamic_subset_enabled or self._config.enabled_tools:
             return tools
-        tool_search = tools.get("tool_search")
-        remote_tools = {
-            name: cls
-            for name, cls in tools.items()
-            if self._is_dynamic_remote_tool(cls)
+        remote = {
+            name for name, cls in tools.items() if self._is_dynamic_remote_tool(cls)
         }
-        if not remote_tools or len(tools) <= manifest.dynamic_subset_threshold:
+        remote_gated = bool(remote) and len(tools) > manifest.dynamic_subset_threshold
+        deferrable = self._deferrable_builtin_names(tools)
+        if not remote_gated and not deferrable:
             return {name: cls for name, cls in tools.items() if name != "tool_search"}
-        if tool_search is None:
+        if "tool_search" not in tools:
             return tools
-        pinned = set(self._manifest_pins[: manifest.dynamic_pinned_tool_limit])
-        return {
-            name: cls
-            for name, cls in tools.items()
-            if name == "tool_search" or name in pinned or name not in remote_tools
-        }
+        hidden: set[str] = set()
+        if remote_gated:
+            hidden |= remote - set(
+                self._manifest_pins[: manifest.dynamic_pinned_tool_limit]
+            )
+        hidden |= deferrable - self._builtin_pins
+        return {name: cls for name, cls in tools.items() if name not in hidden}
+
+    def hidden_tool_names(self) -> set[str]:
+        return set(self._filtered_available_tools()) - set(self.manifest_tools)
+
+    def deferred_builtin_stubs(self) -> list[tuple[str, str]]:
+        tools = self._filtered_available_tools()
+        visible = set(self.manifest_tools)
+        return [
+            (name, first_sentence(tools[name].description, 90))
+            for name in sorted(self._deferrable_builtin_names(tools) - visible)
+        ]
 
     def _filtered_available_tools(self) -> dict[str, type[BaseTool]]:
         with self._lock:
@@ -283,24 +306,32 @@ class ToolManager:
         remote_names = {
             name for name, cls in available.items() if self._is_dynamic_remote_tool(cls)
         }
-        selected = [name for name in tool_names if name in remote_names]
-        if not selected:
-            return []
-        limit = self._config.tool_manifest.dynamic_pinned_tool_limit
-        merged = selected + [
-            name for name in self._manifest_pins if name not in selected
+        builtin_sel = [
+            name
+            for name in tool_names
+            if name in self._deferrable_builtin_names(available)
         ]
-        self._manifest_pins = merged[:limit]
-        return list(self._manifest_pins)
+        remote_sel = [name for name in tool_names if name in remote_names]
+        self._builtin_pins.update(builtin_sel)
+        if remote_sel:
+            limit = self._config.tool_manifest.dynamic_pinned_tool_limit
+            merged = remote_sel + [
+                name for name in self._manifest_pins if name not in remote_sel
+            ]
+            self._manifest_pins = merged[:limit]
+        if not builtin_sel and not remote_sel:
+            return []
+        return [*sorted(self._builtin_pins), *self._manifest_pins]
 
     def search_tools(
         self, query: str, *, max_results: int | None = None
     ) -> list[ToolInfo]:
         available = self._filtered_available_tools()
+        deferrable = self._deferrable_builtin_names(available)
         candidates = [
             (name, cls)
             for name, cls in available.items()
-            if self._is_dynamic_remote_tool(cls)
+            if self._is_dynamic_remote_tool(cls) or name in deferrable
         ]
         limit = max_results or self._config.tool_manifest.dynamic_search_results
         terms = [term for term in query.lower().split() if term]
@@ -317,11 +348,14 @@ class ToolManager:
             if exact_hits or fuzzy >= _TOOL_SEARCH_FUZZY_MATCH_THRESHOLD:
                 scored.append((score, name, cls))
         scored.sort(key=lambda item: (-item[0], item[1]))
+        # MCP classes resolve no prompts/*.md (loader returns None anyway); the
+        # explicit gate keeps the builtin-only intent of `usage` obvious.
         return [
             ToolInfo(
                 name=name,
                 description=str(getattr(cls, "description", "")),
                 parameters=cls.get_parameters(),
+                usage=cls.get_tool_prompt() if name in deferrable else None,
             )
             for _, name, cls in scored[:limit]
         ]

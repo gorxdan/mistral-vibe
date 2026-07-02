@@ -14,6 +14,22 @@ _EDIT_SMART_MAP: dict[str, str] = {
 }
 
 
+def first_sentence(text: str, max_chars: int) -> str:
+    """Shorten text to its first sentence, falling back to a max_chars
+    word-boundary cut. Keeps the lead intent the model needs to choose a tool
+    while dropping the elaboration that bloats a small-window prompt.
+    """
+    stripped = text.strip()
+    first_period = stripped.find(". ")
+    if 0 <= first_period < max_chars:
+        return stripped[: first_period + 1]
+    if len(stripped) <= max_chars:
+        return stripped
+    head = stripped[:max_chars]
+    space = head.rfind(" ")
+    return (head[:space] if space > 0 else head).rstrip() + "…"
+
+
 def line_contexts(content: str, snippet: str) -> list[tuple[int, str, str]]:
     """``(start_line, prefix, suffix)`` per match, completing it to whole lines.
 

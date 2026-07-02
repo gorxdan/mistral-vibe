@@ -51,6 +51,7 @@ class WorkflowStatus(
     ToolUIData[WorkflowStatusArgs, WorkflowStatusResult],
 ):
     read_only: ClassVar[bool] = True
+    manifest_deferrable: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Diagnostic snapshot of background workflow runs: per-run agent count, "
         "phase breakdown, in-flight agents with their running token totals, and "

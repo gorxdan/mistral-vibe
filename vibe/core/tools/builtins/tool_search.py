@@ -20,7 +20,7 @@ class ToolSearchArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: str = Field(
-        description="Words describing the remote MCP/connector tool you need."
+        description="Words (or the exact name) describing the hidden tool you need."
     )
     max_results: int | None = Field(
         default=None,
@@ -42,9 +42,9 @@ class ToolSearch(
     BaseTool[ToolSearchArgs, ToolSearchResult, BaseToolConfig, BaseToolState]
 ):
     description = (
-        "Search the hidden remote MCP/connector tool catalog by keyword and activate "
-        "the best matches for future turns. Use this when you need an external tool "
-        "that is not currently visible in the tool list."
+        "Search the hidden tool catalog (deactivated builtin tools and remote "
+        "MCP/connector tools) by keyword and activate the best matches for future "
+        "turns. Use this when a tool you need is not in your current tool list."
     )
 
     @classmethod
@@ -52,7 +52,11 @@ class ToolSearch(
         return bool(
             config is not None
             and config.tool_manifest.dynamic_subset_enabled
-            and (config.mcp_servers or config.connectors)
+            and (
+                config.mcp_servers
+                or config.connectors
+                or config.tool_manifest.defer_builtin_tools
+            )
         )
 
     async def run(

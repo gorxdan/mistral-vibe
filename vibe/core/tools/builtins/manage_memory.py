@@ -149,6 +149,7 @@ class ManageMemoryConfig(BaseToolConfig):
 class ManageMemory(
     BaseTool[ManageMemoryArgs, ManageMemoryResult, ManageMemoryConfig, BaseToolState]
 ):
+    manifest_deferrable: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Manage durable cross-session memories (markdown files under ~/.vibe/memory). "
         "Actions: add (new memory), update (patch existing), list, delete. Memories are "

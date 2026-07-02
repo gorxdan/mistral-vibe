@@ -3390,6 +3390,9 @@ class VibeApp(App):
                 parent_session_id=loop.parent_session_id,
             )
 
+        # Auto-activate for the deferred manifest (lead reads teammate escalations
+        # via team_message); no-op when defer_builtin_tools is off.
+        loop.tool_manager.pin_manifest_tools(["team_message"])
         return TeamManager(
             loop.session_id, hooks_manager=loop.hooks_manager, hook_context=hook_context
         )

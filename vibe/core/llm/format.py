@@ -19,25 +19,14 @@ from vibe.core.types import (
     Role,
     StrToolChoice,
 )
+from vibe.core.utils import first_sentence
 
 if TYPE_CHECKING:
     from vibe.core.tools.manager import ToolManager
 
 
 def _trim_description(description: str, max_chars: int) -> str:
-    """Shorten a tool description to its first sentence, falling back to a
-    max_chars word-boundary cut. Keeps the lead intent the model needs to choose
-    the tool while dropping the elaboration that bloats a small-window prompt.
-    """
-    text = description.strip()
-    first_period = text.find(". ")
-    if 0 <= first_period < max_chars:
-        return text[: first_period + 1]
-    if len(text) <= max_chars:
-        return text
-    head = text[:max_chars]
-    space = head.rfind(" ")
-    return (head[:space] if space > 0 else head).rstrip() + "…"
+    return first_sentence(description, max_chars)
 
 
 class APIToolFormatHandler:
@@ -55,20 +44,36 @@ class APIToolFormatHandler:
         # The param schema (names/types/enums) is always sent verbatim — only the
         # prose description is shortened, and only on small-window tiers, so tool
         # selection stays accurate while the per-turn schema cost drops.
-        return [
-            AvailableTool(
-                function=AvailableFunction(
-                    name=tool_class.get_name(),
-                    description=_trim_description(
-                        tool_class.description, description_max_chars
+        stub_suffix = self._deferred_stub_suffix(tool_manager)
+        tools: list[AvailableTool] = []
+        for tool_class in tool_manager.manifest_tools.values():
+            description = (
+                _trim_description(tool_class.description, description_max_chars)
+                if trim_descriptions
+                else tool_class.description
+            )
+            # Trim-then-append: a small-tier first-sentence trim must not eat
+            # the deferred-tool stub listing.
+            if stub_suffix and tool_class.get_name() == "tool_search":
+                description = f"{description}{stub_suffix}"
+            tools.append(
+                AvailableTool(
+                    function=AvailableFunction(
+                        name=tool_class.get_name(),
+                        description=description,
+                        parameters=tool_class.get_parameters(),
                     )
-                    if trim_descriptions
-                    else tool_class.description,
-                    parameters=tool_class.get_parameters(),
                 )
             )
-            for tool_class in tool_manager.manifest_tools.values()
-        ]
+        return tools
+
+    @staticmethod
+    def _deferred_stub_suffix(tool_manager: ToolManager) -> str:
+        stubs = tool_manager.deferred_builtin_stubs()
+        if not stubs:
+            return ""
+        listing = "; ".join(f"`{name}` — {summary}" for name, summary in stubs)
+        return f" Hidden builtin tools you can activate here: {listing}"
 
     def get_tool_choice(self) -> StrToolChoice | AvailableTool:
         return "auto"
@@ -131,11 +136,17 @@ class APIToolFormatHandler:
         for parsed_call in parsed.tool_calls:
             tool_class = active_tools.get(parsed_call.tool_name)
             if not tool_class:
+                hint = (
+                    " — it exists but is not activated; call tool_search with "
+                    "its name first"
+                    if parsed_call.tool_name in tool_manager.hidden_tool_names()
+                    else ""
+                )
                 failed_calls.append(
                     FailedToolCall(
                         tool_name=parsed_call.tool_name,
                         call_id=parsed_call.call_id,
-                        error=f"Unknown tool '{parsed_call.tool_name}'",
+                        error=f"Unknown tool '{parsed_call.tool_name}'{hint}",
                     )
                 )
                 continue

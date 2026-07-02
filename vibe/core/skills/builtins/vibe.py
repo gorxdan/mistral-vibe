@@ -248,6 +248,11 @@ dynamic_subset_enabled = true
 dynamic_subset_threshold = 80
 dynamic_pinned_tool_limit = 8
 dynamic_search_results = 8
+# Opt-in (default false): also hide the long-tail builtins (team_message,
+# workflow_status, workflow_stop, schedule, manage_memory) behind tool_search.
+defer_builtin_tools = false
+# Never deferred: `background` and enter/exit_plan_mode (harness-directed).
+# Activations are in-memory; a resumed session (incl. a live team's lead) re-activates.
 
 # Per-tool configuration
 [tools.bash]

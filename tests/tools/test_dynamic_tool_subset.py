@@ -115,6 +115,54 @@ def test_pinned_remote_tool_is_added_to_next_manifest() -> None:
     assert "connector_heavy_search_records_8" not in names
 
 
+def test_builtin_deferral_default_off_manifest_unchanged() -> None:
+    assert ToolManifestConfig().defer_builtin_tools is False
+
+    config = build_test_vibe_config()
+    manager = ToolManager(lambda: config, mcp_registry=FakeMCPRegistry())
+
+    names = _manifest_names(manager)
+    assert "tool_search" not in names
+    for name in ("team_message", "workflow_status", "schedule", "manage_memory"):
+        assert name in names
+    assert set(names) == set(manager.available_tools)
+
+    small_catalog = _manager(remote_count=4)
+    assert "tool_search" not in _manifest_names(small_catalog)
+
+
+def test_all_remotes_pinned_over_threshold_keeps_tool_search() -> None:
+    remotes = [
+        _remote_tool(
+            f"search_records_{i}",
+            f"Search CRM records and customer notes for shard {i}",
+        )
+        for i in range(6)
+    ]
+    registry = FakeConnectorRegistry({"heavy": remotes})
+    config = build_test_vibe_config(
+        enable_connectors=True,
+        connectors=[ConnectorConfig(name="heavy")],
+        tool_manifest=ToolManifestConfig(
+            dynamic_subset_enabled=True,
+            dynamic_subset_threshold=10,
+            dynamic_pinned_tool_limit=8,
+        ),
+    )
+    manager = ToolManager(
+        lambda: config, mcp_registry=FakeMCPRegistry(), connector_registry=registry
+    )
+    all_remote_names = [f"connector_heavy_search_records_{i}" for i in range(6)]
+
+    manager.pin_manifest_tools(all_remote_names)
+    names = _manifest_names(manager)
+
+    assert set(names) == set(manager.available_tools)
+    assert "tool_search" in names
+    for name in all_remote_names:
+        assert name in names
+
+
 @pytest.mark.asyncio
 async def test_tool_search_discovers_and_pins_matching_remote_tools() -> None:
     manager = _manager(remote_count=80)

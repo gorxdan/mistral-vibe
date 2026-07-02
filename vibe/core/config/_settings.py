@@ -553,6 +553,15 @@ class ToolManifestConfig(BaseModel):
     dynamic_search_results: int = Field(
         default=8, ge=1, description="Default maximum matches returned by tool_search."
     )
+    defer_builtin_tools: bool = Field(
+        default=False,
+        description=(
+            "When true, rarely-used builtin tools (team_message, workflow_status, "
+            "workflow_stop, schedule, manage_memory) are withheld from the "
+            "model-facing manifest and activated on demand via tool_search. "
+            "Their names stay visible as one-line stubs."
+        ),
+    )
 
 
 EffortLevel = Literal["normal", "le-chaton"]

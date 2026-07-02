@@ -47,6 +47,19 @@ class TestBuiltinSkills:
         for trigger in ("mcp", "config", "providers"):
             assert trigger in lowered
 
+    def test_vibe_skill_documents_defer_builtin_tools(self) -> None:
+        prompt = BUILTIN_SKILLS["vibe"].prompt
+        assert "defer_builtin_tools = false" in prompt
+        for name in (
+            "team_message",
+            "workflow_status",
+            "workflow_stop",
+            "schedule",
+            "manage_memory",
+        ):
+            assert name in prompt
+        assert "`background`" in prompt
+
     def test_discovers_builtin_skills(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("vibe.core.skills.manager.BUILTIN_SKILLS", BUILTIN_SKILLS)
         config = build_test_vibe_config()

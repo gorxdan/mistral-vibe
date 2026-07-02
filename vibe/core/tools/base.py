@@ -134,6 +134,7 @@ class ToolInfo(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any]
+    usage: str | None = None
 
 
 class ToolPermissionError(Exception):
@@ -215,6 +216,10 @@ class BaseTool[
     # subagent fan-outs run at once so a concurrent batch doesn't overwhelm the
     # backend; ordinary tools are unaffected.
     is_subagent_spawner: ClassVar[bool] = False
+
+    # Withholdable from the model manifest, tool_search-activated on demand
+    # (defer_builtin_tools); harness-directed tools (background, exit_plan_mode) never.
+    manifest_deferrable: ClassVar[bool] = False
 
     @classmethod
     def call_is_read_only(cls, args: BaseModel, *, agent_manager: Any = None) -> bool:

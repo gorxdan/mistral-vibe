@@ -55,6 +55,7 @@ class ScheduleConfig(BaseToolConfig):
 
 
 class Schedule(BaseTool[ScheduleArgs, ScheduleResult, ScheduleConfig, BaseToolState]):
+    manifest_deferrable: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Schedule a future turn instead of blocking on `sleep`. `create` arms a "
         "timer that re-prompts you with `prompt` after `interval` (recurring, or "

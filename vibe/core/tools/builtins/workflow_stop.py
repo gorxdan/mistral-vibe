@@ -56,6 +56,7 @@ class WorkflowStop(
     BaseTool[WorkflowStopArgs, WorkflowStopResult, WorkflowStopConfig, BaseToolState],
     ToolUIData[WorkflowStopArgs, WorkflowStopResult],
 ):
+    manifest_deferrable: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Stop one or all background workflow runs. Cancels the run's asyncio "
         "task, halting any in-flight agents immediately. Use this to recover "

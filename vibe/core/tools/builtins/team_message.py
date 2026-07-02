@@ -122,6 +122,7 @@ class TeamMessage(
     BaseTool[TeamMessageArgs, TeamMessageResult, TeamMessageConfig, BaseToolState],
     ToolUIData[TeamMessageArgs, TeamMessageResult],
 ):
+    manifest_deferrable: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Send messages to teammates and read the lead's inbox from the shared "
         "team Mailbox. This is how the host communicates with spawned teammates "

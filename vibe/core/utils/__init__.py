@@ -40,6 +40,7 @@ from vibe.core.utils.tags import (
     get_user_cancellation_message,
     is_user_cancellation_event,
 )
+from vibe.core.utils.text import first_sentence
 from vibe.core.utils.time import utc_now
 
 __all__ = [
@@ -59,6 +60,7 @@ __all__ = [
     "build_ssl_context",
     "compact_complete_display",
     "configure_ssl_context",
+    "first_sentence",
     "get_platform_display_name",
     "get_platform_id",
     "get_server_url_from_api_base",
