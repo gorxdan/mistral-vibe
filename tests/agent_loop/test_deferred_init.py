@@ -609,3 +609,28 @@ class TestActGatesOnExperiments:
 
             assert finished_init is True
             assert any(getattr(event, "content", None) == "hello" for event in events)
+
+
+class TestEagerInitMCPRegistry:
+    def test_no_mcp_servers_skips_registry_creation(self) -> None:
+        config = build_test_vibe_config(mcp_servers=[])
+
+        with patch.object(AgentLoop, "_create_mcp_registry") as create:
+            loop = build_test_agent_loop(config=config, mcp_registry=None)
+
+        create.assert_not_called()
+        assert loop.mcp_registry is None
+
+    def test_configured_mcp_servers_create_registry_eagerly(self) -> None:
+        mcp_server = MCPStdio(name="srv", transport="stdio", command="echo")
+        config = build_test_vibe_config(mcp_servers=[mcp_server])
+        registry = FakeMCPRegistry()
+
+        with (
+            patch.object(AgentLoop, "_create_mcp_registry", return_value=registry),
+            patch.object(ToolManager, "integrate_all"),
+        ):
+            loop = build_test_agent_loop(config=config, mcp_registry=None)
+
+        assert loop.mcp_registry is registry
+        assert loop.tool_manager._mcp_registry is registry

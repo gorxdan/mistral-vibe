@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 def test_importing_entrypoint_does_not_import_interactive_ui_modules() -> None:
     code = """
@@ -16,6 +18,9 @@ blocked = [
     "vibe.setup.trusted_folders.trust_folder_dialog",
     "textual",
     "git",
+    "vibe.core.config",
+    "rich",
+    "httpx",
 ]
 loaded = [name for name in blocked if name in sys.modules]
 if loaded:
@@ -122,55 +127,17 @@ if loaded:
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_constructing_deferred_agent_loop_does_not_import_mcp_package(
-    tmp_path: Path,
-) -> None:
-    code = """
-import sys
+_AGENT_LOOP_MCP_PROBE = Path(__file__).parent / "_agent_loop_mcp_probe.py"
 
-from vibe.core.agent_loop import AgentLoop, AgentLoopParams
-from vibe.core.config import SessionLoggingConfig, VibeConfig
-from vibe.core.config.harness_files import (
-    init_harness_files_manager,
-    reset_harness_files_manager,
+
+@pytest.mark.parametrize(
+    "probe_args", [["--defer"], []], ids=["deferred", "headless_eager"]
 )
-
-
-class Backend:
-    async def complete(self, *args, **kwargs):
-        raise AssertionError
-
-    async def __aexit__(self, *args):
-        return None
-
-
-init_harness_files_manager("user", "project")
-try:
-    config = VibeConfig(
-        enable_connectors=False,
-        session_logging=SessionLoggingConfig(enabled=False),
-    )
-    loop = AgentLoop(
-        config,
-        backend=Backend(),
-        params=AgentLoopParams(defer_heavy_init=True, headless=True),
-    )
-    if loop._deferred_init_thread is not None:
-        loop._deferred_init_thread.join()
-finally:
-    reset_harness_files_manager()
-
-blocked = [
-    "vibe.core.tools.mcp.tools",
-    "mcp",
-]
-loaded = [name for name in blocked if name in sys.modules]
-if loaded:
-    raise SystemExit(f"unexpected deferred agent loop modules loaded: {loaded}")
-"""
-
+def test_constructing_agent_loop_without_mcp_servers_does_not_import_mcp_package(
+    tmp_path: Path, probe_args: list[str]
+) -> None:
     result = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, str(_AGENT_LOOP_MCP_PROBE), *probe_args],
         check=False,
         capture_output=True,
         text=True,

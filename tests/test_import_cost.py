@@ -44,6 +44,12 @@ print(",".join(leaked))
         # pulls mcp. Restoring lazy MCP loading is a follow-up; sounddevice stays
         # guarded. The TUI app path above is still mcp-clean.
         ("vibe.cli.cli", ("sounddevice",)),
+        # SpeechOutputFormat is pinned locally in config/models.py precisely so
+        # the config stack stays off the 95-module mistralai SDK (~83ms).
+        ("vibe.core.config", ("mistralai",)),
+        # `vibe --help` budget: the entrypoint module must stay argparse+stdlib;
+        # the config stack (and with it mistralai/otel) loads after parsing.
+        ("vibe.cli.entrypoint", ("mistralai",)),
     ],
 )
 def test_import_does_not_pull_heavy_optional_deps(

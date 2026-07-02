@@ -160,7 +160,8 @@ def test_interactive_splash_stops_before_running_cli(
         entrypoint_mod, "parse_arguments", lambda: _make_args(prompt=None)
     )
     monkeypatch.setattr(
-        entrypoint_mod, "init_harness_files_manager", lambda *a, **k: None
+        "vibe.core.config.harness_files.init_harness_files_manager",
+        lambda *a, **k: None,
     )
     monkeypatch.setattr("vibe.cli.cli.run_cli", fake_run_cli)
 
@@ -181,7 +182,8 @@ def test_trust_flag_trusts_cwd_for_session_only(
     args = _make_args(trust=True, prompt=None)
     monkeypatch.setattr(entrypoint_mod, "parse_arguments", lambda: args)
     monkeypatch.setattr(
-        entrypoint_mod, "init_harness_files_manager", lambda *a, **k: None
+        "vibe.core.config.harness_files.init_harness_files_manager",
+        lambda *a, **k: None,
     )
 
     # Stop main() before it runs the actual CLI.
@@ -215,7 +217,8 @@ def test_trust_flag_works_in_programmatic_mode(
         lambda _cwd: pytest.fail("must not prompt in -p mode"),
     )
     monkeypatch.setattr(
-        entrypoint_mod, "init_harness_files_manager", lambda *a, **k: None
+        "vibe.core.config.harness_files.init_harness_files_manager",
+        lambda *a, **k: None,
     )
 
     def fake_run_cli(_args: argparse.Namespace, **_kwargs: object) -> None:
@@ -246,7 +249,8 @@ def test_check_upgrade_does_not_pass_trust_resolver(
         lambda _cwd: pytest.fail("check-upgrade must not prompt for trust"),
     )
     monkeypatch.setattr(
-        entrypoint_mod, "init_harness_files_manager", lambda *a, **k: None
+        "vibe.core.config.harness_files.init_harness_files_manager",
+        lambda *a, **k: None,
     )
 
     def fake_run_cli(
@@ -281,7 +285,8 @@ def test_interactive_start_passes_trust_resolver_to_cli(
         lambda _cwd: calls.append("trust"),
     )
     monkeypatch.setattr(
-        entrypoint_mod, "init_harness_files_manager", lambda *a, **k: None
+        "vibe.core.config.harness_files.init_harness_files_manager",
+        lambda *a, **k: None,
     )
 
     def fake_run_cli(
