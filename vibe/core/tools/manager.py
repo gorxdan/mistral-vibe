@@ -7,6 +7,7 @@ import functools
 import hashlib
 import importlib.util
 import inspect
+import os
 from pathlib import Path
 import re
 import sys
@@ -20,6 +21,10 @@ from vibe.core.tools.base import BaseTool, BaseToolConfig, ToolInfo, ToolPermiss
 from vibe.core.utils import first_sentence, name_matches, run_sync
 
 _TOOL_SEARCH_FUZZY_MATCH_THRESHOLD = 0.25
+# logger.isEnabledFor(10) is always True (logger.py forces DEBUG); gate on env instead.
+_TELEMETRY_DEBUG = os.environ.get("DEBUG_MODE") == "true" or (
+    os.environ.get("LOG_LEVEL", "WARNING").upper() == "DEBUG"
+)
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
@@ -333,6 +338,9 @@ class ToolManager:
             for name, cls in available.items()
             if self._is_dynamic_remote_tool(cls) or name in deferrable
         ]
+        # debug-only: scope difflib-vs-BM25 necessity by candidate count.
+        if _TELEMETRY_DEBUG:
+            logger.debug("tool_search candidates=%s query=%s", len(candidates), query)
         limit = max_results or self._config.tool_manifest.dynamic_search_results
         terms = [term for term in query.lower().split() if term]
         scored: list[tuple[float, str, type[BaseTool]]] = []

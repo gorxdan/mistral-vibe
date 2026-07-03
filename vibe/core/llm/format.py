@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 import orjson
@@ -12,6 +13,7 @@ from vibe.core.llm.models import (
     ResolvedMessage,
     ResolvedToolCall,
 )
+from vibe.core.logger import logger
 from vibe.core.types import (
     AvailableFunction,
     AvailableTool,
@@ -27,6 +29,12 @@ if TYPE_CHECKING:
 
 def _trim_description(description: str, max_chars: int) -> str:
     return first_sentence(description, max_chars)
+
+
+# logger.isEnabledFor(10) is always True (logger.py forces DEBUG); gate on env instead.
+_TELEMETRY_DEBUG = os.environ.get("DEBUG_MODE") == "true" or (
+    os.environ.get("LOG_LEVEL", "WARNING").upper() == "DEBUG"
+)
 
 
 class APIToolFormatHandler:
@@ -64,6 +72,16 @@ class APIToolFormatHandler:
                         parameters=tool_class.get_parameters(),
                     )
                 )
+            )
+        # debug-only: scope namespace-grouping necessity by manifest size.
+        if _TELEMETRY_DEBUG:
+            hidden = len(tool_manager.hidden_tool_names())
+            logger.debug(
+                "manifest_tools size=%s hidden=%s has_remote=%s",
+                len(tools),
+                hidden,
+                hidden > 0
+                or any(t.function.name.startswith(("mcp", "conn")) for t in tools),
             )
         return tools
 
