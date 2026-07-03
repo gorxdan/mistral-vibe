@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 
 from git import Repo
+from git.exc import GitCommandError
 import pytest
 
 from vibe.core.config import WorktreeConfig
@@ -786,7 +787,7 @@ def test_locked_worktree_survives_external_remove(tmp_path: Path) -> None:
     assert len(admin_entries) == 1
 
     # External remove must refuse on a locked worktree.
-    with pytest.raises(Exception):
+    with pytest.raises(GitCommandError):
         repo.git.worktree("remove", str(wt))
 
     # Admin entry survives.
@@ -821,7 +822,6 @@ def test_exit_unlocks_then_removes(tmp_path: Path) -> None:
 
 
 def test_exit_handles_already_deleted_dir(tmp_path: Path) -> None:
-    """F6: exit when the worktree dir was externally removed does not crash."""
     repo_dir = tmp_path / "myrepo"
     repo_dir.mkdir()
     repo = Repo.init(str(repo_dir))

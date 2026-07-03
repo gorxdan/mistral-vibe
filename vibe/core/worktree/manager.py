@@ -482,6 +482,17 @@ class WorktreeManager:
         self._reap_dead_pid_worktrees(repo, config)
         self._reap_husk_dirs(repo, config)
 
+    def gc(self, repo: Repo, config: WorktreeConfig) -> None:
+        # Public entry for `vibe worktree gc`: unlike _prune_and_report (which
+        # resolves its own repo and bails on prune failure), takes repo explicitly.
+        try:
+            repo.git.worktree("prune")
+        except GitCommandError as exc:
+            logger.debug("git worktree prune failed: %s", exc)
+        self._gc_abandoned_worktrees(repo, config)
+        self._reap_dead_pid_worktrees(repo, config)
+        self._reap_husk_dirs(repo, config)
+
     def _reap_husk_dirs(self, repo: Repo, config: WorktreeConfig) -> None:
         """F5-fs: reclaim unregistered worktree dirs (husks) by walking base_dir.
 

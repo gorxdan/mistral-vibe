@@ -266,18 +266,10 @@ def _cmd_discard(branch: str, *, force: bool) -> int:
 
 
 def _cmd_gc() -> int:
-    """Prune stale worktrees and reclaim husk dirs in the current repo."""
     repo = _repo()
     if repo is None:
         return 1
     cfg = _load_worktree_config()
-    try:
-        repo.git.worktree("prune")
-        print("vibe worktree: pruned stale worktree registrations.")
-    except GitCommandError as exc:
-        print(f"vibe worktree: prune failed: {exc}", file=sys.stderr)
-    worktree_manager._gc_abandoned_worktrees(repo, cfg)
-    worktree_manager._reap_dead_pid_worktrees(repo, cfg)
-    worktree_manager._reap_husk_dirs(repo, cfg)
-    print("vibe worktree: GC complete.")
+    worktree_manager.gc(repo, cfg)
+    print("vibe worktree: pruned stale worktrees and reclaimed husk dirs.")
     return 0
