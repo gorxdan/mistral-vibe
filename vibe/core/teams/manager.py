@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+import contextlib
 import os
 from pathlib import Path
 import secrets
@@ -92,6 +93,14 @@ class TeamManager:
         with lock:
             write_safe(self._config_file, config.model_dump_json(indent=2))
 
+    @contextlib.contextmanager
+    def _mutate_config(self) -> Iterator[TeamConfig]:
+        lock = FileLock(str(self._config_lock), timeout=5)
+        with lock:
+            config = TeamConfig.model_validate_json(read_safe(self._config_file).text)
+            yield config
+            write_safe(self._config_file, config.model_dump_json(indent=2))
+
     def get_config(self) -> TeamConfig:
         return self._load_config()
 
@@ -99,22 +108,19 @@ class TeamManager:
         return self._load_config().members
 
     def add_member(self, member: TeamMember) -> None:
-        config = self._load_config()
-        config.members.append(member)
-        self._save_config(config)
+        with self._mutate_config() as config:
+            config.members.append(member)
 
     def remove_member(self, name: str) -> None:
-        config = self._load_config()
-        config.members = [m for m in config.members if m.name != name]
-        self._save_config(config)
+        with self._mutate_config() as config:
+            config.members = [m for m in config.members if m.name != name]
 
     def update_member_status(self, name: str, status: str) -> None:
-        config = self._load_config()
-        for m in config.members:
-            if m.name == name:
-                m.status = status
-                break
-        self._save_config(config)
+        with self._mutate_config() as config:
+            for m in config.members:
+                if m.name == name:
+                    m.status = status
+                    break
 
     async def _dispatch_hook(self, hook_type: str, **fields: Any) -> None:
         """Fire a team lifecycle hook event (no-op without a hooks manager).
@@ -237,12 +243,15 @@ class TeamManager:
             await asyncio.to_thread(
                 self.update_member_status, name, f"running:pid={proc.pid}"
             )
-            config = await asyncio.to_thread(self._load_config)
-            for m in config.members:
-                if m.name == name:
-                    m.pid = proc.pid
-                    break
-            await asyncio.to_thread(self._save_config, config)
+
+            def _stamp_pid() -> None:
+                with self._mutate_config() as config:
+                    for m in config.members:
+                        if m.name == name:
+                            m.pid = proc.pid
+                            break
+
+            await asyncio.to_thread(_stamp_pid)
 
             stdout, stderr = await proc.communicate()
 

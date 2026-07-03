@@ -573,3 +573,34 @@ async def test_team_command_task_verbs_route_to_manager() -> None:
 
     assert ("add", "buy more milk") in calls
     assert ("done", "task-1", "all good") in calls
+
+
+def test_config_mutation_holds_one_lock(tmp_path, monkeypatch):
+    # add_member's RMW must hold one config lock, not load-lock + save-lock,
+    # or a concurrent writer between the two holds is silently overwritten.
+    import vibe.core.teams.manager as manager_mod
+
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    real_filelock = manager_mod.FileLock
+    acquires: list[str] = []
+
+    class _CountingLock(real_filelock):  # type: ignore[misc, valid-type]
+        def acquire(self, *args, **kwargs):
+            acquires.append("config")
+            return super().acquire(*args, **kwargs)
+
+    monkeypatch.setattr(manager_mod, "FileLock", _CountingLock)
+    mgr = TeamManager("lead-session", team_name="test-atomic-config")
+    try:
+        from vibe.core.teams.models import TeamMember
+
+        # Isolate the mutation: __init__ writes the initial config (1 acquire),
+        # so clear before measuring add_member's own RMW.
+        acquires.clear()
+        mgr.add_member(TeamMember(name="alice"))
+        assert len(acquires) == 1, (
+            f"config mutation must hold one lock across RMW, got {len(acquires)}; "
+            "a second acquire means load and save release between, racing concurrent writers"
+        )
+    finally:
+        mgr.cleanup()
