@@ -1,8 +1,17 @@
 # AGENTS.md
 
-Conventions for **Mistral Vibe** — Python 3.12+ CLI coding assistant managed with `uv`.
+Conventions for **Mistral Vibe** — Python 3.12+ CLI coding assistant managed with `uv`. This repo is a **fork of `mistralai/mistral-vibe`** (remote `upstream`); read `## Fork` before structuring any change.
 
 Layout: `vibe/core` (engine: agent loop, tools, LLM backends, config, workflows, teams) | `vibe/cli` (Textual TUI) | `vibe/acp` (Agent Client Protocol) | `vibe/setup` (first-run wizards) | `tests/` (autouse fixtures in `conftest.py`, doubles in `tests/stubs/` named `Fake*`)
+
+## Fork
+
+Fork of `mistralai/mistral-vibe` (remote `upstream`), synced continuously — merge upstream releases often, keep deltas small. The fork survives on cheap merges; the enemy is **structural divergence**: git merges by path, so deleting/renaming/splitting a file upstream still ships turns *every* future upstream edit to that path into a permanent `modify/delete` conflict that can never 3-way merge. (The `agent_loop` package split cost exactly this on upstream's 2nd-most-churned file until it was un-split back to `vibe/core/agent_loop.py`.)
+
+Structure new work to add, not restructure:
+- **New feature → new sibling file, thin hook in the upstream file.** Never split, rename, or relocate an upstream-owned file. Idiom: `vibe/core/agent_loop.py` + sibling `agent_loop_*.py` mixins (mirrors upstream's own `agent_loop_hooks.py`); `AgentLoop` composes fork-only subsystems (`agent_loop_memory`/`_failover`/`_safety_judge`) as sibling-mixin bases. Deleting a *fork-added* file is fine; deleting/renaming an *upstream* file is a divergence decision.
+- **When you must edit an upstream file, keep edits minimal and localized** — small hunks 3-way merge; scattered edits and reordering conflict. Do not reorder upstream's methods/functions.
+- **Guard enforces it:** `scripts/check_upstream_divergence.py` + `tests/test_upstream_divergence.py` fail on any newly-deleted file upstream still ships. Consciously-accepted divergences go in `_ACCEPTED_DIVERGENCE` with a reason. Baseline is a pinned merge-base SHA (`_MERGE_BASE`) — **bump it after each upstream sync**.
 
 ## Rules
 
