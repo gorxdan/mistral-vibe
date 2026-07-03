@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from vibe.core.teams.errors import TeamStorageBusyError
 from vibe.core.teams.mailbox import Mailbox
 from vibe.core.teams.manager import TeamManager
 from vibe.core.teams.models import Message, Task, TaskStatus, TeamConfig, TeamMember
@@ -14,4 +15,5 @@ __all__ = [
     "TeamConfig",
     "TeamManager",
     "TeamMember",
+    "TeamStorageBusyError",
 ]

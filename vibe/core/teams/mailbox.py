@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+import contextlib
 from pathlib import Path
 import re
 import time
 from uuid import uuid4
 
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from vibe.core.logger import logger
+from vibe.core.teams.errors import TeamStorageBusyError
 from vibe.core.teams.models import Message, MessageKind
 from vibe.core.utils.io import read_safe, write_safe
 
@@ -42,6 +45,16 @@ class Mailbox:
     def _inbox(self, name: str) -> Path:
         return self._mailbox_dir / _safe_name(name)
 
+    @contextlib.contextmanager
+    def _lock_inbox(self, inbox: Path) -> Iterator[None]:
+        lock_path = inbox / ".lock"
+        lock = FileLock(str(lock_path), timeout=5)
+        try:
+            with lock:
+                yield
+        except Timeout as e:
+            raise TeamStorageBusyError(str(lock_path)) from e
+
     def send(
         self,
         from_name: str,
@@ -66,8 +79,7 @@ class Mailbox:
         )
         inbox.mkdir(parents=True, exist_ok=True)
         msg_file = inbox / f"{msg.id}.json"
-        lock = FileLock(str(inbox / ".lock"), timeout=5)
-        with lock:
+        with self._lock_inbox(inbox):
             write_safe(msg_file, msg.model_dump_json(indent=2))
         return msg
 
@@ -94,8 +106,7 @@ class Mailbox:
         if not inbox.is_dir():
             return []
         messages: list[Message] = []
-        lock = FileLock(str(inbox / ".lock"), timeout=5)
-        with lock:
+        with self._lock_inbox(inbox):
             for msg_file, msg in self._read_in_order(inbox):
                 if mark_read and not msg.read:
                     msg.read = True
@@ -108,8 +119,7 @@ class Mailbox:
         if not inbox.is_dir():
             return []
         messages: list[Message] = []
-        lock = FileLock(str(inbox / ".lock"), timeout=5)
-        with lock:
+        with self._lock_inbox(inbox):
             for _msg_file, msg in self._read_in_order(inbox):
                 if not msg.read:
                     messages.append(msg)
@@ -119,7 +129,6 @@ class Mailbox:
         inbox = self._inbox(recipient)
         if not inbox.is_dir():
             return
-        lock = FileLock(str(inbox / ".lock"), timeout=5)
-        with lock:
+        with self._lock_inbox(inbox):
             for msg_file in inbox.glob("*.json"):
                 msg_file.unlink(missing_ok=True)

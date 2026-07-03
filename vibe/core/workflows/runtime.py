@@ -1838,7 +1838,7 @@ class WorkflowRuntime:
             strip_unknown: bool = True,
             contract: dict | None = None,
             **extra: Any,
-        ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure:
+        ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure | None:
             # Tolerate unknown kwargs so one stray argument degrades a single
             # agent() call instead of crashing the whole workflow at 0 agents.
             # `agentType`/`agent_type` is a common cross-API spelling of `agent`;
@@ -1857,18 +1857,27 @@ class WorkflowRuntime:
                         "ignoring",
                         ignored,
                     )
-            return await self.spawn_agent(
-                prompt,
-                agent=agent,
-                model=model,
-                label=label,
-                phase=phase,
-                schema=schema,
-                budget_estimate=budget_estimate,
-                isolation=isolation,
-                strip_unknown=strip_unknown,
-                contract=contract,
-            )
+            try:
+                return await self.spawn_agent(
+                    prompt,
+                    agent=agent,
+                    model=model,
+                    label=label,
+                    phase=phase,
+                    schema=schema,
+                    budget_estimate=budget_estimate,
+                    isolation=isolation,
+                    strip_unknown=strip_unknown,
+                    contract=contract,
+                )
+            except (AgentCapExceeded, BudgetExhausted):
+                # Hard ceilings must fail the run; mirrors parallel()._safe.
+                raise
+            except Exception:
+                # Degrade like parallel() so a bare await doesn't null the run's
+                # return_value via run()'s broad handler at runtime.py:2026.
+                logger.warning("workflow: agent() call failed", exc_info=True)
+                return None
 
         async def _workflow(name: str, args: Any = None) -> Any:
             return await self._run_nested(name, args)

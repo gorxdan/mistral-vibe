@@ -940,6 +940,46 @@ async def main():
     assert "boom from act" in result.summary
 
 
+async def test_bare_await_agent_failure_preserves_return_value() -> None:
+    # A bare await agent() must degrade to None like parallel() does, not null
+    # the run's return_value via run()'s broad handler.
+    calls = {"n": 0}
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        calls["n"] += 1
+        # Calls 1-2 (the parallel assess agents) succeed; call 3 (the bare
+        # synthesizer await) raises.
+        if calls["n"] == 3:
+            return _raising_factory()(
+                prompt, agent=agent, parent_context=parent_context
+            )
+        return make_factory()(prompt, agent=agent, parent_context=parent_context)
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=factory, max_agents=10, budget_total=1_000_000
+    )
+    script = (
+        "async def main():\n"
+        "    phase('assess')\n"
+        "    found = await parallel(\n"
+        "        lambda: agent('a', label='a', phase='assess'),\n"
+        "        lambda: agent('b', label='b', phase='assess'),\n"
+        "    )\n"
+        "    phase('synthesize')\n"
+        "    report = await agent('synthesize', label='synth', phase='synthesize')\n"
+        "    return {'found': found, 'report': report}\n"
+    )
+    result = await rt.run(script)
+    # The bare-await failure degraded to None instead of nulling return_value.
+    assert result.return_value is not None, (
+        "a bare await agent() failure must not null the whole run's return_value"
+    )
+    assert result.return_value["found"] == ["mock response", "mock response"]
+    assert result.return_value["report"] is None
+    assert result.run.status.value == "completed_with_failures"
+    assert "1/3" in result.summary, "summary must report the single synthesizer failure"
+
+
 async def test_live_status_reports_per_phase_failure_breakdown() -> None:
     # live_status() must surface a per-phase completed/failed/failed_details
     # breakdown so observers (workflow_status tool) can see which agents failed

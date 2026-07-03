@@ -4,12 +4,25 @@ import asyncio
 import os
 from pathlib import Path
 
+from filelock import Timeout
 import pytest
 
+from vibe.core.teams.errors import TeamStorageBusyError
 from vibe.core.teams.mailbox import Mailbox
 from vibe.core.teams.manager import TeamManager
 from vibe.core.teams.models import TaskStatus
 from vibe.core.teams.task_store import TaskStore
+
+
+class _TimeoutLock:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def __enter__(self):
+        raise Timeout("busy.lock")
+
+    def __exit__(self, *_args):
+        return False
 
 
 def test_add_and_get_task(tmp_path: Path) -> None:
@@ -573,3 +586,72 @@ async def test_team_command_task_verbs_route_to_manager() -> None:
 
     assert ("add", "buy more milk") in calls
     assert ("done", "task-1", "all good") in calls
+
+
+def test_mailbox_lock_timeout_raises_team_storage_busy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import vibe.core.teams.mailbox as mailbox_mod
+
+    mb = Mailbox(tmp_path)
+    mb.send("alice", "bob", "seed")
+    monkeypatch.setattr(mailbox_mod, "FileLock", _TimeoutLock)
+    operations = [
+        lambda: mb.send("alice", "bob", "next"),
+        lambda: mb.read("bob"),
+        lambda: mb.get_unread("bob"),
+        lambda: mb.clear("bob"),
+    ]
+    for op in operations:
+        with pytest.raises(TeamStorageBusyError):
+            op()
+
+
+def test_task_store_lock_timeout_raises_team_storage_busy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import vibe.core.teams.task_store as task_store_mod
+
+    store = TaskStore(tmp_path)
+    store.add_task("Task A")
+    monkeypatch.setattr(task_store_mod, "FileLock", _TimeoutLock)
+    operations = [
+        store.reload,
+        lambda: store.add_task("Task B"),
+        lambda: store.claim_task("task-1", "alice"),
+        lambda: store.complete_task("task-1", "done"),
+    ]
+    for op in operations:
+        with pytest.raises(TeamStorageBusyError):
+            op()
+
+
+def test_config_mutation_holds_one_lock(tmp_path, monkeypatch):
+    # add_member's RMW must hold one config lock, not load-lock + save-lock,
+    # or a concurrent writer between the two holds is silently overwritten.
+    import vibe.core.teams.manager as manager_mod
+
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    real_filelock = manager_mod.FileLock
+    acquires: list[str] = []
+
+    class _CountingLock(real_filelock):  # type: ignore[misc, valid-type]
+        def acquire(self, *args, **kwargs):
+            acquires.append("config")
+            return super().acquire(*args, **kwargs)
+
+    monkeypatch.setattr(manager_mod, "FileLock", _CountingLock)
+    mgr = TeamManager("lead-session", team_name="test-atomic-config")
+    try:
+        from vibe.core.teams.models import TeamMember
+
+        # Isolate the mutation: __init__ writes the initial config (1 acquire),
+        # so clear before measuring add_member's own RMW.
+        acquires.clear()
+        mgr.add_member(TeamMember(name="alice"))
+        assert len(acquires) == 1, (
+            f"config mutation must hold one lock across RMW, got {len(acquires)}; "
+            "a second acquire means load and save release between, racing concurrent writers"
+        )
+    finally:
+        mgr.cleanup()
