@@ -143,10 +143,54 @@ def _cmd_list() -> int:
     return 0
 
 
+def _linked_worktree_main_dir(repo: Repo) -> Path | None:
+    """The main working tree's path when the current tree is a *linked* worktree,
+    else None.
+
+    A merge run from a linked worktree targets that worktree's HEAD, not main —
+    and a sandboxed (isolated) worktree session cannot write the main checkout at
+    all. Detecting this lets ``merge`` steer to push + PR instead of a merge that
+    silently misses main or dies on a read-only filesystem. Linked worktrees have
+    a per-worktree git dir distinct from the shared common dir; the main tree is
+    the common dir's parent.
+    """
+    try:
+        git_dir = Path(repo.git_dir).resolve()
+        common_dir = Path(repo.common_dir).resolve()
+    except (TypeError, ValueError):
+        return None
+    if git_dir == common_dir:
+        return None
+    main_dir = common_dir.parent
+    return main_dir if main_dir.is_dir() else None
+
+
+def _merge_from_linked_worktree(branch: str, main_dir: Path) -> int:
+    """Steer to push + PR: the one landing path that works from a sandboxed
+    worktree, where a direct merge into main is impossible.
+    """
+    print(
+        f"vibe worktree: this is a linked worktree, not the main checkout at "
+        f"{main_dir}.\n"
+        f"A merge here would land on this worktree's HEAD, not main — and a "
+        f"sandboxed session cannot write the main checkout. To land {branch} on "
+        f"main, push it and open a PR (works from anywhere):\n"
+        f"    git push -u origin {branch}\n"
+        f"    gh pr create --head {branch} --fill\n"
+        f"or run the merge from the main checkout:\n"
+        f"    cd {main_dir} && vibe worktree merge {branch}",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def _cmd_merge(branch: str) -> int:
     repo = _repo()
     if repo is None:
         return 1
+    main_dir = _linked_worktree_main_dir(repo)
+    if main_dir is not None:
+        return _merge_from_linked_worktree(branch, main_dir)
     root = Path(repo.working_tree_dir) if repo.working_tree_dir else Path.cwd()
     try:
         # Per-repo lock: two simultaneous merges would otherwise rebase/ff

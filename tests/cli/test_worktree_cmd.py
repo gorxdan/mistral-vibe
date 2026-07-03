@@ -206,3 +206,43 @@ def test_merge_strands_gracefully_when_merge_lock_busy(
     # Nothing landed while the lock was held; branch kept for retry.
     assert not (_wt_dir(root) / "work.txt").exists()
     assert branch in [b.name for b in root.branches]
+
+
+# From a linked worktree, `merge` can't land on main (targets the worktree HEAD,
+# and a sandboxed session can't write main) — it must steer to push+PR, not merge.
+def test_merge_from_linked_worktree_offers_push_pr(tmp_path: Path, capsys) -> None:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    root = Repo.init(str(repo_dir))
+    with root.config_writer() as cw:
+        cw.set_value("user", "name", "T")
+        cw.set_value("user", "email", "t@t")
+    (repo_dir / "f.txt").write_text("base\n")
+    root.git.add("-A")
+    root.git.commit("-m", "base")
+
+    # a branch with new work we want to land on main
+    root.git.branch("vibe/feature")
+    fr = Repo(str(repo_dir))
+    fr.git.checkout("vibe/feature")
+    (repo_dir / "feat.txt").write_text("feature\n")
+    fr.git.add("-A")
+    fr.git.commit("-m", "feature work")
+    fr.git.checkout("master" if "master" in fr.heads else "main")
+
+    # run the command from a LINKED worktree (a sandboxed session's home)
+    wt = tmp_path / "wt"
+    root.git.worktree("add", str(wt), "-b", "vibe/session", "HEAD")
+    session = Repo(str(wt))
+    head_before = session.head.commit.hexsha
+    os.chdir(str(wt))
+
+    rc = run_worktree_command(["merge", "vibe/feature"])
+
+    err = capsys.readouterr().err
+    assert rc == 1, "must not report success from a linked worktree"
+    assert "linked worktree" in err.lower()
+    assert "git push" in err
+    assert "vibe/feature" in err
+    # and it did NOT merge vibe/feature into the worktree's HEAD
+    assert Repo(str(wt)).head.commit.hexsha == head_before
