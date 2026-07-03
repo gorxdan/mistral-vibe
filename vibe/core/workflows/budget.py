@@ -29,6 +29,8 @@ class Budget:
 
     def reserve(self, estimate: int | None = None) -> Reservation:
         est = estimate if estimate is not None else self.default_reservation
+        if est < 0:
+            raise ValueError(f"budget reserve estimate must be non-negative, got {est}")
 
         if self.total is not None:
             remaining = self.total - self._reserved - self._spent

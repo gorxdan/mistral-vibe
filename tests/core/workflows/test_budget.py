@@ -106,3 +106,15 @@ def test_budget_guard_in_loop() -> None:
 
     assert rounds == 2
     assert b.remaining() == 60_000
+
+
+def test_negative_estimate_rejected() -> None:
+    # A negative estimate must not be accepted: it lowers _reserved and inflates
+    # remaining(), letting a workflow author bypass the budget cap.
+    b = Budget(total=100_000, default_reservation=50_000)
+    b.reserve()
+    assert b.remaining() == 50_000
+    with pytest.raises(ValueError):
+        b.reserve(-1_000_000)
+    # remaining() is unchanged — the rejected call did not mutate _reserved.
+    assert b.remaining() == 50_000
