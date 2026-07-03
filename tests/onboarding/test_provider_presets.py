@@ -343,6 +343,21 @@ def test_openrouter_preset_model_config() -> None:
     assert model.auto_compact_threshold == 880000
 
 
+def test_openrouter_preset_ships_laguna_xs_2_1() -> None:
+    preset = next(p for p in PRESETS if p.key == "openrouter")
+    laguna = next((m for m in preset.extra_models if m.alias == "laguna-xs-2.1"), None)
+    assert laguna is not None
+    assert laguna.name == "poolside/laguna-xs-2.1"
+    assert laguna.provider == "openrouter"
+    assert laguna.thinking == "high"
+    assert laguna.input_price == 0.06
+    assert laguna.output_price == 0.12
+    assert laguna.context_window == 262144
+    # 200k sits below the 262k window ceiling, so compaction triggers before the
+    # model rejects the context.
+    assert laguna.auto_compact_threshold == 200000
+
+
 def test_apply_openrouter_preset_persists_provider_and_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -358,6 +373,10 @@ def test_apply_openrouter_preset_persists_provider_and_model(
     provider_names = {p["name"] for p in config["providers"]}
     assert "openrouter" in provider_names
     assert config["active_model"] == preset.model.alias
+    persisted = {m["alias"]: m for m in config["models"]}
+    assert "laguna-xs-2.1" in persisted
+    assert persisted["laguna-xs-2.1"]["name"] == "poolside/laguna-xs-2.1"
+    assert persisted["laguna-xs-2.1"]["context_window"] == 262144
 
 
 def test_openrouter_preset_resolvable_by_provider_name() -> None:

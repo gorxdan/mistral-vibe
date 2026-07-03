@@ -334,6 +334,21 @@ PRESETS: list[ProviderPreset] = [
             # matching the other ~1M-window presets.
             auto_compact_threshold=880000,
         ),
+        extra_models=(
+            ModelConfig(
+                # Poolside's Laguna XS 2.1 on OpenRouter: 256K context, 32K max
+                # output, $0.06 / $0.12 per 1M tokens. A compact coding-agent
+                # model that can be switched to from the picker.
+                name="poolside/laguna-xs-2.1",
+                provider="openrouter",
+                alias="laguna-xs-2.1",
+                thinking="high",
+                input_price=0.06,
+                output_price=0.12,
+                auto_compact_threshold=200000,
+                context_window=262144,
+            ),
+        ),
     ),
     ProviderPreset(
         key="bedrock",

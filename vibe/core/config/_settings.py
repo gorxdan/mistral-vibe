@@ -633,6 +633,7 @@ KNOWN_MODEL_CONTEXT_WINDOWS: dict[tuple[str, str], int] = {
     ("sakana", "fugu"): 1_000_000,
     ("sakana", "fugu-ultra"): 1_000_000,
     ("longcat", "LongCat-2.0"): 1_000_000,
+    ("openrouter", "poolside/laguna-xs-2.1"): 262144,
 }
 
 DEFAULT_TRANSCRIBE_PROVIDERS = [
