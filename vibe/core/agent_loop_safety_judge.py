@@ -1,32 +1,26 @@
-"""Safety-judge + approval mixin for AgentLoop.
+"""Safety-judge subsystem mixin for AgentLoop (fork-only).
 
-Provides the safety-judge LLM gate (verdict cache, args serialization, transcript
-window), the ASK-gated approval flow, and the modification (re-validate +
-re-dispatch) path. Extracted from the loop module.
+The LLM safety judge that pre-screens ASK-gated tool calls: verdict cache, args
+serialization/truncation guard, transcript window, and the modification
+(re-validate + re-dispatch) path. Upstream has no safety judge, so this lives in
+a sibling module — matching the ``agent_loop_hooks`` placement — and is composed
+onto AgentLoop via ``AgentLoopSafetyMixin``. The permission-gate flow that calls
+into it (``_should_execute_tool`` / ``_ask_approval``) stays in the extracted
+upstream mixin.
 
 Implicit dependencies on the host class (AgentLoop):
 
 Attributes (set by AgentLoop.__init__):
-    approval_callback         (ApprovalCallback | None)
-    pending_judge_deferral    (str | None)
-    _permission_store         (PermissionStore)
-    _judge_verdict_cache      (OrderedDict[...], JudgeVerdict)
+    pending_judge_deferral       (str | None)
+    _judge_verdict_cache         (OrderedDict[..., JudgeVerdict])
     _judge_verdict_cache_maxsize (int)
     _judge_model_alias_for_cache (str | None)
-    _current_user_message_id  (str | None)
 
-Properties (defined on AgentLoop):
-    config                    (VibeConfig)
-    bypass_tool_permissions   (bool)
-    agent_profile             (AgentProfile)
-    effective_model           (() -> ModelConfig)
-    messages                  (MessageList)
-
-Methods (defined elsewhere on AgentLoop / sibling mixins):
+Properties / methods (defined on AgentLoop / sibling mixins):
+    config                     (VibeConfig)
     _get_extra_headers(provider) -> dict[str, str]
-    _serialize_tool_input(tool_call) -> dict[str, Any]   [AgentLoopHooksMixin]
-    _fire_notification_hooks(kind, msg, tool_name) -> AsyncGenerator [AgentLoopHooksMixin]
-    _patch_assistant_tool_call_args(call_id, tool_input) -> None  [AgentLoopHooksMixin]
+    messages, _serialize_tool_input, _patch_assistant_tool_call_args
+        [AgentLoopHooksMixin — inherited via the class base]
 """
 
 from __future__ import annotations
@@ -36,110 +30,41 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from vibe.core.agent_loop._limits import (
+from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
+from vibe.core.agent_loop_limits import (
     JUDGE_ARGS_LIMIT,
     JUDGE_ARGS_TRUNCATED_SENTINEL,
     JUDGE_TRANSCRIPT_LIMIT,
     JUDGE_TRANSCRIPT_TURNS,
 )
-from vibe.core.agent_loop._models import ToolDecision, ToolExecutionResponse
-from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
+from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
 from vibe.core.logger import logger
 from vibe.core.tools.base import ToolPermission
-from vibe.core.tools.permissions import PermissionContext, RequiredPermission
-from vibe.core.types import ApprovalResponse, Role
+from vibe.core.types import Role
 
 if TYPE_CHECKING:
-    from vibe.core.agents.models import AgentProfile
-    from vibe.core.config import ModelConfig, VibeConfig
+    from vibe.core.config import VibeConfig
     from vibe.core.llm.models import ResolvedToolCall
-    from vibe.core.tools.base import BaseTool
-    from vibe.core.tools.permissions import PermissionStore
+    from vibe.core.tools.permissions import RequiredPermission
     from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
-    from vibe.core.types import ApprovalCallback
 
 
-class AgentLoopSafetyMixin(AgentLoopHooksMixin):
-    """Mixin that adds the safety-judge + approval gate to AgentLoop.
+class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
+    """Mixin that adds the fork-only safety-judge subsystem to AgentLoop.
 
     See module docstring for the implicit contract with the host class.
     """
 
     # Declared for type-checking only; set by AgentLoop.__init__.
-    approval_callback: ApprovalCallback | None
     pending_judge_deferral: str | None
-    _permission_store: PermissionStore
-    _judge_verdict_cache: Any  # OrderedDict[tuple, JudgeVerdict] — exact type below
+    _judge_verdict_cache: Any  # OrderedDict[tuple, JudgeVerdict]
     _judge_verdict_cache_maxsize: int
     _judge_model_alias_for_cache: str | None
-    _current_user_message_id: str | None
-    tool_manager: Any  # ToolManager — typed loosely to avoid a runtime import cycle
 
     @property
     def config(self) -> VibeConfig: ...
 
-    @property
-    def bypass_tool_permissions(self) -> bool: ...
-
-    @property
-    def agent_profile(self) -> AgentProfile: ...
-
-    # ``messages``, ``_serialize_tool_input``, ``_fire_notification_hooks``, and
-    # ``_patch_assistant_tool_call_args`` are inherited from AgentLoopHooksMixin
-    # (see class bases) — redeclaring them here as stubs would shadow the real
-    # implementations, so they are intentionally omitted.
-
-    def effective_model(self) -> ModelConfig: ...
-
     def _get_extra_headers(self, provider: Any | None = None) -> dict[str, str]: ...
-
-    async def _should_execute_tool(
-        self, tool: BaseTool, args: BaseModel, tool_call_id: str
-    ) -> ToolDecision:
-        if self.bypass_tool_permissions:
-            return ToolDecision(
-                verdict=ToolExecutionResponse.EXECUTE,
-                approval_type=ToolPermission.ALWAYS,
-            )
-
-        async with self._permission_store.lock:
-            tool_name = tool.get_name()
-            ctx = tool.resolve_permission(args)
-
-            if ctx is None:
-                config_perm = self.tool_manager.get_tool_config(tool_name).permission
-                ctx = PermissionContext(permission=config_perm)
-
-            if ctx.permission == ToolPermission.ALWAYS:
-                return ToolDecision(
-                    verdict=ToolExecutionResponse.EXECUTE,
-                    approval_type=ToolPermission.ALWAYS,
-                )
-            if ctx.permission == ToolPermission.NEVER:
-                return ToolDecision(
-                    verdict=ToolExecutionResponse.SKIP,
-                    approval_type=ToolPermission.NEVER,
-                    feedback=ctx.reason
-                    or f"Tool '{tool_name}' is permanently disabled",
-                )
-            uncovered = [
-                rp
-                for rp in ctx.required_permissions
-                if not self._permission_store.covers(tool_name, rp)
-            ]
-            if ctx.required_permissions and not uncovered:
-                return ToolDecision(
-                    verdict=ToolExecutionResponse.EXECUTE,
-                    approval_type=ToolPermission.ALWAYS,
-                )
-
-        # Lock released: the safety-judge LLM call and human approval are slow;
-        # holding the permission lock across them would serialize every parallel
-        # ASK-gated tool. The rule-store reads above happened under the lock.
-        judged = await self._judge_tool_safety(tool_name, args, uncovered)
-        if judged is not None:
-            return judged
-        return await self._ask_approval(tool_name, args, tool_call_id, uncovered)
 
     async def _judge_tool_safety(
         self, tool_name: str, args: BaseModel, uncovered: list[RequiredPermission]
@@ -309,52 +234,6 @@ class AgentLoopSafetyMixin(AgentLoopHooksMixin):
         if isinstance(modified, ToolDecision):
             return tool_call, tool_input, modified
         return modified[0], modified[1], decision
-
-    async def _ask_approval(
-        self,
-        tool_name: str,
-        args: BaseModel,
-        tool_call_id: str,
-        required_permissions: list[RequiredPermission],
-    ) -> ToolDecision:
-        if not self.approval_callback:
-            return ToolDecision(
-                verdict=ToolExecutionResponse.SKIP,
-                approval_type=ToolPermission.ASK,
-                feedback="Tool execution not permitted.",
-            )
-        await self._fire_notification_hooks(
-            "permission_required", f"Approval needed for {tool_name}", tool_name
-        )
-        response, feedback, modified_args = await self.approval_callback(
-            tool_name,
-            args,
-            tool_call_id,
-            required_permissions,
-            # Carry the judge's deferral reason (set in _judge_tool_safety) so
-            # the host prompt can show WHY approval is needed even when the
-            # call originated from a workflow/task subagent — the subagent's
-            # loop-local pending_judge_deferral is invisible to the host, so the
-            # note must travel with the callback itself.
-            self.pending_judge_deferral,
-        )
-
-        match response:
-            case ApprovalResponse.YES:
-                verdict = ToolExecutionResponse.EXECUTE
-            case ApprovalResponse.MODIFY:
-                verdict = ToolExecutionResponse.EXECUTE
-            case _:
-                verdict = ToolExecutionResponse.SKIP
-
-        return ToolDecision(
-            verdict=verdict,
-            approval_type=ToolPermission.ASK,
-            feedback=feedback,
-            modified_args=modified_args
-            if response == ApprovalResponse.MODIFY
-            else None,
-        )
 
     def _resolve_safety_judge(self) -> SafetyJudge | None:
         judge_cfg = self.config.safety_judge

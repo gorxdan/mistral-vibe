@@ -8,7 +8,7 @@ import pytest
 from tests.conftest import build_test_agent_loop
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
-from vibe.core.agent_loop._errors import (
+from vibe.core.agent_loop import (
     _is_context_too_long_error,
     _is_non_retryable_error,
     _is_response_too_long_error,
