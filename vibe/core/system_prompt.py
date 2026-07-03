@@ -834,8 +834,10 @@ def get_universal_system_prompt(
                 f"for the user.\n\n"
                 f"Your branch is NOT merged automatically on exit — it is kept so "
                 f"the user reviews and lands it explicitly with "
-                f"`vibe worktree merge {wt.branch}` (or `git merge {wt.branch}`) "
-                f"from the original checkout."
+                f"`vibe worktree merge {wt.branch}` from the original checkout. You "
+                f"cannot write that checkout from inside this worktree, so to land "
+                f"it yourself, push the branch and open a PR "
+                f"(`git push -u origin {wt.branch}`)."
             )
 
     return "\n\n".join(sections)

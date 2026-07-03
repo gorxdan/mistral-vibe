@@ -842,7 +842,8 @@ The `vibe worktree` subcommand manages stranded branches outside the TUI
   stranded work exists).
 - `vibe worktree merge <branch>` — land a branch into HEAD. Rebases onto HEAD
   first, then fast-forwards; aborts cleanly (keeping the branch) on a real
-  conflict.
+  conflict. Run it from the main checkout: from inside a linked/sandboxed
+  worktree it cannot write main, so it steers you to `git push` + a PR instead.
 - `vibe worktree discard <branch>` — delete a branch that is no longer wanted
   (forces deletion of unmerged work; prompts unless `--force`).
 
