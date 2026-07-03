@@ -1325,7 +1325,7 @@ class WorkflowRuntime:
             base_config,
             params=AgentLoopParams(
                 agent_name=agent,
-                entrypoint_metadata=ctx.entrypoint_metadata if ctx else None,
+                launch_context=ctx.launch_context if ctx else None,
                 terminal_emulator=ctx.terminal_emulator if ctx else None,
                 is_subagent=True,
                 defer_heavy_init=True,

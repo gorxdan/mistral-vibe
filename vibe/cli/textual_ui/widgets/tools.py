@@ -21,7 +21,7 @@ from vibe.cli.textual_ui.widgets.no_markup_static import (
     NoMarkupStatic,
     NonSelectableStatic,
 )
-from vibe.cli.textual_ui.widgets.status_message import StatusMessage
+from vibe.cli.textual_ui.widgets.status_message import IndicatorState, StatusMessage
 from vibe.cli.textual_ui.widgets.tool_widgets import (
     LINKIFY_RESULT_TOOLS,
     ToolResultWidget,
@@ -131,16 +131,12 @@ class ToolCallMessage(StatusMessage):
 
     def show_muted(self) -> None:
         # Neutral grey square with the call summary -- used for an error whose
-        # verdict is still unknown and for a user-cancelled call.
-        self.muted = True
-        self.success = True
-        self.stop_spinning(success=True)
+        # verdict is still unknown, a user-declined call, and a cancelled call.
+        self.settle(IndicatorState.MUTED)
 
     def escalate_error(self) -> None:
         # No recovery followed: promote the held square to a hard red cross.
-        self.muted = False
-        self.success = False
-        self.update_display()
+        self.settle(IndicatorState.ERROR)
 
 
 class ToolResultMessage(ClickWithoutDragMixin, Static):

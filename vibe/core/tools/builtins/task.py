@@ -513,7 +513,7 @@ class Task(
             config=base_config,
             params=AgentLoopParams(
                 agent_name=args.agent,
-                entrypoint_metadata=ctx.entrypoint_metadata,
+                launch_context=ctx.launch_context,
                 terminal_emulator=ctx.terminal_emulator,
                 is_subagent=True,
                 # Stream like the host: reasoning models (k2.7-code/GLM) need stream=True.

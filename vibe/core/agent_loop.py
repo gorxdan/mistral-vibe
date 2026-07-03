@@ -118,7 +118,7 @@ from vibe.core.telemetry.build_metadata import (
 )
 from vibe.core.telemetry.send import TelemetryClient
 from vibe.core.telemetry.types import (
-    EntrypointMetadata,
+    LaunchContext,
     TelemetryCallType,
     TelemetryRequestMetadata,
     TerminalEmulator,
@@ -443,7 +443,7 @@ class AgentLoopParams:
     max_price: float | None = None
     max_session_tokens: int | None = None
     enable_streaming: bool = False
-    entrypoint_metadata: EntrypointMetadata | None = None
+    launch_context: LaunchContext | None = None
     terminal_emulator: TerminalEmulator | None = None
     is_subagent: bool = False
     defer_heavy_init: bool = False
@@ -484,7 +484,7 @@ class AgentLoop(
         self._init_session_identity(p.is_subagent)
         self._init_messages(p.defer_heavy_init, p.message_observer)
         self._init_session_state(
-            p.is_subagent, p.entrypoint_metadata, p.terminal_emulator, config
+            p.is_subagent, p.launch_context, p.terminal_emulator, config
         )
         self._init_telemetry(config, p.is_subagent)
         self._init_hooks(p.hook_config_result)
@@ -643,8 +643,7 @@ class AgentLoop(
             config=self.config,
             manager=self.experiment_manager,
             session_logger=self.session_logger,
-            entrypoint_metadata=self.entrypoint_metadata,
-            terminal_emulator=self.terminal_emulator,
+            launch_context=self.launch_context,
         )
         if updated:
             with contextlib.suppress(Exception):
@@ -661,19 +660,6 @@ class AgentLoop(
                 await self.refresh_system_prompt()
 
     def emit_new_session_telemetry(self) -> None:
-        entrypoint = (
-            self.entrypoint_metadata.agent_entrypoint
-            if self.entrypoint_metadata
-            else "unknown"
-        )
-        client_name = (
-            self.entrypoint_metadata.client_name if self.entrypoint_metadata else None
-        )
-        client_version = (
-            self.entrypoint_metadata.client_version
-            if self.entrypoint_metadata
-            else None
-        )
         has_agents_md = has_agents_md_file(safe_cwd())
         nb_skills = len(self.skill_manager.available_skills)
         nb_mcp_servers = len(self.config.mcp_servers)
@@ -684,10 +670,6 @@ class AgentLoop(
             nb_skills=nb_skills,
             nb_mcp_servers=nb_mcp_servers,
             nb_models=nb_models,
-            entrypoint=entrypoint,
-            client_name=client_name,
-            client_version=client_version,
-            terminal_emulator=self.terminal_emulator,
         )
 
     def emit_ready_telemetry(self, init_duration_ms: int) -> None:
@@ -1106,7 +1088,7 @@ class AgentLoop(
         self, call_type: TelemetryCallType | None = None
     ) -> TelemetryRequestMetadata:
         return build_request_metadata(
-            entrypoint_metadata=self.entrypoint_metadata,
+            launch_context=self.launch_context,
             session_id=self.session_id,
             parent_session_id=self.parent_session_id,
             call_type=(
@@ -1814,7 +1796,7 @@ class AgentLoop(
                     agent_manager=self.agent_manager,
                     active_model=self.effective_model().alias,
                     session_dir=self.session_logger.session_dir,
-                    entrypoint_metadata=self.entrypoint_metadata,
+                    launch_context=self.launch_context,
                     approval_callback=_timed(self.approval_callback),
                     user_input_callback=_timed(self.user_input_callback),
                     sampling_callback=self._sampling_handler,
@@ -2413,7 +2395,7 @@ class AgentLoop(
                 max_price=self._max_price,
                 max_session_tokens=self._max_session_tokens,
                 enable_streaming=self.enable_streaming,
-                entrypoint_metadata=self.entrypoint_metadata,
+                launch_context=self.launch_context,
                 terminal_emulator=self.terminal_emulator,
                 defer_heavy_init=True,
                 hook_config_result=self._hook_config_result,
@@ -2559,6 +2541,11 @@ class AgentLoop(
                 if has_tool_calls or not summary_content:
                     if self.config.raise_on_compaction_failure:
                         reason = "tool_call" if has_tool_calls else "empty_summary"
+                        self.telemetry_client.send_compaction_failed(
+                            reason=reason,
+                            session_id=self.session_id,
+                            parent_session_id=self.parent_session_id,
+                        )
                         raise CompactionFailedError(reason)
                     summary_content = ""
             except Exception:
@@ -2865,7 +2852,7 @@ class AgentLoop(
     def _init_session_state(
         self,
         is_subagent: bool,
-        entrypoint_metadata: EntrypointMetadata | None,
+        launch_context: LaunchContext | None,
         terminal_emulator: TerminalEmulator | None,
         config: VibeConfig,
     ) -> None:
@@ -2917,8 +2904,19 @@ class AgentLoop(
         # available, to let the user pick a model to switch to (the rate-limit
         # model-switch dialog). None in headless/ACP runs → surface the error.
         self.rate_limit_callback: RateLimitCallback | None = None
-        self.entrypoint_metadata = entrypoint_metadata
-        self.terminal_emulator = terminal_emulator
+        self.launch_context = (
+            launch_context.model_copy(
+                update={
+                    "terminal_emulator": terminal_emulator
+                    or launch_context.terminal_emulator
+                }
+            )
+            if launch_context is not None
+            else None
+        )
+        self.terminal_emulator = terminal_emulator or (
+            launch_context.terminal_emulator if launch_context else None
+        )
 
     def _init_telemetry(self, config: VibeConfig, is_subagent: bool) -> None:
         try:
@@ -2965,7 +2963,7 @@ class AgentLoop(
             config_getter=lambda: self.config,
             session_id_getter=lambda: self.session_id,
             parent_session_id_getter=lambda: self.parent_session_id,
-            entrypoint_metadata_getter=lambda: self.entrypoint_metadata,
+            launch_context=self.launch_context,
             experiments_getter=lambda: self.experiment_manager.assignments(),
         )
         self.session_logger = SessionLogger(config.session_logging, self.session_id)

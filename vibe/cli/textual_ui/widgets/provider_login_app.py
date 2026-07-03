@@ -52,7 +52,7 @@ from vibe.setup.onboarding.provider_presets import (
 )
 
 if TYPE_CHECKING:
-    from vibe.core.telemetry.types import EntrypointMetadata
+    from vibe.core.telemetry.types import LaunchContext
 
 _OPTION_PADDING = "  "
 _HELP_SELECT = "Enter Select  Esc Close"
@@ -144,7 +144,7 @@ class ProviderLoginApp(Container):
         openai_sign_in_service_factory: OpenAISignInServiceFactory | None = None,
         zai_sign_in_service_factory: ZaiSignInServiceFactory | None = None,
         zai_protocol_handler_installer: ZaiProtocolHandlerInstaller | None = None,
-        entrypoint_metadata: EntrypointMetadata | None = None,
+        launch_context: LaunchContext | None = None,
     ) -> None:
         super().__init__(id="providerlogin-app")
         self._config = config
@@ -163,7 +163,7 @@ class ProviderLoginApp(Container):
         self._zai_protocol_handler_installer = (
             zai_protocol_handler_installer or install_zai_protocol_handler
         )
-        self._entrypoint_metadata = entrypoint_metadata
+        self._entrypoint_metadata = launch_context
         self._targets = self._build_targets()
         self._target: _ProviderLoginTarget | None = None
         self._mode = "providers"
@@ -459,7 +459,7 @@ class ProviderLoginApp(Container):
         result = persist_api_key(
             resolve_api_key_provider(target.provider),
             api_key,
-            entrypoint_metadata=self._entrypoint_metadata,
+            launch_context=self._entrypoint_metadata,
         )
         if result != "completed":
             self._show_error(f"Could not save API key: {result}")
@@ -533,7 +533,7 @@ class ProviderLoginApp(Container):
         except ZaiSignInError as exc:
             return _LoginResult(False, target.provider.name, str(exc))
         result = persist_api_key(
-            target.provider, api_key, entrypoint_metadata=self._entrypoint_metadata
+            target.provider, api_key, launch_context=self._entrypoint_metadata
         )
         if result != "completed":
             return _LoginResult(
@@ -568,7 +568,7 @@ class ProviderLoginApp(Container):
         result = persist_api_key(
             resolve_api_key_provider(target.provider),
             api_key,
-            entrypoint_metadata=self._entrypoint_metadata,
+            launch_context=self._entrypoint_metadata,
         )
         if result != "completed":
             return _LoginResult(

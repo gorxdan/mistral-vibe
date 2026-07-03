@@ -35,8 +35,8 @@ from vibe.core.programmatic import ProgrammaticOptions, run_programmatic
 from vibe.core.sentry import init_sentry
 from vibe.core.session import last_session_pointer
 from vibe.core.session.session_loader import SessionLoader
-from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
-from vibe.core.telemetry.types import EntrypointMetadata
+from vibe.core.telemetry.build_metadata import build_launch_context
+from vibe.core.telemetry.types import LaunchContext
 from vibe.core.tracing import setup_tracing
 from vibe.core.trusted_folders import find_trustable_files, trusted_folders_manager
 from vibe.core.types import LLMMessage, OutputFormat, Role
@@ -49,8 +49,8 @@ from vibe.setup.update_prompt import (
 )
 
 
-def _build_cli_entrypoint_metadata() -> EntrypointMetadata:
-    return build_entrypoint_metadata(
+def _build_cli_entrypoint_metadata() -> LaunchContext:
+    return build_launch_context(
         agent_entrypoint="cli",
         agent_version=__version__,
         client_name="vibe_cli",
@@ -98,7 +98,7 @@ def load_config_or_exit(*, interactive: bool) -> VibeConfig:
             sys.exit(1)
         from vibe.setup.onboarding import run_onboarding
 
-        run_onboarding(entrypoint_metadata=_build_cli_entrypoint_metadata())
+        run_onboarding(launch_context=_build_cli_entrypoint_metadata())
         return VibeConfig.load()
     except ValidationError as e:
         rprint(f"[yellow]{_format_config_validation_error(e)}[/]")
@@ -427,7 +427,7 @@ def run_cli(  # noqa: PLR0912
     if args.setup:
         from vibe.setup.onboarding import run_onboarding
 
-        run_onboarding(entrypoint_metadata=_build_cli_entrypoint_metadata())
+        run_onboarding(launch_context=_build_cli_entrypoint_metadata())
         sys.exit(0)
 
     try:
@@ -450,7 +450,7 @@ def run_cli(  # noqa: PLR0912
         sentry_enabled = init_sentry(
             config,
             headless=not is_interactive,
-            entrypoint_metadata=_build_cli_entrypoint_metadata(),
+            launch_context=_build_cli_entrypoint_metadata(),
         )
         initial_agent_name = get_initial_agent_name(args, config)
         plugin_result = load_and_apply_plugins(config)
@@ -502,7 +502,7 @@ def run_cli(  # noqa: PLR0912
                         params=AgentLoopParams(
                             agent_name=initial_agent_name,
                             enable_streaming=True,
-                            entrypoint_metadata=_build_cli_entrypoint_metadata(),
+                            launch_context=_build_cli_entrypoint_metadata(),
                             terminal_emulator=detect_terminal(),
                             defer_heavy_init=True,
                             hook_config_result=hook_config_result,

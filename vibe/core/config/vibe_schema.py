@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AfterValidator, Field, field_validator, model_validator
 
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config._defaults import (
@@ -67,6 +68,19 @@ from vibe.core.prompts import (
     load_prompt,
     load_system_prompt,
 )
+
+
+def _unique_by(key: str) -> Callable[[list[Any]], list[Any]]:
+    def check(items: list[Any]) -> list[Any]:
+        seen: set[str] = set()
+        for item in items:
+            value = getattr(item, key)
+            if value in seen:
+                raise ValueError(f"Duplicate {key} {value!r}; must be unique")
+            seen.add(value)
+        return items
+
+    return check
 
 
 class VibeConfigSchema(ConfigSchema):
@@ -146,7 +160,11 @@ class VibeConfigSchema(ConfigSchema):
             " is set. Supports glob patterns and regex with 're:' prefix."
         ),
     )
-    mcp_servers: Annotated[list[MCPServer], WithUnionMerge(merge_key="name")] = Field(
+    mcp_servers: Annotated[
+        list[MCPServer],
+        WithUnionMerge(merge_key="name"),
+        AfterValidator(_unique_by("name")),
+    ] = Field(
         default_factory=list, description="Preferred MCP server configuration entries."
     )
     enable_connectors: Annotated[bool, WithReplaceMerge()] = True

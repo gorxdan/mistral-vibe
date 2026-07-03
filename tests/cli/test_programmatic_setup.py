@@ -26,6 +26,7 @@ def _make_args(**overrides: object) -> argparse.Namespace:
         "model": None,
         "output": "text",
         "agent": "default",
+        "auto_approve": False,
         "check_upgrade": False,
         "setup": False,
         "workdir": None,
@@ -37,7 +38,6 @@ def _make_args(**overrides: object) -> argparse.Namespace:
         "keep_alive": None,
         "worktree": False,
         "no_worktree": False,
-        "auto_approve": False,
     }
     base.update(overrides)
     return argparse.Namespace(**base)

@@ -805,6 +805,7 @@ vibe [PROMPT]                       # Start interactive session with optional pr
 vibe -p TEXT / --prompt TEXT         # Programmatic mode using `default_agent`, one-shot, exit
 vibe -p TEXT --auto-approve          # Programmatic mode with all tool calls approved
 vibe -p TEXT --keep-alive SECONDS    # Keep firing scheduled-loop turns for SECONDS before exiting (-p only)
+vibe -p TEXT --agent lean --auto-approve  # Lean mode with all tool calls approved
 vibe --agent NAME                   # Select agent profile (falls back to `default_agent` config)
 vibe --model ALIAS                  # Active model for this session (overrides `active_model`; also threaded into isolated subagents)
 vibe --auto-approve / --yolo         # Shortcut for `--agent auto-approve`
@@ -864,7 +865,8 @@ There are two kinds of agents:
 - **auto-approve**: Auto-approves all tool calls
 - **coordinator**: Orchestration-only lead (read/grep/glob + `task`/`launch_workflow`/`team`); cannot write files or run bash directly
 - **lean**: Specialized Lean 4 proof assistant. Not available by default — must be
-  installed with `/leanstall` (removed with `/unleanstall`)
+  installed with `/leanstall` (removed with `/unleanstall`). Use `--agent lean
+  --auto-approve` or `--agent lean --yolo` to run Lean mode without tool prompts.
 
 ### Plan Mode
 

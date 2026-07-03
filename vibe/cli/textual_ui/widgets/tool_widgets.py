@@ -275,7 +275,7 @@ class EditResultWidget(ToolResultWidget[EditResult]):
             )
         )
         self.border_row_colors = diff_border_colors(rows)
-        yield from self._yield_truncated_widgets(rows)
+        yield Vertical(*self._yield_truncated_widgets(rows), classes="diff-scroll")
         yield from self._footer()
 
 
