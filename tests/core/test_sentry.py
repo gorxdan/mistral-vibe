@@ -7,9 +7,9 @@ import pytest
 
 from tests.conftest import build_test_vibe_config
 from vibe.core import sentry
-from vibe.core.telemetry.types import EntrypointMetadata
+from vibe.core.telemetry.types import LaunchContext
 
-_METADATA = EntrypointMetadata(
+_METADATA = LaunchContext(
     agent_entrypoint="cli",
     agent_version="0.0.0",
     client_name="test",
@@ -24,7 +24,7 @@ def test_init_sentry_without_dsn_short_circuits_before_sdk_import(
     monkeypatch.delitem(sys.modules, "sentry_sdk", raising=False)
     config = build_test_vibe_config(enable_telemetry=True)
 
-    result = sentry.init_sentry(config, headless=True, entrypoint_metadata=_METADATA)
+    result = sentry.init_sentry(config, headless=True, launch_context=_METADATA)
 
     assert result is False
     assert "sentry_sdk" not in sys.modules
@@ -33,10 +33,7 @@ def test_init_sentry_without_dsn_short_circuits_before_sdk_import(
 def test_init_sentry_disabled_telemetry_returns_false() -> None:
     config = build_test_vibe_config(enable_telemetry=False)
 
-    assert (
-        sentry.init_sentry(config, headless=True, entrypoint_metadata=_METADATA)
-        is False
-    )
+    assert sentry.init_sentry(config, headless=True, launch_context=_METADATA) is False
 
 
 def test_capture_sentry_exception_without_dsn_does_not_import_sdk(

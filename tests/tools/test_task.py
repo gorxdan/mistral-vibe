@@ -14,7 +14,7 @@ from vibe.core.agents.models import (
     AgentType,
     profile_requires_isolation,
 )
-from vibe.core.telemetry.types import TerminalEmulator
+from vibe.core.telemetry.types import LaunchContext, TerminalEmulator
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError, ToolPermission
 from vibe.core.tools.builtins.task import Task, TaskArgs, TaskResult, TaskToolConfig
 from vibe.core.tools.permissions import PermissionContext
@@ -96,7 +96,13 @@ class TestTaskToolValidation:
         return InvokeContext(
             tool_call_id="test-call-id",
             agent_manager=manager,
-            terminal_emulator=TerminalEmulator.VSCODE,
+            launch_context=LaunchContext(
+                agent_entrypoint="cli",
+                agent_version="1.0.0",
+                client_name="vibe_cli",
+                client_version="1.0.0",
+                terminal_emulator=TerminalEmulator.VSCODE,
+            ),
         )
 
     @pytest.mark.asyncio
@@ -476,7 +482,13 @@ class TestTaskToolExecution:
         return InvokeContext(
             tool_call_id="test-call-id",
             agent_manager=manager,
-            terminal_emulator=TerminalEmulator.VSCODE,
+            launch_context=LaunchContext(
+                agent_entrypoint="cli",
+                agent_version="1.0.0",
+                client_name="vibe_cli",
+                client_version="1.0.0",
+                terminal_emulator=TerminalEmulator.VSCODE,
+            ),
         )
 
     @pytest.mark.asyncio
@@ -511,7 +523,7 @@ class TestTaskToolExecution:
             assert result.completed is True
             _params = mock_agent_loop_class.call_args.kwargs.get("params")
             assert _params is not None
-            assert _params.terminal_emulator is TerminalEmulator.VSCODE
+            assert _params.launch_context.terminal_emulator is TerminalEmulator.VSCODE
 
     @pytest.mark.asyncio
     async def test_handles_stopped_by_middleware(

@@ -14,7 +14,7 @@ from vibe.cli.textual_ui.widgets.banner.petit_chat import PetitChat
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.logger import logger
-from vibe.core.telemetry.types import EntrypointMetadata
+from vibe.core.telemetry.types import LaunchContext
 from vibe.setup.auth.api_key_persistence import persist_api_key
 from vibe.setup.auth.zai_callback import wait_for_zai_callback
 from vibe.setup.auth.zai_protocol_handler import (
@@ -60,7 +60,7 @@ class ZaiSignInScreen(OnboardingScreen):
         service_factory: SignInServiceFactory,
         *,
         copy_sign_in_url: CopySignInUrl,
-        entrypoint_metadata: EntrypointMetadata | None = None,
+        launch_context: LaunchContext | None = None,
         protocol_handler_installer: ProtocolHandlerInstaller | None = None,
         success_exit_delay: float = SUCCESS_EXIT_DELAY_SECONDS,
     ) -> None:
@@ -72,7 +72,7 @@ class ZaiSignInScreen(OnboardingScreen):
         self._protocol_handler_installer = (
             protocol_handler_installer or install_zai_protocol_handler
         )
-        self._entrypoint_metadata = entrypoint_metadata
+        self._entrypoint_metadata = launch_context
         self._success_exit_delay = success_exit_delay
         self._sign_in_url: str | None = None
         self._running = False
@@ -181,7 +181,7 @@ class ZaiSignInScreen(OnboardingScreen):
             return
 
         result = persist_api_key(
-            self.provider, api_key, entrypoint_metadata=self._entrypoint_metadata
+            self.provider, api_key, launch_context=self._entrypoint_metadata
         )
         if result != "completed":
             self._show_error("Signed in, but could not save the API key.")

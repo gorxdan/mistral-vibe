@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from vibe.core.hooks.models import HookConfigResult
     from vibe.core.loop import Scheduler
     from vibe.core.skills.manager import SkillManager
-    from vibe.core.telemetry.types import EntrypointMetadata, TerminalEmulator
+    from vibe.core.telemetry.types import LaunchContext, TerminalEmulator
     from vibe.core.tools.background import BackgroundRegistry
     from vibe.core.tools.mcp.pool import MCPSessionPool
     from vibe.core.tools.mcp_sampling import MCPSamplingHandler
@@ -60,7 +60,7 @@ class InvokeContext:
     user_input_callback: UserInputCallback | None = field(default=None)
     sampling_callback: MCPSamplingHandler | None = field(default=None)
     session_dir: Path | None = field(default=None)
-    entrypoint_metadata: EntrypointMetadata | None = field(default=None)
+    launch_context: LaunchContext | None = field(default=None)
     plan_file_path: Path | None = field(default=None)
     switch_agent_callback: SwitchAgentCallback | None = field(default=None)
     skill_manager: SkillManager | None = field(default=None)

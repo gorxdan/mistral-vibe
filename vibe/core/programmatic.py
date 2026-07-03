@@ -29,7 +29,7 @@ from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
 from vibe.core.output_formatters import OutputFormatter, create_formatter
 from vibe.core.schedule_driver import ScheduleDriver
 from vibe.core.teams import TeamManager
-from vibe.core.telemetry.build_metadata import build_entrypoint_metadata
+from vibe.core.telemetry.build_metadata import build_launch_context
 from vibe.core.telemetry.types import ClientMetadata
 from vibe.core.teleport.types import (
     TeleportPushRequiredEvent,
@@ -226,8 +226,7 @@ def _exit_if_orphaned_isolated_child() -> bool:
             os.kill(parent_pid, 0)
     except (ValueError, ProcessLookupError):
         logger.warning(
-            "Orphaned isolated spawn: parent pid %s is gone; exiting.",
-            parent_pid_str,
+            "Orphaned isolated spawn: parent pid %s is gone; exiting.", parent_pid_str
         )
         return True
     except OSError:
@@ -270,7 +269,7 @@ def run_programmatic(
             enable_streaming=False,
             headless=opts.headless,
             is_subagent=opts.allow_subagent,
-            entrypoint_metadata=build_entrypoint_metadata(
+            launch_context=build_launch_context(
                 agent_entrypoint="programmatic",
                 agent_version=__version__,
                 client_name=opts.client_metadata.name,

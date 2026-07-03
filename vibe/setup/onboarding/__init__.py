@@ -11,7 +11,7 @@ from textual.screen import Screen
 from vibe.cli.clipboard import try_copy_text_to_clipboard
 from vibe.core.config import DEFAULT_PROVIDERS, ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.paths import GLOBAL_ENV_FILE
-from vibe.core.telemetry.types import EntrypointMetadata
+from vibe.core.telemetry.types import LaunchContext
 from vibe.core.types import Backend
 from vibe.setup.auth import BrowserSignInService, HttpBrowserSignInGateway
 from vibe.setup.auth.openai_sign_in import OpenAISignInService
@@ -49,7 +49,7 @@ class OnboardingApp(App[str | None]):
         config: OnboardingContext | VibeConfig | None = None,
         browser_sign_in_service_factory: Callable[[], BrowserSignInService]
         | None = None,
-        entrypoint_metadata: EntrypointMetadata | None = None,
+        launch_context: LaunchContext | None = None,
         browser_sign_in_success_delay: float = SUCCESS_EXIT_DELAY_SECONDS,
         browser_sign_in_url_help_delay: float = SIGN_IN_URL_HELP_DELAY_SECONDS,
         copy_sign_in_url: CopySignInUrl | None = None,
@@ -68,7 +68,7 @@ class OnboardingApp(App[str | None]):
         self._config = config
         self._provider = config.provider
         self._vibe_base_url = config.vibe_base_url
-        self._entrypoint_metadata = entrypoint_metadata
+        self._launch_context = launch_context
         self._browser_sign_in_success_delay = browser_sign_in_success_delay
         self._browser_sign_in_url_help_delay = browser_sign_in_url_help_delay
         self._copy_sign_in_url = copy_sign_in_url or self._copy_sign_in_url_to_clipboard
@@ -121,7 +121,7 @@ class OnboardingApp(App[str | None]):
             ApiKeyScreen(
                 provider,
                 vibe_base_url=self._vibe_base_url,
-                entrypoint_metadata=self._entrypoint_metadata,
+                launch_context=self._launch_context,
                 help_url=help_url,
                 pending_model=pending_model,
             ),
@@ -158,7 +158,7 @@ class OnboardingApp(App[str | None]):
                 preset.model,
                 self._zai_sign_in_service_factory,
                 copy_sign_in_url=self._copy_sign_in_url,
-                entrypoint_metadata=self._entrypoint_metadata,
+                launch_context=self._launch_context,
                 protocol_handler_installer=self._zai_protocol_handler_installer,
                 success_exit_delay=self._browser_sign_in_success_delay,
             ),
@@ -212,7 +212,7 @@ class OnboardingApp(App[str | None]):
                     provider,
                     self._browser_sign_in_service_factory,
                     copy_sign_in_url=self._copy_sign_in_url,
-                    entrypoint_metadata=self._entrypoint_metadata,
+                    launch_context=self._launch_context,
                     success_exit_delay=self._browser_sign_in_success_delay,
                     sign_in_url_help_delay=self._browser_sign_in_url_help_delay,
                 ),
@@ -253,9 +253,9 @@ class OnboardingApp(App[str | None]):
 
 
 def run_onboarding(
-    app: App | None = None, *, entrypoint_metadata: EntrypointMetadata | None = None
+    app: App | None = None, *, launch_context: LaunchContext | None = None
 ) -> None:
-    result = (app or OnboardingApp(entrypoint_metadata=entrypoint_metadata)).run()
+    result = (app or OnboardingApp(launch_context=launch_context)).run()
     match result:
         case None:
             rprint("\n[yellow]Setup cancelled. See you next time![/]")

@@ -40,6 +40,18 @@ def _get_auto_compact_properties(
     return cast(dict[str, object], auto_compact[0]["properties"])
 
 
+def _get_compaction_failed_properties(
+    telemetry_events: list[dict[str, object]],
+) -> dict[str, object]:
+    failed = [
+        event
+        for event in telemetry_events
+        if event.get("event_name") == "vibe.compaction_failed"
+    ]
+    assert len(failed) == 1
+    return cast(dict[str, object], failed[0]["properties"])
+
+
 @pytest.mark.asyncio
 async def test_auto_compact_emits_correct_events(telemetry_events: list[dict]) -> None:
     backend = FakeBackend([
@@ -314,7 +326,9 @@ async def test_compact_without_extra_instructions_has_no_additional_section() ->
 
 
 @pytest.mark.asyncio
-async def test_compact_raises_on_tool_call_when_flag_enabled() -> None:
+async def test_compact_raises_on_tool_call_when_flag_enabled(
+    telemetry_events: list[dict],
+) -> None:
     """With the flag on, a compaction that returns a tool call raises."""
     backend = FakeBackend([
         [
@@ -341,10 +355,13 @@ async def test_compact_raises_on_tool_call_when_flag_enabled() -> None:
     with pytest.raises(CompactionFailedError) as exc_info:
         await agent.compact()
     assert exc_info.value.reason == "tool_call"
+    assert _get_compaction_failed_properties(telemetry_events)["reason"] == "tool_call"
 
 
 @pytest.mark.asyncio
-async def test_compact_raises_on_empty_summary_when_flag_enabled() -> None:
+async def test_compact_raises_on_empty_summary_when_flag_enabled(
+    telemetry_events: list[dict],
+) -> None:
     """With the flag on, a compaction with empty content raises."""
     backend = FakeBackend([[mock_llm_chunk(content="   ")]])
     cfg = build_test_vibe_config(
@@ -358,6 +375,9 @@ async def test_compact_raises_on_empty_summary_when_flag_enabled() -> None:
     with pytest.raises(CompactionFailedError) as exc_info:
         await agent.compact()
     assert exc_info.value.reason == "empty_summary"
+    assert (
+        _get_compaction_failed_properties(telemetry_events)["reason"] == "empty_summary"
+    )
 
 
 @pytest.mark.asyncio

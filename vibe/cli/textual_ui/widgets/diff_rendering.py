@@ -92,7 +92,7 @@ def _highlight_line(code: str, language: str, theme: type[HighlightTheme]) -> Co
 def _gutter_styles(prefix_char: str, *, ansi: bool) -> tuple[str, str]:
     if prefix_char == "-":
         if ansi:
-            return f"bold {_REMOVED_STYLE}", f"bold {_REMOVED_STYLE}"
+            return _REMOVED_STYLE, _REMOVED_STYLE
         return _REMOVED_STYLE, _DIM_MUTED_STYLE
     if prefix_char == "+":
         sign_style = _ADDED_STYLE

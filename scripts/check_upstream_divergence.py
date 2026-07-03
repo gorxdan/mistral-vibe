@@ -24,7 +24,7 @@ from pathlib import Path
 import subprocess
 
 # Last upstream sync point (mistralai/mistral-vibe). Bump on each upstream merge.
-_MERGE_BASE = "4e495f658dedbc701aa96920a2b2e5e2998e9bfa"
+_MERGE_BASE = "ac8f1a0"  # v2.18.4
 
 # Structural divergences we have consciously accepted. Path -> why it is tolerated.
 # Removing a path from here means "we expect it back at its upstream location";

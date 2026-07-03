@@ -136,8 +136,7 @@ def parse_arguments() -> argparse.Namespace:
         "for human-readable (default), 'json' for all messages at end, "
         "'streaming' for newline-delimited JSON per message.",
     )
-    agent_group = parser.add_mutually_exclusive_group()
-    agent_group.add_argument(
+    parser.add_argument(
         "--agent",
         metavar="NAME",
         default=None,
@@ -146,12 +145,11 @@ def parse_arguments() -> argparse.Namespace:
         "'default_agent' config setting in both interactive and programmatic "
         "(-p/--prompt) mode.",
     )
-    agent_group.add_argument(
+    parser.add_argument(
         "--auto-approve",
         "--yolo",
         action="store_true",
-        help="Shortcut for --agent auto-approve. Approves all tool calls without "
-        "prompting.",
+        help="Approves all tool calls without prompting for the selected agent.",
     )
     parser.add_argument(
         "--model",

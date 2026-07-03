@@ -3656,7 +3656,7 @@ class VibeApp(App):
             agent_manager=loop.agent_manager,
             active_model=loop.effective_model().alias,
             session_dir=loop.session_logger.session_dir,
-            entrypoint_metadata=loop.entrypoint_metadata,
+            launch_context=loop.launch_context,
             approval_callback=loop.approval_callback,
             sampling_callback=loop._sampling_handler,
             skill_manager=loop.skill_manager,

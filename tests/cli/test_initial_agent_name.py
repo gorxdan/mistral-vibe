@@ -70,3 +70,10 @@ def test_auto_approve_flag_keeps_agent_and_bypasses_permissions() -> None:
     assert get_initial_agent_name(args, config) == BuiltinAgentName.PLAN
     _apply_cli_overrides(args, config)
     assert config.bypass_tool_permissions is True
+
+
+def test_auto_approve_flag_keeps_explicit_agent_arg() -> None:
+    config = VibeConfig.model_construct(default_agent=BuiltinAgentName.PLAN)
+    args = _make_args(agent="lean", prompt="hello", auto_approve=True)
+
+    assert get_initial_agent_name(args, config) == BuiltinAgentName.LEAN
