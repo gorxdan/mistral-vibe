@@ -8,7 +8,7 @@ import pytest
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
-from vibe.core.agent_loop import _loop as agent_loop_module
+from vibe.core import agent_loop as agent_loop_module
 from vibe.core.baseline_scaling import BaselineTier
 
 

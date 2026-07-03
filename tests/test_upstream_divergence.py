@@ -26,16 +26,9 @@ def test_no_new_structural_divergence() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Un-split pending: vibe/core/agent_loop.py is a package. Restoring it to a "
-        "single file at the upstream path makes upstream's edits 3-way merge again. "
-        "When this XPASSes, un-split has landed — remove this xfail and drop "
-        "agent_loop.py from _ACCEPTED_DIVERGENCE."
-    ),
-)
 def test_agent_loop_is_single_file_matching_upstream() -> None:
+    # Un-split landed: agent_loop.py is a single file at upstream's path (not a
+    # package), so upstream's edits to it 3-way merge instead of modify/delete.
     root = guard.repo_root()
     assert (root / "vibe/core/agent_loop.py").is_file()
     assert not (root / "vibe/core/agent_loop").is_dir()

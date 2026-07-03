@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from vibe.core.agent_loop._init_guard import requires_init
+from vibe.core.agent_loop import requires_init
 
 
 class _FakeLoop:

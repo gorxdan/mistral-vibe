@@ -245,8 +245,7 @@ ignore = ["D203", "D205", "D213", "ANN401", "PLR6301"]
 # than refactored (hot paths, high-risk to restructure). Refactor candidates.
 "vibe/cli/cli.py" = ["PLR0915"]
 "vibe/cli/textual_ui/app.py" = ["PLR0904"]
-"vibe/core/agent_loop/_loop.py" = ["PLR0904", "PLR0912", "PLR0914", "PLR0915"]
-"vibe/core/agent_loop/session_mixin.py" = ["PLR0914"]
+"vibe/core/agent_loop.py" = ["PLR0904", "PLR0912", "PLR0914", "PLR0915"]
 "vibe/core/config/_settings.py" = ["PLR0904"]
 "vibe/core/workflows/runtime.py" = ["PLR0912", "PLR0914", "PLR0915", "PLR1702"]
 

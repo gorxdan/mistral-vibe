@@ -31,12 +31,6 @@ _MERGE_BASE = "4e495f658dedbc701aa96920a2b2e5e2998e9bfa"
 # the guard then fails until it is restored. agent_loop.py is the active target of
 # the un-split work (restores 3-way merge on upstream's 2nd-most-churned file).
 _ACCEPTED_DIVERGENCE: dict[str, str] = {
-    "vibe/core/agent_loop.py": (
-        "UN-SPLIT TARGET: split into the vibe/core/agent_loop/ package; upstream "
-        "still ships one file and churns it heavily (37 commits), so every upstream "
-        "edit hits a modify/delete conflict. Restore this file, then delete this "
-        "entry and drop the xfail on test_agent_loop_is_single_file."
-    ),
     "vibe/core/llm/backend/base.py": (
         "Renamed to adapter_port.py. Low upstream churn (3 commits); revert candidate."
     ),
