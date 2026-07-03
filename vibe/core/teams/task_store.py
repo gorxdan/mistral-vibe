@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+import contextlib
 from pathlib import Path
 import time
 
-from filelock import FileLock
+from filelock import FileLock, Timeout
 import orjson
 
 from vibe.core.logger import logger
+from vibe.core.teams.errors import TeamStorageBusyError
 from vibe.core.teams.models import Task, TaskStatus
 from vibe.core.utils.io import read_safe, write_safe
 
@@ -19,8 +22,14 @@ class TaskStore:
         self._tasks: dict[str, Task] = {}
         self._load()
 
-    def _lock(self) -> FileLock:
-        return FileLock(str(self._lock_file), timeout=5)
+    @contextlib.contextmanager
+    def _locked(self) -> Iterator[None]:
+        lock = FileLock(str(self._lock_file), timeout=5)
+        try:
+            with lock:
+                yield
+        except Timeout as e:
+            raise TeamStorageBusyError(str(self._lock_file)) from e
 
     def _read_tasks(self) -> dict[str, Task]:
         """Read tasks from disk. Caller must already hold ``_lock``."""
@@ -43,11 +52,11 @@ class TaskStore:
         )
 
     def _load(self) -> None:
-        with self._lock():
+        with self._locked():
             self._tasks = self._read_tasks()
 
     def _save(self) -> None:
-        with self._lock():
+        with self._locked():
             self._write_tasks(self._tasks)
 
     def add_task(
@@ -57,7 +66,7 @@ class TaskStore:
         dependencies: list[str] | None = None,
         task_id: str | None = None,
     ) -> Task:
-        with self._lock():
+        with self._locked():
             tasks = self._read_tasks()
             task_id = task_id or f"task-{len(tasks) + 1}"
             task = Task(
@@ -74,7 +83,7 @@ class TaskStore:
     def claim_task(self, task_id: str, assignee: str) -> Task | None:
         # Atomic read-modify-write: re-read tasks.json under the lock so two
         # processes cannot both observe PENDING and claim the same task.
-        with self._lock():
+        with self._locked():
             tasks = self._read_tasks()
             task = tasks.get(task_id)
             if task is None:
@@ -92,7 +101,7 @@ class TaskStore:
     def complete_task(
         self, task_id: str, result: str | None = None, *, actor: str | None = None
     ) -> Task | None:
-        with self._lock():
+        with self._locked():
             tasks = self._read_tasks()
             task = tasks.get(task_id)
             if task is None:
