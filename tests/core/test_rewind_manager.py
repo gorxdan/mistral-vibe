@@ -92,6 +92,57 @@ class TestCheckpoints:
         matches = [s for s in mgr.checkpoints[0].files if s.path == resolved]
         assert len(matches) == 1
 
+    def test_unchanged_file_shares_one_buffer_across_checkpoints(
+        self, tmp_path: Path
+    ) -> None:
+        # Unedited file across many turns must retain one buffer, not one/turn.
+        messages = _make_messages("hello")
+        mgr, _, _ = _make_manager(messages)
+        f = tmp_path / "big.bin"
+        f.write_bytes(b"A" * 4096)
+
+        mgr.create_checkpoint()
+        mgr.add_snapshot(_snap(f))
+        for _ in range(20):  # 20 more turns, file never touched again
+            mgr.create_checkpoint()
+
+        buffers = {
+            id(s.content)
+            for cp in mgr.checkpoints
+            for s in cp.files
+            if s.content is not None
+        }
+        values = {
+            bytes(s.content)
+            for cp in mgr.checkpoints
+            for s in cp.files
+            if s.content is not None
+        }
+        assert len(values) == 1
+        assert len(buffers) == len(values)
+
+    def test_distinct_versions_are_each_retained(self, tmp_path: Path) -> None:
+        # Dedup must not over-share: a genuinely changed file keeps each version.
+        messages = _make_messages("hello")
+        mgr, _, _ = _make_manager(messages)
+        f = tmp_path / "f.bin"
+
+        versions = [b"v1" * 100, b"v2" * 100, b"v3" * 100]
+        f.write_bytes(versions[0])
+        mgr.create_checkpoint()
+        mgr.add_snapshot(_snap(f))
+        for v in versions[1:]:
+            f.write_bytes(v)
+            mgr.create_checkpoint()
+
+        seen = {
+            bytes(s.content)
+            for cp in mgr.checkpoints
+            for s in cp.files
+            if s.content is not None
+        }
+        assert seen == set(versions)
+
     def test_has_changes_detects_new_file(self, tmp_path: Path) -> None:
         messages = _make_messages("hello")
         mgr, _, _ = _make_manager(messages)

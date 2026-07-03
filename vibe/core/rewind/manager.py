@@ -62,7 +62,10 @@ class RewindManager:
         files: list[FileSnapshot] = []
         if self._checkpoints:
             for snap in self._checkpoints[-1].files:
-                files.append(self._read_snapshot(snap.path))
+                fresh = self._read_snapshot(snap.path)
+                # Reuse the prior buffer when byte-identical: a file unedited
+                # across N turns keeps one copy, not N (RAM tracked turn count).
+                files.append(snap if fresh.content == snap.content else fresh)
         self._checkpoints.append(
             Checkpoint(message_index=len(self._messages), files=files)
         )
