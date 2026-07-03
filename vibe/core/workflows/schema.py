@@ -153,7 +153,11 @@ def build_response_format(schema: dict) -> dict:
 
 def build_prompt_fallback(schema: dict) -> str:
     return (
-        "\n\nYou MUST respond with a single valid JSON object matching this schema:\n"
+        "\n\nYour final response must be a single valid JSON object matching this "
+        "schema:\n"
         f"{orjson.dumps(schema, option=orjson.OPT_INDENT_2).decode('utf-8')}\n"
-        "Respond with ONLY the JSON object, no markdown fences, no explanation."
+        "Ground every field in what your tools actually returned this turn — call "
+        "read/grep/lsp to resolve real symbols and facts rather than answering from "
+        "memory. When your investigation is complete, emit ONLY the JSON object, no "
+        "markdown fences, no surrounding prose."
     )
