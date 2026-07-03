@@ -27,6 +27,7 @@ from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
 from vibe.cli.clipboard import copy_text_to_clipboard
+from vibe.cli.textual_ui.widgets.navigable_option_list import NavigableOptionList
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.core.logger import logger
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory, TaskEntry
@@ -426,7 +427,7 @@ class TasksApp(Container):
             )
             return
         options = [Option(_build_row_text(e), id=e.task_id) for e in entries]
-        option_list = OptionList(*options, id="tasks-list")
+        option_list = NavigableOptionList(*options, id="tasks-list")
         await body.mount(option_list)
         option_list.focus()
 
@@ -463,7 +464,7 @@ class TasksApp(Container):
                 options = [
                     Option(_agent_row_text(a), id=f"agent:{a.key}") for a in agents
                 ]
-                await scroll.mount(OptionList(*options, id="tasks-agent-list"))
+                await scroll.mount(NavigableOptionList(*options, id="tasks-agent-list"))
 
     def _refresh_detail_view(self) -> None:
         if self._view != "detail":
@@ -498,7 +499,7 @@ class TasksApp(Container):
             options = [Option(_agent_row_text(a), id=f"agent:{a.key}") for a in agents]
             if agent_list is None:
                 self.query_one("#tasks-detail", VerticalScroll).mount(
-                    OptionList(*options, id="tasks-agent-list")
+                    NavigableOptionList(*options, id="tasks-agent-list")
                 )
             else:
                 highlighted = agent_list.highlighted

@@ -32,6 +32,8 @@ import dataclasses
 import os
 from typing import TYPE_CHECKING
 
+from vibe.core.utils.io import write_safe
+
 if TYPE_CHECKING:
     from pyinstrument import Profiler
 
@@ -106,10 +108,10 @@ def stop_and_print() -> None:
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
         output_path = out_dir / f"{_state.label}-profile.html"
-        output_path.write_text(_state.profiler.output_html(), encoding="utf-8")
+        write_safe(output_path, _state.profiler.output_html())
 
         text_path = out_dir / f"{_state.label}-profile.txt"
-        text_path.write_text(_state.profiler.output_text(color=False), encoding="utf-8")
+        write_safe(text_path, _state.profiler.output_text(color=False))
     except OSError as exc:
         print(
             f"\n[profiler:{_state.label}] could not write reports under {out_dir}: {exc}",

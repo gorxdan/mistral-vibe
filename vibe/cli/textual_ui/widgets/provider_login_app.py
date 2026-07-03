@@ -18,6 +18,7 @@ from textual.widgets.option_list import Option
 from textual.worker import Worker
 
 from vibe.cli.clipboard import copy_text_to_clipboard
+from vibe.cli.textual_ui.widgets.navigable_option_list import NavigableOptionList
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.cli.textual_ui.widgets.vscode_compat import VscodeCompatInput
 from vibe.core.auth.openai_oauth import OpenAIOAuthError
@@ -183,7 +184,7 @@ class ProviderLoginApp(Container):
                 "Provider Login", classes="settings-title"
             )
             yield self._title_widget
-            self._options_widget = OptionList(id="providerlogin-options")
+            self._options_widget = NavigableOptionList(id="providerlogin-options")
             yield self._options_widget
             self._detail_widget = NoMarkupStatic("", id="providerlogin-detail")
             yield self._detail_widget
