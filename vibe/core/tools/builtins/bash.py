@@ -16,6 +16,7 @@ import tree_sitter_bash as tsbash
 
 from vibe.core.config import SandboxConfig
 from vibe.core.logger import logger
+from vibe.core.paths import VIBE_HOME
 from vibe.core.scratchpad import is_scratchpad_path
 from vibe.core.tools.arity import build_session_pattern
 from vibe.core.tools.base import (
@@ -69,6 +70,15 @@ def _close_fd_quietly(fd: int | None) -> None:
         os.close(fd)
     except OSError:
         pass
+
+
+def _sandbox_toolchain_cache_root() -> Path:
+    # Writable, persistent (stays warm), private (host ~/.cache is read-only in
+    # the sandbox; a sandboxed agent must not poison the user's real caches).
+    root = VIBE_HOME.path / "sandbox-cache"
+    (root / "uv").mkdir(parents=True, exist_ok=True)
+    (root / "pre-commit").mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def _build_sandbox_env(config: SandboxConfig, *, host_session: bool) -> dict[str, str]:
@@ -752,6 +762,12 @@ class Bash(
             for d in _collect_outside_dirs(_extract_commands(command)):
                 write_roots.append(Path(d))
             env = _build_sandbox_env(sb, host_session=True)
+            # Host session only (isolated subagents stay worktree-strict): let
+            # `git commit`'s pre-commit/uv gates write their cache.
+            cache_root = _sandbox_toolchain_cache_root()
+            write_roots.append(cache_root)
+            env["UV_CACHE_DIR"] = str(cache_root / "uv")
+            env["PRE_COMMIT_HOME"] = str(cache_root / "pre-commit")
 
         if ctx is not None and ctx.scratchpad_dir is not None:
             write_roots.append(Path(ctx.scratchpad_dir))

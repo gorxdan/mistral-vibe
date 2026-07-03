@@ -481,6 +481,54 @@ def test_resolve_sandbox_isolated_no_outside_widening(tmp_path, monkeypatch) -> 
             os.close(fd)
 
 
+def test_resolve_sandbox_host_redirects_toolchain_cache(monkeypatch) -> None:
+    # Host session: pre-commit/uv caches redirect to a writable private root
+    # (bound writable) so `git commit` gates run instead of hitting RO ~/.cache.
+    import os
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+    )
+    bash = _bash(SandboxConfig(enabled=True))
+    argv, _profile, env, fd = bash._resolve_sandbox(None, "git commit -m x")
+    try:
+        assert argv is not None
+        uv_cache = env["UV_CACHE_DIR"]
+        pc_home = env["PRE_COMMIT_HOME"]
+        assert uv_cache.endswith("sandbox-cache/uv")
+        assert pc_home.endswith("sandbox-cache/pre-commit")
+        cache_root = str(Path(uv_cache).parent.resolve())
+        assert cache_root in argv  # the cache root is bound writable
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def test_resolve_sandbox_isolated_does_not_redirect_cache(
+    tmp_path, monkeypatch
+) -> None:
+    # Isolated subagents stay worktree-strict: no cache write root out of tree.
+    import os
+
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+    )
+    bash = _bash(SandboxConfig(enabled=True))
+    argv, _profile, env, fd = bash._resolve_sandbox(None, "git commit -m x")
+    try:
+        assert argv is not None
+        assert "UV_CACHE_DIR" not in env
+        assert "PRE_COMMIT_HOME" not in env
+        assert "sandbox-cache" not in " ".join(argv)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def test_scrub_env_drops_secrets_keeps_allowlist() -> None:
     base = {
         "PATH": "/bin",
