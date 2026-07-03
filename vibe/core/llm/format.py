@@ -12,6 +12,7 @@ from vibe.core.llm.models import (
     ResolvedMessage,
     ResolvedToolCall,
 )
+from vibe.core.logger import logger
 from vibe.core.types import (
     AvailableFunction,
     AvailableTool,
@@ -64,6 +65,16 @@ class APIToolFormatHandler:
                         parameters=tool_class.get_parameters(),
                     )
                 )
+            )
+        # debug-only: scope namespace-grouping necessity by manifest size.
+        if logger.isEnabledFor(10):  # DEBUG
+            hidden = len(tool_manager.hidden_tool_names())
+            logger.debug(
+                "manifest_tools size=%s hidden=%s has_remote=%s",
+                len(tools),
+                hidden,
+                hidden > 0
+                or any(t.function.name.startswith(("mcp", "conn")) for t in tools),
             )
         return tools
 

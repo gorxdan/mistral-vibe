@@ -333,6 +333,9 @@ class ToolManager:
             for name, cls in available.items()
             if self._is_dynamic_remote_tool(cls) or name in deferrable
         ]
+        # debug-only: scope difflib-vs-BM25 necessity by candidate count.
+        if logger.isEnabledFor(10):  # DEBUG
+            logger.debug("tool_search candidates=%s query=%s", len(candidates), query)
         limit = max_results or self._config.tool_manifest.dynamic_search_results
         terms = [term for term in query.lower().split() if term]
         scored: list[tuple[float, str, type[BaseTool]]] = []
