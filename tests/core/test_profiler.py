@@ -81,6 +81,17 @@ def test_start_survives_stale_async_context(
     assert (LOG_DIR.path / "turn-child-0-profile.html").exists()
 
 
+def test_interval_env_knob(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VIBE_PROFILE_INTERVAL", raising=False)
+    assert profiler.interval() is None
+    monkeypatch.setenv("VIBE_PROFILE_INTERVAL", "0.005")
+    assert profiler.interval() == 0.005
+    monkeypatch.setenv("VIBE_PROFILE_INTERVAL", "junk")
+    assert profiler.interval() is None
+    monkeypatch.setenv("VIBE_PROFILE_INTERVAL", "0")
+    assert profiler.interval() == 0.0001  # clamped floor, never a 0s busy-loop
+
+
 def test_stop_and_print_fail_soft_when_log_dir_unwritable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

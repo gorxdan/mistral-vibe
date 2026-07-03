@@ -4,7 +4,9 @@ Wraps pyinstrument (dev-only dependency). Silently no-ops when not installed or
 when ``VIBE_PROFILE`` is unset, so production paths are untouched.
 
 Activated by ``VIBE_PROFILE=1``. Optionally cap how many turns are recorded with
-``VIBE_PROFILE_TURNS=N`` (default 1) to avoid a file per turn on long sessions.
+``VIBE_PROFILE_TURNS=N`` (default 1) to avoid a file per turn on long sessions, and
+coarsen the sample rate with ``VIBE_PROFILE_INTERVAL=<seconds>`` (e.g. 0.005) to keep
+reports small on long, mostly-idle turns.
 
 Usage::
 
@@ -63,6 +65,22 @@ def turn_limit() -> int:
         return 1
 
 
+def interval() -> float | None:
+    """Sampling interval in seconds (``VIBE_PROFILE_INTERVAL``); None = pyinstrument default.
+
+    Coarsen it (e.g. 0.005) to shrink profiles of long, mostly-idle turns:
+    async_mode="disabled" samples wall-clock continuously, including await idle,
+    so a multi-minute turn can emit a huge report at the 1ms default.
+    """
+    raw = os.environ.get("VIBE_PROFILE_INTERVAL")
+    if raw is None:
+        return None
+    try:
+        return max(0.0001, float(raw))
+    except ValueError:
+        return None
+
+
 def start(label: str = "default") -> bool:
     """Start profiling. The label names the output file.
 
@@ -87,7 +105,12 @@ def start(label: str = "default") -> bool:
 
     # async_mode="disabled": the default mode's per-async-context ContextVar leaks
     # past our _state guard and crashed profiled workflow agents (see git blame).
-    prof = Profiler(async_mode="disabled")
+    iv = interval()
+    prof = (
+        Profiler(async_mode="disabled", interval=iv)
+        if iv is not None
+        else Profiler(async_mode="disabled")
+    )
     try:
         prof.start()
     except RuntimeError:
