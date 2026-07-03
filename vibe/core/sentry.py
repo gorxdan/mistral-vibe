@@ -5,6 +5,7 @@ from typing import Any
 
 from vibe import __version__
 from vibe.core.config import VibeConfig
+from vibe.core.logger import logger
 from vibe.core.telemetry.types import EntrypointMetadata
 
 # Injected at build time
@@ -54,15 +55,22 @@ def capture_sentry_exception(
     tags: dict[str, str] | None = None,
     extras: dict[str, Any] | None = None,
 ) -> None:
-    import sentry_sdk
-
-    if not sentry_sdk.is_initialized():
+    # Crash handler must never crash: skip when Sentry is inert (no DSN), and
+    # guard the release path so a broken sentry_sdk can't mask the real error.
+    if _SENTRY_DSN is None:
         return
+    try:
+        import sentry_sdk
 
-    with sentry_sdk.new_scope() as scope:
-        scope.set_tag("fatal", "true" if fatal else "false")
-        for key, value in (tags or {}).items():
-            scope.set_tag(key, value)
-        for key, value in (extras or {}).items():
-            scope.set_extra(key, value)
-        scope.capture_exception(error)
+        if not sentry_sdk.is_initialized():
+            return
+
+        with sentry_sdk.new_scope() as scope:
+            scope.set_tag("fatal", "true" if fatal else "false")
+            for key, value in (tags or {}).items():
+                scope.set_tag(key, value)
+            for key, value in (extras or {}).items():
+                scope.set_extra(key, value)
+            scope.capture_exception(error)
+    except Exception:
+        logger.debug("sentry exception capture failed", exc_info=True)
