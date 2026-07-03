@@ -4,17 +4,27 @@
 # `git config core.hooksPath .githooks`, so the automation is version-controlled
 # and shared across clones (each clone must set core.hooksPath once).
 #
-# Why post-commit: the user asked for the manual `uv tool install --force` step
-# to fire automatically on every commit.
+# DEBOUNCED (trailing edge): a burst of commits coalesces into ONE reinstall that
+# fires only after VIBE_REINSTALL_COOLDOWN seconds of commit quiet. Each commit
+# writes a unique stamp; a waiter reinstalls only if the stamp still matches its
+# own after the sleep — so every commit but the last one in a burst exits cheaply.
+# Why: `uv tool install --force` rewrites the shared tool venv non-atomically, so
+# a `vibe` launched *during* it hits a half-installed env (missing modules). By
+# deferring to a quiet period, a launch right after a commit hits the stable
+# existing install instead of racing a mid-flight reinstall.
 #
 # Guards (this repo has multiple agents committing concurrently):
-#   - detached: the slow `uv tool install --force` runs in a background session
-#     (setsid), so the commit returns immediately and never blocks the agent.
-#   - flock-serialized, non-blocking: the tool venv is shared; if a reinstall is
-#     already in flight this run skips (the in-flight one covers the tree).
-#   - source-guarded: only reinstalls when `mistral-vibe` is installed FROM this repo
-#     (per the uv receipt); a PyPI install or different fork is never clobbered.
+#   - detached: the slow work runs in a background session (setsid), so the
+#     commit returns immediately and never blocks the agent.
+#   - debounced + flock-serialized, non-blocking: only the newest commit's
+#     deferred reinstall survives; if one is already installing, this run skips.
+#   - source-guarded: only reinstalls when `mistral-vibe` is installed FROM this
+#     repo (per the uv receipt); a PyPI install or different fork is never clobbered.
 #   - non-fatal: failures are logged to the cache file; git ignores the exit code.
+#
+# Env knobs: VIBE_REINSTALL_COOLDOWN (seconds, default 90);
+# VIBE_REINSTALL_CMD (install command, default `uv tool install --force`; set to
+# `true` to disable reinstalls, or a wrapper for testing).
 
 set -uo pipefail
 
@@ -26,19 +36,29 @@ export VIBE_REINSTALL_LOCK="$LOCK_DIR/reinstall.lock"
 export VIBE_REINSTALL_LOG="$LOCK_DIR/reinstall.log"
 export VIBE_REINSTALL_REPO="$REPO_ROOT"
 export VIBE_REINSTALL_RECEIPT="${HOME}/.local/share/uv/tools/mistral-vibe/uv-receipt.toml"
+export VIBE_REINSTALL_STAMP="$LOCK_DIR/last_commit"
+export VIBE_REINSTALL_CMD="${VIBE_REINSTALL_CMD:-uv tool install --force}"
+COOLDOWN="${VIBE_REINSTALL_COOLDOWN:-90}"
+
+# Unique per commit; written synchronously here so the newest value always wins.
+NOW="$(date +%s%N)-$$"
+echo "$NOW" > "$VIBE_REINSTALL_STAMP"
 
 setsid bash -c '
+    sleep "$1" || exit 0
+    # Trailing edge: bail unless this is still the newest commit in the burst.
+    [[ "$(cat "$VIBE_REINSTALL_STAMP" 2>/dev/null)" == "$0" ]] || exit 0
     exec 9>"$VIBE_REINSTALL_LOCK"
     flock -n 9 || exit 0
     [[ -f "$VIBE_REINSTALL_RECEIPT" ]] || exit 0
     grep -q "directory = \"$VIBE_REINSTALL_REPO\"" "$VIBE_REINSTALL_RECEIPT" 2>/dev/null || exit 0
-    if uv tool install --force "$VIBE_REINSTALL_REPO" >>"$VIBE_REINSTALL_LOG" 2>&1; then
+    if $VIBE_REINSTALL_CMD "$VIBE_REINSTALL_REPO" >>"$VIBE_REINSTALL_LOG" 2>&1; then
         echo "[post-commit] mistral-vibe reinstalled to latest" >>"$VIBE_REINSTALL_LOG"
     else
         echo "[post-commit] mistral-vibe reinstall failed" >>"$VIBE_REINSTALL_LOG"
     fi
-' </dev/null >/dev/null 2>&1 &
+' "$NOW" "$COOLDOWN" </dev/null >/dev/null 2>&1 &
 disown 2>/dev/null || true
 
-echo "[post-commit] mistral-vibe reinstall started in background" >&2
+echo "[post-commit] mistral-vibe reinstall scheduled (debounced ${COOLDOWN}s)" >&2
 exit 0
