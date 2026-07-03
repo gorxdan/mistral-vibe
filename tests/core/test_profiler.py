@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 import time
@@ -50,6 +51,34 @@ def test_nested_section_keeps_outer_profile_running(
     assert profiler._state.profiler is None
     assert (LOG_DIR.path / "outer-profile.html").exists()
     assert not (LOG_DIR.path / "inner-profile.html").exists()
+
+
+def test_start_survives_stale_async_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_working_directory: Path
+) -> None:
+    pytest.importorskip("pyinstrument")
+    monkeypatch.setenv("VIBE_PROFILE", "1")
+
+    async def scenario() -> None:
+        host_stopped = asyncio.Event()
+
+        async def child() -> None:
+            await host_stopped.wait()
+            assert profiler._state.profiler is None
+            with profiler.section("turn-child-0", turn=0):
+                _burn()
+
+        with profiler.section("turn-host-0", turn=0):
+            # child snapshots the active-profiler context; parent then stops
+            task = asyncio.create_task(child())
+            await asyncio.sleep(0)
+        host_stopped.set()
+        await task
+
+    asyncio.run(scenario())
+
+    assert profiler._state.profiler is None
+    assert (LOG_DIR.path / "turn-child-0-profile.html").exists()
 
 
 def test_stop_and_print_fail_soft_when_log_dir_unwritable(

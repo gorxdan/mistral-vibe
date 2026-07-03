@@ -85,9 +85,15 @@ def start(label: str = "default") -> bool:
         )
         return False
 
+    # async_mode="disabled": the default mode's per-async-context ContextVar leaks
+    # past our _state guard and crashed profiled workflow agents (see git blame).
+    prof = Profiler(async_mode="disabled")
+    try:
+        prof.start()
+    except RuntimeError:
+        return False  # dev-only profiling must never crash what it observes
     _state.label = label
-    _state.profiler = Profiler()
-    _state.profiler.start()
+    _state.profiler = prof
     return True
 
 
