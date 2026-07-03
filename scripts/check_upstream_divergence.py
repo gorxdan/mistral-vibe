@@ -69,6 +69,21 @@ def baseline_available(root: Path | None = None) -> bool:
     return True
 
 
+def upstream_unsynced_count(root: Path | None = None) -> int | None:
+    """Commits in the upstream ref not yet in HEAD — a stale-baseline signal.
+
+    None when the upstream ref is unavailable (not fetched). After syncing
+    upstream, bump ``_MERGE_BASE`` so the divergence diff tracks the new point.
+    """
+    root = root or repo_root()
+    ref = os.environ.get("VIBE_UPSTREAM_REF", "upstream/main")
+    try:
+        out = _git(["rev-list", "--count", f"HEAD..{ref}"], root)
+    except subprocess.CalledProcessError:
+        return None
+    return int(out.strip() or "0")
+
+
 def deleted_upstream_files(root: Path | None = None) -> list[str]:
     """Files under vibe/ that existed at the baseline but not at HEAD's original
     path — i.e. our structural deletions/renames/splits relative to upstream.
@@ -123,6 +138,12 @@ def main() -> int:
     report = build_report(root)
     for f in report.accepted:
         print(f"accepted divergence: {f}")
+    unsynced = upstream_unsynced_count(root)
+    if unsynced:
+        print(
+            f"\nNOTE: {unsynced} upstream commit(s) not in HEAD — the divergence "
+            "baseline (_MERGE_BASE) is stale. Sync upstream, then bump _MERGE_BASE."
+        )
     if report.unexpected:
         print("\nNEW structural divergence (upstream ships these; HEAD deleted them):")
         for f in report.unexpected:

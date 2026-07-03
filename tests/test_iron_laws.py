@@ -100,3 +100,39 @@ def test_prod_pyright_ignore_ratchet() -> None:
         "prod `# pyright: ignore` is banned (AGENTS.md: fix at source); "
         "found:\n" + "\n".join(hits)
     )
+
+
+# Ceilings = current violations on UPSTREAM-owned files (fixing adds divergence).
+# A NEW violation lands on fork code, exceeds the ceiling, and fails.
+_BARE_OPTIONLIST_CEILING = 2  # mcp_oauth_app.py, connector_auth_app.py (upstream)
+_BARE_CI_MAJOR_PIN_CEILING = 1  # release.yml download-artifact (upstream)
+
+
+def test_navigable_option_list_ratchet() -> None:
+    pattern = re.compile(r"(?<![A-Za-z])OptionList\(")
+    hits = [
+        f"{p.relative_to(VIBE_PKG.parent)}:{i}"
+        for p in _prod_files()
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        if pattern.search(line)
+    ]
+    assert len(hits) <= _BARE_OPTIONLIST_CEILING, (
+        "New bare OptionList(...): selectable lists must use NavigableOptionList "
+        f"(AGENTS.md Widgets). Ceiling {_BARE_OPTIONLIST_CEILING} is the accepted "
+        f"upstream-owned set: {hits}"
+    )
+
+
+def test_ci_action_pins_exact_version_ratchet() -> None:
+    workflows = TESTS_ROOT.parent / ".github" / "workflows"
+    pattern = re.compile(r"uses:.*@[0-9a-f]{40} # v[0-9]+\s*$")
+    hits = [
+        f"{p.name}:{i}"
+        for p in sorted(workflows.glob("*.yml"))
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        if pattern.search(line)
+    ]
+    assert len(hits) <= _BARE_CI_MAJOR_PIN_CEILING, (
+        "New bare-major action pin comment: use exact # vX.Y.Z (AGENTS.md CI). "
+        f"Ceiling {_BARE_CI_MAJOR_PIN_CEILING} is the upstream-owned set: {hits}"
+    )
