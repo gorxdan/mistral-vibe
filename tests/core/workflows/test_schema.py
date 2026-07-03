@@ -129,6 +129,9 @@ def test_build_prompt_fallback() -> None:
     assert "JSON" in fb
     assert "refuted" in fb
     assert "no markdown fences" in fb
+    # regression guard: schema fallback must steer tool use, not suppress it
+    assert "read/grep/lsp" in fb
+    assert "from memory" in fb
 
 
 def test_schema_validation_error_is_exception() -> None:
