@@ -25,14 +25,14 @@ from vibe.core.agent_loop._errors import (
     TeleportError,
 )
 from vibe.core.agent_loop._init_guard import requires_init
-from vibe.core.agent_loop._limits import (
+from vibe.core.agent_loop.session_mixin import AgentLoopSessionMixin
+from vibe.core.agent_loop_limits import (
     AGGREGATE_TOOL_RESULT_CHARS,
     MAX_CONCURRENT_SUBAGENTS,
     MAX_TOOL_RESULT_CHARS,
     TOOL_RESULT_PREVIEW_CHARS,
     tool_result_hard_cap,
 )
-from vibe.core.agent_loop.session_mixin import AgentLoopSessionMixin
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
 from vibe.core.baseline_scaling import BaselineTier, baseline_tier_for
@@ -197,7 +197,7 @@ if TYPE_CHECKING:
     from vibe.core.tools.connectors import ConnectorRegistry
     from vibe.core.tools.mcp import MCPRegistry
     from vibe.core.tools.safety_judge import JudgeVerdict
-from vibe.core.agent_loop._models import ToolDecision, ToolExecutionResponse
+from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)

@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from vibe.core.agent_loop._models import ToolDecision, ToolExecutionResponse
+from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
 from vibe.core.agent_loop_safety_judge import AgentLoopSafetyJudgeMixin
 from vibe.core.tools.base import ToolPermission
 from vibe.core.tools.permissions import PermissionContext, RequiredPermission

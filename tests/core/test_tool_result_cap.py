@@ -5,7 +5,7 @@ from tests.conftest import (
     build_test_vibe_config,
     make_test_models,
 )
-from vibe.core.agent_loop._limits import (
+from vibe.core.agent_loop_limits import (
     MAX_TOOL_RESULT_CHARS,
     TOOL_RESULT_CHARS_PER_TOKEN,
     TOOL_RESULT_WINDOW_FRACTION,

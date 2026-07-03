@@ -30,14 +30,14 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from vibe.core.agent_loop._limits import (
+from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
+from vibe.core.agent_loop_limits import (
     JUDGE_ARGS_LIMIT,
     JUDGE_ARGS_TRUNCATED_SENTINEL,
     JUDGE_TRANSCRIPT_LIMIT,
     JUDGE_TRANSCRIPT_TURNS,
 )
-from vibe.core.agent_loop._models import ToolDecision, ToolExecutionResponse
-from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
+from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
 from vibe.core.logger import logger
 from vibe.core.tools.base import ToolPermission
 from vibe.core.types import Role

@@ -27,7 +27,7 @@ from vibe.core.agent_loop._loop import (
     _git_executable_present,
     _teleport_service_cls,
 )
-from vibe.core.agent_loop._models import ToolDecision, ToolExecutionResponse
+from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
 
 __all__ = [
     "_TELEPORT_AVAILABLE",
