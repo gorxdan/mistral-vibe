@@ -2539,13 +2539,13 @@ class AgentLoop(
                 summary_content = (summary_result.message.content or "").strip()
                 has_tool_calls = bool(summary_result.message.tool_calls)
                 if has_tool_calls or not summary_content:
+                    reason = "tool_call" if has_tool_calls else "empty_summary"
+                    self.telemetry_client.send_compaction_failed(
+                        reason=reason,
+                        session_id=self.session_id,
+                        parent_session_id=self.parent_session_id,
+                    )
                     if self.config.raise_on_compaction_failure:
-                        reason = "tool_call" if has_tool_calls else "empty_summary"
-                        self.telemetry_client.send_compaction_failed(
-                            reason=reason,
-                            session_id=self.session_id,
-                            parent_session_id=self.parent_session_id,
-                        )
                         raise CompactionFailedError(reason)
                     summary_content = ""
             except Exception:
