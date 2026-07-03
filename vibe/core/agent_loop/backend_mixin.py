@@ -51,9 +51,9 @@ from vibe.core.agent_loop._errors import (
     _raise_for_backend_error,
     _refusal_error,
 )
-from vibe.core.agent_loop.failover_mixin import AgentLoopFailoverMixin
-from vibe.core.agent_loop.memory_mixin import AgentLoopMemoryMixin
 from vibe.core.agent_loop.safety_mixin import AgentLoopSafetyMixin
+from vibe.core.agent_loop_failover import AgentLoopFailoverMixin
+from vibe.core.agent_loop_memory import AgentLoopMemoryMixin
 from vibe.core.baseline_scaling import baseline_tier_for, trim_tool_descriptions
 from vibe.core.compaction import truncate_compaction_context_for_backend
 from vibe.core.llm.backend.factory import create_backend
