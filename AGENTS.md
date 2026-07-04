@@ -2,6 +2,17 @@
 
 Conventions for **Mistral Vibe** — Python 3.12+ CLI coding assistant managed with `uv`. This repo is a **fork of `mistralai/mistral-vibe`** (remote `upstream`); read `## Fork` before structuring any change.
 
+## OpenWiki
+
+This repository has documentation located in the /openwiki directory.
+
+Start here:
+- [OpenWiki quickstart](openwiki/quickstart.md)
+
+OpenWiki includes repository overview, architecture notes, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+When working in this repository, read the OpenWiki quickstart first, then follow its links to the relevant architecture, workflow, domain, operation, and testing notes.
+
 Layout: `vibe/core` (engine: agent loop, tools, LLM backends, config, workflows, teams) | `vibe/cli` (Textual TUI) | `vibe/acp` (Agent Client Protocol) | `vibe/setup` (first-run wizards) | `tests/` (autouse fixtures in `conftest.py`, doubles in `tests/stubs/` named `Fake*`)
 
 ## Fork
