@@ -832,12 +832,13 @@ def get_universal_system_prompt(
                 f"work is still saved to the branch via an anonymous `WIP` "
                 f"auto-commit on exit, but a real commit message is far clearer "
                 f"for the user.\n\n"
-                f"Your branch is NOT merged automatically on exit — it is kept so "
-                f"the user reviews and lands it explicitly with "
-                f"`vibe worktree merge {wt.branch}` from the original checkout. You "
-                f"cannot write that checkout from inside this worktree, so to land "
-                f"it yourself, push the branch and open a PR "
-                f"(`git push -u origin {wt.branch}`)."
+                f"Your branch is NOT merged automatically on exit — but you CAN "
+                f"land it yourself from inside this worktree: when your work is "
+                f"complete, committed, and verified, call `land_work`. It runs the "
+                f"merge in the unsandboxed host process (the bash sandbox makes the "
+                f"main checkout read-only, so `git merge` from bash is impossible) "
+                f"and asks the user to approve each landing. Prefer `land_work` over "
+                f"pushing a branch — only push if the user explicitly asks."
             )
 
     return "\n\n".join(sections)
