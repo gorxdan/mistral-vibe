@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from vibe.core.skills.builtins.agent_delegation import SKILL as AGENT_DELEGATION_SKILL
 from vibe.core.skills.builtins.init import SKILL as INIT_SKILL
 from vibe.core.skills.builtins.tool_guides import SKILL as TOOL_GUIDES_SKILL
 from vibe.core.skills.builtins.vibe import SKILL as VIBE_SKILL
@@ -8,7 +9,13 @@ from vibe.core.skills.models import SkillInfo
 
 BUILTIN_SKILLS: dict[str, SkillInfo] = {
     skill.name: skill
-    for skill in [VIBE_SKILL, WORKFLOW_SKILL, TOOL_GUIDES_SKILL, INIT_SKILL]
+    for skill in [
+        VIBE_SKILL,
+        WORKFLOW_SKILL,
+        TOOL_GUIDES_SKILL,
+        INIT_SKILL,
+        AGENT_DELEGATION_SKILL,
+    ]
 }
 
 __all__ = ["BUILTIN_SKILLS"]

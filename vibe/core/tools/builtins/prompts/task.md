@@ -5,7 +5,7 @@ Context offload (work that would bloat main context) | specialized work (match t
 
 ## Best practices
 - **Clear, detailed brief** — the subagent works autonomously and can't ask you questions; give it everything it needs to succeed.
-- **Right subagent** — match the profile to the task type (see available subagents in the system prompt).
+- **Right subagent** — match the profile to the task type (see available subagents in the system prompt). For delegating file-mutating work to `editor`/`grunt`/`worker` (everyday patterns, plan-execute-verify, parallel edits), load the `agent-delegation` skill.
 - **Baseline first** — for an unfamiliar repo, map packages with `glob`, find central symbols/callers with `lsp`, and read the entry points before delegating.
 - **Prefer direct tools** — if you know the file/symbol/flow, use `read`/`lsp`/`grep` yourself; file count alone doesn't make a task delegable.
 - **Don't micromanage** the subagent's approach.
