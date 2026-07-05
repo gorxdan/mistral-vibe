@@ -9,6 +9,8 @@ import time
 from vibe.core.logger import logger
 from vibe.core.session.session_id import shorten_session_id
 
+SCRATCHPAD_PREFIX = "vibe-scratchpad-"
+
 _active_scratchpads: dict[str, Path] = {}
 _atexit_registered = False
 # Stranded scratchpads (process crashed/SIGKILLed before atexit) are reclaimed by
@@ -65,7 +67,7 @@ def gc_stale_scratchpads(max_age_s: int = _SCRATCHPAD_GC_AGE_S) -> None:
     try:
         active = {p.resolve() for p in _active_scratchpads.values()}
         cutoff = time.time() - max_age_s
-        for d in Path(tempfile.gettempdir()).glob("vibe-scratchpad-*"):
+        for d in Path(tempfile.gettempdir()).glob(f"{SCRATCHPAD_PREFIX}*"):
             try:
                 if not d.is_dir() or d.resolve() in active:
                     continue
@@ -96,6 +98,30 @@ def is_scratchpad_path(path_str: str) -> bool:
         )
     except (ValueError, OSError):
         return False
+
+
+def is_foreign_scratchpad_path(path_str: str) -> bool:
+    """Return True if the path is inside a scratchpad-shaped dir that is NOT
+    this process's active scratchpad.
+
+    Companion to ``is_scratchpad_path``: that returns True only for THIS
+    process's scratchpads; this returns True for scratchpad-shaped paths
+    belonging to other concurrent vibe processes, which share the global
+    ``/tmp`` namespace. A file tool targeting such a path is almost always
+    a dropped ``task_id`` (the caller re-derived a verifier-log path by
+    search instead of carrying the ``asub-N`` id) — surfacing it logs the
+    real mechanism rather than leaving it indistinguishable from any other
+    outside-workdir read.
+    """
+    try:
+        resolved = Path(path_str).expanduser().resolve()
+    except (ValueError, OSError):
+        return False
+    active = {sp.resolve() for sp in _active_scratchpads.values()}
+    return any(
+        p.name.startswith(SCRATCHPAD_PREFIX) and p not in active
+        for p in (resolved, *resolved.parents)
+    )
 
 
 def _is_subpath(path: Path, parent: Path) -> bool:

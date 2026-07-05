@@ -4,7 +4,8 @@ import fnmatch
 import os
 from pathlib import Path, PurePath
 
-from vibe.core.scratchpad import is_scratchpad_path
+from vibe.core.logger import logger
+from vibe.core.scratchpad import is_foreign_scratchpad_path, is_scratchpad_path
 from vibe.core.tools.base import ToolError, ToolPermission
 from vibe.core.tools.permissions import (
     PermissionContext,
@@ -78,6 +79,16 @@ def resolve_file_tool_permission(
     """
     if is_scratchpad_path(path_str):
         return PermissionContext(permission=ToolPermission.ALWAYS)
+
+    if is_foreign_scratchpad_path(path_str):
+        logger.warning(
+            "file tool %s targets a foreign scratchpad (%s) — likely a dropped "
+            "task_id re-derived a path by search instead of carrying the asub-N "
+            "id; the global /tmp scratchpad namespace means newest-mtime ordering "
+            "can return another session's file",
+            tool_name,
+            path_str,
+        )
 
     if (
         result := resolve_path_permission(
