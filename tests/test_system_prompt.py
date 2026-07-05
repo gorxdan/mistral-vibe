@@ -124,7 +124,7 @@ def test_orchestration_section_present_in_normal_mode() -> None:
     assert "Local tools first, delegation second" in prompt
     assert "map files with `glob`" in prompt
     assert "symbols and callers with `lsp`" in prompt
-    assert "not a substitute for reconnaissance" in prompt
+    assert "Do not delegate trivia" in prompt
     assert "`task`" in prompt
     # The profile→use map is present.
     for profile in ("`explore`", "`research`", "`reviewer`", "`debugger`"):
