@@ -153,27 +153,9 @@ class ProjectContextProvider:
         git_status = self.get_git_status() if include_git_status else ""
 
         template = UtilityPrompt.PROJECT_CONTEXT.read()
-        context = Template(template).safe_substitute(
+        return Template(template).safe_substitute(
             abs_path=str(self.root_path), git_status=git_status
         )
-
-        from vibe.core.worktree.manager import worktree_manager
-
-        if (wt := worktree_manager.active) is not None:
-            context += (
-                f"\n\n## Worktree isolation active\n"
-                f"Your shell is `cd`'d into an isolated worktree; writes land on "
-                f"branch `{wt.branch}`, isolated until merged. Use relative paths "
-                f"so reads/edits/writes resolve against the worktree; do not "
-                f"write under the original repo root. Commit finished work with a "
-                f"clear message so it merges back cleanly.\n\n"
-                f"Sandbox PID namespace: `ps`/`/proc` inside a sandboxed bash "
-                f"show only that sandbox — process-liveness conclusions are "
-                f"invalid. Never classify a worktree as stale or empty based on "
-                f"a sandboxed process scan. The worktree is locked; only the "
-                f"owning session can remove it."
-            )
-        return context
 
 
 def _get_default_shell() -> str:
@@ -797,7 +779,11 @@ def get_universal_system_prompt(
                 f"## Worktree isolation\n\nIsolated git worktree; writes land on "
                 f"branch `{wt.branch}` (use relative paths). Commit your work as "
                 f"the last step; the branch is kept for an explicit "
-                f"`vibe worktree merge {wt.branch}` — it is NOT merged on exit."
+                f"`vibe worktree merge {wt.branch}` — it is NOT merged on exit.\n\n"
+                f"Sandbox PID namespace: `ps`/`/proc` inside a sandboxed bash "
+                f"show only that sandbox — process-liveness conclusions are "
+                f"invalid. Never classify a worktree as stale or empty based on "
+                f"a sandboxed process scan."
             )
         else:
             sections.append(
@@ -822,7 +808,12 @@ def get_universal_system_prompt(
                 f"merge in the unsandboxed host process (the bash sandbox makes the "
                 f"main checkout read-only, so `git merge` from bash is impossible) "
                 f"and asks the user to approve each landing. Prefer `land_work` over "
-                f"pushing a branch — only push if the user explicitly asks."
+                f"pushing a branch — only push if the user explicitly asks.\n\n"
+                f"Sandbox PID namespace: `ps`/`/proc` inside a sandboxed bash show "
+                f"only that sandbox — process-liveness conclusions are invalid. "
+                f"Never classify a worktree as stale or empty based on a sandboxed "
+                f"process scan. The worktree is locked; only the owning session "
+                f"can remove it."
             )
 
     return "\n\n".join(sections)
