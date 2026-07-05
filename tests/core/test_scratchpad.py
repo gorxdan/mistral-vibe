@@ -4,7 +4,13 @@ import os
 import tempfile
 
 import vibe.core.scratchpad as scratchpad
-from vibe.core.scratchpad import get_scratchpad_dir, init_scratchpad, is_scratchpad_path
+from vibe.core.scratchpad import (
+    SCRATCHPAD_PREFIX,
+    get_scratchpad_dir,
+    init_scratchpad,
+    is_foreign_scratchpad_path,
+    is_scratchpad_path,
+)
 
 
 class TestScratchpadCleanup:
@@ -113,3 +119,28 @@ class TestIsScratchpadPath:
         assert sp is not None
         sibling = str(sp.parent / "other-dir" / "file.txt")
         assert not is_scratchpad_path(sibling)
+
+
+class TestIsForeignScratchpadPath:
+    def test_true_for_other_session_scratchpad(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        scratchpad._active_scratchpads.clear()
+        mine = init_scratchpad("my-session")
+        foreign = tmp_path / f"{SCRATCHPAD_PREFIX}other-session-x"
+        foreign.mkdir()
+        assert mine is not None
+        assert is_foreign_scratchpad_path(str(foreign / "bg" / "asub-1.log"))
+
+    def test_false_for_own_scratchpad(self):
+        mine = init_scratchpad("my-session")
+        assert mine is not None
+        assert not is_foreign_scratchpad_path(str(mine / "file.txt"))
+
+    def test_false_for_non_scratchpad_path(self):
+        assert not is_foreign_scratchpad_path("/etc/passwd")
+
+    def test_false_for_unrelated_tmp_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        unrelated = tmp_path / "not-a-scratchpad"
+        unrelated.mkdir()
+        assert not is_foreign_scratchpad_path(str(unrelated / "f.txt"))
