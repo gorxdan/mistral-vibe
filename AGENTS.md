@@ -59,6 +59,8 @@ Search: `lsp` for symbol questions (`go_to_definition`/`find_references`/`hover`
 
 `from vibe.core.logger import logger` (stdlib `logging` + `StructuredLogFormatter`). Env: `LOG_LEVEL` (default `WARNING`), `LOG_MAX_BYTES`. Logs in `~/.vibe/logs/vibe.log`. `%s` positional args (deferred formatting, grep-friendly). Module-local exception hierarchies with `_fmt()` helper.
 
+Diagnostics env vars: `DEBUG_MODE=true` forces `DEBUG` logging and attaches `debugpy` on `localhost:5678` (vibe-acp only). `VIBE_PROFILE=1` enables pyinstrument turn profiling (`vibe/core/profiler.py`) — no-op when unset, so instrumentation can stay in-tree at zero overhead; companions: `VIBE_PROFILE_TURNS=N` (default 1) caps recorded turns, `VIBE_PROFILE_INTERVAL=<seconds>` coarsens the sample rate.
+
 ## Widgets
 
 - For selectable lists, use `NavigableOptionList` from `vibe/cli/textual_ui/widgets/navigable_option_list.py` instead of Textual's `OptionList`. It adds `j`/`k` cursor navigation on top of the arrow keys; the bare `OptionList` only handles arrows.
