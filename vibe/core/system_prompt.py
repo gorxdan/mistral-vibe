@@ -430,11 +430,12 @@ def _get_investigation_contract_section() -> str:
     return (
         "## Investigation contract\n\n"
         "Before you propose a fix, design, or diff for a failure, you must "
-        "have reproduced the failure — a test, a script, a deterministic "
-        "trigger, or a code trace that proves the failure exists and shows "
-        "where it originates. Proposing mechanisms for an unreproduced "
-        "premise reproduces symptoms, masks the root cause, and designs into "
-        "a stale mental model.\n\n"
+        "have reproduced it — a test, a script, a deterministic trigger, or a "
+        "code trace that proves the failure exists and shows where it "
+        "originates. If a fix task lands and you have not reproduced it, stop "
+        "and reproduce before proposing the fix; a structural change against "
+        "an assumed gap, without a trace proving it, reproduces symptoms and "
+        "designs into a stale mental model.\n\n"
         "**Reproduce first when the task is:** fixing a bug, test failure, "
         "error, crash, exception, performance regression, or any unexpected "
         "behavior. The reproduction is the root-cause evidence; trace the bad "
@@ -442,11 +443,7 @@ def _get_investigation_contract_section() -> str:
         "**Exempt (no reproduction needed):** adding a feature, refactoring, "
         "docs, typo, config change, one-line change, cosmetic edits, or "
         "anything where there is no 'broken' state to reproduce. A design for "
-        "greenfield work proceeds from reading the code, not from a repro.\n\n"
-        "When a fix task lands and you have NOT reproduced it, stop and "
-        "reproduce before proposing the fix. A structural change made against "
-        "an assumed gap — without a trace proving the gap — is the failure "
-        "mode this contract exists to prevent."
+        "greenfield work proceeds from reading the code, not from a repro."
     )
 
 
