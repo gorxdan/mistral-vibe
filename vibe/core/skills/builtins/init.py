@@ -30,9 +30,12 @@ the answer to this question and skip asking.
 
 ## Phase 2 — survey the project
 
-Do the survey yourself with `glob`, `grep`, `read`, and `bash`. You are looking \
-only for things the model could not guess from reading the code on demand. Read, \
-in rough order of signal:
+Do the survey yourself with `glob`, `grep`, `read`, `bash`, and `lsp`. Use \
+`lsp` (`document_symbol`, `workspace_symbol`, `find_references`) for anything \
+structural — call graphs, public API surface, where a symbol is defined or \
+consumed — so you understand the architecture without reading every file. You \
+are looking only for things the model could not guess from reading the code on \
+demand. Read, in rough order of signal:
 
 1. Manifest and build files — `pyproject.toml`, `package.json`, `Cargo.toml`, \
    `go.mod`, `pom.xml`, `mix.exs`, `deno.json`, `Makefile`, `justfile`. Note the \
@@ -47,7 +50,9 @@ in rough order of signal:
    flow into AGENTS.md rather than live in a competing file.
 6. Formatter and linter configs (`ruff.toml`, `.prettierrc`, `biome.json`, \
    `.golangci.yml`, eslint configs, `.editorconfig`).
-7. The repo's top-level shape — is it a monorepo with workspaces? A single \
+7. The repo's top-level shape — use `lsp workspace_symbol` and \
+   `document_symbol` to map packages, entry points, and central abstractions \
+   without reading every file. Is it a monorepo with workspaces? A single \
    package? Multiple deployable apps?
 
 Run `git remote -v` and note the hosting platform (GitHub, GitLab, etc.) and \
