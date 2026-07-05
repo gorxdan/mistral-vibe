@@ -490,7 +490,7 @@ def run_cli(  # noqa: PLR0912
                     config.displayed_workdir = str(worktree_handle.original_repo_root)
                     rprint(
                         f"[dim]Isolated on branch {worktree_handle.branch} "
-                        f"— changes land via vibe worktree merge after exit.[/]"
+                        f"— land finished work with the land_work tool.[/]"
                     )
                 # Surface any unmerged branches from prior sessions (the
                 # _prune_and_report orphan log is file-only and invisible).
