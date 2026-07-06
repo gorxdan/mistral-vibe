@@ -181,7 +181,9 @@ async def test_selector_fails_to_empty_on_backend_error(monkeypatch) -> None:
         async def complete(self, *a: Any, **k: Any) -> Any:
             raise RuntimeError("down")
 
-    monkeypatch.setattr("vibe.core.memory.selector.BACKEND_FACTORY", {"generic": _Boom})
+    monkeypatch.setattr(
+        "vibe.core.memory._llm_client.BACKEND_FACTORY", {"generic": _Boom}
+    )
     ids = await _selector().select(["- [a] A"], "user msg", {"a"})
     assert ids == []
 
@@ -743,7 +745,7 @@ async def test_extractor_fails_to_empty_on_backend_error(monkeypatch) -> None:
             raise RuntimeError("down")
 
     monkeypatch.setattr(
-        "vibe.core.memory.extractor.BACKEND_FACTORY", {"generic": _Boom}
+        "vibe.core.memory._llm_client.BACKEND_FACTORY", {"generic": _Boom}
     )
     out = await _extractor().extract("some transcript", "")
     assert out == []
@@ -1701,7 +1703,7 @@ async def test_consolidator_fails_to_empty_on_backend_error(monkeypatch) -> None
             raise RuntimeError("down")
 
     monkeypatch.setattr(
-        "vibe.core.memory.consolidator.BACKEND_FACTORY", {"generic": _Boom}
+        "vibe.core.memory._llm_client.BACKEND_FACTORY", {"generic": _Boom}
     )
     out = await _consolidator().consolidate(["- [a] A"], "body", {"a"})
     assert out == []

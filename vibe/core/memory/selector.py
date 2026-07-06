@@ -14,9 +14,8 @@ from typing import Any
 import orjson
 
 from vibe.core.config import ModelConfig, ProviderConfig
-from vibe.core.llm.backend.factory import BACKEND_FACTORY
-from vibe.core.llm.types import CompletionRequest
 from vibe.core.logger import logger
+from vibe.core.memory._llm_client import _MemoryLLMClient
 from vibe.core.types import LLMMessage, Role
 
 _SYSTEM_PROMPT = """\
@@ -26,7 +25,7 @@ Respond with ONLY a JSON object: {"ids": ["id1", "id2"]}, most-relevant first,
 at most K ids, [] if none apply."""
 
 
-class MemorySelector:
+class MemorySelector(_MemoryLLMClient):
     def __init__(
         self,
         *,
@@ -37,12 +36,14 @@ class MemorySelector:
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
-        self._model = model
-        self._provider = provider
+        super().__init__(
+            model=model,
+            provider=provider,
+            timeout=timeout,
+            extra_headers=extra_headers,
+            extra_body=extra_body,
+        )
         self._max_selected = max_selected
-        self._timeout = timeout
-        self._extra_headers = extra_headers or {}
-        self._extra_body = extra_body or None
 
     async def select(
         self,
@@ -93,24 +94,9 @@ class MemorySelector:
             LLMMessage(role=Role.SYSTEM, content=_SYSTEM_PROMPT),
             LLMMessage(role=Role.USER, content=user_content),
         ]
-        backend_cls = BACKEND_FACTORY[self._provider.backend]
-        async with backend_cls(
-            provider=self._provider, timeout=self._timeout
-        ) as backend:
-            result = await backend.complete(
-                CompletionRequest(
-                    model=self._model,
-                    messages=messages,
-                    temperature=self._model.temperature,
-                    tools=None,
-                    tool_choice=None,
-                    max_tokens=512,
-                    extra_headers=self._extra_headers,
-                    response_format={"type": "json_object"},
-                    extra_body=self._extra_body,
-                )
-            )
-        return result.message.content
+        return await self._complete_json(
+            messages, max_tokens=512, temperature=self._model.temperature
+        )
 
     def _parse(self, content: str | None, valid_ids: set[str]) -> list[str]:
         text = (content or "").strip()
