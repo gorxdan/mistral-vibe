@@ -41,7 +41,7 @@ from vibe.core.logger import logger
 from vibe.core.types import Role
 
 if TYPE_CHECKING:
-    from vibe.core.config import MemoryConfig, ProviderConfig, VibeConfig
+    from vibe.core.config import MemoryConfig, ModelConfig, ProviderConfig, VibeConfig
     from vibe.core.memory.consolidator import ConsolidationAction, MemoryConsolidator
     from vibe.core.memory.extractor import MemoryExtractor
     from vibe.core.memory.models import MemoryEntry
@@ -110,18 +110,32 @@ class AgentLoopMemoryMixin:
                     logger.warning("memory trash sweep failed (%s)", e)
         return self._memory_store
 
-    def _resolve_memory_selector(self) -> MemorySelector | None:
-        from vibe.core.memory.selector import MemorySelector
+    def _resolve_memory_model(
+        self, alias: str | None
+    ) -> tuple[ModelConfig, ProviderConfig] | None:
+        """Resolve a model + provider for a memory subprocess.
 
-        mem = self.config.memory
+        Walks the alias (per-process override, already disambiguated by caller)
+        through ``memory.model`` → ``compaction_model`` → active model, then
+        validates availability. Returns None if no usable model resolves.
+        """
         model = None
-        if mem.model:
-            model = next((m for m in self.config.models if m.alias == mem.model), None)
+        if alias:
+            model = next((m for m in self.config.models if m.alias == alias), None)
         if model is None:
             model = self.config.compaction_model or self.config.get_active_model()
         if not self.config.is_model_available(model):
             return None
-        provider = self.config.get_provider_for_model(model)
+        return model, self.config.get_provider_for_model(model)
+
+    def _resolve_memory_selector(self) -> MemorySelector | None:
+        from vibe.core.memory.selector import MemorySelector
+
+        mem = self.config.memory
+        resolved = self._resolve_memory_model(mem.model)
+        if resolved is None:
+            return None
+        model, provider = resolved
         return MemorySelector(
             model=model,
             provider=provider,
@@ -313,15 +327,10 @@ class AgentLoopMemoryMixin:
         from vibe.core.memory.extractor import MemoryExtractor
 
         mem = self.config.memory
-        model = None
-        alias = mem.auto_extract_model or mem.model
-        if alias:
-            model = next((m for m in self.config.models if m.alias == alias), None)
-        if model is None:
-            model = self.config.compaction_model or self.config.get_active_model()
-        if not self.config.is_model_available(model):
+        resolved = self._resolve_memory_model(mem.auto_extract_model or mem.model)
+        if resolved is None:
             return None
-        provider = self.config.get_provider_for_model(model)
+        model, provider = resolved
         return MemoryExtractor(
             model=model,
             provider=provider,
@@ -493,15 +502,10 @@ class AgentLoopMemoryMixin:
         from vibe.core.memory.consolidator import MemoryConsolidator
 
         mem = self.config.memory
-        model = None
-        alias = mem.consolidate_model or mem.model
-        if alias:
-            model = next((m for m in self.config.models if m.alias == alias), None)
-        if model is None:
-            model = self.config.compaction_model or self.config.get_active_model()
-        if not self.config.is_model_available(model):
+        resolved = self._resolve_memory_model(mem.consolidate_model or mem.model)
+        if resolved is None:
             return None
-        provider = self.config.get_provider_for_model(model)
+        model, provider = resolved
         return MemoryConsolidator(
             model=model,
             provider=provider,
@@ -694,15 +698,10 @@ class AgentLoopMemoryMixin:
         from vibe.core.memory.verifier import MemoryVerifier
 
         mem = self.config.memory
-        model = None
-        alias = mem.verify_model or mem.model
-        if alias:
-            model = next((m for m in self.config.models if m.alias == alias), None)
-        if model is None:
-            model = self.config.compaction_model or self.config.get_active_model()
-        if not self.config.is_model_available(model):
+        resolved = self._resolve_memory_model(mem.verify_model or mem.model)
+        if resolved is None:
             return None
-        provider = self.config.get_provider_for_model(model)
+        model, provider = resolved
         return MemoryVerifier(
             model=model,
             provider=provider,
