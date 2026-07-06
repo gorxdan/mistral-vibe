@@ -15,9 +15,8 @@ import orjson
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from vibe.core.config import ModelConfig, ProviderConfig
-from vibe.core.llm.backend.factory import BACKEND_FACTORY
-from vibe.core.llm.types import CompletionRequest
 from vibe.core.logger import logger
+from vibe.core.memory._llm_client import _MemoryLLMClient
 from vibe.core.memory.models import MemoryType
 from vibe.core.types import LLMMessage, Role
 
@@ -91,7 +90,7 @@ def merge_memory_body(existing: str, addition: str, today: str) -> str:
     return f"{(existing or '').rstrip()}\n\n--- Updated {today} ---\n{add}"
 
 
-class MemoryExtractor:
+class MemoryExtractor(_MemoryLLMClient):
     def __init__(
         self,
         *,
@@ -101,11 +100,13 @@ class MemoryExtractor:
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
-        self._model = model
-        self._provider = provider
-        self._timeout = timeout
-        self._extra_headers = extra_headers or {}
-        self._extra_body = extra_body or None
+        super().__init__(
+            model=model,
+            provider=provider,
+            timeout=timeout,
+            extra_headers=extra_headers,
+            extra_body=extra_body,
+        )
 
     async def extract(
         self, transcript: str, existing_index: str
@@ -134,24 +135,9 @@ class MemoryExtractor:
             LLMMessage(role=Role.SYSTEM, content=_SYSTEM_PROMPT),
             LLMMessage(role=Role.USER, content=user_content),
         ]
-        backend_cls = BACKEND_FACTORY[self._provider.backend]
-        async with backend_cls(
-            provider=self._provider, timeout=self._timeout
-        ) as backend:
-            result = await backend.complete(
-                CompletionRequest(
-                    model=self._model,
-                    messages=messages,
-                    temperature=self._model.temperature,
-                    tools=None,
-                    tool_choice=None,
-                    max_tokens=1024,
-                    extra_headers=self._extra_headers,
-                    response_format={"type": "json_object"},
-                    extra_body=self._extra_body,
-                )
-            )
-        return result.message.content
+        return await self._complete_json(
+            messages, max_tokens=1024, temperature=self._model.temperature
+        )
 
     def _parse(self, content: str | None) -> list[ExtractedMemory]:
         text = (content or "").strip()
