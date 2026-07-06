@@ -25,6 +25,12 @@ from vibe.core.workflows.budget import (
     ReadOnlyBudget,
     Reservation,
 )
+from vibe.core.workflows.citations import (
+    CitationFailure,
+    CitationSpec,
+    apply_citation_report,
+    verify_citations,
+)
 from vibe.core.workflows.contract import (
     ContractFailure,
     ContractReport,
@@ -325,13 +331,21 @@ class _MessageBoard:
 
 
 def _prompt_hash(
-    prompt: str, agent: str, phase: str | None = None, isolation: str | None = None
+    prompt: str,
+    agent: str,
+    phase: str | None = None,
+    isolation: str | None = None,
+    citation_spec: CitationSpec | None = None,
 ) -> str:
     # isolation is part of the identity: an isolated (subprocess/worktree) run is
     # not interchangeable with an in-process one for the same prompt/agent/phase.
     # Only fold it in when set, so ordinary keys are unchanged.
     iso = f":iso={isolation}" if isolation else ""
-    return hashlib.sha256(f"{agent}:{phase}{iso}:{prompt}".encode()).hexdigest()[:16]
+    # citations gate transforms the cached response; gated != ungated.
+    cit = ":cit" if citation_spec is not None else ""
+    return hashlib.sha256(f"{agent}:{phase}{iso}{cit}:{prompt}".encode()).hexdigest()[
+        :16
+    ]
 
 
 # Must match programmatic.py's sentinel; the isolated subprocess writes one
@@ -806,6 +820,20 @@ class WorkflowRuntime:
             )
         return ContractSpec.model_validate(contract)
 
+    @staticmethod
+    def _resolve_citations(citations: dict | None) -> CitationSpec | None:
+        # Works in both isolation modes: read tasks cite existing repo files.
+        if citations is None:
+            return None
+        return CitationSpec.model_validate(citations)
+
+    @staticmethod
+    def _apply_citations(
+        parsed: dict[str, Any], root: Path, spec: CitationSpec
+    ) -> dict[str, Any] | CitationFailure:
+        report = verify_citations(root, parsed, spec)
+        return apply_citation_report(parsed, report, spec)
+
     async def spawn_agent(
         self,
         prompt: str,
@@ -819,10 +847,20 @@ class WorkflowRuntime:
         isolation: str | None = None,
         strip_unknown: bool = True,
         contract: dict | None = None,
-    ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure:
+        citations: dict | None = None,
+    ) -> (
+        str
+        | dict[str, Any]
+        | SchemaValidationFailure
+        | ContractFailure
+        | CitationFailure
+    ):
         contract_spec = self._resolve_contract(contract, isolation)
+        citation_spec = self._resolve_citations(citations)
         effective_phase = phase if phase is not None else self._current_phase
-        cache_key = _prompt_hash(prompt, agent, effective_phase, isolation)
+        cache_key = _prompt_hash(
+            prompt, agent, effective_phase, isolation, citation_spec
+        )
         if cached := self._cache.get(cache_key):
             self._log(f"cache hit: {label or agent}")
             self._record_cached_result(cached)
@@ -844,6 +882,7 @@ class WorkflowRuntime:
                     cache_key=cache_key,
                     strip_unknown=strip_unknown,
                     contract=contract_spec,
+                    citations=citation_spec,
                 )
             if isolation is not None:
                 raise WorkflowError(
@@ -859,6 +898,7 @@ class WorkflowRuntime:
                 reservation=reservation,
                 cache_key=cache_key,
                 strip_unknown=strip_unknown,
+                citations=citation_spec,
             )
 
     async def _prepare_spawn(
@@ -907,7 +947,8 @@ class WorkflowRuntime:
         reservation: Reservation,
         cache_key: str,
         strip_unknown: bool = True,
-    ) -> str | dict[str, Any] | SchemaValidationFailure:
+        citations: CitationSpec | None = None,
+    ) -> str | dict[str, Any] | SchemaValidationFailure | CitationFailure:
         response_format = build_response_format(schema) if schema is not None else None
         effective_prompt = prompt
         if schema is not None:
@@ -1122,6 +1163,8 @@ class WorkflowRuntime:
                     parsed = strip_unknown_properties(parsed, schema)
                 errors = validate_against_schema(parsed, schema)
                 if not errors:
+                    if citations is not None:
+                        parsed = self._apply_citations(parsed, Path.cwd(), citations)
                     self._finalize_agent(
                         _FinalizeArgs(
                             prompt=prompt,
@@ -1449,7 +1492,14 @@ class WorkflowRuntime:
         cache_key: str,
         strip_unknown: bool = True,
         contract: ContractSpec | None = None,
-    ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure:
+        citations: CitationSpec | None = None,
+    ) -> (
+        str
+        | dict[str, Any]
+        | SchemaValidationFailure
+        | ContractFailure
+        | CitationFailure
+    ):
         effective_prompt = prompt + (
             build_prompt_fallback(schema) if schema is not None else ""
         )
@@ -1481,6 +1531,15 @@ class WorkflowRuntime:
                 output, schema, strip_unknown, completed, error_msg
             )
         )
+        # Reconcile cited file/line/snippet claims against Path.cwd(); read
+        # tasks cite existing repo files, no worktree threading needed.
+        citation_failure: CitationFailure | None = None
+        if completed and citations is not None and isinstance(response, dict):
+            response = self._apply_citations(response, Path.cwd(), citations)
+            if isinstance(response, CitationFailure):
+                citation_failure = response
+                completed = False
+                error_msg = "citation verification failed (strict)"
         tokens_in, tokens_out = self._charge_isolated_tokens(
             stats, reservation, completed, label, agent
         )
@@ -1503,6 +1562,8 @@ class WorkflowRuntime:
             )
         )
         if not completed:
+            if citation_failure is not None:
+                return citation_failure
             failure = self._isolated_failure_value(
                 contract_report, schema, schema_errors, error_msg, output
             )

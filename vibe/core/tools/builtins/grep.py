@@ -245,7 +245,17 @@ _MIN_SYMBOL_LEN = 2
 
 
 def _is_symbol_shaped(pattern: str) -> bool:
-    return len(pattern) >= _MIN_SYMBOL_LEN and _SYMBOL_RE.fullmatch(pattern) is not None
+    # Bare identifier, or pipe-joined alts where at least one segment is bare.
+    # Recall-favoring: a false nudge is low-cost, a missed one is what this fixes.
+    if _SYMBOL_RE.fullmatch(pattern) and len(pattern) >= _MIN_SYMBOL_LEN:
+        return True
+    if "|" in pattern:
+        return any(
+            len(seg) >= _MIN_SYMBOL_LEN and _SYMBOL_RE.fullmatch(seg) is not None
+            for seg in (s.strip() for s in pattern.split("|"))
+            if seg
+        )
+    return False
 
 
 def _lsp_available() -> bool:
@@ -321,9 +331,11 @@ class Grep(
         )
         if _is_symbol_shaped(args.pattern) and _lsp_available():
             result._hint = (
-                f"'{args.pattern}' looks like a symbol — lsp "
-                "go_to_definition / find_references resolves it, including "
-                "imports and re-exports that grep misses."
+                f"NOTE: '{args.pattern}' is a symbol lookup — use lsp "
+                "go_to_definition / find_references instead of grep for this. "
+                "grep misses imports, re-exports, aliases, and overloads that "
+                "lsp resolves; grepping a symbol here is the routing miss the "
+                "harness flags. For a symbol question, call lsp next."
             )
             record_symbol_grep_miss()
         yield result
