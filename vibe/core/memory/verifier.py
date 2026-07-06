@@ -171,7 +171,9 @@ class MemoryVerifier(_MemoryLLMClient):
             LLMMessage(role=Role.SYSTEM, content=_SYSTEM_PROMPT),
             LLMMessage(role=Role.USER, content=user_content),
         ]
-        return await self._complete_json(messages, max_tokens=1024, temperature=0.0)
+        return await self._complete_json(
+            messages, max_tokens=1024, temperature=self._model.temperature
+        )
 
     def _parse(self, content: str | None) -> list[Assertion]:
         text = (content or "").strip()
