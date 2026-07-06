@@ -331,13 +331,21 @@ class _MessageBoard:
 
 
 def _prompt_hash(
-    prompt: str, agent: str, phase: str | None = None, isolation: str | None = None
+    prompt: str,
+    agent: str,
+    phase: str | None = None,
+    isolation: str | None = None,
+    citation_spec: CitationSpec | None = None,
 ) -> str:
     # isolation is part of the identity: an isolated (subprocess/worktree) run is
     # not interchangeable with an in-process one for the same prompt/agent/phase.
     # Only fold it in when set, so ordinary keys are unchanged.
     iso = f":iso={isolation}" if isolation else ""
-    return hashlib.sha256(f"{agent}:{phase}{iso}:{prompt}".encode()).hexdigest()[:16]
+    # citations gate transforms the cached response; gated != ungated.
+    cit = ":cit" if citation_spec is not None else ""
+    return hashlib.sha256(f"{agent}:{phase}{iso}{cit}:{prompt}".encode()).hexdigest()[
+        :16
+    ]
 
 
 # Must match programmatic.py's sentinel; the isolated subprocess writes one
@@ -850,7 +858,9 @@ class WorkflowRuntime:
         contract_spec = self._resolve_contract(contract, isolation)
         citation_spec = self._resolve_citations(citations)
         effective_phase = phase if phase is not None else self._current_phase
-        cache_key = _prompt_hash(prompt, agent, effective_phase, isolation)
+        cache_key = _prompt_hash(
+            prompt, agent, effective_phase, isolation, citation_spec
+        )
         if cached := self._cache.get(cache_key):
             self._log(f"cache hit: {label or agent}")
             self._record_cached_result(cached)

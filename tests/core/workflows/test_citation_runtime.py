@@ -149,3 +149,25 @@ async def test_fabricated_citation_dropped_real_one_kept(repo_files: Path) -> No
     files = [f["file"] for f in result["findings"]]
     assert "auth.py" in files
     assert "totally_made_up.py" not in files
+
+
+async def test_cache_does_not_poison_gated_call(repo_files: Path) -> None:
+    # Regression: ungated call used to poison cache for later gated call.
+    response = '{"findings": [{"file": "fabricated.py", "line": 1}]}'
+    calls = [0]
+
+    def counting_factory(
+        prompt: str, *, agent: str, parent_context: Any | None = None
+    ) -> Any:
+        calls[0] += 1
+        return MockAgentLoop(response_text=response)
+
+    rt = WorkflowRuntime(agent_loop_factory=counting_factory)
+    first = await rt.spawn_agent("same prompt", schema=FINDINGS_SCHEMA)
+    second = await rt.spawn_agent(
+        "same prompt", schema=FINDINGS_SCHEMA, citations={**CITATIONS, "strict": True}
+    )
+    assert calls[0] == 2
+    assert isinstance(first, dict)
+    assert isinstance(second, CitationFailure)
+    assert not second
