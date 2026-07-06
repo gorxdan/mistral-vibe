@@ -85,6 +85,37 @@ async def test_symbol_grep_while_lsp_available_records_miss(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_pipe_joined_symbol_grep_records_miss(tmp_path, monkeypatch):
+    # Pipe-joined alts ("foo|bar|baz") = common alias-hunt form that evades
+    # bare-identifier detection.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "test.py").write_text("def validate():\n    pass\n")
+    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
+    grep = Grep(config_getter=lambda: GrepToolConfig(), state=BaseToolState())
+
+    await collect_result(
+        grep.run(GrepArgs(pattern="validate_schema|SchemaValidator|validate"))
+    )
+
+    assert adherence.snapshot()["symbol_grep_miss"] == 1
+
+
+@pytest.mark.asyncio
+async def test_symbol_grep_hint_is_directive_note(tmp_path, monkeypatch):
+    # Hint must be directive "NOTE:", not soft "looks like".
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
+    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
+    grep = Grep(config_getter=lambda: GrepToolConfig(), state=BaseToolState())
+
+    result = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
+
+    assert result._hint is not None
+    assert result._hint.startswith("NOTE:")
+    assert "lsp" in result._hint
+
+
+@pytest.mark.asyncio
 async def test_non_symbol_grep_does_not_record_miss(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "test.py").write_text("error: boom\n")
