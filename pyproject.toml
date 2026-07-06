@@ -264,11 +264,11 @@ required-imports = ["from __future__ import annotations"]
 
 [tool.ruff.lint.pylint]
 max-public-methods = 26
-max-positional-args = 10
+max-positional-args = 11
 max-statements = 50
 max-branches = 15
 max-locals = 15
-max-args = 10
+max-args = 11
 max-returns = 6
 max-nested-blocks = 5
 

@@ -6,6 +6,13 @@ from vibe.core.workflows.budget import (
     BudgetSnapshot,
     Reservation,
 )
+from vibe.core.workflows.citations import (
+    CitationFailure,
+    CitationReport,
+    CitationSpec,
+    CitationViolation,
+    verify_citations,
+)
 from vibe.core.workflows.contract import (
     ContractFailure,
     ContractReport,
@@ -47,6 +54,10 @@ __all__ = [
     "BudgetExhausted",
     "BudgetSnapshot",
     "CachedAgentResult",
+    "CitationFailure",
+    "CitationReport",
+    "CitationSpec",
+    "CitationViolation",
     "ContractFailure",
     "ContractReport",
     "ContractSpec",
@@ -70,5 +81,6 @@ __all__ = [
     "build_response_format",
     "validate_against_schema",
     "validate_script",
+    "verify_citations",
     "verify_contract",
 ]
