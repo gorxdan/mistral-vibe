@@ -303,7 +303,10 @@ def preset_probe_passes(preset: ServerPreset) -> bool:
 def available_presets(root_path: Path | None = None) -> list[ServerPreset]:
     candidates = list(PRESETS.values())
     if root_path is not None:
-        candidates = [p for p in candidates if preset_matches_root(p, root_path)]
+        matched = [p for p in candidates if preset_matches_root(p, root_path)]
+        # Never zero out the set — a marker-less dir (/tmp, home) falls back to
+        # all installed presets so LSP stays usable; the filter only narrows.
+        candidates = matched if matched else candidates
 
     usable: list[ServerPreset] = []
     for probe in (_probe(preset, root_path) for preset in candidates):
