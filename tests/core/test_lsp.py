@@ -534,6 +534,29 @@ def test_preset_matches_root_no_git_ancestor_stays_single_dir(tmp_path) -> None:
     assert preset_matches_root(_PYRIGHT, subdir) is False
 
 
+def test_available_presets_falls_back_to_all_when_no_marker_matches(
+    monkeypatch, tmp_path
+) -> None:
+    from vibe.core.lsp import _defaults
+    from vibe.core.lsp._defaults import PRESETS, PresetProbe, available_presets
+
+    # A marker-less root must not zero out the server set (regression: LSP
+    # silently disabled in /tmp, home, any non-project dir).
+    assert not any(
+        (tmp_path / m).exists()
+        for p in PRESETS.values()
+        for m in p.server.manifest_markers
+    )
+
+    monkeypatch.setattr(
+        _defaults,
+        "_probe",
+        lambda preset, root_path=None: PresetProbe(preset=preset, status="available"),
+    )
+    keys = {p.key for p in available_presets(tmp_path)}
+    assert keys == set(PRESETS.keys())
+
+
 def test_build_server_configs_filters_to_project_languages(
     monkeypatch, tmp_path
 ) -> None:
