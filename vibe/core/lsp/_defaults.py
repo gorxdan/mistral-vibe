@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -317,11 +318,44 @@ def available_presets(root_path: Path | None = None) -> list[ServerPreset]:
     return usable
 
 
+def _marker_search_dirs(start: Path) -> Iterator[Path]:
+    """Yield directories to scan for manifest markers, walking up from ``start``.
+
+    Walks up to and including the first ancestor containing a ``.git`` entry
+    (the project root), so launching vibe from a project subdirectory still
+    detects the project's language servers. With no ``.git`` ancestor at all,
+    only ``start`` itself is yielded — so launching from a non-project
+    directory (home, ``/tmp``) keeps the original single-dir behavior and
+    never matches a stray marker in some unrelated ancestor.
+    """
+    resolved = start.resolve()
+    seen: list[Path] = []
+    found_git = False
+    for candidate in [resolved, *resolved.parents]:
+        seen.append(candidate)
+        if (candidate / ".git").exists():
+            found_git = True
+            break
+    yield from seen if found_git else [resolved]
+
+
+def _dir_has_marker(directory: Path, markers: tuple[str, ...]) -> bool:
+    for marker in markers:
+        if any(c in marker for c in "*?["):
+            if any(directory.glob(marker)):
+                return True
+        elif (directory / marker).exists():
+            return True
+    return False
+
+
 def preset_matches_root(preset: ServerPreset, root_path: Path) -> bool:
     """Whether ``preset`` is relevant to the project at ``root_path``.
 
-    A preset is relevant when any of its ``manifest_markers`` exists at the
-    project root. Markers containing glob characters (``*``, ``?``, ``[``)
+    A preset is relevant when any of its ``manifest_markers`` exists in the
+    session directory or an ancestor up to the enclosing ``.git`` root — so
+    launching vibe from a project subdirectory still detects the project's
+    language servers. Markers containing glob characters (``*``, ``?``, ``[``)
     are matched with :meth:`Path.glob` so variable-name files like
     ``*.csproj`` or ``*.sln`` work. Presets without markers are always
     relevant so a marker-less server isn't silently dropped.
@@ -329,13 +363,7 @@ def preset_matches_root(preset: ServerPreset, root_path: Path) -> bool:
     markers = preset.server.manifest_markers
     if not markers:
         return True
-    for marker in markers:
-        if any(c in marker for c in "*?["):
-            if any(root_path.glob(marker)):
-                return True
-        elif (root_path / marker).exists():
-            return True
-    return False
+    return any(_dir_has_marker(d, markers) for d in _marker_search_dirs(root_path))
 
 
 def broken_presets() -> list[PresetProbe]:

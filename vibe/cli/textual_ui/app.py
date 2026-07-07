@@ -3088,9 +3088,8 @@ class VibeApp(App):
                 "automatically after edits. Run /lsp to check status."
             )
         else:
-            lines = self._lsp_install_hint_lines(
-                lead="LSP enabled, but no language servers were found on your PATH.",
-                footer="Then run /lspstall again to re-detect.",
+            lines = self._lsp_empty_server_hint_lines(
+                footer="Run /lspstall again after changing directory or config."
             )
         await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
 
@@ -3107,16 +3106,44 @@ class VibeApp(App):
             ordered.append(preset.key)
         return ordered
 
-    def _lsp_install_hint_lines(self, *, lead: str, footer: str) -> list[str]:
-        from vibe.core.lsp._defaults import PRESETS, broken_presets
+    def _lsp_empty_server_hint_lines(self, *, footer: str = "") -> list[str]:
+        """Lines for the no-active-servers case, naming the real cause.
 
-        recent = self._recent_preset_keys()
-        pinned = [PRESETS[k] for k in recent if k in PRESETS]
-        rest = [p for k, p in PRESETS.items() if k not in recent]
-        ordered = pinned + rest
-        lines = [lead, "", "Install one to get started:", ""]
-        for preset in ordered:
-            lines.append(f"  - {preset.display_name}: {preset.install_hint}")
+        Distinguishes "servers installed on PATH but no project manifest marker
+        matched here" from "no language-server binaries on PATH at all". The old
+        code reported both as "not on your PATH", sending users to reinstall
+        servers that were already working.
+        """
+        from vibe.core.lsp._defaults import PRESETS, available_presets, broken_presets
+
+        on_path = available_presets(None)
+        if on_path:
+            names = ", ".join(p.display_name for p in on_path)
+            lines = [
+                f"Language servers are installed ({names}), but none matched "
+                "this project: no manifest marker (pyproject.toml, "
+                "package.json, Cargo.toml, go.mod, …) was found at or above "
+                "the current directory.",
+                "",
+                "To use them here, either:",
+                "  - launch vibe from the project root,",
+                "  - declare the server with a [[lsp_servers]] block in "
+                "config.toml, or",
+                "  - set lsp_auto_discover = false and add it manually.",
+            ]
+        else:
+            recent = self._recent_preset_keys()
+            pinned = [PRESETS[k] for k in recent if k in PRESETS]
+            rest = [p for k, p in PRESETS.items() if k not in recent]
+            ordered = pinned + rest
+            lines = [
+                "No language server binaries were found on your PATH.",
+                "",
+                "Install one to get started:",
+                "",
+            ]
+            for preset in ordered:
+                lines.append(f"  - {preset.display_name}: {preset.install_hint}")
         broken = broken_presets()
         if broken:
             lines.append("")
@@ -3127,8 +3154,9 @@ class VibeApp(App):
                     f"  - {probe.preset.display_name}: reinstall "
                     f"({probe.preset.install_hint}) — {detail}"
                 )
-        lines.append("")
-        lines.append(footer)
+        if footer:
+            lines.append("")
+            lines.append(footer)
         return lines
 
     async def _uninstall_lsp(self, **kwargs: Any) -> None:
@@ -3153,23 +3181,10 @@ class VibeApp(App):
             )
             return
         from vibe.core.lsp import get_lsp_manager
-        from vibe.core.lsp._defaults import available_presets
 
         manager = get_lsp_manager()
         if manager is None or not manager.servers:
-            available = available_presets()
-            if available:
-                names = ", ".join(p.display_name for p in available)
-                hint = (
-                    f"Detected on PATH: {names}. Run /lspstall to re-sync, "
-                    "or restart vibe if you just installed."
-                )
-            else:
-                hint_lines = self._lsp_install_hint_lines(
-                    lead="No language server binaries on PATH.",
-                    footer="Run /lspstall to re-detect after installing.",
-                )
-                hint = "\n".join(hint_lines)
+            hint = "\n".join(self._lsp_empty_server_hint_lines())
             await self._mount_and_scroll(
                 UserCommandMessage(
                     f"LSP is installed but no servers are active.\n\n{hint}"
