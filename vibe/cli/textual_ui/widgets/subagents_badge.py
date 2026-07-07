@@ -53,7 +53,7 @@ class SubagentsBadge(NoMarkupStatic):
     def _render_frame(self) -> None:
         if not self._body:
             return
-        self.update(f"{self._spinner.next_frame()} {self._body}")
+        self.update(f"{self._spinner.next_frame()} {self._body}", layout=False)
 
     def _start_timer(self) -> None:
         if self._timer is None and self.is_mounted:

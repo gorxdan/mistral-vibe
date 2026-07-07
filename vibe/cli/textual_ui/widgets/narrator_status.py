@@ -26,6 +26,7 @@ class NarratorStatus(NarratorManagerListener, Static):
         self._narrator_manager = narrator_manager
         self._timer: Timer | None = None
         self._frame: int = 0
+        self._last_width: int = -1
 
     def on_mount(self) -> None:
         self._narrator_manager.add_listener(self)
@@ -50,16 +51,21 @@ class NarratorStatus(NarratorManagerListener, Static):
         match self.state:
             case NarratorState.SUMMARIZING:
                 char = SHRINK_FRAMES[self._frame % len(SHRINK_FRAMES)]
-                self.update(
+                text = (
                     f"[bold orange]{char}[/bold orange] summarizing "
                     f"[dim]{shortcut('Esc/Ctrl+C')} to stop[/dim]"
                 )
             case NarratorState.SPEAKING:
                 bars = BAR_FRAMES[self._frame % len(BAR_FRAMES)]
-                self.update(
+                text = (
                     f"[bold orange]{bars}[/bold orange] speaking "
                     f"[dim]{shortcut('Esc/Ctrl+C')} to stop[/dim]"
                 )
+            case _:
+                return
+        width = len(text)
+        self.update(text, layout=width != self._last_width)
+        self._last_width = width
         self._frame += 1
 
     def _stop_timer(self) -> None:
