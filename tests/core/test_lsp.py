@@ -511,6 +511,29 @@ def test_preset_matches_root_requires_manifest_marker(tmp_path) -> None:
     assert preset_matches_root(_GOPLS, tmp_path) is True
 
 
+def test_preset_matches_root_walks_up_to_git_root(tmp_path) -> None:
+    from vibe.core.lsp._defaults import _GOPLS, _PYRIGHT, preset_matches_root
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "pyproject.toml").write_text("")
+    subdir = tmp_path / "src" / "pkg"
+    subdir.mkdir(parents=True)
+    assert preset_matches_root(_PYRIGHT, subdir) is True
+    assert preset_matches_root(_GOPLS, subdir) is False
+    (tmp_path / "go.mod").write_text("")
+    assert preset_matches_root(_GOPLS, subdir) is True
+
+
+def test_preset_matches_root_no_git_ancestor_stays_single_dir(tmp_path) -> None:
+    from vibe.core.lsp._defaults import _PYRIGHT, preset_matches_root
+
+    (tmp_path / "pyproject.toml").write_text("")
+    subdir = tmp_path / "sub"
+    subdir.mkdir()
+    # No .git anywhere above, so a marker only in the parent must NOT match.
+    assert preset_matches_root(_PYRIGHT, subdir) is False
+
+
 def test_build_server_configs_filters_to_project_languages(
     monkeypatch, tmp_path
 ) -> None:
