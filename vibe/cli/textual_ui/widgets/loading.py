@@ -92,6 +92,7 @@ class LoadingWidget(SpinnerMixin, Static):
         self.debounce_widget: Static | None = None
         self.start_time: float | None = None
         self._last_elapsed: int = -1
+        self._last_hint_width: int = -1
         self._paused_total: float = 0.0
         self._pause_start: float | None = None
         self._queued_count: int = 0
@@ -221,10 +222,10 @@ class LoadingWidget(SpinnerMixin, Static):
         if self._indicator_widget:
             spinner_char = self._spinner.next_frame()
             color = self._get_color_for_position(0)
-            self._indicator_widget.update(f"[{color}]{spinner_char}[/]")
+            self._indicator_widget.update(f"[{color}]{spinner_char}[/]", layout=False)
 
         if self._status_widget:
-            self._status_widget.update(self._build_status_text())
+            self._status_widget.update(self._build_status_text(), layout=False)
 
         self.transition_progress += 1
         if self.transition_progress > total_elements:
@@ -240,7 +241,12 @@ class LoadingWidget(SpinnerMixin, Static):
             elapsed = int(time() - self.start_time - paused)
             if elapsed != self._last_elapsed:
                 self._last_elapsed = elapsed
-                self.hint_widget.update(shortcut_hint(self._format_hint(elapsed)))
+                hint = self._format_hint(elapsed)
+                width = len(hint)
+                self.hint_widget.update(
+                    shortcut_hint(hint), layout=width != self._last_hint_width
+                )
+                self._last_hint_width = width
 
 
 @contextmanager
