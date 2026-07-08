@@ -159,6 +159,9 @@ def test_le_chaton_requires_local_reconnaissance_before_workflows() -> None:
     assert "First use local `glob` and `lsp`" in prompt
     assert "A broad label such as 'analyze this repo' does not by itself" in prompt
     assert "File count alone is not a reason to delegate" in prompt
+    # workflow path must carry the same narrow-brief steer as the task-tool prose
+    assert "give each agent one question" in prompt
+    assert "breadth comes from more agents, not bigger prompts" in prompt
 
 
 def test_le_chaton_recovery_and_monitor_prose_moved_to_workflow_skill() -> None:
@@ -732,3 +735,6 @@ def test_workflow_authoring_guide_is_lazy_not_always_on() -> None:
     skill = BUILTIN_SKILLS["workflow-authoring"]
     assert "## Local discovery comes first" in skill.prompt
     assert "dedup_by" in skill.prompt
+    # authoring guide must steer toward one-question-per-agent fan-out
+    assert "One question per agent" in skill.prompt
+    assert "fan out for breadth" in skill.prompt
