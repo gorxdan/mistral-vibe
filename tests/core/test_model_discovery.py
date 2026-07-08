@@ -15,6 +15,7 @@ from vibe.core.llm.model_discovery import (
     DiscoveredModel,
     RawModel,
     _is_chat_model,
+    _synth_model,
     build_persisted_updates,
     candidate_local_providers,
     discover_extra_models,
@@ -151,6 +152,306 @@ async def test_discover_inherits_reasoning_from_configured_template(
     assert sibling.thinking == "max"
     assert sibling.preserve_reasoning is True
     assert sibling.temperature is None
+
+
+# --- OpenRouter-shaped metadata enrichment --------------------------------
+
+
+def _openrouter_item(
+    *,
+    id: str,
+    name: str,
+    pricing: dict[str, str] | None,
+    reasoning: dict[str, object] | None,
+    input_modalities: list[str],
+    context_length: int,
+) -> dict[str, object]:
+    return {
+        "id": id,
+        "name": name,
+        "context_length": context_length,
+        "architecture": {"input_modalities": input_modalities},
+        "pricing": pricing,
+        "reasoning": reasoning,
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_models_extracts_openrouter_metadata() -> None:
+    # /v1/models metadata must reach the RawModels (price, reasoning, images, name).
+    respx.get("https://openrouter.ai/api/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    _openrouter_item(
+                        id="tencent/hy3",
+                        name="Tencent: Hy3",
+                        pricing={"prompt": "0.00000014", "completion": "0.00000058"},
+                        reasoning={
+                            "mandatory": False,
+                            "default_effort": "high",
+                            "supported_efforts": ["high", "low", "none"],
+                        },
+                        input_modalities=["text"],
+                        context_length=262144,
+                    ),
+                    _openrouter_item(
+                        id="tencent/hy3:free",
+                        name="Tencent: Hy3 (free)",
+                        pricing={"prompt": "0", "completion": "0"},
+                        reasoning={"mandatory": False, "default_effort": "high"},
+                        input_modalities=["text"],
+                        context_length=262144,
+                    ),
+                    _openrouter_item(
+                        id="anthropic/claude-opus-4.1",
+                        name="Anthropic: Claude Opus 4.1",
+                        pricing={"prompt": "0.000015", "completion": "0.000075"},
+                        reasoning={"mandatory": False},
+                        input_modalities=["image", "text", "file"],
+                        context_length=200000,
+                    ),
+                    _openrouter_item(
+                        id="meta-llama/llama-3.3-70b-instruct",
+                        name="Meta: Llama 3.3 70B Instruct",
+                        pricing={"prompt": "0.0000001", "completion": "0.00000032"},
+                        reasoning=None,
+                        input_modalities=["text"],
+                        context_length=131072,
+                    ),
+                ]
+            },
+        )
+    )
+    provider = ProviderConfig(
+        name="openrouter",
+        api_base="https://openrouter.ai/api/v1",
+        api_key_env_var="",
+        discover_models=True,
+    )
+    out = {m.id: m for m in await fetch_models(provider)}
+
+    hy3 = out["tencent/hy3"]
+    assert hy3.display_name == "Tencent: Hy3"
+    assert hy3.input_price == pytest.approx(0.14)
+    assert hy3.output_price == pytest.approx(0.58)
+    assert hy3.reasoning_effort == "high"
+    assert hy3.supports_images is False
+    assert hy3.context_length == 262144
+
+    free = out["tencent/hy3:free"]
+    assert free.input_price == 0.0
+    assert free.output_price == 0.0
+
+    opus = out["anthropic/claude-opus-4.1"]
+    assert opus.input_price == pytest.approx(15.0)
+    assert opus.output_price == pytest.approx(75.0)
+    # reasoning present but no default_effort -> high (sensible agentic floor)
+    assert opus.reasoning_effort == "high"
+    assert opus.supports_images is True
+
+    llama = out["meta-llama/llama-3.3-70b-instruct"]
+    # no reasoning advertised -> None, caller falls back to template/off
+    assert llama.reasoning_effort is None
+    assert llama.supports_images is False
+
+
+@pytest.mark.asyncio
+async def test_discover_applies_openrouter_metadata_over_generic_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Metadata must override the generic owl-alpha template (thinking=off).
+    config = build_test_vibe_config(
+        providers=[
+            ProviderConfig(
+                name="openrouter",
+                api_base="https://openrouter.ai/api/v1",
+                api_key_env_var="",
+                discover_models=True,
+            )
+        ],
+        models=[
+            ModelConfig(
+                name="openrouter/owl-alpha",
+                provider="openrouter",
+                alias="openrouter",
+                thinking="off",
+                input_price=0.0,
+                output_price=0.0,
+            )
+        ],
+    )
+
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        if provider.name != "openrouter":
+            return []
+        return [
+            RawModel(
+                id="tencent/hy3",
+                context_length=262144,
+                display_name="Tencent: Hy3",
+                input_price=0.14,
+                output_price=0.58,
+                supports_images=False,
+                reasoning_effort="high",
+            ),
+            RawModel(
+                id="anthropic/claude-opus-4.1",
+                context_length=200000,
+                display_name="Anthropic: Claude Opus 4.1",
+                input_price=15.0,
+                output_price=75.0,
+                supports_images=True,
+                reasoning_effort="high",
+            ),
+        ]
+
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
+    out = {dm.model.alias: dm for dm in await discover_extra_models(config)}
+
+    hy3 = out["tencent/hy3"]
+    assert hy3.model.thinking == "high"  # metadata overrides template's "off"
+    assert hy3.model.input_price == pytest.approx(0.14)
+    assert hy3.model.output_price == pytest.approx(0.58)
+    assert hy3.model.supports_images is False
+    assert hy3.display_name == "Tencent: Hy3"
+
+    opus = out["anthropic/claude-opus-4.1"]
+    assert opus.model.thinking == "high"
+    assert opus.model.supports_images is True
+    assert opus.display_name == "Anthropic: Claude Opus 4.1"
+
+
+@pytest.mark.asyncio
+async def test_discover_falls_back_to_template_when_no_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No metadata fields -> template inherited, defaults preserved.
+    config = build_test_vibe_config(
+        providers=[
+            ProviderConfig(
+                name="kimi",
+                api_base="https://api.kimi.com/coding/v1",
+                api_key_env_var="",
+                discover_models=True,
+            )
+        ],
+        models=[
+            ModelConfig(
+                name="kimi-k2.7-code",
+                provider="kimi",
+                alias="kimi",
+                thinking="max",
+                preserve_reasoning=True,
+            )
+        ],
+    )
+
+    async def _fake(provider: ProviderConfig, **_k: object) -> list[RawModel]:
+        return [RawModel("kimi-k2.6")] if provider.name == "kimi" else []
+
+    monkeypatch.setattr("vibe.core.llm.model_discovery.fetch_models", _fake)
+    out = await discover_extra_models(config)
+    assert len(out) == 1
+    sibling = out[0].model
+    assert sibling.thinking == "max"  # template inherited (no metadata to override)
+    assert sibling.input_price == 0.0
+    assert sibling.supports_images is False
+    assert out[0].display_name is None
+
+
+def test_synth_model_missing_price_falls_back_to_template() -> None:
+    # Regression: missing price must inherit the template's (metadata -> template -> default).
+    template = ModelConfig(
+        name="template/model",
+        provider="openrouter",
+        alias="template",
+        thinking="max",
+        supports_images=True,
+        input_price=123.0,
+        output_price=456.0,
+    )
+
+    no_price = RawModel(id="server/no-meta")
+    missing = _synth_model(
+        "openrouter",
+        "server/no-meta",
+        "server/no-meta",
+        template=template,
+        source=no_price,
+    )
+    assert missing.input_price == 123.0
+    assert missing.output_price == 456.0
+    assert missing.thinking == "max"
+    assert missing.supports_images is True
+
+    # Present metadata still overrides the template.
+    with_price = RawModel(
+        id="server/x", input_price=0.25, output_price=0.75, reasoning_effort="low"
+    )
+    present = _synth_model(
+        "openrouter", "server/x", "server/x", template=template, source=with_price
+    )
+    assert present.input_price == pytest.approx(0.25)
+    assert present.output_price == pytest.approx(0.75)
+    assert present.thinking == "low"
+
+    # No template at all -> bare default 0.0.
+    bare = _synth_model("openrouter", "z", "z", source=no_price)
+    assert bare.input_price == 0.0
+    assert bare.output_price == 0.0
+
+
+@pytest.mark.asyncio
+async def test_discover_persists_enriched_metadata_round_trip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A discovered OpenRouter model carrying real pricing/thinking/images must
+    # survive build_persisted_updates so a reload keeps the enriched profile.
+    config = build_test_vibe_config(
+        providers=[
+            ProviderConfig(
+                name="openrouter",
+                api_base="https://openrouter.ai/api/v1",
+                api_key_env_var="",
+                discover_models=True,
+            )
+        ],
+        models=[
+            ModelConfig(
+                name="openrouter/owl-alpha", provider="openrouter", alias="openrouter"
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        VibeConfig, "get_persisted_config", classmethod(lambda _cls: {})
+    )
+    dm = DiscoveredModel(
+        model=ModelConfig(
+            name="tencent/hy3",
+            provider="openrouter",
+            alias="tencent/hy3",
+            thinking="high",
+            input_price=0.14,
+            output_price=0.58,
+            supports_images=False,
+            context_window=262144,
+        ),
+        provider=config.providers[0],
+        ephemeral=False,
+        display_name="Tencent: Hy3",
+    )
+
+    upd = build_persisted_updates(config, dm)
+    entry = next(m for m in upd["models"] if m["alias"] == "tencent/hy3")
+    reloaded = ModelConfig.model_validate(entry)
+    assert reloaded.thinking == "high"
+    assert reloaded.input_price == pytest.approx(0.14)
+    assert reloaded.output_price == pytest.approx(0.58)
+    assert reloaded.supports_images is False
+    assert reloaded.context_window == 262144
 
 
 # --- fetch_model_ids -------------------------------------------------------
@@ -757,6 +1058,68 @@ async def test_fetch_models_parses_chatgpt_models_endpoint() -> None:
     )
     out = await fetch_models(_chatgpt_provider())
     assert out == [RawModel("gpt-5.5", 272000), RawModel("gpt-5.4", None)]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_models_extracts_chatgpt_metadata() -> None:
+    # codex /models reports display_name, default_reasoning_level,
+    # supported_reasoning_levels, and input_modalities (per codex's ModelInfo).
+    _seed_chatgpt_session()
+    respx.get(CHATGPT_MODELS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "slug": "gpt-5.5",
+                        "display_name": "GPT-5.5",
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": [
+                            {"effort": "low"},
+                            {"effort": "medium"},
+                            {"effort": "high"},
+                        ],
+                        "input_modalities": ["text", "image"],
+                        "visibility": "list",
+                        "context_window": 272000,
+                    },
+                    {
+                        "slug": "gpt-5.4",
+                        "display_name": "GPT-5.4",
+                        "default_reasoning_level": "minimal",
+                        "supported_reasoning_levels": [{"effort": "minimal"}],
+                        "input_modalities": ["text"],
+                        "visibility": "list",
+                    },
+                    {
+                        "slug": "plain-model",
+                        "display_name": "Plain",
+                        "visibility": "list",
+                    },
+                ]
+            },
+        )
+    )
+    out = {m.id: m for m in await fetch_models(_chatgpt_provider())}
+
+    big = out["gpt-5.5"]
+    assert big.display_name == "GPT-5.5"
+    assert big.reasoning_effort == "medium"
+    assert big.supports_images is True
+    assert big.context_length == 272000
+    assert big.input_price is None and big.output_price is None  # codex has no pricing
+
+    # minimal -> off (Vibe has no minimal tier).
+    small = out["gpt-5.4"]
+    assert small.reasoning_effort == "off"
+    assert small.supports_images is False
+
+    # No reasoning fields advertised -> None (caller falls back to template/off).
+    plain = out["plain-model"]
+    assert plain.reasoning_effort is None
+    assert plain.supports_images is None
+    assert plain.display_name == "Plain"
 
 
 @pytest.mark.asyncio
