@@ -240,6 +240,9 @@ class AgentLoopLLMResponseError(AgentLoopError): ...
 
 _STREAM_DEGENERATE_RETRIES = 2
 
+_RATE_LIMIT_GRACE_RETRIES = 2
+_RATE_LIMIT_GRACE_BASE_DELAY = 5.0
+
 
 class InvalidStreamError(AgentLoopLLMResponseError):
     def __init__(self, reason: str) -> None:
@@ -1204,6 +1207,7 @@ class AgentLoop(
             first_llm_turn = True
             emergency_compacted = False
             shaping_attempted = False
+            rate_limit_retries = 0
             # Output-escalation state is scoped to this user turn.
             self._max_output_override = None
             self._response_too_long_attempts = 0
@@ -1265,6 +1269,19 @@ class AgentLoop(
                     )
                     continue
                 except RateLimitError as e:
+                    if rate_limit_retries < _RATE_LIMIT_GRACE_RETRIES:
+                        rate_limit_retries += 1
+                        delay = _RATE_LIMIT_GRACE_BASE_DELAY * rate_limit_retries
+                        logger.warning(
+                            "Rate-limited on %s; backing off for %.1fs before "
+                            "retrying (grace %d/%d)",
+                            e.model,
+                            delay,
+                            rate_limit_retries,
+                            _RATE_LIMIT_GRACE_RETRIES,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
                     fallback = self._switch_to_fallback_model()
                     if fallback is None:
                         if self.rate_limit_callback is not None:
