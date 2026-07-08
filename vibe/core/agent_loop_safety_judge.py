@@ -68,14 +68,14 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
 
     async def _judge_tool_safety(
         self, tool_name: str, args: BaseModel, uncovered: list[RequiredPermission]
-    ) -> ToolDecision | None:
+    ) -> tuple[ToolDecision | None, str | None]:
         # Cleared each decision; set to the judge's reason when it defers so the
         # approval UI can show why the user is being asked. Must not leak stale
         # values to the next prompt.
         self.pending_judge_deferral = None
         judge = self._resolve_safety_judge()
         if judge is None:
-            return None
+            return None, self.pending_judge_deferral
         # Drop cached verdicts when the judge model changes: a verdict produced
         # under one model must not be reused after swapping to another.
         judge_model = self.config.safety_judge.model
@@ -114,7 +114,7 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
                 tool_name,
                 JUDGE_ARGS_LIMIT,
             )
-            return None
+            return None, self.pending_judge_deferral
         cache_key = (tool_name, args_key, tuple(flagged_reasons), transcript_key)
         # Reuse a real verdict for an identical call instead of re-querying the
         # judge model. Fail-closed verdicts (verdict.failed) are never stored,
@@ -139,14 +139,14 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
             logger.info(
                 "Safety judge deferred tool %r to user: %s", tool_name, verdict.reason
             )
-            return None
+            return None, self.pending_judge_deferral
         logger.info("Safety judge auto-approved tool %r: %s", tool_name, verdict.reason)
         return ToolDecision(
             verdict=ToolExecutionResponse.EXECUTE,
             approval_type=ToolPermission.ALWAYS,
             feedback=f"Auto-approved by safety judge: {verdict.reason}",
             judge_approved=True,
-        )
+        ), None
 
     @staticmethod
     def _serialize_args(args: BaseModel) -> tuple[str, str, bool]:

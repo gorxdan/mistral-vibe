@@ -51,6 +51,17 @@ else:  # pragma: no cover - frozen builds without psutil
     _CHILDREN_FAILED = _PROC_GONE = _PROC_UNREADABLE = _IO_UNAVAILABLE = ()
 
 
+def resource_monitor_opt_in() -> bool:
+    """Opt-in gate for the always-on resource monitor.
+
+    Off unless VIBE_RESOURCE_MONITOR is set to a truthy value, so a default
+    session has zero sampling overhead (the monitor only logs; the cost is the
+    periodic /proc tree walk). Subagents stay off regardless of the env var.
+    """
+    val = os.environ.get("VIBE_RESOURCE_MONITOR", "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
 # Per-process counters read once per tree walk. cpu_seconds and the disk byte
 # counters are cumulative-since-process-start; rss is point-in-time. The disk
 # fields are None when io_counters is unavailable for the proc (macOS has no

@@ -120,14 +120,6 @@ class LandWork(
                 "cannot merge into a detached HEAD."
             ) from None
 
-        if main_repo.is_dirty(untracked_files=False):
-            raise ToolError(
-                f"Main checkout at {main_dir} (on {target}) has a dirty working "
-                "tree. Landing a merge requires a clean main tree so the merge "
-                "can update it atomically. The user should commit or stash main's "
-                "changes first. Refusing to land."
-            )
-
         worktree_dirty_note = ""
         try:
             wt_repo = Repo(str(handle.worktree_path))
@@ -153,6 +145,13 @@ class LandWork(
 
         try:
             with merge_lock(main_dir):
+                if main_repo.is_dirty(untracked_files=False):
+                    raise ToolError(
+                        f"Main checkout at {main_dir} (on {target}) has a dirty working "
+                        "tree. Landing a merge requires a clean main tree so the merge "
+                        "can update it atomically. The user should commit or stash main's "
+                        "changes first. Refusing to land."
+                    )
                 merge_sha = _merge_no_ff(main_repo, branch, message)
         except Timeout:
             raise ToolError(
