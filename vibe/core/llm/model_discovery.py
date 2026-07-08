@@ -25,7 +25,7 @@ import urllib.parse
 
 import httpx
 
-from vibe.core.config import ModelConfig, ProviderConfig, resolve_api_key
+from vibe.core.config import ModelConfig, ProviderConfig, ThinkingLevel, resolve_api_key
 from vibe.core.logger import logger
 from vibe.core.types import Backend
 from vibe.core.utils.http import build_ssl_context
@@ -49,11 +49,16 @@ class DiscoveredModel:
     ``ephemeral`` is True when the provider was auto-detected and is NOT in the
     user's config — selecting such a model must persist the provider too so it
     stays resolvable after reload.
+
+    ``display_name`` is the server's friendly label (e.g. "Tencent: Hy3 (free)"),
+    shown in the picker in place of the raw API id; None when the server advertises
+    none (then the id is shown).
     """
 
     model: ModelConfig
     provider: ProviderConfig
     ephemeral: bool
+    display_name: str | None = None
 
 
 def _ollama_base_url() -> str:
@@ -88,17 +93,30 @@ def candidate_local_providers() -> list[ProviderConfig]:
 
 @dataclass(frozen=True)
 class RawModel:
-    """A discovered model id plus the context window the server advertises.
+    """A discovered model id plus the metadata the server advertises.
 
     ``context_length`` is the model's own maximum (ollama's
     ``details.context_length`` or vLLM's ``max_model_len`` and friends); it is
     None when the server advertises nothing. It becomes the synthesized model's
     ``context_window`` (capped by ollama's served window); the compaction
     threshold is then derived from that window by the config validator.
+
+    The remaining optional fields are populated only when the server reports them
+    (OpenRouter's ``/v1/models`` carries rich metadata; ollama/vLLM/llama.cpp do
+    not and stay None). They override the synthesized model's template defaults
+    when present, so a discovered OpenRouter model keeps its real pricing, reasoning
+    effort, and image support instead of inheriting a generic profile.
     """
 
     id: str
     context_length: int | None = None
+    # OpenRouter-shaped metadata (None when the server does not advertise it).
+    display_name: str | None = None
+    # Per-million-token USD pricing, matching ModelConfig.input_price/output_price.
+    input_price: float | None = None
+    output_price: float | None = None
+    supports_images: bool | None = None
+    reasoning_effort: ThinkingLevel | None = None
 
 
 # Field names different OpenAI-compatible runtimes use to advertise a model's
@@ -133,6 +151,94 @@ def _ctx_from_models_item(item: dict[str, Any]) -> int | None:
     if isinstance(meta, dict):
         return _ctx_value(meta, _CTX_META_KEYS)
     return None
+
+
+# OpenRouter reasoning-effort names → Vibe ThinkingLevel (xhigh→max, none→off).
+_EFFORT_TO_THINKING: dict[str, ThinkingLevel] = {
+    "max": "max",
+    "xhigh": "max",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+    "none": "off",
+}
+
+
+def _per_million_price(pricing: Any, key: str) -> float | None:
+    """OpenRouter advertises per-token USD as a string (e.g. "0.00000014"); convert
+    to per-million-token USD matching ModelConfig.input_price/output_price. None on
+    any missing/non-numeric value.
+    """
+    if not isinstance(pricing, dict):
+        return None
+    raw = pricing.get(key)
+    if not isinstance(raw, str | int | float) or isinstance(raw, bool):
+        return None
+    try:
+        per_token = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return per_token * 1_000_000 if per_token >= 0 else None
+
+
+def _reasoning_effort(reasoning: Any) -> ThinkingLevel | None:
+    """Map OpenRouter's ``reasoning`` object to a ThinkingLevel, or None.
+
+    Uses ``default_effort`` when the model declares one; otherwise ``high`` when
+    reasoning is merely supported (no default), and None when not advertised at
+    all (the caller falls back to the template / off).
+    """
+    if not isinstance(reasoning, dict):
+        return None
+    default_effort = reasoning.get("default_effort")
+    if isinstance(default_effort, str):
+        return _EFFORT_TO_THINKING.get(default_effort.lower())
+    # Reasoning supported but no explicit default — high is a sensible agentic floor.
+    return "high"
+
+
+def _supports_images(item: dict[str, Any]) -> bool | None:
+    """Whether the model accepts image inputs, from OpenRouter's architecture
+    modality list. None when the field is absent (server does not advertise it).
+    """
+    architecture = item.get("architecture")
+    if not isinstance(architecture, dict):
+        return None
+    modalities = architecture.get("input_modalities")
+    if not isinstance(modalities, list):
+        return None
+    return "image" in modalities
+
+
+def _meta_from_models_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Duck-typed extraction of OpenRouter-shaped metadata from one /v1/models
+    entry. Returns only the fields the server advertises; ollama/vLLM/llama.cpp
+    omit them and get an empty dict (the caller keeps current behavior).
+    """
+    name = item.get("name")
+    return {
+        "display_name": name if isinstance(name, str) and name else None,
+        "input_price": _per_million_price(item.get("pricing"), "prompt"),
+        "output_price": _per_million_price(item.get("pricing"), "completion"),
+        "supports_images": _supports_images(item),
+        "reasoning_effort": _reasoning_effort(item.get("reasoning")),
+    }
+
+
+def _with_context(model: RawModel, context_length: int | None) -> RawModel:
+    """Rebuild a RawModel with a different context_length, preserving all other
+    metadata. ``RawModel`` is frozen, so ollama context enrichment (which overrides
+    /v1/models' value with the trained length from /api/tags) swaps the whole tuple.
+    """
+    return RawModel(
+        id=model.id,
+        context_length=context_length,
+        display_name=model.display_name,
+        input_price=model.input_price,
+        output_price=model.output_price,
+        supports_images=model.supports_images,
+        reasoning_effort=model.reasoning_effort,
+    )
 
 
 def _auth_headers(provider: ProviderConfig) -> dict[str, str]:
@@ -207,11 +313,23 @@ async def _fetch_v1_models(
     items = data.get("data") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []
-    return [
-        RawModel(item["id"], _ctx_from_models_item(item))
-        for item in items
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    ]
+    models: list[RawModel] = []
+    for item in items:
+        if not (isinstance(item, dict) and isinstance(item.get("id"), str)):
+            continue
+        meta = _meta_from_models_item(item)
+        models.append(
+            RawModel(
+                id=item["id"],
+                context_length=_ctx_from_models_item(item),
+                display_name=meta["display_name"],
+                input_price=meta["input_price"],
+                output_price=meta["output_price"],
+                supports_images=meta["supports_images"],
+                reasoning_effort=meta["reasoning_effort"],
+            )
+        )
+    return models
 
 
 async def _fetch_chatgpt_models(
@@ -311,7 +429,8 @@ async def fetch_models(
             tag_ctx = await _fetch_ollama_context_lengths(provider, client)
             if tag_ctx:
                 models = [
-                    RawModel(m.id, tag_ctx.get(m.id, m.context_length)) for m in models
+                    _with_context(m, tag_ctx.get(m.id, m.context_length))
+                    for m in models
                 ]
         return models
     finally:
@@ -399,21 +518,30 @@ def _synth_model(
     *,
     context_window: int | None = None,
     template: ModelConfig | None = None,
+    source: RawModel | None = None,
 ) -> ModelConfig:
-    # Inherit reasoning behaviour from the provider's configured model so a
-    # discovered sibling of a thinking model (Moonshot/GLM/OpenAI) is not
-    # silently labelled thinking="off" and keeps Preserved Thinking + temperature.
-    # auto_compact_threshold stays unset: the config validator derives it from
-    # context_window when the window is known.
+    # Metadata (source) overrides the template; auto_compact_threshold stays unset.
+    src = source
     kwargs: dict[str, Any] = dict(
         name=model_id,
         provider=provider_name,
         alias=alias,
-        input_price=0.0,
-        output_price=0.0,
-        thinking=template.thinking if template else "off",
+        input_price=(src.input_price if src and src.input_price is not None else 0.0),
+        output_price=(
+            src.output_price if src and src.output_price is not None else 0.0
+        ),
+        thinking=(
+            src.reasoning_effort
+            if src and src.reasoning_effort is not None
+            else (template.thinking if template else "off")
+        ),
         preserve_reasoning=template.preserve_reasoning if template else False,
         temperature=template.temperature if template else 1.0,
+        supports_images=(
+            src.supports_images
+            if src and src.supports_images is not None
+            else (template.supports_images if template else False)
+        ),
     )
     if context_window is not None:
         kwargs["context_window"] = context_window
@@ -491,9 +619,11 @@ async def discover_extra_models(
                         alias,
                         context_window=window,
                         template=template,
+                        source=rm,
                     ),
                     provider=provider,
                     ephemeral=ephemeral,
+                    display_name=rm.display_name,
                 )
             )
 

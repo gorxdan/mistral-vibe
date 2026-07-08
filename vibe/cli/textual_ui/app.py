@@ -4436,10 +4436,12 @@ class VibeApp(App):
         ]
         # Show the provider's real API model name as each entry's primary label
         # (the friendly alias is what gets persisted as active_model). Discovered
-        # models already carry name == api id.
+        # models use the server's friendly display_name when advertised (e.g.
+        # "Tencent: Hy3 (free)") and fall back to the raw API id otherwise.
         display_names = {m.alias: m.name for m in self.config.available_models}
         display_names.update({
-            alias: dm.model.name for alias, dm in self._discovered_models.items()
+            alias: dm.display_name or dm.model.name
+            for alias, dm in self._discovered_models.items()
         })
         providers = {m.alias: m.provider for m in self.config.available_models}
         providers.update({
