@@ -559,6 +559,47 @@ class TestReasoningFieldNameConversion:
             assert results[1].message.content == "Answer"
 
 
+class TestOpenAIAdapterReasoningEffort:
+    def _make_request(self, thinking: str, extra_body: dict | None = None) -> dict:
+        adapter = OpenAIAdapter()
+        provider = ProviderConfig(
+            name="test",
+            api_base="https://api.example.com/v1",
+            api_key_env_var="API_KEY",
+        )
+        request = adapter.prepare_request(
+            RequestParams(
+                model_name="test-model",
+                messages=[LLMMessage(role=Role.USER, content="hi")],
+                temperature=0.2,
+                tools=None,
+                max_tokens=None,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
+                thinking=thinking,
+                extra_body=extra_body,
+            )
+        )
+        return json.loads(request.body)
+
+    def test_emits_reasoning_effort_when_thinking_on(self) -> None:
+        payload = self._make_request("high")
+        assert payload["reasoning_effort"] == "high"
+
+    def test_maps_max_to_xhigh(self) -> None:
+        payload = self._make_request("max")
+        assert payload["reasoning_effort"] == "xhigh"
+
+    def test_omits_reasoning_effort_when_thinking_off(self) -> None:
+        payload = self._make_request("off")
+        assert "reasoning_effort" not in payload
+
+    def test_extra_body_reasoning_effort_wins(self) -> None:
+        payload = self._make_request("high", extra_body={"reasoning_effort": "low"})
+        assert payload["reasoning_effort"] == "low"
+
+
 class TestMistralReasoningFieldNameValidation:
     def test_mistral_backend_rejects_custom_reasoning_field_name(self):
         provider = ProviderConfig(
