@@ -526,9 +526,15 @@ def _synth_model(
         name=model_id,
         provider=provider_name,
         alias=alias,
-        input_price=(src.input_price if src and src.input_price is not None else 0.0),
+        input_price=(
+            src.input_price
+            if src and src.input_price is not None
+            else (template.input_price if template else 0.0)
+        ),
         output_price=(
-            src.output_price if src and src.output_price is not None else 0.0
+            src.output_price
+            if src and src.output_price is not None
+            else (template.output_price if template else 0.0)
         ),
         thinking=(
             src.reasoning_effort

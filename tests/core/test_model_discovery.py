@@ -15,6 +15,7 @@ from vibe.core.llm.model_discovery import (
     DiscoveredModel,
     RawModel,
     _is_chat_model,
+    _synth_model,
     build_persisted_updates,
     candidate_local_providers,
     discover_extra_models,
@@ -359,6 +360,48 @@ async def test_discover_falls_back_to_template_when_no_metadata(
     assert sibling.input_price == 0.0
     assert sibling.supports_images is False
     assert out[0].display_name is None
+
+
+def test_synth_model_missing_price_falls_back_to_template() -> None:
+    # Regression: missing price must inherit the template's (metadata -> template -> default).
+    template = ModelConfig(
+        name="template/model",
+        provider="openrouter",
+        alias="template",
+        thinking="max",
+        supports_images=True,
+        input_price=123.0,
+        output_price=456.0,
+    )
+
+    no_price = RawModel(id="server/no-meta")
+    missing = _synth_model(
+        "openrouter",
+        "server/no-meta",
+        "server/no-meta",
+        template=template,
+        source=no_price,
+    )
+    assert missing.input_price == 123.0
+    assert missing.output_price == 456.0
+    assert missing.thinking == "max"
+    assert missing.supports_images is True
+
+    # Present metadata still overrides the template.
+    with_price = RawModel(
+        id="server/x", input_price=0.25, output_price=0.75, reasoning_effort="low"
+    )
+    present = _synth_model(
+        "openrouter", "server/x", "server/x", template=template, source=with_price
+    )
+    assert present.input_price == pytest.approx(0.25)
+    assert present.output_price == pytest.approx(0.75)
+    assert present.thinking == "low"
+
+    # No template at all -> bare default 0.0.
+    bare = _synth_model("openrouter", "z", "z", source=no_price)
+    assert bare.input_price == 0.0
+    assert bare.output_price == 0.0
 
 
 @pytest.mark.asyncio
