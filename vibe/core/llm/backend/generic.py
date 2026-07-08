@@ -177,6 +177,13 @@ class OpenAIAdapter(APIAdapter):
             extra_body,
         )
 
+        # max→xhigh; value rejection self-heals via _retry_body_for_effort.
+        # Skip when caller set it via extra_body (caller owns the format).
+        if params.thinking != "off" and "reasoning_effort" not in payload:
+            payload["reasoning_effort"] = (
+                "xhigh" if params.thinking == "max" else params.thinking
+            )
+
         if enable_streaming:
             payload["stream"] = True
             stream_options = {"include_usage": True}
