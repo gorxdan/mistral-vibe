@@ -489,7 +489,10 @@ async def test_act_persists_transcript_when_cancelled_mid_turn(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_rate_limit(observer_capture) -> None:
+async def test_rate_limit(observer_capture, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Grace disabled (0): this test asserts the terminal RateLimitError surfaces,
+    # not the backoff-and-retry path. With grace on, the 5s+10s sleeps time out.
+    monkeypatch.setattr("vibe.core.agent_loop._RATE_LIMIT_GRACE_RETRIES", 0)
     observed, observer = observer_capture
     response = httpx.Response(
         HTTPStatus.TOO_MANY_REQUESTS, request=httpx.Request("POST", "http://test")

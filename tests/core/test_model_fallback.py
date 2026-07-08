@@ -34,7 +34,12 @@ def _loop(fallbacks: list[str], *, models: list[ModelConfig] | None = None):
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_fails_over_to_fallback_and_retries() -> None:
+async def test_rate_limit_fails_over_to_fallback_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Grace is disabled (0) so this exercises failover in isolation; the grace
+    # period has its own dedicated test below.
+    monkeypatch.setattr("vibe.core.agent_loop._RATE_LIMIT_GRACE_RETRIES", 0)
     loop = _loop(["backup"])
     calls = {"turn": 0}
 
@@ -57,8 +62,10 @@ async def test_rate_limit_fails_over_to_fallback_and_retries() -> None:
 
 @pytest.mark.asyncio
 async def test_rate_limit_with_no_fallback_surfaces_error(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Grace disabled to test failover-exhaustion in isolation.
+    monkeypatch.setattr("vibe.core.agent_loop._RATE_LIMIT_GRACE_RETRIES", 0)
     # Single configured model: no fallback_models AND no alternatives for
     # headless auto-recovery, so the error surfaces with the actionable hint.
     loop = _loop([], models=[_model("primary")])
@@ -85,7 +92,11 @@ async def test_rate_limit_with_no_fallback_surfaces_error(
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_headless_auto_recovers_to_available_model() -> None:
+async def test_rate_limit_headless_auto_recovers_to_available_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Grace disabled to test headless auto-recovery in isolation.
+    monkeypatch.setattr("vibe.core.agent_loop._RATE_LIMIT_GRACE_RETRIES", 0)
     # Headless (no rate_limit_callback) with no fallback_models configured but a
     # second available model present: a 429 should auto-recover to it instead of
     # dead-ending. This closes the gap where ACP/workflows/forked sessions failed
@@ -113,7 +124,11 @@ async def test_rate_limit_headless_auto_recovers_to_available_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_prompts_model_switch_and_retries() -> None:
+async def test_rate_limit_prompts_model_switch_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Grace disabled to test the prompt path in isolation.
+    monkeypatch.setattr("vibe.core.agent_loop._RATE_LIMIT_GRACE_RETRIES", 0)
     # No automatic fallback, but a rate_limit_callback is wired: a 429 should pop
     # the model-switch dialog, switch to the chosen model, and retry the turn.
     loop = _loop([])
@@ -151,7 +166,11 @@ async def test_rate_limit_prompts_model_switch_and_retries() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_dialog_declined_surfaces_error() -> None:
+async def test_rate_limit_dialog_declined_surfaces_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Grace disabled to test dialog-decline in isolation.
+    monkeypatch.setattr("vibe.core.agent_loop._RATE_LIMIT_GRACE_RETRIES", 0)
     # User cancels the dialog (callback returns None) → surface the error.
     loop = _loop([])
 
@@ -169,6 +188,63 @@ async def test_rate_limit_dialog_declined_surfaces_error() -> None:
     with pytest.raises(RateLimitError):
         _ = [e async for e in loop._conversation_loop("hi")]
     assert loop._fallback_model_override is None
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_grace_retries_same_model_before_failover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # grace=2: 3 consecutive 429s (2 grace + 1 failover) recover to the fallback
+    # without prompting the user.
+    monkeypatch.setattr("vibe.core.agent_loop._RATE_LIMIT_GRACE_RETRIES", 2)
+    monkeypatch.setattr("vibe.core.agent_loop._RATE_LIMIT_GRACE_BASE_DELAY", 0.0)
+    loop = _loop(["backup"])
+    calls = {"turn": 0}
+
+    async def fake_turn() -> AsyncGenerator[BaseEvent, None]:
+        calls["turn"] += 1
+        if calls["turn"] <= 3:
+            raise RateLimitError("local", "primary")
+        return
+        yield  # pragma: no cover
+
+    loop._perform_llm_turn = fake_turn  # type: ignore[method-assign]
+
+    events = [e async for e in loop._conversation_loop("hi")]
+
+    # 3 rate-limited turns (2 absorbed by grace on the primary, 1 failover to
+    # backup) + a 4th succeeding turn on the backup.
+    assert calls["turn"] == 4
+    assert loop._fallback_model_override is not None
+    assert loop._fallback_model_override.alias == "backup"
+    assert events
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_grace_recovers_without_failover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The common case: a single transient 429. Grace absorbs it on the same
+    # model — no fallback override is set, no model switch occurs.
+    monkeypatch.setattr("vibe.core.agent_loop._RATE_LIMIT_GRACE_RETRIES", 2)
+    monkeypatch.setattr("vibe.core.agent_loop._RATE_LIMIT_GRACE_BASE_DELAY", 0.0)
+    loop = _loop(["backup"])
+    calls = {"turn": 0}
+
+    async def fake_turn() -> AsyncGenerator[BaseEvent, None]:
+        calls["turn"] += 1
+        if calls["turn"] == 1:
+            raise RateLimitError("local", "primary")
+        return
+        yield  # pragma: no cover
+
+    loop._perform_llm_turn = fake_turn  # type: ignore[method-assign]
+
+    events = [e async for e in loop._conversation_loop("hi")]
+
+    assert calls["turn"] == 2, "grace retried the same model once"
+    assert loop._fallback_model_override is None, "no failover on a transient blip"
+    assert events
 
 
 @pytest.mark.asyncio
