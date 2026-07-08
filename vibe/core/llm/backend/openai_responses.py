@@ -601,7 +601,7 @@ class OpenAIResponsesAdapter(APIAdapter):
             "parameters": tool.function.parameters,
         }
 
-    def build_payload(  # noqa: PLR0913
+    def build_payload(
         self,
         *,
         model_name: str,
