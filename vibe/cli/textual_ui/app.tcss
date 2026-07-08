@@ -1793,6 +1793,15 @@ NarratorStatus {
     border: none;
 }
 
+/* The list never takes focus (the filter input keeps it), and an unfocused
+   OptionList dims its cursor to the blurred style — invisible on ansi themes.
+   Pin the focused cursor look so arrow-key navigation is always visible. */
+#modelpicker-options > .option-list--option-highlighted {
+    color: $block-cursor-foreground;
+    background: $block-cursor-background;
+    text-style: $block-cursor-text-style;
+}
+
 .modelpicker-help {
     width: 100%;
     height: auto;

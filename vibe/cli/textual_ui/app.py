@@ -4657,7 +4657,12 @@ class VibeApp(App):
 
     def _handle_model_picker_app_escape(self) -> None:
         def _close() -> None:
-            self.query_one(ModelPickerApp).post_message(ModelPickerApp.Cancelled())
+            picker = self.query_one(ModelPickerApp)
+            # First escape clears a typed filter (mistype recovery); a second
+            # escape (or escape with no filter) cancels the picker.
+            if picker.clear_filter():
+                return
+            picker.post_message(ModelPickerApp.Cancelled())
 
         self._close_bottom_panel("model-picker", _close)
 
@@ -4702,6 +4707,10 @@ class VibeApp(App):
     def action_rewind_prev(self) -> None:
         if self._agent_running:
             return
+        # ctrl+p/alt+up are app-priority bindings — don't hijack rewind while a
+        # picker or other bottom app owns the keyboard.
+        if self._current_bottom_app not in {BottomApp.Input, BottomApp.Rewind}:
+            return
 
         user_widgets = self._get_user_message_widgets()
         if not user_widgets:
@@ -4740,6 +4749,8 @@ class VibeApp(App):
 
     def action_rewind_next(self) -> None:
         if not self._rewind_mode:
+            return
+        if self._current_bottom_app not in {BottomApp.Input, BottomApp.Rewind}:
             return
 
         if self._rewind_highlighted_widget is None:
@@ -5166,6 +5177,13 @@ class VibeApp(App):
         )
 
     def action_delete_right_or_quit(self) -> None:
+        # Bottom app open = chat input unmounted; ctrl+d must never reach the
+        # quit path — forward delete-right to the focused input instead.
+        if self._current_bottom_app != BottomApp.Input:
+            if isinstance(focused := self.focused, Input):
+                focused.action_delete_right()
+            return
+
         if (container := self._get_chat_input()) and container.value:
             if container.input_widget:
                 container.input_widget.action_delete_right()

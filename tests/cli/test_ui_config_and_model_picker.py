@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from textual.widgets import OptionList
+from textual.widgets import Input, OptionList
 
 from tests.conftest import build_test_vibe_app, build_test_vibe_config
 from vibe.cli.textual_ui.app import BottomApp
@@ -609,3 +609,258 @@ async def test_config_to_thinking_picker_select_returns_to_input() -> None:
 
         assert app._current_bottom_app == BottomApp.Input
         assert app.config.get_active_model().thinking == "medium"
+
+
+# --- model picker UX: filter-focused flow ---
+
+
+def _picker_option_list(app: Any) -> OptionList:
+    return app.query_one(ModelPickerApp).query_one(OptionList)
+
+
+def _highlighted_id(app: Any) -> str | None:
+    option = _picker_option_list(app).highlighted_option
+    return option.id if option is not None else None
+
+
+async def _open_model_picker(app: Any, pilot: Any) -> None:
+    await pilot.pause(0.1)
+    await app._show_model()
+    await pilot.pause(0.2)
+
+
+@pytest.mark.asyncio
+async def test_model_picker_highlight_visible_while_filter_focused() -> None:
+    # Cursor must be visible while the filter keeps focus — under ansi-dark the
+    # unfocused OptionList otherwise renders the highlight identical to siblings.
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            app.theme = "ansi-dark"
+            await _open_model_picker(app, pilot)
+
+            assert isinstance(app.focused, Input)
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            option_list = _picker_option_list(app)
+            highlighted = option_list.highlighted
+            assert highlighted is not None
+            # Compare against a row that is neither highlighted nor the current
+            # model (the current model renders bold regardless of highlight).
+            other = next(
+                i
+                for i, option in enumerate(option_list.options)
+                if not option.disabled and i != highlighted and option.id != "alpha"
+            )
+            region = option_list.content_region
+
+            def visual(row: int) -> tuple[Any, ...]:
+                # get_style_at attaches per-row click meta; compare only the
+                # visible attributes.
+                style = app.screen.get_style_at(region.x + 4, region.y + row)
+                return (style.color, style.bgcolor, style.bold, style.reverse)
+
+            assert visual(highlighted) != visual(other)
+
+
+@pytest.mark.asyncio
+async def test_model_picker_typing_preserves_arrow_navigation() -> None:
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await _open_model_picker(app, pilot)
+
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            assert _highlighted_id(app) == "beta"
+
+            # Narrowing the filter (all models still match) keeps the user's
+            # arrow-navigated position instead of snapping back to the current model.
+            await pilot.press("m", "o", "d", "e", "l")
+            await pilot.pause(0.2)
+            assert _highlighted_id(app) == "beta"
+
+            with patch("vibe.cli.textual_ui.app.VibeConfig.save_updates") as mock_save:
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+                mock_save.assert_called_once_with({"active_model": "beta"})
+
+
+@pytest.mark.asyncio
+async def test_model_picker_filtering_anchors_first_match() -> None:
+    models = [
+        ModelConfig(name="model-a", provider="mistral", alias="alpha"),
+        ModelConfig(name="model-b", provider="mistral", alias="beta"),
+        ModelConfig(name="model-c", provider="mistral", alias="gamma"),
+    ]
+    config = build_test_vibe_config(models=models, active_model="beta")
+    with _no_discovery():
+        app = build_test_vibe_app(config=config)
+        async with app.run_test() as pilot:
+            await _open_model_picker(app, pilot)
+            assert _highlighted_id(app) == "beta"
+
+            await pilot.press("m", "o", "d", "e", "l")
+            await pilot.pause(0.2)
+            assert _highlighted_id(app) == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_model_picker_tab_keeps_filter_focus() -> None:
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await _open_model_picker(app, pilot)
+
+            assert _picker_option_list(app).can_focus is False
+            await pilot.press("tab")
+            await pilot.pause(0.1)
+            focused = app.focused
+            assert isinstance(focused, Input)
+            assert focused.id == "modelpicker-filter"
+
+            await pilot.press("down")
+            await pilot.pause(0.1)
+            assert _highlighted_id(app) == "beta"
+
+
+@pytest.mark.asyncio
+async def test_model_picker_zero_match_shows_empty_state() -> None:
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await _open_model_picker(app, pilot)
+
+            await pilot.press("z", "z", "z")
+            await pilot.pause(0.2)
+            picker = app.query_one(ModelPickerApp)
+            assert _selectable_option_ids(picker) == []
+            assert 'No models match "zzz"' in _disabled_option_labels(picker)
+
+            with patch("vibe.cli.textual_ui.app.VibeConfig.save_updates") as mock_save:
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+                mock_save.assert_not_called()
+            assert app._current_bottom_app == BottomApp.ModelPicker
+
+
+@pytest.mark.asyncio
+async def test_model_picker_multiword_filter_order_independent() -> None:
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_mixed_provider_models())
+        async with app.run_test() as pilot:
+            await _open_model_picker(app, pilot)
+
+            picker = app.query_one(ModelPickerApp)
+            filter_input = picker.query_one(Input)
+            for query in ("mistral model-b", "model-b mistral"):
+                filter_input.value = query
+                await pilot.pause(0.2)
+                assert _selectable_option_ids(picker) == ["beta"], query
+
+
+@pytest.mark.asyncio
+async def test_model_picker_escape_clears_filter_before_cancel() -> None:
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await _open_model_picker(app, pilot)
+
+            await pilot.press("b", "e", "t")
+            await pilot.pause(0.2)
+            picker = app.query_one(ModelPickerApp)
+            assert _selectable_option_ids(picker) == ["beta"]
+
+            with patch("vibe.cli.textual_ui.app.VibeConfig.save_updates") as mock_save:
+                await pilot.press("escape")
+                await pilot.pause(0.2)
+                assert app._current_bottom_app == BottomApp.ModelPicker
+                assert picker.query_one(Input).value == ""
+                assert _selectable_option_ids(picker) == ["alpha", "beta", "gamma"]
+                assert _highlighted_id(app) == "alpha"
+
+                await pilot.press("escape")
+                await pilot.pause(0.2)
+                assert app._current_bottom_app == BottomApp.Input
+                mock_save.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_picker_ctrl_d_does_not_quit() -> None:
+    config = _make_config_with_models()
+    config.ask_confirmation_on_exit = False
+    with _no_discovery():
+        app = build_test_vibe_app(config=config)
+        async with app.run_test() as pilot:
+            await _open_model_picker(app, pilot)
+
+            await pilot.press("ctrl+d")
+            await pilot.pause(0.2)
+            assert app._current_bottom_app == BottomApp.ModelPicker
+            assert len(app.query(ModelPickerApp)) == 1
+
+            # With filter text, ctrl+d acts as delete-right inside the filter.
+            await pilot.press("b", "e", "t", "a")
+            await pilot.press("home")
+            await pilot.press("ctrl+d")
+            await pilot.pause(0.2)
+            picker = app.query_one(ModelPickerApp)
+            assert picker.query_one(Input).value == "eta"
+
+
+@pytest.mark.asyncio
+async def test_model_picker_ctrl_home_end_jump() -> None:
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_mixed_provider_models())
+        async with app.run_test() as pilot:
+            await _open_model_picker(app, pilot)
+
+            await pilot.press("ctrl+end")
+            await pilot.pause(0.1)
+            assert _highlighted_id(app) == "gamma"
+
+            await pilot.press("ctrl+home")
+            await pilot.pause(0.1)
+            assert _highlighted_id(app) == "alpha"
+
+
+@pytest.mark.asyncio
+async def test_model_picker_ctrl_p_stays_in_picker() -> None:
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await _open_model_picker(app, pilot)
+
+            await pilot.press("ctrl+p")
+            await pilot.pause(0.1)
+            assert app._current_bottom_app == BottomApp.ModelPicker
+            assert app._rewind_mode is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "expected_updates"),
+    [
+        ("judge", {"safety_judge": {"model": "beta"}}),
+        ("subagent", {"subagent_model": "beta"}),
+        ("grunt", {"grunt_model": "beta"}),
+    ],
+)
+async def test_model_picker_target_persists_to_right_key(
+    target: str, expected_updates: dict[str, Any]
+) -> None:
+    with _no_discovery():
+        app = build_test_vibe_app(config=_make_config_with_models())
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            await app._switch_to_model_picker_app(target=target)
+            await pilot.pause(0.2)
+
+            await pilot.press("down")
+            with patch("vibe.cli.textual_ui.app.VibeConfig.save_updates") as mock_save:
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+                mock_save.assert_called_once_with(expected_updates)
+
+            assert app._model_picker_target == "active"
+            assert app._current_bottom_app == BottomApp.Input
