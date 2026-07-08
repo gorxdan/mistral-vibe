@@ -8,6 +8,16 @@ references, and call paths; then read enough code to define independent
 questions. Launch only if that reconnaissance shows real parallel work. A broad
 request ("analyze this repo") or a high file count is not sufficient by itself.
 
+## One question per agent — fan out for breadth
+
+Each agent runs in its own context window, so breadth comes from launching more
+agents, not from bigger prompts. A fat brief — "analyze the whole architecture" or
+six investigation areas in one prompt — forces shallow coverage of every area and
+is the single most common authoring failure. Split it: one mechanism, one area,
+one repository per agent, then `parallel(*[agent(...) for x in areas])`. Name
+exact files and symbols in each prompt. If a brief answers "and also", it is two
+agents.
+
 ## When to Use This Tool
 
 - **Multi-agent tasks**: reconnaissance reveals 3+ independent questions or separable implementation areas
