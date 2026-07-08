@@ -153,13 +153,15 @@ def _ctx_from_models_item(item: dict[str, Any]) -> int | None:
     return None
 
 
-# OpenRouter reasoning-effort names → Vibe ThinkingLevel (xhigh→max, none→off).
+# Provider effort names → Vibe ThinkingLevel (xhigh/ultra→max, none/minimal→off).
 _EFFORT_TO_THINKING: dict[str, ThinkingLevel] = {
     "max": "max",
+    "ultra": "max",
     "xhigh": "max",
     "high": "high",
     "medium": "medium",
     "low": "low",
+    "minimal": "off",
     "none": "off",
 }
 
@@ -287,6 +289,38 @@ def _chatgpt_models_url(provider: ProviderConfig) -> str:
     return f"{base}{separator}{query}"
 
 
+def _chatgpt_reasoning_effort(item: dict[str, Any]) -> ThinkingLevel | None:
+    # codex reports default_reasoning_level as a string; high when supported but unset.
+    default = item.get("default_reasoning_level")
+    if isinstance(default, str):
+        return _EFFORT_TO_THINKING.get(default.lower())
+    levels = item.get("supported_reasoning_levels")
+    if isinstance(levels, list) and levels:
+        return "high"
+    return None
+
+
+def _chatgpt_supports_images(item: dict[str, Any]) -> bool | None:
+    modalities = item.get("input_modalities")
+    if not isinstance(modalities, list):
+        return None
+    return "image" in modalities
+
+
+def _meta_from_chatgpt_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Duck-typed extraction of codex /models metadata (display_name, reasoning,
+    image support). Codex reports no pricing, so prices stay None.
+    """
+    name = item.get("display_name")
+    return {
+        "display_name": name if isinstance(name, str) and name else None,
+        "input_price": None,
+        "output_price": None,
+        "supports_images": _chatgpt_supports_images(item),
+        "reasoning_effort": _chatgpt_reasoning_effort(item),
+    }
+
+
 async def _get_json(
     client: httpx.AsyncClient, url: str, headers: dict[str, str], provider_name: str
 ) -> Any | None:
@@ -361,7 +395,18 @@ async def _fetch_chatgpt_models(
         slug = item.get("slug")
         if not isinstance(slug, str):
             continue
-        out.append(RawModel(slug, _ctx_value(item, _CHATGPT_CTX_KEYS)))
+        meta = _meta_from_chatgpt_item(item)
+        out.append(
+            RawModel(
+                id=slug,
+                context_length=_ctx_value(item, _CHATGPT_CTX_KEYS),
+                display_name=meta["display_name"],
+                input_price=meta["input_price"],
+                output_price=meta["output_price"],
+                supports_images=meta["supports_images"],
+                reasoning_effort=meta["reasoning_effort"],
+            )
+        )
     return out
 
 

@@ -1062,6 +1062,68 @@ async def test_fetch_models_parses_chatgpt_models_endpoint() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_fetch_models_extracts_chatgpt_metadata() -> None:
+    # codex /models reports display_name, default_reasoning_level,
+    # supported_reasoning_levels, and input_modalities (per codex's ModelInfo).
+    _seed_chatgpt_session()
+    respx.get(CHATGPT_MODELS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "slug": "gpt-5.5",
+                        "display_name": "GPT-5.5",
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": [
+                            {"effort": "low"},
+                            {"effort": "medium"},
+                            {"effort": "high"},
+                        ],
+                        "input_modalities": ["text", "image"],
+                        "visibility": "list",
+                        "context_window": 272000,
+                    },
+                    {
+                        "slug": "gpt-5.4",
+                        "display_name": "GPT-5.4",
+                        "default_reasoning_level": "minimal",
+                        "supported_reasoning_levels": [{"effort": "minimal"}],
+                        "input_modalities": ["text"],
+                        "visibility": "list",
+                    },
+                    {
+                        "slug": "plain-model",
+                        "display_name": "Plain",
+                        "visibility": "list",
+                    },
+                ]
+            },
+        )
+    )
+    out = {m.id: m for m in await fetch_models(_chatgpt_provider())}
+
+    big = out["gpt-5.5"]
+    assert big.display_name == "GPT-5.5"
+    assert big.reasoning_effort == "medium"
+    assert big.supports_images is True
+    assert big.context_length == 272000
+    assert big.input_price is None and big.output_price is None  # codex has no pricing
+
+    # minimal -> off (Vibe has no minimal tier).
+    small = out["gpt-5.4"]
+    assert small.reasoning_effort == "off"
+    assert small.supports_images is False
+
+    # No reasoning fields advertised -> None (caller falls back to template/off).
+    plain = out["plain-model"]
+    assert plain.reasoning_effort is None
+    assert plain.supports_images is None
+    assert plain.display_name == "Plain"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_fetch_models_chatgpt_sends_oauth_bearer() -> None:
     _seed_chatgpt_session()
     route = respx.get(CHATGPT_MODELS_URL).mock(
