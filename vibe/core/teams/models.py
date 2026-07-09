@@ -12,6 +12,18 @@ class TaskStatus(StrEnum):
     BLOCKED = auto()
 
 
+class TeamSafetyMode(StrEnum):
+    @staticmethod
+    def _generate_next_value_(
+        name: str, start: int, count: int, last_values: list[str]
+    ) -> str:
+        del start, count, last_values
+        return name.lower().replace("_", "-")
+
+    SHARED = auto()
+    SHARED_ASK = auto()
+
+
 class MessageKind(StrEnum):
     """Structured message kinds for typed teammate ↔ lead communication.
 
@@ -61,6 +73,7 @@ class TeamMember(BaseModel):
     spawn_prompt: str | None = None
     max_turns: int | None = None
     worker: bool = False
+    safety_mode: TeamSafetyMode = TeamSafetyMode.SHARED
     last_task_id: str | None = None
     last_claimed_at: float | None = None
 

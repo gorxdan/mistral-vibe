@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from vibe.core.hooks.models import HookConfigResult
     from vibe.core.loop import Scheduler
     from vibe.core.skills.manager import SkillManager
+    from vibe.core.teams.models import TeamSafetyMode
     from vibe.core.telemetry.types import LaunchContext, TerminalEmulator
     from vibe.core.tools.background import BackgroundRegistry
     from vibe.core.tools.mcp.pool import MCPSessionPool
@@ -96,9 +97,10 @@ class InvokeContext:
     # teammates — the teammate-only `team` tool is unavailable to the lead.
     team_dir_callback: Callable[[], str | None] | None = field(default=None)
     # Spawns a teammate from host-side tools.
-    # Args: name, prompt, agent, max_turns, worker (queue worker when True).
+    # Args: name, prompt, agent, max_turns, worker, safety_mode.
     team_spawn_callback: (
-        Callable[[str, str, str, int, bool], Awaitable[dict[str, Any]]] | None
+        Callable[[str, str, str, int, bool, TeamSafetyMode], Awaitable[dict[str, Any]]]
+        | None
     ) = field(default=None)
     # Resolves the host's LLM safety judge (or None when disabled). Used by the
     # workflow runtime to judge each isolated agent's prompt at spawn time —

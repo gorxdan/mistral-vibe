@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from vibe.core.teams.models import TeamSafetyMode
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory, _team_status
 
 if TYPE_CHECKING:
@@ -96,11 +97,33 @@ class _FakeTeamMember:
     agent_type: str = "auto-approve"
     status: str = "running"
     pid: int | None = None
+    spawn_prompt: str | None = None
+    max_turns: int | None = None
+    worker: bool = False
+    safety_mode: TeamSafetyMode = TeamSafetyMode.SHARED
+    last_task_id: str | None = None
+    last_claimed_at: float | None = None
+
+
+@dataclass
+class _FakeTeamTask:
+    id: str
+    assignee: str | None = None
+    claimed_at: float | None = None
+
+
+class _FakeTaskStore:
+    def __init__(self) -> None:
+        self.tasks: list[_FakeTeamTask] = []
+
+    def get_all_tasks(self) -> list[_FakeTeamTask]:
+        return list(self.tasks)
 
 
 class _FakeTeamManager:
     def __init__(self) -> None:
         self.members: list[_FakeTeamMember] = []
+        self.task_store = _FakeTaskStore()
         self.stopped: list[str] = []
 
     def get_members(self) -> list[_FakeTeamMember]:
@@ -223,6 +246,35 @@ def test_agent_task_id_uses_live_prefix():
     )
     [agent] = reg.list_tasks(category=TaskCategory.AGENT)
     assert agent.task_id == "wf-2/live-abc"
+
+
+def test_team_entry_includes_observability_details():
+    reg, _wf, team, _loop = _registry_with_all()
+    claimed_at = time.time() - 30
+    team.members.append(
+        _FakeTeamMember(
+            name="alice",
+            spawn_prompt="inspect queue",
+            max_turns=7,
+            worker=True,
+            safety_mode=TeamSafetyMode.SHARED_ASK,
+            last_task_id="task-1",
+            last_claimed_at=claimed_at,
+        )
+    )
+    team.task_store.tasks.append(
+        _FakeTeamTask(id="task-2", assignee="alice", claimed_at=time.time())
+    )
+
+    [entry] = reg.list_tasks(category=TaskCategory.TEAM)
+
+    assert entry.detail["spawn_prompt"] == "inspect queue"
+    assert entry.detail["max_turns"] == 7
+    assert entry.detail["worker"] is True
+    assert entry.detail["safety_mode"] == "shared-ask"
+    assert entry.detail["last_task_id"] == "task-1"
+    assert entry.detail["last_claimed_at"] == claimed_at
+    assert entry.detail["lease_age_s"] is not None
 
 
 # ---------------------------------------------------------------------------

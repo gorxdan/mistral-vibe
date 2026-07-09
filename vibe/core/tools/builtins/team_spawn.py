@@ -5,6 +5,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from vibe.core.teams.models import TeamSafetyMode
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -41,6 +42,13 @@ class TeamSpawnArgs(BaseModel):
             "(default), run a single -p prompt and exit."
         ),
     )
+    safety_mode: TeamSafetyMode = Field(
+        default=TeamSafetyMode.SHARED,
+        description=(
+            "Team safety mode. shared is today's behavior. shared-ask routes "
+            "ASK-level bash/edit/write_file actions through the lead mailbox."
+        ),
+    )
 
 
 class TeamSpawnResult(BaseModel):
@@ -50,6 +58,7 @@ class TeamSpawnResult(BaseModel):
     team_dir: str
     message: str
     worker: bool = False
+    safety_mode: TeamSafetyMode = TeamSafetyMode.SHARED
 
 
 class TeamSpawnConfig(BaseToolConfig):
@@ -101,11 +110,17 @@ class TeamSpawn(
                 "(no team spawn callback wired)."
             )
         result = await ctx.team_spawn_callback(
-            args.name, args.prompt, args.agent, args.max_turns, args.worker
+            args.name,
+            args.prompt,
+            args.agent,
+            args.max_turns,
+            args.worker,
+            args.safety_mode,
         )
         yield TeamSpawnResult(
             name=str(result["name"]),
             team_dir=str(result["team_dir"]),
             message=str(result["message"]),
             worker=bool(result.get("worker", args.worker)),
+            safety_mode=TeamSafetyMode(result.get("safety_mode", args.safety_mode)),
         )

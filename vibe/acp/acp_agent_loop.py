@@ -152,7 +152,7 @@ from vibe.core.session.saved_sessions import (
 from vibe.core.session.session_loader import SessionLoader
 from vibe.core.session.title_format import format_session_title
 from vibe.core.skills.manager import SkillManager
-from vibe.core.teams import TeamManager
+from vibe.core.teams import TeamManager, TeamSafetyMode
 from vibe.core.telemetry.build_metadata import build_launch_context
 from vibe.core.telemetry.send import TelemetryClient
 from vibe.core.telemetry.types import LaunchContext
@@ -775,7 +775,9 @@ class VibeAcpAgentLoop(AcpAgent):
 
     def _make_team_spawn_callback(
         self, session: AcpSessionLoop
-    ) -> Callable[[str, str, str, int, bool], Awaitable[dict[str, Any]]]:
+    ) -> Callable[
+        [str, str, str, int, bool, TeamSafetyMode], Awaitable[dict[str, Any]]
+    ]:
         def hook_context() -> HookSessionContext:
             transcript = ""
             logger = session.agent_loop.session_logger
@@ -789,7 +791,12 @@ class VibeAcpAgentLoop(AcpAgent):
             )
 
         async def spawn(
-            name: str, prompt: str, agent: str, max_turns: int, worker: bool = False
+            name: str,
+            prompt: str,
+            agent: str,
+            max_turns: int,
+            worker: bool = False,
+            safety_mode: TeamSafetyMode = TeamSafetyMode.SHARED,
         ) -> dict[str, Any]:
             if session.team_manager is None:
                 session.team_manager = TeamManager(
@@ -801,7 +808,12 @@ class VibeAcpAgentLoop(AcpAgent):
                 if registry is not None:
                     registry.attach_team_manager(lambda: session.team_manager)
             await session.team_manager.spawn_teammate(
-                name, prompt, agent=agent, max_turns=max_turns, worker=worker
+                name,
+                prompt,
+                agent=agent,
+                max_turns=max_turns,
+                worker=worker,
+                safety_mode=safety_mode,
             )
             kind = "worker" if worker else "teammate"
             return {
@@ -809,6 +821,7 @@ class VibeAcpAgentLoop(AcpAgent):
                 "team_dir": str(session.team_manager.team_dir),
                 "message": f"Spawned {kind} `{name}`.",
                 "worker": worker,
+                "safety_mode": safety_mode.value,
             }
 
         return spawn

@@ -11,6 +11,7 @@ from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.lsp._integration import notify_file_changed
 from vibe.core.rewind.manager import FileSnapshot
 from vibe.core.scratchpad import is_scratchpad_path
+from vibe.core.tools._team_safety import enforce_shared_ask
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -97,7 +98,12 @@ class WriteFile(
         self, args: WriteFileArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | WriteFileResult, None]:
         file_path, content_bytes = self._prepare_and_validate_path(args)
+        permission = self.resolve_permission(args)
+        await enforce_shared_ask(
+            self.get_name(), str(file_path), permission, self.config.permission
+        )
 
+        self._ensure_parent_dir(file_path)
         await self._write_file(args, file_path)
         await notify_file_changed(file_path, args.content)
 
@@ -110,6 +116,10 @@ class WriteFile(
         yield WriteFileResult(
             path=str(file_path), bytes_written=content_bytes, content=args.content
         )
+
+    def _ensure_parent_dir(self, file_path: Path) -> None:
+        if self.config.create_parent_dirs:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _prepare_and_validate_path(self, args: WriteFileArgs) -> tuple[Path, int]:
         if not args.path.strip():
@@ -131,10 +141,7 @@ class WriteFile(
             raise ToolError(
                 f"File '{file_path}' already exists. Use edit to modify it."
             )
-
-        if self.config.create_parent_dirs:
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-        elif not file_path.parent.exists():
+        if not self.config.create_parent_dirs and not file_path.parent.exists():
             raise ToolError(f"Parent directory does not exist: {file_path.parent}")
 
         return file_path, content_bytes

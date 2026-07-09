@@ -28,7 +28,7 @@ from vibe.core.loop import LoopManager
 from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
 from vibe.core.output_formatters import OutputFormatter, create_formatter
 from vibe.core.schedule_driver import ScheduleDriver
-from vibe.core.teams import TeamManager
+from vibe.core.teams import TeamManager, TeamSafetyMode
 from vibe.core.telemetry.build_metadata import build_launch_context
 from vibe.core.telemetry.types import ClientMetadata
 from vibe.core.teleport.types import (
@@ -355,11 +355,21 @@ def run_programmatic(
         return team_manager
 
     async def spawn_team(
-        name: str, prompt: str, agent: str, max_turns: int, worker: bool = False
+        name: str,
+        prompt: str,
+        agent: str,
+        max_turns: int,
+        worker: bool = False,
+        safety_mode: TeamSafetyMode = TeamSafetyMode.SHARED,
     ) -> dict[str, Any]:
         manager = ensure_team_manager()
         await manager.spawn_teammate(
-            name, prompt, agent=agent, max_turns=max_turns, worker=worker
+            name,
+            prompt,
+            agent=agent,
+            max_turns=max_turns,
+            worker=worker,
+            safety_mode=safety_mode,
         )
         kind = "worker" if worker else "teammate"
         return {
@@ -367,6 +377,7 @@ def run_programmatic(
             "team_dir": str(manager.team_dir),
             "message": f"Spawned {kind} `{name}`.",
             "worker": worker,
+            "safety_mode": safety_mode.value,
         }
 
     async def cleanup_team() -> None:

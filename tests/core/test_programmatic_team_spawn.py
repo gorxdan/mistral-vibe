@@ -8,6 +8,7 @@ from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.programmatic import ProgrammaticOptions, run_programmatic
+from vibe.core.teams.models import TeamSafetyMode
 from vibe.core.types import Backend, FunctionCall, OutputFormat, ToolCall
 
 
@@ -16,7 +17,7 @@ def test_programmatic_team_spawn_tool_creates_active_team(
 ) -> None:
     monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe-home"))
 
-    spawned: list[tuple[str, str, str, int, bool]] = []
+    spawned: list[tuple[str, str, str, int, bool, TeamSafetyMode]] = []
 
     async def fake_spawn(
         self,
@@ -26,8 +27,9 @@ def test_programmatic_team_spawn_tool_creates_active_team(
         agent: str,
         max_turns: int,
         worker: bool = False,
+        safety_mode: TeamSafetyMode = TeamSafetyMode.SHARED,
     ):
-        spawned.append((name, prompt, agent, max_turns, worker))
+        spawned.append((name, prompt, agent, max_turns, worker, safety_mode))
         return name
 
     monkeypatch.setattr(
@@ -70,4 +72,13 @@ def test_programmatic_team_spawn_tool_creates_active_team(
             ),
         )
 
-    assert spawned == [("reviewer", "Review the perf changes.", "explore", 2, False)]
+    assert spawned == [
+        (
+            "reviewer",
+            "Review the perf changes.",
+            "explore",
+            2,
+            False,
+            TeamSafetyMode.SHARED,
+        )
+    ]
