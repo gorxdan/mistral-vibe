@@ -2148,6 +2148,28 @@ async def main():
     assert result.return_value == {"results": [0, 1, 2]}
 
 
+async def test_board_survives_snapshot_restore(runtime: WorkflowRuntime) -> None:
+    # Board channels roundtrip through snapshot/restore so multi-phase
+    # scripts that use post_message resume with their handoff data intact.
+    runtime._board.post("findings", {"risk": "high"})
+    runtime._board.post("findings", "second")
+    runtime._board.post("notes", "misc")
+    runtime._budget.reserve(100)
+
+    snap = runtime.snapshot("wf-snap", "src")
+
+    fresh = WorkflowRuntime(
+        agent_loop_factory=runtime.agent_loop_factory, budget_total=runtime.budget_total
+    )
+    fresh.restore_from_snapshot(snap)
+
+    findings = fresh._board.fetch("findings")
+    notes = fresh._board.fetch("notes")
+    assert [m for m in findings if isinstance(m, dict)] == [{"risk": "high"}]
+    assert "second" in findings
+    assert notes == ["misc"]
+
+
 class _FakeProfile:
     def __init__(self, overrides: dict[str, Any]) -> None:
         self.overrides = overrides
@@ -2483,7 +2505,8 @@ async def test_worker_spawn_args_forbids_extra_fields() -> None:
 def test_create_real_loop_caps_turns() -> None:
     from unittest.mock import MagicMock, patch
 
-    from vibe.core.workflows.runtime import DEFAULT_ISOLATED_MAX_TURNS, WorkflowRuntime
+    from vibe.core.workflows._limits import DEFAULT_ISOLATED_MAX_TURNS
+    from vibe.core.workflows.runtime import WorkflowRuntime
 
     rt = WorkflowRuntime(agent_loop_factory=None)
     with patch("vibe.core.agent_loop.AgentLoop") as mock_loop:

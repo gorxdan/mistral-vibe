@@ -167,11 +167,9 @@ class WorkflowRunSnapshot(BaseModel):
     budget_total: int | None = None
     budget_spent: int = 0
     cached_results: list[CachedAgentResult] = Field(default_factory=list)
-    # The script's return value, captured so a completed run's result survives
-    # session exit and can be re-read after resume. None until the run finishes
-    # (or for runs that failed/cancelled before main() returned). Coerced to a
-    # JSON-safe form at snapshot time, so a non-serializable return value degrades
-    # to its string form rather than dropping the whole snapshot.
+    # Inter-agent message board channels, captured so multi-phase scripts that
+    # use post_message survive resume. Empty unless the script used the board.
+    board: dict[str, list[Any]] = Field(default_factory=dict)
     return_value: Any = None
 
     @property
