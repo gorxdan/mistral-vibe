@@ -177,12 +177,10 @@ class OpenAIAdapter(APIAdapter):
             extra_body,
         )
 
-        # max→xhigh; value rejection self-heals via _retry_body_for_effort.
-        # Skip when caller set it via extra_body (caller owns the format).
+        # Verbatim: xhigh/max are real API tiers. 400-rejection self-heals.
+        # Skip when the caller set it via extra_body (caller owns the format).
         if params.thinking != "off" and "reasoning_effort" not in payload:
-            payload["reasoning_effort"] = (
-                "xhigh" if params.thinking == "max" else params.thinking
-            )
+            payload["reasoning_effort"] = params.thinking
 
         if enable_streaming:
             payload["stream"] = True
@@ -290,11 +288,19 @@ _NETWORK_OP_TIMEOUT = 60.0
 _OPEN_TIMEOUT = 90.0
 
 # Reasoning-effort tiers, highest → lowest. Used to recover when a backend
-# rejects an effort value (a model without "xhigh", or codex rejecting "none"):
+# rejects an effort value (a model without "max", or codex rejecting "none"):
 # retry with the supported value nearest the rejected one. Nearest-by-tier
 # downgrades a too-high request to the model's ceiling and lifts a too-low one
-# to its floor — i.e. "xhigh if available, else the highest level the model has".
-_EFFORT_ORDER: tuple[str, ...] = ("xhigh", "high", "medium", "low", "minimal", "none")
+# to its floor — i.e. "max if available, else the highest level the model has".
+_EFFORT_ORDER: tuple[str, ...] = (
+    "max",
+    "xhigh",
+    "high",
+    "medium",
+    "low",
+    "minimal",
+    "none",
+)
 _REJECTED_EFFORT_RE = re.compile(r"unsupported value:\s*'([^']+)'", re.IGNORECASE)
 _SUPPORTED_EFFORTS_RE = re.compile(r"supported values are:\s*([^.]+)", re.IGNORECASE)
 

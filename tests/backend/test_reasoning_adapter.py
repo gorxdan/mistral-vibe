@@ -49,7 +49,7 @@ def _prepare(adapter, provider, messages, **kwargs):
 
 
 class TestReasoningEffort:
-    @pytest.mark.parametrize("level", ["low", "medium", "high"])
+    @pytest.mark.parametrize("level", ["low", "medium", "high", "xhigh", "max"])
     def test_sets_reasoning_effort(self, adapter, provider, level):
         payload = _prepare(
             adapter,
@@ -68,16 +68,16 @@ class TestReasoningEffort:
         )
         assert "reasoning_effort" not in payload
 
-    def test_max_maps_to_xhigh(self, adapter, provider):
-        # "max" requests the top tier "xhigh"; never send the literal "max".
-        # Models without xhigh are downgraded by the backend's 400 retry.
-        payload = _prepare(
-            adapter,
-            provider,
-            [LLMMessage(role=Role.USER, content="Hi")],
-            thinking="max",
-        )
-        assert payload["reasoning_effort"] == "xhigh"
+    def test_max_and_xhigh_pass_through(self, adapter, provider):
+        # Verbatim: xhigh/max are real API tiers; 400-rejection self-heals.
+        for level in ("xhigh", "max"):
+            payload = _prepare(
+                adapter,
+                provider,
+                [LLMMessage(role=Role.USER, content="Hi")],
+                thinking=level,
+            )
+            assert payload["reasoning_effort"] == level
 
 
 class TestThinkingBlocksConversion:

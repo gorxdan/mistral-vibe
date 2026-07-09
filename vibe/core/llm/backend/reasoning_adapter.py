@@ -103,10 +103,8 @@ class ReasoningAdapter(APIAdapter):
             payload["temperature"] = temperature
 
         if thinking != "off":
-            # "max" is our internal top level → request the API's top, "xhigh".
-            # Models that don't support xhigh are handled by the backend's
-            # effort-downgrade retry (falls back to the highest the model lists).
-            payload["reasoning_effort"] = "xhigh" if thinking == "max" else thinking
+            # Verbatim: xhigh/max are real API tiers. 400-rejection self-heals.
+            payload["reasoning_effort"] = thinking
 
         if tools:
             payload["tools"] = [tool.model_dump(exclude_none=True) for tool in tools]
