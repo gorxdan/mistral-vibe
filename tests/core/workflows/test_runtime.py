@@ -2212,6 +2212,44 @@ async def main():
     assert result.return_value == {"n": 0}
 
 
+async def test_team_task_noops_without_active_team(runtime: WorkflowRuntime) -> None:
+    result = await runtime.run(
+        "async def main():\n"
+        "    tid = team_task('Review the diff')\n"
+        "    return {'task_id': tid}\n"
+    )
+    assert result.return_value == {"task_id": None}
+
+
+async def test_team_task_enqueues_into_shared_task_store(
+    runtime: WorkflowRuntime, tmp_path: Any
+) -> None:
+    from vibe.core.teams.task_store import TaskStore
+
+    team_dir = tmp_path / "team"
+    team_dir.mkdir()
+    TaskStore(team_dir).add_task("pre-existing")  # so next id is task-2
+
+    runtime.parent_context = type(  # type: ignore[assignment]
+        "Ctx", (), {"team_dir_callback": staticmethod(lambda: str(team_dir))}
+    )()
+
+    result = await runtime.run(
+        "async def main():\n"
+        "    tid = team_task('Review auth module', dependencies=['task-1'])\n"
+        "    return {'task_id': tid}\n"
+    )
+
+    assert result.return_value is not None
+    task_id = result.return_value["task_id"]
+    assert task_id == "task-2"
+    store = TaskStore(team_dir)
+    task = store.get_task("task-2")
+    assert task is not None
+    assert task.description == "Review auth module"
+    assert task.dependencies == ["task-1"]
+
+
 async def test_message_board_is_shared_across_parallel_agents(
     runtime: WorkflowRuntime,
 ) -> None:

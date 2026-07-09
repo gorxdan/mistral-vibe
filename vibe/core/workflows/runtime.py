@@ -873,6 +873,26 @@ class WorkflowRuntime:
                 f"in a workflow it must run with isolation='worktree'."
             )
 
+    def _post_team_task(
+        self, description: str, dependencies: list[str] | None
+    ) -> str | None:
+        ctx = self.parent_context
+        if ctx is None or ctx.team_dir_callback is None:
+            self._log("team_task: no team active; skipped")
+            return None
+        team_dir_str = ctx.team_dir_callback()
+        if not team_dir_str:
+            self._log("team_task: no team dir; skipped")
+            return None
+        from pathlib import Path
+
+        from vibe.core.teams.task_store import TaskStore
+
+        store = TaskStore(Path(team_dir_str))
+        task = store.add_task(description, dependencies=dependencies)
+        self._log(f"team_task: enqueued {task.id}")
+        return task.id
+
     async def _judge_isolated_spawn(
         self, prompt: str, agent: str, label: str | None
     ) -> None:
@@ -2106,6 +2126,11 @@ class WorkflowRuntime:
         def _fetch_messages(channel: str) -> list[Any]:
             return self._board.fetch(channel)
 
+        def _team_task(
+            description: str, dependencies: list[str] | None = None
+        ) -> str | None:
+            return self._post_team_task(description, dependencies)
+
         injected: dict[str, Any] = {
             "agent": _agent,
             "parallel": self.parallel,
@@ -2116,6 +2141,7 @@ class WorkflowRuntime:
             "budget": ReadOnlyBudget(self._budget),
             "post_message": _post_message,
             "fetch_messages": _fetch_messages,
+            "team_task": _team_task,
             "flatten": _flatten,
             "dedup_by": _dedup_by,
             "merge_by": _merge_by,
