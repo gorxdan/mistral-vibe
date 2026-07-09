@@ -2885,6 +2885,29 @@ def test_accept_extracted_memory_word_boundary_matching() -> None:
     assert AgentLoopMemoryMixin._accept_extracted_memory(wip) is True
 
 
+def test_accept_extracted_memory_blocks_40_percent_kept() -> None:
+    from vibe.core.agent_loop_memory import AgentLoopMemoryMixin
+
+    # "blocks 40%" is a useful fact, not the "blocks 40 [tests]" one-shot
+    # signal — it must be kept, not dropped by the substring keyword.
+    pct = ExtractedMemory(
+        title="Parser coverage",
+        description="the parser blocks 40% of malformed input",
+        type=MemoryType.PROJECT,
+        body="long-term behavior",
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(pct) is True
+
+    # Control: the genuine "blocks 40 tests" one-shot signal is still dropped.
+    tests = ExtractedMemory(
+        title="Test status",
+        description="blocks 40 tests on the legacy runner",
+        type=MemoryType.PROJECT,
+        body="blocks 40 and counting",
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(tests) is False
+
+
 @pytest.mark.asyncio
 async def test_maybe_schedule_consolidation_logs_when_gated(
     monkeypatch, tmp_path, caplog

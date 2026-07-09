@@ -532,7 +532,7 @@ class AgentLoopMemoryMixin:
             "audit card",
             "audit kanban",
             "ci has external",
-            "blocks 40",
+            "blocks 40 ",  # trailing space excludes "blocks 40%" (a useful fact)
         )
         resume = ("resume", "bootstrap", "pointer", "ongoing", "still open", "wip")
         # Word-boundary match so a keyword like "wip" does not fire inside
