@@ -2830,11 +2830,17 @@ def test_accept_extracted_memory_requires_type_and_title() -> None:
     )
     assert AgentLoopMemoryMixin._accept_extracted_memory(no_title) is False
 
-    # Updates are lenient (existing entry already has type/description).
+    # Updates are lenient (existing entry already has type/description/title).
     update = ExtractedMemory(
         title="x", action="update", id="existing", body="new twist"
     )
     assert AgentLoopMemoryMixin._accept_extracted_memory(update) is True
+    update_empty_title = ExtractedMemory(
+        title="", action="update", id="existing", body="new twist"
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(update_empty_title) is True
+    update_no_id = ExtractedMemory(title="x", action="update", body="new twist")
+    assert AgentLoopMemoryMixin._accept_extracted_memory(update_no_id) is False
 
 
 def test_accept_extracted_memory_drops_oneshot_project_state() -> None:

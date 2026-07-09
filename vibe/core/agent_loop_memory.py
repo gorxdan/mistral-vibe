@@ -508,12 +508,14 @@ class AgentLoopMemoryMixin:
         from vibe.core.memory.extractor import ExtractedMemory
         from vibe.core.memory.models import MemoryType
 
-        if not isinstance(pm, ExtractedMemory) or not (pm.title or "").strip():
-            if isinstance(pm, ExtractedMemory):
-                logger.info("memory extract drop: empty title")
+        if not isinstance(pm, ExtractedMemory):
             return False
+        # Updates only need a real id (existing entry already has title/type).
         if pm.action == "update":
-            return True
+            return bool(pm.id)
+        if not (pm.title or "").strip():
+            logger.info("memory extract drop: empty title")
+            return False
         if pm.type is None or not (pm.body or "").strip():
             logger.info("memory extract drop: missing type or body (%r)", pm.title[:60])
             return False
