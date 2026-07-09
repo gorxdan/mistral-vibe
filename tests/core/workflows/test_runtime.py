@@ -2250,6 +2250,33 @@ async def test_team_task_enqueues_into_shared_task_store(
     assert task.dependencies == ["task-1"]
 
 
+async def test_recipe_find_verify_synth(runtime: WorkflowRuntime) -> None:
+    result = await runtime.run(
+        "async def main():\n"
+        "    async def synth(results):\n"
+        "        return f'synth: {len(results)}'\n"
+        "    r = await recipe('find_verify_synth',\n"
+        "        items=['topic A', 'topic B'],\n"
+        "        synth=synth)\n"
+        "    return {'result': r}\n"
+    )
+    assert result.return_value is not None
+    assert result.return_value["result"] == "synth: 2"
+
+
+async def test_recipe_rejects_unknown_name(runtime: WorkflowRuntime) -> None:
+    result = await runtime.run(
+        "async def main():\n"
+        "    try:\n"
+        "        await recipe('bogus', items=['x'])\n"
+        "        return {'error': None}\n"
+        "    except Exception as e:\n"
+        "        return {'error': str(e)}\n"
+    )
+    assert result.return_value is not None
+    assert "not a known recipe" in result.return_value["error"]
+
+
 async def test_message_board_is_shared_across_parallel_agents(
     runtime: WorkflowRuntime,
 ) -> None:
