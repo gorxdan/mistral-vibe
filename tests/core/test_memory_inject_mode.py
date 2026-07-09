@@ -144,7 +144,15 @@ def test_injected_index_clipped_while_selector_view_unclipped(tmp_path):
     )
 
     injected = loop._injected_index_markdown(store)
-    assert all(len(line) <= 100 for line in injected.splitlines())
+    # Compact inject lines omit the trailing "and N more" footer when all fit;
+    # every real index line is still per-entry capped.
+    real_lines = [
+        ln
+        for ln in injected.splitlines()
+        if ln.startswith("- ") and not ln.startswith("...")
+    ]
+    assert real_lines
+    assert all(len(line) <= 100 for line in real_lines)
     selector_lines = store.index(loop.config.memory.max_entries_scanned)
     assert any(len(line) > 100 for line in selector_lines)
 

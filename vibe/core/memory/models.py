@@ -30,6 +30,9 @@ _MONTH_DAYS = 30
 _YEAR_DAYS = 365
 
 _INDEX_ELLIPSIS = "…"
+# Compact inject-line key length: long auto-extract slugs burn the per-line
+# budget; prefer a short title when the id exceeds this.
+_INJECT_KEY_MAX = 40
 
 
 class MemoryType(StrEnum):
@@ -202,3 +205,39 @@ class MemoryEntry(BaseModel):
         if not m.description or room <= 0:
             return f"{head}{scope}"
         return f"{head}: {m.description[:room].rstrip()}{_INDEX_ELLIPSIS}{scope}"
+
+    def inject_line(self, today: _dt.date | None = None, max_chars: int = 100) -> str:
+        # Compact line for the always-on main-model index. Prefers a short title
+        # over the full slug when the id is long (auto-extract often slugifies
+        # the whole title into the id, burning the per-line budget on noise).
+        m = self.metadata
+        age = age_label(m.updated, today)
+        state = (
+            m.verification_state.value
+            if m.verification_state != VerificationState.UNVERIFIED
+            else None
+        )
+        parts = [
+            p for p in (m.type.value if m.type is not None else None, age, state) if p
+        ]
+        type_tag = f" [{', '.join(parts)}]" if parts else ""
+        scope = " (project)" if m.scope == "project" else ""
+        # Short display key: id if short, else title (clipped). Selector still
+        # sees the full id via index_line so it can return real ids.
+        key = (
+            m.id
+            if len(m.id) <= _INJECT_KEY_MAX
+            else (m.title[:_INJECT_KEY_MAX].rstrip() or m.id[:_INJECT_KEY_MAX])
+        )
+        label = m.description or m.title
+        if label == m.title and key == m.title:
+            label = ""
+        desc = f": {label}" if label else ""
+        full = f"- [{key}]{type_tag}{desc}{scope}"
+        if max_chars <= 0 or len(full) <= max_chars:
+            return full
+        head = f"- [{key}]{type_tag}"
+        room = max_chars - len(head) - len(scope) - 2 - len(_INDEX_ELLIPSIS)
+        if not label or room <= 0:
+            return f"{head}{scope}"
+        return f"{head}: {label[:room].rstrip()}{_INDEX_ELLIPSIS}{scope}"

@@ -2667,3 +2667,240 @@ async def test_verify_returns_unverified_when_no_assertions(monkeypatch) -> None
     assert not result.skipped
     assert result.state.value == "unverified"
     assert result.results == []
+
+
+# --------------------------------------------------------------------------- #
+# Index budget + pin types + compact inject lines                              #
+# --------------------------------------------------------------------------- #
+
+
+def test_index_markdown_respects_max_chars_budget(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    for i in range(20):
+        store.upsert(
+            MemoryEntry(
+                metadata=MemoryMetadata(
+                    id=f"mem-{i}",
+                    title=f"Title {i}",
+                    description=f"description for memory number {i} " * 3,
+                    type=MemoryType.PROJECT,
+                    updated=f"2026-07-0{(i % 8) + 1}",
+                ),
+                body="b",
+            )
+        )
+    md = store.index_markdown(
+        limit=200, entry_max_chars=100, max_chars=500, compact=True
+    )
+    # Footer may push slightly over; the real lines must fit the budget.
+    real = [ln for ln in md.splitlines() if ln.startswith("- ")]
+    body = "\n".join(real)
+    assert len(body) <= 500
+    assert "more" in md  # hidden count reported
+    # Selector view still sees all entries with full descriptions.
+    selector = store.index(200)
+    assert len(selector) == 20
+    assert any("description for memory" in line for line in selector)
+
+
+def test_index_markdown_pins_user_and_feedback_first(tmp_path) -> None:
+    store = MemoryStore(user_dir=tmp_path)
+    # Older feedback should still beat newer project when pinned.
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="old-feedback",
+                title="Old feedback",
+                description="prefer this",
+                type=MemoryType.FEEDBACK,
+                updated="2026-06-01",
+            ),
+            body="fb",
+        )
+    )
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="new-project",
+                title="New project",
+                description="recent project noise",
+                type=MemoryType.PROJECT,
+                updated="2026-07-08",
+            ),
+            body="p",
+        )
+    )
+    md = store.index_markdown(
+        max_chars=200, entry_max_chars=80, pin_types=["user", "feedback"], compact=True
+    )
+    # With a tight budget only one line may fit; it must be the pinned feedback.
+    first = next(ln for ln in md.splitlines() if ln.startswith("- "))
+    assert "Old feedback" in first or "old-feedback" in first or "prefer this" in first
+    assert "New project" not in first
+
+
+def test_inject_line_shortens_long_slug_ids() -> None:
+    entry = MemoryEntry(
+        metadata=MemoryMetadata(
+            id="pre-existing-test-isolation-failure-in-tests-core-test-model-discovery-py",
+            title="Test isolation failure",
+            description="ChatGPT token leaks when full file run together",
+            type=MemoryType.PROJECT,
+        ),
+        body="b",
+    )
+    line = entry.inject_line(max_chars=100)
+    assert len(line) <= 100
+    # Full slug must not dominate; title or description should appear.
+    assert "Test isolation" in line or "ChatGPT" in line or "token" in line
+    # Selector line still carries the real id.
+    full = entry.index_line()
+    assert "pre-existing-test-isolation-failure" in full
+
+
+def test_injected_index_uses_budget_and_compact(tmp_path, monkeypatch) -> None:
+    config = build_test_vibe_config(
+        memory=MemoryConfig(
+            inject_mode="late",
+            index_max_chars=400,
+            index_entry_max_chars=80,
+            index_pin_types=["user", "feedback"],
+        )
+    )
+    loop = build_test_agent_loop(config=config)
+    store = MemoryStore(user_dir=tmp_path)
+    for i in range(15):
+        store.upsert(
+            MemoryEntry(
+                metadata=MemoryMetadata(
+                    id=f"proj-noise-{i}",
+                    title=f"Noise {i}",
+                    description="project state " * 5,
+                    type=MemoryType.PROJECT,
+                    updated="2026-07-08",
+                ),
+                body="b",
+            )
+        )
+    store.upsert(
+        MemoryEntry(
+            metadata=MemoryMetadata(
+                id="user-pref",
+                title="User pref",
+                description="does not use cloud",
+                type=MemoryType.USER,
+                updated="2026-06-01",
+            ),
+            body="u",
+        )
+    )
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    md = loop._injected_index_markdown(store)
+    real = [ln for ln in md.splitlines() if ln.startswith("- ")]
+    body = "\n".join(real)
+    assert len(body) <= 400
+    assert any("User pref" in ln or "does not use cloud" in ln for ln in real)
+    # Selector still sees every id with full descriptions.
+    sel = store.index(200)
+    assert len(sel) == 16
+
+
+def test_accept_extracted_memory_requires_type_and_title() -> None:
+    from vibe.core.agent_loop_memory import AgentLoopMemoryMixin
+
+    ok = ExtractedMemory(
+        title="Resume dinopark",
+        description="bootstrap pointer for decompilation",
+        type=MemoryType.PROJECT,
+        body="see phase 1b",
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(ok) is True
+
+    # Title alone is enough for description (filled at write time).
+    title_only = ExtractedMemory(
+        title="Prefers terse responses", type=MemoryType.FEEDBACK, body="why"
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(title_only) is True
+
+    no_type = ExtractedMemory(title="x", description="y", type=None, body="z")
+    assert AgentLoopMemoryMixin._accept_extracted_memory(no_type) is False
+
+    no_title = ExtractedMemory(
+        title="", description="y", type=MemoryType.FEEDBACK, body="z"
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(no_title) is False
+
+    # Updates are lenient (existing entry already has type/description/title).
+    update = ExtractedMemory(
+        title="x", action="update", id="existing", body="new twist"
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(update) is True
+    update_empty_title = ExtractedMemory(
+        title="", action="update", id="existing", body="new twist"
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(update_empty_title) is True
+    update_no_id = ExtractedMemory(title="x", action="update", body="new twist")
+    assert AgentLoopMemoryMixin._accept_extracted_memory(update_no_id) is False
+
+
+def test_accept_extracted_memory_drops_oneshot_project_state() -> None:
+    from vibe.core.agent_loop_memory import AgentLoopMemoryMixin
+
+    oneshot = ExtractedMemory(
+        title="PR 406 merge-ready",
+        description="audit review verdict merge-ready",
+        type=MemoryType.PROJECT,
+        body="A1 is the priority follow-up; cards resolved",
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(oneshot) is False
+
+    resume = ExtractedMemory(
+        title="Dinopark resume",
+        description="bootstrap pointer for ongoing decompilation",
+        type=MemoryType.PROJECT,
+        body="phase 1b still open; resume from driver far-call",
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(resume) is True
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_consolidation_logs_when_gated(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    import logging
+
+    config = build_test_vibe_config(
+        memory=MemoryConfig(
+            consolidate=True, consolidate_min_age_days=7, consolidate_min_candidates=6
+        )
+    )
+    loop = build_test_agent_loop(config=config)
+    store = MemoryStore(user_dir=tmp_path)
+    # Only 2 candidates under the age gate — not enough to run.
+    store.upsert(_stale_entry("a", days=10))
+    store.upsert(_stale_entry("b", days=10))
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    with caplog.at_level(logging.INFO, logger="vibe"):
+        loop._maybe_schedule_consolidation()
+    assert loop._mem_consolidate_task is None
+    assert any("consolidation gated" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_maybe_schedule_consolidation_fires_at_7d_default(
+    monkeypatch, tmp_path
+) -> None:
+    # Regression: 14d default left a week-old corpus permanently ungated.
+    config = build_test_vibe_config(
+        memory=MemoryConfig(
+            consolidate=True, consolidate_min_age_days=7, consolidate_min_candidates=6
+        )
+    )
+    loop = build_test_agent_loop(config=config)
+    store = MemoryStore(user_dir=tmp_path)
+    for letter in "abcdef":
+        store.upsert(_stale_entry(letter, body=f"body {letter}", days=8))
+    monkeypatch.setattr(loop, "_get_memory_store", lambda: store)
+    loop._maybe_schedule_consolidation()
+    assert loop._mem_consolidate_task is not None
+    loop._mem_consolidate_task.cancel()

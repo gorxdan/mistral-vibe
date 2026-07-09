@@ -39,6 +39,15 @@ or ephemeral task state — those are derivable or short-lived. If the user
 explicitly asks to save something derivable, extract only the surprising or
 non-obvious part.
 
+Do NOT save one-shot project status: closed audits, "PR is merge-ready",
+"cards resolved", pre-existing test footnotes, or CI notes that will not
+matter next session. Project memories must be resume pointers (ongoing work,
+decisions, deadlines) — not a diary of finished tasks.
+
+Every create MUST include type AND a specific description (<=300 chars). Title
+should be short (a few words); the description carries the recall key. Prefer
+updating an existing memory over creating a near-duplicate.
+
 When the transcript REFINES or CORRECTS a memory already in the index, emit
 "action": "update" with "id" set to that EXISTING memory's id (copy it exactly
 from the index) and "body" holding only the new/changed detail. Otherwise omit

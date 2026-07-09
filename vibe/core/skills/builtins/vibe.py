@@ -761,16 +761,20 @@ max_selected = 5                 # Top-K injected
 max_inject_chars = 8000          # Hard cap on total injected body text
 max_entries_scanned = 200        # Cap on index lines sent to the selector
 index_entry_max_chars = 120      # Per-line char cap for the injected index (0 = uncapped)
+index_max_chars = 6000           # Hard cap on always-injected index total (0 = uncapped)
+index_pin_types = ["user", "feedback"]  # Prefer these types in the injected index
 timeout = 20.0                   # Per-selection LLM timeout
 prefetch = true                  # Warm the selector before the turn needs it
 inject_mode = "late"             # "late" (ephemeral tail message) | "system"
 late_anchor = "tail"             # "tail" (request tail; cache-stable) | "before-user" (legacy)
 # Auto-extraction (write memories from conversation) and consolidation (merge
 # similar memories) families are also configurable: auto_extract,
-# auto_extract_model, auto_extract_max_writes, auto_extract_min_messages,
-# auto_extract_timeout, consolidate, consolidate_model, consolidate_min_age_days,
-# consolidate_min_candidates, consolidate_interval_days, consolidate_max_actions,
-# consolidate_timeout. See vibe/core/config/_settings.py (MemoryConfig) for defaults.
+# auto_extract_model, auto_extract_max_writes (default 2), auto_extract_min_messages,
+# auto_extract_timeout, consolidate, consolidate_model, consolidate_min_age_days
+# (default 7), consolidate_min_candidates, consolidate_interval_days,
+# consolidate_max_actions, consolidate_timeout. See MemoryConfig in
+# vibe/core/config/_settings.py for defaults. The always-on index is compact +
+# budgeted; the selector still sees full unclipped descriptions.
 ```
 
 **Scopes.** The `manage_memory` tool defaults new memories to the current
