@@ -45,8 +45,8 @@ from vibe.core.verification_contract import (
     VerificationReportError,
     parse_verification_report,
 )
+from vibe.core.workflows._limits import DEFAULT_ISOLATED_MAX_TURNS
 from vibe.core.workflows.runtime import (
-    DEFAULT_ISOLATED_MAX_TURNS,
     IsolatedResult,
     run_isolated_agent,
 )

@@ -268,7 +268,7 @@ max-positional-args = 11
 max-statements = 50
 max-branches = 15
 max-locals = 15
-max-args = 11
+max-args = 12
 max-returns = 6
 max-nested-blocks = 5
 
