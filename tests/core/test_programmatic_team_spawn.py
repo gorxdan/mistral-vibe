@@ -16,10 +16,18 @@ def test_programmatic_team_spawn_tool_creates_active_team(
 ) -> None:
     monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe-home"))
 
-    spawned: list[tuple[str, str, str, int]] = []
+    spawned: list[tuple[str, str, str, int, bool]] = []
 
-    async def fake_spawn(self, name: str, prompt: str, *, agent: str, max_turns: int):
-        spawned.append((name, prompt, agent, max_turns))
+    async def fake_spawn(
+        self,
+        name: str,
+        prompt: str,
+        *,
+        agent: str,
+        max_turns: int,
+        worker: bool = False,
+    ):
+        spawned.append((name, prompt, agent, max_turns, worker))
         return name
 
     monkeypatch.setattr(
@@ -62,4 +70,4 @@ def test_programmatic_team_spawn_tool_creates_active_team(
             ),
         )
 
-    assert spawned == [("reviewer", "Review the perf changes.", "explore", 2)]
+    assert spawned == [("reviewer", "Review the perf changes.", "explore", 2, False)]
