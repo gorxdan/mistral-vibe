@@ -535,7 +535,15 @@ class AgentLoopMemoryMixin:
             "blocks 40",
         )
         resume = ("resume", "bootstrap", "pointer", "ongoing", "still open", "wip")
-        drop = any(m in blob for m in oneshot) and not any(m in blob for m in resume)
+        # Word-boundary match so a keyword like "wip" does not fire inside
+        # "swipe", and "blocks 40" does not fire inside "blocks 400".
+        oneshot_re = re.compile(
+            r"\b(?:" + "|".join(re.escape(m) for m in oneshot) + r")\b"
+        )
+        resume_re = re.compile(
+            r"\b(?:" + "|".join(re.escape(m) for m in resume) + r")\b"
+        )
+        drop = bool(oneshot_re.search(blob)) and not bool(resume_re.search(blob))
         if drop:
             logger.info(
                 "memory extract drop: one-shot project state (%r)", pm.title[:60]
