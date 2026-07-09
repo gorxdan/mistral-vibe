@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 from http import HTTPStatus
-import time
 
 import orjson
 from pydantic import BaseModel, ConfigDict
@@ -31,9 +30,10 @@ from vibe.core.llm.backend.factory import BACKEND_FACTORY
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.llm.types import BackendLike, CompletionRequest
 from vibe.core.logger import logger
-from vibe.core.types import LLMChunk, LLMMessage, LLMUsage, Role
-from vibe.core.usage import CallKind, UsageMeter, usage_cost
-from vibe.core.utils.tokens import approx_token_count
+from vibe.core.types import LLMChunk, LLMMessage, Role
+from vibe.core.usage import CallKind, SpendPurpose, UsageMeter
+from vibe.core.usage._auxiliary import complete_auxiliary
+from vibe.core.usage._session import SessionSpendAdapter
 
 # Shared across both judge prompts: the injection-defense preamble and the
 # JSON-only output contract. Factored so the two stay in lockstep; only the
@@ -137,6 +137,7 @@ class SafetyJudge:
         extra_headers: dict[str, str] | None = None,
         timeout: float | None = None,
         usage_meter: UsageMeter | None = None,
+        spend_adapter: SessionSpendAdapter | None = None,
     ) -> None:
         self._model = model
         self._provider = provider
@@ -144,6 +145,7 @@ class SafetyJudge:
         self._extra_headers = extra_headers or {}
         self._timeout = timeout if timeout is not None else provider_timeout(provider)
         self._usage_meter = usage_meter
+        self._spend_adapter = spend_adapter
 
     async def judge(
         self,
@@ -220,7 +222,7 @@ class SafetyJudge:
                     temperature,
                     self._provider.name,
                 )
-                result = await self._complete(backend, messages, None)
+                result = await self._complete(backend, messages, None, is_retry=True)
         return self._parse(result.message.content)
 
     async def _complete(
@@ -228,46 +230,23 @@ class SafetyJudge:
         backend: BackendLike,
         messages: list[LLMMessage],
         temperature: float | None,
+        *,
+        is_retry: bool = False,
     ) -> LLMChunk:
         request = self._request(messages, temperature)
-        if self._usage_meter is None:
-            return await backend.complete(request)
-
-        estimated_prompt_tokens = sum(
-            approx_token_count(message.content or "") for message in messages
-        )
-        estimated_usage = LLMUsage(
-            prompt_tokens=estimated_prompt_tokens,
-            completion_tokens=self._config.max_tokens,
-        )
-        reservation = self._usage_meter.try_reserve(
-            estimated_prompt_tokens + self._config.max_tokens,
-            estimated_cost_usd=usage_cost(self._model, estimated_usage),
-        )
-        if reservation is None:
-            raise RuntimeError("auxiliary spend limit exhausted")
-        started = time.monotonic()
-        try:
-            result = await backend.complete(request)
-        except BaseException:
-            self._usage_meter.reconcile(
-                reservation,
-                usage=None,
-                model=self._model,
-                provider=self._provider,
-                call_kind=CallKind.SAFETY_JUDGE,
-                duration_s=time.monotonic() - started,
-            )
-            raise
-        self._usage_meter.reconcile(
-            reservation,
-            usage=result.usage,
+        result = await complete_auxiliary(
+            backend,
+            request,
             model=self._model,
             provider=self._provider,
             call_kind=CallKind.SAFETY_JUDGE,
-            duration_s=time.monotonic() - started,
-            result_used=True,
+            purpose=SpendPurpose.SAFETY_JUDGE,
+            usage_meter=self._usage_meter,
+            spend_adapter=self._spend_adapter,
+            is_retry=is_retry,
         )
+        if result is None:
+            raise RuntimeError("auxiliary spend limit exhausted")
         return result
 
     def _request(

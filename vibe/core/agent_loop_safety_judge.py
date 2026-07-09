@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from vibe.core.tools.permissions import RequiredPermission
     from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
     from vibe.core.usage import UsageMeter
+    from vibe.core.usage._session import SessionSpendAdapter
 
 
 class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
@@ -62,6 +63,7 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
     _judge_verdict_cache_maxsize: int
     _judge_model_alias_for_cache: str | None
     _usage_meter: UsageMeter
+    _spend_adapter: SessionSpendAdapter
 
     @property
     def config(self) -> VibeConfig: ...
@@ -269,4 +271,5 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
             extra_headers=self._get_extra_headers(provider),
             timeout=self.config.api_timeout,
             usage_meter=self._usage_meter,
+            spend_adapter=self._spend_adapter,
         )

@@ -40,7 +40,6 @@ __all__ = [
 
 
 UNROUTED_PAID_CALL_BOUNDARIES = frozenset({
-    "auxiliary_models",
     "isolated_subprocess",
     "mcp_sampling",
     "narration",
@@ -153,9 +152,9 @@ class _SessionSpendCall:
 class SessionSpendAdapter:
     """Scoped paid-call admission for one agent in a shared session ledger.
 
-    Narration, MCP sampling, isolated subprocesses, and auxiliary memory/safety
-    models remain explicit later integration boundaries. They do not silently
-    borrow this session adapter's scope.
+    Narration, MCP sampling, and isolated subprocesses remain explicit later
+    integration boundaries. They do not silently borrow this session adapter's
+    scope.
     """
 
     def __init__(

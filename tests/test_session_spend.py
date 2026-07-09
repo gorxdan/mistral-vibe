@@ -529,7 +529,6 @@ def test_task_and_workflow_in_process_children_inherit_session_adapter(
 
 def test_later_paid_call_integration_boundaries_are_explicit() -> None:
     assert UNROUTED_PAID_CALL_BOUNDARIES == {
-        "auxiliary_models",
         "isolated_subprocess",
         "mcp_sampling",
         "narration",
