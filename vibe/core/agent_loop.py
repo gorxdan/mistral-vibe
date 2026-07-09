@@ -2981,7 +2981,7 @@ class AgentLoop(
         ) = None
         self.team_dir_callback: Callable[[], str | None] | None = None
         self.team_spawn_callback: (
-            Callable[[str, str, str, int], Awaitable[dict[str, Any]]] | None
+            Callable[[str, str, str, int, bool], Awaitable[dict[str, Any]]] | None
         ) = None
         # Unified background-task registry — owns bash-backgrounded processes
         # and aggregates workflows/teams/loops. None until wired by the entry

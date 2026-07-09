@@ -187,21 +187,51 @@ class TeamManager:
         *,
         agent: str = "auto-approve",
         max_turns: int = 20,
+        worker: bool = False,
+        lease_s: float | None = None,
     ) -> str:
         # Validate the name at the boundary: it becomes a mailbox inbox path
         # (via _safe_name) and a teammate env var, so a path-looking value like
         # "../evil" would otherwise register a teammate that team_message later
         # refuses to address. Apply the mailbox's rule here so both agree.
         validate_member_name(name)
-        member = TeamMember(name=name, agent_type=agent, status="running")
+        from vibe.core.teams.worker_loop import worker_bootstrap_prompt
+
+        spawn_prompt = worker_bootstrap_prompt(prompt) if worker else prompt
+        # Cap stored prompt so config.json stays small; full text still goes to -p.
+        max_stored = 2000
+        stored_prompt = (
+            spawn_prompt
+            if len(spawn_prompt) <= max_stored
+            else spawn_prompt[:max_stored]
+        )
+        member = TeamMember(
+            name=name,
+            agent_type=agent,
+            status="running",
+            spawn_prompt=stored_prompt,
+            max_turns=max_turns,
+            worker=worker,
+        )
         await asyncio.to_thread(self.add_member, member)
 
-        task = asyncio.create_task(self._run_teammate(name, prompt, agent, max_turns))
+        task = asyncio.create_task(
+            self._run_teammate(
+                name, spawn_prompt, agent, max_turns, worker=worker, lease_s=lease_s
+            )
+        )
         self._teammate_tasks[name] = task
         return name
 
     async def _run_teammate(
-        self, name: str, prompt: str, agent: str, max_turns: int
+        self,
+        name: str,
+        prompt: str,
+        agent: str,
+        max_turns: int,
+        *,
+        worker: bool = False,
+        lease_s: float | None = None,
     ) -> None:
         proc: asyncio.subprocess.Process | None = None
         try:
@@ -223,6 +253,8 @@ class TeamManager:
                 "--no-worktree",
             ]
 
+            from vibe.core.teams.task_store import DEFAULT_TASK_LEASE_S
+            from vibe.core.teams.worker_loop import TEAM_LEASE_ENV, TEAM_WORKER_ENV
             from vibe.core.tools.sandbox import scrub_child_env
 
             # Same as isolated agents: provider keys stay, host creds stripped.
@@ -230,6 +262,11 @@ class TeamManager:
             env["VIBE_TEAM_NAME"] = self._team_name
             env["VIBE_TEAM_DIR"] = str(self._team_dir)
             env["VIBE_TEAMMATE_NAME"] = name
+            if worker:
+                env[TEAM_WORKER_ENV] = "1"
+                env[TEAM_LEASE_ENV] = str(
+                    lease_s if lease_s is not None else DEFAULT_TASK_LEASE_S
+                )
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,

@@ -13,6 +13,10 @@ from vibe.core.teams.errors import TeamStorageBusyError
 from vibe.core.teams.models import Task, TaskStatus
 from vibe.core.utils.io import read_safe, write_safe
 
+# Default lease for IN_PROGRESS claims. Workers that die mid-task leave the
+# claim until reclaim_stale runs (worker loop tick or lead list/available).
+DEFAULT_TASK_LEASE_S = 900.0
+
 
 class TaskStore:
     def __init__(self, team_dir: Path) -> None:
@@ -94,6 +98,7 @@ class TaskStore:
                 return None
             task.status = TaskStatus.IN_PROGRESS
             task.assignee = assignee
+            task.claimed_at = time.time()
             self._write_tasks(tasks)
             self._tasks = tasks
             return task
@@ -115,10 +120,41 @@ class TaskStore:
                 return None
             task.status = TaskStatus.COMPLETED
             task.completed_at = time.time()
+            task.claimed_at = None
             task.result = result
             self._write_tasks(tasks)
             self._tasks = tasks
             return task
+
+    def reclaim_stale(
+        self, lease_s: float = DEFAULT_TASK_LEASE_S, *, now: float | None = None
+    ) -> list[str]:
+        """Return IN_PROGRESS tasks whose claim lease expired to PENDING.
+
+        Under lock: re-read disk, reset assignee/claimed_at for each stale claim.
+        Tasks without claimed_at (pre-lease records) are treated as stale so a
+        crashed pre-upgrade worker cannot hold the queue forever.
+        """
+        if lease_s <= 0:
+            return []
+        deadline = (time.time() if now is None else now) - lease_s
+        reclaimed: list[str] = []
+        with self._locked():
+            tasks = self._read_tasks()
+            for task in tasks.values():
+                if task.status != TaskStatus.IN_PROGRESS:
+                    continue
+                claimed = task.claimed_at
+                if claimed is not None and claimed > deadline:
+                    continue
+                task.status = TaskStatus.PENDING
+                task.assignee = None
+                task.claimed_at = None
+                reclaimed.append(task.id)
+            if reclaimed:
+                self._write_tasks(tasks)
+                self._tasks = tasks
+        return reclaimed
 
     def get_task(self, task_id: str) -> Task | None:
         return self._tasks.get(task_id)

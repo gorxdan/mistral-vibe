@@ -3842,17 +3842,19 @@ class VibeApp(App):
         return str(self._team_manager.team_dir)
 
     async def _team_spawn_for_tool(
-        self, name: str, prompt: str, agent: str, max_turns: int
+        self, name: str, prompt: str, agent: str, max_turns: int, worker: bool = False
     ) -> dict[str, Any]:
         if self._team_manager is None:
             self._team_manager = self._build_team_manager()
         await self._team_manager.spawn_teammate(
-            name, prompt, agent=agent, max_turns=max_turns
+            name, prompt, agent=agent, max_turns=max_turns, worker=worker
         )
+        kind = "worker" if worker else "teammate"
         return {
             "name": name,
             "team_dir": str(self._team_manager.team_dir),
-            "message": f"Spawned teammate `{name}`.",
+            "message": f"Spawned {kind} `{name}`.",
+            "worker": worker,
         }
 
     async def _run_workflow_command(self, cmd_args: str = "", **kwargs: Any) -> None:

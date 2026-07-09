@@ -331,12 +331,31 @@ class _MessageBoard:
         return list(self._channels.keys())
 
 
+def _fingerprint_payload(value: Any) -> str:
+    """Stable short hash for schema/contract dicts (order-insensitive via orjson)."""
+    if value is None:
+        return ""
+    if isinstance(value, BaseModel):
+        payload = value.model_dump(mode="json")
+    else:
+        payload = value
+    try:
+        blob = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
+    except TypeError:
+        blob = repr(payload).encode()
+    return hashlib.sha256(blob).hexdigest()[:12]
+
+
 def _prompt_hash(
     prompt: str,
     agent: str,
     phase: str | None = None,
     isolation: str | None = None,
     citation_spec: CitationSpec | None = None,
+    *,
+    model: str | None = None,
+    schema: dict | None = None,
+    contract: dict | ContractSpec | None = None,
 ) -> str:
     # isolation is part of the identity: an isolated (subprocess/worktree) run is
     # not interchangeable with an in-process one for the same prompt/agent/phase.
@@ -344,9 +363,14 @@ def _prompt_hash(
     iso = f":iso={isolation}" if isolation else ""
     # citations gate transforms the cached response; gated != ungated.
     cit = ":cit" if citation_spec is not None else ""
-    return hashlib.sha256(f"{agent}:{phase}{iso}{cit}:{prompt}".encode()).hexdigest()[
-        :16
-    ]
+    # model/schema/contract change the effective agent output; omitting them
+    # caused silent wrong cache hits on resume after schema/contract edits.
+    mod = f":m={model}" if model else ""
+    sch = f":s={_fingerprint_payload(schema)}" if schema is not None else ""
+    con = f":c={_fingerprint_payload(contract)}" if contract is not None else ""
+    return hashlib.sha256(
+        f"{agent}:{phase}{iso}{cit}{mod}{sch}{con}:{prompt}".encode()
+    ).hexdigest()[:16]
 
 
 # Must match programmatic.py's sentinel; the isolated subprocess writes one
@@ -860,7 +884,14 @@ class WorkflowRuntime:
         citation_spec = self._resolve_citations(citations)
         effective_phase = phase if phase is not None else self._current_phase
         cache_key = _prompt_hash(
-            prompt, agent, effective_phase, isolation, citation_spec
+            prompt,
+            agent,
+            effective_phase,
+            isolation,
+            citation_spec,
+            model=model,
+            schema=schema,
+            contract=contract_spec if contract_spec is not None else contract,
         )
         if cached := self._cache.get(cache_key):
             self._log(f"cache hit: {label or agent}")

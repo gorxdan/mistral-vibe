@@ -44,6 +44,49 @@ def test_claim_task(tmp_path: Path) -> None:
     assert claimed is not None
     assert claimed.status == TaskStatus.IN_PROGRESS
     assert claimed.assignee == "reviewer"
+    assert claimed.claimed_at is not None
+
+
+def test_reclaim_stale_returns_expired_claims(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path)
+    store.add_task("Long running")
+    claimed = store.claim_task("task-1", "alice")
+    assert claimed is not None
+    assert claimed.claimed_at is not None
+    # Force claim into the past relative to lease.
+    with store._locked():
+        tasks = store._read_tasks()
+        tasks["task-1"].claimed_at = claimed.claimed_at - 10_000
+        store._write_tasks(tasks)
+        store._tasks = tasks
+
+    reclaimed = store.reclaim_stale(lease_s=60.0)
+    assert reclaimed == ["task-1"]
+    task = store.get_task("task-1")
+    assert task is not None
+    assert task.status == TaskStatus.PENDING
+    assert task.assignee is None
+    assert task.claimed_at is None
+
+
+def test_reclaim_stale_keeps_fresh_claims(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path)
+    store.add_task("Fresh")
+    store.claim_task("task-1", "alice")
+    assert store.reclaim_stale(lease_s=900.0) == []
+    task = store.get_task("task-1")
+    assert task is not None
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert task.assignee == "alice"
+
+
+def test_complete_clears_claimed_at(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path)
+    store.add_task("A")
+    store.claim_task("task-1", "alice")
+    completed = store.complete_task("task-1", result="ok", actor="alice")
+    assert completed is not None
+    assert completed.claimed_at is None
 
 
 def test_claim_already_claimed(tmp_path: Path) -> None:

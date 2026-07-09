@@ -128,6 +128,29 @@ class ProgrammaticOptions:
     no_worktree: bool = False
 
 
+async def _run_team_worker_session(
+    agent_loop: AgentLoop, formatter: OutputFormatter, bootstrap_prompt: str
+) -> None:
+    """Claim-loop path for VIBE_TEAM_WORKER=1 (long-lived queue worker).
+
+    Each claimed task is one ``agent_loop.act`` turn. Bootstrap prompt is only
+    logged — the harness injects per-task prompts from TaskStore.
+    """
+    logger.info("TEAM_WORKER bootstrap: %s", bootstrap_prompt[:500])
+
+    async def run_task(task_prompt: str) -> str | None:
+        async with aclosing(agent_loop.act(task_prompt)) as events:
+            async for event in events:
+                formatter.on_event(event)
+                if isinstance(event, AssistantEvent) and event.stopped_by_middleware:
+                    raise ConversationLimitException(event.content)
+        return formatter.finalize()
+
+    from vibe.core.teams.worker_loop import run_team_worker_loop
+
+    await run_team_worker_loop(run_task)
+
+
 async def _run_session(
     config: VibeConfig,
     agent_loop: AgentLoop,
@@ -155,31 +178,7 @@ async def _run_session(
             await agent_loop.initialize_experiments()
             agent_loop.emit_new_session_telemetry()
 
-        if opts.teleport and config.vibe_code_enabled:
-            gen = agent_loop.teleport_to_vibe_code(prompt or None)
-            async for event in gen:
-                formatter.on_event(event)
-                if isinstance(event, TeleportPushRequiredEvent):
-                    next_event = await gen.asend(
-                        TeleportPushResponseEvent(approved=True)
-                    )
-                    formatter.on_event(next_event)
-        else:
-            async with aclosing(agent_loop.act(prompt)) as events:
-                async for event in events:
-                    formatter.on_event(event)
-                    if (
-                        isinstance(event, AssistantEvent)
-                        and event.stopped_by_middleware
-                    ):
-                        raise ConversationLimitException(event.content)
-
-        # Keep-alive drive: fire scheduled loops as further turns until they
-        # drain (one-shots) or the deadline passes (caps recurring loops).
-        if opts.keep_alive_seconds and scheduler.loops:
-            await _drive_scheduled_loops(
-                agent_loop, scheduler, formatter, opts.keep_alive_seconds
-            )
+        await _drive_programmatic_turn(agent_loop, formatter, opts, prompt, scheduler)
 
         if os.environ.get("VIBE_WORKFLOW_EMIT_STATS") == "1":
             stats_line = _STATS_SENTINEL + orjson.dumps({
@@ -198,6 +197,45 @@ async def _run_session(
         # their own shutdown; this only reaps registry-owned processes.
         await background_registry.shutdown()
         await _teardown_lsp_and_loop(agent_loop)
+
+
+async def _drive_programmatic_turn(
+    agent_loop: AgentLoop,
+    formatter: OutputFormatter,
+    opts: ProgrammaticOptions,
+    prompt: str,
+    scheduler: LoopManager,
+) -> None:
+    """Run teleport, team-worker claim loop, or a single act turn + keep-alive."""
+    if opts.teleport and agent_loop.base_config.vibe_code_enabled:
+        gen = agent_loop.teleport_to_vibe_code(prompt or None)
+        async for event in gen:
+            formatter.on_event(event)
+            if isinstance(event, TeleportPushRequiredEvent):
+                next_event = await gen.asend(TeleportPushResponseEvent(approved=True))
+                formatter.on_event(next_event)
+    else:
+        from vibe.core.teams.worker_loop import is_team_worker
+
+        if is_team_worker():
+            await _run_team_worker_session(agent_loop, formatter, prompt)
+        else:
+            await _act_once(agent_loop, formatter, prompt)
+
+    if opts.keep_alive_seconds and scheduler.loops:
+        await _drive_scheduled_loops(
+            agent_loop, scheduler, formatter, opts.keep_alive_seconds
+        )
+
+
+async def _act_once(
+    agent_loop: AgentLoop, formatter: OutputFormatter, prompt: str
+) -> None:
+    async with aclosing(agent_loop.act(prompt)) as events:
+        async for event in events:
+            formatter.on_event(event)
+            if isinstance(event, AssistantEvent) and event.stopped_by_middleware:
+                raise ConversationLimitException(event.content)
 
 
 def _emit_headless_sandbox_nudge(sandbox: SandboxConfig | None) -> None:
@@ -317,14 +355,18 @@ def run_programmatic(
         return team_manager
 
     async def spawn_team(
-        name: str, prompt: str, agent: str, max_turns: int
+        name: str, prompt: str, agent: str, max_turns: int, worker: bool = False
     ) -> dict[str, Any]:
         manager = ensure_team_manager()
-        await manager.spawn_teammate(name, prompt, agent=agent, max_turns=max_turns)
+        await manager.spawn_teammate(
+            name, prompt, agent=agent, max_turns=max_turns, worker=worker
+        )
+        kind = "worker" if worker else "teammate"
         return {
             "name": name,
             "team_dir": str(manager.team_dir),
-            "message": f"Spawned teammate `{name}`.",
+            "message": f"Spawned {kind} `{name}`.",
+            "worker": worker,
         }
 
     async def cleanup_team() -> None:

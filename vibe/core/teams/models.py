@@ -45,6 +45,7 @@ class Task(BaseModel):
     assignee: str | None = None
     dependencies: list[str] = Field(default_factory=list)
     created_at: float = 0.0
+    claimed_at: float | None = None
     completed_at: float | None = None
     result: str | None = None
 
@@ -57,6 +58,11 @@ class TeamMember(BaseModel):
     agent_type: str = "default"
     status: str = "idle"
     pid: int | None = None
+    spawn_prompt: str | None = None
+    max_turns: int | None = None
+    worker: bool = False
+    last_task_id: str | None = None
+    last_claimed_at: float | None = None
 
 
 class TeamConfig(BaseModel):
