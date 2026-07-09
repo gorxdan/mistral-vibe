@@ -676,9 +676,7 @@ class TestClearHistoryObserverBugfix:
 
 class TestStatsEdgeCases:
     @pytest.mark.asyncio
-    async def test_session_cost_approximation_on_model_change(
-        self, monkeypatch
-    ) -> None:
+    async def test_session_cost_preserved_on_model_change(self, monkeypatch) -> None:
         monkeypatch.setenv("LECHAT_API_KEY", "mock-key")
 
         backend = FakeBackend(mock_llm_chunk(content="Response"))
@@ -695,7 +693,9 @@ class TestStatsEdgeCases:
 
         cost_after = agent.stats.session_cost
 
-        assert cost_after > cost_before
+        # Switching models must not retroactively reprice past calls.
+        assert cost_after == cost_before
+        assert cost_after > 0.0
 
     @pytest.mark.asyncio
     async def test_multiple_reloads_accumulate_correctly(self) -> None:

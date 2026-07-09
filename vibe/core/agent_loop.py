@@ -2337,6 +2337,9 @@ class AgentLoop(
                 )
             else:
                 cost = 0.0
+        # Accrue the exact per-call cost so session_cost survives a mid-session
+        # model switch without repricing the whole session against the new model.
+        self.stats.accumulated_cost_usd += cost
         self._usage_recorder.record(
             UsageRecord.from_usage(
                 timestamp=time.time(),

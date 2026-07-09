@@ -363,8 +363,11 @@ _SANDBOX_FAILURE_MARKERS = (
     "operation not permitted",
 )
 _SANDBOX_BLOCKED_HINT = (
-    "the OS sandbox may have blocked this; set sandbox.enabled=false or add the "
-    "path to sandbox.write_dirs"
+    "the OS sandbox may have blocked this. The bash tool runs sandboxed with a "
+    "read-only filesystem, but the file tools (read, edit, write_file) and "
+    "write_durable bypass the sandbox — switch to one of those instead of "
+    "retrying bash. To grant bash write access, add the path to "
+    "sandbox.write_dirs or set sandbox.enabled=false"
 )
 
 
