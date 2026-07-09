@@ -988,6 +988,23 @@ class TransportError(Exception):
         )
 
 
+class UnclassifiedBackendError(Exception):
+    """API error that did not match a typed recovery class.
+
+    Raised by ``_raise_for_backend_error`` for residual failures so the
+    conversation loop can attempt failover instead of aborting the turn with a
+    bare ``RuntimeError``.
+    """
+
+    failover_hint: str | None = None
+
+    def __init__(self, provider: str, model: str, detail: str) -> None:
+        self.provider = provider
+        self.model = model
+        self.detail = detail
+        super().__init__(f"API error from {provider} (model: {model}): {detail}")
+
+
 class RefusalError(Exception):
     def __init__(
         self,

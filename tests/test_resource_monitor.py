@@ -14,6 +14,7 @@ from vibe.core.resource_monitor import (
     _ProcReading,
     _TreeAccumulator,
     _TreeWalk,
+    resource_monitor_opt_in,
 )
 
 
@@ -32,6 +33,19 @@ def _walk(
         rss_bytes=sum(r.rss_bytes for r in readings.values()),
         nb_procs=len(readings),
     )
+
+
+def test_resource_monitor_opt_in_env_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Default (unset) must stay off so a default session has zero sampling
+    # overhead; only an explicit truthy VIBE_RESOURCE_MONITOR opts in.
+    monkeypatch.delenv("VIBE_RESOURCE_MONITOR", raising=False)
+    assert resource_monitor_opt_in() is False
+    for val in ("1", "true", "yes", "on"):
+        monkeypatch.setenv("VIBE_RESOURCE_MONITOR", val)
+        assert resource_monitor_opt_in() is True
+    for val in ("", "0", "false", "off", "no"):
+        monkeypatch.setenv("VIBE_RESOURCE_MONITOR", val)
+        assert resource_monitor_opt_in() is False
 
 
 @pytest.fixture(autouse=True)

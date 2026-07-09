@@ -104,7 +104,7 @@ from vibe.core.middleware import (
 from vibe.core.paths import safe_cwd
 from vibe.core.plan_session import PlanSession
 from vibe.core.prompts import UtilityPrompt
-from vibe.core.resource_monitor import ResourceMonitor
+from vibe.core.resource_monitor import ResourceMonitor, resource_monitor_opt_in
 from vibe.core.rewind import RewindManager
 from vibe.core.scratchpad import init_scratchpad
 from vibe.core.session.session_id import extract_suffix, generate_session_id
@@ -195,6 +195,7 @@ from vibe.core.types import (
     ToolResultEvent,
     ToolStreamEvent,
     TransportError,
+    UnclassifiedBackendError,
     UserInputCallback,
     UserMessageEvent,
 )
@@ -303,9 +304,8 @@ def _raise_for_backend_error(
         raise TransportError(provider_name, model_name) from e
     if _is_server_error(e):
         raise ServerError(provider_name, model_name) from e
-    raise RuntimeError(
-        f"API error from {provider_name} (model: {model_name}): {e}"
-    ) from e
+    # Typed residual so the loop can failover (bare RuntimeError aborted the turn).
+    raise UnclassifiedBackendError(provider_name, model_name, str(e)) from e
 
 
 def _should_raise_rate_limit_error(e: Exception) -> bool:
@@ -1333,6 +1333,21 @@ class AgentLoop(
                         log_prefix_args=(e.provider,),
                     )
                     continue
+                except UnclassifiedBackendError as e:
+                    # Residual API error: failover when pool configured (else re-raise).
+                    self._apply_failover(
+                        e,
+                        self._switch_to_fallback_model(),
+                        error_type="unclassified_backend",
+                        unavailable_reason=(
+                            f"{e.provider!r} backend returned an unclassified error"
+                        ),
+                        log_template=(
+                            "%r backend unclassified error; falling back to %r"
+                        ),
+                        log_prefix_args=(e.provider,),
+                    )
+                    continue
                 except ResponseTooLongError:
                     nxt = self._escalate_max_output()
                     if nxt is None:
@@ -1930,10 +1945,14 @@ class AgentLoop(
         # Lock released: the safety-judge LLM call and human approval are slow;
         # holding the permission lock across them would serialize every parallel
         # ASK-gated tool. The rule-store reads above happened under the lock.
-        judged = await self._judge_tool_safety(tool_name, args, uncovered)
+        judged, judge_deferral = await self._judge_tool_safety(
+            tool_name, args, uncovered
+        )
         if judged is not None:
             return judged
-        return await self._ask_approval(tool_name, args, tool_call_id, uncovered)
+        return await self._ask_approval(
+            tool_name, args, tool_call_id, uncovered, judge_deferral=judge_deferral
+        )
 
     async def _ask_approval(
         self,
@@ -1941,6 +1960,7 @@ class AgentLoop(
         args: BaseModel,
         tool_call_id: str,
         required_permissions: list[RequiredPermission],
+        judge_deferral: str | None = None,
     ) -> ToolDecision:
         if not self.approval_callback:
             return ToolDecision(
@@ -1961,7 +1981,7 @@ class AgentLoop(
             # call originated from a workflow/task subagent — the subagent's
             # loop-local pending_judge_deferral is invisible to the host, so the
             # note must travel with the callback itself.
-            self.pending_judge_deferral,
+            judge_deferral,
         )
 
         match response:
@@ -2985,7 +3005,8 @@ class AgentLoop(
         )
         self.session_logger = SessionLogger(config.session_logging, self.session_id)
         self.resource_monitor = ResourceMonitor(
-            enabled=not is_subagent, label_getter=lambda: self.session_id
+            enabled=not is_subagent and resource_monitor_opt_in(),
+            label_getter=lambda: self.session_id,
         )
 
     def _init_hooks(self, hook_config_result: HookConfigResult | None) -> None:

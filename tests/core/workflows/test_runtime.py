@@ -1614,6 +1614,52 @@ async def test_isolated_executor_passes_auto_approve_and_worktree_root_env(
     assert captured["cwd"] == str(fake_wt.path)
 
 
+async def test_isolated_executor_scrubs_host_secrets_from_child_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Isolated children must not inherit host git/gh/cloud creds.
+    from pathlib import Path
+
+    import vibe.core.worktree.ephemeral as eph
+    from vibe.core.worktree.ephemeral import EphemeralWorktree
+
+    fake_wt = EphemeralWorktree(
+        path=Path("/tmp/iso-wt-scrub"),
+        branch="iso",
+        repo_root=Path("/tmp/repo"),
+        base_sha="0" * 40,
+    )
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
+    monkeypatch.setenv("GH_TOKEN", "ghp_must_not_leak")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/run/ssh-agent.sock")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws_must_not_leak")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-must-keep")
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 7
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"out", b"")
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        captured["env"] = kwargs.get("env", {})
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    await rt._default_isolated_executor("do it", "worker", "lbl", 40)
+    env = captured["env"]
+    assert "GH_TOKEN" not in env
+    assert "SSH_AUTH_SOCK" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert env.get("OPENAI_API_KEY") == "sk-must-keep"
+    assert env.get("VIBE_ISOLATED_AUTO_APPROVE") == "1"
+
+
 async def test_validate_workflow_profile_rejects_editor_without_isolation() -> None:
     # editor has an enabled_tools allowlist (read/grep/write_file/edit) yet
     # writes files. The old 'no allowlist = isolate' proxy missed it; the

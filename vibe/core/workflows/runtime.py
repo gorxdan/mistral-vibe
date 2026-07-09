@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+import contextlib
 from contextlib import aclosing
 from dataclasses import dataclass, field
 import functools
@@ -489,7 +490,10 @@ async def _spawn_isolated(
     ]
     if model:
         cmd += ["--model", model]
-    env = os.environ.copy()
+    from vibe.core.tools.sandbox import scrub_child_env
+
+    # Provider keys stay; host git/gh/ssh/cloud creds stripped.
+    env = scrub_child_env()
     env["VIBE_WORKFLOW_EMIT_STATS"] = "1"
     # Child wires an auto-yes approval callback (so write/edit/bash run instead
     # of SKIPping headless — see programmatic._isolated_auto_approve) and
@@ -509,9 +513,6 @@ async def _spawn_isolated(
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(wt.path),
-            # The child is a trusted `vibe` instance and needs the parent's
-            # credentials (e.g. the provider API key) to run; pass the env
-            # explicitly (same as teams). Isolation bounds files, not env/secrets.
             env=env,
             stdout=stdout_target,
             stderr=asyncio.subprocess.PIPE,
@@ -1029,6 +1030,7 @@ class WorkflowRuntime:
                 raise
         for attempt in range(self.schema_retries + 1):
             accumulated = []
+            loop: AgentLoop | None = None
             try:
                 loop = self._create_loop(
                     effective_prompt, agent=agent, model=model, base_config=base_config
@@ -1123,12 +1125,18 @@ class WorkflowRuntime:
                 completed = False
                 error_msg = str(e)
                 break
+            finally:
+                # Reap memory tasks so they cannot outlive the agent.
+                if loop is not None:
+                    with contextlib.suppress(Exception):
+                        await loop.aclose()
 
             # Accumulate across attempts: a fresh loop is created per retry, so
             # its stats report only that attempt. Overwriting dropped the tokens
             # spent on failed schema attempts from the budget.
-            tokens_in += getattr(loop.stats, "session_prompt_tokens", 0)
-            tokens_out += getattr(loop.stats, "session_completion_tokens", 0)
+            if loop is not None:
+                tokens_in += getattr(loop.stats, "session_prompt_tokens", 0)
+                tokens_out += getattr(loop.stats, "session_completion_tokens", 0)
             live.tokens_in = tokens_in
             live.tokens_out = tokens_out
 

@@ -32,6 +32,7 @@ from vibe.core.types import (
     ToolCall,
     ToolResultEvent,
     TransportError,
+    UnclassifiedBackendError,
 )
 
 
@@ -162,6 +163,17 @@ def test_raise_for_backend_error_classifies_transport() -> None:
         )
 
 
+def test_raise_for_backend_error_residual_is_unclassified_not_runtime() -> None:
+    # Residual failures must be UnclassifiedBackendError (not bare RuntimeError).
+    with pytest.raises(UnclassifiedBackendError) as ei:
+        _raise_for_backend_error(
+            ValueError("weird provider payload"), "mistral", "devstral-latest"
+        )
+    assert ei.value.provider == "mistral"
+    assert ei.value.model == "devstral-latest"
+    assert "weird provider payload" in str(ei.value)
+
+
 def test_is_non_retryable_error_walks_cause_chain_and_detects_flag() -> None:
     class _Inner(Exception):
         non_retryable = True
@@ -245,10 +257,12 @@ async def test_chat_reraises_non_retryable_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_wraps_unknown_backend_error_as_runtime_error() -> None:
+async def test_chat_wraps_unknown_backend_error_as_unclassified() -> None:
+    # Residual API failures surface as UnclassifiedBackendError so the
+    # conversation loop can failover (not bare RuntimeError, which aborted).
     exc = _backend_error(status=HTTPStatus.NOT_FOUND, body="boom")
     loop = _loop_with_backend(_RaisingBackend(exc))
-    with pytest.raises(RuntimeError, match="API error"):
+    with pytest.raises(UnclassifiedBackendError, match="API error"):
         await loop._chat()
 
 
@@ -259,7 +273,7 @@ async def test_chat_missing_usage_surfaces_as_api_error() -> None:
             return LLMChunk(message=LLMMessage(role=Role.ASSISTANT, content="hi"))
 
     loop = _loop_with_backend(_NoUsageBackend())
-    with pytest.raises(RuntimeError, match="Usage data missing"):
+    with pytest.raises(UnclassifiedBackendError, match="Usage data missing"):
         await loop._chat()
 
 
