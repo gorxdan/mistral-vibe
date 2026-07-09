@@ -195,6 +195,7 @@ from vibe.core.types import (
     ToolResultEvent,
     ToolStreamEvent,
     TransportError,
+    UnclassifiedBackendError,
     UserInputCallback,
     UserMessageEvent,
 )
@@ -303,9 +304,8 @@ def _raise_for_backend_error(
         raise TransportError(provider_name, model_name) from e
     if _is_server_error(e):
         raise ServerError(provider_name, model_name) from e
-    raise RuntimeError(
-        f"API error from {provider_name} (model: {model_name}): {e}"
-    ) from e
+    # Typed residual so the loop can failover (bare RuntimeError aborted the turn).
+    raise UnclassifiedBackendError(provider_name, model_name, str(e)) from e
 
 
 def _should_raise_rate_limit_error(e: Exception) -> bool:
@@ -1330,6 +1330,21 @@ class AgentLoop(
                         error_type="transport",
                         unavailable_reason=f"{e.provider!r} backend dropped the connection",
                         log_template="%r backend dropped the connection; falling back to %r",
+                        log_prefix_args=(e.provider,),
+                    )
+                    continue
+                except UnclassifiedBackendError as e:
+                    # Residual API error: failover when pool configured (else re-raise).
+                    self._apply_failover(
+                        e,
+                        self._switch_to_fallback_model(),
+                        error_type="unclassified_backend",
+                        unavailable_reason=(
+                            f"{e.provider!r} backend returned an unclassified error"
+                        ),
+                        log_template=(
+                            "%r backend unclassified error; falling back to %r"
+                        ),
                         log_prefix_args=(e.provider,),
                     )
                     continue

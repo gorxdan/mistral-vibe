@@ -14,6 +14,7 @@ from vibe.core.tools.sandbox import (
     build_sandbox_command,
     build_seatbelt_profile,
     detect_backend,
+    scrub_child_env,
     scrub_env,
     unshare_confinement_nudge,
 )
@@ -546,6 +547,37 @@ def test_scrub_env_drops_secrets_keeps_allowlist() -> None:
     assert "OPENAI_API_KEY" not in out
     assert "AWS_SECRET_ACCESS_KEY" not in out
     assert "GH_TOKEN" not in out
+
+
+def test_scrub_child_env_drops_host_creds_keeps_provider_keys() -> None:
+    # Isolated/team children inherit provider keys so they can call the model,
+    # but must not receive host git/gh/ssh/cloud creds (exfil under --trust).
+    base = {
+        "PATH": "/bin",
+        "HOME": "/home/x",
+        "OPENAI_API_KEY": "sk-keep",
+        "MISTRAL_API_KEY": "msk-keep",
+        "GH_TOKEN": "ghp_drop",
+        "GITHUB_TOKEN": "ghs_drop",
+        "SSH_AUTH_SOCK": "/run/ssh-agent.sock",
+        "GIT_SSH_COMMAND": "ssh -i /home/x/.ssh/id",
+        "AWS_SECRET_ACCESS_KEY": "aws_drop",
+        "AWS_ACCESS_KEY_ID": "AKIADROP",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/tmp/sa.json",
+        "VIBE_HOME": "/tmp/vibe",
+    }
+    out = scrub_child_env(base)
+    assert out["OPENAI_API_KEY"] == "sk-keep"
+    assert out["MISTRAL_API_KEY"] == "msk-keep"
+    assert out["PATH"] == "/bin"
+    assert out["VIBE_HOME"] == "/tmp/vibe"
+    assert "GH_TOKEN" not in out
+    assert "GITHUB_TOKEN" not in out
+    assert "SSH_AUTH_SOCK" not in out
+    assert "GIT_SSH_COMMAND" not in out
+    assert "AWS_SECRET_ACCESS_KEY" not in out
+    assert "AWS_ACCESS_KEY_ID" not in out
+    assert "GOOGLE_APPLICATION_CREDENTIALS" not in out
 
 
 # --------------------------------------------------------------------------- #

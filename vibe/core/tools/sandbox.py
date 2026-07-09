@@ -174,6 +174,44 @@ def scrub_env(base: dict[str, str], passthrough: list[str]) -> dict[str, str]:
     return {k: v for k, v in base.items() if k in allowed or k.startswith("LC_")}
 
 
+# Host-only creds never passed to isolated/team children (unlike HOST_GIT_ENV_PASSTHROUGH).
+_CHILD_SECRET_DENYLIST = frozenset({
+    "SSH_AUTH_SOCK",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GIT_SSH_COMMAND",
+    "GNUPGHOME",
+    "GPG_TTY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "AZURE_CLIENT_SECRET",
+    "AZURE_CLIENT_ID",
+    "AZURE_TENANT_ID",
+})
+
+
+def scrub_child_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Env for an isolated/team child process: inherit parent, drop host secrets.
+
+    Provider API keys (``*_API_KEY``, ``*_TOKEN`` that are not host-git/cloud
+    creds) stay so the child can call the model. Host git/gh/ssh/cloud creds
+    are stripped — isolation bounds files AND these secrets. Callers then set
+    the VIBE_* control vars they need on the returned dict.
+    """
+    env = dict(base if base is not None else os.environ)
+    for key in _CHILD_SECRET_DENYLIST:
+        env.pop(key, None)
+    # Case-insensitive denylist match for user-exported aliases.
+    for key in list(env):
+        if key.upper() in _CHILD_SECRET_DENYLIST:
+            env.pop(key, None)
+    return env
+
+
 def _canonical_roots(roots: list[Path]) -> list[str]:
     # Skip roots that aren't existing dirs: bwrap --bind on a missing source
     # aborts the whole sandbox with "Can't find source path".

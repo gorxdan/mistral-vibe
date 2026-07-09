@@ -223,7 +223,10 @@ class TeamManager:
                 "--no-worktree",
             ]
 
-            env = os.environ.copy()
+            from vibe.core.tools.sandbox import scrub_child_env
+
+            # Same as isolated agents: provider keys stay, host creds stripped.
+            env = scrub_child_env()
             env["VIBE_TEAM_NAME"] = self._team_name
             env["VIBE_TEAM_DIR"] = str(self._team_dir)
             env["VIBE_TEAMMATE_NAME"] = name
