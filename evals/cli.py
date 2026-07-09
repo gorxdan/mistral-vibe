@@ -32,7 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--release-gate",
         action="store_true",
-        help="Require at least five trials in every baseline and candidate group",
+        help=(
+            "Require five trials per group plus policy and security fixture coverage"
+        ),
     )
     return parser
 

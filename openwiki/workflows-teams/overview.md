@@ -57,6 +57,13 @@ Scripts are validated via AST before execution (`security.py`):
 - Raises `BudgetExhausted`
 - `ReadOnlyBudget` — sandbox-safe proxy that stores only bound accessor callables, prevents workflow scripts from mutating spend via `__self__`/`__closure__` paths
 
+In-process workflow agents also reserve under the parent session spend broker.
+Exhausting either the workflow-local token budget or the shared session envelope
+terminates the run as `WorkflowStatus.BLOCKED`; direct, schema, isolated,
+parallel, and pipeline paths preserve that status instead of degrading it to a
+`None` result. Ordinary child exceptions retain the existing recoverable
+`None`/`COMPLETED_WITH_FAILURES` behavior.
+
 ### Schema Validation
 
 **Source**: `vibe/core/workflows/schema.py`
@@ -118,10 +125,10 @@ Agent teams coordinate multiple independent Vibe instances. Unlike subagents (in
 Teammates coordinate via file-backed shared state with file locking:
 
 - **TaskStore** (`task_store.py`): persists all tasks to single `tasks.json` under `FileLock`
-  - `add_task()` — auto-generates `task-N` id, supports `dependencies[]`
+  - `add_task()` — accepts a legacy description or structured `TaskBrief`, auto-generates `task-N` id, supports `dependencies[]`
   - `claim_task()` — **atomic read-modify-write** — re-reads under lock, checks `PENDING` + `_dependencies_met()`, sets `IN_PROGRESS` + assignee
-  - `complete_task()` — marks `COMPLETED`, stores `result`
-  - `_dependencies_met()` — checks all dependency tasks are `COMPLETED`
+  - `complete_task()` — persists an explicit `TaskOutcome`; `RETRYABLE` returns the task to `PENDING`, while other outcomes end the lifecycle
+  - `_dependencies_met()` — requires every dependency outcome to be `SUCCEEDED`, not merely terminal
 
 - **Mailbox** (`mailbox.py`): file-per-message, per-recipient inbox under `team_dir/mailbox/`
   - `send()` — writes `Message` JSON under lock (`FileLock`, 5s timeout → `TeamStorageBusyError`)
@@ -129,6 +136,19 @@ Teammates coordinate via file-backed shared state with file locking:
   - Messages sorted by timestamp + id (uuid filenames don't sort lexically)
 
 - **TeamConfig** (`models.py`): team metadata — `team_name`, `members[]`, `team_dir`, `lead_session_id`
+
+### Structured Task Protocol
+
+Protocol v2 team tasks persist a `TaskBrief` with an objective, inputs, allowed
+and denied paths, acceptance checks, optional finite budget/deadline, and tool
+manifest identity. Terminal `TaskOutcome` values are `SUCCEEDED`, `FAILED`,
+`BLOCKED`, or `RETRYABLE`, with evidence, diagnostics, changed paths, receipt ID,
+remaining work, and manifest identity. Legacy description/result records remain
+loadable through the protocol-v1 adapter.
+
+Lifecycle (`PENDING`, `IN_PROGRESS`, terminal) is separate from outcome. A
+retryable result is atomically requeued and does not fire a terminal completion
+hook; downstream tasks unlock only after a succeeded outcome.
 
 ### Message Types
 

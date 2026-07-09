@@ -15,7 +15,7 @@ Vibe uses a layered TOML configuration system built on Pydantic settings. Config
 | Category | Fields |
 |---|---|
 | **Models/Providers** | `providers: list[ProviderConfig]`, `models: list[ModelConfig]`, `active_model: str`, `fallback_models: list[str]`, `compaction_model`, `subagent_model`, `grunt_model` |
-| **Limits** | `api_timeout`, `auto_compact_threshold`, `max_output_escalation`, `context_shaping`, `auxiliary_budget` |
+| **Limits** | `api_timeout`, `auto_compact_threshold`, `max_output_escalation`, `context_shaping`, `spend`, `auxiliary_budget` |
 | **Subsystems** | `memory: MemoryConfig`, `safety_judge: SafetyJudgeConfig`, `project_context: ProjectContextConfig`, `experiments: ExperimentsConfig`, `worktree: WorktreeConfig` |
 | **Tools** | `tools` (dict), `tool_paths`, `enabled_tools`, `disabled_tools` |
 | **UI/Behavior** | `theme`, `vim_keybindings`, `bypass_tool_permissions`, `enable_telemetry`, `caveman_thinking`, `include_project_context` |
@@ -50,6 +50,8 @@ From `vibe/core/config/__init__.py`:
 - `ModelConfig` — model id, provider, alias, thinking level, pricing, context threshold, image support
 - `ProviderConfig` — endpoint, API key env var, backend type, API style
 - `SafetyJudgeConfig` — enabled, model, max_tokens, timeout
+- `SpendConfig` — shared session prompt/completion/total token, USD, call,
+  concurrency, retry, and deadline limits for routed paid calls
 - `AuxiliaryBudgetConfig` — shared per-session token, call, and USD caps for standalone helper models
 - `MemoryConfig` — enabled, select_mode, model, max_selected, max_inject_chars, timeout
 - `SandboxConfig` — bash sandbox settings
@@ -218,8 +220,23 @@ All LLM components use **standalone backends** — failures are best-effort no-o
 
 Standalone memory and safety-judge calls share `auxiliary_budget` (defaults:
 50,000 tokens, 24 calls, and $1 per running agent). A zero limit disables
-auxiliary dispatch; the main agent and workflow budgets are separate. Restarting
-Vibe creates a fresh auxiliary envelope.
+auxiliary dispatch. This local helper meter is an inner envelope in addition to
+the shared session ledger. Restarting Vibe creates a fresh auxiliary envelope.
+
+## Session Spend Broker
+
+**Source**: `vibe/core/usage/`, `vibe/core/config/_spend_config.py`
+
+`SpendConfig` has finite defaults of 400,000 prompt tokens, 100,000 completion
+tokens, 500,000 total tokens, $10, 128 calls, two concurrent calls, and 16
+retries. `SessionSpendAdapter` reserves against a file-lock-backed hierarchy
+before primary, compaction, in-process task/workflow, memory, and safety-judge
+dispatch, then reconciles provider usage. Missing usage is charged at the
+estimate. Runtime `max_price` and `max_session_tokens` values can only reduce the
+configured session envelope.
+
+Isolated subprocesses, MCP sampling, narration, and backend-internal retry
+attempts remain explicit unrouted boundaries.
 
 ### Memory Types
 

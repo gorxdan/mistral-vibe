@@ -172,10 +172,40 @@ fallback_models = []              # Aliases tried if the active model errors
 context_shaping = ...             # Sub-table controlling context window shaping
 safety_judge = ...                # Sub-table for the safety-judge backend (gates tools/spawns)
 auxiliary_budget = ...            # Sub-table limiting memory/safety calls per running agent
+spend = ...                       # Durable session envelope for routed paid model calls
 prompt_paths = []                 # Additional dirs searched first for custom prompts
 plugin_paths = []                 # Additional dirs searched for plugin manifests
 installed_components = []         # Opt-in features, e.g. ["lsp"]
 ```
+
+### Session Spend Envelope
+
+Primary, compaction, in-process task/workflow, memory-helper, and safety-judge
+calls reserve from a shared session ledger before dispatch. Finite defaults are
+400,000 prompt tokens, 100,000 completion tokens, 500,000 total tokens, $10, 128
+calls, two concurrent calls, and 16 retries. Runtime `max_price` and
+`max_session_tokens` values can only lower those caps.
+
+```toml
+[spend]
+max_prompt_tokens = 400000
+max_completion_tokens = 100000
+max_total_tokens = 500000
+max_cost_usd = 10.0
+max_calls = 128
+max_concurrent_calls = 2
+max_retries = 16
+# deadline_seconds = 3600.0
+default_max_output_tokens = 32768
+unpriced_input_usd_per_million = 10.0
+unpriced_output_usd_per_million = 30.0
+```
+
+Missing usage is charged at the reservation estimate. The fallback rates cover
+models without configured or built-in pricing; set both to `0` for local or
+subscription models that should not consume a USD cap. Isolated subprocesses,
+MCP sampling, narration, and backend-internal retries are not yet routed as
+distinct calls through this ledger.
 
 ### Providers
 
@@ -757,9 +787,11 @@ max_calls = 24
 max_cost_usd = 1.0
 ```
 
-Set a limit to `0` to disable those helper calls. The main agent and workflow
-budgets are separate. USD enforcement requires known model pricing; token and
-call limits always apply. Restart Vibe to create a fresh auxiliary envelope.
+Set a limit to `0` to disable those helper calls. This is an additional inner
+envelope: a helper must pass both it and the shared session broker. Memory
+exhaustion skips optional work; safety-judge exhaustion falls back to human
+approval. USD enforcement requires known model pricing; token and call limits
+always apply. Restart Vibe to create a fresh auxiliary envelope.
 
 ### Memory
 
@@ -933,9 +965,18 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
   command evidence. The host verification contract (on by default via
   `verification_subsystem`) requires spawning it before reporting non-trivial
   work done; the todo tool appends a nudge when a 3+ item list closes without a
-  verify step.
+  verify step. A verifier's prose is observational: `land_work` requires a
+  harness-created durable receipt from trusted local checks, bound to the current
+  task contract, repository state, configuration, and check set.
 
 Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
+
+For bounded delegation, `task.task` accepts a structured `TaskBrief` with an
+objective, named inputs, allowed and denied paths, acceptance checks, optional
+token/USD/call budget, deadline, and tool-manifest identity. The result includes
+a `TaskOutcome` status (`succeeded`, `failed`, `blocked`, or `retryable`) plus
+evidence, diagnostics, changed paths, receipt ID, and remaining work. Legacy
+free-form task strings remain supported.
 
 ### Async subagents (background delegation)
 
