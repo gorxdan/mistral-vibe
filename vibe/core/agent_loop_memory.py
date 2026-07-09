@@ -146,9 +146,15 @@ class AgentLoopMemoryMixin:
         )
 
     def _injected_index_markdown(self, store: MemoryStore) -> str:
+        # Main-model view: compact lines, pin types first, hard char budget.
+        # Selector still uses store.index() with full unclipped descriptions.
         mem = self.config.memory
         return store.index_markdown(
-            mem.max_entries_scanned, entry_max_chars=mem.index_entry_max_chars
+            mem.max_entries_scanned,
+            entry_max_chars=mem.index_entry_max_chars,
+            max_chars=mem.index_max_chars,
+            pin_types=mem.index_pin_types,
+            compact=True,
         )
 
     async def _apply_memory_selection(self, user_msg: str) -> None:
@@ -404,25 +410,15 @@ class AgentLoopMemoryMixin:
     async def _extract_memories(self, start: int, end: int) -> None:
         import datetime as _dt
 
-        from vibe.core.memory.extractor import merge_memory_body
-        from vibe.core.memory.models import (
-            MemoryEntry,
-            MemoryMetadata,
-            MemoryType,
-            slugify,
-        )
-        from vibe.core.memory.store import project_memory_dir
-
         try:
             store = self._get_memory_store()
-            if store is None:
-                return
             extractor = self._resolve_memory_extractor()
-            if extractor is None:
+            if store is None or extractor is None:
                 return
-            transcript = self._transcript_text(start, end)
-            existing = store.index_markdown(self.config.memory.max_entries_scanned)
-            proposed = await extractor.extract(transcript, existing)
+            proposed = await extractor.extract(
+                self._transcript_text(start, end),
+                store.index_markdown(self.config.memory.max_entries_scanned),
+            )
             if not proposed:
                 return
             today = _dt.date.today().isoformat()
@@ -432,71 +428,117 @@ class AgentLoopMemoryMixin:
             for pm in proposed:
                 if budget <= 0:
                     break
-                if pm.action == "update":
-                    # Merge into the named existing memory instead of a blind
-                    # overwrite. An unknown/missing id is dropped rather than
-                    # fabricated into a new entry — the extractor was told to
-                    # name a real id, and guessing would scatter duplicates.
-                    if not pm.id:
-                        continue
-                    target = store.get(pm.id)
-                    if target is None:
-                        continue
-                    merged = merge_memory_body(target.body, pm.body, today)
-                    meta = target.metadata.model_copy(
-                        update={
-                            "updated": today,
-                            "description": (
-                                pm.description or target.metadata.description
-                            ),
-                            "tags": pm.tags or target.metadata.tags,
-                            "type": (
-                                pm.type if pm.type is not None else target.metadata.type
-                            ),
-                        }
-                    )
-                    store.upsert(
-                        MemoryEntry(metadata=meta, body=merged),
-                        project=(target.metadata.scope == "project"),
-                    )
+                if not self._accept_extracted_memory(pm):
+                    continue
+                if self._apply_extracted_memory(store, pm, today):
                     self._mem_extract_writes += 1
                     budget -= 1
-                    continue
-                mid = slugify(pm.title)
-                existing_entry = store.get(mid)
-                created = existing_entry.metadata.created if existing_entry else today
-                # Scope follows type: project/reference facts are project-local
-                # (PR state, deadlines, external-system pointers that only apply
-                # here), user/feedback are global. Falls back to user scope when
-                # no trusted project namespace is active, so extraction never
-                # drops a memory just because project context is absent.
-                project_scope = pm.type in {MemoryType.PROJECT, MemoryType.REFERENCE}
-                if project_scope and project_memory_dir() is None:
-                    project_scope = False
-                scope: Literal["user", "project"] = (
-                    "project" if project_scope else "user"
-                )
-                meta = MemoryMetadata(
-                    id=mid,
-                    title=pm.title,
-                    description=pm.description,
-                    tags=pm.tags,
-                    type=pm.type,
-                    scope=scope,
-                    created=created,
-                    updated=today,
-                    source="auto",
-                    session_id=self.session_id,
-                )
-                if project_scope:
-                    project_memory_dir(create=True)
-                store.upsert(
-                    MemoryEntry(metadata=meta, body=pm.body), project=project_scope
-                )
-                self._mem_extract_writes += 1
-                budget -= 1
         except Exception as e:
             logger.warning("memory extraction failed (%s)", e)
+
+    def _apply_extracted_memory(
+        self, store: MemoryStore, pm: object, today: str
+    ) -> bool:
+        from vibe.core.memory.extractor import ExtractedMemory, merge_memory_body
+        from vibe.core.memory.models import (
+            MemoryEntry,
+            MemoryMetadata,
+            MemoryType,
+            slugify,
+        )
+        from vibe.core.memory.store import project_memory_dir
+
+        if not isinstance(pm, ExtractedMemory):
+            return False
+        if pm.action == "update":
+            if not pm.id:
+                return False
+            target = store.get(pm.id)
+            if target is None:
+                return False
+            merged = merge_memory_body(target.body, pm.body, today)
+            meta = target.metadata.model_copy(
+                update={
+                    "updated": today,
+                    "description": pm.description or target.metadata.description,
+                    "tags": pm.tags or target.metadata.tags,
+                    "type": pm.type if pm.type is not None else target.metadata.type,
+                }
+            )
+            store.upsert(
+                MemoryEntry(metadata=meta, body=merged),
+                project=(target.metadata.scope == "project"),
+            )
+            return True
+        # Prefer a short slug: long title-slugs burn the inject-line budget.
+        mid = slugify(pm.title)[:48].rstrip("-") or "memory"
+        existing_entry = store.get(mid)
+        created = existing_entry.metadata.created if existing_entry else today
+        project_scope = pm.type in {MemoryType.PROJECT, MemoryType.REFERENCE}
+        if project_scope and project_memory_dir() is None:
+            project_scope = False
+        scope: Literal["user", "project"] = "project" if project_scope else "user"
+        desc = (pm.description or "").strip() or pm.title
+        meta = MemoryMetadata(
+            id=mid,
+            title=pm.title,
+            description=desc,
+            tags=pm.tags,
+            type=pm.type,
+            scope=scope,
+            created=created,
+            updated=today,
+            source="auto",
+            session_id=self.session_id,
+        )
+        if project_scope:
+            project_memory_dir(create=True)
+        store.upsert(MemoryEntry(metadata=meta, body=pm.body), project=project_scope)
+        return True
+
+    @staticmethod
+    def _accept_extracted_memory(pm: object) -> bool:
+        """Drop low-value auto-extract proposals before they hit the store.
+
+        Requires a type and a non-empty title (description may fall back to
+        title). Refuses one-shot project state that looks like closed PR/audit
+        notes without resume intent — those filled the always-on index with
+        noise. Updates are lenient (existing entry already has type/description).
+        """
+        from vibe.core.memory.extractor import ExtractedMemory
+        from vibe.core.memory.models import MemoryType
+
+        if not isinstance(pm, ExtractedMemory) or not (pm.title or "").strip():
+            if isinstance(pm, ExtractedMemory):
+                logger.info("memory extract drop: empty title")
+            return False
+        if pm.action == "update":
+            return True
+        if pm.type is None or not (pm.body or "").strip():
+            logger.info("memory extract drop: missing type or body (%r)", pm.title[:60])
+            return False
+        if pm.type != MemoryType.PROJECT:
+            return True
+        blob = f"{pm.title} {pm.description} {pm.body}".lower()
+        oneshot = (
+            "merge-ready",
+            "cards resolved",
+            "zero open",
+            "closed as non-issue",
+            "pre-existing test",
+            "pre-existing snapshot",
+            "audit card",
+            "audit kanban",
+            "ci has external",
+            "blocks 40",
+        )
+        resume = ("resume", "bootstrap", "pointer", "ongoing", "still open", "wip")
+        drop = any(m in blob for m in oneshot) and not any(m in blob for m in resume)
+        if drop:
+            logger.info(
+                "memory extract drop: one-shot project state (%r)", pm.title[:60]
+            )
+        return not drop
 
     def _resolve_memory_consolidator(self) -> MemoryConsolidator | None:
         from vibe.core.memory.consolidator import MemoryConsolidator
@@ -529,6 +571,7 @@ class AgentLoopMemoryMixin:
         for attr in ("_mem_consolidate_task", "_mem_extract_task"):
             task = getattr(self, attr)
             if task is not None and not task.done():
+                logger.debug("memory consolidation deferred: %s still in flight", attr)
                 return
         store = self._get_memory_store()
         if store is None:
@@ -536,12 +579,32 @@ class AgentLoopMemoryMixin:
         today = _dt.date.today()
         last = store.last_consolidation()
         if last is not None and (today - last).days < mem.consolidate_interval_days:
+            logger.debug(
+                "memory consolidation gated: last run %s (interval %dd)",
+                last.isoformat(),
+                mem.consolidate_interval_days,
+            )
             return
         candidates = store.consolidation_candidates(
             min_age_days=mem.consolidate_min_age_days, today=today
         )
         if len(candidates) < mem.consolidate_min_candidates:
+            # Visible at INFO so a silent no-op (the 14d-age trap that left a
+            # 93-entry store unconsolidated for weeks) is diagnosable without
+            # DEBUG. Fires at most once per session path that reaches here.
+            logger.info(
+                "memory consolidation gated: %d candidates age>=%dd "
+                "(need %d); raise LOG_LEVEL=DEBUG for interval/in-flight gates",
+                len(candidates),
+                mem.consolidate_min_age_days,
+                mem.consolidate_min_candidates,
+            )
             return
+        logger.info(
+            "memory consolidation scheduling: %d candidates age>=%dd",
+            len(candidates),
+            mem.consolidate_min_age_days,
+        )
         task = asyncio.create_task(self._consolidate_memories(candidates, today))
         self._mem_consolidate_task = task
         task.add_done_callback(self._on_consolidate_done)

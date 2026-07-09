@@ -331,16 +331,30 @@ class MemoryConfig(BaseSettings):
     # Char cap per always-injected index line (id/tag/title/scope kept verbatim;
     # tags drop, description clips). 0 = uncapped. 63 entries: ~6.8k -> ~1.9k tok.
     index_entry_max_chars: int = 120
+    # Hard cap on total always-injected index characters (~1.5k tokens at 4
+    # chars/token). Pin types fill first; remaining budget is newest-first.
+    # 0 = uncapped (legacy full-index inject). Selector still sees the full
+    # unclipped scan up to max_entries_scanned.
+    index_max_chars: int = 6000
+    # Types always preferred in the injected index (when present), regardless of
+    # recency. Project/reference stay selector-only unless they fit the budget.
+    index_pin_types: list[str] = Field(default_factory=lambda: ["user", "feedback"])
     timeout: float = 20.0
     extra_body: dict[str, Any] = Field(default_factory=dict)
     auto_extract: bool = False
     auto_extract_model: str | None = None
-    auto_extract_max_writes: int = 3
+    # Cap auto-writes per session. Lowered from 3: le-chaton forces extract on
+    # and a higher cap filled the store with one-shot project state faster than
+    # consolidation could prune it.
+    auto_extract_max_writes: int = 2
     auto_extract_min_messages: int = 4
     auto_extract_timeout: float = 30.0
     consolidate: bool = False
     consolidate_model: str | None = None
-    consolidate_min_age_days: int = 14
+    # Age gate for consolidation candidates. 7d (was 14): a busy le-chaton week
+    # never reached 14d, so consolidation silently no-op'd while auto-extract
+    # kept writing. Candidates younger than this stay live for deep recall.
+    consolidate_min_age_days: int = 7
     consolidate_min_candidates: int = 6
     consolidate_interval_days: int = 7
     consolidate_max_actions: int = 5

@@ -105,21 +105,73 @@ class MemoryStore:
         )
 
     def index(self, limit: int = 200, entry_max_chars: int = 0) -> list[str]:
+        # Selector view: full unclipped (or lightly capped) lines, newest first.
+        # Never apply the inject budget here — the selector needs descriptions.
         return [
             e.index_line(max_chars=entry_max_chars)
             for e in self._sorted_entries()[:limit]
         ]
 
-    def index_markdown(self, limit: int = 200, entry_max_chars: int = 0) -> str:
+    def index_markdown(
+        self,
+        limit: int = 200,
+        entry_max_chars: int = 0,
+        *,
+        max_chars: int = 0,
+        pin_types: list[str] | frozenset[str] | None = None,
+        compact: bool = False,
+    ) -> str:
+        """Build the always-on index block for the main model.
+
+        When ``max_chars`` > 0, pin types fill first (user/feedback by default),
+        then newest-first until the budget is exhausted. Hidden count is always
+        reported so the model knows more exist via manage_memory list / selector.
+        ``compact=True`` uses short inject lines (title-first) instead of full
+        slug lines — selector still uses :meth:`index` with full descriptions.
+        """
         entries = self._sorted_entries()
-        shown = entries[:limit]
-        lines = [e.index_line(max_chars=entry_max_chars) for e in shown]
-        hidden = len(entries) - len(shown)
+        if not entries:
+            return ""
+        pin_set = {t.lower() for t in (pin_types or ())}
+        if max_chars > 0:
+            pinned: list[MemoryEntry] = []
+            rest: list[MemoryEntry] = []
+            for e in entries:
+                t = e.metadata.type.value if e.metadata.type is not None else ""
+                if t in pin_set:
+                    pinned.append(e)
+                else:
+                    rest.append(e)
+            ordered = pinned + rest
+        else:
+            ordered = entries[:limit]
+
+        lines: list[str] = []
+        used = 0
+        shown = 0
+        for e in ordered:
+            if shown >= limit:
+                break
+            line = (
+                e.inject_line(max_chars=entry_max_chars or 100)
+                if compact
+                else e.index_line(max_chars=entry_max_chars)
+            )
+            if not line:
+                continue
+            # +1 for the newline that will join lines (except the first).
+            cost = len(line) + (1 if lines else 0)
+            if max_chars > 0 and used + cost > max_chars:
+                break
+            lines.append(line)
+            used += cost
+            shown += 1
+        hidden = len(entries) - shown
         if hidden > 0:
             noun = "memory" if hidden == 1 else "memories"
             lines.append(
                 f"... and {hidden} more {noun} not shown "
-                "(raise memory.max_entries_scanned to surface them)"
+                "(selector may still recall them; manage_memory list for full index)"
             )
         return "\n".join(lines)
 
