@@ -11,7 +11,7 @@ import inspect
 from pathlib import Path
 import re
 import time
-from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard, TypeVar, cast
 
 import orjson
 from pydantic import BaseModel, ConfigDict
@@ -771,6 +771,8 @@ class WorkflowRuntime:
             self._event_sink(msg)
 
     def _set_phase(self, name: str | None) -> None:
+        if self._current_phase is not None and self._current_phase != name:
+            self._maybe_emit_replan_signal(self._current_phase)
         if name is None:
             self._current_phase = None
             self._log("phase: (reset)")
@@ -780,6 +782,34 @@ class WorkflowRuntime:
             self._phase_order.append(name)
         self._current_phase = name
         self._log(f"phase: {name}")
+
+    _REPLAN_MIN_OK_RATIO: ClassVar[float] = 0.5
+    _REPLAN_MIN_PHASE_RESULTS: ClassVar[int] = 2
+    _REPLAN_BUDGET_FRACTION: ClassVar[float] = 0.15
+
+    def _maybe_emit_replan_signal(self, phase_name: str) -> None:
+        report = self._phases.get(phase_name)
+        if report is None or len(report.agent_results) < self._REPLAN_MIN_PHASE_RESULTS:
+            return
+        n_total = len(report.agent_results)
+        n_ok = sum(1 for r in report.agent_results if r.completed)
+        ok_ratio = n_ok / n_total
+        budget_low = False
+        if self.budget_total is not None and self.budget_total > 0:
+            snap = self._budget.snapshot()
+            remaining = self.budget_total - snap.reserved - snap.spent
+            budget_low = remaining / self.budget_total < self._REPLAN_BUDGET_FRACTION
+        if ok_ratio >= self._REPLAN_MIN_OK_RATIO and not budget_low:
+            return
+        reason = (
+            f"low success ratio ({n_ok}/{n_total})"
+            if ok_ratio < self._REPLAN_MIN_OK_RATIO
+            else f"budget nearly exhausted ({self._budget.snapshot().spent}/{self.budget_total})"
+        )
+        self._log(
+            f"REPLAN SIGNAL: phase '{phase_name}' — {reason}. "
+            "Host may launch a follow-up workflow."
+        )
 
     def _record_agent_result(self, result: AgentResult) -> None:
         phase_name = result.phase or "default"
