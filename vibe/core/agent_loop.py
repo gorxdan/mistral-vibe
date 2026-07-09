@@ -218,6 +218,7 @@ from vibe.core.utils import (
     is_user_cancellation_event,
 )
 from vibe.core.utils.tokens import truncate_middle_to_tokens
+from vibe.core.verification_state import VerificationState
 
 if TYPE_CHECKING:
     from vibe.core.loop import Scheduler
@@ -1850,6 +1851,7 @@ class AgentLoop(
                     team_spawn_callback=self.team_spawn_callback,
                     background_registry=self.background_registry,
                     files_read=self._files_read,
+                    verification_state=self._verification_state,
                     tool_manager=self.tool_manager,
                 ),
                 **tool_call.args_dict,
@@ -2865,6 +2867,7 @@ class AgentLoop(
         self._files_read: dict[str, str] = {}
         self._files_read_reconstructed: bool = False
         self._agents_md_fingerprint: str | None = None
+        self._verification_state = VerificationState()
 
         self._system_prompt_tier = self._current_baseline_tier()
 

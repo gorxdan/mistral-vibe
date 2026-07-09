@@ -6,6 +6,7 @@ from contextlib import aclosing, suppress
 from dataclasses import dataclass
 import fnmatch
 from pathlib import Path
+import re
 import time
 from typing import ClassVar, Literal
 
@@ -72,6 +73,24 @@ def _effective_subagent_model(args: TaskArgs, ctx: InvokeContext) -> str | None:
     if ctx.agent_manager:
         return ctx.agent_manager.config.active_model or None
     return None
+
+
+_VERDICT_PASS_RE = re.compile(r"^\s*VERDICT:\s*PASS\b", re.IGNORECASE | re.MULTILINE)
+
+
+def _maybe_record_verifier_pass(agent: str, response: str, ctx: InvokeContext) -> None:
+    # Only the verifier subagent may set the verifier flag.
+    if agent != BuiltinAgentName.VERIFIER or not response:
+        return
+    state = ctx.verification_state
+    if state is None:
+        return
+    if _VERDICT_PASS_RE.search(response):
+        match = _VERDICT_PASS_RE.search(response)
+        start = match.start() if match else 0
+        tail = response[start:].split("\n", 2)
+        summary = tail[0].strip() if tail else "VERDICT: PASS"
+        state.record_verifier_pass(summary)
 
 
 @dataclass
@@ -377,6 +396,7 @@ class Task(
                 response_text = result.output
                 worktree_path = result.worktree_path
                 branch = result.branch
+                _maybe_record_verifier_pass(args.agent, response_text, ctx)
         except Exception as e:
             completed = False
             response_text = f"[Isolated subagent error: {e}]"

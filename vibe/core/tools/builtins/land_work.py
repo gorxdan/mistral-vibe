@@ -194,7 +194,11 @@ class LandWork(
 
 
 def _require_verification_note(args: LandWorkArgs, ctx: InvokeContext | None) -> None:
-    # Attestation only (no VERDICT parse); skip when config is unreachable.
+    # Recorded pass (workflow contract or verifier) satisfies the gate.
+    if ctx is not None:
+        state = ctx.verification_state
+        if state is not None and state.has_pass():
+            return
     if ctx is None or ctx.agent_manager is None:
         return
     enabled = bool(getattr(ctx.agent_manager.config, "verification_subsystem", True))
@@ -203,12 +207,16 @@ def _require_verification_note(args: LandWorkArgs, ctx: InvokeContext | None) ->
     note = (args.verification_note or "").strip()
     if note:
         return
+    hint = (
+        " A recorded pass is also accepted (spawn `verifier` via `task`, or run "
+        "a workflow with `contract=`)."
+    )
     raise ToolError(
         "land_work requires verification_note when verification_subsystem is "
         "on. Pass a short attestation: e.g. 'verifier VERDICT: PASS — "
         "<what was checked>' or 'trivial: <reason>' for exempt work "
         "(one-line fix, docs-only, read-only). Set verification_subsystem = "
-        "false to disable this gate."
+        "false to disable this gate." + hint
     )
 
 
