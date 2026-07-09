@@ -873,6 +873,49 @@ class WorkflowRuntime:
                 f"in a workflow it must run with isolation='worktree'."
             )
 
+    async def _run_recipe(
+        self,
+        name: str,
+        *,
+        items: list[str] | None = None,
+        find_agent: str = "explore",
+        verify_agent: str = "reviewer",
+        synth: Any = None,
+        max_concurrency: int | None = None,
+    ) -> list[Any] | Any:
+        if name not in {"find_verify_synth", "find_verify"}:
+            raise WorkflowError(
+                f"recipe('{name}') is not a known recipe. "
+                "Available: 'find_verify_synth', 'find_verify'."
+            )
+        if items is None:
+            items = []
+
+        async def _find(prev: Any, item: Any, index: int) -> Any:
+            return await self.spawn_agent(
+                str(item), agent=find_agent, label=f"find-{index}"
+            )
+
+        async def _verify(prev: Any, item: Any, index: int) -> Any:
+            return await self.spawn_agent(
+                f"Verify this finding:\n{prev}",
+                agent=verify_agent,
+                label=f"verify-{index}",
+            )
+
+        stages: list[Any] = [_find, _verify]
+        if synth is not None:
+            stages.append(synth)
+        pipeline_result = await self.pipeline(
+            items, *stages, max_concurrency=max_concurrency
+        )
+        if synth is not None:
+            synth_result = synth(pipeline_result)
+            if inspect.isawaitable(synth_result):
+                return await synth_result
+            return synth_result
+        return pipeline_result
+
     def _post_team_task(
         self, description: str, dependencies: list[str] | None
     ) -> str | None:
@@ -2131,6 +2174,24 @@ class WorkflowRuntime:
         ) -> str | None:
             return self._post_team_task(description, dependencies)
 
+        async def _recipe(
+            name: str,
+            *,
+            items: list[str] | None = None,
+            find_agent: str = "explore",
+            verify_agent: str = "reviewer",
+            synth: Any = None,
+            max_concurrency: int | None = None,
+        ) -> list[Any] | Any:
+            return await self._run_recipe(
+                name,
+                items=items,
+                find_agent=find_agent,
+                verify_agent=verify_agent,
+                synth=synth,
+                max_concurrency=max_concurrency,
+            )
+
         injected: dict[str, Any] = {
             "agent": _agent,
             "parallel": self.parallel,
@@ -2142,6 +2203,7 @@ class WorkflowRuntime:
             "post_message": _post_message,
             "fetch_messages": _fetch_messages,
             "team_task": _team_task,
+            "recipe": _recipe,
             "flatten": _flatten,
             "dedup_by": _dedup_by,
             "merge_by": _merge_by,
