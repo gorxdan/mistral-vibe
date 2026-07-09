@@ -32,16 +32,17 @@ def test_resolve_permission_honors_config_override(configured: ToolPermission) -
 
 @pytest.mark.asyncio
 async def test_spawn_uses_context_callback_and_returns_team_dir(tmp_path: Path) -> None:
-    calls: list[tuple[str, str, str, int]] = []
+    calls: list[tuple[str, str, str, int, bool]] = []
 
     async def spawn(
-        name: str, prompt: str, agent: str, max_turns: int
-    ) -> dict[str, str]:
-        calls.append((name, prompt, agent, max_turns))
+        name: str, prompt: str, agent: str, max_turns: int, worker: bool = False
+    ) -> dict[str, str | bool]:
+        calls.append((name, prompt, agent, max_turns, worker))
         return {
             "name": name,
             "team_dir": str(tmp_path),
             "message": f"Spawned teammate `{name}`.",
+            "worker": worker,
         }
 
     ctx = InvokeContext(tool_call_id="t1", team_spawn_callback=spawn)
@@ -58,10 +59,36 @@ async def test_spawn_uses_context_callback_and_returns_team_dir(tmp_path: Path) 
         )
     )
 
-    assert calls == [("reviewer", "Review the latest performance diff.", "explore", 3)]
+    assert calls == [
+        ("reviewer", "Review the latest performance diff.", "explore", 3, False)
+    ]
     assert result.name == "reviewer"
     assert result.team_dir == str(tmp_path)
     assert "Spawned teammate" in result.message
+    assert result.worker is False
+
+
+@pytest.mark.asyncio
+async def test_spawn_worker_flag_passed_to_callback(tmp_path: Path) -> None:
+    calls: list[bool] = []
+
+    async def spawn(
+        name: str, prompt: str, agent: str, max_turns: int, worker: bool = False
+    ) -> dict[str, str | bool]:
+        calls.append(worker)
+        return {
+            "name": name,
+            "team_dir": str(tmp_path),
+            "message": f"Spawned worker `{name}`.",
+            "worker": worker,
+        }
+
+    ctx = InvokeContext(tool_call_id="t1", team_spawn_callback=spawn)
+    result = await collect_result(
+        _make_tool().run(TeamSpawnArgs(name="w1", prompt="notes", worker=True), ctx=ctx)
+    )
+    assert calls == [True]
+    assert result.worker is True
 
 
 @pytest.mark.asyncio

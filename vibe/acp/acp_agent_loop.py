@@ -775,7 +775,7 @@ class VibeAcpAgentLoop(AcpAgent):
 
     def _make_team_spawn_callback(
         self, session: AcpSessionLoop
-    ) -> Callable[[str, str, str, int], Awaitable[dict[str, Any]]]:
+    ) -> Callable[[str, str, str, int, bool], Awaitable[dict[str, Any]]]:
         def hook_context() -> HookSessionContext:
             transcript = ""
             logger = session.agent_loop.session_logger
@@ -789,7 +789,7 @@ class VibeAcpAgentLoop(AcpAgent):
             )
 
         async def spawn(
-            name: str, prompt: str, agent: str, max_turns: int
+            name: str, prompt: str, agent: str, max_turns: int, worker: bool = False
         ) -> dict[str, Any]:
             if session.team_manager is None:
                 session.team_manager = TeamManager(
@@ -801,12 +801,14 @@ class VibeAcpAgentLoop(AcpAgent):
                 if registry is not None:
                     registry.attach_team_manager(lambda: session.team_manager)
             await session.team_manager.spawn_teammate(
-                name, prompt, agent=agent, max_turns=max_turns
+                name, prompt, agent=agent, max_turns=max_turns, worker=worker
             )
+            kind = "worker" if worker else "teammate"
             return {
                 "name": name,
                 "team_dir": str(session.team_manager.team_dir),
-                "message": f"Spawned teammate `{name}`.",
+                "message": f"Spawned {kind} `{name}`.",
+                "worker": worker,
             }
 
         return spawn

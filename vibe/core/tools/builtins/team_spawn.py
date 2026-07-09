@@ -27,7 +27,19 @@ class TeamSpawnArgs(BaseModel):
         default="auto-approve", description="Agent profile for the teammate subprocess."
     )
     max_turns: int = Field(
-        default=20, description="Maximum turns the teammate subprocess may run.", ge=1
+        default=20,
+        description=(
+            "Maximum turns per task (worker mode) or for the whole one-shot run."
+        ),
+        ge=1,
+    )
+    worker: bool = Field(
+        default=False,
+        description=(
+            "If true, spawn a long-lived queue worker (VIBE_TEAM_WORKER=1) that "
+            "claims tasks from the shared TaskStore until stopped. If false "
+            "(default), run a single -p prompt and exit."
+        ),
     )
 
 
@@ -37,6 +49,7 @@ class TeamSpawnResult(BaseModel):
     name: str
     team_dir: str
     message: str
+    worker: bool = False
 
 
 class TeamSpawnConfig(BaseToolConfig):
@@ -50,7 +63,8 @@ class TeamSpawn(
     description: ClassVar[str] = (
         "Spawn a teammate subprocess for team-based work. This creates a shared "
         "team workspace so the host can coordinate via team_message and inspect "
-        "the teammate through background."
+        "the teammate through background. Pass worker=true for a long-lived "
+        "queue worker that claims TaskStore tasks until stopped."
     )
 
     @classmethod
@@ -87,6 +101,11 @@ class TeamSpawn(
                 "(no team spawn callback wired)."
             )
         result = await ctx.team_spawn_callback(
-            args.name, args.prompt, args.agent, args.max_turns
+            args.name, args.prompt, args.agent, args.max_turns, args.worker
         )
-        yield TeamSpawnResult(**result)
+        yield TeamSpawnResult(
+            name=str(result["name"]),
+            team_dir=str(result["team_dir"]),
+            message=str(result["message"]),
+            worker=bool(result.get("worker", args.worker)),
+        )

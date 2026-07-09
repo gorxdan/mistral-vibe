@@ -95,9 +95,10 @@ class InvokeContext:
     # active. Lets the lead bind the shared Mailbox/TaskStore to message
     # teammates — the teammate-only `team` tool is unavailable to the lead.
     team_dir_callback: Callable[[], str | None] | None = field(default=None)
-    # Spawns a teammate from host-side tools. Args: name, prompt, agent, max_turns.
+    # Spawns a teammate from host-side tools.
+    # Args: name, prompt, agent, max_turns, worker (queue worker when True).
     team_spawn_callback: (
-        Callable[[str, str, str, int], Awaitable[dict[str, Any]]] | None
+        Callable[[str, str, str, int, bool], Awaitable[dict[str, Any]]] | None
     ) = field(default=None)
     # Resolves the host's LLM safety judge (or None when disabled). Used by the
     # workflow runtime to judge each isolated agent's prompt at spawn time —
