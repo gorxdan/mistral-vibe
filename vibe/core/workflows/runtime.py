@@ -346,6 +346,14 @@ def _fingerprint_payload(value: Any) -> str:
     return hashlib.sha256(blob).hexdigest()[:12]
 
 
+def _record_contract_pass(runtime: WorkflowRuntime, contract: Any, report: Any) -> None:
+    ctx = runtime.parent_context
+    if ctx is None or ctx.verification_state is None:
+        return
+    summary = report.summary() if hasattr(report, "summary") else "contract passed"
+    ctx.verification_state.record_contract_pass(summary)
+
+
 def _prompt_hash(
     prompt: str,
     agent: str,
@@ -1771,6 +1779,7 @@ class WorkflowRuntime:
             if contract is not None and wt is not None:
                 contract_report = verify_contract(wt.path, contract)
                 if contract_report.passed:
+                    _record_contract_pass(self, contract, contract_report)
                     contract_report.delivered = await asyncio.to_thread(
                         deliver_ephemeral_worktree, wt
                     )

@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from vibe.core.tools.mcp_sampling import MCPSamplingHandler
     from vibe.core.tools.permissions import PermissionContext, PermissionStore
     from vibe.core.types import ApprovalCallback, SwitchAgentCallback, UserInputCallback
+    from vibe.core.verification_state import VerificationState
 
 ARGS_COUNT = 4
 
@@ -119,6 +120,8 @@ class InvokeContext:
     # read-before-edit with staleness detection across calls. None when no loop
     # is running.
     files_read: dict[str, str] | None = field(default=None)
+    # Session-scoped verification flags; only set by the two owning paths.
+    verification_state: VerificationState | None = field(default=None)
     # Tool manager for meta-tools (e.g. tool_search) that need to inspect or
     # adjust the active manifest without reaching back into AgentLoop.
     tool_manager: Any | None = field(default=None)
