@@ -2863,6 +2863,28 @@ def test_accept_extracted_memory_drops_oneshot_project_state() -> None:
     assert AgentLoopMemoryMixin._accept_extracted_memory(resume) is True
 
 
+def test_accept_extracted_memory_word_boundary_matching() -> None:
+    from vibe.core.agent_loop_memory import AgentLoopMemoryMixin
+
+    # "wip" must match the whole word only, not "swipe" (substring bug).
+    swipe = ExtractedMemory(
+        title="Audit card for ownership",
+        description="file ownership swipe policy documented",
+        type=MemoryType.PROJECT,
+        body="audit card closed",
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(swipe) is False
+
+    # Control: a genuine "wip" resume signal is still kept.
+    wip = ExtractedMemory(
+        title="Dinopark wip",
+        description="work in progress on the decompiler",
+        type=MemoryType.PROJECT,
+        body="still wip, resume next session",
+    )
+    assert AgentLoopMemoryMixin._accept_extracted_memory(wip) is True
+
+
 @pytest.mark.asyncio
 async def test_maybe_schedule_consolidation_logs_when_gated(
     monkeypatch, tmp_path, caplog
