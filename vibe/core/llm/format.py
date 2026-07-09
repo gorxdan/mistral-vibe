@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any
 
-import orjson
 from pydantic import ValidationError
 
 from vibe.core.llm.models import (
@@ -13,6 +12,7 @@ from vibe.core.llm.models import (
     ResolvedMessage,
     ResolvedToolCall,
 )
+from vibe.core.llm.tool_call_repair import parse_tool_arguments
 from vibe.core.logger import logger
 from vibe.core.types import (
     AvailableFunction,
@@ -128,15 +128,15 @@ class APIToolFormatHandler:
         for tc in api_tool_calls:
             if not (function_call := tc.function):
                 continue
-            try:
-                args = orjson.loads(function_call.arguments or "{}")
-            except orjson.JSONDecodeError:
-                args = {}
+            parsed_args = parse_tool_arguments(function_call.arguments)
 
             tool_calls.append(
                 ParsedToolCall(
                     tool_name=function_call.name or "",
-                    raw_args=args,
+                    raw_args=parsed_args.arguments,
+                    raw_text=parsed_args.raw_text,
+                    parse_error=parsed_args.diagnostic,
+                    repaired=parsed_args.repaired,
                     call_id=tc.id or "",
                 )
             )
@@ -152,6 +152,16 @@ class APIToolFormatHandler:
         active_tools = tool_manager.manifest_tools
 
         for parsed_call in parsed.tool_calls:
+            if parsed_call.parse_error is not None:
+                failed_calls.append(
+                    FailedToolCall(
+                        tool_name=parsed_call.tool_name,
+                        call_id=parsed_call.call_id,
+                        error=parsed_call.parse_error.for_model(),
+                        diagnostic=parsed_call.parse_error,
+                    )
+                )
+                continue
             tool_class = active_tools.get(parsed_call.tool_name)
             if not tool_class:
                 # tool_search itself can be hidden (small MCP catalogs); the
