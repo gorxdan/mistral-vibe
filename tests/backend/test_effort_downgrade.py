@@ -1,8 +1,3 @@
-"""Reasoning-effort downgrade: send the top tier (xhigh for `max`) and, when a
-model rejects it with a 400 listing supported values, retry with the nearest
-supported effort — "xhigh if available, else the model's highest level".
-"""
-
 from __future__ import annotations
 
 import httpx
@@ -20,8 +15,12 @@ from vibe.core.llm.backend.generic import (
 from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import LLMMessage, Role
 
+_MAX_REJECTED = (
+    "Unsupported value: 'max' is not supported with the 'gpt-4o' model. "
+    "Supported values are: 'low', 'medium', 'high'."
+)
 _XHIGH_REJECTED = (
-    "Unsupported value: 'xhigh' is not supported with the 'gpt-4o' model. "
+    "Unsupported value: 'xhigh' is not supported with the 'gpt-5.5' model. "
     "Supported values are: 'low', 'medium', 'high'."
 )
 _NONE_REJECTED = (
@@ -31,6 +30,9 @@ _NONE_REJECTED = (
 
 
 class TestNearestSupportedEffort:
+    def test_downgrades_max_to_highest_available(self):
+        assert _nearest_supported_effort(_MAX_REJECTED) == "high"
+
     def test_downgrades_xhigh_to_highest_available(self):
         assert _nearest_supported_effort(_XHIGH_REJECTED) == "high"
 
@@ -91,7 +93,7 @@ async def test_streaming_retries_with_downgraded_effort():
         route = mock_api.post(OPENAI_RESPONSES_PATH).mock(
             side_effect=[
                 httpx.Response(
-                    400, content=orjson.dumps({"error": {"message": _XHIGH_REJECTED}})
+                    400, content=orjson.dumps({"error": {"message": _MAX_REJECTED}})
                 ),
                 httpx.Response(
                     200,
@@ -116,10 +118,10 @@ async def test_streaming_retries_with_downgraded_effort():
             )
         ]
 
-    # First request sent the top tier; it was rejected, so we retried.
+    # First request sent the requested tier verbatim; it was rejected, retried.
     assert len(route.calls) == 2
     first = orjson.loads(route.calls[0].request.content)
     second = orjson.loads(route.calls[1].request.content)
-    assert first["reasoning"]["effort"] == "xhigh"
-    assert second["reasoning"]["effort"] == "high"  # nearest supported to xhigh
+    assert first["reasoning"]["effort"] == "max"
+    assert second["reasoning"]["effort"] == "high"  # nearest supported to max
     assert any(c.message.content == "ok" for c in out)

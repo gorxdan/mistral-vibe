@@ -213,6 +213,7 @@ _THINKING_TO_REASONING_EFFORT: dict[str, ReasoningEffortValue] = {
     "low": "none",
     "medium": "high",
     "high": "high",
+    "xhigh": "high",
     "max": "high",
 }
 

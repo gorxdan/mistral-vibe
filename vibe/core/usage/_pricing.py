@@ -37,6 +37,17 @@ _PRICING: dict[str, ModelPricing] = {
     "glm-4.6": ModelPricing(input_price=0.6, output_price=2.2, cached_input_price=0.11),
     "glm-4.5": ModelPricing(input_price=0.6, output_price=2.2, cached_input_price=0.11),
     # ── OpenAI (platform.openai.com/docs/pricing, Standard tier) ──
+    # GPT-5.6 ships three durable capability tiers (Sol/Terra/Luna) under one
+    # generation; cache reads get the standard 90% input discount (openai.com).
+    "gpt-5.6-sol": ModelPricing(
+        input_price=5.0, output_price=30.0, cached_input_price=0.5
+    ),
+    "gpt-5.6-terra": ModelPricing(
+        input_price=2.5, output_price=15.0, cached_input_price=0.25
+    ),
+    "gpt-5.6-luna": ModelPricing(
+        input_price=1.0, output_price=6.0, cached_input_price=0.1
+    ),
     "gpt-5.5": ModelPricing(input_price=5.0, output_price=30.0, cached_input_price=0.5),
     "gpt-5.4": ModelPricing(
         input_price=2.5, output_price=15.0, cached_input_price=0.25
