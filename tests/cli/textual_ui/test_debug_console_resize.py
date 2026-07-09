@@ -22,7 +22,6 @@ class _LogViewTestApp(App):
 
 @pytest.mark.asyncio
 async def test_render_line_no_keyerror_on_width_mismatch():
-    """render_line must not raise KeyError when wrap width != cached width."""
     app = _LogViewTestApp()
     async with app.run_test(size=(80, 24)) as pilot:
         log_view = app._log_view

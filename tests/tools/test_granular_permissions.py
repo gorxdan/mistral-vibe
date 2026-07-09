@@ -750,13 +750,11 @@ class TestCollectOutsideDirs:
         assert len(dirs) == 0
 
     def test_traversal_path_without_dot_prefix(self):
-        """Paths like src/../../../etc/passwd don't start with . but contain /."""
         (self.workdir / "src").mkdir()
         dirs = _collect_outside_dirs(["cat src/../../../etc/passwd"])
         assert len(dirs) >= 1
 
     def test_in_workdir_subdir_path_not_collected(self):
-        """foo/bar inside workdir should not be flagged."""
         (self.workdir / "foo").mkdir()
         (self.workdir / "foo" / "bar").touch()
         dirs = _collect_outside_dirs(["cat foo/bar"])

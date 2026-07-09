@@ -45,7 +45,6 @@ class TestFileToolScratchpadPermissions:
         assert result.permission is ToolPermission.ALWAYS
 
     def test_scratchpad_env_file_still_allowed(self):
-        """Scratchpad bypasses sensitive pattern checks."""
         sp = scratchpad_mod.get_scratchpad_dir("test-session")
         assert sp is not None
         tool = WriteFile(config_getter=lambda: WriteFileConfig(), state=BaseToolState())

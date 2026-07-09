@@ -327,11 +327,6 @@ async def test_workflow_detail_shows_budget_phase_breakdown_and_cost():
 
 @pytest.mark.asyncio
 async def test_workflow_detail_lists_agents_and_drill_down_shows_prompt_response():
-    """A workflow's agents render as a navigable list, and drilling into one
-    shows its prompt + response (the gap this change closes: previously the
-    detail view showed only aggregate counts and a 'response not available'
-    string).
-    """
     from textual.app import App, ComposeResult
     from textual.containers import Container
 
@@ -397,10 +392,6 @@ async def test_workflow_detail_lists_agents_and_drill_down_shows_prompt_response
 
 @pytest.mark.asyncio
 async def test_detail_view_poll_refresh_does_not_duplicate_widgets():
-    """The 1s poll refresh must update widgets IN PLACE. Re-mounting fixed-id
-    widgets each tick raced Textual's deferred remove() and crashed the app with
-    DuplicateIds ('tasks-agent-list'). Several refreshes must leave exactly one.
-    """
     from textual.app import App, ComposeResult
     from textual.containers import Container
 
@@ -462,10 +453,6 @@ async def test_detail_view_poll_refresh_does_not_duplicate_widgets():
 
 @pytest.mark.asyncio
 async def test_live_agent_detail_shows_prompt_and_streaming_preview():
-    """An in-flight agent's prompt + response_so_far render in the agent
-    category detail (previously a hardcoded 'response not available' string
-    even though the preview existed).
-    """
     from textual.app import App, ComposeResult
     from textual.containers import Container
 
@@ -636,11 +623,6 @@ async def test_flat_list_live_workflow_agent_drills_into_full_agent_view():
 
 @pytest.mark.asyncio
 async def test_pause_message_from_pane_calls_registry_pause():
-    """The pane emits TaskPauseRequested; the app handler must AWAIT the
-    registry pause() coroutine (regression: a missing await once silently
-    dropped the resume path). Here we assert the registry is actually invoked
-    by routing the message the way VibeApp does.
-    """
     runner = _FakeWorkflowRunner()
     runner.runs.append(_FakeRunEntry(run_id="wf-1", status=_WorkflowStatus("running")))
     reg = _registry(runner)

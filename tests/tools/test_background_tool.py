@@ -72,11 +72,6 @@ async def reaping_registry():
 
 @pytest.mark.asyncio
 async def test_background_returns_immediately_with_handle(tmp_path):
-    """The whole point: background=True does NOT block on a long command.
-
-    Uses `sleep 5` — if the tool blocked, collect_result would hang until the
-    per-test timeout. Backgrounding returns at once with a task_id and pid.
-    """
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
@@ -141,9 +136,6 @@ async def test_background_without_session_or_scratchpad_raises():
 
 @pytest.mark.asyncio
 async def test_background_false_is_byte_identical_to_foreground(tmp_path):
-    """Regression: background must default to False and the foreground path
-    still awaits communicate() and returns the real stdout/returncode.
-    """
     bash = _bash()
     _ctx(None, session_dir=tmp_path)
 
@@ -248,9 +240,6 @@ def _has_log_block(response: str) -> bool:
 
 @pytest.mark.asyncio
 async def test_scoped_list_returns_only_the_named_task(tmp_path):
-    """task_id scopes the listing to one task: with two procs, asking for
-    proc-1 returns exactly proc-1 and never proc-2 (exact match, no prefix).
-    """
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
@@ -272,9 +261,6 @@ async def test_scoped_list_returns_only_the_named_task(tmp_path):
 
 @pytest.mark.asyncio
 async def test_scoped_list_shows_recent_log_by_default(tmp_path):
-    """Omitting tail on a scoped lookup still surfaces recent output — that's
-    the whole point of asking for a single task.
-    """
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
@@ -293,7 +279,6 @@ async def test_scoped_list_shows_recent_log_by_default(tmp_path):
 
 @pytest.mark.asyncio
 async def test_scoped_list_tail_zero_suppresses_log(tmp_path):
-    """Explicit tail=0 overrides the scoped default — status only, no log."""
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
@@ -314,9 +299,6 @@ async def test_scoped_list_tail_zero_suppresses_log(tmp_path):
 
 @pytest.mark.asyncio
 async def test_scoped_list_unknown_id_lists_known_ids(tmp_path):
-    """An unknown task_id yields a clear not-found message naming the known
-    ids, so the caller can recover without a second round-trip.
-    """
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
@@ -336,7 +318,6 @@ async def test_scoped_list_unknown_id_lists_known_ids(tmp_path):
 
 @pytest.mark.asyncio
 async def test_scoped_list_explicit_tail_overrides_default(tmp_path):
-    """An explicit positive tail wins over the scoped default sample."""
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
@@ -411,9 +392,6 @@ class _FakeWorkflowRunner:
 
 @pytest.mark.asyncio
 async def test_family_scoping_pulls_in_workflow_children():
-    """task_id='wf-1' returns the workflow row AND its wf-1/live-* children —
-    the family — via the '/' boundary match.
-    """
     registry = BackgroundRegistry()
     wf = _FakeWorkflowRunner()
     wf.runs.append(
@@ -441,9 +419,6 @@ async def test_family_scoping_pulls_in_workflow_children():
 
 @pytest.mark.asyncio
 async def test_family_scoping_isolates_sibling_workflows():
-    """wf-1's family must not bleed into wf-2's family — the boundary match
-    keys on the full id, not a numeric prefix.
-    """
     registry = BackgroundRegistry()
     wf = _FakeWorkflowRunner()
     wf.runs.append(
@@ -474,10 +449,6 @@ async def test_family_scoping_isolates_sibling_workflows():
 
 @pytest.mark.asyncio
 async def test_family_scoping_has_no_numeric_footgun(tmp_path):
-    """Regression guard: proc-1 must not match proc-10. The '/' boundary
-    match means a bare numeric suffix can never widen the scope — there is
-    no proc-1/... child, and 'proc-10' does not start with 'proc-1/'.
-    """
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
@@ -517,11 +488,6 @@ async def test_family_scoping_has_no_numeric_footgun(tmp_path):
 
 @pytest.mark.asyncio
 async def test_scoped_workflow_list_tails_child_agent_transcript(tmp_path):
-    """background list task_id=wf-1 shows the workflow row AND each live
-    agent's recent transcript (rendered as 'role: content'), not just the
-    agent's status line. This closes the gap where AGENT-category rows had no
-    tail because only PROCESS entries had on-disk logs.
-    """
     import json
 
     log = tmp_path / "agent-transcript.jsonl"
@@ -562,9 +528,6 @@ async def test_scoped_workflow_list_tails_child_agent_transcript(tmp_path):
 
 @pytest.mark.asyncio
 async def test_scoped_agent_list_tails_single_agent(tmp_path):
-    """Asking for the agent id directly (wf-1/live-explore) tails just that
-    agent — same machinery, scoped to the one child row.
-    """
     import json
 
     log = tmp_path / "single-agent.jsonl"
@@ -656,7 +619,6 @@ async def test_background_tool_without_registry_raises():
 
 
 def test_background_tool_is_always_allowed():
-    """resolve_permission returns ALWAYS — it only touches session-launched tasks."""
     tool = _background_tool()
     perm = tool.resolve_permission(BackgroundArgs(action="stop", task_id="proc-1"))
     from vibe.core.tools.base import ToolPermission
@@ -672,9 +634,6 @@ def test_background_tool_is_always_allowed():
 
 @pytest.mark.asyncio
 async def test_read_log_tail_trims_oversized_log_in_place(tmp_path, monkeypatch):
-    """A chatty server's log must not grow unbounded: when it exceeds the disk
-    cap, read_log_tail rewrites it in place to a bounded tail.
-    """
     import vibe.core.tools.background as bgmod
 
     # Shrink the caps so the test runs fast on a small file.
@@ -715,13 +674,6 @@ class _DummyProc:
 
 @pytest.mark.asyncio
 async def test_end_to_end_background_server_serves_then_stops(tmp_path):
-    """Background a real python http.server, confirm it writes its bind line,
-    then confirm stop() frees it. This is the core 'launch a web server' UX.
-
-    Uses -u so the startup print flushes immediately (stdout is block-buffered
-    when redirected to a file, so the bind line would otherwise sit in the
-    buffer until the process exits).
-    """
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
@@ -763,13 +715,6 @@ async def test_end_to_end_background_server_serves_then_stops(tmp_path):
 
 @pytest.mark.asyncio
 async def test_stop_reaps_grandchild_process_tree(tmp_path):
-    """A backgrounded command that spawns its own children must have the whole
-    tree reaped, not just the shell. start_new_session=True makes the shell a
-    session/pgid leader, so killpg(getpgid(shell_pid)) fans out to children.
-
-    The command writes a grandchild's PID to a file, then waits. After stop,
-    that PID must no longer be alive.
-    """
     # Sandbox disabled: bwrap --unshare-pid namespaces $$, so the reported PID
     # would be an in-namespace number that _pid_alive checks on the host (false RED).
     bash = _bash(BashToolConfig(sandbox=SandboxConfig(enabled=False)))
@@ -832,9 +777,6 @@ def _pid_alive(pid: int) -> bool:
 
 @pytest.mark.asyncio
 async def test_shutdown_reaps_real_running_process(tmp_path):
-    """registry.shutdown() (the app-exit orphan preventer) must terminate and
-    reap a genuinely running process, not just a fake.
-    """
     bash = _bash()
     registry = BackgroundRegistry()
     ctx = _ctx(registry, session_dir=tmp_path, scratchpad_dir=tmp_path)
@@ -861,7 +803,6 @@ async def test_shutdown_reaps_real_running_process(tmp_path):
 
 @pytest.mark.asyncio
 async def test_register_process_enforces_running_cap(monkeypatch, tmp_path):
-    """A looping agent must not be able to spawn unbounded background shells."""
     import vibe.core.tools.background as bgmod
 
     monkeypatch.setattr(bgmod, "_MAX_RUNNING_PROCS", 2)
@@ -899,12 +840,6 @@ async def test_register_process_enforces_running_cap(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_background_cap_rejects_and_terminates_orphan(monkeypatch, tmp_path):
-    """End-to-end: when registration rejects (cap reached) the just-spawned
-    process must be force-killed, not left running and unreachable.
-
-    Regression for a leak where the failure handler only closed the log and
-    passively awaited (sending no signal), orphaning the child to init.
-    """
     import vibe.core.tools.background as bgmod
     import vibe.core.tools.builtins.bash as bashmod
 

@@ -542,9 +542,6 @@ def _registry_with_workflow_log(
 
 
 def test_read_agent_log_tail_returns_formatted_recent_messages(tmp_path):
-    """A wf-N/live-la-M id resolves to the agent's transcript and renders the
-    last lines as readable 'role: content' snippets — not raw JSON.
-    """
     reg, _wf = _registry_with_workflow_log(tmp_path)
 
     tail = reg.read_agent_log_tail("wf-1/live-la-0", lines=2)
@@ -555,9 +552,6 @@ def test_read_agent_log_tail_returns_formatted_recent_messages(tmp_path):
 
 
 def test_read_agent_log_tail_empty_for_isolated_agent(tmp_path):
-    """An agent with no log_path (isolated/worktree agent) returns '' — nothing
-    stable to tail, rendered as 'no output yet'.
-    """
     reg, wf, _team, _loop = _registry_with_all()
     wf.runs.append(
         _FakeRunEntry(
@@ -571,7 +565,6 @@ def test_read_agent_log_tail_empty_for_isolated_agent(tmp_path):
 
 
 def test_read_agent_log_tail_empty_for_unknown_id():
-    """Unknown run or agent ids return '' rather than raising."""
     reg, _wf, _team, _loop = _registry_with_all()
 
     assert reg.read_agent_log_tail("wf-999/live-la-0") == ""
@@ -581,13 +574,11 @@ def test_read_agent_log_tail_empty_for_unknown_id():
 
 
 def test_read_agent_log_tail_empty_when_no_workflow_runner():
-    """With no workflow runner attached, agent tails resolve to ''."""
     reg = BackgroundRegistry()
     assert reg.read_agent_log_tail("wf-1/live-la-0") == ""
 
 
 def test_parse_agent_task_id_round_trip():
-    """The id parser splits hierarchical agent ids and rejects non-agent ids."""
     parse = BackgroundRegistry._parse_agent_task_id
     assert parse("wf-1/live-la-3") == ("wf-1", "la-3")
     assert parse("proc-1") == (None, None)  # not hierarchical
@@ -596,9 +587,6 @@ def test_parse_agent_task_id_round_trip():
 
 
 def test_format_jsonl_tail_handles_malformed_trailing_line():
-    """A partial trailing write (no closing brace yet) is passed through, not
-    dropped, so an in-progress append never blanks the tail.
-    """
     from vibe.core.tools.background import _format_jsonl_tail
 
     raw = '{"role": "assistant", "content": "ok"}\n{"role": "user", "content": "par'
@@ -817,9 +805,6 @@ async def test_shutdown_cancels_running_async_agents():
 
 @pytest.mark.asyncio
 async def test_register_async_agent_stores_prompt_model_and_log_path(tmp_path):
-    """The observability kwargs are surfaced on the listed entry so the Tasks
-    pane and `background` tool can render what the agent was asked to do.
-    """
     reg = BackgroundRegistry()
     log_path = tmp_path / "bg" / "asub-1.log"
 
@@ -853,7 +838,6 @@ async def test_register_async_agent_stores_prompt_model_and_log_path(tmp_path):
 
 @pytest.mark.asyncio
 async def test_update_async_progress_records_streaming_state():
-    """In-process collector updates flow onto the listed entry while running."""
     reg = BackgroundRegistry()
 
     async def long_running() -> _FakeIsolatedResult:
@@ -886,7 +870,6 @@ async def test_update_async_progress_records_streaming_state():
 
 @pytest.mark.asyncio
 async def test_update_async_progress_noop_for_unknown_or_finalized():
-    """A stale update after completion must not clobber captured state."""
     reg = BackgroundRegistry()
 
     async def quick() -> _FakeIsolatedResult:
@@ -909,7 +892,6 @@ async def test_update_async_progress_noop_for_unknown_or_finalized():
 
 @pytest.mark.asyncio
 async def test_read_async_tail_tails_isolated_log_file(tmp_path):
-    """Isolated subagents stream stdout to a log file; the registry tails it."""
     reg = BackgroundRegistry()
     log_path = tmp_path / "asub-1.log"
     log_path.write_text("line one\nline two\nline three\n")
@@ -935,9 +917,6 @@ async def test_read_async_tail_tails_isolated_log_file(tmp_path):
 
 @pytest.mark.asyncio
 async def test_read_async_tail_returns_response_so_far_for_in_process():
-    """In-process subagents have no log file; the tail falls back to the
-    streaming partial response the collector keeps current.
-    """
     reg = BackgroundRegistry()
 
     async def long_running() -> _FakeIsolatedResult:
