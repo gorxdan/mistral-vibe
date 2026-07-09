@@ -354,6 +354,53 @@ def _record_contract_pass(runtime: WorkflowRuntime, contract: Any, report: Any) 
     ctx.verification_state.record_contract_pass(summary)
 
 
+def _synth_delivered(delivered: Any) -> ContractReport:
+    report = ContractReport(passed=True, delivered=bool(delivered))
+    return report
+
+
+async def _run_verifier_in_worktree(
+    runtime: WorkflowRuntime, wt: Any, result: Any, model: str | None
+) -> bool:
+    # Returns True (deliver) on VERDICT: PASS, False (block) otherwise.
+    from vibe.core.agents.models import BuiltinAgentName
+
+    ctx = runtime.parent_context
+    state = ctx.verification_state if ctx is not None else None
+    v_prompt = (
+        f"Verify the work just produced in this worktree. The worker prompt was:\n"
+        f"{result.output or '(empty)'}\n\n"
+        "Inspect the diff/files, run targeted tests, and emit a strict "
+        "VERDICT: PASS | FAIL | PARTIAL with command evidence."
+    )
+    try:
+        v_result = await _spawn_isolated(
+            wt,
+            v_prompt,
+            BuiltinAgentName.VERIFIER,
+            DEFAULT_ISOLATED_MAX_TURNS,
+            deliver=False,
+            stamp_wt=None,
+            model=model,
+        )
+    except Exception as exc:
+        logger.warning("then='verifier' spawn failed: %s", exc)
+        return False
+    response = v_result.output or ""
+    from vibe.core.tools.builtins.task import _VERDICT_PASS_RE
+
+    if not _VERDICT_PASS_RE.search(response):
+        logger.info("then='verifier' verdict blocked deliver: %s", response[:200])
+        return False
+    if state is not None:
+        match = _VERDICT_PASS_RE.search(response)
+        start = match.start() if match else 0
+        tail = response[start:].split("\n", 2)
+        summary = tail[0].strip() if tail else "VERDICT: PASS"
+        state.record_verifier_pass(summary)
+    return True
+
+
 def _prompt_hash(
     prompt: str,
     agent: str,
@@ -881,6 +928,7 @@ class WorkflowRuntime:
         strip_unknown: bool = True,
         contract: dict | None = None,
         citations: dict | None = None,
+        then: str | None = None,
     ) -> (
         str
         | dict[str, Any]
@@ -888,6 +936,15 @@ class WorkflowRuntime:
         | ContractFailure
         | CitationFailure
     ):
+        if then is not None and then != "verifier":
+            raise WorkflowError(
+                f"agent(then=...) supports only 'verifier'; got {then!r}"
+            )
+        if then == "verifier" and isolation != "worktree":
+            raise WorkflowError(
+                "agent(then='verifier') requires isolation='worktree' "
+                "(it verifies artifacts in the isolated tree before deliver)."
+            )
         contract_spec = self._resolve_contract(contract, isolation)
         citation_spec = self._resolve_citations(citations)
         effective_phase = phase if phase is not None else self._current_phase
@@ -923,6 +980,7 @@ class WorkflowRuntime:
                     strip_unknown=strip_unknown,
                     contract=contract_spec,
                     citations=citation_spec,
+                    then=then,
                 )
             if isolation is not None:
                 raise WorkflowError(
@@ -1540,6 +1598,7 @@ class WorkflowRuntime:
         strip_unknown: bool = True,
         contract: ContractSpec | None = None,
         citations: CitationSpec | None = None,
+        then: str | None = None,
     ) -> (
         str
         | dict[str, Any]
@@ -1568,7 +1627,7 @@ class WorkflowRuntime:
             completed,
             error_msg,
         ) = await self._execute_isolated(
-            effective_prompt, agent, label, contract, live, model=model
+            effective_prompt, agent, label, contract, live, model=model, then=then
         )
         if completed and contract_report is not None and not contract_report.passed:
             completed = False
@@ -1628,10 +1687,10 @@ class WorkflowRuntime:
         live: Any,
         *,
         model: str | None = None,
+        then: str | None = None,
     ) -> tuple[str, dict[str, int] | None, ContractReport | None, bool, str | None]:
         try:
             if self.isolated_executor is not None:
-                # Custom test seam: returns output (str) or (output, stats).
                 raw = await self.isolated_executor(
                     effective_prompt, agent, label, DEFAULT_ISOLATED_MAX_TURNS
                 )
@@ -1647,6 +1706,7 @@ class WorkflowRuntime:
                 DEFAULT_ISOLATED_MAX_TURNS,
                 contract=contract,
                 model=model,
+                then=then,
             )
             return output, stats, contract_report, True, None
         except (AgentCapExceeded, BudgetExhausted):
@@ -1751,11 +1811,8 @@ class WorkflowRuntime:
         *,
         contract: ContractSpec | None = None,
         model: str | None = None,
+        then: str | None = None,
     ) -> tuple[str, dict[str, int] | None, ContractReport | None]:
-        # Delegate spawn+communicate+stats to the shared run_isolated_agent
-        # (same path the task() tool uses), keeping ownership of the worktree
-        # (keep_worktree=True) so contract verification can run against the live
-        # tree before delivery + reap.
         from vibe.core.worktree.ephemeral import (
             deliver_ephemeral_worktree,
             remove_ephemeral_worktree,
@@ -1775,19 +1832,24 @@ class WorkflowRuntime:
         )
         wt = result.wt
         contract_report: ContractReport | None = None
+        should_deliver = False
         try:
             if contract is not None and wt is not None:
                 contract_report = verify_contract(wt.path, contract)
-                if contract_report.passed:
+                should_deliver = contract_report.passed
+            if should_deliver and then == "verifier" and wt is not None:
+                verdict = await _run_verifier_in_worktree(self, wt, result, model)
+                should_deliver = verdict
+            if should_deliver and wt is not None:
+                if contract_report is not None:
                     _record_contract_pass(self, contract, contract_report)
-                    contract_report.delivered = await asyncio.to_thread(
-                        deliver_ephemeral_worktree, wt
-                    )
+                delivered = await asyncio.to_thread(deliver_ephemeral_worktree, wt)
+                if contract_report is not None:
+                    contract_report.delivered = delivered
+                elif then == "verifier":
+                    contract_report = _synth_delivered(delivered)
         finally:
             if wt is not None:
-                # Delivered -> work is in the parent, force-remove. Otherwise
-                # keep so undelivered (failed contract or ff refused) work
-                # stays recoverable via `git merge <branch>`.
                 await asyncio.to_thread(
                     remove_ephemeral_worktree,
                     wt,
@@ -1946,6 +2008,7 @@ class WorkflowRuntime:
             isolation: str | None = None,
             strip_unknown: bool = True,
             contract: dict | None = None,
+            then: str | None = None,
             **extra: Any,
         ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure | None:
             # Tolerate unknown kwargs so one stray argument degrades a single
@@ -1978,6 +2041,7 @@ class WorkflowRuntime:
                     isolation=isolation,
                     strip_unknown=strip_unknown,
                     contract=contract,
+                    then=then,
                 )
             except (AgentCapExceeded, BudgetExhausted):
                 # Hard ceilings must fail the run; mirrors parallel()._safe.
