@@ -9,6 +9,8 @@ from typing import Any
 from git import Repo
 import pytest
 
+from vibe.core.tools.base import InvokeContext
+from vibe.core.verification_state import VerificationState
 from vibe.core.workflows.contract import ContractFailure, ContractReport, ContractSpec
 from vibe.core.workflows.runtime import WorkflowRuntime
 import vibe.core.worktree.ephemeral as ephemeral
@@ -64,7 +66,12 @@ async def test_default_executor_contract_passes_and_delivers(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _setup_repo(tmp_path, monkeypatch, _FAKE_VIBE_WRITE)
-    rt = WorkflowRuntime()
+    verification_state = VerificationState()
+    rt = WorkflowRuntime(
+        parent_context=InvokeContext(
+            tool_call_id="test", verification_state=verification_state
+        )
+    )
     contract = ContractSpec.model_validate({
         "outputs": [{"path": "auth.py", "must_contain": ["JWT"]}]
     })
@@ -74,8 +81,35 @@ async def test_default_executor_contract_passes_and_delivers(
     assert report is not None
     assert report.passed
     assert report.delivered
+    assert verification_state.has_pass()
     # Delivery ff-merged the worktree into the parent; the file landed.
     assert (root / "auth.py").read_text().startswith("JWT_TOKEN")
+
+
+@pytest.mark.asyncio
+async def test_default_executor_does_not_record_pass_when_delivery_fails(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_repo(tmp_path, monkeypatch, _FAKE_VIBE_WRITE)
+    monkeypatch.setattr(ephemeral, "deliver_ephemeral_worktree", lambda wt: False)
+    verification_state = VerificationState()
+    rt = WorkflowRuntime(
+        parent_context=InvokeContext(
+            tool_call_id="test", verification_state=verification_state
+        )
+    )
+    contract = ContractSpec.model_validate({
+        "outputs": [{"path": "auth.py", "must_contain": ["JWT"]}]
+    })
+
+    _output, _stats, report = await rt._default_isolated_executor(
+        "impl", "auto-approve", "lbl", 40, contract=contract
+    )
+
+    assert report is not None
+    assert report.passed
+    assert not report.delivered
+    assert not verification_state.has_pass()
 
 
 @pytest.mark.asyncio

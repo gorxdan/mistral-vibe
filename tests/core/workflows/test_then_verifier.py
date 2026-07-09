@@ -16,6 +16,39 @@ from vibe.core.workflows.runtime import (
 
 pytestmark = pytest.mark.asyncio
 
+_PASS_RESPONSE = (
+    "Verification notes.\n\n"
+    "### Check: focused tests\n"
+    "**Command run:**\n"
+    "  uv run pytest -q\n"
+    "**Output observed:**\n"
+    "  3 passed\n"
+    "**Result: PASS**\n\n"
+    "VERDICT: PASS"
+)
+
+_FAIL_RESPONSE = (
+    "Verification notes.\n\n"
+    "### Check: focused tests\n"
+    "**Command run:**\n"
+    "  uv run pytest -q\n"
+    "**Output observed:**\n"
+    "  1 failed\n"
+    "**Result: FAIL**\n\n"
+    "VERDICT: FAIL"
+)
+
+_PARTIAL_RESPONSE = (
+    "Verification notes.\n\n"
+    "### Check: focused tests\n"
+    "**Command run:**\n"
+    "  uv run pytest -q\n"
+    "**Output observed:**\n"
+    "  2 passed, 1 failed\n"
+    "**Result: FAIL**\n\n"
+    "VERDICT: PARTIAL"
+)
+
 
 def _make_runtime(state: VerificationState | None = None) -> WorkflowRuntime:
     from tests.core.workflows.test_runtime import make_factory
@@ -64,7 +97,7 @@ async def test_run_verifier_pass_records_and_returns_true(
     async def fake_spawn(
         wt: Any, prompt: str, agent: str, max_turns: int, **kw: Any
     ) -> Any:
-        return _FakeResult(output="All checks passed.\n\nVERDICT: PASS — green")
+        return _FakeResult(output=_PASS_RESPONSE)
 
     monkeypatch.setattr("vibe.core.workflows.runtime._spawn_isolated", fake_spawn)
     result = _FakeResult("did the work")
@@ -74,7 +107,6 @@ async def test_run_verifier_pass_records_and_returns_true(
 
     assert verdict is True
     assert state.last_verifier_pass is not None
-    assert state.last_verifier_pass.summary.startswith("VERDICT: PASS")
 
 
 async def test_run_verifier_fail_blocks_and_returns_false(
@@ -86,7 +118,7 @@ async def test_run_verifier_fail_blocks_and_returns_false(
     async def fake_spawn(
         wt: Any, prompt: str, agent: str, max_turns: int, **kw: Any
     ) -> Any:
-        return _FakeResult(output="Found bugs.\nVERDICT: FAIL")
+        return _FakeResult(output=_FAIL_RESPONSE)
 
     monkeypatch.setattr("vibe.core.workflows.runtime._spawn_isolated", fake_spawn)
 
@@ -119,7 +151,7 @@ async def test_run_verifier_noop_without_state(monkeypatch: pytest.MonkeyPatch) 
     async def fake_spawn(
         wt: Any, prompt: str, agent: str, max_turns: int, **kw: Any
     ) -> Any:
-        return _FakeResult(output="VERDICT: PASS")
+        return _FakeResult(output=_PASS_RESPONSE)
 
     monkeypatch.setattr("vibe.core.workflows.runtime._spawn_isolated", fake_spawn)
 
@@ -135,7 +167,7 @@ async def test_run_verifier_partial_blocks() -> None:
     rt = _make_runtime(state)
     rt.parent_context = InvokeContext(tool_call_id="t1", verification_state=state)
 
-    fake_result = _FakeResult(output="Some checks failed.\nVERDICT: PARTIAL")
+    fake_result = _FakeResult(output=_PARTIAL_RESPONSE)
     mock_spawn = AsyncMock(return_value=fake_result)
 
     import vibe.core.workflows.runtime as rt_mod
@@ -194,7 +226,7 @@ async def test_default_isolated_executor_standalone_then_verifier_pass_delivers_
         nonlocal spawn_count
         spawn_count += 1
         if spawn_count == 2:
-            return _VerdictProc(b"Checks done.\n\nVERDICT: PASS - green")
+            return _VerdictProc(_PASS_RESPONSE.encode())
         return _FakeProc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
@@ -240,7 +272,7 @@ async def test_default_isolated_executor_standalone_then_verifier_fail_blocks(
         nonlocal spawn_count
         spawn_count += 1
         if spawn_count == 2:
-            return _VerdictProc(b"Found bugs.\nVERDICT: FAIL")
+            return _VerdictProc(_FAIL_RESPONSE.encode())
         return _FakeProc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)

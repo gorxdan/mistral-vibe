@@ -515,8 +515,7 @@ class OpenAIResponsesAdapter(APIAdapter):
             # with a 400 — their minimum is 'low'. Platform/mini models (gpt-5.5,
             # gpt-5.4-mini) accept 'none' for genuinely no reasoning.
             return "low" if "codex" in model_name.lower() else "none"
-        if thinking == "max":
-            return "xhigh"
+        # Verbatim: xhigh/max are real API tiers. 400-rejection self-heals.
         return thinking
 
     @staticmethod

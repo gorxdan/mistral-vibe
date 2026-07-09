@@ -6,7 +6,6 @@ from contextlib import aclosing, suppress
 from dataclasses import dataclass
 import fnmatch
 from pathlib import Path
-import re
 import time
 from typing import ClassVar, Literal
 
@@ -42,7 +41,21 @@ from vibe.core.types import (
     ToolResultEvent,
     ToolStreamEvent,
 )
-from vibe.core.workflows.runtime import DEFAULT_ISOLATED_MAX_TURNS, run_isolated_agent
+from vibe.core.verification_contract import (
+    VerificationReportError,
+    parse_verification_report,
+)
+from vibe.core.workflows._limits import DEFAULT_ISOLATED_MAX_TURNS
+from vibe.core.workflows.runtime import (
+    IsolatedResult,
+    run_isolated_agent,
+)
+
+
+def workspace_fingerprint() -> str | None:
+    from vibe.core._workspace_verification import workspace_fingerprint as calculate
+
+    return calculate()
 
 
 def _configured_subagent_model(ctx: InvokeContext) -> str | None:
@@ -75,24 +88,57 @@ def _effective_subagent_model(args: TaskArgs, ctx: InvokeContext) -> str | None:
     return None
 
 
-_VERDICT_PASS_RE = re.compile(
-    r"^[ \t]*VERDICT:[ \t]*PASS\b", re.IGNORECASE | re.MULTILINE
-)
-
-
-def _maybe_record_verifier_pass(agent: str, response: str, ctx: InvokeContext) -> None:
+def _maybe_record_verifier_pass(
+    agent: str,
+    response: str,
+    ctx: InvokeContext,
+    *,
+    completed: bool = True,
+    attempt: _VerificationAttempt | None = None,
+) -> None:
     # Only the verifier subagent may set the verifier flag.
-    if agent != BuiltinAgentName.VERIFIER or not response:
+    if agent != BuiltinAgentName.VERIFIER or not response or not completed:
         return
     state = ctx.verification_state
     if state is None:
         return
-    match = _VERDICT_PASS_RE.search(response)
-    if match is None:
+    if attempt is not None and (
+        attempt.workspace_fingerprint is None
+        or workspace_fingerprint() != attempt.workspace_fingerprint
+    ):
         return
-    tail = response[match.start() :].split("\n", 2)
-    summary = tail[0].strip() if tail else "VERDICT: PASS"
-    state.record_verifier_pass(summary)
+    try:
+        report = parse_verification_report(response)
+    except VerificationReportError:
+        return
+    if report.passed:
+        state.record_verifier_pass(report)
+
+
+def _record_background_isolated_verifier_pass(
+    task: asyncio.Task[IsolatedResult],
+    agent: str,
+    ctx: InvokeContext,
+    attempt: _VerificationAttempt | None = None,
+) -> None:
+    if task.cancelled():
+        return
+    try:
+        result = task.result()
+    except Exception:
+        return
+    _maybe_record_verifier_pass(agent, result.output, ctx, attempt=attempt)
+
+
+@dataclass(frozen=True, slots=True)
+class _VerificationAttempt:
+    workspace_fingerprint: str | None
+
+
+def _start_verification_attempt(agent: str) -> _VerificationAttempt | None:
+    if agent != BuiltinAgentName.VERIFIER:
+        return None
+    return _VerificationAttempt(workspace_fingerprint())
 
 
 @dataclass
@@ -223,7 +269,11 @@ class Task(
         # sequential — conservative; isolation would make them concurrent-safe
         # too, but this gate never needs the per-tool isolation config. Mirrors
         # the in-process vs isolated decision in invoke().
-        if getattr(args, "async_run", False) or agent_manager is None:
+        if (
+            getattr(args, "agent", "") == BuiltinAgentName.VERIFIER
+            or getattr(args, "async_run", False)
+            or agent_manager is None
+        ):
             return False
         get_agent = getattr(agent_manager, "get_agent", None)
         if get_agent is None:
@@ -287,7 +337,11 @@ class Task(
         return None
 
     async def _run_async_isolated(
-        self, args: TaskArgs, ctx: InvokeContext
+        self,
+        args: TaskArgs,
+        ctx: InvokeContext,
+        *,
+        verification_attempt: _VerificationAttempt | None = None,
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
         registry = ctx.background_registry
         if registry is None:
@@ -332,6 +386,11 @@ class Task(
             ),
             name=f"async-task-{args.agent}",
         )
+        bg_task.add_done_callback(
+            lambda task: _record_background_isolated_verifier_pass(
+                task, args.agent, ctx, verification_attempt
+            )
+        )
         task_id = registry.register_async_agent(
             args.agent,
             bg_task,
@@ -358,7 +417,11 @@ class Task(
         )
 
     async def _run_isolated(
-        self, args: TaskArgs, ctx: InvokeContext
+        self,
+        args: TaskArgs,
+        ctx: InvokeContext,
+        *,
+        verification_attempt: _VerificationAttempt | None = None,
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
         task_text = args.task
         if ctx.scratchpad_dir:
@@ -398,7 +461,9 @@ class Task(
                 response_text = result.output
                 worktree_path = result.worktree_path
                 branch = result.branch
-                _maybe_record_verifier_pass(args.agent, response_text, ctx)
+                _maybe_record_verifier_pass(
+                    args.agent, response_text, ctx, attempt=verification_attempt
+                )
         except Exception as e:
             completed = False
             response_text = f"[Isolated subagent error: {e}]"
@@ -477,19 +542,28 @@ class Task(
         should_isolate = isolation_mode == "always" or (
             isolation_mode == "auto" and profile_requires_isolation(agent_profile)
         )
+        verification_attempt = _start_verification_attempt(args.agent)
         if args.async_run:
             if should_isolate:
-                async for result in self._run_async_isolated(args, ctx):
+                async for result in self._run_async_isolated(
+                    args, ctx, verification_attempt=verification_attempt
+                ):
                     yield result
             else:
-                async for result in self._run_in_process_async(args, ctx):
+                async for result in self._run_in_process_async(
+                    args, ctx, verification_attempt=verification_attempt
+                ):
                     yield result
             return
         if should_isolate:
-            async for result in self._run_isolated(args, ctx):
+            async for result in self._run_isolated(
+                args, ctx, verification_attempt=verification_attempt
+            ):
                 yield result
             return
-        async for result in self._run_in_process(args, ctx):
+        async for result in self._run_in_process(
+            args, ctx, verification_attempt=verification_attempt
+        ):
             yield result
 
     @staticmethod
@@ -560,7 +634,11 @@ class Task(
         return subagent_loop, task_text
 
     async def _run_in_process(
-        self, args: TaskArgs, ctx: InvokeContext
+        self,
+        args: TaskArgs,
+        ctx: InvokeContext,
+        *,
+        verification_attempt: _VerificationAttempt | None = None,
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
         subagent_loop, task_text = self._build_subagent_loop(args, ctx)
         accumulated_response: list[str] = []
@@ -599,14 +677,18 @@ class Task(
             with suppress(Exception):
                 await subagent_loop.aclose()
 
-        yield TaskResult(
-            response="".join(accumulated_response),
-            turns_used=turns_used,
-            completed=completed,
+        response = "".join(accumulated_response)
+        _maybe_record_verifier_pass(
+            args.agent, response, ctx, completed=completed, attempt=verification_attempt
         )
+        yield TaskResult(response=response, turns_used=turns_used, completed=completed)
 
     async def _run_in_process_collect(
-        self, args: TaskArgs, ctx: InvokeContext
+        self,
+        args: TaskArgs,
+        ctx: InvokeContext,
+        *,
+        verification_attempt: _VerificationAttempt | None = None,
     ) -> _InProcessResult:
         registry = ctx.background_registry
         current_task = asyncio.current_task()
@@ -636,28 +718,42 @@ class Task(
         finally:
             with suppress(Exception):
                 await subagent_loop.aclose()
-        return _InProcessResult(
-            output="".join(accumulated_response), returncode=0 if completed else 1
+        response = "".join(accumulated_response)
+        _maybe_record_verifier_pass(
+            args.agent, response, ctx, completed=completed, attempt=verification_attempt
         )
+        return _InProcessResult(output=response, returncode=0 if completed else 1)
 
     async def _run_in_process_async(
-        self, args: TaskArgs, ctx: InvokeContext
+        self,
+        args: TaskArgs,
+        ctx: InvokeContext,
+        *,
+        verification_attempt: _VerificationAttempt | None = None,
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
         registry = ctx.background_registry
         if registry is None:
-            async for result in self._run_in_process(args, ctx):
+            async for result in self._run_in_process(
+                args, ctx, verification_attempt=verification_attempt
+            ):
                 yield result
             return
         effective_model = _effective_subagent_model(args, ctx)
-        bg_task = asyncio.create_task(
-            self._run_in_process_collect(args, ctx), name=f"async-task-{args.agent}"
-        )
+        result_path = self._bg_log_path(ctx)
+        if verification_attempt is None:
+            collect = self._run_in_process_collect(args, ctx)
+        else:
+            collect = self._run_in_process_collect(
+                args, ctx, verification_attempt=verification_attempt
+            )
+        bg_task = asyncio.create_task(collect, name=f"async-task-{args.agent}")
         task_id = registry.register_async_agent(
             args.agent,
             bg_task,
             label=self._subagent_label(args),
             prompt=args.task,
             model=effective_model,
+            log_path=result_path,
         )
         yield ToolStreamEvent(
             tool_name=self.get_name(),

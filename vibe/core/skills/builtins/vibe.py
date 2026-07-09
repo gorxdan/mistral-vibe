@@ -128,7 +128,7 @@ file_watcher_for_autocomplete = true   # default: on
 ask_confirmation_on_exit = true  # Require a second Ctrl+D to quit (Ctrl+C always confirms)
 
 # Behavior
-bypass_tool_permissions = false    # Skip tool approval prompts
+bypass_tool_permissions = false    # Skip approval prompts; NEVER remains blocked
 system_prompt_id = "cli"          # System prompt: "cli", "lean", or custom .md filename
 compaction_prompt_id = "compact"  # Compaction prompt: built-in "compact" or custom .md filename
 enable_telemetry = true
@@ -171,6 +171,7 @@ compaction_model = ...            # Alias for compaction; default unset (uses ac
 fallback_models = []              # Aliases tried if the active model errors
 context_shaping = ...             # Sub-table controlling context window shaping
 safety_judge = ...                # Sub-table for the safety-judge backend (gates tools/spawns)
+auxiliary_budget = ...            # Sub-table limiting memory/safety calls per running agent
 prompt_paths = []                 # Additional dirs searched first for custom prompts
 plugin_paths = []                 # Additional dirs searched for plugin manifests
 installed_components = []         # Opt-in features, e.g. ["lsp"]
@@ -744,37 +745,51 @@ non-conforming stdout) emits a UI warning and lets the gated action proceed
   and the assistant message is patched so subsequent LLM turns reflect what
   actually ran.
 
+### Auxiliary model budget
+
+Standalone memory and safety-judge calls share finite limits for the lifetime of
+the running agent, including compaction and `/clear`:
+
+```toml
+[auxiliary_budget]
+max_tokens = 50000
+max_calls = 24
+max_cost_usd = 1.0
+```
+
+Set a limit to `0` to disable those helper calls. The main agent and workflow
+budgets are separate. USD enforcement requires known model pricing; token and
+call limits always apply. Restart Vibe to create a fresh auxiliary envelope.
+
 ### Memory
 
 Cross-session memory stores durable notes as plain `*.md` files (YAML
-frontmatter + body) under `~/.vibe/memory/`. Each turn, a selector (its own
-standalone backend, like the safety judge) scans only the lightweight
-frontmatter index and injects up to `max_selected` relevant bodies into the
-system prompt. Selection fails open (no memories) on any error.
+frontmatter + body) under `~/.vibe/memory/`. Each turn, a local lexical selector
+scans the lightweight frontmatter index and injects up to `max_selected`
+relevant bodies into the system prompt. The default hybrid mode calls the
+standalone LLM selector only when local candidates tie near the cutoff.
+Selection fails open (index only) on any error.
 
 ```toml
 [memory]
 enabled = true                   # Master switch
 select_mode = "per-turn"         # "per-turn" | "per-session" | "always"
+selector_mode = "hybrid"         # "local" | "hybrid" | "llm"
+local_min_score = 3.0
+local_ambiguity_margin = 0.15
 model = ...                      # Alias; default unset (None) — falls back to compaction, then active
-max_selected = 5                 # Top-K injected
-max_inject_chars = 8000          # Hard cap on total injected body text
-max_entries_scanned = 200        # Cap on index lines sent to the selector
-index_entry_max_chars = 120      # Per-line char cap for the injected index (0 = uncapped)
-index_max_chars = 6000           # Hard cap on always-injected index total (0 = uncapped)
+max_selected = 2                 # Top-K injected
+max_inject_chars = 4000          # Hard cap on total injected body text
+max_entries_scanned = 200        # Cap on locally scored / fallback index entries
+index_entry_max_chars = 100      # Per-line char cap for the injected index (0 = uncapped)
+index_max_chars = 4000           # Hard cap on always-injected index total (0 = uncapped)
 index_pin_types = ["user", "feedback"]  # Prefer these types in the injected index
-timeout = 20.0                   # Per-selection LLM timeout
-prefetch = true                  # Warm the selector before the turn needs it
+timeout = 20.0                   # Ambiguous-hybrid / LLM-only timeout
+prefetch = true                  # Race only an LLM fallback before it is needed
 inject_mode = "late"             # "late" (ephemeral tail message) | "system"
 late_anchor = "tail"             # "tail" (request tail; cache-stable) | "before-user" (legacy)
-# Auto-extraction (write memories from conversation) and consolidation (merge
-# similar memories) families are also configurable: auto_extract,
-# auto_extract_model, auto_extract_max_writes (default 2), auto_extract_min_messages,
-# auto_extract_timeout, consolidate, consolidate_model, consolidate_min_age_days
-# (default 7), consolidate_min_candidates, consolidate_interval_days,
-# consolidate_max_actions, consolidate_timeout. See MemoryConfig in
-# vibe/core/config/_settings.py for defaults. The always-on index is compact +
-# budgeted; the selector still sees full unclipped descriptions.
+# Maintenance flags are explicit; see MemoryConfig for models, timing, and limits.
+# Index injection is compact; recall scoring still uses unclipped descriptions.
 ```
 
 **Scopes.** The `manage_memory` tool defaults new memories to the current
@@ -807,9 +822,9 @@ Tool, skill, and agent names support three matching modes:
 ```
 vibe [PROMPT]                       # Start interactive session with optional prompt
 vibe -p TEXT / --prompt TEXT         # Programmatic mode using `default_agent`, one-shot, exit
-vibe -p TEXT --auto-approve          # Programmatic mode with all tool calls approved
+vibe -p TEXT --auto-approve          # Programmatic mode with permitted calls approved
 vibe -p TEXT --keep-alive SECONDS    # Keep firing scheduled-loop turns for SECONDS before exiting (-p only)
-vibe -p TEXT --agent lean --auto-approve  # Lean mode with all tool calls approved
+vibe -p TEXT --agent lean --auto-approve  # Lean mode without consent prompts
 vibe --agent NAME                   # Select agent profile (falls back to `default_agent` config)
 vibe --model ALIAS                  # Active model for this session (overrides `active_model`; also threaded into isolated subagents)
 vibe --auto-approve / --yolo         # Shortcut for `--agent auto-approve`
@@ -866,7 +881,7 @@ There are two kinds of agents:
 - **chat**: Read-only conversational mode (grep/read/`ask_user_question`/`task`); no file edits or shell
 - **plan**: Read-only planning sandbox (writes only the plan file at `~/.vibe/plans/`)
 - **accept-edits**: Auto-approves file edits but asks for other tools
-- **auto-approve**: Auto-approves all tool calls
+- **auto-approve**: Auto-approves permitted tool calls; `NEVER` remains blocked
 - **coordinator**: Orchestration-only lead (read/grep/glob + `task`/`launch_workflow`/`team`); cannot write files or run bash directly
 - **lean**: Specialized Lean 4 proof assistant. Not available by default — must be
   installed with `/leanstall` (removed with `/unleanstall`). Use `--agent lean

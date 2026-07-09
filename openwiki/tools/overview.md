@@ -73,7 +73,7 @@ The tool system is how the agent interacts with the world — reading files, run
 2. `before_tool` hooks fire (can deny or rewrite)
 3. Safety Judge pre-screens ASK-gated calls (if enabled)
 4. Permission Store checks: `ALWAYS` → auto-approve, `NEVER` → hard-block, `ASK` → user prompt
-5. User approves or denies (interactive) or auto-approve flag bypasses (programmatic)
+5. User approves or denies (interactive), or auto-approve bypasses consent for calls not resolved as `NEVER` (programmatic)
 
 Permissions can be configured per-tool in `config.toml`:
 ```toml

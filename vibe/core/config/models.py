@@ -356,7 +356,8 @@ def _default_alias_to_name(data: Any) -> Any:
     return data
 
 
-ThinkingLevel = Literal["off", "low", "medium", "high", "max"]
+# Aligned to OpenAI reasoning tiers. ultra is client-side orchestration, not a wire value.
+ThinkingLevel = Literal["off", "low", "medium", "high", "xhigh", "max"]
 THINKING_LEVELS: list[str] = list(get_args(ThinkingLevel))
 Verbosity = Literal["low", "medium", "high"]
 

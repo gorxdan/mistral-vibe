@@ -7,6 +7,7 @@ from typing import Annotated, Any
 from pydantic import AfterValidator, Field, field_validator, model_validator
 
 from vibe.core.agents.models import BuiltinAgentName
+from vibe.core.config._auxiliary_config import AuxiliaryBudgetConfig
 from vibe.core.config._defaults import (
     DEFAULT_API_RETRY_MAX_ELAPSED_TIME,
     DEFAULT_API_TIMEOUT,
@@ -409,6 +410,9 @@ class VibeConfigSchema(ConfigSchema):
     )
     safety_judge: Annotated[SafetyJudgeConfig, WithReplaceMerge()] = Field(
         default_factory=SafetyJudgeConfig
+    )
+    auxiliary_budget: Annotated[AuxiliaryBudgetConfig, WithReplaceMerge()] = Field(
+        default_factory=AuxiliaryBudgetConfig
     )
     memory: Annotated[MemoryConfig, WithReplaceMerge()] = Field(
         default_factory=MemoryConfig

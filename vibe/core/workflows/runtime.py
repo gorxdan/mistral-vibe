@@ -19,6 +19,12 @@ from pydantic import BaseModel, ConfigDict
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
+from vibe.core.workflows._limits import (
+    DEFAULT_BUDGET_TOTAL,
+    DEFAULT_ISOLATED_MAX_TURNS,
+    DEFAULT_MAX_AGENTS,
+    DEFAULT_MAX_CONCURRENT,
+)
 from vibe.core.workflows._port import AgentLoopFactory
 from vibe.core.workflows.budget import (
     Budget,
@@ -89,9 +95,6 @@ class _AwaitableResult:
 T = TypeVar("T")
 I = TypeVar("I")
 
-DEFAULT_MAX_CONCURRENT = 32
-DEFAULT_MAX_AGENTS = 1000
-DEFAULT_BUDGET_TOTAL = None
 DEFAULT_SCHEMA_RETRIES = 2
 
 
@@ -248,8 +251,6 @@ def _loop_log_path(loop: Any) -> Path | None:
     return sl.messages_filepath
 
 
-DEFAULT_ISOLATED_MAX_TURNS = 300
-
 # A custom executor owns the whole spawn contract incl. the scratchpad grant
 # (VIBE_ISOLATED_SCRATCHPAD_DIR); without it children are worktree-confined only.
 IsolatedExecutor = Callable[
@@ -364,8 +365,11 @@ async def _run_verifier_in_worktree(
 ) -> bool:
     # Returns True (deliver) on VERDICT: PASS, False (block) otherwise.
     from vibe.core.agents.models import BuiltinAgentName
+    from vibe.core.tools.builtins.task import _maybe_record_verifier_pass
+    from vibe.core.tools.base import InvokeContext
 
     ctx = runtime.parent_context
+    invoke_ctx: InvokeContext | None = ctx if isinstance(ctx, InvokeContext) else None
     state = ctx.verification_state if ctx is not None else None
     v_prompt = (
         f"Verify the work just produced in this worktree. The worker prompt was:\n"
@@ -387,17 +391,27 @@ async def _run_verifier_in_worktree(
         logger.warning("then='verifier' spawn failed: %s", exc)
         return False
     response = v_result.output or ""
-    from vibe.core.tools.builtins.task import _VERDICT_PASS_RE
+    from vibe.core.verification_contract import (
+        VerificationReportError,
+        parse_verification_report,
+    )
 
-    if not _VERDICT_PASS_RE.search(response):
+    try:
+        report = parse_verification_report(response)
+        passed = report.passed
+    except VerificationReportError:
+        passed = False
+    if (
+        passed
+        and invoke_ctx is not None
+        and state is not None
+    ):
+        _maybe_record_verifier_pass(
+            BuiltinAgentName.VERIFIER, response, invoke_ctx
+        )
+    if not passed:
         logger.info("then='verifier' verdict blocked deliver: %s", response[:200])
         return False
-    if state is not None:
-        match = _VERDICT_PASS_RE.search(response)
-        start = match.start() if match else 0
-        tail = response[start:].split("\n", 2)
-        summary = tail[0].strip() if tail else "VERDICT: PASS"
-        state.record_verifier_pass(summary)
     return True
 
 
@@ -450,6 +464,7 @@ def _parse_stats(stderr_text: str) -> dict[str, int] | None:
 @dataclass
 class IsolatedResult:
     output: str
+    returncode: int = 0
     stats: dict[str, int] | None = None
     delivered: bool = False
     worktree_path: str | None = None
@@ -1859,6 +1874,8 @@ class WorkflowRuntime:
                     wt,
                     keep_if_changed=not (contract_report and contract_report.delivered),
                 )
+        if contract is not None and contract_report and contract_report.delivered:
+            _record_contract_pass(self, contract, contract_report)
         return result.output, result.stats, contract_report
 
     def parallel(

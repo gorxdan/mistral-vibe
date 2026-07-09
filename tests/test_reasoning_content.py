@@ -587,9 +587,11 @@ class TestOpenAIAdapterReasoningEffort:
         payload = self._make_request("high")
         assert payload["reasoning_effort"] == "high"
 
-    def test_maps_max_to_xhigh(self) -> None:
-        payload = self._make_request("max")
-        assert payload["reasoning_effort"] == "xhigh"
+    def test_max_and_xhigh_pass_through(self) -> None:
+        # xhigh/max are genuine API tiers (GPT-5.6); they pass through verbatim
+        # rather than being clamped to xhigh.
+        assert self._make_request("xhigh")["reasoning_effort"] == "xhigh"
+        assert self._make_request("max")["reasoning_effort"] == "max"
 
     def test_omits_reasoning_effort_when_thinking_off(self) -> None:
         payload = self._make_request("off")

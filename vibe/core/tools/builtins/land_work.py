@@ -19,6 +19,10 @@ from vibe.core.tools.base import (
     ToolPermission,
 )
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
+from vibe.core.verification_contract import (
+    is_trivial_change_set,
+    is_trivial_verification_note,
+)
 from vibe.core.worktree.manager import merge_lock, worktree_manager
 
 if TYPE_CHECKING:
@@ -41,10 +45,10 @@ class LandWorkArgs(BaseModel):
     verification_note: str | None = Field(
         default=None,
         description=(
-            "Required when verification_subsystem is on: a short note that "
-            "independent verification completed — e.g. 'verifier VERDICT: PASS' "
-            "plus what was checked, or 'trivial: <reason>' for exempt work "
-            "(one-line fix, docs-only, read-only). Empty notes are rejected."
+            "Required when verification_subsystem is on unless this session has "
+            "a recorded verifier or contract pass. Only 'trivial: <reason>' is "
+            "accepted here, and only for a committed documentation-only diff; "
+            "the tool validates the changed paths."
         ),
     )
 
@@ -72,7 +76,8 @@ class LandWork(
         "sandbox makes the main checkout read-only, so this is the only path that "
         "can write it). Call this ONCE when your work is complete, committed, and "
         "verified. When verification_subsystem is on, pass verification_note "
-        "(verifier PASS summary or 'trivial: <reason>'). Merge preserves original "
+        "with a docs-only 'trivial: <reason>' unless a verifier or workflow pass "
+        "was recorded automatically. Merge preserves original "
         "commit SHAs and is revertable via `git revert -m 1 <merge-sha>`. "
         "Requires user approval. Refuses if main is dirty or the branch is "
         "already merged. Only available inside an active worktree isolation session."
@@ -108,8 +113,6 @@ class LandWork(
                 "land_work requires an active worktree isolation session. "
                 "No worktree is active."
             )
-
-        _require_verification_note(args, ctx)
 
         main_dir = handle.original_repo_root
         branch = handle.branch
@@ -153,6 +156,10 @@ class LandWork(
             )
             return
 
+        _require_verification_note(
+            args, ctx, changed_paths=_changed_paths(main_repo, target, branch)
+        )
+
         message = args.commit_message or _DEFAULT_MESSAGE_TEMPLATE.format(branch=branch)
 
         try:
@@ -193,7 +200,12 @@ class LandWork(
         )
 
 
-def _require_verification_note(args: LandWorkArgs, ctx: InvokeContext | None) -> None:
+def _require_verification_note(
+    args: LandWorkArgs,
+    ctx: InvokeContext | None,
+    *,
+    changed_paths: list[str] | None = None,
+) -> None:
     # Recorded pass (workflow contract or verifier) satisfies the gate.
     if ctx is not None:
         state = ctx.verification_state
@@ -205,19 +217,43 @@ def _require_verification_note(args: LandWorkArgs, ctx: InvokeContext | None) ->
     if not enabled:
         return
     note = (args.verification_note or "").strip()
+    if is_trivial_verification_note(note):
+        if changed_paths is not None and is_trivial_change_set(changed_paths):
+            return
+        raise ToolError(
+            "land_work rejected the trivial waiver: it is limited to committed "
+            "documentation-only changes under docs/, openwiki/, or standard "
+            "root documentation files."
+        )
     if note:
-        return
+        raise ToolError(
+            "land_work rejected verification_note: model-supplied verification "
+            "reports cannot authorize a merge. Run the verifier subagent or a "
+            "workflow contract so the PASS is recorded by the harness."
+        )
     hint = (
         " A recorded pass is also accepted (spawn `verifier` via `task`, or run "
         "a workflow with `contract=`)."
     )
     raise ToolError(
         "land_work requires verification_note when verification_subsystem is "
-        "on. Pass a short attestation: e.g. 'verifier VERDICT: PASS — "
-        "<what was checked>' or 'trivial: <reason>' for exempt work "
-        "(one-line fix, docs-only, read-only). Set verification_subsystem = "
+        "on. Run the verifier subagent or a workflow contract, or pass "
+        "'trivial: <reason>' for a committed documentation-only diff. Set "
+        "verification_subsystem = "
         "false to disable this gate." + hint
     )
+
+
+def _changed_paths(
+    repo: Repo, target_branch: str, source_branch: str
+) -> list[str] | None:
+    try:
+        output = repo.git.diff(
+            "--name-only", f"{target_branch}...{source_branch}", "--"
+        )
+    except GitCommandError:
+        return None
+    return [line for line in output.splitlines() if line]
 
 
 def _is_merged(repo: Repo, branch: str) -> bool:

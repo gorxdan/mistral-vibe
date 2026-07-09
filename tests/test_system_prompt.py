@@ -75,6 +75,10 @@ def test_small_tier_drops_gated_sections_large_keeps_them() -> None:
     assert "## Orchestrating Subagents" not in small
     # The subagents list itself stays (tool subset is tier-invariant).
     assert "# Available Subagents" in small
+    assert "## Verification invariant" in small
+    assert "## Investigation invariant" in small
+    assert "## Verification contract" not in small
+    assert "## Investigation contract" not in small
     # SMALL is strictly smaller.
     assert len(small) < len(large)
 
@@ -636,7 +640,8 @@ def test_verification_contract_section_present_when_subsystem_enabled() -> None:
     # Dead verifier (no VERDICT / subagent error) is not a pass.
     assert "no verdict" in prompt_on.lower()
     # Structural land_work gate is part of the contract.
-    assert "verification_note" in prompt_on
+    assert "report pasted into tool arguments is not accepted" in prompt_on
+    assert "documentation-only diff" in prompt_on
     # The verifier profile appears in the subagents picker.
     assert "- `verifier` —" in prompt_on
 

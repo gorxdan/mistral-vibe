@@ -13,12 +13,15 @@ this base only owns model/provider/timeout storage and the completion call.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
 from vibe.core.llm.types import CompletionRequest
-from vibe.core.types import LLMMessage
+from vibe.core.types import LLMMessage, LLMUsage
+from vibe.core.usage import CallKind, UsageMeter, usage_cost
+from vibe.core.utils.tokens import approx_token_count
 
 
 class _MemoryLLMClient:
@@ -33,6 +36,8 @@ class _MemoryLLMClient:
     _timeout: float
     _extra_headers: dict[str, str]
     _extra_body: dict[str, Any] | None
+    _call_kind: CallKind
+    _usage_meter: UsageMeter | None
 
     def __init__(
         self,
@@ -40,12 +45,16 @@ class _MemoryLLMClient:
         model: ModelConfig,
         provider: ProviderConfig,
         timeout: float,
+        call_kind: CallKind,
+        usage_meter: UsageMeter | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
         self._model = model
         self._provider = provider
         self._timeout = timeout
+        self._call_kind = call_kind
+        self._usage_meter = usage_meter
         self._extra_headers = extra_headers or {}
         self._extra_body = extra_body or None
 
@@ -58,21 +67,61 @@ class _MemoryLLMClient:
         the model's own value (None keeps a temperature-omitting model's wire
         contract), or an explicit float to override.
         """
-        backend_cls = BACKEND_FACTORY[self._provider.backend]
-        async with backend_cls(
-            provider=self._provider, timeout=self._timeout
-        ) as backend:
-            result = await backend.complete(
-                CompletionRequest(
-                    model=self._model,
-                    messages=messages,
-                    temperature=temperature,
-                    tools=None,
-                    tool_choice=None,
-                    max_tokens=max_tokens,
-                    extra_headers=self._extra_headers,
-                    response_format={"type": "json_object"},
-                    extra_body=self._extra_body,
-                )
+        request = CompletionRequest(
+            model=self._model,
+            messages=messages,
+            temperature=temperature,
+            tools=None,
+            tool_choice=None,
+            max_tokens=max_tokens,
+            extra_headers=self._extra_headers,
+            response_format={"type": "json_object"},
+            extra_body=self._extra_body,
+        )
+        if self._usage_meter is None:
+            backend_cls = BACKEND_FACTORY[self._provider.backend]
+            async with backend_cls(
+                provider=self._provider, timeout=self._timeout
+            ) as backend:
+                result = await backend.complete(request)
+            return result.message.content
+
+        estimated_prompt_tokens = sum(
+            approx_token_count(message.content or "") for message in messages
+        )
+        estimated_usage = LLMUsage(
+            prompt_tokens=estimated_prompt_tokens, completion_tokens=max_tokens
+        )
+        reservation = self._usage_meter.try_reserve(
+            estimated_prompt_tokens + max_tokens,
+            estimated_cost_usd=usage_cost(self._model, estimated_usage),
+        )
+        if reservation is None:
+            return None
+        started = time.monotonic()
+        try:
+            backend_cls = BACKEND_FACTORY[self._provider.backend]
+            async with backend_cls(
+                provider=self._provider, timeout=self._timeout
+            ) as backend:
+                result = await backend.complete(request)
+        except BaseException:
+            self._usage_meter.reconcile(
+                reservation,
+                usage=None,
+                model=self._model,
+                provider=self._provider,
+                call_kind=self._call_kind,
+                duration_s=time.monotonic() - started,
             )
+            raise
+        self._usage_meter.reconcile(
+            reservation,
+            usage=result.usage,
+            model=self._model,
+            provider=self._provider,
+            call_kind=self._call_kind,
+            duration_s=time.monotonic() - started,
+            result_used=True,
+        )
         return result.message.content

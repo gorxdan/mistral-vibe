@@ -58,6 +58,12 @@ class TestTaskConcurrencyGating:
         args = TaskArgs(task="x", agent="explore", async_run=True)
         assert Task.call_is_read_only(args, agent_manager=manager) is False
 
+    def test_inline_verifier_serializes_with_mutating_tools(
+        self, manager: AgentManager
+    ) -> None:
+        args = TaskArgs(task="verify", agent="verifier", async_run=False)
+        assert Task.call_is_read_only(args, agent_manager=manager) is False
+
     def test_no_agent_manager_serializes(self) -> None:
         args = TaskArgs(task="x", agent="explore")
         assert Task.call_is_read_only(args, agent_manager=None) is False

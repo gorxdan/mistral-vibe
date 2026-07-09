@@ -27,10 +27,12 @@ from vibe.core.types import (
     CompactStartEvent,
     FunctionCall,
     LLMMessage,
+    LLMUsage,
     Role,
     ToolCall,
     UserMessageEvent,
 )
+from vibe.core.usage import UsageRecorder
 
 
 def make_config(
@@ -177,6 +179,31 @@ class TestAgentStatsHelpers:
         stats = AgentStats(context_tokens=150_000)
         assert stats.auto_compact_threshold == 0
         assert stats.tokens_until_compaction == 0
+
+
+@pytest.mark.parametrize(
+    ("is_subagent", "harness", "expected_kind"),
+    [(False, False, "main"), (True, False, "subagent"), (False, True, "compaction")],
+)
+def test_usage_records_are_attributed_by_call_kind(
+    tmp_path, is_subagent: bool, harness: bool, expected_kind: str
+) -> None:
+    config = make_config()
+    agent = build_test_agent_loop(config=config, is_subagent=is_subagent)
+    recorder = UsageRecorder(tmp_path / "usage.jsonl")
+    agent._usage_recorder = recorder
+
+    agent._update_stats(
+        LLMUsage(prompt_tokens=10, completion_tokens=2),
+        0.1,
+        provider=config.get_active_provider(),
+        model=config.get_active_model(),
+        harness=harness,
+    )
+
+    [record] = recorder.read_all()
+    assert record.call_kind == expected_kind
+    assert record.harness is harness
 
 
 class TestReloadPreservesStats:
@@ -676,9 +703,7 @@ class TestClearHistoryObserverBugfix:
 
 class TestStatsEdgeCases:
     @pytest.mark.asyncio
-    async def test_session_cost_approximation_on_model_change(
-        self, monkeypatch
-    ) -> None:
+    async def test_session_cost_preserved_on_model_change(self, monkeypatch) -> None:
         monkeypatch.setenv("LECHAT_API_KEY", "mock-key")
 
         backend = FakeBackend(mock_llm_chunk(content="Response"))
@@ -695,7 +720,9 @@ class TestStatsEdgeCases:
 
         cost_after = agent.stats.session_cost
 
-        assert cost_after > cost_before
+        # Switching models must not retroactively reprice past calls.
+        assert cost_after == cost_before
+        assert cost_after > 0.0
 
     @pytest.mark.asyncio
     async def test_multiple_reloads_accumulate_correctly(self) -> None:

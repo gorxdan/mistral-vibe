@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from http import HTTPStatus
+import time
 
 import orjson
 from pydantic import BaseModel, ConfigDict
@@ -28,9 +29,11 @@ from pydantic import BaseModel, ConfigDict
 from vibe.core.config import ModelConfig, ProviderConfig, SafetyJudgeConfig
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
 from vibe.core.llm.exceptions import BackendError
-from vibe.core.llm.types import CompletionRequest
+from vibe.core.llm.types import BackendLike, CompletionRequest
 from vibe.core.logger import logger
-from vibe.core.types import LLMMessage, Role
+from vibe.core.types import LLMChunk, LLMMessage, LLMUsage, Role
+from vibe.core.usage import CallKind, UsageMeter, usage_cost
+from vibe.core.utils.tokens import approx_token_count
 
 # Shared across both judge prompts: the injection-defense preamble and the
 # JSON-only output contract. Factored so the two stay in lockstep; only the
@@ -133,12 +136,14 @@ class SafetyJudge:
         config: SafetyJudgeConfig,
         extra_headers: dict[str, str] | None = None,
         timeout: float | None = None,
+        usage_meter: UsageMeter | None = None,
     ) -> None:
         self._model = model
         self._provider = provider
         self._config = config
         self._extra_headers = extra_headers or {}
         self._timeout = timeout if timeout is not None else provider_timeout(provider)
+        self._usage_meter = usage_meter
 
     async def judge(
         self,
@@ -204,7 +209,7 @@ class SafetyJudge:
             provider=self._provider, timeout=self._timeout
         ) as backend:
             try:
-                result = await backend.complete(self._request(messages, temperature))
+                result = await self._complete(backend, messages, temperature)
             except BackendError as e:
                 # Provider rejected the temperature itself (kimi 400): retry
                 # once omitting it instead of failing closed for the session.
@@ -215,8 +220,55 @@ class SafetyJudge:
                     temperature,
                     self._provider.name,
                 )
-                result = await backend.complete(self._request(messages, None))
+                result = await self._complete(backend, messages, None)
         return self._parse(result.message.content)
+
+    async def _complete(
+        self,
+        backend: BackendLike,
+        messages: list[LLMMessage],
+        temperature: float | None,
+    ) -> LLMChunk:
+        request = self._request(messages, temperature)
+        if self._usage_meter is None:
+            return await backend.complete(request)
+
+        estimated_prompt_tokens = sum(
+            approx_token_count(message.content or "") for message in messages
+        )
+        estimated_usage = LLMUsage(
+            prompt_tokens=estimated_prompt_tokens,
+            completion_tokens=self._config.max_tokens,
+        )
+        reservation = self._usage_meter.try_reserve(
+            estimated_prompt_tokens + self._config.max_tokens,
+            estimated_cost_usd=usage_cost(self._model, estimated_usage),
+        )
+        if reservation is None:
+            raise RuntimeError("auxiliary spend limit exhausted")
+        started = time.monotonic()
+        try:
+            result = await backend.complete(request)
+        except BaseException:
+            self._usage_meter.reconcile(
+                reservation,
+                usage=None,
+                model=self._model,
+                provider=self._provider,
+                call_kind=CallKind.SAFETY_JUDGE,
+                duration_s=time.monotonic() - started,
+            )
+            raise
+        self._usage_meter.reconcile(
+            reservation,
+            usage=result.usage,
+            model=self._model,
+            provider=self._provider,
+            call_kind=CallKind.SAFETY_JUDGE,
+            duration_s=time.monotonic() - started,
+            result_used=True,
+        )
+        return result
 
     def _request(
         self, messages: list[LLMMessage], temperature: float | None

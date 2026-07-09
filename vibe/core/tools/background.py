@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import orjson
 
 from vibe.core.logger import logger
+from vibe.core.tools._background_delivery import compact_background_completion
 
 if TYPE_CHECKING:
     import asyncio.subprocess
@@ -346,11 +347,18 @@ class BackgroundRegistry:
         except Exception as exc:
             rec.status = "failed"
             rec.completed = False
-            rec.error = str(exc) or exc.__class__.__name__
+            error = str(exc) or exc.__class__.__name__
+            error_path = (
+                rec.log_path.with_suffix(f"{rec.log_path.suffix}.error")
+                if rec.log_path is not None
+                else None
+            )
+            rec.error = compact_background_completion(error, error_path)
             self._async_completions.append(rec)
             self._notify_completion()
             return
-        rec.response = str(getattr(result, "output", result) or "")
+        response = str(getattr(result, "output", result) or "")
+        rec.response = compact_background_completion(response, rec.log_path)
         rec.completed = bool(getattr(result, "returncode", 1) == 0)
         rec.worktree_path = getattr(result, "worktree_path", None)
         rec.branch = getattr(result, "branch", None)
@@ -403,7 +411,9 @@ class BackgroundRegistry:
         if rec is None:
             return ""
         if rec.log_path is not None:
-            return self._tail_bytes(rec.log_path, lines)
+            tail = self._tail_bytes(rec.log_path, lines)
+            if tail:
+                return tail
         text = rec.response_so_far or rec.response
         if not text:
             return ""

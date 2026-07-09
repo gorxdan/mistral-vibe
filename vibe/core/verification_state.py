@@ -1,16 +1,15 @@
-"""Session-scoped verification state: recorded pass flags for the merge gate.
+"""Workspace-bound verification state for the merge gate.
 
 Two write-seams own the flags and are the only sanctioned setters:
 
 - ``record_contract_pass`` — called by the workflow runtime after
   ``verify_contract`` returns ``passed`` (in-process, authoritative).
-- ``record_verifier_pass`` — called by the task tool when a ``verifier``-profile
-  subagent returns a response whose final verdict line is ``VERDICT: PASS``.
+- ``record_verifier_pass`` — called by the task tool after a ``verifier``-profile
+  response parses as an evidence-backed ``VERDICT: PASS`` report.
 
-``land_work`` accepts a recorded pass flag (via ``InvokeContext``) as satisfying
-the verification requirement, superseding the free-text ``verification_note``.
-The flag path is stricter than prose: it cannot be forged by the host typing a
-string, because only the two owning code paths can set it.
+``land_work`` accepts a recorded pass only while its repository fingerprint still
+matches. The verifier flag stores the parsed report; model-authored notes cannot
+satisfy the gate.
 """
 
 from __future__ import annotations
@@ -18,11 +17,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import time
 
+from vibe.core.verification_contract import VerificationReport
+
+
+def workspace_fingerprint() -> str | None:
+    from vibe.core._workspace_verification import workspace_fingerprint as calculate
+
+    return calculate()
+
 
 @dataclass
 class VerificationPass:
     source: str
     summary: str
+    workspace_fingerprint: str | None
+    report: VerificationReport | None = None
     recorded_at: float = field(default_factory=time.monotonic)
 
 
@@ -33,17 +42,28 @@ class VerificationState:
 
     def record_contract_pass(self, summary: str) -> None:
         self.last_contract_pass = VerificationPass(
-            source="workflow-contract", summary=summary
+            source="workflow-contract",
+            summary=summary,
+            workspace_fingerprint=workspace_fingerprint(),
         )
 
-    def record_verifier_pass(self, summary: str) -> None:
+    def record_verifier_pass(self, report: VerificationReport) -> None:
+        if not report.passed:
+            raise ValueError("only a passing verifier report can satisfy the gate")
         self.last_verifier_pass = VerificationPass(
-            source="verifier-subagent", summary=summary
+            source="verifier-subagent",
+            summary=report.summary(),
+            workspace_fingerprint=workspace_fingerprint(),
+            report=report,
         )
 
     def has_pass(self) -> bool:
-        return (
-            self.last_contract_pass is not None or self.last_verifier_pass is not None
+        current = workspace_fingerprint()
+        if current is None:
+            return False
+        return any(
+            recorded is not None and recorded.workspace_fingerprint == current
+            for recorded in (self.last_contract_pass, self.last_verifier_pass)
         )
 
     def latest(self) -> VerificationPass | None:

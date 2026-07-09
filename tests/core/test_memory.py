@@ -580,7 +580,9 @@ async def test_apply_selection_shows_index_even_when_selector_returns_empty(
     # still leave the always-on index in context so the model knows memories
     # exist. This is the failure that motivated the redesign.
     loop = build_test_agent_loop(
-        config=build_test_vibe_config(memory=MemoryConfig(inject_mode="system"))
+        config=build_test_vibe_config(
+            memory=MemoryConfig(inject_mode="system", selector_mode="llm")
+        )
     )
     store = MemoryStore(user_dir=tmp_path)
     store.upsert(_entry("relevant", desc="directly relevant", body="the answer"))
@@ -607,7 +609,9 @@ async def test_apply_selection_includes_bodies_when_selector_hits(
     monkeypatch, tmp_path
 ) -> None:
     loop = build_test_agent_loop(
-        config=build_test_vibe_config(memory=MemoryConfig(inject_mode="system"))
+        config=build_test_vibe_config(
+            memory=MemoryConfig(inject_mode="system", selector_mode="llm")
+        )
     )
     store = MemoryStore(user_dir=tmp_path)
     store.upsert(_entry("hit", desc="d", body="deep detail"))
@@ -839,6 +843,26 @@ async def test_auto_extract_scheduled_under_normal_effort() -> None:
     loop._mem_extract_task.cancel()
 
 
+def test_le_chaton_respects_disabled_memory_maintenance(monkeypatch) -> None:
+    config = build_test_vibe_config(
+        effort_mode="le-chaton",
+        memory=MemoryConfig(auto_extract=False, consolidate=False, verify=False),
+    )
+    loop = build_test_agent_loop(config=config)
+
+    def _unexpected_store() -> None:
+        raise AssertionError("disabled memory maintenance must not touch the store")
+
+    monkeypatch.setattr(loop, "_get_memory_store", _unexpected_store)
+    loop._maybe_schedule_memory_extraction()
+    loop._maybe_schedule_consolidation()
+    loop._maybe_schedule_verification()
+
+    assert loop._mem_extract_task is None
+    assert loop._mem_consolidate_task is None
+    assert loop._mem_verify_task is None
+
+
 @pytest.mark.asyncio
 async def test_maybe_schedule_extraction_held_off_while_consolidation_runs() -> None:
     # Extraction must not run while a consolidation task is in flight: the two
@@ -1059,7 +1083,9 @@ async def test_selector_accepts_already_surfaced_kwarg() -> None:
 async def test_apply_selection_tracks_surfaced_across_turns(
     monkeypatch, tmp_path
 ) -> None:
-    loop = build_test_agent_loop()
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(memory=MemoryConfig(selector_mode="llm"))
+    )
     store = MemoryStore(user_dir=tmp_path)
     store.upsert(_entry("m1", body="one"))
     store.upsert(_entry("m2", body="two"))
@@ -1253,7 +1279,9 @@ def test_index_markdown_cap_keeps_hidden_count_footer(tmp_path) -> None:
 
 def _prefetch_loop(monkeypatch, tmp_path) -> Any:
     loop = build_test_agent_loop(
-        config=build_test_vibe_config(memory=MemoryConfig(inject_mode="system"))
+        config=build_test_vibe_config(
+            memory=MemoryConfig(inject_mode="system", selector_mode="llm")
+        )
     )
     store = MemoryStore(user_dir=tmp_path)
     store.upsert(_entry("hit", body="deep detail", desc="relevant"))
@@ -1734,14 +1762,12 @@ async def test_maybe_schedule_consolidation_disabled_by_default(
 
 
 @pytest.mark.asyncio
-async def test_maybe_schedule_consolidation_runs_under_le_chaton(
+async def test_maybe_schedule_consolidation_runs_when_enabled_under_le_chaton(
     monkeypatch, tmp_path
 ) -> None:
-    # Le-chaton is the flagship mode and gets every benefit, consolidation
-    # included. The old blanket is_le_chaton() exclusion is dropped; the
-    # config gate (consolidate) is bypassed in le-chaton, so a corpus with
-    # enough stale candidates schedules a run even with consolidate=False.
-    config = build_test_vibe_config(effort_mode="le-chaton")
+    config = build_test_vibe_config(
+        effort_mode="le-chaton", memory=MemoryConfig(consolidate=True)
+    )
     loop = build_test_agent_loop(config=config)
     store = MemoryStore(user_dir=tmp_path)
     monkeypatch.setattr(loop, "_get_memory_store", lambda: store)

@@ -37,6 +37,7 @@ from vibe.core.types import (
     ToolCall,
     ToolCallEvent,
     ToolResultEvent,
+    UnclassifiedBackendError,
     UserMessageEvent,
 )
 from vibe.core.utils import CancellationReason, get_user_cancellation_message
@@ -444,7 +445,7 @@ async def test_act_flushes_and_logs_when_streaming_errors(observer_capture) -> N
     )
     agent.session_logger.save_interaction = AsyncMock(return_value=None)
 
-    with pytest.raises(RuntimeError, match="boom in streaming"):
+    with pytest.raises(UnclassifiedBackendError, match="boom in streaming"):
         [_ async for _ in agent.act("Trigger stream failure")]
 
     assert [role for role, _ in observed] == [Role.SYSTEM, Role.USER]

@@ -33,6 +33,7 @@ import orjson
 from pydantic import BaseModel
 
 from vibe.core import loop_tracer, profiler, stream_tracer
+from vibe.core._compaction_request import with_compaction_system_prompt
 from vibe.core.agent_loop_failover import AgentLoopFailoverMixin
 from vibe.core.agent_loop_hooks import AgentLoopHooksMixin
 from vibe.core.agent_loop_limits import (
@@ -200,7 +201,10 @@ from vibe.core.types import (
     UserMessageEvent,
 )
 from vibe.core.usage import (
+    CallKind,
     RateLimitStore,
+    SpendLimits,
+    UsageMeter,
     UsageRecord,
     compute_cost,
     get_usage_recorder,
@@ -1791,6 +1795,14 @@ class AgentLoop(
     ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent | HookEvent]:
         self.stats.tool_calls_agreed += 1
 
+        if (
+            tool_call.tool_name != "land_work"
+            and not tool_call.tool_class.call_is_read_only(
+                tool_call.validated_args, agent_manager=self.agent_manager
+            )
+        ):
+            self._verification_state.clear()
+
         # Snapshot read (rewind/undo) does blocking file I/O; run it off the
         # event loop so a write tool on a large file doesn't stall concurrent
         # readers in the same turn.
@@ -1909,12 +1921,6 @@ class AgentLoop(
     async def _should_execute_tool(
         self, tool: BaseTool, args: BaseModel, tool_call_id: str
     ) -> ToolDecision:
-        if self.bypass_tool_permissions:
-            return ToolDecision(
-                verdict=ToolExecutionResponse.EXECUTE,
-                approval_type=ToolPermission.ALWAYS,
-            )
-
         async with self._permission_store.lock:
             tool_name = tool.get_name()
             ctx = tool.resolve_permission(args)
@@ -1934,6 +1940,11 @@ class AgentLoop(
                     approval_type=ToolPermission.NEVER,
                     feedback=ctx.reason
                     or f"Tool '{tool_name}' is permanently disabled",
+                )
+            if self.bypass_tool_permissions:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.EXECUTE,
+                    approval_type=ToolPermission.ALWAYS,
                 )
             uncovered = [
                 rp
@@ -2052,8 +2063,11 @@ class AgentLoop(
             tool_call_id=tool_call.call_id,
         )
 
-    def _messages_for_backend(self, active_model: ModelConfig) -> Sequence[LLMMessage]:
-        msgs = self._cap_injected_messages_for_backend(self._with_late_memory())
+    def _messages_for_backend(
+        self, active_model: ModelConfig, *, include_late_memory: bool = True
+    ) -> Sequence[LLMMessage]:
+        messages = self._with_late_memory() if include_late_memory else self.messages
+        msgs = self._cap_injected_messages_for_backend(messages)
         if active_model.supports_images:
             return msgs
         if not any(m.images for m in msgs):
@@ -2096,8 +2110,8 @@ class AgentLoop(
             backend = create_backend(provider=provider, timeout=self.config.api_timeout)
         backend_metadata = self._build_backend_metadata()
 
-        available_tools = self._available_tools(active_model)
-        tool_choice = self.format_handler.get_tool_choice()
+        available_tools = None if harness else self._available_tools(active_model)
+        tool_choice = None if harness else self.format_handler.get_tool_choice()
 
         last_user_message = self._last_user_message()
         self.telemetry_client.send_request_sent(
@@ -2127,14 +2141,16 @@ class AgentLoop(
                 result = await backend.complete(
                     CompletionRequest(
                         model=active_model,
-                        messages=self._messages_for_backend(active_model),
+                        messages=self._messages_for_backend(
+                            active_model, include_late_memory=not harness
+                        ),
                         temperature=active_model.temperature,
                         tools=available_tools,
                         tool_choice=tool_choice,
                         extra_headers=extra_headers,
                         max_tokens=max_tokens,
                         metadata=backend_metadata.model_dump(exclude_none=True),
-                        response_format=self._response_format,
+                        response_format=None if harness else self._response_format,
                     ),
                     response_headers_sink=turn_state_sink,
                 )
@@ -2341,6 +2357,9 @@ class AgentLoop(
                 )
             else:
                 cost = 0.0
+        # Accrue the exact per-call cost so session_cost survives a mid-session
+        # model switch without repricing the whole session against the new model.
+        self.stats.accumulated_cost_usd += cost
         self._usage_recorder.record(
             UsageRecord.from_usage(
                 timestamp=time.time(),
@@ -2351,6 +2370,15 @@ class AgentLoop(
                 duration_s=time_seconds,
                 session_id=self.session_id,
                 harness=harness,
+                call_kind=(
+                    CallKind.COMPACTION.value
+                    if harness
+                    else (
+                        CallKind.SUBAGENT.value
+                        if self._is_subagent
+                        else CallKind.MAIN.value
+                    )
+                ),
             )
         )
 
@@ -2412,9 +2440,11 @@ class AgentLoop(
             await self._fire_session_end_hooks(lifecycle_reason)
             self._session_started = False  # next act() re-fires SessionStart
         old_session_id = self.session_id
+        self._verification_state.clear()
         self.emit_session_closed_telemetry()
         suffix = extract_suffix(self.session_id)
         self.session_id = generate_session_id(suffix=suffix)
+        self._usage_meter.rebind_session(self.session_id)
         parent_session_id = old_session_id if keep_parent else None
         self.parent_session_id = parent_session_id
         self.session_logger.reset_session(
@@ -2444,6 +2474,7 @@ class AgentLoop(
         )
         forked._max_output_override = self._max_output_override
         forked.session_id = generate_session_id(suffix=extract_suffix(self.session_id))
+        forked._usage_meter.rebind_session(forked.session_id)
         forked.parent_session_id = self.session_id
         # A forked session gets its OWN fresh background registry — not the
         # parent's reference. _close_agent_loop calls registry.shutdown() on
@@ -2557,7 +2588,7 @@ class AgentLoop(
             # never overflows; the real history is restored before reset() below.
             summary_messages = MessageList(
                 build_summary_input(
-                    history_snapshot,
+                    with_compaction_system_prompt(history_snapshot),
                     summary_request,
                     compaction_model.auto_compact_threshold,
                 )
@@ -2969,6 +3000,15 @@ class AgentLoop(
             pass
 
         self._usage_recorder = get_usage_recorder()
+        self._usage_meter = UsageMeter(
+            self.session_id,
+            limits=SpendLimits(
+                max_tokens=config.auxiliary_budget.max_tokens,
+                max_cost_usd=config.auxiliary_budget.max_cost_usd,
+                max_calls=config.auxiliary_budget.max_calls,
+            ),
+            recorder=self._usage_recorder,
+        )
         self._rate_limit_store = RateLimitStore()
 
         self._current_user_message_id: str | None = None

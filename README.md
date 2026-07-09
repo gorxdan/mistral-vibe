@@ -129,7 +129,7 @@ Vibe comes with several built-in agent profiles, each designed for different use
 - **`default`**: Standard agent that requires approval for tool executions. Best for general use.
 - **`plan`**: Read-only agent for exploration and planning. Auto-approves safe tools like `grep` and `read`.
 - **`accept-edits`**: Auto-approves file edits only (`write_file`, `edit`). Useful for code refactoring.
-- **`auto-approve`**: Auto-approves all tool executions. Use with caution.
+- **`auto-approve`**: Auto-approves permitted tool executions; `NEVER` policy still blocks. Use with caution.
 
 Use the `--agent` flag to select a different agent:
 
@@ -286,7 +286,7 @@ vibe --prompt "Refactor the main function in cli/main.py to be more modular."
 ```
 
 By default, it uses your configured `default_agent` (`default` unless changed).
-To approve all tool calls without prompting, pass `--auto-approve` or `--yolo`
+To approve all permitted tool calls without prompting, pass `--auto-approve` or `--yolo`
 (also available for interactive sessions):
 
 ```bash
@@ -301,7 +301,7 @@ When using `--prompt`, you can specify additional options:
 - **`--max-price DOLLARS`**: Set a maximum cost limit in dollars. The session will be interrupted if the cost exceeds this limit.
 - **`--max-tokens N`**: Set a maximum cumulative LLM token budget for the session, counting both prompt and completion tokens. The session will be interrupted if usage exceeds this limit.
 - **`--agent NAME`**: Select the agent profile for this run.
-- **`--auto-approve`, `--yolo`**: Approves all tool calls without prompting, including in interactive sessions. Can be combined with any `--agent` value.
+- **`--auto-approve`, `--yolo`**: Approves permitted tool calls without prompting, including in interactive sessions. Calls resolved as `NEVER` remain blocked. Can be combined with any `--agent` value.
 - **`--enabled-tools TOOL`**: Enable specific tools. In programmatic mode, this disables all other tools. Can be specified multiple times. Supports exact names, glob patterns (e.g., `bash*`), or regex with `re:` prefix (e.g., `re:^serena_.*$`).
 - **`--output FORMAT`**: Set the output format. Options:
   - `text` (default): Human-readable text output
@@ -611,25 +611,48 @@ timeout = 15.0             # seconds; on timeout the judge fails closed (you are
 How it fits the existing controls:
 
 - It only fills the **approval prompt** gap. Calls your denylist/guardrails mark as denied (`NEVER`) are still hard-blocked — the judge never sees them.
-- `--auto-approve` is unchanged: it still bypasses everything (including the judge).
+- `--auto-approve` bypasses user consent and the judge for permitted calls; immutable `NEVER` policy remains blocked.
 - It **fails closed**. No usable judge model, an API error, a timeout, a refusal, or an unparsable answer all fall back to the normal human prompt.
 - Every judge auto-approval is logged.
 
 > **Security note.** An LLM judge is a probabilistic gate, not a guarantee. The tool call it evaluates is authored by the (untrusted) main model, so a compromised or jailbroken main model could in principle craft a call designed to fool the judge. Keep your denylist authoritative, prefer a judge model from a different provider than your active model, and treat this as convenience, not a sandbox.
 
+### Auxiliary Model Budget
+
+Standalone memory and safety-judge calls share a finite budget for the lifetime
+of the running agent, including compaction and `/clear`. The main agent and
+workflow budgets remain separate.
+
+```toml
+[auxiliary_budget]
+max_tokens = 50000
+max_calls = 24
+max_cost_usd = 1.0
+```
+
+Set a limit to `0` to disable those auxiliary calls. Token and call caps always
+apply; the USD cap additionally relies on configured or built-in model pricing.
+Restart Vibe to create a fresh auxiliary envelope.
+
 ### Cross-Session Memory
 
-Vibe can carry durable notes across sessions as plain `*.md` files (YAML frontmatter + body) under `~/.vibe/memory/`. Each turn, a selector running on its own backend scans the lightweight frontmatter index and injects the most relevant bodies into the system prompt. It is on by default; selection fails open (no memories injected) on any error.
+Vibe can carry durable notes across sessions as plain `*.md` files (YAML frontmatter + body) under `~/.vibe/memory/`. Each turn, a local lexical selector scans the lightweight frontmatter index and injects the most relevant bodies into the system prompt. The default hybrid mode calls the standalone LLM selector only when local candidates tie near the selection cutoff. It is on by default; selection fails open (index only) on any error.
 
 ```toml
 [memory]
 enabled = true
 select_mode = "per-turn"   # "per-turn" | "per-session" | "always"
+selector_mode = "hybrid"   # "local" | "hybrid" | "llm"
+local_min_score = 3.0
+local_ambiguity_margin = 0.15
+prefetch = true              # races only ambiguous hybrid / llm selection
 model = ""                  # alias; falls back to compaction, then active model
-max_selected = 5            # top-K memories injected per turn
-max_inject_chars = 8000     # hard cap on total injected body text
-timeout = 20.0              # selector LLM timeout; on timeout, no memories
+max_selected = 2            # top-K memories injected per turn
+max_inject_chars = 4000     # hard cap on total injected body text
+timeout = 20.0              # LLM fallback timeout; local recall has no API call
 ```
+
+Use `selector_mode = "local"` to prohibit selector API calls or `"llm"` to restore legacy LLM-only selection. Auto-extraction, consolidation, and verification run only when their explicit memory flags are enabled; effort mode does not turn them on implicitly.
 
 Memories are written via the `manage_memory` tool. By default they are **global** (shared across every project). Pass `scope = "project"` to write to the current trusted project's private namespace under `~/.vibe/memory/projects/<hash>/`. The namespace is keyed by the repository's git common dir, so every session and every git worktree of one repo shares the same project memory; different repos (and non-git directories) stay isolated. Project memories never live inside the repo, so they cannot be committed, and they shadow same-id global memories for that project only. `scope = "project"` requires a trusted project directory.
 

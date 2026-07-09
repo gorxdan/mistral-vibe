@@ -16,6 +16,7 @@ from vibe.core.tools.base import (
 )
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from vibe.core.types import ToolResultEvent, ToolStreamEvent
+from vibe.core.verification_contract import is_verification_todo
 
 
 class TodoStatus(StrEnum):
@@ -89,7 +90,7 @@ def _should_nudge(todos: list[TodoItem], verification_enabled: bool) -> bool:
         return False
     if not all(t.status == TodoStatus.COMPLETED for t in todos):
         return False
-    return not any("verif" in t.content.lower() for t in todos)
+    return not any(is_verification_todo(todo.content) for todo in todos)
 
 
 class Todo(

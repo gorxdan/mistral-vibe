@@ -11,6 +11,10 @@ import subprocess
 import time
 from typing import TYPE_CHECKING
 
+from vibe.core._prompt_invariants import (
+    COMPACT_INVESTIGATION_INVARIANT,
+    COMPACT_VERIFICATION_INVARIANT,
+)
 from vibe.core.baseline_scaling import (
     BaselineTier,
     agents_md_byte_budget,
@@ -385,8 +389,10 @@ def _get_verification_contract_section() -> str:
         "not success.\n"
         "- **No VERDICT / subagent error** → not a pass; respawn once with "
         "a tighter brief, else tell the user verification could not complete.\n"
-        "`land_work` requires a `verification_note` when this layer is on "
-        "(verifier PASS summary, or `trivial: <reason>`)."
+        "A valid verifier or contract PASS is recorded automatically for "
+        "`land_work`; a report pasted into tool arguments is not accepted. A "
+        "`trivial: <reason>` waiver is accepted only when `land_work` confirms "
+        "a committed documentation-only diff."
     )
 
 
@@ -614,14 +620,18 @@ def _build_prompt_detail_sections(
         sections.append(subagents_section)
         if section_enabled(tier, "orchestration_prose"):
             sections.append(_get_orchestration_section())
-        if getattr(config, "verification_subsystem", True) and section_enabled(
-            tier, "verification_contract"
-        ):
-            sections.append(_get_verification_contract_section())
-        if getattr(config, "investigation_subsystem", True) and section_enabled(
-            tier, "investigation_contract"
-        ):
-            sections.append(_get_investigation_contract_section())
+        if getattr(config, "verification_subsystem", True):
+            sections.append(
+                _get_verification_contract_section()
+                if section_enabled(tier, "verification_contract")
+                else COMPACT_VERIFICATION_INVARIANT
+            )
+        if getattr(config, "investigation_subsystem", True):
+            sections.append(
+                _get_investigation_contract_section()
+                if section_enabled(tier, "investigation_contract")
+                else COMPACT_INVESTIGATION_INVARIANT
+            )
 
     sections.extend(filter(None, [_get_scratchpad_section(scratchpad_dir)]))
     return sections

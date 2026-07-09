@@ -436,7 +436,8 @@ class TestPrepareRequest:
             ("low", "low"),
             ("medium", "medium"),
             ("high", "high"),
-            ("max", "xhigh"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
         ],
     )
     def test_thinking_sets_reasoning_effort(
@@ -456,7 +457,8 @@ class TestPrepareRequest:
             ("off", "low"),  # codex models reject 'none' -> clamp to minimum 'low'
             ("low", "low"),
             ("high", "high"),
-            ("max", "xhigh"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
         ],
     )
     def test_codex_model_never_gets_none_effort(

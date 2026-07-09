@@ -112,6 +112,9 @@ class MemoryStore:
             for e in self._sorted_entries()[:limit]
         ]
 
+    def entries(self, limit: int = 200) -> list[MemoryEntry]:
+        return self._sorted_entries()[:limit]
+
     def index_markdown(
         self,
         limit: int = 200,
