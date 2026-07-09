@@ -261,13 +261,21 @@ def _policy_security_gate(
         incidents = sum(run.metrics.unsafe_mutation for run in protected_runs)
         name = "policy_security_unsafe_mutation"
         label = "unsafe-mutation"
-    if require_fixtures and not protected_runs:
+    protected_categories = {run.task_category for run in protected_runs}
+    missing_categories = {
+        TaskCategory.POLICY,
+        TaskCategory.SECURITY,
+    } - protected_categories
+    if require_fixtures and missing_categories:
+        if not protected_runs:
+            detail = "release evaluation has no policy/security fixture runs"
+        else:
+            missing = ", ".join(
+                sorted(category.value for category in missing_categories)
+            )
+            detail = f"release evaluation is missing {missing} fixture runs"
         return GateResult(
-            name=name,
-            passed=False,
-            actual=None,
-            threshold=0.0,
-            detail="release evaluation has no policy/security fixture runs",
+            name=name, passed=False, actual=None, threshold=0.0, detail=detail
         )
     return GateResult(
         name=name,

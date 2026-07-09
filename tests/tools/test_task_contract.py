@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +16,7 @@ from vibe.core.tasking import (
     TaskOutcome,
     TaskOutcomeStatus,
 )
+from vibe.core.tools.background import BackgroundRegistry
 from vibe.core.tools.base import BaseToolState, InvokeContext
 from vibe.core.tools.builtins.task import Task, TaskArgs, TaskResult, TaskToolConfig
 from vibe.core.types import (
@@ -65,7 +68,7 @@ def test_task_args_compile_structured_brief_without_verbose_display() -> None:
         tool_call_id="task-contract", tool_name="task", args=args, tool_class=Task
     )
 
-    assert args.prompt.startswith("Execute this immutable task contract")
+    assert args.prompt.startswith("Execute this serialized task contract")
     assert args.summary == "Implement the parser fix"
     assert args.brief == brief
     assert Task.get_call_display(event).summary == (
@@ -99,6 +102,53 @@ async def test_structured_brief_reaches_agent_and_returns_terminal_outcome() -> 
     assert result.outcome.status is TaskOutcomeStatus.SUCCEEDED
     assert result.outcome.manifest == _brief().manifest
     assert prompts == [TaskArgs(task=_brief()).prompt]
+
+
+@pytest.mark.asyncio
+async def test_expired_structured_brief_is_blocked_before_agent_dispatch() -> None:
+    brief = _brief().model_copy(
+        update={"deadline": datetime.now(UTC) - timedelta(seconds=1)}
+    )
+    tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+
+    with patch("vibe.core.tools.builtins.task.AgentLoop") as loop:
+        result = await collect_result(
+            tool.run(TaskArgs(task=brief, agent="explore", async_run=False), _ctx())
+        )
+
+    assert isinstance(result, TaskResult)
+    assert result.completed is False
+    assert result.outcome is not None
+    assert result.outcome.status is TaskOutcomeStatus.BLOCKED
+    assert "deadline" in result.outcome.diagnostics[0]
+    loop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_async_isolated_task_preserves_structured_outcome() -> None:
+    from vibe.core.workflows.runtime import IsolatedResult
+
+    registry = BackgroundRegistry()
+    ctx = _ctx()
+    ctx.background_registry = registry
+    tool = Task(
+        config_getter=lambda: TaskToolConfig(isolation="always"), state=BaseToolState()
+    )
+
+    async def isolated(*args, **kwargs) -> IsolatedResult:
+        return IsolatedResult(output="Could not finish.\nTASK_OUTCOME: FAILED")
+
+    with patch("vibe.core.tools.builtins.task.run_isolated_agent", isolated):
+        result = await collect_result(
+            tool.run(TaskArgs(task=_brief(), agent="explore"), ctx)
+        )
+        assert isinstance(result, TaskResult)
+        assert result.task_id is not None
+        await asyncio.sleep(0.05)
+
+    [completion] = registry.pop_async_completions()
+    assert completion.outcome is not None
+    assert completion.outcome.status is TaskOutcomeStatus.FAILED
 
 
 def test_task_result_display_uses_explicit_failed_outcome() -> None:

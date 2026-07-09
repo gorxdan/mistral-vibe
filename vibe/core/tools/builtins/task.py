@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import fnmatch
 from pathlib import Path
 import time
@@ -53,11 +54,7 @@ from vibe.core.verification_contract import (
     VerificationReportError,
     parse_verification_report,
 )
-from vibe.core.workflows.runtime import (
-    DEFAULT_ISOLATED_MAX_TURNS,
-    IsolatedResult,
-    run_isolated_agent,
-)
+from vibe.core.workflows.runtime import DEFAULT_ISOLATED_MAX_TURNS, run_isolated_agent
 
 
 def workspace_fingerprint() -> str | None:
@@ -130,21 +127,6 @@ def _maybe_record_verifier_pass(
         state.record_verifier_pass(report)
 
 
-def _record_background_isolated_verifier_pass(
-    task: asyncio.Task[IsolatedResult],
-    agent: str,
-    ctx: InvokeContext,
-    attempt: _VerificationAttempt | None = None,
-) -> None:
-    if task.cancelled():
-        return
-    try:
-        result = task.result()
-    except Exception:
-        return
-    _maybe_record_verifier_pass(agent, result.output, ctx, attempt=attempt)
-
-
 @dataclass(frozen=True, slots=True)
 class _VerificationAttempt:
     workspace_fingerprint: str | None
@@ -172,7 +154,7 @@ class TaskArgs(BaseModel):
     task: str | TaskBrief = Field(
         description=(
             "The task to delegate. Pass a string for legacy free-form delegation "
-            "or a TaskBrief object for bounded scope and explicit outcomes."
+            "or a TaskBrief object for validated metadata and explicit outcomes."
         )
     )
     agent: str = Field(
@@ -295,9 +277,11 @@ class Task(
         "searched; point it at specific paths/symbols and scope its searches. A "
         "subagent has its own, often smaller, context window, so an open-ended "
         "broad search there can overflow it — give it targets, not a hunt.\n\n"
-        "For bounded work, pass a structured TaskBrief instead of a free-form "
-        "string. Its path scope, checks, budget, deadline, and tool manifest are "
-        "immutable, and the worker must return an explicit terminal outcome.\n\n"
+        "For structured work, pass a TaskBrief instead of a free-form string. "
+        "The serialized brief is immutable within the worker prompt, expired "
+        "deadlines are blocked before dispatch, and the worker must return an "
+        "explicit terminal outcome. Path scope, checks, and task-specific budgets "
+        "are contract metadata in this version; they are not host-enforced.\n\n"
         "Execution: subagents run in the BACKGROUND by default — the call returns "
         "a task_id immediately and the subagent's result is delivered to you "
         "automatically at the start of a later turn (you are auto-resumed when it "
@@ -392,6 +376,56 @@ class Task(
 
         return None
 
+    async def _collect_async_isolated(
+        self,
+        args: TaskArgs,
+        ctx: InvokeContext,
+        task_text: str,
+        effective_model: str | None,
+        log_path: Path | None,
+        verification_attempt: _VerificationAttempt | None,
+    ) -> _InProcessResult:
+        completed = True
+        forced_status: TaskOutcomeStatus | None = None
+        diagnostic: str | None = None
+        worktree_path: str | None = None
+        branch: str | None = None
+        try:
+            result = await run_isolated_agent(
+                task_text,
+                args.agent,
+                label=args.agent,
+                max_turns=DEFAULT_ISOLATED_MAX_TURNS,
+                deliver=True,
+                model=effective_model,
+                log_path=log_path,
+                scratchpad_dir=ctx.scratchpad_dir,
+            )
+            response = result.output
+            completed = result.returncode == 0
+            worktree_path = result.worktree_path
+            branch = result.branch
+        except Exception as e:
+            completed = False
+            response = f"[Isolated subagent error: {e}]"
+            forced_status, diagnostic = _subagent_error_outcome(e)
+        _maybe_record_verifier_pass(
+            args.agent, response, ctx, completed=completed, attempt=verification_attempt
+        )
+        return _InProcessResult(
+            output=response,
+            returncode=0 if completed else 1,
+            worktree_path=worktree_path,
+            branch=branch,
+            outcome=resolve_task_outcome(
+                args.brief,
+                response,
+                completed=completed,
+                forced_status=forced_status,
+                diagnostic=diagnostic,
+            ),
+        )
+
     async def _run_async_isolated(
         self,
         args: TaskArgs,
@@ -438,22 +472,10 @@ class Task(
 
         effective_model = _effective_subagent_model(args, ctx)
         bg_task = asyncio.create_task(
-            run_isolated_agent(
-                task_text,
-                args.agent,
-                label=args.agent,
-                max_turns=DEFAULT_ISOLATED_MAX_TURNS,
-                deliver=True,
-                model=effective_model,
-                log_path=log_path,
-                scratchpad_dir=ctx.scratchpad_dir,
+            self._collect_async_isolated(
+                args, ctx, task_text, effective_model, log_path, verification_attempt
             ),
             name=f"async-task-{args.agent}",
-        )
-        bg_task.add_done_callback(
-            lambda task: _record_background_isolated_verifier_pass(
-                task, args.agent, ctx, verification_attempt
-            )
         )
         task_id = registry.register_async_agent(
             args.agent,
@@ -592,6 +614,29 @@ class Task(
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
         if not ctx or not ctx.agent_manager:
             raise ToolError("Task tool requires agent_manager in context")
+
+        if (
+            args.brief is not None
+            and args.brief.deadline is not None
+            and args.brief.deadline <= datetime.now(UTC)
+        ):
+            diagnostic = (
+                f"task deadline {args.brief.deadline.isoformat()} expired before "
+                "subagent dispatch"
+            )
+            yield TaskResult(
+                response=f"[Structured task blocked: {diagnostic}]",
+                turns_used=0,
+                completed=False,
+                outcome=resolve_task_outcome(
+                    args.brief,
+                    "",
+                    completed=False,
+                    forced_status=TaskOutcomeStatus.BLOCKED,
+                    diagnostic=diagnostic,
+                ),
+            )
+            return
 
         agent_manager = ctx.agent_manager
 

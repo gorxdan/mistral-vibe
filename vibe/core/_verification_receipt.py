@@ -702,9 +702,9 @@ def _changed_paths(
     repo: Repo, base_sha: str, candidate_sha: str, untracked: Sequence[tuple[str, str]]
 ) -> tuple[str, ...]:
     outputs = (
-        repo.git.diff("--name-only", base_sha, candidate_sha, "--"),
-        repo.git.diff("--name-only", "--cached", "HEAD", "--"),
-        repo.git.diff("--name-only", "HEAD", "--"),
+        repo.git.diff("--no-renames", "--name-only", base_sha, candidate_sha, "--"),
+        repo.git.diff("--no-renames", "--name-only", "--cached", "HEAD", "--"),
+        repo.git.diff("--no-renames", "--name-only", "HEAD", "--"),
     )
     paths = {line for output in outputs for line in output.splitlines() if line}
     paths.update(name for name, _ in untracked)

@@ -105,6 +105,18 @@ DEFAULT_SCHEMA_RETRIES = 2
 _JSON_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*\n?(.*?)```", re.DOTALL)
 
 
+async def _gather_owned(awaitables: list[Awaitable[Any]]) -> list[Any]:
+    tasks = [asyncio.ensure_future(awaitable) for awaitable in awaitables]
+    try:
+        return await asyncio.gather(*tasks)
+    except (Exception, asyncio.CancelledError):
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
 def _strip_code_fences(text: str) -> str:
     s = text.strip()
     for match in _JSON_FENCE_RE.finditer(s):
@@ -1904,7 +1916,7 @@ class WorkflowRuntime:
                 return None
 
         async def _run() -> list[Any]:
-            return await asyncio.gather(*[_safe(t) for t in thunk_list])
+            return await _gather_owned([_safe(t) for t in thunk_list])
 
         return _AwaitableResult(_run())
 
@@ -1981,7 +1993,7 @@ class WorkflowRuntime:
                 return await _run_item(index, item)
 
         async def _run() -> list[Any]:
-            return await asyncio.gather(*[
+            return await _gather_owned([
                 _guarded_run_item(i, it) for i, it in enumerate(items_list)
             ])
 

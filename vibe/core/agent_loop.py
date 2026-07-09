@@ -3404,10 +3404,13 @@ class AgentLoop(
             )
             if rec.error:
                 summary += f"\n[error: {rec.error}]"
+            if rec.outcome is not None:
+                summary += "\nTASK_OUTCOME_JSON:" + rec.outcome.model_dump_json(
+                    exclude_none=True
+                )
             label = getattr(rec, "label", None) or rec.agent
             message = (
-                f"[background subagent {rec.task_id} ({label}) "
-                f"{'completed' if rec.completed else 'failed'}]\n{summary}"
+                f"[background subagent {rec.task_id} ({label}) {rec.status}]\n{summary}"
             )
             self.messages.append(
                 LLMMessage(
@@ -3425,6 +3428,7 @@ class AgentLoop(
                 worktree_path=rec.worktree_path,
                 branch=rec.branch,
                 error=rec.error,
+                outcome=rec.outcome,
             )
 
     def _apply_tool_result_budget(self, tool_call: ResolvedToolCall, text: str) -> str:

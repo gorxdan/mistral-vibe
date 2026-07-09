@@ -301,7 +301,7 @@ def _changed_paths(
 ) -> list[str] | None:
     try:
         output = repo.git.diff(
-            "--name-only", f"{target_branch}...{source_branch}", "--"
+            "--no-renames", "--name-only", f"{target_branch}...{source_branch}", "--"
         )
     except GitCommandError:
         return None

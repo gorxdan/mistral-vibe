@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
@@ -124,6 +125,43 @@ async def test_spend_rejection_blocks_workflow(body: str) -> None:
     assert result.return_value is None
     assert "Workflow blocked" in result.summary
     assert "session:test" in result.summary
+
+
+@pytest.mark.parametrize("mode", ["parallel", "pipeline"])
+async def test_spend_rejection_cancels_running_siblings(mode: str) -> None:
+    runtime = WorkflowRuntime(max_agents=4, budget_total=100_000)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def slow(_item: str = "slow") -> str:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return "late mutation"
+
+    async def denied(_item: str = "denied") -> str:
+        await started.wait()
+        raise _spend_error()
+
+    try:
+        with pytest.raises(SpendBudgetExceededError):
+            if mode == "parallel":
+                await runtime.parallel(slow(), denied())
+            else:
+
+                async def stage(item: str) -> str:
+                    return await (slow(item) if item == "slow" else denied(item))
+
+                await runtime.pipeline(["slow", "denied"], stage)
+
+        assert cancelled.is_set()
+    finally:
+        release.set()
+        await asyncio.sleep(0)
 
 
 async def test_blocked_status_survives_snapshot_round_trip() -> None:

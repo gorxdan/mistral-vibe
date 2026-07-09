@@ -61,6 +61,7 @@ def _run(
     base_sha: str,
     store: VerificationReceiptStore,
     checks: tuple[TrustedCheck, ...] | None = None,
+    allowed_paths: tuple[str, ...] = ("tracked.txt",),
 ):
     return run_trusted_verification(
         checks
@@ -78,7 +79,7 @@ def _run(
         recipe_version="test-v1",
         contract_hash=hash_payload("contract"),
         configuration_hash=hash_payload("config"),
-        allowed_paths=("tracked.txt",),
+        allowed_paths=allowed_paths,
         store=store,
     )
 
@@ -238,6 +239,24 @@ def test_receipt_invalidates_when_base_changes(tmp_path: Path) -> None:
 
     assert not validation.valid
     assert "base commit changed" in validation.summary()
+
+
+def test_receipt_scope_includes_both_rename_endpoints(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    repo, base_sha = _repo(repository)
+    write_safe(repository / "outside.py", "value = 1\n")
+    repo.index.add(["outside.py"])
+    base_sha = repo.index.commit("add source").hexsha
+    (repository / "docs").mkdir()
+    repo.git.mv("outside.py", "docs/inside.md")
+    repo.index.commit("rename into allowed path")
+    store = VerificationReceiptStore(tmp_path / "store")
+
+    receipt = _run(repository, base_sha, store, allowed_paths=("docs/**",))
+
+    assert receipt.repository.changed_paths == ("docs/inside.md", "outside.py")
+    assert not receipt.allowed_paths_passed
+    assert not receipt.passed
 
 
 def test_empty_or_failed_check_set_never_produces_pass(tmp_path: Path) -> None:

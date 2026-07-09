@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import orjson
 
 from vibe.core.logger import logger
+from vibe.core.tasking import TaskOutcome
 from vibe.core.tools._background_delivery import compact_background_completion
 
 if TYPE_CHECKING:
@@ -86,6 +87,7 @@ class _AsyncAgentRec:
     response_so_far: str = ""
     turns_used: int = 0
     log_path: Path | None = None
+    outcome: TaskOutcome | None = None
 
 
 def _signal_proc_group(proc: asyncio.subprocess.Process, sig: int) -> None:
@@ -362,7 +364,8 @@ class BackgroundRegistry:
         rec.completed = bool(getattr(result, "returncode", 1) == 0)
         rec.worktree_path = getattr(result, "worktree_path", None)
         rec.branch = getattr(result, "branch", None)
-        if rec.completed:
+        rec.outcome = getattr(result, "outcome", None)
+        if rec.completed and (rec.outcome is None or rec.outcome.succeeded):
             rec.status = "completed"
         else:
             rec.status = "failed"
@@ -516,6 +519,11 @@ class BackgroundRegistry:
                             "response_so_far": rec.response_so_far,
                             "turns_used": rec.turns_used,
                             "log_path": str(rec.log_path) if rec.log_path else None,
+                            "outcome": (
+                                rec.outcome.model_dump(mode="json", exclude_none=True)
+                                if rec.outcome is not None
+                                else None
+                            ),
                         },
                     )
                 )

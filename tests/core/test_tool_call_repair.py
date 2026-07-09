@@ -64,3 +64,14 @@ def test_non_object_arguments_report_expected_shape() -> None:
     assert parsed.parse_error is not None
     assert parsed.parse_error.expected == "object"
     assert parsed.parse_error.actual == "list"
+
+
+def test_multiple_json_objects_are_not_repaired_to_the_first() -> None:
+    raw = '{"command":"echo first"} {"command":"echo second"}'
+
+    [parsed] = APIToolFormatHandler().parse_message(_message(raw)).tool_calls
+
+    assert parsed.raw_args == {}
+    assert parsed.parse_error is not None
+    assert parsed.repaired is False
+    assert parsed.raw_text == raw

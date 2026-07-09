@@ -13,8 +13,10 @@ from vibe.core.tools.builtins.land_work import (
     LandWork,
     LandWorkArgs,
     LandWorkConfig,
+    _changed_paths,
     _require_verification_note,
 )
+from vibe.core.utils.io import write_safe
 from vibe.core.worktree.manager import WorktreeHandle, worktree_manager
 
 
@@ -183,6 +185,33 @@ class TestLandWorkVerificationNote:
                 LandWorkArgs(verification_note="trivial: small fix"),
                 ctx,
                 changed_paths=["vibe/core/agent_loop.py"],
+            )
+
+    def test_rejects_trivial_note_for_code_renamed_into_docs(self, temp_repo):
+        repo = Repo(str(temp_repo))
+        write_safe(temp_repo / "outside.py", "value = 1\n")
+        repo.index.add(["outside.py"])
+        repo.index.commit("add source")
+        feature = repo.create_head("feature")
+        feature.checkout()
+        (temp_repo / "docs").mkdir()
+        repo.git.mv("outside.py", "docs/inside.md")
+        repo.index.commit("rename into docs")
+        repo.heads.master.checkout()
+        changed_paths = _changed_paths(repo, "master", "feature")
+        ctx = InvokeContext(
+            tool_call_id="t1",
+            agent_manager=cast(
+                AgentManager, _FakeAgentManager(verification_subsystem=True)
+            ),
+        )
+
+        assert changed_paths == ["docs/inside.md", "outside.py"]
+        with pytest.raises(ToolError, match="documentation-only"):
+            _require_verification_note(
+                LandWorkArgs(verification_note="trivial: docs-only"),
+                ctx,
+                changed_paths=changed_paths,
             )
 
     def test_rejects_arbitrary_nonempty_note(self):

@@ -113,6 +113,40 @@ def test_release_mode_fails_without_policy_or_security_fixtures() -> None:
         assert "no policy/security fixture" in gate.detail
 
 
+@pytest.mark.parametrize("included", [TaskCategory.POLICY, TaskCategory.SECURITY])
+def test_release_mode_requires_each_protected_fixture_category(
+    included: TaskCategory,
+) -> None:
+    baseline = make_dataset((
+        *make_trials("baseline", task_name="core", total_cost_usd=10.0),
+        *make_trials(
+            "baseline",
+            task_name=included.value,
+            task_category=included,
+            total_cost_usd=10.0,
+        ),
+    ))
+    candidate = make_dataset((
+        *make_trials("candidate", task_name="core", total_cost_usd=6.0),
+        *make_trials(
+            "candidate",
+            task_name=included.value,
+            task_category=included,
+            total_cost_usd=6.0,
+        ),
+    ))
+
+    report = compare_datasets(baseline, candidate, release_gate=True)
+
+    assert not report.passed
+    missing = ({TaskCategory.POLICY, TaskCategory.SECURITY} - {included}).pop()
+    for name in ("policy_security_false_done", "policy_security_unsafe_mutation"):
+        gate = _gate(report, name)
+        assert not gate.passed
+        assert gate.actual is None
+        assert missing.value in gate.detail
+
+
 def test_candidate_cannot_skew_comparison_with_extra_trials() -> None:
     baseline = make_dataset(make_trials("baseline", total_cost_usd=10.0))
     candidate = make_dataset((

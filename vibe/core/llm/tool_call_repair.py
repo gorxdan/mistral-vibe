@@ -62,7 +62,9 @@ def parse_tool_arguments(raw: str | None) -> ToolArgumentParse:
 
 def _repair_candidates(text: str) -> tuple[str, ...]:
     candidates: list[str] = [text]
-    candidates.extend(match.group(1).strip() for match in _FENCE_RE.finditer(text))
+    fenced = tuple(_FENCE_RE.finditer(text))
+    if len(fenced) == 1:
+        candidates.append(fenced[0].group(1).strip())
     if balanced := _first_balanced_object(text):
         candidates.append(balanced)
     for candidate in tuple(candidates):
@@ -96,6 +98,9 @@ def _first_balanced_object(text: str) -> str | None:
         elif char == "}":
             depth -= 1
             if depth == 0:
+                outside = text[:start] + text[index + 1 :]
+                if any(marker in outside for marker in "{}[]"):
+                    return None
                 return text[start : index + 1]
     return None
 

@@ -28,6 +28,7 @@ from pydantic import (
 
 from vibe.core.experiments.models import EvalResponse
 from vibe.core.logger import logger
+from vibe.core.tasking import TaskOutcome
 
 
 class ScheduledLoop(BaseModel):
@@ -832,6 +833,7 @@ class BackgroundTaskCompletedEvent(BaseEvent):
     worktree_path: str | None = None
     branch: str | None = None
     error: str | None = None
+    outcome: TaskOutcome | None = None
 
 
 class OutputFormat(StrEnum):
