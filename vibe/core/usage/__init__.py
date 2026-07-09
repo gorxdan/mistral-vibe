@@ -17,6 +17,14 @@ from vibe.core.usage._codex_quota import (
     CodexQuotaWindow,
     fetch_codex_quota,
 )
+from vibe.core.usage._meter import (
+    CallKind,
+    SpendLimits,
+    SpendSnapshot,
+    UsageMeter,
+    UsageReservation,
+    usage_cost,
+)
 from vibe.core.usage._pricing import ModelPricing, compute_cost, lookup_pricing
 from vibe.core.usage._rate_limits import (
     RateLimitSnapshot,
@@ -32,6 +40,7 @@ from vibe.core.usage._recorder import (
 from vibe.core.usage.models import UsageRecord
 
 __all__ = [
+    "CallKind",
     "CodexCredits",
     "CodexMonthlyLimit",
     "CodexQuotaSnapshot",
@@ -43,8 +52,12 @@ __all__ = [
     "ProviderBreakdown",
     "RateLimitSnapshot",
     "RateLimitStore",
+    "SpendLimits",
+    "SpendSnapshot",
+    "UsageMeter",
     "UsageRecord",
     "UsageRecorder",
+    "UsageReservation",
     "UsageSummary",
     "WindowRollup",
     "compute_cost",
@@ -56,4 +69,5 @@ __all__ = [
     "reset_usage_recorder_for_tests",
     "session_records",
     "summarize",
+    "usage_cost",
 ]

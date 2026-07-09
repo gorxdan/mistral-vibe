@@ -10,6 +10,8 @@ import pytest
 
 from vibe.core.teams.models import TeamSafetyMode
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory, _team_status
+from vibe.core.utils.io import read_safe
+from vibe.core.workflows.runtime import IsolatedResult
 
 if TYPE_CHECKING:
     from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
@@ -764,6 +766,59 @@ async def test_async_agent_completion_queued_and_drained():
 
 
 @pytest.mark.asyncio
+async def test_real_isolated_result_is_reported_completed():
+    reg = BackgroundRegistry()
+
+    async def quick() -> IsolatedResult:
+        return IsolatedResult(output="done")
+
+    reg.register_async_agent("worker", asyncio.create_task(quick()))
+    await asyncio.sleep(0.05)
+
+    [completion] = reg.pop_async_completions()
+    assert completion.status == "completed"
+    assert completion.completed is True
+    assert completion.response == "done"
+
+
+@pytest.mark.asyncio
+async def test_large_async_completion_is_persisted_and_compacted(tmp_path):
+    reg = BackgroundRegistry()
+    result_path = tmp_path / "bg" / "asub-result.log"
+    output = "start\n" + ("x" * 10_000) + "\nend"
+
+    async def quick() -> _FakeIsolatedResult:
+        return _FakeIsolatedResult(output=output)
+
+    reg.register_async_agent(
+        "worker", asyncio.create_task(quick()), log_path=result_path
+    )
+    await asyncio.sleep(0.05)
+
+    [completion] = reg.pop_async_completions()
+    assert len(completion.response) < len(output)
+    assert str(result_path) in completion.response
+    assert "Full background result" in completion.response
+    assert read_safe(result_path).text == output
+
+
+@pytest.mark.asyncio
+async def test_large_async_completion_without_storage_stays_bounded():
+    reg = BackgroundRegistry()
+    output = "x" * 10_000
+
+    async def quick() -> _FakeIsolatedResult:
+        return _FakeIsolatedResult(output=output)
+
+    reg.register_async_agent("worker", asyncio.create_task(quick()))
+    await asyncio.sleep(0.05)
+
+    [completion] = reg.pop_async_completions()
+    assert len(completion.response) < 5_000
+    assert "full output could not be persisted" in completion.response
+
+
+@pytest.mark.asyncio
 async def test_async_completion_fires_wake_callback():
     reg = BackgroundRegistry()
     woke = asyncio.Event()
@@ -802,6 +857,26 @@ async def test_async_agent_failure_queued_with_error():
     assert len(drained) == 1
     assert drained[0].completed is False
     assert "subprocess exploded" in (drained[0].error or "")
+
+
+@pytest.mark.asyncio
+async def test_large_async_agent_error_is_persisted_and_compacted(tmp_path):
+    reg = BackgroundRegistry()
+    log_path = tmp_path / "bg" / "asub.log"
+    error_text = "failure: " + ("x" * 10_000)
+
+    async def boom() -> _FakeIsolatedResult:
+        raise RuntimeError(error_text)
+
+    reg.register_async_agent("worker", asyncio.create_task(boom()), log_path=log_path)
+    await asyncio.sleep(0.05)
+
+    [completion] = reg.pop_async_completions()
+    error_path = log_path.with_suffix(".log.error")
+    assert completion.error is not None
+    assert len(completion.error) < len(error_text)
+    assert str(error_path) in completion.error
+    assert read_safe(error_path).text == error_text
 
 
 @pytest.mark.asyncio

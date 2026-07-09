@@ -19,6 +19,12 @@ from pydantic import BaseModel, ConfigDict
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
+from vibe.core.workflows._limits import (
+    DEFAULT_BUDGET_TOTAL,
+    DEFAULT_ISOLATED_MAX_TURNS,
+    DEFAULT_MAX_AGENTS,
+    DEFAULT_MAX_CONCURRENT,
+)
 from vibe.core.workflows._port import AgentLoopFactory
 from vibe.core.workflows.budget import (
     Budget,
@@ -89,9 +95,6 @@ class _AwaitableResult:
 T = TypeVar("T")
 I = TypeVar("I")
 
-DEFAULT_MAX_CONCURRENT = 32
-DEFAULT_MAX_AGENTS = 1000
-DEFAULT_BUDGET_TOTAL = None
 DEFAULT_SCHEMA_RETRIES = 2
 
 
@@ -248,8 +251,6 @@ def _loop_log_path(loop: Any) -> Path | None:
     return sl.messages_filepath
 
 
-DEFAULT_ISOLATED_MAX_TURNS = 300
-
 # A custom executor owns the whole spawn contract incl. the scratchpad grant
 # (VIBE_ISOLATED_SCRATCHPAD_DIR); without it children are worktree-confined only.
 IsolatedExecutor = Callable[
@@ -403,6 +404,7 @@ def _parse_stats(stderr_text: str) -> dict[str, int] | None:
 @dataclass
 class IsolatedResult:
     output: str
+    returncode: int = 0
     stats: dict[str, int] | None = None
     delivered: bool = False
     worktree_path: str | None = None
@@ -1779,7 +1781,6 @@ class WorkflowRuntime:
             if contract is not None and wt is not None:
                 contract_report = verify_contract(wt.path, contract)
                 if contract_report.passed:
-                    _record_contract_pass(self, contract, contract_report)
                     contract_report.delivered = await asyncio.to_thread(
                         deliver_ephemeral_worktree, wt
                     )
@@ -1793,6 +1794,8 @@ class WorkflowRuntime:
                     wt,
                     keep_if_changed=not (contract_report and contract_report.delivered),
                 )
+        if contract is not None and contract_report and contract_report.delivered:
+            _record_contract_pass(self, contract, contract_report)
         return result.output, result.stats, contract_report
 
     def parallel(

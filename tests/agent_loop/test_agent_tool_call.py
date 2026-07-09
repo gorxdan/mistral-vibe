@@ -256,12 +256,13 @@ async def test_tool_call_rejected_when_auto_approve_disabled_and_rejected_by_cal
     assert tool_finished[0]["properties"]["approval_type"] == "ask"
 
 
+@pytest.mark.parametrize("auto_approve", [False, True])
 @pytest.mark.asyncio
 async def test_tool_call_skipped_when_permission_is_never(
-    telemetry_events: list[dict],
+    telemetry_events: list[dict], auto_approve: bool
 ) -> None:
     agent_loop = make_agent_loop(
-        auto_approve=False,
+        auto_approve=auto_approve,
         todo_permission=ToolPermission.NEVER,
         backend=FakeBackend([
             [

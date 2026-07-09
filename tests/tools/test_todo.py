@@ -35,6 +35,24 @@ def test_nudge_suppressed_when_a_verify_item_is_present() -> None:
     assert _should_nudge(todos, verification_enabled=True) is False
 
 
+def test_nudge_not_suppressed_by_incidental_verifier_keyword() -> None:
+    todos = [
+        _todo(1, "Add verifier profile"),
+        _todo(2, "Fix verification parser"),
+        _todo(3, "Wire prompt"),
+    ]
+    assert _should_nudge(todos, verification_enabled=True) is True
+
+
+def test_nudge_suppressed_by_normalized_test_action() -> None:
+    todos = [
+        _todo(1, "Add config flag"),
+        _todo(2, "Add profile"),
+        _todo(3, "RUN: focused tests"),
+    ]
+    assert _should_nudge(todos, verification_enabled=True) is False
+
+
 def test_nudge_suppressed_below_min_size() -> None:
     todos = [_todo(1, "Add config flag"), _todo(2, "Add profile")]
     assert _should_nudge(todos, verification_enabled=True) is False

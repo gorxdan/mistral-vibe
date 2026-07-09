@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import cast
 
 from git import Repo
 import pytest
 
+from vibe.core.agents.manager import AgentManager
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
 from vibe.core.tools.builtins.land_work import (
     LandWork,
@@ -140,23 +142,67 @@ class TestLandWorkVerificationNote:
     def test_skips_when_subsystem_off(self):
         ctx = InvokeContext(
             tool_call_id="t1",
-            agent_manager=_FakeAgentManager(verification_subsystem=False),  # type: ignore[arg-type]
+            agent_manager=cast(
+                AgentManager, _FakeAgentManager(verification_subsystem=False)
+            ),
         )
         _require_verification_note(LandWorkArgs(), ctx)
 
     def test_requires_note_when_subsystem_on(self):
         ctx = InvokeContext(
             tool_call_id="t1",
-            agent_manager=_FakeAgentManager(verification_subsystem=True),  # type: ignore[arg-type]
+            agent_manager=cast(
+                AgentManager, _FakeAgentManager(verification_subsystem=True)
+            ),
         )
         with pytest.raises(ToolError, match="verification_note"):
             _require_verification_note(LandWorkArgs(), ctx)
 
-    def test_accepts_nonempty_note(self):
+    def test_accepts_trivial_note_with_reason(self):
         ctx = InvokeContext(
             tool_call_id="t1",
-            agent_manager=_FakeAgentManager(verification_subsystem=True),  # type: ignore[arg-type]
+            agent_manager=cast(
+                AgentManager, _FakeAgentManager(verification_subsystem=True)
+            ),
         )
         _require_verification_note(
-            LandWorkArgs(verification_note="trivial: docs-only"), ctx
+            LandWorkArgs(verification_note="trivial: docs-only"),
+            ctx,
+            changed_paths=["docs/guide.md"],
         )
+
+    def test_rejects_trivial_note_for_code_diff(self):
+        ctx = InvokeContext(
+            tool_call_id="t1",
+            agent_manager=cast(
+                AgentManager, _FakeAgentManager(verification_subsystem=True)
+            ),
+        )
+        with pytest.raises(ToolError, match="documentation-only"):
+            _require_verification_note(
+                LandWorkArgs(verification_note="trivial: small fix"),
+                ctx,
+                changed_paths=["vibe/core/agent_loop.py"],
+            )
+
+    def test_rejects_arbitrary_nonempty_note(self):
+        ctx = InvokeContext(
+            tool_call_id="t1",
+            agent_manager=cast(
+                AgentManager, _FakeAgentManager(verification_subsystem=True)
+            ),
+        )
+        with pytest.raises(ToolError, match="cannot authorize"):
+            _require_verification_note(
+                LandWorkArgs(verification_note="I ran the tests and they passed"), ctx
+            )
+
+    def test_rejects_trivial_note_without_reason(self):
+        ctx = InvokeContext(
+            tool_call_id="t1",
+            agent_manager=cast(
+                AgentManager, _FakeAgentManager(verification_subsystem=True)
+            ),
+        )
+        with pytest.raises(ToolError, match="cannot authorize"):
+            _require_verification_note(LandWorkArgs(verification_note="trivial:"), ctx)

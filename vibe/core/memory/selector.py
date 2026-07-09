@@ -17,6 +17,7 @@ from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.logger import logger
 from vibe.core.memory._llm_client import _MemoryLLMClient
 from vibe.core.types import LLMMessage, Role
+from vibe.core.usage import CallKind, UsageMeter
 
 _SYSTEM_PROMPT = """\
 You pick which durable memories are relevant to the user's current request.
@@ -33,6 +34,7 @@ class MemorySelector(_MemoryLLMClient):
         provider: ProviderConfig,
         max_selected: int = 5,
         timeout: float = 20.0,
+        usage_meter: UsageMeter | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
@@ -40,6 +42,8 @@ class MemorySelector(_MemoryLLMClient):
             model=model,
             provider=provider,
             timeout=timeout,
+            call_kind=CallKind.MEMORY_SELECT,
+            usage_meter=usage_meter,
             extra_headers=extra_headers,
             extra_body=extra_body,
         )

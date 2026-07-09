@@ -15,7 +15,7 @@ Vibe uses a layered TOML configuration system built on Pydantic settings. Config
 | Category | Fields |
 |---|---|
 | **Models/Providers** | `providers: list[ProviderConfig]`, `models: list[ModelConfig]`, `active_model: str`, `fallback_models: list[str]`, `compaction_model`, `subagent_model`, `grunt_model` |
-| **Limits** | `api_timeout`, `auto_compact_threshold`, `max_output_escalation`, `context_shaping` |
+| **Limits** | `api_timeout`, `auto_compact_threshold`, `max_output_escalation`, `context_shaping`, `auxiliary_budget` |
 | **Subsystems** | `memory: MemoryConfig`, `safety_judge: SafetyJudgeConfig`, `project_context: ProjectContextConfig`, `experiments: ExperimentsConfig`, `worktree: WorktreeConfig` |
 | **Tools** | `tools` (dict), `tool_paths`, `enabled_tools`, `disabled_tools` |
 | **UI/Behavior** | `theme`, `vim_keybindings`, `bypass_tool_permissions`, `enable_telemetry`, `caveman_thinking`, `include_project_context` |
@@ -50,6 +50,7 @@ From `vibe/core/config/__init__.py`:
 - `ModelConfig` — model id, provider, alias, thinking level, pricing, context threshold, image support
 - `ProviderConfig` — endpoint, API key env var, backend type, API style
 - `SafetyJudgeConfig` — enabled, model, max_tokens, timeout
+- `AuxiliaryBudgetConfig` — shared per-session token, call, and USD caps for standalone helper models
 - `MemoryConfig` — enabled, select_mode, model, max_selected, max_inject_chars, timeout
 - `SandboxConfig` — bash sandbox settings
 - `WorktreeConfig` — subagent isolation settings
@@ -208,12 +209,17 @@ Durable cross-session notes as plain `*.md` files under `~/.vibe/memory/`.
 
 ### How It Works
 
-1. **Turn start**: `MemorySelector` (standalone LLM backend) picks relevant memories from `MemoryStore` index → injected into system prompt. Fails to empty `[]` on any error — memory hiccups never break a turn.
+1. **Turn start**: `LocalMemorySelector` ranks the `MemoryStore` index by id, title, description, tags, and index metadata. In the default `hybrid` mode, the standalone LLM `MemorySelector` runs only when local candidates tie near the selection cutoff. A confident match (including a confident empty result) uses no selector API call.
 2. **After turn**: `MemoryExtractor` proposes new/updated memories from transcript → `MemoryStore` persists.
 3. **Periodically**: `MemoryConsolidator` merges duplicates → `MemoryStore.trash()` for reversibility.
 4. **Verification**: `MemoryVerifier` re-checks factual claims against current codebase → tags `STALE`/`BROKEN`.
 
 All LLM components use **standalone backends** — failures are best-effort no-ops that never trigger model failover.
+
+Standalone memory and safety-judge calls share `auxiliary_budget` (defaults:
+50,000 tokens, 24 calls, and $1 per running agent). A zero limit disables
+auxiliary dispatch; the main agent and workflow budgets are separate. Restarting
+Vibe creates a fresh auxiliary envelope.
 
 ### Memory Types
 
@@ -231,11 +237,17 @@ All LLM components use **standalone backends** — failures are best-effort no-o
 [memory]
 enabled = true
 select_mode = "per-turn"   # "per-turn" | "per-session" | "always"
+selector_mode = "hybrid"   # "local" | "hybrid" | "llm"
+local_min_score = 3.0
+local_ambiguity_margin = 0.15
+prefetch = true              # races only ambiguous hybrid / llm selection
 model = ""                  # alias; falls back to compaction, then active model
-max_selected = 5
-max_inject_chars = 8000
+max_selected = 2
+max_inject_chars = 4000
 timeout = 20.0
 ```
+
+`local` never calls the memory selector model. `hybrid` calls it only to break an ambiguous local cutoff. `llm` restores the legacy selector-on-every-selection behavior. Auto-extraction, consolidation, and verification are controlled only by their explicit memory flags; `le-chaton` does not enable them implicitly.
 
 ## Where to Start When Changing Config/Backends
 
@@ -244,7 +256,7 @@ timeout = 20.0
 - **New backend**: `vibe/core/llm/backend/factory.py` → `vibe/core/llm/types.py` (BackendLike protocol)
 - **Model failover**: `vibe/core/agent_loop_failover.py`
 - **Skills**: `vibe/core/skills/manager.py` → `vibe/core/skills/parser.py`
-- **Memory**: `vibe/core/memory/store.py` → `vibe/core/memory/selector.py`
+- **Memory**: `vibe/core/memory/store.py` → `vibe/core/memory/local_selector.py` → `vibe/core/memory/selector.py`
 
 ## Tests
 

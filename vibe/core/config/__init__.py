@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from vibe.core.config._auxiliary_config import AuxiliaryBudgetConfig
 from vibe.core.config._defaults import (
     DEFAULT_CONSOLE_BASE_URL,
     DEFAULT_MISTRAL_API_ENV_KEY,
@@ -114,6 +115,7 @@ __all__ = [
     "MISSING_BACKING_STORE_DATA_FINGERPRINT",
     "THINKING_LEVELS",
     "AddOperationPatch",
+    "AuxiliaryBudgetConfig",
     "ConfigChangeCallback",
     "ConfigChangeEvent",
     "ConfigDefinitionError",

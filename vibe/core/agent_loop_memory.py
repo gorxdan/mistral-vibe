@@ -44,11 +44,13 @@ if TYPE_CHECKING:
     from vibe.core.config import MemoryConfig, ModelConfig, ProviderConfig, VibeConfig
     from vibe.core.memory.consolidator import ConsolidationAction, MemoryConsolidator
     from vibe.core.memory.extractor import MemoryExtractor
+    from vibe.core.memory.local_selector import LocalMemorySelection
     from vibe.core.memory.models import MemoryEntry
     from vibe.core.memory.selector import MemorySelector
     from vibe.core.memory.store import MemoryStore
     from vibe.core.memory.verifier import MemoryVerifier
     from vibe.core.types import MessageList
+    from vibe.core.usage import UsageMeter
 
 
 class AgentLoopMemoryMixin:
@@ -72,6 +74,7 @@ class AgentLoopMemoryMixin:
     _mem_prefetch_task: asyncio.Task[list[str]] | None
     _mem_consolidate_task: asyncio.Task[None] | None
     _mem_verify_task: asyncio.Task[None] | None
+    _usage_meter: UsageMeter
 
     # ``config`` is a @property on the host (AgentLoop), so the mixin must
     # declare it the same way rather than as a plain class attribute, or the
@@ -141,8 +144,26 @@ class AgentLoopMemoryMixin:
             provider=provider,
             max_selected=mem.max_selected,
             timeout=mem.timeout,
+            usage_meter=self._usage_meter,
             extra_headers=self._get_extra_headers(provider),
             extra_body=mem.extra_body or None,
+        )
+
+    def _select_local_memories(
+        self, store: MemoryStore, user_msg: str
+    ) -> LocalMemorySelection:
+        from vibe.core.memory.local_selector import LocalMemorySelector
+
+        mem = self.config.memory
+        selector = LocalMemorySelector(
+            max_selected=mem.max_selected,
+            min_score=mem.local_min_score,
+            ambiguity_margin=mem.local_ambiguity_margin,
+        )
+        return selector.select(
+            store.entries(mem.max_entries_scanned),
+            user_msg,
+            already_surfaced=self._mem_surfaced,
         )
 
     def _injected_index_markdown(self, store: MemoryStore) -> str:
@@ -172,28 +193,38 @@ class AgentLoopMemoryMixin:
                 self._set_memory_section("")
                 self._memory_applied = True
                 return
-            # Best-effort deep recall. Isolated in its own try so a selector
-            # failure still leaves the always-on index in context.
             bodies = ""
             if mem.select_mode == "always":
                 ids = store.ids()[: mem.max_selected]
                 bodies = store.bodies(ids, mem.max_inject_chars)
             else:
+                ids: list[str] = []
+                use_llm = mem.selector_mode == "llm"
+                if mem.selector_mode != "llm":
+                    try:
+                        local = self._select_local_memories(store, user_msg)
+                        ids = list(local.ids)
+                        use_llm = mem.selector_mode == "hybrid" and local.ambiguous
+                    except Exception as e:
+                        logger.warning("local memory recall failed (%s)", e)
+                        use_llm = mem.selector_mode == "hybrid"
                 try:
-                    selector = self._resolve_memory_selector()
+                    selector = self._resolve_memory_selector() if use_llm else None
                     if selector is not None:
-                        ids = await selector.select(
+                        selected = await selector.select(
                             store.index(mem.max_entries_scanned),
                             user_msg,
                             set(store.ids()),
                             already_surfaced=self._mem_surfaced,
                         )
-                        self._mem_surfaced.update(ids)
-                        bodies = store.bodies(ids, mem.max_inject_chars)
+                        if selected:
+                            ids = selected
                 except Exception as e:
                     logger.warning(
                         "memory body recall failed (%s); showing index only", e
                     )
+                self._mem_surfaced.update(ids)
+                bodies = store.bodies(ids, mem.max_inject_chars)
             self._set_memory_section(self._compose_memory_section(index_md, bodies))
             self._memory_applied = True
         except Exception as e:
@@ -272,6 +303,18 @@ class AgentLoopMemoryMixin:
             if mem.select_mode == "always":
                 self._apply_memory_recall(store.ids()[: mem.max_selected])
                 return
+            previously_surfaced = set(self._mem_surfaced)
+            use_llm = mem.selector_mode == "llm"
+            if mem.selector_mode != "llm":
+                try:
+                    local = self._select_local_memories(store, user_msg)
+                    self._apply_memory_recall(list(local.ids))
+                    use_llm = mem.selector_mode == "hybrid" and local.ambiguous
+                except Exception as e:
+                    logger.warning("local memory recall failed (%s)", e)
+                    use_llm = mem.selector_mode == "hybrid"
+            if not use_llm:
+                return
             selector = self._resolve_memory_selector()
             if selector is None:
                 return
@@ -280,7 +323,7 @@ class AgentLoopMemoryMixin:
                     store.index(mem.max_entries_scanned),
                     user_msg,
                     set(store.ids()),
-                    already_surfaced=self._mem_surfaced,
+                    already_surfaced=previously_surfaced,
                 )
             )
             self._mem_prefetch_task = task
@@ -289,14 +332,17 @@ class AgentLoopMemoryMixin:
             logger.warning("memory prefetch kick failed (%s); continuing without", e)
 
     def _on_prefetch_done(self, task: asyncio.Task[list[str]]) -> None:
-        # The reference is cleared on consume/cancel; this callback only reaps
-        # a settled prefetch's result so an errored selector surfaces as a log
-        # line rather than an unhandled-task warning.
-        if task is self._mem_prefetch_task and not task.cancelled():
-            try:
-                task.result()
-            except Exception as e:
-                logger.warning("memory prefetch errored (%s); index-only stays", e)
+        if task is not self._mem_prefetch_task:
+            return
+        self._mem_prefetch_task = None
+        if task.cancelled():
+            return
+        try:
+            ids = task.result()
+        except Exception as e:
+            logger.warning("memory prefetch errored (%s); index-only stays", e)
+            return
+        self._apply_memory_recall(ids)
 
     def _consume_memory_prefetch(self) -> None:
         task = self._mem_prefetch_task
@@ -326,6 +372,9 @@ class AgentLoopMemoryMixin:
         task = self._mem_prefetch_task
         if task is None:
             return
+        if task.done() and not task.cancelled():
+            self._consume_memory_prefetch()
+            return
         self._mem_prefetch_task = None
         task.cancel()
 
@@ -341,6 +390,7 @@ class AgentLoopMemoryMixin:
             model=model,
             provider=provider,
             timeout=mem.auto_extract_timeout,
+            usage_meter=self._usage_meter,
             extra_headers=self._get_extra_headers(provider),
             extra_body=mem.extra_body or None,
         )
@@ -349,7 +399,7 @@ class AgentLoopMemoryMixin:
         if self._is_subagent:
             return
         mem = self.config.memory
-        if not (mem.auto_extract or self.config.is_le_chaton()):
+        if not mem.auto_extract:
             return
         if (
             self._mem_consolidate_task is not None
@@ -563,6 +613,7 @@ class AgentLoopMemoryMixin:
             provider=provider,
             max_actions=mem.consolidate_max_actions,
             timeout=mem.consolidate_timeout,
+            usage_meter=self._usage_meter,
             extra_headers=self._get_extra_headers(provider),
             extra_body=mem.extra_body or None,
         )
@@ -571,7 +622,7 @@ class AgentLoopMemoryMixin:
         if self._is_subagent:
             return
         mem = self.config.memory
-        if not (mem.consolidate or self.config.is_le_chaton()):
+        if not mem.consolidate:
             return
         # In-flight guards (two reasons, one return): (a) the interval stamp is
         # day-granularity and only written at the END of a run, so a second turn
@@ -780,6 +831,7 @@ class AgentLoopMemoryMixin:
             provider=provider,
             project_root=Path.cwd(),
             timeout=mem.verify_timeout,
+            usage_meter=self._usage_meter,
             extra_headers=self._get_extra_headers(provider),
             extra_body=mem.extra_body or None,
         )
@@ -788,7 +840,7 @@ class AgentLoopMemoryMixin:
         if self._is_subagent:
             return
         mem = self.config.memory
-        if not mem.verify and not self.config.is_le_chaton():
+        if not mem.verify:
             return
         for attr in ("_mem_consolidate_task", "_mem_extract_task", "_mem_verify_task"):
             task = getattr(self, attr)

@@ -26,6 +26,7 @@ from vibe.core.logger import logger
 from vibe.core.memory._llm_client import _MemoryLLMClient
 from vibe.core.memory.models import VerificationState
 from vibe.core.types import LLMMessage, Role
+from vibe.core.usage import CallKind, UsageMeter
 
 _SYSTEM_PROMPT = """\
 You extract machine-checkable assertions from a durable memory so a verifier \
@@ -122,6 +123,7 @@ class MemoryVerifier(_MemoryLLMClient):
         provider: ProviderConfig,
         project_root: Path,
         timeout: float = 45.0,
+        usage_meter: UsageMeter | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
@@ -129,6 +131,8 @@ class MemoryVerifier(_MemoryLLMClient):
             model=model,
             provider=provider,
             timeout=timeout,
+            call_kind=CallKind.MEMORY_VERIFY,
+            usage_meter=usage_meter,
             extra_headers=extra_headers,
             extra_body=extra_body,
         )

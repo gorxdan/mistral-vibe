@@ -23,6 +23,7 @@ from pydantic_settings import (
 import tomli_w
 
 from vibe.core.agents.models import BuiltinAgentName
+from vibe.core.config._auxiliary_config import AuxiliaryBudgetConfig
 from vibe.core.config._defaults import (
     DEFAULT_API_TIMEOUT,
     DEFAULT_AUTO_COMPACT_THRESHOLD,
@@ -308,15 +309,17 @@ class MemoryConfig(BaseSettings):
 
     enabled: bool = True
     select_mode: Literal["per-turn", "per-session", "always"] = "per-turn"
-    # When true, deep-recall selection races the LLM loop instead of blocking
-    # it: the always-on index is injected at turn start, and full bodies are
-    # folded in only if the selector settles before the first LLM call. A slow
-    # selector is abandoned to index-only rather than stalling the turn for the
-    # full timeout. Set false to restore the blocking pre-loop selection.
+    # Local scoring is the default recall path. Hybrid asks the LLM only when
+    # local candidates tie near the selection cutoff; llm restores legacy recall.
+    selector_mode: Literal["local", "hybrid", "llm"] = "hybrid"
+    local_min_score: float = Field(default=3.0, ge=0.0)
+    local_ambiguity_margin: float = Field(default=0.15, ge=0.0, le=1.0)
+    # When true, an ambiguous hybrid or LLM-only selection races the main loop.
+    # Confident local bodies are folded in synchronously before that first call.
     prefetch: bool = True
     model: str | None = None
-    max_selected: int = 5
-    max_inject_chars: int = 8000
+    max_selected: int = 2
+    max_inject_chars: int = 4000
     # Where the volatile recall block is placed. "system" embeds it in the
     # system prompt (replaced each turn): a selection change then mutates the
     # prefix root and busts the cached history behind it. "late" (default) keeps
@@ -344,9 +347,8 @@ class MemoryConfig(BaseSettings):
     extra_body: dict[str, Any] = Field(default_factory=dict)
     auto_extract: bool = False
     auto_extract_model: str | None = None
-    # Cap auto-writes per session. Lowered from 3: le-chaton forces extract on
-    # and a higher cap filled the store with one-shot project state faster than
-    # consolidation could prune it.
+    # Cap auto-writes per session so explicit extraction cannot fill the store
+    # with one-shot project state faster than consolidation can prune it.
     auto_extract_max_writes: int = 2
     auto_extract_min_messages: int = 4
     auto_extract_timeout: float = 30.0
@@ -789,6 +791,9 @@ class VibeConfig(BaseSettings):
     # Default model for the `grunt` subagent (bulk/grunt work). Empty =
     # fall back to subagent_model, then the host session's model.
     grunt_model: str = ""
+    auxiliary_budget: AuxiliaryBudgetConfig = Field(
+        default_factory=AuxiliaryBudgetConfig
+    )
     max_output_escalation: MaxOutputEscalationConfig = Field(
         default_factory=MaxOutputEscalationConfig
     )

@@ -26,6 +26,12 @@ class UsageRecord(BaseModel):
     # True for harness-internal calls (compaction summary, telemetry) so /status
     # can split user-driven spend from the harness's own self-spend.
     harness: bool = False
+    # Stable subsystem label for cost attribution. Defaults keep historical
+    # usage.jsonl records readable after this field was introduced.
+    call_kind: str = "main"
+    # Optional auxiliary work can finish after its consumer has moved on. None
+    # means the caller could not determine utilization at record time.
+    result_used: bool | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -47,6 +53,8 @@ class UsageRecord(BaseModel):
         duration_s: float,
         session_id: str,
         harness: bool = False,
+        call_kind: str = "main",
+        result_used: bool | None = None,
     ) -> UsageRecord:
         return cls(
             timestamp=timestamp,
@@ -60,4 +68,6 @@ class UsageRecord(BaseModel):
             duration_s=duration_s,
             session_id=session_id,
             harness=harness,
+            call_kind=call_kind,
+            result_used=result_used,
         )

@@ -12,6 +12,11 @@ this cycle (read-parallel/write-serial tools, tool-result budget, context-overfl
 recovery, model failover, Retry-After, the LLM safety judge, `extra_body` thinking
 control, `cached_tokens` visibility).
 
+## Program roadmap
+
+- [Cost and reliability roadmap](cost-reliability-roadmap.md) - phased TODO for
+  making weaker agents dependable while reducing paid harness calls and context.
+
 ## The six specs
 
 | # | Spec | Closes (vs Claude Code) | Effort | Verdict |

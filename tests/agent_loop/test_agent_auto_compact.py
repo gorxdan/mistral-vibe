@@ -15,7 +15,8 @@ from tests.conftest import (
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core.agent_loop import CompactionFailedError
-from vibe.core.config import ModelConfig
+from vibe.core.config import MemoryConfig, ModelConfig
+from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import (
     AssistantEvent,
     CompactEndEvent,
@@ -221,9 +222,11 @@ class _ModelTrackingBackend(FakeBackend):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.requested_models: list[ModelConfig] = []
+        self.requests: list[CompletionRequest] = []
 
     async def complete(self, request, *, response_headers_sink=None):
         self.requested_models.append(request.model)
+        self.requests.append(request)
         return await super().complete(
             request, response_headers_sink=response_headers_sink
         )
@@ -252,6 +255,37 @@ async def test_compact_uses_compaction_model() -> None:
 
     assert backend.requested_models[0].name == "compaction-model"
     assert backend.requested_models[1].name != "compaction-model"
+    compaction_request = backend.requests[0]
+    assert compaction_request.tools is None
+    assert compaction_request.tool_choice is None
+    assert "Summarize a coding-agent transcript" in (
+        compaction_request.messages[0].content or ""
+    )
+    assert "super useful programming assistant" not in (
+        compaction_request.messages[0].content or ""
+    )
+
+
+@pytest.mark.asyncio
+async def test_compact_omits_task_schema_and_late_memory() -> None:
+    backend = _ModelTrackingBackend([[mock_llm_chunk(content="<summary>")]])
+    cfg = build_test_vibe_config(
+        models=make_test_models(auto_compact_threshold=999),
+        memory=MemoryConfig(inject_mode="late"),
+    )
+    agent = build_test_agent_loop(config=cfg, backend=backend)
+    agent.messages.append(LLMMessage(role=Role.USER, content="Hello"))
+    agent._response_format = {"type": "json_schema", "json_schema": {"name": "task"}}
+    agent._late_memory_section = "late memory must not enter the summary request"
+
+    await agent.compact()
+
+    request = backend.requests[0]
+    assert request.response_format is None
+    assert all(
+        "late memory must not enter" not in (message.content or "")
+        for message in request.messages
+    )
 
 
 @pytest.mark.asyncio

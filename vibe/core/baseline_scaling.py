@@ -32,7 +32,8 @@ _SECTION_TIERS: dict[str, frozenset[BaselineTier]] = {
     # Largest optional blocks — dropped first (MEDIUM already sheds these two).
     "config_reference": frozenset({_L}),
     "le_chaton_long": frozenset({_L}),
-    # Mid-cost prose — kept through MEDIUM, dropped at SMALL.
+    # Mid-cost prose — kept through MEDIUM, dropped at SMALL. Verification and
+    # investigation retain compact invariant replacements in system_prompt.py.
     "model_routing_list": frozenset({_L, _M}),
     "orchestration_prose": frozenset({_L, _M}),
     "verification_contract": frozenset({_L, _M}),

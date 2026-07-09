@@ -81,4 +81,4 @@ JUDGE_TRANSCRIPT_TURNS = 4
 # backend throughput contention / rate-limiting when the model emits several
 # independent read-only task calls at once; ordinary concurrent tools (read,
 # grep, glob) are not gated.
-MAX_CONCURRENT_SUBAGENTS = 4
+MAX_CONCURRENT_SUBAGENTS = 2

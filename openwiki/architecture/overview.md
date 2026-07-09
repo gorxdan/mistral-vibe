@@ -86,7 +86,7 @@ Pure constants (no class coupling):
 - `TOOL_RESULT_PREVIEW_CHARS = 12_000` — inline preview size (head 75% + tail 25%)
 - `AGGREGATE_TOOL_RESULT_CHARS = 200_000` — total cap for parallel tool calls
 - `tool_result_hard_cap(threshold_tokens)` — scales cap to model's context budget
-- `MAX_CONCURRENT_SUBAGENTS = 4`
+- `MAX_CONCURRENT_SUBAGENTS = 2`
 
 ## Data Flow: A Single Turn
 

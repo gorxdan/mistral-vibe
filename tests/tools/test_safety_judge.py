@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -7,7 +8,12 @@ import pytest
 
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from vibe.core.agent_loop import AgentLoop, ToolExecutionResponse
-from vibe.core.config import DEFAULT_MODELS, ModelConfig, SafetyJudgeConfig
+from vibe.core.config import (
+    DEFAULT_MODELS,
+    ModelConfig,
+    ProviderConfig,
+    SafetyJudgeConfig,
+)
 from vibe.core.tools.base import BaseToolState
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
 from vibe.core.tools.safety_judge import (
@@ -17,7 +23,8 @@ from vibe.core.tools.safety_judge import (
     SafetyJudge,
     _system_prompt_for,
 )
-from vibe.core.types import ApprovalResponse
+from vibe.core.types import ApprovalResponse, Backend, LLMUsage
+from vibe.core.usage import SpendLimits, UsageMeter, UsageRecorder
 
 
 def _bash() -> Bash:
@@ -193,9 +200,14 @@ async def test_judge_deferral_reason_is_threaded_to_approval_callback() -> None:
     )
 
 
+@pytest.mark.parametrize("bypass_tool_permissions", [False, True])
 @pytest.mark.asyncio
-async def test_denylisted_command_never_consults_judge() -> None:
-    loop = build_test_agent_loop()
+async def test_denylisted_command_never_consults_judge(
+    bypass_tool_permissions: bool,
+) -> None:
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(bypass_tool_permissions=bypass_tool_permissions)
+    )
     fake = _FakeJudge(safe=True)  # would approve — must never be reached
     loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
     approval = _RecordingApproval(ApprovalResponse.YES)
@@ -326,6 +338,148 @@ async def test_judge_forwards_model_temperature_verbatim(
     verdict = await judge.judge("bash", '{"command":"ls"}', ["network access"])
     assert verdict.safe is True
     assert captured == [model_temperature]
+
+
+@pytest.mark.asyncio
+async def test_judge_records_auxiliary_usage(monkeypatch, tmp_path) -> None:
+    model = ModelConfig(name="judge-model", provider="test", alias="judge")
+    provider = ProviderConfig(
+        name="test", api_base="https://example.test", backend=Backend.GENERIC
+    )
+
+    class _MeteredBackend:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _MeteredBackend:
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+        async def complete(self, request: Any, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                message=SimpleNamespace(
+                    content='{"safe": true, "reason": "read-only"}'
+                ),
+                usage=LLMUsage(prompt_tokens=40, completion_tokens=8),
+            )
+
+    monkeypatch.setattr(
+        "vibe.core.tools.safety_judge.BACKEND_FACTORY",
+        {Backend.GENERIC: _MeteredBackend},
+    )
+    recorder = UsageRecorder(tmp_path / "usage.jsonl")
+    judge = SafetyJudge(
+        model=model,
+        provider=provider,
+        config=SafetyJudgeConfig(enabled=True, model=model.alias),
+        usage_meter=UsageMeter("session", recorder=recorder),
+    )
+
+    verdict = await judge.judge("bash", '{"command":"ls"}', [])
+
+    assert verdict.safe is True
+    records = recorder.read_all()
+    assert len(records) == 1
+    assert records[0].call_kind == "safety_judge"
+    assert records[0].total_tokens == 48
+    assert records[0].result_used is True
+
+
+@pytest.mark.asyncio
+async def test_judge_rejects_projected_cost_before_backend_dispatch(
+    monkeypatch, tmp_path
+) -> None:
+    model = ModelConfig(
+        name="judge-model",
+        provider="test",
+        alias="judge",
+        input_price=1_000.0,
+        output_price=2_000.0,
+    )
+    provider = ProviderConfig(
+        name="test", api_base="https://example.test", backend=Backend.GENERIC
+    )
+    calls = 0
+
+    class _UnexpectedBackend:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _UnexpectedBackend:
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+        async def complete(self, request: Any, **kwargs: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            raise AssertionError("cost-rejected calls must not reach the backend")
+
+    monkeypatch.setattr(
+        "vibe.core.tools.safety_judge.BACKEND_FACTORY",
+        {Backend.GENERIC: _UnexpectedBackend},
+    )
+    meter = UsageMeter(
+        "session",
+        limits=SpendLimits(max_cost_usd=0.0001),
+        recorder=UsageRecorder(tmp_path / "usage.jsonl"),
+    )
+    judge = SafetyJudge(
+        model=model,
+        provider=provider,
+        config=SafetyJudgeConfig(enabled=True, model=model.alias),
+        usage_meter=meter,
+    )
+
+    verdict = await judge.judge("bash", '{"command":"ls"}', [])
+
+    assert verdict.failed is True
+    assert calls == 0
+    assert meter.snapshot().calls == 0
+
+
+@pytest.mark.asyncio
+async def test_judge_timeout_reconciles_auxiliary_reservation(
+    monkeypatch, tmp_path
+) -> None:
+    model = ModelConfig(name="judge-model", provider="test", alias="judge")
+    provider = ProviderConfig(
+        name="test", api_base="https://example.test", backend=Backend.GENERIC
+    )
+
+    class _SlowBackend:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _SlowBackend:
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+        async def complete(self, request: Any, **kwargs: Any) -> Any:
+            await asyncio.sleep(1)
+
+    monkeypatch.setattr(
+        "vibe.core.tools.safety_judge.BACKEND_FACTORY", {Backend.GENERIC: _SlowBackend}
+    )
+    recorder = UsageRecorder(tmp_path / "usage.jsonl")
+    meter = UsageMeter("session", recorder=recorder)
+    judge = SafetyJudge(
+        model=model,
+        provider=provider,
+        config=SafetyJudgeConfig(enabled=True, model=model.alias, timeout=0.01),
+        usage_meter=meter,
+    )
+
+    verdict = await judge.judge("bash", '{"command":"ls"}', [])
+
+    assert verdict.failed is True
+    assert meter.snapshot().reserved_tokens == 0
+    assert len(recorder.read_all()) == 1
 
 
 # --------------------------------------------------------------------------- #
