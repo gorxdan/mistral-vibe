@@ -9,10 +9,8 @@ import fnmatch
 import hashlib
 from pathlib import Path, PurePosixPath
 import re
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from git import Repo
-from git.exc import GitError
 import orjson
 from pydantic import (
     BaseModel,
@@ -26,6 +24,9 @@ from pydantic import (
 from vibe import __version__
 from vibe.core.paths import VIBE_HOME
 from vibe.core.utils.io import read_safe, write_durable
+
+if TYPE_CHECKING:
+    from git import Repo
 
 RECEIPT_VERSION = 1
 OUTPUT_EXCERPT_CHARS = 4_000
@@ -649,6 +650,9 @@ def validate_receipt_id(
 
 
 def _open_repo(path: Path | None) -> Repo:
+    from git import Repo
+    from git.exc import GitError
+
     try:
         repo = Repo(path or Path.cwd(), search_parent_directories=True)
     except (GitError, OSError, ValueError) as exc:
@@ -659,6 +663,8 @@ def _open_repo(path: Path | None) -> Repo:
 
 
 def _read_repository_state(repo: Repo, base_sha: str) -> _RawRepositoryState:
+    from git.exc import GitError
+
     try:
         base = repo.commit(base_sha).hexsha
         candidate = repo.head.commit
