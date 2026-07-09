@@ -24,7 +24,15 @@ from logging.handlers import RotatingFileHandler
 from vibe.core.logger import StructuredLogFormatter
 from vibe.core.paths import LOG_DIR
 
-_COUNTS: dict[str, int] = {"symbol_grep_miss": 0, "lsp_call": 0}
+_COUNTS: dict[str, int] = {
+    "symbol_grep_miss": 0,
+    "lsp_call": 0,
+    # Consecutive misses since last lsp hit; resets on record_lsp_call.
+    "consecutive_symbol_grep_miss": 0,
+}
+
+# Soft NOTE below this; ESCALATION at/above (no intervening lsp call).
+ESCALATE_AFTER = 2
 
 _log = logging.getLogger("vibe.adherence")
 _log.propagate = False
@@ -70,20 +78,76 @@ def _emit(message: str) -> None:
     _log.info(message)
 
 
-def record_symbol_grep_miss() -> None:
+def record_symbol_grep_miss() -> int:
     """A grep ran for a symbol-shaped pattern while LSP was available.
 
     That is the routing miss this harness tries to reduce: lsp would have
     resolved the symbol (incl. imports/re-exports) more completely.
+
+    Returns the new consecutive-miss count (for hint escalation).
     """
     _COUNTS["symbol_grep_miss"] += 1
-    _emit("lsp_adherence miss kind=symbol_grep")
+    _COUNTS["consecutive_symbol_grep_miss"] += 1
+    consecutive = _COUNTS["consecutive_symbol_grep_miss"]
+    _emit(f"lsp_adherence miss kind=symbol_grep consecutive={consecutive}")
+    return consecutive
 
 
 def record_lsp_call(operation: str) -> None:
     """A successful lsp call — the intended choice for a symbol query."""
     _COUNTS["lsp_call"] += 1
+    # Corrected path: clear the consecutive streak so the next miss is soft again.
+    _COUNTS["consecutive_symbol_grep_miss"] = 0
     _emit(f"lsp_adherence hit op={operation}")
+
+
+def consecutive_symbol_grep_misses() -> int:
+    return _COUNTS["consecutive_symbol_grep_miss"]
+
+
+def should_escalate_symbol_grep() -> bool:
+    return _COUNTS["consecutive_symbol_grep_miss"] >= ESCALATE_AFTER
+
+
+def symbol_grep_hint(pattern: str, *, consecutive: int | None = None) -> str:
+    """Model-visible routing hint after a symbol-shaped grep while LSP is up.
+
+    Bare identifiers → ``workspace_symbol`` first (no file/position needed).
+    Position-based ops only after a hit. Escalates after ``ESCALATE_AFTER``
+    consecutive misses without an intervening lsp call.
+    """
+    n = (
+        consecutive
+        if consecutive is not None
+        else _COUNTS["consecutive_symbol_grep_miss"]
+    )
+    bare = _is_bare_identifier(pattern)
+    first_step = (
+        f"`lsp` `workspace_symbol` query={pattern!r} (no file_path needed)"
+        if bare
+        else (
+            "`lsp` `workspace_symbol` for the name, or `go_to_definition` / "
+            "`find_references` once you have file_path + 1-based position"
+        )
+    )
+    if n >= ESCALATE_AFTER:
+        return (
+            f"ESCALATION: {n} consecutive symbol greps while LSP is available "
+            f"(pattern {pattern!r}). Stop using grep for symbols — call {first_step} "
+            "next. grep misses imports, re-exports, aliases, and overloads that "
+            "lsp resolves. Further symbol greps without an lsp call keep this "
+            "escalation active."
+        )
+    return (
+        f"NOTE: {pattern!r} is a symbol lookup — use {first_step} instead of "
+        "grep. grep misses imports, re-exports, aliases, and overloads that "
+        "lsp resolves; grepping a symbol here is the routing miss the harness "
+        "flags. For a symbol question, call lsp next."
+    )
+
+
+def _is_bare_identifier(pattern: str) -> bool:
+    return bool(pattern) and pattern.isidentifier()
 
 
 def snapshot() -> dict[str, int]:

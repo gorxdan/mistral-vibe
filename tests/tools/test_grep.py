@@ -683,6 +683,7 @@ async def test_symbol_grep_sets_hint_when_lsp_available(grep, tmp_path, monkeypa
     assert result._hint
     assert "FooBar" in result._hint
     assert "lsp" in result._hint
+    assert "workspace_symbol" in result._hint
     # get_result_extra surfaces it for the model-visible text.
     assert grep is not None
     extra = grep.get_result_extra(result)
@@ -709,3 +710,20 @@ async def test_symbol_grep_no_hint_when_lsp_unavailable(grep, tmp_path, monkeypa
 
     assert result._hint == ""
     assert grep.get_result_extra(result) is None
+
+
+@pytest.mark.asyncio
+async def test_symbol_grep_escalates_on_second_miss(grep, tmp_path, monkeypatch):
+    from vibe.core.lsp import _adherence as adherence
+
+    adherence.reset_for_test()
+    (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
+    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
+
+    first = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
+    second = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
+
+    assert first._hint.startswith("NOTE:")
+    assert second._hint.startswith("ESCALATION:")
+    assert "workspace_symbol" in second._hint
+    assert adherence.snapshot()["consecutive_symbol_grep_miss"] == 2

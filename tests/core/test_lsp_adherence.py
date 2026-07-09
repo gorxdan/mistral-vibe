@@ -16,19 +16,24 @@ def _reset_adherence():
 
 
 def test_record_symbol_grep_miss_increments_counter():
-    adherence.record_symbol_grep_miss()
-    adherence.record_symbol_grep_miss()
+    n1 = adherence.record_symbol_grep_miss()
+    n2 = adherence.record_symbol_grep_miss()
     snap = adherence.snapshot()
+    assert n1 == 1 and n2 == 2
     assert snap["symbol_grep_miss"] == 2
+    assert snap["consecutive_symbol_grep_miss"] == 2
     assert snap["lsp_call"] == 0
 
 
-def test_record_lsp_call_increments_counter():
+def test_record_lsp_call_increments_counter_and_resets_consecutive():
+    adherence.record_symbol_grep_miss()
+    adherence.record_symbol_grep_miss()
     adherence.record_lsp_call("hover")
     adherence.record_lsp_call("find_references")
     snap = adherence.snapshot()
     assert snap["lsp_call"] == 2
-    assert snap["symbol_grep_miss"] == 0
+    assert snap["symbol_grep_miss"] == 2
+    assert snap["consecutive_symbol_grep_miss"] == 0
 
 
 def test_snapshot_returns_copy():
@@ -46,7 +51,11 @@ def test_configure_disabled_silences_emit(monkeypatch):
     adherence.record_symbol_grep_miss()
     adherence.record_lsp_call("hover")
     assert calls == []
-    assert adherence.snapshot() == {"symbol_grep_miss": 1, "lsp_call": 1}
+    assert adherence.snapshot() == {
+        "symbol_grep_miss": 1,
+        "lsp_call": 1,
+        "consecutive_symbol_grep_miss": 0,
+    }
 
 
 def test_configure_reenable_restores_emit(tmp_path, monkeypatch):
@@ -69,7 +78,38 @@ def test_reset_clears_counters():
     adherence.record_symbol_grep_miss()
     adherence.record_lsp_call("hover")
     adherence.reset_for_test()
-    assert adherence.snapshot() == {"symbol_grep_miss": 0, "lsp_call": 0}
+    assert adherence.snapshot() == {
+        "symbol_grep_miss": 0,
+        "lsp_call": 0,
+        "consecutive_symbol_grep_miss": 0,
+    }
+
+
+def test_symbol_grep_hint_bare_identifier_prefers_workspace_symbol():
+    hint = adherence.symbol_grep_hint("FooBar", consecutive=1)
+    assert hint.startswith("NOTE:")
+    assert "workspace_symbol" in hint
+    assert "FooBar" in hint
+    assert "go_to_definition" not in hint
+
+
+def test_symbol_grep_hint_escalates_after_threshold():
+    soft = adherence.symbol_grep_hint("FooBar", consecutive=1)
+    hard = adherence.symbol_grep_hint("FooBar", consecutive=adherence.ESCALATE_AFTER)
+    assert soft.startswith("NOTE:")
+    assert hard.startswith("ESCALATION:")
+    assert "Stop using grep for symbols" in hard
+    assert "workspace_symbol" in hard
+
+
+def test_should_escalate_tracks_consecutive_misses():
+    assert not adherence.should_escalate_symbol_grep()
+    adherence.record_symbol_grep_miss()
+    assert not adherence.should_escalate_symbol_grep()
+    adherence.record_symbol_grep_miss()
+    assert adherence.should_escalate_symbol_grep()
+    adherence.record_lsp_call("workspace_symbol")
+    assert not adherence.should_escalate_symbol_grep()
 
 
 @pytest.mark.asyncio
@@ -113,6 +153,7 @@ async def test_symbol_grep_hint_is_directive_note(tmp_path, monkeypatch):
     assert result._hint is not None
     assert result._hint.startswith("NOTE:")
     assert "lsp" in result._hint
+    assert "workspace_symbol" in result._hint
 
 
 @pytest.mark.asyncio
