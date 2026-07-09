@@ -19,6 +19,13 @@ from vibe.core.agents.models import (
 )
 from vibe.core.config import SessionLoggingConfig, VibeConfig
 from vibe.core.logger import logger
+from vibe.core.tasking import (
+    TaskBrief,
+    TaskOutcome,
+    TaskOutcomeStatus,
+    compile_task_brief,
+    resolve_task_outcome,
+)
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -149,11 +156,17 @@ class _InProcessResult:
     returncode: int
     worktree_path: str | None = None
     branch: str | None = None
+    outcome: TaskOutcome | None = None
 
 
 class TaskArgs(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    task: str = Field(description="The task to delegate to the subagent")
+    task: str | TaskBrief = Field(
+        description=(
+            "The task to delegate. Pass a string for legacy free-form delegation "
+            "or a TaskBrief object for bounded scope and explicit outcomes."
+        )
+    )
     agent: str = Field(
         default="explore",
         description="Name of the agent profile to use (must be a subagent)",
@@ -183,6 +196,22 @@ class TaskArgs(BaseModel):
         ),
     )
 
+    @property
+    def brief(self) -> TaskBrief | None:
+        return self.task if isinstance(self.task, TaskBrief) else None
+
+    @property
+    def prompt(self) -> str:
+        if isinstance(self.task, TaskBrief):
+            return compile_task_brief(self.task)
+        return self.task
+
+    @property
+    def summary(self) -> str:
+        if isinstance(self.task, TaskBrief):
+            return self.task.objective
+        return self.task
+
 
 class TaskResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -194,7 +223,16 @@ class TaskResult(BaseModel):
             "subagents run in a subprocess that does not report turn count)."
         ),
     )
-    completed: bool = Field(description="Whether the task completed normally")
+    completed: bool = Field(
+        description="Whether the agent execution completed normally"
+    )
+    outcome: TaskOutcome | None = Field(
+        default=None,
+        description=(
+            "Terminal task outcome. None only for a background launch handoff or "
+            "a legacy caller-created result."
+        ),
+    )
     isolated: bool = Field(
         default=False, description="Whether the subagent ran in an isolated worktree."
     )
@@ -249,6 +287,9 @@ class Task(
         "searched; point it at specific paths/symbols and scope its searches. A "
         "subagent has its own, often smaller, context window, so an open-ended "
         "broad search there can overflow it — give it targets, not a hunt.\n\n"
+        "For bounded work, pass a structured TaskBrief instead of a free-form "
+        "string. Its path scope, checks, budget, deadline, and tool manifest are "
+        "immutable, and the worker must return an explicit terminal outcome.\n\n"
         "Execution: subagents run in the BACKGROUND by default — the call returns "
         "a task_id immediately and the subagent's result is delivered to you "
         "automatically at the start of a later turn (you are auto-resumed when it "
@@ -288,7 +329,9 @@ class Task(
     def get_call_display(cls, event: ToolCallEvent) -> ToolCallDisplay:
         args = event.args
         if isinstance(args, TaskArgs):
-            return ToolCallDisplay(summary=f"Running {args.agent} agent: {args.task}")
+            return ToolCallDisplay(
+                summary=f"Running {args.agent} agent: {args.summary}"
+            )
         return ToolCallDisplay(summary="Running subagent")
 
     @classmethod
@@ -301,6 +344,11 @@ class Task(
             if result.task_id is not None:
                 return ToolResultDisplay(
                     success=True, message="Agent running in background"
+                )
+            if result.outcome is not None and not result.outcome.succeeded:
+                return ToolResultDisplay(
+                    success=False,
+                    message=f"Agent outcome: {result.outcome.status.value}",
                 )
             # turns_used is None for isolated subagents (subprocess doesn't
             # report it); omit the count instead of showing a misleading "0".
@@ -351,20 +399,28 @@ class Task(
                 yield result
             return
 
-        task_text = args.task
+        task_text = args.prompt
         if ctx.scratchpad_dir:
             task_text = (
                 f"Scratchpad directory: {ctx.scratchpad_dir}\n"
                 "You can read and write files here without permission prompts.\n\n"
-                f"{args.task}"
+                f"{task_text}"
             )
 
         denied = await self._judge_isolated_spawn(task_text, args.agent, ctx)
         if denied is not None:
+            response = f"[Isolated subagent denied by safety judge: {denied}]"
             yield TaskResult(
-                response=f"[Isolated subagent denied by safety judge: {denied}]",
+                response=response,
                 completed=False,
                 isolated=True,
+                outcome=resolve_task_outcome(
+                    args.brief,
+                    response,
+                    completed=False,
+                    forced_status=TaskOutcomeStatus.BLOCKED,
+                    diagnostic=denied,
+                ),
             )
             return
 
@@ -395,7 +451,7 @@ class Task(
             args.agent,
             bg_task,
             label=self._subagent_label(args),
-            prompt=args.task,
+            prompt=args.prompt,
             model=effective_model,
             log_path=log_path,
         )
@@ -423,12 +479,12 @@ class Task(
         *,
         verification_attempt: _VerificationAttempt | None = None,
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
-        task_text = args.task
+        task_text = args.prompt
         if ctx.scratchpad_dir:
             task_text = (
                 f"Scratchpad directory: {ctx.scratchpad_dir}\n"
                 "You can read and write files here without permission prompts.\n\n"
-                f"{args.task}"
+                f"{task_text}"
             )
         yield ToolStreamEvent(
             tool_name=self.get_name(),
@@ -439,6 +495,8 @@ class Task(
         response_text = ""
         worktree_path: str | None = None
         branch: str | None = None
+        forced_status: TaskOutcomeStatus | None = None
+        diagnostic: str | None = None
         try:
             denied = await self._judge_isolated_spawn(task_text, args.agent, ctx)
             if denied is not None:
@@ -447,6 +505,8 @@ class Task(
                 # tool surfaces the denial in-band; no subprocess is spawned.
                 completed = False
                 response_text = f"[Isolated subagent denied by safety judge: {denied}]"
+                forced_status = TaskOutcomeStatus.BLOCKED
+                diagnostic = denied
             else:
                 result = await run_isolated_agent(
                     task_text,
@@ -467,6 +527,8 @@ class Task(
         except Exception as e:
             completed = False
             response_text = f"[Isolated subagent error: {e}]"
+            forced_status = TaskOutcomeStatus.RETRYABLE
+            diagnostic = str(e)
 
         yield TaskResult(
             response=response_text,
@@ -475,6 +537,13 @@ class Task(
             isolated=True,
             worktree_path=worktree_path,
             branch=branch,
+            outcome=resolve_task_outcome(
+                args.brief,
+                response_text,
+                completed=completed,
+                forced_status=forced_status,
+                diagnostic=diagnostic,
+            ),
         )
 
     async def _judge_isolated_spawn(
@@ -568,7 +637,7 @@ class Task(
 
     @staticmethod
     def _subagent_label(args: TaskArgs) -> str:
-        snippet = args.task.strip().split("\n", 1)[0][:60]
+        snippet = args.summary.strip().split("\n", 1)[0][:60]
         return f"{args.agent}: {snippet}" if snippet else args.agent
 
     def _build_subagent_loop(
@@ -624,12 +693,12 @@ class Task(
             subagent_loop.parent_session_id = ctx.session_id
         if ctx.approval_callback:
             subagent_loop.set_approval_callback(ctx.approval_callback)
-        task_text = args.task
+        task_text = args.prompt
         if ctx.scratchpad_dir:
             task_text = (
                 f"Scratchpad directory: {ctx.scratchpad_dir}\n"
                 "You can read and write files here without permission prompts.\n\n"
-                f"{args.task}"
+                f"{task_text}"
             )
         return subagent_loop, task_text
 
@@ -643,6 +712,8 @@ class Task(
         subagent_loop, task_text = self._build_subagent_loop(args, ctx)
         accumulated_response: list[str] = []
         completed = True
+        forced_status: TaskOutcomeStatus | None = None
+        diagnostic: str | None = None
         try:
             async with aclosing(subagent_loop.act(task_text)) as events:
                 async for event in events:
@@ -670,6 +741,8 @@ class Task(
         except Exception as e:
             completed = False
             accumulated_response.append(f"\n[Subagent error: {e}]")
+            forced_status = TaskOutcomeStatus.RETRYABLE
+            diagnostic = str(e)
             turns_used = sum(
                 msg.role == Role.ASSISTANT for msg in subagent_loop.messages
             )
@@ -681,7 +754,18 @@ class Task(
         _maybe_record_verifier_pass(
             args.agent, response, ctx, completed=completed, attempt=verification_attempt
         )
-        yield TaskResult(response=response, turns_used=turns_used, completed=completed)
+        yield TaskResult(
+            response=response,
+            turns_used=turns_used,
+            completed=completed,
+            outcome=resolve_task_outcome(
+                args.brief,
+                response,
+                completed=completed,
+                forced_status=forced_status,
+                diagnostic=diagnostic,
+            ),
+        )
 
     async def _run_in_process_collect(
         self,
@@ -696,6 +780,8 @@ class Task(
         accumulated_response: list[str] = []
         completed = True
         turns = 0
+        forced_status: TaskOutcomeStatus | None = None
+        diagnostic: str | None = None
         try:
             async with aclosing(subagent_loop.act(task_text)) as events:
                 async for event in events:
@@ -715,6 +801,8 @@ class Task(
         except Exception as e:
             completed = False
             accumulated_response.append(f"\n[Subagent error: {e}]")
+            forced_status = TaskOutcomeStatus.RETRYABLE
+            diagnostic = str(e)
         finally:
             with suppress(Exception):
                 await subagent_loop.aclose()
@@ -722,7 +810,17 @@ class Task(
         _maybe_record_verifier_pass(
             args.agent, response, ctx, completed=completed, attempt=verification_attempt
         )
-        return _InProcessResult(output=response, returncode=0 if completed else 1)
+        return _InProcessResult(
+            output=response,
+            returncode=0 if completed else 1,
+            outcome=resolve_task_outcome(
+                args.brief,
+                response,
+                completed=completed,
+                forced_status=forced_status,
+                diagnostic=diagnostic,
+            ),
+        )
 
     async def _run_in_process_async(
         self,
@@ -751,7 +849,7 @@ class Task(
             args.agent,
             bg_task,
             label=self._subagent_label(args),
-            prompt=args.task,
+            prompt=args.prompt,
             model=effective_model,
             log_path=result_path,
         )
