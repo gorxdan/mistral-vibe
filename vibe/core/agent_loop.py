@@ -222,6 +222,7 @@ from vibe.core.utils.tokens import truncate_middle_to_tokens
 if TYPE_CHECKING:
     from vibe.core.loop import Scheduler
     from vibe.core.memory.store import MemoryStore
+    from vibe.core.teams.models import TeamSafetyMode
     from vibe.core.teleport.teleport import TeleportService
     from vibe.core.teleport.types import TeleportPushResponseEvent, TeleportYieldEvent
     from vibe.core.tools.background import BackgroundRegistry
@@ -430,6 +431,7 @@ def _teleport_service_cls() -> type[TeleportService] | None:
 if TYPE_CHECKING:
     from vibe.core.loop import Scheduler
     from vibe.core.memory.store import MemoryStore
+    from vibe.core.teams.models import TeamSafetyMode
     from vibe.core.teleport.teleport import TeleportService
     from vibe.core.teleport.types import TeleportPushResponseEvent, TeleportYieldEvent
     from vibe.core.tools.background import BackgroundRegistry
@@ -2981,7 +2983,10 @@ class AgentLoop(
         ) = None
         self.team_dir_callback: Callable[[], str | None] | None = None
         self.team_spawn_callback: (
-            Callable[[str, str, str, int, bool], Awaitable[dict[str, Any]]] | None
+            Callable[
+                [str, str, str, int, bool, TeamSafetyMode], Awaitable[dict[str, Any]]
+            ]
+            | None
         ) = None
         # Unified background-task registry — owns bash-backgrounded processes
         # and aggregates workflows/teams/loops. None until wired by the entry

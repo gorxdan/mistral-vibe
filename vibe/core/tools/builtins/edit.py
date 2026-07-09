@@ -10,6 +10,7 @@ from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.lsp._integration import notify_file_changed
 from vibe.core.rewind.manager import FileSnapshot
 from vibe.core.scratchpad import is_scratchpad_path
+from vibe.core.tools._team_safety import enforce_shared_ask
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -159,6 +160,11 @@ class Edit(
                     f"This file has changed since it was last read: {file_path}\n"
                     f"Re-read it before editing to get the current content."
                 )
+
+        permission = self.resolve_permission(args)
+        await enforce_shared_ask(
+            self.get_name(), str(file_path), permission, self.config.permission
+        )
 
         try:
             async with file_write_lock(file_path):

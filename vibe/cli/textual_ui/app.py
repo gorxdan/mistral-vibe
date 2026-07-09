@@ -211,6 +211,7 @@ from vibe.core.session.session_loader import SessionLoader
 from vibe.core.session.title_format import format_session_title
 from vibe.core.skills.manager import SkillManager
 from vibe.core.teams.manager import TeamManager
+from vibe.core.teams.models import TeamSafetyMode
 from vibe.core.teleport.telemetry import send_teleport_early_failure_telemetry
 from vibe.core.teleport.types import (
     TeleportCheckingGitEvent,
@@ -3842,12 +3843,23 @@ class VibeApp(App):
         return str(self._team_manager.team_dir)
 
     async def _team_spawn_for_tool(
-        self, name: str, prompt: str, agent: str, max_turns: int, worker: bool = False
+        self,
+        name: str,
+        prompt: str,
+        agent: str,
+        max_turns: int,
+        worker: bool = False,
+        safety_mode: TeamSafetyMode = TeamSafetyMode.SHARED,
     ) -> dict[str, Any]:
         if self._team_manager is None:
             self._team_manager = self._build_team_manager()
         await self._team_manager.spawn_teammate(
-            name, prompt, agent=agent, max_turns=max_turns, worker=worker
+            name,
+            prompt,
+            agent=agent,
+            max_turns=max_turns,
+            worker=worker,
+            safety_mode=safety_mode,
         )
         kind = "worker" if worker else "teammate"
         return {
@@ -3855,6 +3867,7 @@ class VibeApp(App):
             "team_dir": str(self._team_manager.team_dir),
             "message": f"Spawned {kind} `{name}`.",
             "worker": worker,
+            "safety_mode": safety_mode.value,
         }
 
     async def _run_workflow_command(self, cmd_args: str = "", **kwargs: Any) -> None:

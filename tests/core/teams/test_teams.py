@@ -10,7 +10,7 @@ import pytest
 from vibe.core.teams.errors import TeamStorageBusyError
 from vibe.core.teams.mailbox import Mailbox
 from vibe.core.teams.manager import TeamManager
-from vibe.core.teams.models import TaskStatus
+from vibe.core.teams.models import TaskStatus, TeamMember, TeamSafetyMode
 from vibe.core.teams.task_store import TaskStore
 
 
@@ -45,6 +45,12 @@ def test_claim_task(tmp_path: Path) -> None:
     assert claimed.status == TaskStatus.IN_PROGRESS
     assert claimed.assignee == "reviewer"
     assert claimed.claimed_at is not None
+
+
+def test_legacy_team_member_defaults_to_shared_safety() -> None:
+    member = TeamMember.model_validate({"name": "alice"})
+
+    assert member.safety_mode is TeamSafetyMode.SHARED
 
 
 def test_reclaim_stale_returns_expired_claims(tmp_path: Path) -> None:
@@ -421,6 +427,66 @@ async def test_teammate_cmd_includes_no_worktree(
         assert "--no-worktree" in captured_cmd
     finally:
         await mgr.stop_teammate("carol")
+        mgr.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_teammate_env_includes_default_safety_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    proc = _FakeProc()
+    captured_env: dict[str, str] = {}
+
+    async def fake_exec(*_args: object, **kwargs: object) -> _FakeProc:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        captured_env.update(env)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    mgr = TeamManager("lead-session", team_name="test-default-safety")
+    try:
+        await mgr.spawn_teammate("dana", "work", agent="explore", max_turns=1)
+        await asyncio.sleep(0.05)
+        assert captured_env["VIBE_TEAM_SAFETY_MODE"] == "shared"
+        assert mgr.get_members()[0].safety_mode is TeamSafetyMode.SHARED
+    finally:
+        await mgr.stop_teammate("dana")
+        mgr.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_teammate_env_includes_shared_ask_safety_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    proc = _FakeProc()
+    captured_env: dict[str, str] = {}
+
+    async def fake_exec(*_args: object, **kwargs: object) -> _FakeProc:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        captured_env.update(env)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    mgr = TeamManager("lead-session", team_name="test-shared-ask-safety")
+    try:
+        await mgr.spawn_teammate(
+            "erin",
+            "work",
+            agent="explore",
+            max_turns=1,
+            safety_mode=TeamSafetyMode.SHARED_ASK,
+        )
+        await asyncio.sleep(0.05)
+        assert captured_env["VIBE_TEAM_SAFETY_MODE"] == "shared-ask"
+        assert mgr.get_members()[0].safety_mode is TeamSafetyMode.SHARED_ASK
+    finally:
+        await mgr.stop_teammate("erin")
         mgr.cleanup()
 
 

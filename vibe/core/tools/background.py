@@ -576,8 +576,27 @@ class BackgroundRegistry:
         except Exception as exc:
             logger.debug("team get_members failed: %s", exc)
             return []
+        active_tasks: dict[str, Any] = {}
+        try:
+            for task in manager.task_store.get_all_tasks():
+                status = getattr(getattr(task, "status", None), "value", None)
+                if status != "in_progress" or not getattr(task, "assignee", None):
+                    continue
+                active_tasks[str(task.assignee)] = task
+        except Exception as exc:
+            logger.debug("team task_store get_all_tasks failed: %s", exc)
+        wall_now = time.time()
         for m in members:
             status = _team_status(getattr(m, "status", "") or "")
+            active_task = active_tasks.get(m.name)
+            claimed_at = getattr(m, "last_claimed_at", None)
+            if claimed_at is None and active_task is not None:
+                claimed_at = getattr(active_task, "claimed_at", None)
+            lease_age_s = wall_now - claimed_at if claimed_at is not None else None
+            last_task_id = getattr(m, "last_task_id", None)
+            if last_task_id is None and active_task is not None:
+                last_task_id = getattr(active_task, "id", None)
+            safety_mode = getattr(m, "safety_mode", None)
             entries.append(
                 TaskEntry(
                     task_id=f"team:{m.name}",
@@ -589,6 +608,13 @@ class BackgroundRegistry:
                         "name": m.name,
                         "pid": getattr(m, "pid", None),
                         "raw_status": getattr(m, "status", ""),
+                        "spawn_prompt": getattr(m, "spawn_prompt", None),
+                        "max_turns": getattr(m, "max_turns", None),
+                        "worker": getattr(m, "worker", False),
+                        "safety_mode": getattr(safety_mode, "value", safety_mode),
+                        "last_task_id": last_task_id,
+                        "last_claimed_at": claimed_at,
+                        "lease_age_s": lease_age_s,
                     },
                 )
             )

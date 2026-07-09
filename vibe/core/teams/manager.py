@@ -15,8 +15,9 @@ from filelock import FileLock
 
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
+from vibe.core.teams._safety import TEAM_SAFETY_MODE_ENV
 from vibe.core.teams.mailbox import Mailbox, validate_member_name
-from vibe.core.teams.models import Task, TeamConfig, TeamMember
+from vibe.core.teams.models import Task, TeamConfig, TeamMember, TeamSafetyMode
 from vibe.core.teams.task_store import TaskStore
 from vibe.core.utils.io import read_safe, write_safe
 
@@ -189,6 +190,7 @@ class TeamManager:
         max_turns: int = 20,
         worker: bool = False,
         lease_s: float | None = None,
+        safety_mode: TeamSafetyMode | str = TeamSafetyMode.SHARED,
     ) -> str:
         # Validate the name at the boundary: it becomes a mailbox inbox path
         # (via _safe_name) and a teammate env var, so a path-looking value like
@@ -197,6 +199,7 @@ class TeamManager:
         validate_member_name(name)
         from vibe.core.teams.worker_loop import worker_bootstrap_prompt
 
+        safety = TeamSafetyMode(safety_mode)
         spawn_prompt = worker_bootstrap_prompt(prompt) if worker else prompt
         # Cap stored prompt so config.json stays small; full text still goes to -p.
         max_stored = 2000
@@ -212,12 +215,19 @@ class TeamManager:
             spawn_prompt=stored_prompt,
             max_turns=max_turns,
             worker=worker,
+            safety_mode=safety,
         )
         await asyncio.to_thread(self.add_member, member)
 
         task = asyncio.create_task(
             self._run_teammate(
-                name, spawn_prompt, agent, max_turns, worker=worker, lease_s=lease_s
+                name,
+                spawn_prompt,
+                agent,
+                max_turns,
+                worker=worker,
+                lease_s=lease_s,
+                safety_mode=safety,
             )
         )
         self._teammate_tasks[name] = task
@@ -232,6 +242,7 @@ class TeamManager:
         *,
         worker: bool = False,
         lease_s: float | None = None,
+        safety_mode: TeamSafetyMode = TeamSafetyMode.SHARED,
     ) -> None:
         proc: asyncio.subprocess.Process | None = None
         try:
@@ -262,6 +273,7 @@ class TeamManager:
             env["VIBE_TEAM_NAME"] = self._team_name
             env["VIBE_TEAM_DIR"] = str(self._team_dir)
             env["VIBE_TEAMMATE_NAME"] = name
+            env[TEAM_SAFETY_MODE_ENV] = safety_mode.value
             if worker:
                 env[TEAM_WORKER_ENV] = "1"
                 env[TEAM_LEASE_ENV] = str(

@@ -18,6 +18,7 @@ from vibe.core.config import SandboxConfig
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
 from vibe.core.scratchpad import is_scratchpad_path
+from vibe.core.tools._team_safety import enforce_shared_ask
 from vibe.core.tools.arity import build_session_pattern
 from vibe.core.tools.base import (
     BaseTool,
@@ -935,6 +936,12 @@ class Bash(
     ) -> AsyncGenerator[ToolStreamEvent | BashResult, None]:
         timeout = args.timeout or self.config.default_timeout
         max_bytes = self.config.max_output_bytes
+        await enforce_shared_ask(
+            self.get_name(),
+            args.command,
+            self.resolve_permission(args),
+            self.config.permission,
+        )
 
         # Returns BEFORE foreground try/finally below — finally never kills backgrounds.
         if args.background:
