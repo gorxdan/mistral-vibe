@@ -150,7 +150,6 @@ class TestToolManagerFiltering:
         assert "read" in tools
 
     def test_tool_paths_with_file_and_directory(self, tmp_path: Path):
-        """Should handle a mix of file and directory paths in tool_paths."""
         import sys
 
         # Create a directory with a tool
@@ -213,7 +212,6 @@ class TestToolRuntimeAvailability:
     def test_unavailable_tool_excluded_from_available_tools(
         self, tmp_path: Path, monkeypatch
     ):
-        """Tools where is_available() returns False should be excluded."""
         import sys
 
         tool_dir = tmp_path / "tools"
@@ -258,7 +256,6 @@ class ConditionalTool(BaseTool[ConditionalToolArgs, ConditionalToolResult, BaseT
         assert "conditional_tool" in manager2.available_tools
 
     def test_default_is_available_returns_true(self):
-        """Tools without is_available() override should be available."""
         vibe_config = build_test_vibe_config()
         manager = ToolManager(lambda: vibe_config)
 
@@ -275,7 +272,6 @@ class TestToolManagerModuleReuse:
     """
 
     def test_multiple_managers_share_tool_classes(self):
-        """Tool classes should be identical across multiple ToolManager instances."""
         vibe_config = build_test_vibe_config()
 
         manager1 = ToolManager(lambda: vibe_config)
@@ -291,7 +287,6 @@ class TestToolManagerModuleReuse:
         assert todo_class1 is todo_class2
 
     def test_tool_state_classes_are_identical(self):
-        """Tool state classes should be identical across managers."""
         vibe_config = build_test_vibe_config()
 
         manager1 = ToolManager(lambda: vibe_config)
@@ -306,7 +301,6 @@ class TestToolManagerModuleReuse:
         assert state_class1 is state_class2
 
     def test_tool_args_results_classes_are_identical(self):
-        """Tool args and result classes should be identical across managers."""
         vibe_config = build_test_vibe_config()
 
         manager1 = ToolManager(lambda: vibe_config)
@@ -322,11 +316,6 @@ class TestToolManagerModuleReuse:
         assert result1 is result2
 
     def test_tool_instances_are_isolated(self):
-        """Tool instances should be separate even though classes are shared.
-
-        This ensures subagents have isolated state (e.g., separate todo lists)
-        while still sharing class definitions for Pydantic validation.
-        """
         vibe_config = build_test_vibe_config()
 
         manager1 = ToolManager(lambda: vibe_config)
@@ -350,7 +339,6 @@ class TestToolManagerModuleReuse:
         assert len(tool2.state.todos) == 0  # Unaffected!
 
     def test_class_shared_but_instances_isolated(self):
-        """Classes must be shared (for validation) but instances isolated (for state)."""
         vibe_config = build_test_vibe_config()
 
         manager1 = ToolManager(lambda: vibe_config)
@@ -368,11 +356,6 @@ class TestToolManagerModuleReuse:
         assert tool1.state is not tool2.state
 
     def test_different_files_same_stem_get_different_modules(self, tmp_path: Path):
-        """Tools with same stem but different paths should be separate modules.
-
-        This ensures user tools can override builtins - a custom todo.py in
-        ~/.config/vibe/tools/ should override the builtin todo.py.
-        """
         import sys
 
         # Create two tool files with the same stem but different content

@@ -18,6 +18,7 @@ from vibe.core.config.harness_files import (
 from vibe.core.logger import logger
 from vibe.core.paths import HISTORY_FILE
 from vibe.core.telemetry.build_metadata import build_launch_context
+from vibe.core.utils.io import write_safe
 
 # Configure line buffering for subprocess communication. typeshed types
 # sys.std{out,err,in} as the minimal TextIO protocol, but at runtime they are
@@ -56,8 +57,7 @@ def bootstrap_config_files() -> None:
     history_file = HISTORY_FILE.path
     if not history_file.exists():
         try:
-            history_file.parent.mkdir(parents=True, exist_ok=True)
-            history_file.write_text("Hello Vibe!\n", "utf-8")
+            write_safe(history_file, "Hello Vibe!\n")
         except Exception as e:
             logger.error("Could not create history file: %s", e)
             raise

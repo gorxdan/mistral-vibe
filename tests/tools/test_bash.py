@@ -367,7 +367,6 @@ class TestDenylistWordBoundary:
 
 
 def test_default_allowlist_includes_read_only_commands():
-    """Test that common read-only commands are in the default allowlist."""
     from vibe.core.tools.builtins.bash import _get_default_allowlist
 
     allowlist = _get_default_allowlist()
@@ -411,7 +410,6 @@ def test_default_allowlist_includes_read_only_commands():
 
 
 def test_new_read_only_commands_are_allowlisted():
-    """Test that newly added read-only commands are automatically allowed."""
     config = BashToolConfig()  # Use default config
     bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
 

@@ -128,7 +128,6 @@ class TestPrepareRequest:
         assert "streamRawPredict" in req.endpoint
 
     def test_no_beta_features_for_vertex(self, adapter, provider):
-        """Vertex AI doesn't support the same beta features as direct Anthropic API."""
         messages = [LLMMessage(role=Role.USER, content="Hello")]
         req = adapter.prepare_request(
             RequestParams(

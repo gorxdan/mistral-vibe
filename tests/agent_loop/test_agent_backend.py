@@ -256,7 +256,6 @@ async def test_passes_launch_context_to_backend(vibe_config: VibeConfig):
 
 @pytest.mark.asyncio
 async def test_mcp_sampling_handler_uses_updated_backend_when_agent_backend_changes():
-    """AgentLoop's MCP sampling handler uses current backend when backend is reassigned."""
     backend1 = FakeBackend([mock_llm_chunk(content="from-backend-1")])
     backend2 = FakeBackend([mock_llm_chunk(content="from-backend-2")])
     config = _two_model_vibe_config("devstral-latest")

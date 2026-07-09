@@ -41,6 +41,7 @@ from vibe.core.tracing import setup_tracing
 from vibe.core.trusted_folders import find_trustable_files, trusted_folders_manager
 from vibe.core.types import LLMMessage, OutputFormat, Role
 from vibe.core.utils import ConversationLimitException
+from vibe.core.utils.io import write_safe
 from vibe.setup.update_prompt import (
     UpdatePromptMode,
     UpdatePromptResult,
@@ -178,8 +179,7 @@ def bootstrap_config_files() -> None:
     history_file = HISTORY_FILE.path
     if not history_file.exists():
         try:
-            history_file.parent.mkdir(parents=True, exist_ok=True)
-            history_file.write_text("Hello Vibe!\n", "utf-8")
+            write_safe(history_file, "Hello Vibe!\n")
         except Exception as e:
             rprint(f"[yellow]Could not create history file: {e}[/]")
 

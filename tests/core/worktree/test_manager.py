@@ -423,7 +423,6 @@ class TestDirtyCarry:
         assert "new untracked file" in content
 
     def test_temp_index_not_polluted(self, manager: WorktreeManager, temp_repo: Path):
-        """The user's .git/index must be byte-identical before and after enter."""
         os.chdir(str(temp_repo))
         # Make the repo dirty.
         (temp_repo / "src.py").write_text("print('dirty')\n")
@@ -442,10 +441,6 @@ class TestDirtyCarry:
     def test_carries_tracked_carry_ignored_file(
         self, manager: WorktreeManager, temp_repo: Path, tmp_path: Path
     ):
-        """WT-3: a tracked file in carry_ignored (e.g. .env) with uncommitted
-        edits must be carried into the worktree, not silently dropped to the
-        stale committed version.
-        """
         os.chdir(str(temp_repo))
         repo = Repo(str(temp_repo))
         (temp_repo / ".env").write_text("SECRET=committed\n")
@@ -611,9 +606,6 @@ class TestGc:
     def test_lists_stranded_branch_that_is_substring_of_live(
         self, manager: WorktreeManager, temp_repo: Path
     ):
-        """A stranded branch whose name is a substring of a LIVE worktree branch
-        must not be hidden by a loose substring liveness test.
-        """
         os.chdir(str(temp_repo))
         root = Repo(str(temp_repo))
         _commit_branch_ahead(root, temp_repo, "vibe/foo")  # stranded, unmerged

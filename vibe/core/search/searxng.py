@@ -12,7 +12,7 @@ import yaml
 from vibe.core.logger import logger
 from vibe.core.utils.async_subprocess import kill_async_subprocess
 from vibe.core.utils.http import build_ssl_context
-from vibe.core.utils.io import read_safe
+from vibe.core.utils.io import read_safe, write_safe
 
 DEFAULT_IMAGE = "searxng/searxng:latest"
 DEFAULT_CONTAINER_NAME = "vibe-searxng"
@@ -468,7 +468,7 @@ async def _reconcile_engines(settings: SearxngSettings) -> None:
         changed = enabled + disabled
         if not changed:
             return
-        local.write_text(new_text, encoding="utf-8")
+        write_safe(local, new_text, encoding="utf-8")
         rc, _, err = await _run_cmd(
             [engine, "cp", str(local), f"{name}:/etc/searxng/settings.yml"],
             timeout=_QUICK_CMD_TIMEOUT,
