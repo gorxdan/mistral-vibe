@@ -47,7 +47,11 @@ class TeamArgs(BaseModel):
     )
     task_id: str | None = Field(default=None, description="Task id for claim/complete.")
     description: str | None = Field(
-        default=None, description="Result text for complete_task."
+        default=None,
+        description=(
+            "Result text for complete_task. Structured tasks require a final "
+            "TASK_OUTCOME: SUCCEEDED|FAILED|BLOCKED|RETRYABLE line."
+        ),
     )
     to_name: str | None = Field(default=None, description="Recipient for send_message.")
     content: str | None = Field(
@@ -185,9 +189,12 @@ class Team(
                         f"Could not complete task {args.task_id} (missing, or not "
                         f"claimed by {actor})."
                     )
+                message = f"Completed task {task.id}."
+                if task.outcome is not None and task.outcome.retryable:
+                    message = f"Task {task.id} queued for retry."
                 yield TeamResult(
                     action=args.action,
-                    message=f"Completed task {task.id}.",
+                    message=message,
                     task=task.model_dump(mode="json"),
                 )
             case "send_message":

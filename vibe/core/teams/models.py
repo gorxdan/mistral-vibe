@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 from enum import StrEnum, auto
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from vibe.core.tasking import (
+    TaskBrief,
+    TaskOutcome,
+    TaskOutcomeStatus,
+    compile_task_brief,
+)
+
+LEGACY_TASK_PROTOCOL_VERSION = 1
+STRUCTURED_TASK_PROTOCOL_VERSION = 2
 
 
 class TaskStatus(StrEnum):
@@ -53,13 +64,76 @@ class Task(BaseModel):
 
     id: str
     description: str
+    protocol_version: Literal[1, 2] = LEGACY_TASK_PROTOCOL_VERSION
+    brief: TaskBrief | None = None
     status: TaskStatus = TaskStatus.PENDING
+    outcome: TaskOutcome | None = None
     assignee: str | None = None
     dependencies: list[str] = Field(default_factory=list)
     created_at: float = 0.0
     claimed_at: float | None = None
     completed_at: float | None = None
     result: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_record(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if brief_data := data.get("brief"):
+            brief = TaskBrief.model_validate(brief_data)
+            data.setdefault("description", brief.objective)
+            data["protocol_version"] = STRUCTURED_TASK_PROTOCOL_VERSION
+        if data.get("outcome") is not None:
+            return data
+        status = data.get("status", TaskStatus.PENDING)
+        status_value = status.value if isinstance(status, TaskStatus) else status
+        result = data.get("result")
+        summary = result.strip() if isinstance(result, str) and result.strip() else None
+        if status_value == TaskStatus.COMPLETED.value:
+            data["outcome"] = {
+                "status": TaskOutcomeStatus.SUCCEEDED,
+                "summary": summary or "Legacy task completed",
+            }
+        elif status_value == TaskStatus.BLOCKED.value:
+            data["outcome"] = {
+                "status": TaskOutcomeStatus.BLOCKED,
+                "summary": summary or "Legacy task blocked",
+            }
+        return data
+
+    @model_validator(mode="after")
+    def validate_protocol_state(self) -> Task:
+        if self.brief is not None:
+            self.protocol_version = STRUCTURED_TASK_PROTOCOL_VERSION
+            if self.outcome is not None:
+                if self.outcome.manifest is None:
+                    self.outcome = self.outcome.model_copy(
+                        update={"manifest": self.brief.manifest}
+                    )
+                elif self.outcome.manifest != self.brief.manifest:
+                    raise ValueError("task outcome manifest does not match task brief")
+        elif self.protocol_version == STRUCTURED_TASK_PROTOCOL_VERSION:
+            raise ValueError("task protocol version 2 requires a task brief")
+        if self.status in {TaskStatus.COMPLETED, TaskStatus.BLOCKED}:
+            if self.outcome is None:
+                raise ValueError("terminal task lifecycle requires an outcome")
+        elif self.outcome is not None and not self.outcome.retryable:
+            raise ValueError(
+                "active task lifecycle may only retain a retryable outcome"
+            )
+        return self
+
+    @property
+    def structured(self) -> bool:
+        return self.brief is not None
+
+    @property
+    def prompt(self) -> str:
+        if self.brief is None:
+            return self.description
+        return compile_task_brief(self.brief)
 
 
 class TeamMember(BaseModel):
