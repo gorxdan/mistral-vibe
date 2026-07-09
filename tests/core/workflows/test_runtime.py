@@ -676,6 +676,91 @@ async def test_response_excludes_prompt_echo_and_reasoning(
     assert result == "mock response"
 
 
+async def test_replan_signal_fires_on_low_success_ratio(
+    runtime: WorkflowRuntime,
+) -> None:
+    from vibe.core.workflows.models import AgentResult
+
+    runtime._set_phase("audit")
+    runtime._record_agent_result(
+        AgentResult(prompt="p", response="ok", completed=True, phase="audit")
+    )
+    runtime._record_agent_result(
+        AgentResult(
+            prompt="p", response="", completed=False, error="boom", phase="audit"
+        )
+    )
+    runtime._record_agent_result(
+        AgentResult(
+            prompt="p", response="", completed=False, error="boom", phase="audit"
+        )
+    )
+
+    events: list[str] = []
+    runtime.set_event_sink(events.append)
+    runtime._set_phase("verify")
+
+    assert any("REPLAN SIGNAL" in e and "audit" in e for e in events), events
+    assert any("low success ratio" in e for e in events), events
+
+
+async def test_replan_signal_fires_on_budget_near_exhausted(
+    runtime: WorkflowRuntime,
+) -> None:
+    from vibe.core.workflows.models import AgentResult
+
+    assert runtime.budget_total is not None
+    events: list[str] = []
+    runtime.set_event_sink(events.append)
+    runtime._set_phase("phase1")
+    runtime._record_agent_result(
+        AgentResult(prompt="p", response="ok", completed=True, phase="phase1")
+    )
+    runtime._record_agent_result(
+        AgentResult(prompt="p", response="ok", completed=True, phase="phase1")
+    )
+    runtime._budget.restore_spent(int(runtime.budget_total * 0.9))
+    runtime._set_phase("phase2")
+
+    assert any("REPLAN SIGNAL" in e and "phase1" in e for e in events), events
+    assert any("budget nearly exhausted" in e for e in events), events
+
+
+async def test_replan_signal_quiet_on_healthy_phase(runtime: WorkflowRuntime) -> None:
+    from vibe.core.workflows.models import AgentResult
+
+    events: list[str] = []
+    runtime.set_event_sink(events.append)
+    runtime._set_phase("healthy")
+    runtime._record_agent_result(
+        AgentResult(prompt="p", response="ok", completed=True, phase="healthy")
+    )
+    runtime._record_agent_result(
+        AgentResult(prompt="p", response="ok", completed=True, phase="healthy")
+    )
+    runtime._set_phase("next")
+
+    assert not any("REPLAN SIGNAL" in e for e in events), events
+
+
+async def test_replan_signal_skips_phase_with_too_few_results(
+    runtime: WorkflowRuntime,
+) -> None:
+    from vibe.core.workflows.models import AgentResult
+
+    events: list[str] = []
+    runtime.set_event_sink(events.append)
+    runtime._set_phase("small")
+    runtime._record_agent_result(
+        AgentResult(
+            prompt="p", response="", completed=False, error="boom", phase="small"
+        )
+    )
+    runtime._set_phase("next")
+
+    assert not any("REPLAN SIGNAL" in e for e in events), events
+
+
 async def test_phase_tracking(runtime: WorkflowRuntime) -> None:
     runtime._set_phase("Find")
     runtime._set_phase("Verify")
