@@ -417,9 +417,8 @@ REVIEWER = AgentProfile(
     name=BuiltinAgentName.REVIEWER,
     display_name="Reviewer",
     description=(
-        "Subagent for adversarial code review: reads code, inspects diffs via "
-        "git, and runs targeted checks/tests. bash is jailed read-only — "
-        "inspection + tests auto-run, code/git mutations are denied."
+        "Adversarial code review of a diff/branch/file; jailed bash for "
+        "inspection and tests only (no mutations)."
     ),
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
@@ -434,11 +433,8 @@ DEBUGGER = AgentProfile(
     name=BuiltinAgentName.DEBUGGER,
     display_name="Debugger",
     description=(
-        "Subagent for systematic debugging: reproduces a failure, isolates it, "
-        "and traces the root cause via read/grep + targeted bash (tests, git "
-        "inspection). Returns root cause + minimal fix; read-only, so it "
-        "diagnoses rather than edits. bash is jailed read-only — inspection + "
-        "tests auto-run, code/git mutations are denied."
+        "Systematic debugging: reproduce, isolate, root-cause; returns cause "
+        "+ minimal fix (diagnoses, does not edit). Jailed bash."
     ),
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
@@ -453,9 +449,8 @@ PLANNER = AgentProfile(
     name=BuiltinAgentName.PLANNER,
     display_name="Planner",
     description=(
-        "Read-only subagent for planning: investigates the code and returns a "
-        "code-grounded, phased plan with risks, critical files, and tradeoffs. "
-        "Designs the approach; the lead decides and implements."
+        "Read-only planning: code-grounded phased plan with risks and files "
+        "to touch (plans; lead implements)."
     ),
     safety=AgentSafety.SAFE,
     agent_type=AgentType.SUBAGENT,
@@ -466,11 +461,8 @@ SECURITY = AgentProfile(
     name=BuiltinAgentName.SECURITY,
     display_name="Security",
     description=(
-        "Subagent for defensive security audit: traces untrusted input to "
-        "sinks, checks the vulnerability classes (injection, path-escape, "
-        "authz, secrets, deserialization), and reports severity-ranked findings "
-        "with fixes. Read + grep + bash jailed read-only — inspection probes "
-        "auto-run, repo mutations and network are denied."
+        "Defensive security audit: untrusted input to sinks; severity-ranked "
+        "findings with fixes. Jailed bash; no mutations/network."
     ),
     # Has bash, so not SAFE — bash invocations still route through the normal
     # approval flow (no bypass_tool_permissions).
@@ -487,13 +479,8 @@ VERIFIER = AgentProfile(
     name=BuiltinAgentName.VERIFIER,
     display_name="Verifier",
     description=(
-        "Verdict-oriented verification subagent: proves a *completed* "
-        "implementation works by trying to break it, then emits a strict "
-        "PASS/FAIL/PARTIAL verdict with command-level evidence. Distinct from "
-        "'reviewer' (which surveys a diff for issues across diverse lenses). "
-        "Read-only: read/grep/lsp + a jailed read-only bash that auto-runs "
-        "tests/lint/git-inspection but denies mutations, network, and package "
-        "installs. The gate, not the surveyor."
+        "Gate a completed implementation: try to break it; emit VERDICT "
+        "PASS/FAIL/PARTIAL with command evidence (not a surveyor like reviewer)."
     ),
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
@@ -508,11 +495,8 @@ EDITOR = AgentProfile(
     name=BuiltinAgentName.EDITOR,
     display_name="Editor",
     description=(
-        "Workflow-only subagent for surgical file edits (renames, codemods, "
-        "targeted changes): write/edit + read/grep, no bash/MCP — lower blast "
-        "radius than worker. MUST run with isolation='worktree' in a workflow; "
-        "in a plain task call it also runs isolated, with write/edit/read "
-        "auto-approved and confined to the worktree (no parent-tree races)."
+        "Surgical file edits (renames, codemods): write/edit + read/grep, no "
+        "bash/MCP. Auto-isolates to a worktree under task default."
     ),
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,
@@ -526,15 +510,8 @@ WORKER = AgentProfile(
     name=BuiltinAgentName.WORKER,
     display_name="Worker",
     description=(
-        "Full-capability subagent for workflows: all builtin tools plus any "
-        "discovered MCP tools (no enabled_tools allowlist). For workflow agents "
-        "that need to act, not just read. MUST run with isolation='worktree' in "
-        "a workflow — it then executes as a `vibe -p` subprocess in its own git "
-        "worktree. write/edit/read are auto-approved and confined to the "
-        "worktree (no headless skip, no parent-tree races); bash is auto-confined "
-        "to the worktree by the OS sandbox (bwrap) when one is available. In a "
-        "plain `task` call it routes to the same isolated worktree under the "
-        "tool's default, with write/edit/read auto-approved there too."
+        "Full-capability write agent (all builtins + MCP). Auto-isolates to a "
+        "worktree under task/workflow default."
     ),
     # No enabled_tools override -> the full tool set (incl. MCP in the subprocess).
     safety=AgentSafety.NEUTRAL,
@@ -546,16 +523,8 @@ GRUNT = AgentProfile(
     name=BuiltinAgentName.GRUNT,
     display_name="Grunt",
     description=(
-        "Write-capable subagent for grunt work: renames, codemods, "
-        "boilerplate generation, repetitive edits across many files — concrete, "
-        "fully-specified tasks with no design decisions. Routes onto a cheap "
-        "model by default (the `grunt_model` config key, falling back to "
-        "subagent_model then the host). Writes run isolated in its own "
-        "worktree, like worker (same plain-task auto-isolation under the "
-        "tool's default); the difference is intent and prompt — give it "
-        "the grunt work and keep thinkers (planner/verifier) for the reasoning "
-        "around it. Composes in workflows: thinkers plan and verify, the grunt "
-        "executes."
+        "Mechanical multi-file edits (renames, codemods, boilerplate) with no "
+        "design decisions. Cheap model by default (`grunt_model`); worktree-isolated."
     ),
     # Same tool surface as worker — the prompt and model routing, not a tool
     # restriction, make this a cheap-work profile.

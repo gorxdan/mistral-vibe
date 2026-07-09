@@ -38,6 +38,15 @@ class LandWorkArgs(BaseModel):
             "'Merge worktree branch <branch>'. Keep it neutral and descriptive."
         ),
     )
+    verification_note: str | None = Field(
+        default=None,
+        description=(
+            "Required when verification_subsystem is on: a short note that "
+            "independent verification completed — e.g. 'verifier VERDICT: PASS' "
+            "plus what was checked, or 'trivial: <reason>' for exempt work "
+            "(one-line fix, docs-only, read-only). Empty notes are rejected."
+        ),
+    )
 
 
 class LandWorkResult(BaseModel):
@@ -62,10 +71,11 @@ class LandWork(
         "merge commit, executed by the unsandboxed host process (the bash tool's "
         "sandbox makes the main checkout read-only, so this is the only path that "
         "can write it). Call this ONCE when your work is complete, committed, and "
-        "verified: the merge preserves your original commit SHAs and is atomically "
-        "revertable via `git revert -m 1 <merge-sha>`. Requires user approval. "
-        "Refuses if the main working tree is dirty or the branch is already merged. "
-        "Only available inside an active worktree isolation session."
+        "verified. When verification_subsystem is on, pass verification_note "
+        "(verifier PASS summary or 'trivial: <reason>'). Merge preserves original "
+        "commit SHAs and is revertable via `git revert -m 1 <merge-sha>`. "
+        "Requires user approval. Refuses if main is dirty or the branch is "
+        "already merged. Only available inside an active worktree isolation session."
     )
 
     @classmethod
@@ -98,6 +108,8 @@ class LandWork(
                 "land_work requires an active worktree isolation session. "
                 "No worktree is active."
             )
+
+        _require_verification_note(args, ctx)
 
         main_dir = handle.original_repo_root
         branch = handle.branch
@@ -179,6 +191,25 @@ class LandWork(
                 + (f" {ahead} commit(s) ahead remains on {branch}." if ahead else "")
             ),
         )
+
+
+def _require_verification_note(args: LandWorkArgs, ctx: InvokeContext | None) -> None:
+    # Attestation only (no VERDICT parse); skip when config is unreachable.
+    if ctx is None or ctx.agent_manager is None:
+        return
+    enabled = bool(getattr(ctx.agent_manager.config, "verification_subsystem", True))
+    if not enabled:
+        return
+    note = (args.verification_note or "").strip()
+    if note:
+        return
+    raise ToolError(
+        "land_work requires verification_note when verification_subsystem is "
+        "on. Pass a short attestation: e.g. 'verifier VERDICT: PASS — "
+        "<what was checked>' or 'trivial: <reason>' for exempt work "
+        "(one-line fix, docs-only, read-only). Set verification_subsystem = "
+        "false to disable this gate."
+    )
 
 
 def _is_merged(repo: Repo, branch: str) -> bool:

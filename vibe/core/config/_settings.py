@@ -329,13 +329,14 @@ class MemoryConfig(BaseSettings):
     late_anchor: Literal["tail", "before-user"] = "tail"
     max_entries_scanned: int = 200
     # Char cap per always-injected index line (id/tag/title/scope kept verbatim;
-    # tags drop, description clips). 0 = uncapped. 63 entries: ~6.8k -> ~1.9k tok.
-    index_entry_max_chars: int = 120
-    # Hard cap on total always-injected index characters (~1.5k tokens at 4
+    # tags drop, description clips). 0 = uncapped. Compact inject lines already
+    # prefer title-first; keep this tight so a large store cannot dominate.
+    index_entry_max_chars: int = 100
+    # Hard cap on total always-injected index characters (~1k tokens at 4
     # chars/token). Pin types fill first; remaining budget is newest-first.
     # 0 = uncapped (legacy full-index inject). Selector still sees the full
     # unclipped scan up to max_entries_scanned.
-    index_max_chars: int = 6000
+    index_max_chars: int = 4000
     # Types always preferred in the injected index (when present), regardless of
     # recency. Project/reference stay selector-only unless they fit the budget.
     index_pin_types: list[str] = Field(default_factory=lambda: ["user", "feedback"])

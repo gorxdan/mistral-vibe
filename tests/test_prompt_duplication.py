@@ -101,11 +101,11 @@ def _files_containing(phrase: str) -> set[Path]:
 
 # Caps = current carrier count; bump only with a documented reason.
 _RATCHET_CASES = [
-    # recon: orchestration (canonical) + task.md; le-chaton + launch_workflow carry it for their own decision surfaces.
+    # recon: orchestration only (task.md slimmed to "Local tools first").
     pytest.param(
-        "establish a baseline", 2, "recon-before-delegating", id="recon-triplet"
+        "establish a baseline", 1, "recon-before-delegating", id="recon-triplet"
     ),
-    # don't-poll: le-chaton + launch_workflow + workflow_results — each surface's decision-time guidance.
+    # don't-poll: le-chaton + launch_workflow + workflow_results.
     pytest.param("Do not poll", 3, "workflow-dont-poll", id="dont-poll"),
 ]
 
