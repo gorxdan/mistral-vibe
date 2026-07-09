@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
+from vibe.core.workflows._cache_identity import workflow_cache_context
 from vibe.core.workflows._limits import (
     DEFAULT_BUDGET_TOTAL,
     DEFAULT_ISOLATED_MAX_TURNS,
@@ -365,6 +366,7 @@ def _prompt_hash(
     model: str | None = None,
     schema: dict | None = None,
     contract: dict | ContractSpec | None = None,
+    context_fingerprint: str | None = None,
 ) -> str:
     # isolation is part of the identity: an isolated (subprocess/worktree) run is
     # not interchangeable with an in-process one for the same prompt/agent/phase.
@@ -377,8 +379,9 @@ def _prompt_hash(
     mod = f":m={model}" if model else ""
     sch = f":s={_fingerprint_payload(schema)}" if schema is not None else ""
     con = f":c={_fingerprint_payload(contract)}" if contract is not None else ""
+    ctx = f":ctx={context_fingerprint}" if context_fingerprint else ""
     return hashlib.sha256(
-        f"{agent}:{phase}{iso}{cit}{mod}{sch}{con}:{prompt}".encode()
+        f"{agent}:{phase}{iso}{cit}{mod}{sch}{con}{ctx}:{prompt}".encode()
     ).hexdigest()[:16]
 
 
@@ -902,6 +905,9 @@ class WorkflowRuntime:
             model=model,
             schema=schema,
             contract=contract_spec if contract_spec is not None else contract,
+            context_fingerprint=workflow_cache_context(
+                self.parent_context, agent=agent, model=model
+            ),
         )
         if cached := self._cache.get(cache_key):
             self._log(f"cache hit: {label or agent}")
