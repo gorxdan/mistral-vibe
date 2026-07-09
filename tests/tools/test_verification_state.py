@@ -6,6 +6,7 @@ import pytest
 
 from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.builtins.land_work import LandWorkArgs, _require_verification_note
+from vibe.core.tools.builtins.task import _maybe_record_verifier_pass
 from vibe.core.verification_state import VerificationState
 
 
@@ -63,3 +64,59 @@ def test_state_latest_picks_most_recent() -> None:
     assert latest is not None
     assert latest.summary == "second"
     assert latest.source == "verifier-subagent"
+
+
+def test_verifier_pass_summary_survives_blank_line_before_verdict() -> None:
+    # Realistic verifier output: prose preamble, blank line, then VERDICT: PASS.
+    state = VerificationState()
+    _maybe_record_verifier_pass(
+        "verifier", "Ran the suite.\n\nVERDICT: PASS — 185 passed", _ctx(state)
+    )
+    assert state.last_verifier_pass is not None
+    assert state.last_verifier_pass.summary.startswith("VERDICT: PASS")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "preamble\n\nVERDICT: PASS",
+        "VERDICT: PASS",
+        "  VERDICT: PASS — green",
+        "notes\nVERDICT:PASS",
+        "X\nverdict: pass",
+    ],
+)
+def test_verifier_pass_records_on_real_pass(response: str) -> None:
+    state = VerificationState()
+    _maybe_record_verifier_pass("verifier", response, _ctx(state))
+    assert state.has_pass()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "VERDICT: PARTIAL",
+        "VERDICT: FAIL",
+        "VERDICT: FAILED",
+        "NOT VERDICT: PASS",
+        "my VERDICT: PASS thing",
+        "VERDICT: PASSES",
+        "VERDICT: PASSPORT",
+        "",
+    ],
+)
+def test_verifier_pass_rejects_non_pass(response: str) -> None:
+    state = VerificationState()
+    _maybe_record_verifier_pass("verifier", response, _ctx(state))
+    assert not state.has_pass()
+
+
+def test_verifier_pass_ignored_for_non_verifier_agent() -> None:
+    state = VerificationState()
+    _maybe_record_verifier_pass("reviewer", "VERDICT: PASS", _ctx(state))
+    assert not state.has_pass()
+
+
+def test_verifier_pass_noop_without_state() -> None:
+    ctx = InvokeContext(tool_call_id="t1", verification_state=None)
+    _maybe_record_verifier_pass("verifier", "VERDICT: PASS", ctx)

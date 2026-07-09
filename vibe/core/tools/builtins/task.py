@@ -75,7 +75,9 @@ def _effective_subagent_model(args: TaskArgs, ctx: InvokeContext) -> str | None:
     return None
 
 
-_VERDICT_PASS_RE = re.compile(r"^\s*VERDICT:\s*PASS\b", re.IGNORECASE | re.MULTILINE)
+_VERDICT_PASS_RE = re.compile(
+    r"^[ \t]*VERDICT:[ \t]*PASS\b", re.IGNORECASE | re.MULTILINE
+)
 
 
 def _maybe_record_verifier_pass(agent: str, response: str, ctx: InvokeContext) -> None:
@@ -85,12 +87,12 @@ def _maybe_record_verifier_pass(agent: str, response: str, ctx: InvokeContext) -
     state = ctx.verification_state
     if state is None:
         return
-    if _VERDICT_PASS_RE.search(response):
-        match = _VERDICT_PASS_RE.search(response)
-        start = match.start() if match else 0
-        tail = response[start:].split("\n", 2)
-        summary = tail[0].strip() if tail else "VERDICT: PASS"
-        state.record_verifier_pass(summary)
+    match = _VERDICT_PASS_RE.search(response)
+    if match is None:
+        return
+    tail = response[match.start() :].split("\n", 2)
+    summary = tail[0].strip() if tail else "VERDICT: PASS"
+    state.record_verifier_pass(summary)
 
 
 @dataclass
