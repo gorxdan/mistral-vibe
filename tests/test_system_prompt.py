@@ -632,11 +632,11 @@ def test_verification_contract_section_present_when_subsystem_enabled() -> None:
         ToolManager(lambda: on), on, SkillManager(lambda: on), AgentManager(lambda: on)
     )
     assert "## Verification contract" in prompt_on
-    assert "spawn the `verifier`" in prompt_on.lower()
-    # The contract covers a verifier that itself errors (no VERDICT line) —
-    # distinct from PASS/FAIL/PARTIAL, so the host doesn't treat a dead
-    # verifier as a pass.
-    assert "no verdict (verifier errored)" in prompt_on.lower()
+    assert "verifier" in prompt_on.lower()
+    # Dead verifier (no VERDICT / subagent error) is not a pass.
+    assert "no verdict" in prompt_on.lower()
+    # Structural land_work gate is part of the contract.
+    assert "verification_note" in prompt_on
     # The verifier profile appears in the subagents picker.
     assert "- `verifier` —" in prompt_on
 

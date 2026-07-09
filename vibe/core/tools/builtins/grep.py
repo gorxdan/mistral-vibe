@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from vibe.core.lsp._adherence import record_symbol_grep_miss
+from vibe.core.lsp._adherence import record_symbol_grep_miss, symbol_grep_hint
 from vibe.core.paths import VIBE_HOME
 from vibe.core.tools.base import (
     BaseTool,
@@ -330,14 +330,8 @@ class Grep(
             head_limit=args.head_limit,
         )
         if _is_symbol_shaped(args.pattern) and _lsp_available():
-            result._hint = (
-                f"NOTE: '{args.pattern}' is a symbol lookup — use lsp "
-                "go_to_definition / find_references instead of grep for this. "
-                "grep misses imports, re-exports, aliases, and overloads that "
-                "lsp resolves; grepping a symbol here is the routing miss the "
-                "harness flags. For a symbol question, call lsp next."
-            )
-            record_symbol_grep_miss()
+            consecutive = record_symbol_grep_miss()
+            result._hint = symbol_grep_hint(args.pattern, consecutive=consecutive)
         yield result
 
     def get_result_extra(self, result: GrepResult) -> str | None:

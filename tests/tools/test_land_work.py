@@ -6,8 +6,13 @@ from pathlib import Path
 from git import Repo
 import pytest
 
-from vibe.core.tools.base import BaseToolState
-from vibe.core.tools.builtins.land_work import LandWork, LandWorkArgs, LandWorkConfig
+from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
+from vibe.core.tools.builtins.land_work import (
+    LandWork,
+    LandWorkArgs,
+    LandWorkConfig,
+    _require_verification_note,
+)
 from vibe.core.worktree.manager import WorktreeHandle, worktree_manager
 
 
@@ -116,3 +121,42 @@ async def _collect(tool: LandWork, args: LandWorkArgs):
     async for r in tool.run(args):
         out.append(r)
     return out
+
+
+class _FakeConfig:
+    def __init__(self, verification_subsystem: bool = True) -> None:
+        self.verification_subsystem = verification_subsystem
+
+
+class _FakeAgentManager:
+    def __init__(self, verification_subsystem: bool = True) -> None:
+        self.config = _FakeConfig(verification_subsystem)
+
+
+class TestLandWorkVerificationNote:
+    def test_skips_when_no_ctx(self):
+        _require_verification_note(LandWorkArgs(), None)
+
+    def test_skips_when_subsystem_off(self):
+        ctx = InvokeContext(
+            tool_call_id="t1",
+            agent_manager=_FakeAgentManager(verification_subsystem=False),  # type: ignore[arg-type]
+        )
+        _require_verification_note(LandWorkArgs(), ctx)
+
+    def test_requires_note_when_subsystem_on(self):
+        ctx = InvokeContext(
+            tool_call_id="t1",
+            agent_manager=_FakeAgentManager(verification_subsystem=True),  # type: ignore[arg-type]
+        )
+        with pytest.raises(ToolError, match="verification_note"):
+            _require_verification_note(LandWorkArgs(), ctx)
+
+    def test_accepts_nonempty_note(self):
+        ctx = InvokeContext(
+            tool_call_id="t1",
+            agent_manager=_FakeAgentManager(verification_subsystem=True),  # type: ignore[arg-type]
+        )
+        _require_verification_note(
+            LandWorkArgs(verification_note="trivial: docs-only"), ctx
+        )
