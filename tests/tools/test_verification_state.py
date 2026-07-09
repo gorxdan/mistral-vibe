@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 
 from vibe.core.agents.manager import AgentManager
-from vibe.core.tools.base import InvokeContext
+from vibe.core.tools.base import InvokeContext, ToolError
 from vibe.core.tools.builtins.land_work import LandWorkArgs, _require_verification_note
 from vibe.core.tools.builtins.task import (
     _maybe_record_verifier_pass,
@@ -58,14 +58,16 @@ def _report(verdict: str = "PASS", result: str = "PASS") -> str:
 
 
 def test_no_pass_and_no_note_raises_when_subsystem_on() -> None:
-    with pytest.raises(Exception, match="verification_note"):
+    with pytest.raises(ToolError, match="verification_note"):
         _require_verification_note(LandWorkArgs(), _ctx(VerificationState()))
 
 
-def test_recorded_verifier_pass_satisfies_gate_without_note() -> None:
+def test_recorded_verifier_pass_does_not_authorize_landing() -> None:
     state = VerificationState()
     state.record_verifier_pass(parse_verification_report(_report()))
-    _require_verification_note(LandWorkArgs(), _ctx(state))
+
+    with pytest.raises(ToolError, match="receipt"):
+        _require_verification_note(LandWorkArgs(), _ctx(state))
 
 
 def test_recorded_pass_is_invalid_after_workspace_changes(monkeypatch) -> None:
@@ -93,10 +95,12 @@ def test_recorded_pass_fails_closed_without_workspace_fingerprint(monkeypatch) -
     assert not state.has_pass()
 
 
-def test_recorded_contract_pass_satisfies_gate_without_note() -> None:
+def test_recorded_contract_pass_does_not_authorize_landing() -> None:
     state = VerificationState()
     state.record_contract_pass("contract ok")
-    _require_verification_note(LandWorkArgs(), _ctx(state))
+
+    with pytest.raises(ToolError, match="receipt"):
+        _require_verification_note(LandWorkArgs(), _ctx(state))
 
 
 def test_state_rejects_nonpassing_verifier_report() -> None:
@@ -222,7 +226,7 @@ def test_verifier_pass_noop_without_state() -> None:
 
 
 def test_land_work_rejects_unstructured_nontrivial_note() -> None:
-    with pytest.raises(Exception, match="cannot authorize"):
+    with pytest.raises(ToolError, match="cannot authorize"):
         _require_verification_note(
             LandWorkArgs(verification_note="verifier VERDICT: PASS - tests green"),
             _ctx(VerificationState()),
@@ -230,14 +234,14 @@ def test_land_work_rejects_unstructured_nontrivial_note() -> None:
 
 
 def test_land_work_rejects_model_supplied_structured_pass_note() -> None:
-    with pytest.raises(Exception, match="cannot authorize"):
+    with pytest.raises(ToolError, match="cannot authorize"):
         _require_verification_note(
             LandWorkArgs(verification_note=_report()), _ctx(VerificationState())
         )
 
 
 def test_land_work_rejects_structured_fail_note() -> None:
-    with pytest.raises(Exception, match="cannot authorize"):
+    with pytest.raises(ToolError, match="cannot authorize"):
         _require_verification_note(
             LandWorkArgs(verification_note=_report(verdict="FAIL", result="FAIL")),
             _ctx(VerificationState()),

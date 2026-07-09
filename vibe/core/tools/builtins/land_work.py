@@ -45,10 +45,16 @@ class LandWorkArgs(BaseModel):
     verification_note: str | None = Field(
         default=None,
         description=(
-            "Required when verification_subsystem is on unless this session has "
-            "a recorded verifier or contract pass. Only 'trivial: <reason>' is "
-            "accepted here, and only for a committed documentation-only diff; "
-            "the tool validates the changed paths."
+            "A 'trivial: <reason>' waiver for committed documentation-only diffs. "
+            "Model-authored verification reports are never accepted here."
+        ),
+    )
+    verification_receipt_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "Optional harness-created verification receipt ID. When omitted, the "
+            "current session's trusted receipt is used."
         ),
     )
 
@@ -59,6 +65,7 @@ class LandWorkResult(BaseModel):
     merge_commit_sha: str | None = None
     target_branch: str | None = None
     source_branch: str | None = None
+    verification_receipt_id: str | None = None
     message: str
 
 
@@ -75,9 +82,9 @@ class LandWork(
         "merge commit, executed by the unsandboxed host process (the bash tool's "
         "sandbox makes the main checkout read-only, so this is the only path that "
         "can write it). Call this ONCE when your work is complete, committed, and "
-        "verified. When verification_subsystem is on, pass verification_note "
-        "with a docs-only 'trivial: <reason>' unless a verifier or workflow pass "
-        "was recorded automatically. Merge preserves original "
+        "verified. When verification_subsystem is on, use a harness-created "
+        "verification receipt or pass verification_note with a docs-only "
+        "'trivial: <reason>'. Merge preserves original "
         "commit SHAs and is revertable via `git revert -m 1 <merge-sha>`. "
         "Requires user approval. Refuses if main is dirty or the branch is "
         "already merged. Only available inside an active worktree isolation session."
@@ -156,11 +163,8 @@ class LandWork(
             )
             return
 
-        _require_verification_note(
-            args, ctx, changed_paths=_changed_paths(main_repo, target, branch)
-        )
-
         message = args.commit_message or _DEFAULT_MESSAGE_TEMPLATE.format(branch=branch)
+        verification_receipt_id: str | None = None
 
         try:
             with merge_lock(main_dir):
@@ -171,7 +175,24 @@ class LandWork(
                         "can update it atomically. The user should commit or stash main's "
                         "changes first. Refusing to land."
                     )
-                merge_sha = _merge_no_ff(main_repo, branch, message)
+                candidate_sha = main_repo.commit(branch).hexsha
+                verification_receipt_id = _require_verification_note(
+                    args,
+                    ctx,
+                    changed_paths=_changed_paths(main_repo, target, branch),
+                    repository_path=handle.worktree_path,
+                    expected_base_sha=main_repo.head.commit.hexsha,
+                    expected_candidate_head=candidate_sha,
+                )
+                merge_sha = _merge_no_ff(main_repo, candidate_sha, message)
+                if candidate_sha not in {
+                    parent.hexsha for parent in main_repo.commit(merge_sha).parents
+                }:
+                    raise ToolError(
+                        "Landing produced a merge that is not parented by the "
+                        "verified candidate commit. Manual repository inspection is "
+                        "required."
+                    )
         except Timeout:
             raise ToolError(
                 "Another merge is in progress on this repo (merge lock busy). "
@@ -192,6 +213,7 @@ class LandWork(
             merge_commit_sha=merge_sha,
             target_branch=target,
             source_branch=branch,
+            verification_receipt_id=verification_receipt_id,
             message=(
                 f"Merged {branch} into {target} (--no-ff) as {merge_sha}."
                 f"{worktree_dirty_note}"
@@ -205,21 +227,49 @@ def _require_verification_note(
     ctx: InvokeContext | None,
     *,
     changed_paths: list[str] | None = None,
-) -> None:
-    # Recorded pass (workflow contract or verifier) satisfies the gate.
-    if ctx is not None:
-        state = ctx.verification_state
-        if state is not None and state.has_pass():
-            return
+    repository_path: Path | None = None,
+    expected_base_sha: str | None = None,
+    expected_candidate_head: str | None = None,
+) -> str | None:
     if ctx is None or ctx.agent_manager is None:
-        return
+        return None
     enabled = bool(getattr(ctx.agent_manager.config, "verification_subsystem", True))
     if not enabled:
-        return
+        return None
+
+    state = ctx.verification_state
+    requested_receipt = args.verification_receipt_id
+    selected_receipt = requested_receipt or (
+        state.receipt_reference.receipt_id
+        if state is not None and state.receipt_reference is not None
+        else None
+    )
+    if selected_receipt is not None:
+        if state is None or repository_path is None or expected_base_sha is None:
+            raise ToolError(
+                "land_work could not validate the verification receipt against the "
+                "candidate repository. Run trusted verification again."
+            )
+        if state.has_valid_receipt(
+            repository_path=repository_path,
+            expected_base_sha=expected_base_sha,
+            expected_candidate_head=expected_candidate_head,
+            receipt_id=selected_receipt,
+        ):
+            return selected_receipt
+        validation = state.last_receipt_validation
+        detail = (
+            validation.summary() if validation is not None else "receipt is invalid"
+        )
+        raise ToolError(
+            f"land_work rejected stale or invalid verification receipt: {detail}. "
+            "Run the trusted acceptance checks again for the current candidate."
+        )
+
     note = (args.verification_note or "").strip()
     if is_trivial_verification_note(note):
         if changed_paths is not None and is_trivial_change_set(changed_paths):
-            return
+            return None
         raise ToolError(
             "land_work rejected the trivial waiver: it is limited to committed "
             "documentation-only changes under docs/, openwiki/, or standard "
@@ -228,17 +278,19 @@ def _require_verification_note(
     if note:
         raise ToolError(
             "land_work rejected verification_note: model-supplied verification "
-            "reports cannot authorize a merge. Run the verifier subagent or a "
-            "workflow contract so the PASS is recorded by the harness."
+            "reports cannot authorize a merge. Run harness-trusted acceptance "
+            "checks so a durable receipt is recorded."
         )
     hint = (
-        " A recorded pass is also accepted (spawn `verifier` via `task`, or run "
-        "a workflow with `contract=`)."
+        " A parsed verifier report or legacy workflow pass is observational only; "
+        "it must be converted into a harness-created receipt backed by locally "
+        "executed checks."
     )
     raise ToolError(
         "land_work requires verification_note when verification_subsystem is "
-        "on. Run the verifier subagent or a workflow contract, or pass "
-        "'trivial: <reason>' for a committed documentation-only diff. Set "
+        "on. Provide a current verification_receipt_id, run the harness-trusted "
+        "acceptance checks, or pass 'trivial: <reason>' for a committed "
+        "documentation-only diff. Set "
         "verification_subsystem = "
         "false to disable this gate." + hint
     )
@@ -264,8 +316,8 @@ def _is_merged(repo: Repo, branch: str) -> bool:
         return False
 
 
-def _merge_no_ff(repo: Repo, branch: str, message: str) -> str:
-    repo.git.merge("--no-ff", "-m", message, branch)
+def _merge_no_ff(repo: Repo, candidate_sha: str, message: str) -> str:
+    repo.git.merge("--no-ff", "-m", message, candidate_sha)
     return repo.head.commit.hexsha
 
 

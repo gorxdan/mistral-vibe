@@ -109,12 +109,12 @@ class TestLandWorkMerge:
         repo.heads.master.checkout()
         (temp_repo / "README.md").write_text("# dirty\n")  # dirty main AFTER commit
         _set_active_handle(temp_repo, "feature")
-        with pytest.raises(Exception, match="dirty"):
+        with pytest.raises(ToolError, match="dirty"):
             asyncio.run(_collect(tool, LandWorkArgs()))
 
     def test_no_active_worktree_raises(self, tool):
         worktree_manager._active = None
-        with pytest.raises(Exception, match="active worktree"):
+        with pytest.raises(ToolError, match="active worktree"):
             asyncio.run(_collect(tool, LandWorkArgs()))
 
 
