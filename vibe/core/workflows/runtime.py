@@ -21,6 +21,7 @@ from vibe.core.llm.exceptions import BackendError
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
 from vibe.core.usage._context import SpendPurpose, SpendScopeKind
+from vibe.core.usage._session import SpendBudgetExceededError
 from vibe.core.workflows._cache_identity import workflow_cache_context
 from vibe.core.workflows._limits import (
     DEFAULT_BUDGET_TOTAL,
@@ -681,6 +682,7 @@ class WorkflowRuntime:
     _spend_group_id: str = field(
         default_factory=lambda: f"workflow:{uuid4().hex}", init=False
     )
+    _terminal_status: WorkflowStatus | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
@@ -1046,6 +1048,7 @@ class WorkflowRuntime:
         tokens_out = 0
         completed = True
         error_msg: str | None = None
+        spend_error: SpendBudgetExceededError | None = None
 
         base_config: VibeConfig | None = None
         if self.agent_loop_factory is None:
@@ -1149,6 +1152,11 @@ class WorkflowRuntime:
                     raise
                 completed = False
                 error_msg = live.error or "cancelled by user"
+                break
+            except SpendBudgetExceededError as e:
+                completed = False
+                error_msg = str(e)
+                spend_error = e
                 break
             except Exception as e:
                 # Graceful structured-output degradation: if the provider rejected
@@ -1282,6 +1290,8 @@ class WorkflowRuntime:
             # so parallel._safe / direct awaiters see them.
             if live.cancel_requested:
                 return "".join(accumulated)
+            if spend_error is not None:
+                raise spend_error
             raise WorkflowError(error_msg or "Agent failed without producing output")
 
         if error_msg is not None:
@@ -1308,6 +1318,8 @@ class WorkflowRuntime:
             )
             if live.cancel_requested:
                 return "".join(accumulated)
+            if spend_error is not None:
+                raise spend_error
             raise WorkflowError(error_msg)
 
         # Genuine schema exhaustion: act() ran clean but never produced valid
@@ -1582,15 +1594,35 @@ class WorkflowRuntime:
                 "contract= is not supported with a custom isolated_executor "
                 "(it requires the default worktree executor)"
             )
-        (
-            output,
-            stats,
-            contract_report,
-            completed,
-            error_msg,
-        ) = await self._execute_isolated(
-            effective_prompt, agent, label, contract, live, model=model
-        )
+        try:
+            (
+                output,
+                stats,
+                contract_report,
+                completed,
+                error_msg,
+            ) = await self._execute_isolated(
+                effective_prompt, agent, label, contract, live, model=model
+            )
+        except SpendBudgetExceededError as e:
+            self._finalize_agent(
+                _FinalizeArgs(
+                    prompt=prompt,
+                    response="",
+                    label=label,
+                    phase=phase,
+                    tokens_in=0,
+                    tokens_out=0,
+                    reservation=reservation,
+                    completed=False,
+                    error=str(e),
+                    cache_key=cache_key,
+                    agent=agent,
+                    model=model,
+                    live=live,
+                )
+            )
+            raise
         if completed and contract_report is not None and not contract_report.passed:
             completed = False
             error_msg = contract_report.summary()
@@ -1670,7 +1702,7 @@ class WorkflowRuntime:
                 model=model,
             )
             return output, stats, contract_report, True, None
-        except (AgentCapExceeded, BudgetExhausted):
+        except (AgentCapExceeded, BudgetExhausted, SpendBudgetExceededError):
             raise
         except asyncio.CancelledError:
             # Whole-run stop re-raises; a targeted cancel sets cancel_requested so
@@ -1862,7 +1894,7 @@ class WorkflowRuntime:
                         return await _invoke(item)
                 else:
                     return await _invoke(item)
-            except (AgentCapExceeded, BudgetExhausted):
+            except (AgentCapExceeded, BudgetExhausted, SpendBudgetExceededError):
                 # Hard ceilings (runaway-agent / overspend backstops) must fail
                 # the run, not silently become a None result that masks the
                 # breach. Ordinary failures still degrade to None below.
@@ -1929,7 +1961,7 @@ class WorkflowRuntime:
             for stage in stages:
                 try:
                     result = await self._call_stage(stage, result, item, index)
-                except (AgentCapExceeded, BudgetExhausted):
+                except (AgentCapExceeded, BudgetExhausted, SpendBudgetExceededError):
                     # Hard ceilings fail the run (see parallel()); they must not
                     # be swallowed into a silent None item.
                     raise
@@ -2001,14 +2033,12 @@ class WorkflowRuntime:
                     strip_unknown=strip_unknown,
                     contract=contract,
                 )
-            except (AgentCapExceeded, BudgetExhausted):
+            except (AgentCapExceeded, BudgetExhausted, SpendBudgetExceededError):
                 # Hard ceilings must fail the run; mirrors parallel()._safe.
                 raise
             except Exception:
                 # Degrade like parallel() so a bare await doesn't null the run's
                 # return_value via run()'s broad handler at runtime.py:2026.
-                # SpendBudgetExceededError follows this existing failure-to-None
-                # contract until workflow results can carry a typed blocked state.
                 logger.warning("workflow: agent() call failed", exc_info=True)
                 return None
 
@@ -2139,6 +2169,7 @@ class WorkflowRuntime:
         }
 
     async def run(self, script_source: str, args: Any = None) -> WorkflowResult:
+        self._terminal_status = None
         violations = validate_script(script_source)
         if violations:
             raise WorkflowError(
@@ -2164,6 +2195,11 @@ class WorkflowRuntime:
             return_value = None
             status = WorkflowStatus.STOPPED
             error = "stopped by user"
+        except (BudgetExhausted, SpendBudgetExceededError) as e:
+            return_value = None
+            status = WorkflowStatus.BLOCKED
+            error = str(e)
+            logger.warning("Workflow blocked by spend budget: %s", e)
         except Exception as e:
             return_value = None
             status = WorkflowStatus.FAILED
@@ -2215,7 +2251,9 @@ class WorkflowRuntime:
             detail = "; ".join(seen)[:500]
             summary += f" — {len(failed)}/{run.agent_count} agent(s) failed: {detail}"
 
-        return WorkflowResult(return_value=return_value, run=run, summary=summary)
+        result = WorkflowResult(return_value=return_value, run=run, summary=summary)
+        self._terminal_status = status
+        return result
 
     def snapshot(
         self,
@@ -2229,7 +2267,7 @@ class WorkflowRuntime:
             run_id=run_id,
             script_source=script_source,
             args=args,
-            status=WorkflowStatus.PAUSED,
+            status=self._terminal_status or WorkflowStatus.PAUSED,
             started_at=self._started_at,
             budget_total=self.budget_total,
             budget_spent=self._budget.snapshot().spent,
