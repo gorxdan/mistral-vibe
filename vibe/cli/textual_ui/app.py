@@ -3415,6 +3415,47 @@ class VibeApp(App):
             loop.session_id, hooks_manager=loop.hooks_manager, hook_context=hook_context
         )
 
+    def _render_team_list_rows(self, members: list[Any]) -> list[str]:
+        rows = [
+            "| Name | Status | PID | Mode | Task | Age |",
+            "|------|--------|-----|------|------|-----|",
+        ]
+        active_by_assignee: dict[str, Any] = {}
+        if self._team_manager is not None:
+            try:
+                for task in self._team_manager.task_store.get_all_tasks():
+                    if getattr(task, "assignee", None):
+                        active_by_assignee[str(task.assignee)] = task
+            except Exception:
+                pass
+        now = time.time()
+        for m in members:
+            mode = getattr(m, "safety_mode", None)
+            mode_val = getattr(mode, "value", mode) or "shared"
+            if mode_val == "shared":
+                mode_val = "-"
+            task_id = getattr(m, "last_task_id", None) or "-"
+            age = "-"
+            claimed = getattr(m, "last_claimed_at", None)
+            active = active_by_assignee.get(m.name)
+            if active is not None:
+                if claimed is None:
+                    claimed = getattr(active, "claimed_at", None)
+                if task_id == "-":
+                    task_id = getattr(active, "id", "-")
+            if claimed is not None:
+                try:
+                    age = f"{int(now - claimed)}s"
+                except (TypeError, ValueError):
+                    age = "?"
+            if getattr(m, "worker", False):
+                mode_val = "worker" if mode_val == "-" else f"{mode_val}+worker"
+            rows.append(
+                f"| {m.name} | {m.status} | {m.pid or '-'} "
+                f"| {mode_val} | {task_id} | {age} |"
+            )
+        return rows
+
     async def _team_command(self, cmd_args: str = "", **kwargs: Any) -> None:
         from vibe.cli.textual_ui.widgets.messages import (
             ErrorMessage,
@@ -3430,9 +3471,7 @@ class VibeApp(App):
             if not members:
                 await self._mount_and_scroll(UserCommandMessage("No teammates."))
                 return
-            rows = ["| Name | Status | PID |", "|------|--------|-----|"]
-            for m in members:
-                rows.append(f"| {m.name} | {m.status} | {m.pid or '-'} |")
+            rows = self._render_team_list_rows(members)
             await self._mount_and_scroll(UserCommandMessage("\n".join(rows)))
             return
 
