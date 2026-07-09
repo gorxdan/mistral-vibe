@@ -365,8 +365,8 @@ async def _run_verifier_in_worktree(
 ) -> bool:
     # Returns True (deliver) on VERDICT: PASS, False (block) otherwise.
     from vibe.core.agents.models import BuiltinAgentName
-    from vibe.core.tools.builtins.task import _maybe_record_verifier_pass
     from vibe.core.tools.base import InvokeContext
+    from vibe.core.tools.builtins.task import _maybe_record_verifier_pass
 
     ctx = runtime.parent_context
     invoke_ctx: InvokeContext | None = ctx if isinstance(ctx, InvokeContext) else None
@@ -401,14 +401,8 @@ async def _run_verifier_in_worktree(
         passed = report.passed
     except VerificationReportError:
         passed = False
-    if (
-        passed
-        and invoke_ctx is not None
-        and state is not None
-    ):
-        _maybe_record_verifier_pass(
-            BuiltinAgentName.VERIFIER, response, invoke_ctx
-        )
+    if passed and invoke_ctx is not None and state is not None:
+        _maybe_record_verifier_pass(BuiltinAgentName.VERIFIER, response, invoke_ctx)
     if not passed:
         logger.info("then='verifier' verdict blocked deliver: %s", response[:200])
         return False
@@ -2295,13 +2289,15 @@ class WorkflowRuntime:
             budget_total=self.budget_total,
             budget_spent=self._budget.snapshot().spent,
             cached_results=list(self._cache.values()),
+            board=_coerce_json_safe(self._board.fetch_all()),
             return_value=_coerce_json_safe(return_value),
         )
 
     def restore_from_snapshot(self, snapshot: WorkflowRunSnapshot) -> None:
         for cached in snapshot.cached_results:
             self._cache[cached.prompt_hash] = cached
-        # Restore prior spend so the budget cap is not silently reset to 0 on
-        # resume (which would allow the resumed run to overspend).
         self._budget.restore_spent(snapshot.budget_spent)
+        for channel, messages in snapshot.board.items():
+            for msg in messages:
+                self._board.post(channel, msg)
         self._log(f"restored {snapshot.cached_count} cached results from snapshot")
