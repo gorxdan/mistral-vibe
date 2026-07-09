@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from vibe.core.tools.mcp_sampling import MCPSamplingHandler
     from vibe.core.tools.permissions import PermissionContext, PermissionStore
     from vibe.core.types import ApprovalCallback, SwitchAgentCallback, UserInputCallback
+    from vibe.core.usage._session import SessionSpendAdapter
     from vibe.core.verification_state import VerificationState
 
 ARGS_COUNT = 4
@@ -125,6 +126,9 @@ class InvokeContext:
     # Tool manager for meta-tools (e.g. tool_search) that need to inspect or
     # adjust the active manifest without reaching back into AgentLoop.
     tool_manager: Any | None = field(default=None)
+    # Shared paid-call scope for in-process child agents. Narration, MCP sampling,
+    # auxiliary models, and isolated subprocesses are not routed through it yet.
+    spend_adapter: SessionSpendAdapter | None = field(default=None)
 
 
 class ToolError(Exception):

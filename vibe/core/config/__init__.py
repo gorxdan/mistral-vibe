@@ -32,6 +32,7 @@ from vibe.core.config._settings import (
     resolve_api_key,
     resolve_theme_name,
 )
+from vibe.core.config._spend_config import SpendConfig
 from vibe.core.config.layer import (
     ConfigLayer,
     ConfigLayerError,
@@ -158,6 +159,7 @@ __all__ = [
     "SafetyJudgeConfig",
     "SandboxConfig",
     "SessionLoggingConfig",
+    "SpendConfig",
     "TTSClient",
     "TTSModelConfig",
     "TTSProviderConfig",

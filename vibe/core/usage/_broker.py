@@ -9,6 +9,7 @@ from vibe.core.usage._context import (
     SpendAmount,
     SpendContext,
     SpendEnvelope,
+    SpendEnvelopeLimits,
     SpendEnvelopeSnapshot,
     SpendRejection,
     SpendReservation,
@@ -39,6 +40,14 @@ class SpendBroker:
 
     def define_envelope(self, envelope: SpendEnvelope) -> SpendEnvelope:
         return self._ledger.define_envelope(envelope)
+
+    def get_envelope(self, scope_id: str) -> SpendEnvelope | None:
+        return self._ledger.get_envelope(scope_id)
+
+    def tighten_envelope(
+        self, scope_id: str, limits: SpendEnvelopeLimits
+    ) -> SpendEnvelope:
+        return self._ledger.tighten_envelope(scope_id, limits)
 
     def try_reserve(
         self,

@@ -48,6 +48,7 @@ from vibe.core.types import (
     ToolResultEvent,
     ToolStreamEvent,
 )
+from vibe.core.usage._session import SpendBudgetExceededError
 from vibe.core.verification_contract import (
     VerificationReportError,
     parse_verification_report,
@@ -93,6 +94,13 @@ def _effective_subagent_model(args: TaskArgs, ctx: InvokeContext) -> str | None:
     if ctx.agent_manager:
         return ctx.agent_manager.config.active_model or None
     return None
+
+
+def _subagent_error_outcome(error: Exception) -> tuple[TaskOutcomeStatus, str]:
+    if isinstance(error, SpendBudgetExceededError):
+        reason = error.rejection.reason.value
+        return TaskOutcomeStatus.BLOCKED, f"spend budget {reason}: {error}"
+    return TaskOutcomeStatus.RETRYABLE, str(error)
 
 
 def _maybe_record_verifier_pass(
@@ -687,6 +695,11 @@ class Task(
                 permission_store=ctx.permission_store,
                 hook_config_result=ctx.hook_config_result,
                 max_turns=DEFAULT_ISOLATED_MAX_TURNS,
+                spend_adapter=(
+                    ctx.spend_adapter.child_agent()
+                    if ctx.spend_adapter is not None
+                    else None
+                ),
             ),
         )
         if ctx.session_id:
@@ -741,8 +754,7 @@ class Task(
         except Exception as e:
             completed = False
             accumulated_response.append(f"\n[Subagent error: {e}]")
-            forced_status = TaskOutcomeStatus.RETRYABLE
-            diagnostic = str(e)
+            forced_status, diagnostic = _subagent_error_outcome(e)
             turns_used = sum(
                 msg.role == Role.ASSISTANT for msg in subagent_loop.messages
             )
@@ -801,8 +813,7 @@ class Task(
         except Exception as e:
             completed = False
             accumulated_response.append(f"\n[Subagent error: {e}]")
-            forced_status = TaskOutcomeStatus.RETRYABLE
-            diagnostic = str(e)
+            forced_status, diagnostic = _subagent_error_outcome(e)
         finally:
             with suppress(Exception):
                 await subagent_loop.aclose()

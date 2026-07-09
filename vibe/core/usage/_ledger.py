@@ -68,6 +68,13 @@ class _ScopeDefinedEvent(_EventBase):
 
 
 @final
+class _EnvelopeTightenedEvent(_EventBase):
+    kind: Literal["envelope_tightened"] = "envelope_tightened"
+    scope_id: str
+    limits: SpendEnvelopeLimits
+
+
+@final
 class _ReservedEvent(_EventBase):
     kind: Literal["reserved"] = "reserved"
     reservation: SpendReservation
@@ -109,6 +116,7 @@ class _RejectedEvent(_EventBase):
 
 LedgerEvent = Annotated[
     _ScopeDefinedEvent
+    | _EnvelopeTightenedEvent
     | _ReservedEvent
     | _ReconciledEvent
     | _ReleasedEvent
@@ -158,6 +166,37 @@ def _remaining_cost(limit: float | None, used: float) -> float | None:
     return None if limit is None else max(limit - used, 0.0)
 
 
+def _tighter_limit[T: int | float](current: T | None, requested: T | None) -> T | None:
+    if requested is None:
+        return current
+    if current is None:
+        return requested
+    return min(current, requested)
+
+
+def _tighten_limits(
+    current: SpendEnvelopeLimits, requested: SpendEnvelopeLimits
+) -> SpendEnvelopeLimits:
+    return SpendEnvelopeLimits(
+        max_prompt_tokens=_tighter_limit(
+            current.max_prompt_tokens, requested.max_prompt_tokens
+        ),
+        max_completion_tokens=_tighter_limit(
+            current.max_completion_tokens, requested.max_completion_tokens
+        ),
+        max_total_tokens=_tighter_limit(
+            current.max_total_tokens, requested.max_total_tokens
+        ),
+        max_cost_usd=_tighter_limit(current.max_cost_usd, requested.max_cost_usd),
+        max_calls=_tighter_limit(current.max_calls, requested.max_calls),
+        max_concurrent_calls=_tighter_limit(
+            current.max_concurrent_calls, requested.max_concurrent_calls
+        ),
+        max_retries=_tighter_limit(current.max_retries, requested.max_retries),
+        deadline_at=_tighter_limit(current.deadline_at, requested.deadline_at),
+    )
+
+
 class SpendLedger:
     """File-lock-backed append-only budget ledger shared by local processes."""
 
@@ -204,8 +243,11 @@ class SpendLedger:
         if event.sequence != state.sequence + 1:
             raise SpendLedgerCorruptError("event sequence is out of order")
         state.sequence = event.sequence
-        if isinstance(event, _ScopeDefinedEvent):
-            self._apply_scope(state, event.envelope)
+        if isinstance(event, (_ScopeDefinedEvent, _EnvelopeTightenedEvent)):
+            if isinstance(event, _ScopeDefinedEvent):
+                self._apply_scope(state, event.envelope)
+            else:
+                self._apply_tightening(state, event)
             return
         if isinstance(event, _ReservedEvent):
             reservation = event.reservation
@@ -273,6 +315,16 @@ class SpendLedger:
         elif not self._valid_parent(scope.kind, parent.kind):
             raise SpendLedgerCorruptError("scope hierarchy is invalid")
         state.scopes[scope.scope_id] = scope
+
+    def _apply_tightening(self, state: _State, event: _EnvelopeTightenedEvent) -> None:
+        scope = state.scopes.get(event.scope_id)
+        if scope is None:
+            raise SpendLedgerCorruptError(
+                "envelope tightening references unknown scope"
+            )
+        if _tighten_limits(scope.limits, event.limits) != event.limits:
+            raise SpendLedgerCorruptError("envelope limits were not monotonic")
+        state.scopes[event.scope_id] = scope.model_copy(update={"limits": event.limits})
 
     @staticmethod
     def _valid_parent(kind: SpendScopeKind, parent_kind: SpendScopeKind) -> bool:
@@ -351,6 +403,33 @@ class SpendLedger:
                 ),
             )
             return scope
+
+    def get_envelope(self, scope_id: str) -> SpendEnvelope | None:
+        with self._locked():
+            return self._load().scopes.get(scope_id)
+
+    def tighten_envelope(
+        self, scope_id: str, requested: SpendEnvelopeLimits
+    ) -> SpendEnvelope:
+        with self._locked():
+            state = self._load()
+            scope = state.scopes.get(scope_id)
+            if scope is None:
+                raise SpendLedgerConflictError(f"unknown scope {scope_id!r}")
+            limits = _tighten_limits(scope.limits, requested)
+            if limits == scope.limits:
+                return scope
+            self._append(
+                state,
+                _EnvelopeTightenedEvent(
+                    sequence=state.sequence + 1,
+                    event_id=uuid4().hex,
+                    timestamp=self._clock(),
+                    scope_id=scope_id,
+                    limits=limits,
+                ),
+            )
+            return state.scopes[scope_id]
 
     def _validate_new_scope(self, state: _State, scope: SpendEnvelope) -> None:
         if scope.kind == SpendScopeKind.SESSION:

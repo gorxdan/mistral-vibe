@@ -1374,10 +1374,8 @@ class VibeAcpAgentLoop(AcpAgent):
         except Exception as e:
             raise ConfigurationError(str(e)) from e
         loaded_session_id = metadata.get("session_id", agent_loop.session_id)
-        agent_loop.session_id = loaded_session_id
-        agent_loop.parent_session_id = metadata.get("parent_session_id")
-        agent_loop.session_logger.resume_existing_session(
-            loaded_session_id, session_dir
+        agent_loop.resume_existing_session(
+            loaded_session_id, metadata.get("parent_session_id"), session_dir
         )
         await agent_loop.hydrate_experiments_from_session()
 

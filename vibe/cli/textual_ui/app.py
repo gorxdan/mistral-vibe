@@ -2946,10 +2946,8 @@ class VibeApp(App):
             msg for msg in loaded_messages if msg.role != Role.SYSTEM
         ]
 
-        self.agent_loop.session_id = session.session_id
-        self.agent_loop.parent_session_id = metadata.get("parent_session_id")
-        self.agent_loop.session_logger.resume_existing_session(
-            session.session_id, session_path
+        self.agent_loop.resume_existing_session(
+            session.session_id, metadata.get("parent_session_id"), session_path
         )
         await self.agent_loop.hydrate_experiments_from_session()
         current_system_messages = [

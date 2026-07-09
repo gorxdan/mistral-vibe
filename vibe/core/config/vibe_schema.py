@@ -42,6 +42,7 @@ from vibe.core.config._settings import (
     resolve_api_key,
     resolve_theme_name,
 )
+from vibe.core.config._spend_config import SpendConfig
 from vibe.core.config.models import (
     ConnectorConfig,
     ExperimentsConfig,
@@ -413,6 +414,9 @@ class VibeConfigSchema(ConfigSchema):
     )
     auxiliary_budget: Annotated[AuxiliaryBudgetConfig, WithReplaceMerge()] = Field(
         default_factory=AuxiliaryBudgetConfig
+    )
+    spend: Annotated[SpendConfig, WithReplaceMerge()] = Field(
+        default_factory=SpendConfig
     )
     memory: Annotated[MemoryConfig, WithReplaceMerge()] = Field(
         default_factory=MemoryConfig

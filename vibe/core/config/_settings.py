@@ -35,6 +35,7 @@ from vibe.core.config._defaults import (
     DEFAULT_THEME,
     DEFAULT_VIBE_BASE_URL,
 )
+from vibe.core.config._spend_config import SpendConfig
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.config.models import (
     THINKING_LEVELS as THINKING_LEVELS,
@@ -794,6 +795,7 @@ class VibeConfig(BaseSettings):
     auxiliary_budget: AuxiliaryBudgetConfig = Field(
         default_factory=AuxiliaryBudgetConfig
     )
+    spend: SpendConfig = Field(default_factory=SpendConfig)
     max_output_escalation: MaxOutputEscalationConfig = Field(
         default_factory=MaxOutputEscalationConfig
     )

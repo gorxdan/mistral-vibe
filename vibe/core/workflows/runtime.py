@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import time
 from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar, cast
+from uuid import uuid4
 
 import orjson
 from pydantic import BaseModel, ConfigDict
@@ -19,6 +20,7 @@ from pydantic import BaseModel, ConfigDict
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.logger import logger
 from vibe.core.types import AssistantEvent
+from vibe.core.usage._context import SpendPurpose, SpendScopeKind
 from vibe.core.workflows._cache_identity import workflow_cache_context
 from vibe.core.workflows._limits import (
     DEFAULT_BUDGET_TOTAL,
@@ -676,6 +678,9 @@ class WorkflowRuntime:
     # pause lets in-flight agents finish but blocks new ones from starting.
     _run_gate: asyncio.Event = field(init=False)
     _paused: bool = field(default=False, init=False)
+    _spend_group_id: str = field(
+        default_factory=lambda: f"workflow:{uuid4().hex}", init=False
+    )
 
     def __post_init__(self) -> None:
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
@@ -1417,6 +1422,13 @@ class WorkflowRuntime:
 
         if base_config is None:
             base_config = self._resolve_agent_config(agent=agent, model=model)
+        spend_adapter = None
+        if ctx and ctx.spend_adapter is not None:
+            spend_adapter = ctx.spend_adapter.child_agent(
+                group_kind=SpendScopeKind.WORKFLOW,
+                group_id=self._spend_group_id,
+                purpose=SpendPurpose.WORKFLOW,
+            )
         # Subagents inherit the parent worktree; never call worktree_manager.enter().
         # Workflow stages share one worktree.
         loop = _AgentLoop(
@@ -1430,6 +1442,7 @@ class WorkflowRuntime:
                 permission_store=ctx.permission_store if ctx else None,
                 hook_config_result=ctx.hook_config_result if ctx else None,
                 max_turns=DEFAULT_ISOLATED_MAX_TURNS,
+                spend_adapter=spend_adapter,
             ),
         )
         if ctx and ctx.session_id:
@@ -1994,6 +2007,8 @@ class WorkflowRuntime:
             except Exception:
                 # Degrade like parallel() so a bare await doesn't null the run's
                 # return_value via run()'s broad handler at runtime.py:2026.
+                # SpendBudgetExceededError follows this existing failure-to-None
+                # contract until workflow results can carry a typed blocked state.
                 logger.warning("workflow: agent() call failed", exc_info=True)
                 return None
 
