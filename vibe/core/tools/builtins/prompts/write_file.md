@@ -16,6 +16,7 @@ Use `write_file` to create a new file. Creating a file registers it in the sessi
 - **NEVER** write new files unless explicitly required — prefer modifying existing files via `edit`.
 - **NEVER** proactively create documentation files (*.md) or README files unless explicitly requested.
 - **AVOID** using emojis in file content unless the user explicitly requests them.
+- **Before batched calls**, `glob` the target paths first. A parallel `write_file` batch where several paths already exist fails every one of those calls at once; a single `glob` check lets you route existing files to `edit` and new files to `write_file` in the same turn.
 
 **Usage Example:**
 

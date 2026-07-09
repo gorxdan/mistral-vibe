@@ -27,6 +27,7 @@ from pydantic import (
 )
 
 from vibe.core.experiments.models import EvalResponse
+from vibe.core.logger import logger
 
 
 class ScheduledLoop(BaseModel):
@@ -72,6 +73,9 @@ class AgentStats(BaseModel):
 
     input_price_per_million: float = 0.0
     output_price_per_million: float = 0.0
+
+    # Exact per-call cost; session_cost returns this so a model switch can't reprice the session.
+    accumulated_cost_usd: float = 0.0
 
     _listeners: dict[str, Callable[[AgentStats], None]] = PrivateAttr(
         default_factory=dict
@@ -119,12 +123,15 @@ class AgentStats(BaseModel):
     @computed_field
     @property
     def session_cost(self) -> float:
-        """Calculate the total session cost in dollars based on token usage and pricing.
+        """Total session cost in USD.
 
-        NOTE: This is a rough estimate and is worst-case scenario.
-        The actual cost may be lower due to prompt caching.
-        If the model changes mid-session, this uses current pricing for all tokens.
+        Prefer the per-call accumulator (`accumulated_cost_usd`), which is exact
+        and immune to mid-session model switches. Fall back to the pricing-fields
+        recompute for stats constructed without going through `_update_stats`
+        (tests, manual construction) so the field stays meaningful there too.
         """
+        if self.accumulated_cost_usd > 0.0:
+            return self.accumulated_cost_usd
         input_cost = (
             self.session_prompt_tokens / 1_000_000
         ) * self.input_price_per_million
@@ -147,11 +154,29 @@ class AgentStats(BaseModel):
     def update_pricing(self, input_price: float, output_price: float) -> None:
         """Update pricing info when model changes.
 
-        NOTE: session_cost will be recalculated using new pricing for all
-        accumulated tokens. This is a known approximation when models change.
-        This should not be a big issue, pricing is only used for max_price which is in
-        programmatic mode, so user should not update models there.
+        Emits a one-line cache-impact warning when a real pricing change coincides
+        with an established cache: switching providers mid-session invalidates the
+        prefix cache (observed cache-hit ratio collapsing ~90% -> ~47% in
+        multi-model sessions), roughly doubling effective input cost. Surfacing the
+        pre-switch ratio at the switch site keeps the trade-off visible.
         """
+        price_changed = (
+            input_price != self.input_price_per_million
+            or output_price != self.output_price_per_million
+        )
+        if (
+            price_changed
+            and self.session_prompt_tokens > 0
+            and self.session_cached_tokens > 0
+        ):
+            logger.warning(
+                "Model/pricing switch at %.0f%% cache hit (%s cached / %s prompt "
+                "tokens) — the new model's prefix cache starts cold, so expect a "
+                "cache-hit drop and higher effective input cost over the next turns",
+                self.cache_hit_ratio * 100,
+                self.session_cached_tokens,
+                self.session_prompt_tokens,
+            )
         self.input_price_per_million = input_price
         self.output_price_per_million = output_price
 
