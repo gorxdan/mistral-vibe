@@ -1837,7 +1837,11 @@ class WorkflowRuntime:
             if contract is not None and wt is not None:
                 contract_report = verify_contract(wt.path, contract)
                 should_deliver = contract_report.passed
-            if should_deliver and then == "verifier" and wt is not None:
+            if (
+                then == "verifier"
+                and wt is not None
+                and (contract is None or should_deliver)
+            ):
                 verdict = await _run_verifier_in_worktree(self, wt, result, model)
                 should_deliver = verdict
             if should_deliver and wt is not None:

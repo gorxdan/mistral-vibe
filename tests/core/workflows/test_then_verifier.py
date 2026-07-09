@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -150,3 +151,107 @@ async def test_run_verifier_partial_blocks() -> None:
 
     assert verdict is False
     assert state.last_verifier_pass is None
+
+
+class _VerdictProc:
+    pid = 4243
+    returncode = 0
+
+    def __init__(self, out: bytes) -> None:
+        self._out = out
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return (self._out, b"")
+
+
+class _FakeProc:
+    pid = 4242
+    returncode = 0
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return (b"worker output", b"")
+
+
+async def test_default_isolated_executor_standalone_then_verifier_pass_delivers_and_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import vibe.core.worktree.ephemeral as eph
+
+    state = VerificationState()
+    rt = _make_runtime(state)
+
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
+    delivered: list[Any] = []
+    monkeypatch.setattr(
+        eph, "deliver_ephemeral_worktree", lambda wt: delivered.append(wt) or True
+    )
+
+    spawn_count = 0
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> Any:
+        nonlocal spawn_count
+        spawn_count += 1
+        if spawn_count == 2:
+            return _VerdictProc(b"Checks done.\n\nVERDICT: PASS - green")
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    out, stats, report = await rt._default_isolated_executor(
+        "do it", "worker", "lbl", 40, then="verifier"
+    )
+
+    assert out == "worker output"
+    assert spawn_count == 2
+    assert delivered == [fake_wt]
+    assert report is not None
+    assert report.passed is True
+    assert report.delivered is True
+    assert state.last_verifier_pass is not None
+    assert state.last_verifier_pass.summary.startswith("VERDICT: PASS")
+
+
+async def test_default_isolated_executor_standalone_then_verifier_fail_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import vibe.core.worktree.ephemeral as eph
+
+    state = VerificationState()
+    rt = _make_runtime(state)
+
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    removed: list[Any] = []
+    monkeypatch.setattr(
+        eph,
+        "remove_ephemeral_worktree",
+        lambda wt, **k: removed.append(k.get("keep_if_changed")),
+    )
+    delivered: list[Any] = []
+    monkeypatch.setattr(
+        eph, "deliver_ephemeral_worktree", lambda wt: delivered.append(wt) or True
+    )
+
+    spawn_count = 0
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> Any:
+        nonlocal spawn_count
+        spawn_count += 1
+        if spawn_count == 2:
+            return _VerdictProc(b"Found bugs.\nVERDICT: FAIL")
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    out, stats, report = await rt._default_isolated_executor(
+        "do it", "worker", "lbl", 40, then="verifier"
+    )
+
+    assert out == "worker output"
+    assert spawn_count == 2
+    assert delivered == []
+    assert report is None or not report.passed
+    assert state.last_verifier_pass is None
+    assert removed and removed[0] is True
