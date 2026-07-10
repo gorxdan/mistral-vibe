@@ -5,7 +5,6 @@ from pathlib import Path
 import types
 from unittest.mock import patch
 
-import orjson
 from pydantic import ValidationError
 import pytest
 
@@ -13,7 +12,12 @@ from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from tests.mock.utils import collect_result, mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core.agents.manager import AgentManager
-from vibe.core.config import ModelConfig, SessionLoggingConfig, SpendConfig
+from vibe.core.config import (
+    ModelConfig,
+    PromptEstimatorMode,
+    SessionLoggingConfig,
+    SpendConfig,
+)
 from vibe.core.llm.types import CompletionRequest
 from vibe.core.tasking import TaskBrief, TaskManifestIdentity, TaskOutcomeStatus
 from vibe.core.tools.base import BaseToolState, InvokeContext
@@ -25,6 +29,7 @@ from vibe.core.types import (
     ImageAttachment,
     LLMChunk,
     LLMMessage,
+    LLMUsage,
     Role,
     UnclassifiedBackendError,
 )
@@ -33,13 +38,17 @@ from vibe.core.usage import (
     get_usage_recorder,
     reset_usage_recorder_for_tests,
 )
+from vibe.core.usage._broker import SpendBroker
 from vibe.core.usage._context import (
     SpendAmount,
+    SpendEnvelope,
+    SpendEnvelopeLimits,
     SpendPurpose,
     SpendRejection,
     SpendRejectionReason,
     SpendScopeKind,
 )
+from vibe.core.usage._prompt_estimator import request_prompt_footprint
 from vibe.core.usage._session import (
     UNROUTED_PAID_CALL_BOUNDARIES,
     SessionSpendAdapter,
@@ -137,12 +146,12 @@ def _adapter(tmp_path: Path, **overrides) -> SessionSpendAdapter:
     )
 
 
-def test_spend_config_defaults_are_finite() -> None:
+def test_spend_config_defaults_use_dynamic_token_admission() -> None:
     config = SpendConfig()
 
-    assert config.max_prompt_tokens == 400_000
-    assert config.max_completion_tokens == 100_000
-    assert config.max_total_tokens == 500_000
+    assert config.max_prompt_tokens is None
+    assert config.max_completion_tokens is None
+    assert config.max_total_tokens is None
     assert config.max_cost_usd == 10.0
     assert config.max_calls == 128
     assert config.max_concurrent_calls == 2
@@ -163,7 +172,7 @@ def test_spend_config_defaults_are_finite() -> None:
                 SpendConfig.model_validate({field: value})
 
 
-def test_request_estimate_is_serialized_utf8_byte_upper_bound() -> None:
+def test_request_estimate_is_below_semantic_byte_ceiling() -> None:
     tools = [
         AvailableTool(
             function=AvailableFunction(
@@ -178,19 +187,9 @@ def test_request_estimate_is_serialized_utf8_byte_upper_bound() -> None:
         "json_schema": {"name": "answer", "schema": {"type": "object"}},
     }
     request = _request(tools=tools, response_format=response_format)
-    serialized = orjson.dumps({
-        "messages": [
-            message.model_dump(mode="json", exclude_none=True)
-            for message in request.messages
-        ],
-        "tools": [
-            tool.model_dump(mode="json", exclude_none=True)
-            for tool in request.tools or []
-        ],
-        "response_format": response_format,
-    })
+    footprint = request_prompt_footprint(request)
 
-    assert estimate_request_tokens(request) == len(serialized)
+    assert estimate_request_tokens(request) <= footprint.strict_tokens
     assert estimate_request_tokens(request) >= len("hello é".encode())
 
 
@@ -207,19 +206,131 @@ def test_request_estimate_includes_file_image_base64_expansion(tmp_path) -> None
         model=_model(),
         messages=[LLMMessage(role=Role.USER, content="inspect", images=[image])],
     )
-    payload = {
-        "messages": [
-            message.model_dump(mode="json", exclude_none=True)
-            for message in request.messages
-        ],
-        "tools": [],
-        "response_format": None,
-    }
-    expanded_size = 4 * ((len(image_bytes) + 2) // 3) + len(b"data:image/png;base64,")
-
-    assert (
-        estimate_request_tokens(request) == len(orjson.dumps(payload)) + expanded_size
+    without_image = CompletionRequest(
+        model=_model(), messages=[LLMMessage(role=Role.USER, content="inspect")]
     )
+
+    assert estimate_request_tokens(request) > estimate_request_tokens(without_image)
+
+
+def _large_request(
+    *, content_size: int = 180_000, model_name: str = "spend-test"
+) -> CompletionRequest:
+    model = _model().model_copy(update={"name": model_name, "alias": model_name})
+    return CompletionRequest(
+        model=model,
+        messages=[LLMMessage(role=Role.USER, content="x" * content_size)],
+        max_tokens=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_adaptive_estimator_admits_long_cached_session_under_explicit_cap(
+    tmp_path,
+) -> None:
+    config = SpendConfig(
+        max_prompt_tokens=400_000,
+        max_completion_tokens=100_000,
+        max_total_tokens=500_000,
+        max_cost_usd=1_000.0,
+        max_calls=20,
+    )
+    usage = LLMUsage(prompt_tokens=45_000, cached_tokens=40_000, completion_tokens=1)
+    result = LLMChunk(message=LLMMessage(role=Role.ASSISTANT), usage=usage)
+    request = _large_request()
+    adaptive_backend = _CountingBackend(result=result)
+    adaptive = SessionSpendAdapter.create(
+        config, "adaptive-session", ledger_path=tmp_path / "adaptive-ledger"
+    )
+
+    for _ in range(8):
+        await adaptive.complete(adaptive_backend, request)
+
+    reservations = [
+        event.reservation for event in adaptive.events() if event.kind == "reserved"
+    ]
+    assert adaptive_backend.complete_calls == 8
+    assert reservations[0].prompt_estimate is not None
+    assert reservations[-1].prompt_estimate is not None
+    assert (
+        reservations[-1].prompt_estimate.estimated_tokens
+        < reservations[0].prompt_estimate.estimated_tokens
+    )
+    assert reservations[-1].prompt_estimate.factor > 1.15
+    assert reservations[-1].estimate.cost_usd == pytest.approx(
+        reservations[-1].estimate.prompt_tokens / 1_000_000 + 2 / 1_000_000
+    )
+    assert adaptive.snapshot().spent.cached_tokens == 320_000
+
+    strict_backend = _CountingBackend(result=result)
+    strict = SessionSpendAdapter.create(
+        config.model_copy(update={"prompt_estimator_mode": PromptEstimatorMode.STRICT}),
+        "strict-session",
+        ledger_path=tmp_path / "strict-ledger",
+    )
+    for _ in range(5):
+        await strict.complete(strict_backend, request)
+    with pytest.raises(SpendBudgetExceededError) as exc_info:
+        await strict.complete(strict_backend, request)
+
+    assert exc_info.value.rejection.reason == SpendRejectionReason.PROMPT_TOKENS
+    assert strict_backend.complete_calls == 5
+
+
+@pytest.mark.asyncio
+async def test_prompt_calibration_replays_and_isolates_models(tmp_path) -> None:
+    config = SpendConfig(max_cost_usd=1_000.0, max_calls=10)
+    result = LLMChunk(
+        message=LLMMessage(role=Role.ASSISTANT),
+        usage=LLMUsage(prompt_tokens=25_000, completion_tokens=1),
+    )
+    ledger_path = tmp_path / "replay-ledger"
+    first = SessionSpendAdapter.create(
+        config, "replay-session", ledger_path=ledger_path
+    )
+    await first.complete(
+        _CountingBackend(result=result), _large_request(content_size=100_000)
+    )
+
+    resumed = SessionSpendAdapter.create(
+        config, "replay-session", ledger_path=ledger_path
+    )
+    await resumed.complete(
+        _CountingBackend(result=result), _large_request(content_size=100_000)
+    )
+    await resumed.complete(
+        _CountingBackend(result=result),
+        _large_request(content_size=100_000, model_name="other-model"),
+    )
+
+    reservations = [
+        event.reservation for event in resumed.events() if event.kind == "reserved"
+    ]
+    assert reservations[0].prompt_estimate is not None
+    assert reservations[1].prompt_estimate is not None
+    assert reservations[2].prompt_estimate is not None
+    assert reservations[0].prompt_estimate.sample_count == 0
+    assert reservations[1].prompt_estimate.sample_count == 1
+    assert reservations[2].prompt_estimate.sample_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("usage", [None, LLMUsage()])
+async def test_absent_or_zero_usage_does_not_train_prompt_estimator(
+    tmp_path, usage: LLMUsage | None
+) -> None:
+    adapter = _adapter(tmp_path, max_calls=3)
+    missing = LLMChunk(message=LLMMessage(role=Role.ASSISTANT), usage=usage)
+    request = _large_request(content_size=20_000)
+
+    await adapter.complete(_CountingBackend(result=missing), request)
+    await adapter.complete(_CountingBackend(), request)
+
+    reservations = [
+        event.reservation for event in adapter.events() if event.kind == "reserved"
+    ]
+    assert reservations[1].prompt_estimate is not None
+    assert reservations[1].prompt_estimate.sample_count == 0
 
 
 @pytest.mark.asyncio
@@ -260,6 +371,8 @@ async def test_budget_rejection_never_invokes_backend(
             await adapter.complete(backend, _request())
 
     assert exc_info.value.rejection.reason == SpendRejectionReason.CALLS
+    assert "configured call limit is reached" in str(exc_info.value)
+    assert "session:" not in str(exc_info.value)
     assert backend.complete_calls == 0
     assert backend.streaming_calls == 0
 
@@ -423,6 +536,9 @@ async def test_agent_loop_runtime_caps_reject_before_dispatch(
         await agent._chat()
 
     assert exc_info.value.rejection.reason == reason
+    if reason is SpendRejectionReason.PROMPT_TOKENS:
+        assert "adaptive prompt estimate" in str(exc_info.value)
+        assert "before dispatch" in str(exc_info.value)
     assert backend.requests_messages == []
 
 
@@ -515,6 +631,84 @@ async def test_reopening_session_tightens_caps_and_preserves_deadline(tmp_path) 
     with pytest.raises(SpendBudgetExceededError):
         await resumed.complete(backend, _request(max_tokens=1))
     assert backend.complete_calls == 0
+
+
+def test_reopening_legacy_session_migrates_omitted_default_token_caps(tmp_path) -> None:
+    ledger_path = tmp_path / "legacy-ledger"
+    broker = SpendBroker(ledger_path)
+    broker.define_envelope(
+        SpendEnvelope(
+            scope_id="session:legacy-session",
+            kind=SpendScopeKind.SESSION,
+            limits=SpendEnvelopeLimits(
+                max_prompt_tokens=400_000,
+                max_completion_tokens=100_000,
+                max_total_tokens=500_000,
+                max_cost_usd=10.0,
+                max_calls=128,
+                max_concurrent_calls=2,
+                max_retries=16,
+            ),
+        )
+    )
+
+    resumed = SessionSpendAdapter.create(
+        SpendConfig(), "legacy-session", ledger_path=ledger_path
+    )
+
+    envelope = resumed.snapshot().envelope
+    assert envelope.policy_version == 2
+    assert envelope.limits.max_prompt_tokens is None
+    assert envelope.limits.max_completion_tokens is None
+    assert envelope.limits.max_total_tokens is None
+    assert (
+        len([
+            event
+            for event in resumed.events()
+            if event.kind == "envelope_policy_migrated"
+        ])
+        == 1
+    )
+
+
+def test_reopening_legacy_session_preserves_explicit_default_token_caps(
+    tmp_path,
+) -> None:
+    ledger_path = tmp_path / "explicit-legacy-ledger"
+    broker = SpendBroker(ledger_path)
+    legacy_limits = SpendEnvelopeLimits(
+        max_prompt_tokens=400_000,
+        max_completion_tokens=100_000,
+        max_total_tokens=500_000,
+        max_cost_usd=10.0,
+        max_calls=128,
+        max_concurrent_calls=2,
+        max_retries=16,
+    )
+    broker.define_envelope(
+        SpendEnvelope(
+            scope_id="session:explicit-legacy-session",
+            kind=SpendScopeKind.SESSION,
+            limits=legacy_limits,
+        )
+    )
+
+    resumed = SessionSpendAdapter.create(
+        SpendConfig(
+            max_prompt_tokens=400_000,
+            max_completion_tokens=100_000,
+            max_total_tokens=500_000,
+        ),
+        "explicit-legacy-session",
+        ledger_path=ledger_path,
+    )
+
+    envelope = resumed.snapshot().envelope
+    assert envelope.policy_version == 1
+    assert envelope.limits == legacy_limits
+    assert not any(
+        event.kind == "envelope_policy_migrated" for event in resumed.events()
+    )
 
 
 @pytest.mark.asyncio

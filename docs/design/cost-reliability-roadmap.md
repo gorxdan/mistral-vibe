@@ -62,7 +62,7 @@ Initial release gates, to be tightened after the baseline is recorded:
 |---|---|
 | Usage | `AgentLoop._update_stats` records primary/compaction/subagent calls. `UsageRecord` carries backwards-compatible `call_kind` and `result_used`; the local `UsageMeter` handles auxiliary calls. The durable `SpendBroker` adds session/workflow/team/agent/call scopes, but the usage event stream does not yet expose the complete scope and outcome metadata. |
 | Auxiliary calls | Memory collaborators and the safety judge reserve through both their smaller host-local meter and the shared session broker with distinct purposes. Optional memory fails open on exhaustion; safety judging falls back to human approval. Narration, MCP sampling, isolated subprocesses, and backend-internal retries remain boundaries. |
-| Session limits | `SessionSpendAdapter` reserves before primary, compaction, and in-process task/workflow calls, shares a file-lock-backed parent cap, reconciles exact or estimated usage, and folds runtime price/token caps into finite config defaults. Turn middleware remains as a compatibility guard. |
+| Session limits | `SessionSpendAdapter` reserves before primary, compaction, and in-process task/workflow calls and shares a file-lock-backed parent envelope. Cumulative token caps are opt-in; adaptive prompt admission is calibrated from exact usage by provider/model/request shape, while $10, call, concurrency, retry, and per-call output defaults remain finite. Explicit config and runtime limits constrain admission; an unexpectedly token-dense call can reconcile above the remaining allowance once. Turn middleware remains as a compatibility guard. |
 | Workflow budget | Workflow `Budget` still supplies its script-visible token allowance. In-process workflow agents receive child scopes under the session broker, and either local or shared spend exhaustion produces persisted `WorkflowStatus.BLOCKED`. Isolated workflow subprocesses do not yet inherit the parent ledger. |
 | Provider concurrency | The process-global provider limiter defaults to four requests in `vibe/core/llm/provider_limiter.py:20-25,52-72`; it is a rate limiter, not a session cost policy. |
 | Memory recall | Hybrid recall now scores locally first and asks the LLM only on an ambiguous cutoff. The weighted lexical/IDF selector and bounded query/store cache are at `vibe/core/memory/local_selector.py:57-218`; blocking and prefetch wiring are at `vibe/core/agent_loop_memory.py:152-228,286-377`. Defaults remain per-turn, with two bodies, 4,000 injected body characters, and a 4,000-character index at `vibe/core/config/_settings.py:306-371`. |
@@ -196,9 +196,14 @@ transactional ledger.
   `session -> workflow/team -> agent -> call`.
 - [x] Support limits for prompt tokens, completion tokens, total tokens, USD,
   calls, concurrent paid calls, retries, and wall-clock deadline.
-- [x] Reserve estimated worst-case spend before dispatch and reconcile provider
-  usage/cost afterward. Treat missing usage as the reserved estimate and expose an
-  `estimated=true` diagnostic.
+- [x] Reserve conservative prompt/completion spend before dispatch and reconcile
+  provider usage/cost afterward. Treat missing usage as the reserved estimate and
+  expose an `estimated=true` diagnostic.
+- [x] Make cumulative token caps opt-in and calibrate adaptive prompt estimates
+  from recent exact usage by provider, model, and request shape. Keep strict
+  serialized token-bearing request estimation available, preserve
+  explicit/runtime admission caps, and migrate only exact legacy generated
+  defaults in configs and ledgers.
 - [x] Send the admitted completion bound to routed backends when `max_tokens` is
   omitted. The `openai-chatgpt` Codex endpoint rejects that field, so this
   backend remains reservation-and-reconciliation enforced rather than

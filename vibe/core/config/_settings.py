@@ -36,6 +36,7 @@ from vibe.core.config._defaults import (
     DEFAULT_VIBE_BASE_URL,
 )
 from vibe.core.config._spend_config import SpendConfig
+from vibe.core.config._spend_migration import prepare_spend_migration
 from vibe.core.config._verification_config import TrustedVerificationRecipeConfig
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.config.models import (
@@ -1440,10 +1441,7 @@ class VibeConfig(BaseSettings):
 
     @classmethod
     def _migrate(cls) -> None:
-        mgr = get_harness_files_manager()
-        if not mgr.persist_allowed:
-            return
-        file = mgr.config_file
+        file = prepare_spend_migration(get_harness_files_manager())
         if file is None:
             return
         try:

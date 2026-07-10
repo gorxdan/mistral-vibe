@@ -119,7 +119,7 @@ pip install mistral-vibe
 - **Multiple Built-in Agents**: Choose from different agent profiles tailored for specific workflows.
 - **Workflow Orchestration**: Write Python scripts that orchestrate parallel agents for codebase audits, migrations, and cross-checked research. Run bundled workflows like `/deep-research` or create your own.
 - **Effort Modes**: Switch between `normal` (turn-by-turn) and `le chaton` (max thinking + automatic workflow planning) via `/effort`.
-- **Session Spend Controls**: Primary, compaction, and in-process child calls reserve from one finite token/USD/call/concurrency envelope before dispatch.
+- **Session Spend Controls**: Primary, compaction, and in-process child calls reserve from one durable envelope using adaptive prompt estimates, finite USD/call/concurrency safeguards, and optional hard token caps.
 - **Trusted Verification Receipts**: Harness-run checks produce durable receipts bound to the task contract and exact repository state; model-authored PASS prose cannot authorize isolated-worktree delivery.
 - **Cross-Session Memory**: Durable notes stored as plain `*.md` files under `~/.vibe/memory/`. Local lexical retrieval handles confident matches; an LLM selector is used only for ambiguous cutoffs by default. Memories are global by default; use `scope = "project"` to namespace them per trusted project (stored under `~/.vibe`, never committed).
 - **Agent Teams**: Coordinate multiple independent Vibe instances working together as teammates, communicating via file-backed shared state.
@@ -668,9 +668,7 @@ the same ledger reserve under a file lock.
 
 ```toml
 [spend]
-max_prompt_tokens = 400000
-max_completion_tokens = 100000
-max_total_tokens = 500000
+prompt_estimator_mode = "adaptive" # "adaptive" or "strict"
 max_cost_usd = 10.0
 max_calls = 128
 max_concurrent_calls = 2
@@ -679,16 +677,39 @@ max_retries = 16
 default_max_output_tokens = 32768
 unpriced_input_usd_per_million = 10.0
 unpriced_output_usd_per_million = 30.0
+
+# Optional cumulative hard caps; omitted by default.
+# max_prompt_tokens = 2000000
+# max_completion_tokens = 200000
+# max_total_tokens = 2200000
 ```
 
-`max_price` and `max_session_tokens` runtime limits further reduce these caps.
-Missing provider usage is charged at the reservation estimate. Models without
-configured or built-in prices use the conservative fallback rates above; set
-both fallback rates to `0` for a local or subscription model that should not be
-USD-limited. When a request omits `max_tokens`, routed backends receive the
-broker's admitted completion bound. The `openai-chatgpt` Codex endpoint rejects
-that field, so its adapter strips the bound at the HTTP boundary and relies on
-reservation plus usage reconciliation instead of a provider-enforced cap.
+The cumulative token fields are omitted by default. Adaptive mode starts with a
+conservative serialized-request estimate, then learns from exact provider usage
+stored in the ledger. Calibration is isolated by provider, model, and request
+shape (thinking settings, vision, tools, and response schema), and only
+similarly-sized requests contribute. `prompt_estimator_mode = "strict"` disables
+learning and reserves the serialized token-bearing request byte ceiling.
+
+Explicit cumulative token values are admission caps. Runtime
+`max_session_tokens` (`--max-tokens`) and `max_price` (`--max-price`) can tighten
+the token and USD envelopes further. Adaptive mode reserves before dispatch, but
+an unexpectedly token-dense call can reconcile above the remaining cap by that
+one call; later calls are blocked. Use `prompt_estimator_mode = "strict"` for the
+most conservative preflight behavior. Existing generated configs whose complete
+`[spend]` table still matches the old defaults are migrated once by removing the
+legacy 400,000/100,000/500,000 token caps; customized or partial tables remain
+explicit. Matching legacy ledger caps are relaxed only for omitted fields. Other
+envelope changes remain tighten-only for the life of that root session.
+
+The default $10, 128-call, two-concurrent-call, 16-retry, and 32,768-token
+per-call output controls remain finite. Missing provider usage is charged at the
+reservation estimate. Models without configured or built-in prices use the
+fallback rates above; set both to `0` for a local or subscription model that
+should not consume the USD cap. When a request omits `max_tokens`, routed
+backends receive the admitted completion bound. The `openai-chatgpt` Codex
+endpoint rejects that field, so its adapter strips it at the HTTP boundary and
+relies on reservation reconciliation.
 
 Isolated subprocesses, MCP sampling, narration, and backend-internal provider
 retries are explicit later integration boundaries. They do not yet reserve a

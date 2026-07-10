@@ -17,9 +17,16 @@ from vibe.core.config._settings import (
     DEFAULT_MISTRAL_BROWSER_AUTH_API_BASE_URL,
     DEFAULT_MISTRAL_BROWSER_AUTH_BASE_URL,
     DEFAULT_PROVIDERS,
+    skip_api_key_check,
+)
+from vibe.core.config._spend_migration import (
+    LEGACY_GENERATED_SPEND_DEFAULTS,
+    LEGACY_SPEND_TOKEN_LIMITS,
+    SPEND_DYNAMIC_DEFAULTS_MIGRATION,
 )
 from vibe.core.config.harness_files import (
     HarnessFilesManager,
+    get_harness_files_manager,
     init_harness_files_manager,
     reset_harness_files_manager,
 )
@@ -27,6 +34,7 @@ from vibe.core.paths import VIBE_HOME
 from vibe.core.trusted_folders import trusted_folders_manager
 from vibe.core.types import Backend
 from vibe.core.utils.http import build_ssl_context, configure_ssl_context
+from vibe.core.utils.io import read_safe, write_safe
 from vibe.setup.onboarding.context import OnboardingContext
 
 
@@ -774,6 +782,152 @@ class TestMigrateKimiGlmPreservedThinking:
         glm = result["models"][0]
         assert glm["preserve_reasoning"] is False  # already-set value kept
         assert glm["temperature"] == 0.2  # marker present -> no rerun/clobber
+
+
+class TestMigrateSpendDynamicTokenDefaults:
+    def test_migrates_exact_generated_defaults_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        legacy_spend = dict(LEGACY_GENERATED_SPEND_DEFAULTS)
+        write_safe(config_file, tomli_w.dumps({"spend": legacy_spend}))
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        result = tomllib.loads(read_safe(config_file).text)
+        expected_spend = {
+            key: value
+            for key, value in legacy_spend.items()
+            if key not in LEGACY_SPEND_TOKEN_LIMITS
+        }
+        assert result["spend"] == expected_spend
+        assert result["applied_migrations"] == [SPEND_DYNAMIC_DEFAULTS_MIGRATION]
+
+        migrated = read_safe(config_file).text
+        VibeConfig._migrate()
+        assert read_safe(config_file).text == migrated
+
+    def test_marker_preserves_later_explicit_legacy_limits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "applied_migrations": [SPEND_DYNAMIC_DEFAULTS_MIGRATION],
+            "spend": dict(LEGACY_GENERATED_SPEND_DEFAULTS),
+        }
+        write_safe(config_file, tomli_w.dumps(data))
+        before = read_safe(config_file).text
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        assert read_safe(config_file).text == before
+
+    @pytest.mark.parametrize(
+        "spend",
+        [
+            {**LEGACY_GENERATED_SPEND_DEFAULTS, "max_cost_usd": 25.0},
+            {**LEGACY_GENERATED_SPEND_DEFAULTS, "deadline_seconds": 3600.0},
+            {
+                "max_prompt_tokens": 400_000,
+                "max_completion_tokens": 100_000,
+                "max_total_tokens": 500_000,
+            },
+        ],
+    )
+    def test_preserves_custom_or_partial_spend_tables(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        spend: dict[str, int | float],
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        write_safe(config_file, tomli_w.dumps({"spend": spend}))
+        before = read_safe(config_file).text
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        assert read_safe(config_file).text == before
+
+    def test_migrates_user_config_under_project_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vibe_home = tmp_path / "home"
+        project_root = tmp_path / "project"
+        project_config = project_root / ".vibe" / "config.toml"
+        user_config = vibe_home / "config.toml"
+        write_safe(
+            user_config, tomli_w.dumps({"spend": dict(LEGACY_GENERATED_SPEND_DEFAULTS)})
+        )
+        write_safe(project_config, tomli_w.dumps({"spend": {"max_cost_usd": 3.0}}))
+        project_before = read_safe(project_config).text
+        monkeypatch.setenv("VIBE_HOME", str(vibe_home))
+        monkeypatch.chdir(project_root)
+        monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: True)
+
+        reset_harness_files_manager()
+        try:
+            init_harness_files_manager("user", "project")
+            assert get_harness_files_manager().config_file == project_config
+            with skip_api_key_check():
+                config = VibeConfig.load()
+        finally:
+            reset_harness_files_manager()
+
+        user_result = tomllib.loads(read_safe(user_config).text)
+        assert all(key not in user_result["spend"] for key in LEGACY_SPEND_TOKEN_LIMITS)
+        assert user_result["applied_migrations"] == [SPEND_DYNAMIC_DEFAULTS_MIGRATION]
+        assert read_safe(project_config).text == project_before
+        assert config.spend.max_prompt_tokens is None
+        assert config.spend.max_completion_tokens is None
+        assert config.spend.max_total_tokens is None
+        assert config.spend.max_cost_usd == 3.0
+
+    def test_migrates_exact_project_config_under_user_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vibe_home = tmp_path / "home"
+        project_root = tmp_path / "project"
+        project_config = project_root / ".vibe" / "config.toml"
+        user_config = vibe_home / "config.toml"
+        write_safe(user_config, tomli_w.dumps({"spend": {"max_cost_usd": 3.0}}))
+        write_safe(
+            project_config,
+            tomli_w.dumps({"spend": dict(LEGACY_GENERATED_SPEND_DEFAULTS)}),
+        )
+        user_before = read_safe(user_config).text
+        monkeypatch.setenv("VIBE_HOME", str(vibe_home))
+        monkeypatch.chdir(project_root)
+        monkeypatch.setattr(trusted_folders_manager, "is_trusted", lambda _: True)
+
+        reset_harness_files_manager()
+        try:
+            init_harness_files_manager("user", "project")
+            with skip_api_key_check():
+                config = VibeConfig.load()
+        finally:
+            reset_harness_files_manager()
+
+        project_result = tomllib.loads(read_safe(project_config).text)
+        assert all(
+            key not in project_result["spend"] for key in LEGACY_SPEND_TOKEN_LIMITS
+        )
+        assert project_result["applied_migrations"] == [
+            SPEND_DYNAMIC_DEFAULTS_MIGRATION
+        ]
+        assert read_safe(user_config).text == user_before
+        assert config.spend.max_prompt_tokens is None
+        assert config.spend.max_completion_tokens is None
+        assert config.spend.max_total_tokens is None
+        assert config.spend.max_cost_usd == 10.0
 
 
 class TestMigrateContextWindowBackfill:

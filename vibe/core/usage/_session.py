@@ -8,13 +8,11 @@ from pathlib import Path
 import time
 from uuid import uuid4
 
-import orjson
-
-from vibe.core.config._spend_config import SpendConfig
+from vibe.core.config._spend_config import PromptEstimatorMode, SpendConfig
 from vibe.core.config.models import ModelConfig
 from vibe.core.llm.types import BackendLike, CompletionRequest
 from vibe.core.paths import VIBE_HOME
-from vibe.core.types import FileImageSource, LLMChunk, LLMUsage
+from vibe.core.types import LLMChunk, LLMUsage
 from vibe.core.usage._broker import SpendBroker
 from vibe.core.usage._context import (
     DEFAULT_RESERVATION_LEASE_S,
@@ -25,11 +23,17 @@ from vibe.core.usage._context import (
     SpendEnvelopeSnapshot,
     SpendPurpose,
     SpendRejection,
+    SpendRejectionReason,
     SpendReservation,
     SpendScopeKind,
 )
 from vibe.core.usage._ledger import LedgerEvent
 from vibe.core.usage._pricing import compute_cost, lookup_pricing
+from vibe.core.usage._prompt_estimator import (
+    PromptReservationPlan,
+    estimate_prompt_tokens,
+    request_prompt_footprint,
+)
 
 __all__ = [
     "SPEND_SESSION_ID_METADATA_KEY",
@@ -49,16 +53,68 @@ UNROUTED_PAID_CALL_BOUNDARIES = frozenset({
 SPEND_SESSION_ID_METADATA_KEY = "spend_session_id"
 _RESERVATION_LEASE_S = DEFAULT_RESERVATION_LEASE_S
 _RESERVATION_RENEW_INTERVAL_S = DEFAULT_RESERVATION_LEASE_S / 3
+_LEGACY_DEFAULT_PROMPT_TOKENS = 400_000
+_LEGACY_DEFAULT_COMPLETION_TOKENS = 100_000
+_LEGACY_DEFAULT_TOTAL_TOKENS = 500_000
 
 
 class SpendBudgetExceededError(RuntimeError):
     def __init__(self, rejection: SpendRejection) -> None:
         self.rejection = rejection
-        limited_scope = rejection.limited_scope_id or rejection.scope_id
-        super().__init__(
-            f"Spend budget rejected {rejection.purpose.value} call "
-            f"({rejection.reason.value}) at scope {limited_scope!r}."
-        )
+        super().__init__(_spend_rejection_message(rejection))
+
+
+def _spend_rejection_message(rejection: SpendRejection) -> str:
+    call = f"{rejection.purpose.value} call"
+    match rejection.reason:
+        case SpendRejectionReason.PROMPT_TOKENS:
+            mode = (
+                "adaptive prompt estimate"
+                if rejection.prompt_estimate is not None
+                and rejection.prompt_estimate.adaptive
+                else "prompt estimate"
+            )
+            detail = (
+                f"before dispatch, the {mode} "
+                f"of {rejection.estimate.prompt_tokens:,} tokens would exceed a "
+                "configured prompt-token limit."
+            )
+        case SpendRejectionReason.COMPLETION_TOKENS:
+            detail = (
+                "before dispatch, the "
+                f"{rejection.estimate.completion_tokens:,}-token output bound would "
+                "exceed a configured completion-token limit."
+            )
+        case SpendRejectionReason.TOTAL_TOKENS:
+            detail = (
+                "before dispatch, the estimated "
+                f"{rejection.estimate.total_tokens:,} total tokens would exceed a "
+                "configured total-token limit."
+            )
+        case SpendRejectionReason.COST_USD:
+            detail = (
+                "before dispatch, the uncached "
+                f"reservation estimate of ${rejection.estimate.cost_usd:.4f} would "
+                "exceed the configured USD limit."
+            )
+        case SpendRejectionReason.CALLS:
+            detail = "the configured call limit is reached."
+        case SpendRejectionReason.CONCURRENT_CALLS:
+            detail = (
+                "the paid-call concurrency "
+                "limit is reached; wait for an active call to finish."
+            )
+        case SpendRejectionReason.RETRIES:
+            detail = "the configured retry limit is reached."
+        case SpendRejectionReason.DEADLINE:
+            detail = "the session deadline has passed."
+        case SpendRejectionReason.DUPLICATE_CALL:
+            detail = f"duplicate call id {rejection.call_id!r}."
+        case SpendRejectionReason.UNKNOWN_SCOPE:
+            detail = f"unknown scope {rejection.scope_id!r}."
+        case _:
+            detail = f"budget reason {rejection.reason.value}."
+    return f"Spend admission blocked the {call}: {detail}"
 
 
 class SpendAdmissionBlockedError(RuntimeError):
@@ -66,28 +122,15 @@ class SpendAdmissionBlockedError(RuntimeError):
 
 
 def estimate_request_tokens(request: CompletionRequest) -> int:
-    payload = {
-        "messages": [
-            message.model_dump(mode="json", exclude_none=True)
-            for message in request.messages
-        ],
-        "tools": [
-            tool.model_dump(mode="json", exclude_none=True)
-            for tool in request.tools or []
-        ],
-        "response_format": request.response_format,
-    }
-    expanded_image_bytes = 0
-    for message in request.messages:
-        for image in message.images or []:
-            if not isinstance(image.source, FileImageSource):
-                continue
-            size = image.source.path.stat().st_size
-            base64_size = 4 * ((size + 2) // 3)
-            expanded_image_bytes += base64_size + len(
-                f"data:{image.mime_type};base64,".encode()
-            )
-    return max(1, len(orjson.dumps(payload)) + expanded_image_bytes)
+    footprint = request_prompt_footprint(request)
+    plan = PromptReservationPlan(
+        footprint=footprint,
+        completion_tokens=0,
+        input_cost_usd_per_token=0.0,
+        completion_cost_usd=0.0,
+        adaptive=True,
+    )
+    return estimate_prompt_tokens(plan, []).estimated_tokens
 
 
 def _cost(model: ModelConfig, usage: LLMUsage, config: SpendConfig) -> float:
@@ -117,12 +160,12 @@ def _session_limits(
     runtime_max_cost_usd: float | None,
     runtime_max_total_tokens: int | None,
 ) -> SpendEnvelopeLimits:
-    max_total_tokens = min(
-        config.max_total_tokens,
+    runtime_total = (
         max(runtime_max_total_tokens, 0)
         if runtime_max_total_tokens is not None
-        else config.max_total_tokens,
+        else None
     )
+    max_total_tokens = _tighter_optional(config.max_total_tokens, runtime_total)
     max_cost_usd = min(
         config.max_cost_usd,
         max(runtime_max_cost_usd, 0.0)
@@ -133,8 +176,10 @@ def _session_limits(
         now + config.deadline_seconds if config.deadline_seconds is not None else None
     )
     return SpendEnvelopeLimits(
-        max_prompt_tokens=min(config.max_prompt_tokens, max_total_tokens),
-        max_completion_tokens=min(config.max_completion_tokens, max_total_tokens),
+        max_prompt_tokens=_bounded_by_total(config.max_prompt_tokens, max_total_tokens),
+        max_completion_tokens=_bounded_by_total(
+            config.max_completion_tokens, max_total_tokens
+        ),
         max_total_tokens=max_total_tokens,
         max_cost_usd=max_cost_usd,
         max_calls=config.max_calls,
@@ -142,6 +187,22 @@ def _session_limits(
         max_retries=config.max_retries,
         deadline_at=deadline_at,
     )
+
+
+def _tighter_optional(left: int | None, right: int | None) -> int | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return min(left, right)
+
+
+def _bounded_by_total(limit: int | None, total: int | None) -> int | None:
+    if total is None:
+        return limit
+    if limit is None:
+        return total
+    return min(limit, total)
 
 
 @dataclass(slots=True)
@@ -185,12 +246,13 @@ class _SessionSpendCall:
                 self.reservation, reason="backend dispatch did not start"
             )
             return
-        if usage is None:
+        if usage is None or (usage.prompt_tokens == 0 and usage.completion_tokens == 0):
             self.adapter._broker.reconcile(self.reservation, None)
             return
         cost = _cost(self.request.model, usage, self.config)
         actual = SpendAmount(
             prompt_tokens=usage.prompt_tokens,
+            cached_tokens=max(0, min(usage.cached_tokens, usage.prompt_tokens)),
             completion_tokens=usage.completion_tokens,
             cost_usd=cost,
         )
@@ -245,6 +307,7 @@ class SessionSpendAdapter:
         session_envelope = SpendEnvelope(
             scope_id=session_scope_id,
             kind=SpendScopeKind.SESSION,
+            policy_version=2,
             limits=_session_limits(
                 config,
                 now=clock(),
@@ -258,6 +321,32 @@ class SessionSpendAdapter:
         elif existing_session_envelope.kind != SpendScopeKind.SESSION:
             broker.define_envelope(session_envelope)
         else:
+            if (
+                existing_session_envelope.policy_version == 1
+                and runtime_max_total_tokens is None
+            ):
+                clear_prompt = (
+                    config.max_prompt_tokens is None
+                    and existing_session_envelope.limits.max_prompt_tokens
+                    == _LEGACY_DEFAULT_PROMPT_TOKENS
+                )
+                clear_completion = (
+                    config.max_completion_tokens is None
+                    and existing_session_envelope.limits.max_completion_tokens
+                    == _LEGACY_DEFAULT_COMPLETION_TOKENS
+                )
+                clear_total = (
+                    config.max_total_tokens is None
+                    and existing_session_envelope.limits.max_total_tokens
+                    == _LEGACY_DEFAULT_TOTAL_TOKENS
+                )
+                if clear_prompt or clear_completion or clear_total:
+                    broker.migrate_legacy_default_token_limits(
+                        session_scope_id,
+                        clear_prompt_tokens=clear_prompt,
+                        clear_completion_tokens=clear_completion,
+                        clear_total_tokens=clear_total,
+                    )
             broker.tighten_envelope(session_scope_id, session_envelope.limits)
         agent_scope_id = f"agent:{session_id}:primary"
         broker.define_envelope(
@@ -369,22 +458,28 @@ class SessionSpendAdapter:
     ) -> _SessionSpendCall:
         if self._admission_state.error is not None:
             raise self._admission_state.error
-        prompt_tokens = estimate_request_tokens(request)
+        footprint = request_prompt_footprint(request)
         completion_tokens = self._completion_token_estimate(request)
-        estimated_usage = LLMUsage(
-            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
-        )
-        estimated_cost = _cost(request.model, estimated_usage, self._config)
-        estimate = SpendAmount(
-            prompt_tokens=prompt_tokens,
+        plan = PromptReservationPlan(
+            footprint=footprint,
             completion_tokens=completion_tokens,
-            cost_usd=estimated_cost,
+            input_cost_usd_per_token=_cost(
+                request.model, LLMUsage(prompt_tokens=1), self._config
+            ),
+            completion_cost_usd=_cost(
+                request.model,
+                LLMUsage(completion_tokens=completion_tokens),
+                self._config,
+            ),
+            adaptive=(
+                self._config.prompt_estimator_mode is PromptEstimatorMode.ADAPTIVE
+            ),
         )
-        decision = self._broker.try_reserve(
+        decision = self._broker.try_reserve_prompt(
             SpendContext(
                 scope_id=self.agent_scope_id, purpose=purpose, is_retry=is_retry
             ),
-            estimate,
+            plan,
             lease_s=_RESERVATION_LEASE_S,
         )
         if isinstance(decision, SpendRejection):

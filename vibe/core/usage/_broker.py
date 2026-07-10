@@ -16,6 +16,7 @@ from vibe.core.usage._context import (
     SpendSettlement,
 )
 from vibe.core.usage._ledger import LedgerEvent, SpendLedger
+from vibe.core.usage._prompt_estimator import PromptReservationPlan
 
 __all__ = ["SpendBroker"]
 
@@ -49,6 +50,21 @@ class SpendBroker:
     ) -> SpendEnvelope:
         return self._ledger.tighten_envelope(scope_id, limits)
 
+    def migrate_legacy_default_token_limits(
+        self,
+        scope_id: str,
+        *,
+        clear_prompt_tokens: bool,
+        clear_completion_tokens: bool,
+        clear_total_tokens: bool,
+    ) -> SpendEnvelope:
+        return self._ledger.migrate_legacy_default_token_limits(
+            scope_id,
+            clear_prompt_tokens=clear_prompt_tokens,
+            clear_completion_tokens=clear_completion_tokens,
+            clear_total_tokens=clear_total_tokens,
+        )
+
     def try_reserve(
         self,
         context: SpendContext,
@@ -57,6 +73,15 @@ class SpendBroker:
         lease_s: float = DEFAULT_RESERVATION_LEASE_S,
     ) -> SpendReservation | SpendRejection:
         return self._ledger.try_reserve(context, estimate, lease_s=lease_s)
+
+    def try_reserve_prompt(
+        self,
+        context: SpendContext,
+        plan: PromptReservationPlan,
+        *,
+        lease_s: float = DEFAULT_RESERVATION_LEASE_S,
+    ) -> SpendReservation | SpendRejection:
+        return self._ledger.try_reserve_prompt(context, plan, lease_s=lease_s)
 
     def reconcile(
         self, reservation: SpendReservation | str, actual: SpendAmount | None

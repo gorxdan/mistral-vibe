@@ -227,16 +227,34 @@ the shared session ledger. Restarting Vibe creates a fresh auxiliary envelope.
 
 **Source**: `vibe/core/usage/`, `vibe/core/config/_spend_config.py`
 
-`SpendConfig` has finite defaults of 400,000 prompt tokens, 100,000 completion
-tokens, 500,000 total tokens, $10, 128 calls, two concurrent calls, and 16
-retries. `SessionSpendAdapter` reserves against a file-lock-backed hierarchy
-before primary, compaction, in-process task/workflow, memory, and safety-judge
-dispatch, then reconciles provider usage. Missing usage is charged at the
-estimate. Runtime `max_price` and `max_session_tokens` values can only reduce the
-configured session envelope. Routed requests that omit `max_tokens` receive the
-admitted completion bound, except `openai-chatgpt` Codex requests: that endpoint
-rejects the field, so its adapter strips it and the broker must enforce the
-reservation through reconciliation rather than an HTTP output cap.
+`SpendConfig` leaves cumulative prompt, completion, and total token caps unset by
+default. The finite defaults remain $10, 128 calls, two concurrent calls, 16
+retries, and a 32,768-token per-call output bound. Explicit `max_prompt_tokens`,
+`max_completion_tokens`, and `max_total_tokens` values are preflight admission
+caps; runtime `max_price` and `max_session_tokens` can tighten the USD and token
+envelopes. Adaptive estimates can reconcile above the remaining allowance by one
+unexpectedly token-dense call. Strict mode is the most conservative option when
+minimizing that overshoot risk matters.
+
+`SessionSpendAdapter` reserves against a file-lock-backed hierarchy before
+primary, compaction, in-process task/workflow, memory, and safety-judge dispatch,
+then reconciles provider usage. The default `prompt_estimator_mode = "adaptive"`
+starts conservatively and learns from exact reconciliations persisted in the
+ledger. Observations are isolated by provider, model, and request shape, and only
+comparable request sizes calibrate one another. `"strict"` mode disables learning
+and reserves the serialized token-bearing request byte ceiling. Missing usage is
+charged at the reservation estimate.
+
+An exact, untouched legacy generated `[spend]` table is migrated once by removing
+its old 400,000 prompt, 100,000 completion, and 500,000 total token defaults.
+Customized or partial tables remain explicit hard limits. Existing ledgers can
+relax matching legacy defaults only for fields omitted after migration; normal
+envelope changes remain tighten-only.
+
+Routed requests that omit `max_tokens` receive the admitted completion bound,
+except `openai-chatgpt` Codex requests: that endpoint rejects the field, so its
+adapter strips it and the broker enforces the reservation through reconciliation
+rather than an HTTP output cap.
 
 Isolated subprocesses, MCP sampling, narration, and backend-internal retry
 attempts remain explicit unrouted boundaries.

@@ -95,7 +95,7 @@ async def test_direct_agent_preserves_spend_rejection(schema: dict | None) -> No
     assert len(calls) == 1
     failed = runtime.build_run().phases[0].agent_results[0]
     assert failed.completed is False
-    assert "session:test" in (failed.error or "")
+    assert "configured call limit is reached" in (failed.error or "")
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ async def test_spend_rejection_blocks_workflow(body: str) -> None:
     }
     assert result.return_value is None
     assert "Workflow blocked" in result.summary
-    assert "session:test" in result.summary
+    assert "configured call limit is reached" in result.summary
 
 
 @pytest.mark.parametrize("mode", ["parallel", "pipeline"])

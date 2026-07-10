@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing
 from pathlib import Path
 
+import orjson
 from pydantic import ValidationError
 import pytest
 
@@ -20,7 +21,7 @@ from vibe.core.usage._context import (
     SpendSettlementDisposition,
 )
 from vibe.core.usage._ledger import SpendLedgerConflictError, SpendLedgerCorruptError
-from vibe.core.utils.io import write_safe
+from vibe.core.utils.io import read_safe, write_safe
 
 
 class _Clock:
@@ -343,6 +344,198 @@ def test_conflicting_scope_definition_is_rejected(tmp_path) -> None:
                 limits=SpendEnvelopeLimits(max_calls=1),
             )
         )
+
+
+def test_legacy_default_token_limit_migration_is_durable_and_idempotent(
+    tmp_path,
+) -> None:
+    ledger_path = tmp_path / "ledger"
+    broker = SpendBroker(ledger_path, clock=_Clock(100.0))
+    _define_agent(
+        broker,
+        session_limits=SpendEnvelopeLimits(
+            max_prompt_tokens=400_000,
+            max_completion_tokens=100_000,
+            max_total_tokens=500_000,
+            max_cost_usd=3.0,
+            max_calls=7,
+            max_concurrent_calls=2,
+            max_retries=4,
+            deadline_at=999.0,
+        ),
+    )
+    reservation = broker.try_reserve(
+        _context("before-migration"), SpendAmount(prompt_tokens=12)
+    )
+    assert isinstance(reservation, SpendReservation)
+    broker.reconcile(reservation, SpendAmount(prompt_tokens=7))
+
+    migrated = broker.migrate_legacy_default_token_limits(
+        "session",
+        clear_prompt_tokens=True,
+        clear_completion_tokens=True,
+        clear_total_tokens=True,
+    )
+    event_count = len(broker.events())
+    repeated = broker.migrate_legacy_default_token_limits(
+        "session",
+        clear_prompt_tokens=True,
+        clear_completion_tokens=True,
+        clear_total_tokens=True,
+    )
+
+    assert migrated == repeated
+    assert migrated.policy_version == 2
+    assert len(broker.events()) == event_count
+    assert migrated.limits == SpendEnvelopeLimits(
+        max_cost_usd=3.0,
+        max_calls=7,
+        max_concurrent_calls=2,
+        max_retries=4,
+        deadline_at=999.0,
+    )
+    migrations = [
+        event for event in broker.events() if event.kind == "envelope_policy_migrated"
+    ]
+    assert len(migrations) == 1
+    assert migrations[0].from_policy_version == 1
+    assert migrations[0].to_policy_version == 2
+    assert migrations[0].cleared_fields == (
+        "max_prompt_tokens",
+        "max_completion_tokens",
+        "max_total_tokens",
+    )
+
+    scope_path = ledger_path / "events" / "00000000000000000001.json"
+    scope_payload = orjson.loads(read_safe(scope_path).text)
+    scope_payload["envelope"].pop("policy_version")
+    write_safe(scope_path, orjson.dumps(scope_payload).decode())
+
+    reopened = SpendBroker(ledger_path)
+    assert reopened.get_envelope("session") == migrated
+    snapshot = reopened.snapshot("session")
+    assert snapshot.spent.prompt_tokens == 7
+    assert snapshot.remaining_prompt_tokens is None
+    assert snapshot.remaining_completion_tokens is None
+    assert snapshot.remaining_total_tokens is None
+
+
+def test_legacy_migration_preserves_unselected_explicit_token_limit(tmp_path) -> None:
+    broker = SpendBroker(tmp_path / "ledger")
+    broker.define_envelope(
+        SpendEnvelope(
+            scope_id="session",
+            kind=SpendScopeKind.SESSION,
+            limits=SpendEnvelopeLimits(
+                max_prompt_tokens=400_000,
+                max_completion_tokens=75_000,
+                max_total_tokens=500_000,
+            ),
+        )
+    )
+
+    with pytest.raises(SpendLedgerConflictError, match="max_completion_tokens"):
+        broker.migrate_legacy_default_token_limits(
+            "session",
+            clear_prompt_tokens=True,
+            clear_completion_tokens=True,
+            clear_total_tokens=True,
+        )
+    unchanged = broker.get_envelope("session")
+    assert unchanged is not None
+    assert unchanged.limits.max_prompt_tokens == 400_000
+    assert unchanged.limits.max_completion_tokens == 75_000
+    assert unchanged.limits.max_total_tokens == 500_000
+
+    migrated = broker.migrate_legacy_default_token_limits(
+        "session",
+        clear_prompt_tokens=True,
+        clear_completion_tokens=False,
+        clear_total_tokens=True,
+    )
+    assert migrated.limits.max_prompt_tokens is None
+    assert migrated.limits.max_completion_tokens == 75_000
+    assert migrated.limits.max_total_tokens is None
+
+
+def test_legacy_migration_is_session_only_and_cannot_run_twice(tmp_path) -> None:
+    broker = SpendBroker(tmp_path / "ledger")
+    _define_agent(
+        broker,
+        session_limits=SpendEnvelopeLimits(
+            max_prompt_tokens=400_000,
+            max_completion_tokens=100_000,
+            max_total_tokens=500_000,
+        ),
+        agent_limits=SpendEnvelopeLimits(max_prompt_tokens=400_000),
+    )
+
+    with pytest.raises(SpendLedgerConflictError, match="session scope"):
+        broker.migrate_legacy_default_token_limits(
+            "agent",
+            clear_prompt_tokens=True,
+            clear_completion_tokens=False,
+            clear_total_tokens=False,
+        )
+
+    broker.migrate_legacy_default_token_limits(
+        "session",
+        clear_prompt_tokens=True,
+        clear_completion_tokens=False,
+        clear_total_tokens=False,
+    )
+    with pytest.raises(SpendLedgerConflictError, match="already applied"):
+        broker.migrate_legacy_default_token_limits(
+            "session",
+            clear_prompt_tokens=False,
+            clear_completion_tokens=True,
+            clear_total_tokens=False,
+        )
+
+
+def test_new_policy_envelope_cannot_be_mistaken_for_legacy_default(tmp_path) -> None:
+    broker = SpendBroker(tmp_path / "ledger")
+    envelope = SpendEnvelope(
+        scope_id="session",
+        kind=SpendScopeKind.SESSION,
+        policy_version=2,
+        limits=SpendEnvelopeLimits(max_prompt_tokens=400_000),
+    )
+    assert broker.define_envelope(envelope) == envelope
+    assert broker.define_envelope(envelope) == envelope
+
+    with pytest.raises(SpendLedgerConflictError, match="policy version 1"):
+        broker.migrate_legacy_default_token_limits(
+            "session",
+            clear_prompt_tokens=True,
+            clear_completion_tokens=False,
+            clear_total_tokens=False,
+        )
+
+
+def test_corrupt_legacy_migration_cannot_change_unrelated_limits(tmp_path) -> None:
+    ledger_path = tmp_path / "ledger"
+    broker = SpendBroker(ledger_path)
+    broker.define_envelope(
+        SpendEnvelope(
+            scope_id="session",
+            kind=SpendScopeKind.SESSION,
+            limits=SpendEnvelopeLimits(max_prompt_tokens=400_000, max_cost_usd=3.0),
+        )
+    )
+    broker.migrate_legacy_default_token_limits(
+        "session",
+        clear_prompt_tokens=True,
+        clear_completion_tokens=False,
+        clear_total_tokens=False,
+    )
+    migration_path = ledger_path / "events" / "00000000000000000002.json"
+    payload = orjson.loads(read_safe(migration_path).text)
+    payload["limits"]["max_cost_usd"] = 4.0
+    write_safe(migration_path, orjson.dumps(payload).decode())
+
+    with pytest.raises(SpendLedgerCorruptError, match="unrelated limits"):
+        SpendBroker(ledger_path).get_envelope("session")
 
 
 def test_envelope_cannot_collide_with_transient_call_scope() -> None:

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from vibe.core.usage._context import (
     MAX_RESERVATION_LEASE_S,
+    PromptTokenEstimate,
     SpendAmount,
     SpendContext,
     SpendEnvelope,
@@ -24,6 +25,12 @@ from vibe.core.usage._context import (
     SpendScopeKind,
     SpendSettlement,
     SpendSettlementDisposition,
+)
+from vibe.core.usage._prompt_estimator import (
+    PROMPT_OBSERVATION_WINDOW,
+    PromptObservation,
+    PromptReservationPlan,
+    estimate_prompt_tokens,
 )
 from vibe.core.utils.io import read_safe, write_durable
 
@@ -74,6 +81,28 @@ class _EnvelopeTightenedEvent(_EventBase):
     limits: SpendEnvelopeLimits
 
 
+type _LegacyTokenLimitField = Literal[
+    "max_prompt_tokens", "max_completion_tokens", "max_total_tokens"
+]
+
+_LEGACY_TOKEN_LIMIT_DEFAULTS: dict[_LegacyTokenLimitField, int] = {
+    "max_prompt_tokens": 400_000,
+    "max_completion_tokens": 100_000,
+    "max_total_tokens": 500_000,
+}
+_LEGACY_TOKEN_LIMIT_FIELDS = tuple(_LEGACY_TOKEN_LIMIT_DEFAULTS)
+
+
+@final
+class _EnvelopePolicyMigratedEvent(_EventBase):
+    kind: Literal["envelope_policy_migrated"] = "envelope_policy_migrated"
+    scope_id: str
+    from_policy_version: Literal[1] = 1
+    to_policy_version: Literal[2] = 2
+    cleared_fields: tuple[_LegacyTokenLimitField, ...] = Field(min_length=1)
+    limits: SpendEnvelopeLimits
+
+
 @final
 class _ReservedEvent(_EventBase):
     kind: Literal["reserved"] = "reserved"
@@ -117,6 +146,7 @@ class _RejectedEvent(_EventBase):
 LedgerEvent = Annotated[
     _ScopeDefinedEvent
     | _EnvelopeTightenedEvent
+    | _EnvelopePolicyMigratedEvent
     | _ReservedEvent
     | _ReconciledEvent
     | _ReleasedEvent
@@ -148,11 +178,16 @@ class _State:
     active: set[str] = field(default_factory=set)
     settlements: dict[str, SpendSettlement] = field(default_factory=dict)
     rejections: list[SpendRejection] = field(default_factory=list)
+    prompt_observations: dict[str, list[PromptObservation]] = field(
+        default_factory=dict
+    )
+    envelope_policy_migrations: set[str] = field(default_factory=set)
 
 
 def _add_amount(left: SpendAmount, right: SpendAmount) -> SpendAmount:
     return SpendAmount(
         prompt_tokens=left.prompt_tokens + right.prompt_tokens,
+        cached_tokens=left.cached_tokens + right.cached_tokens,
         completion_tokens=left.completion_tokens + right.completion_tokens,
         cost_usd=left.cost_usd + right.cost_usd,
     )
@@ -243,11 +278,16 @@ class SpendLedger:
         if event.sequence != state.sequence + 1:
             raise SpendLedgerCorruptError("event sequence is out of order")
         state.sequence = event.sequence
-        if isinstance(event, (_ScopeDefinedEvent, _EnvelopeTightenedEvent)):
+        if isinstance(
+            event,
+            (_ScopeDefinedEvent, _EnvelopeTightenedEvent, _EnvelopePolicyMigratedEvent),
+        ):
             if isinstance(event, _ScopeDefinedEvent):
                 self._apply_scope(state, event.envelope)
-            else:
+            elif isinstance(event, _EnvelopeTightenedEvent):
                 self._apply_tightening(state, event)
+            else:
+                self._apply_policy_migration(state, event)
             return
         if isinstance(event, _ReservedEvent):
             reservation = event.reservation
@@ -326,6 +366,54 @@ class SpendLedger:
             raise SpendLedgerCorruptError("envelope limits were not monotonic")
         state.scopes[event.scope_id] = scope.model_copy(update={"limits": event.limits})
 
+    def _apply_policy_migration(
+        self, state: _State, event: _EnvelopePolicyMigratedEvent
+    ) -> None:
+        scope = state.scopes.get(event.scope_id)
+        if scope is None:
+            raise SpendLedgerCorruptError(
+                "envelope policy migration references unknown scope"
+            )
+        if scope.kind != SpendScopeKind.SESSION:
+            raise SpendLedgerCorruptError(
+                "envelope policy migration requires a session scope"
+            )
+        if scope.policy_version != event.from_policy_version:
+            raise SpendLedgerCorruptError(
+                "envelope policy migration has the wrong source version"
+            )
+        if event.scope_id in state.envelope_policy_migrations:
+            raise SpendLedgerCorruptError("envelope policy migrated more than once")
+        requested = set(event.cleared_fields)
+        canonical_fields = tuple(
+            field_name
+            for field_name in _LEGACY_TOKEN_LIMIT_FIELDS
+            if field_name in requested
+        )
+        if event.cleared_fields != canonical_fields:
+            raise SpendLedgerCorruptError(
+                "envelope policy migration fields are not canonical"
+            )
+        for field_name in event.cleared_fields:
+            if (
+                getattr(scope.limits, field_name)
+                != _LEGACY_TOKEN_LIMIT_DEFAULTS[field_name]
+            ):
+                raise SpendLedgerCorruptError(
+                    "envelope policy migration did not start from a legacy default"
+                )
+        expected_limits = scope.limits.model_copy(
+            update={field_name: None for field_name in event.cleared_fields}
+        )
+        if event.limits != expected_limits:
+            raise SpendLedgerCorruptError(
+                "envelope policy migration changed unrelated limits"
+            )
+        state.scopes[event.scope_id] = scope.model_copy(
+            update={"limits": event.limits, "policy_version": event.to_policy_version}
+        )
+        state.envelope_policy_migrations.add(event.scope_id)
+
     @staticmethod
     def _valid_parent(kind: SpendScopeKind, parent_kind: SpendScopeKind) -> bool:
         if kind in {SpendScopeKind.WORKFLOW, SpendScopeKind.TEAM}:
@@ -360,6 +448,22 @@ class SpendLedger:
             applied=True,
             timestamp=event.timestamp,
         )
+        prompt_estimate = state.reservations[reservation_id].prompt_estimate
+        if (
+            not event.estimated
+            and prompt_estimate is not None
+            and event.amount.prompt_tokens > 0
+        ):
+            observations = state.prompt_observations.setdefault(
+                prompt_estimate.profile_key, []
+            )
+            observations.append(
+                PromptObservation(
+                    base_tokens=prompt_estimate.base_tokens,
+                    actual_tokens=event.amount.prompt_tokens,
+                )
+            )
+            del observations[:-PROMPT_OBSERVATION_WINDOW]
 
     @staticmethod
     def _active_reservation(state: _State, reservation_id: str) -> SpendReservation:
@@ -431,6 +535,68 @@ class SpendLedger:
             )
             return state.scopes[scope_id]
 
+    def migrate_legacy_default_token_limits(
+        self,
+        scope_id: str,
+        *,
+        clear_prompt_tokens: bool,
+        clear_completion_tokens: bool,
+        clear_total_tokens: bool,
+    ) -> SpendEnvelope:
+        requested_fields: list[_LegacyTokenLimitField] = []
+        if clear_prompt_tokens:
+            requested_fields.append("max_prompt_tokens")
+        if clear_completion_tokens:
+            requested_fields.append("max_completion_tokens")
+        if clear_total_tokens:
+            requested_fields.append("max_total_tokens")
+        if not requested_fields:
+            raise ValueError("at least one legacy token limit must be selected")
+        with self._locked():
+            state = self._load()
+            scope = state.scopes.get(scope_id)
+            if scope is None:
+                raise SpendLedgerConflictError(f"unknown scope {scope_id!r}")
+            if scope.kind != SpendScopeKind.SESSION:
+                raise SpendLedgerConflictError(
+                    "legacy token limit migration requires a session scope"
+                )
+            fields_to_clear: list[_LegacyTokenLimitField] = []
+            for field_name in requested_fields:
+                current = getattr(scope.limits, field_name)
+                if current is None:
+                    continue
+                if current != _LEGACY_TOKEN_LIMIT_DEFAULTS[field_name]:
+                    raise SpendLedgerConflictError(
+                        f"{field_name} is not the legacy default"
+                    )
+                fields_to_clear.append(field_name)
+            if not fields_to_clear:
+                return scope
+            if scope_id in state.envelope_policy_migrations:
+                raise SpendLedgerConflictError(
+                    "envelope policy migration was already applied"
+                )
+            if scope.policy_version != 1:
+                raise SpendLedgerConflictError(
+                    "legacy token limit migration requires policy version 1"
+                )
+            limits = scope.limits.model_copy(
+                update={field_name: None for field_name in fields_to_clear}
+            )
+            self._append(
+                state,
+                _EnvelopePolicyMigratedEvent(
+                    sequence=state.sequence + 1,
+                    event_id=uuid4().hex,
+                    timestamp=self._clock(),
+                    scope_id=scope_id,
+                    cleared_fields=tuple(fields_to_clear),
+                    limits=limits,
+                ),
+            )
+            return state.scopes[scope_id]
+
     def _validate_new_scope(self, state: _State, scope: SpendEnvelope) -> None:
         if scope.kind == SpendScopeKind.SESSION:
             if scope.parent_scope_id is not None:
@@ -451,42 +617,86 @@ class SpendLedger:
             raise ValueError(f"lease_s must be in (0, {MAX_RESERVATION_LEASE_S:g}]")
         with self._locked():
             state = self._load()
-            now = self._clock()
-            self._expire_stale(state, now)
-            call_id = context.call_id or uuid4().hex
-            chain = self._known_scope_chain(state, context.scope_id)
-            rejection = self._reservation_rejection(
-                state, context, estimate, call_id, chain, now
+            return self._try_reserve_loaded(state, context, estimate, lease_s=lease_s)
+
+    def try_reserve_prompt(
+        self, context: SpendContext, plan: PromptReservationPlan, *, lease_s: float
+    ) -> SpendReservation | SpendRejection:
+        if lease_s <= 0 or lease_s > MAX_RESERVATION_LEASE_S:
+            raise ValueError(f"lease_s must be in (0, {MAX_RESERVATION_LEASE_S:g}]")
+        with self._locked():
+            state = self._load()
+            prompt_estimate = estimate_prompt_tokens(
+                plan, state.prompt_observations.get(plan.footprint.profile_key, [])
             )
-            if rejection is not None:
-                self._record_rejection(state, rejection, now)
-                return rejection
-            deadline = self._earliest_deadline(state, chain)
-            lease_expires_at = now + lease_s
-            if deadline is not None:
-                lease_expires_at = min(lease_expires_at, deadline)
-            call_scope_id = f"call:{call_id}"
-            reservation = SpendReservation(
-                reservation_id=call_id,
-                call_scope_id=call_scope_id,
-                scope_id=context.scope_id,
-                scope_chain=(*chain, call_scope_id),
-                purpose=context.purpose,
-                estimate=estimate,
-                is_retry=context.is_retry,
-                created_at=now,
-                lease_expires_at=lease_expires_at,
-            )
-            self._append(
-                state,
-                _ReservedEvent(
-                    sequence=state.sequence + 1,
-                    event_id=uuid4().hex,
-                    timestamp=now,
-                    reservation=reservation,
+            estimate = SpendAmount(
+                prompt_tokens=prompt_estimate.estimated_tokens,
+                completion_tokens=plan.completion_tokens,
+                cost_usd=(
+                    prompt_estimate.estimated_tokens * plan.input_cost_usd_per_token
+                    + plan.completion_cost_usd
                 ),
             )
-            return reservation
+            return self._try_reserve_loaded(
+                state,
+                context,
+                estimate,
+                lease_s=lease_s,
+                prompt_estimate=prompt_estimate,
+            )
+
+    def _try_reserve_loaded(
+        self,
+        state: _State,
+        context: SpendContext,
+        estimate: SpendAmount,
+        *,
+        lease_s: float,
+        prompt_estimate: PromptTokenEstimate | None = None,
+    ) -> SpendReservation | SpendRejection:
+        now = self._clock()
+        self._expire_stale(state, now)
+        call_id = context.call_id or uuid4().hex
+        chain = self._known_scope_chain(state, context.scope_id)
+        rejection = self._reservation_rejection(
+            state,
+            context,
+            estimate,
+            call_id,
+            chain,
+            now,
+            prompt_estimate=prompt_estimate,
+        )
+        if rejection is not None:
+            self._record_rejection(state, rejection, now)
+            return rejection
+        deadline = self._earliest_deadline(state, chain)
+        lease_expires_at = now + lease_s
+        if deadline is not None:
+            lease_expires_at = min(lease_expires_at, deadline)
+        call_scope_id = f"call:{call_id}"
+        reservation = SpendReservation(
+            reservation_id=call_id,
+            call_scope_id=call_scope_id,
+            scope_id=context.scope_id,
+            scope_chain=(*chain, call_scope_id),
+            purpose=context.purpose,
+            estimate=estimate,
+            prompt_estimate=prompt_estimate,
+            is_retry=context.is_retry,
+            created_at=now,
+            lease_expires_at=lease_expires_at,
+        )
+        self._append(
+            state,
+            _ReservedEvent(
+                sequence=state.sequence + 1,
+                event_id=uuid4().hex,
+                timestamp=now,
+                reservation=reservation,
+            ),
+        )
+        return reservation
 
     def _known_scope_chain(self, state: _State, scope_id: str) -> tuple[str, ...]:
         if scope_id not in state.scopes:
@@ -514,6 +724,8 @@ class SpendLedger:
         call_id: str,
         chain: tuple[str, ...],
         now: float,
+        *,
+        prompt_estimate: PromptTokenEstimate | None = None,
     ) -> SpendRejection | None:
         reason: SpendRejectionReason | None = None
         limited_scope_id: str | None = None
@@ -534,6 +746,7 @@ class SpendLedger:
             scope_chain=chain,
             purpose=context.purpose,
             estimate=estimate,
+            prompt_estimate=prompt_estimate,
             is_retry=context.is_retry,
             reason=reason,
             limited_scope_id=limited_scope_id,

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 __all__ = [
     "DEFAULT_RESERVATION_LEASE_S",
     "MAX_RESERVATION_LEASE_S",
+    "PromptTokenEstimate",
     "SpendAmount",
     "SpendContext",
     "SpendEnvelope",
@@ -72,10 +73,28 @@ class _FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
 
+class PromptTokenEstimate(_FrozenModel):
+    estimator_version: int = Field(ge=1)
+    profile_key: str = Field(min_length=1, max_length=512)
+    base_tokens: int = Field(ge=1)
+    strict_tokens: int = Field(ge=1)
+    estimated_tokens: int = Field(ge=1)
+    factor: float = Field(gt=0.0)
+    sample_count: int = Field(ge=0)
+    adaptive: bool
+
+
 class SpendAmount(_FrozenModel):
     prompt_tokens: int = Field(default=0, ge=0)
+    cached_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_cached_tokens(self) -> Self:
+        if self.cached_tokens > self.prompt_tokens:
+            raise ValueError("cached_tokens cannot exceed prompt_tokens")
+        return self
 
     @property
     def total_tokens(self) -> int:
@@ -96,6 +115,7 @@ class SpendEnvelopeLimits(_FrozenModel):
 class SpendEnvelope(_FrozenModel):
     scope_id: str = Field(min_length=1, max_length=256)
     kind: SpendScopeKind
+    policy_version: int = Field(default=1, ge=1)
     limits: SpendEnvelopeLimits = Field(default_factory=SpendEnvelopeLimits)
     parent_scope_id: str | None = Field(default=None, min_length=1, max_length=256)
 
@@ -121,6 +141,7 @@ class SpendReservation(_FrozenModel):
     scope_chain: tuple[str, ...] = Field(min_length=2)
     purpose: SpendPurpose
     estimate: SpendAmount
+    prompt_estimate: PromptTokenEstimate | None = None
     is_retry: bool
     created_at: float = Field(ge=0.0)
     lease_expires_at: float = Field(ge=0.0)
@@ -144,6 +165,7 @@ class SpendRejection(_FrozenModel):
     scope_chain: tuple[str, ...] = ()
     purpose: SpendPurpose
     estimate: SpendAmount
+    prompt_estimate: PromptTokenEstimate | None = None
     is_retry: bool
     reason: SpendRejectionReason
     limited_scope_id: str | None = Field(default=None, min_length=1, max_length=256)

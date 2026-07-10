@@ -182,16 +182,15 @@ installed_components = []         # Opt-in features, e.g. ["lsp"]
 ### Session Spend Envelope
 
 Primary, compaction, in-process task/workflow, memory-helper, and safety-judge
-calls reserve from a shared session ledger before dispatch. Finite defaults are
-400,000 prompt tokens, 100,000 completion tokens, 500,000 total tokens, $10, 128
-calls, two concurrent calls, and 16 retries. Runtime `max_price` and
-`max_session_tokens` values can only lower those caps.
+calls reserve from a shared session ledger before dispatch. Cumulative prompt,
+completion, and total token caps are omitted by default. Adaptive prompt
+estimation learns from exact usage for comparable requests with the same
+provider, model, and request shape. Strict mode disables learning and reserves
+the serialized token-bearing request byte ceiling.
 
 ```toml
 [spend]
-max_prompt_tokens = 400000
-max_completion_tokens = 100000
-max_total_tokens = 500000
+prompt_estimator_mode = "adaptive" # "adaptive" or "strict"
 max_cost_usd = 10.0
 max_calls = 128
 max_concurrent_calls = 2
@@ -202,9 +201,16 @@ unpriced_input_usd_per_million = 10.0
 unpriced_output_usd_per_million = 30.0
 ```
 
+The $10, 128-call, two-concurrent-call, 16-retry, and per-call output controls
+remain finite. Explicit token values and runtime `max_session_tokens` are
+preflight admission caps; runtime `max_price` can further tighten USD. An
+unexpectedly token-dense adaptive call can reconcile above the remaining cap by
+that one call, so use strict mode for the most conservative behavior. Exact
+untouched legacy generated defaults are removed once, while customized values
+remain explicit.
 Missing usage is charged at the reservation estimate. The fallback rates cover
 models without configured or built-in pricing; set both to `0` for local or
-subscription models that should not consume a USD cap. Routed requests without
+subscription models that should not consume the USD cap. Routed requests without
 `max_tokens` receive the broker's admitted output bound, except
 `openai-chatgpt` Codex calls: that endpoint rejects the field, so its adapter
 strips it and relies on reservation reconciliation. Isolated subprocesses, MCP
