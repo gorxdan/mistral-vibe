@@ -164,6 +164,14 @@ class Lsp(
     async def run(
         self, args: LspArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | LspResult, None]:
+        if (
+            ctx is not None
+            and ctx.task_contract is not None
+            and args.operation is LspOperation.WORKSPACE_SYMBOL
+        ):
+            raise ToolError(
+                "workspace_symbol is unavailable under a path-scoped task contract"
+            )
         manager = self._ensure_manager()
         if manager is None:
             installed = self._lsp_installed()
@@ -272,7 +280,7 @@ class Lsp(
                         args.operation.value,
                         (time.perf_counter() - server_t0) * 1000.0,
                     )
-                    yield hit[1]
+                    yield self._scope_result(hit[1], ctx)
                     return
             if ctx is not None and args.operation.value in _CALL_HIERARCHY_OPS:
                 # Call-hierarchy can block ~1s+ while a cold server indexes;
@@ -306,7 +314,24 @@ class Lsp(
         except LSPError as exc:
             raise ToolError(f"LSP request failed: {exc}") from exc
 
-        yield result
+        yield self._scope_result(result, ctx)
+
+    def _scope_result(self, result: LspResult, ctx: InvokeContext | None) -> LspResult:
+        if ctx is None or ctx.task_contract is None or not result.locations:
+            return result
+        locations = [
+            location
+            for location in result.locations
+            if ctx.task_contract.allows_search_result(
+                path_from_uri(
+                    location.get("uri", "")
+                    or (location.get("data") or {}).get("uri", "")
+                )
+            )
+        ]
+        first_line = result.summary.splitlines()[0]
+        label = first_line.split(" (", 1)[0].removesuffix(":")
+        return self._format_locations(label, locations)
 
     async def _dispatch(
         self,
@@ -736,7 +761,11 @@ class Lsp(
             rng = item.get("range") or {}
             start = rng.get("start") or {}
             lines.append(f"  {name} at {path_from_uri(uri)}:{start.get('line', 0) + 1}")
-        return LspResult(operation="call_hierarchy", summary="\n".join(lines))
+        return LspResult(
+            operation="call_hierarchy",
+            summary="\n".join(lines),
+            locations=list(raw[:50]),
+        )
 
     @staticmethod
     def _as_location_list(raw: Any) -> list[dict[str, Any]]:

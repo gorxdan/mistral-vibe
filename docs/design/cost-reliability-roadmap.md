@@ -17,6 +17,23 @@ verification is cheaper and harder to bluff than another review agent. Bounded
 repair preserves an investigation instead of paying to repeat it. Local memory
 retrieval removes a background model call from most turns.
 
+## Runtime hardening completed on 2026-07-10
+
+| Goal | Implemented behavior |
+|---|---|
+| Enforce contracts | Frozen briefs bind to host-owned path, check, budget, deadline, and manifest policy. Runtime tool lookup cannot widen a 6-8 tool trusted manifest. Structured completion and selected check execution are host-owned; isolated candidates are inspected and checked before delivery. |
+| Reduce repeated context | Team workers create a fresh `AgentLoop` per claimed task. Background siblings produce one debounced parent wake and one bounded injection containing artifact paths, SHA-256 digests, sizes, outcomes, and previews. |
+| Integrate bounded repair | Deterministic JSON repair runs first. Workflow retries retain one worker conversation and receive exact diagnostics. Repeated semantic state stops or invokes one explicitly configured strong-model escalation; formatting can use one no-tools 512-token cheap-model call. |
+| Close spend gaps | Narration, teams, task/workflow subprocesses, formatter/semantic repair, verification, and provider retries use the shared file-locked broker. Process contexts attach only to existing child scopes. Dispatched leases reconcile conservatively after crashes; undispatched leases release. |
+| Optimize optional intelligence | Memory extraction requires an explicit durable signal. Retrieval ambiguity, formatting, mechanical edits, and semantic escalation have separate explicit model aliases. |
+| Cache carefully | Workflow result reuse is disabled unless the trusted host supplies a complete dependency-closure SHA-256 fingerprint. Eligible keys bind that fingerprint with repository state, model/provider settings, routing policy, schema/contract, tool schemas/policy, and harness version. Write-capable work, isolated work, citations, verification, and receipts are never replayed. |
+
+Remaining work is measurement and operator visibility. MCP sampling,
+text-to-speech, real-time transcription, and Mistral model-backed web search are
+documented external paid-call boundaries outside the token broker. Full
+purpose-level usage views are incomplete, and paid weak-model A/B gates have not
+yet been run.
+
 Line numbers below describe the repository on 2026-07-09. Symbols are the
 authoritative anchors when later upstream syncs move a line.
 
@@ -61,24 +78,24 @@ Initial release gates, to be tightened after the baseline is recorded:
 | Area | Current behavior and gap |
 |---|---|
 | Usage | `AgentLoop._update_stats` records primary/compaction/subagent calls. `UsageRecord` carries backwards-compatible `call_kind` and `result_used`; the local `UsageMeter` handles auxiliary calls. The durable `SpendBroker` adds session/workflow/team/agent/call scopes, but the usage event stream does not yet expose the complete scope and outcome metadata. |
-| Auxiliary calls | Memory collaborators and the safety judge reserve through both their smaller host-local meter and the shared session broker with distinct purposes. Optional memory fails open on exhaustion; safety judging falls back to human approval. Narration, MCP sampling, isolated subprocesses, and backend-internal retries remain boundaries. |
+| Auxiliary calls | Memory collaborators, the safety judge, narration, repair, verification, isolated subprocesses, and observable provider retries reserve through the shared session broker with distinct purposes. Optional memory/narration fail open on exhaustion; safety judging falls back to human approval. MCP sampling, text-to-speech, real-time transcription, and Mistral model-backed web search remain documented external paid-call boundaries. |
 | Session limits | `SessionSpendAdapter` reserves before primary, compaction, and in-process task/workflow calls and shares a file-lock-backed parent envelope. Cumulative token caps are opt-in; adaptive prompt admission is calibrated from exact usage by provider/model/request shape, while $10, call, concurrency, retry, and per-call output defaults remain finite. Explicit config and runtime limits constrain admission; an unexpectedly token-dense call can reconcile above the remaining allowance once. Turn middleware remains as a compatibility guard. |
-| Workflow budget | Workflow `Budget` still supplies its script-visible token allowance. In-process workflow agents receive child scopes under the session broker, and either local or shared spend exhaustion produces persisted `WorkflowStatus.BLOCKED`. Isolated workflow subprocesses do not yet inherit the parent ledger. |
+| Workflow budget | Workflow `Budget` supplies its script-visible allowance. In-process and isolated workflow agents receive child scopes under the session broker, and either local or shared exhaustion produces persisted `WorkflowStatus.BLOCKED`. |
 | Provider concurrency | The process-global provider limiter defaults to four requests in `vibe/core/llm/provider_limiter.py:20-25,52-72`; it is a rate limiter, not a session cost policy. |
 | Memory recall | Hybrid recall now scores locally first and asks the LLM only on an ambiguous cutoff. The weighted lexical/IDF selector and bounded query/store cache are at `vibe/core/memory/local_selector.py:57-218`; blocking and prefetch wiring are at `vibe/core/agent_loop_memory.py:152-228,286-377`. Defaults remain per-turn, with two bodies, 4,000 injected body characters, and a 4,000-character index at `vibe/core/config/_settings.py:306-371`. |
-| Memory background work | Confident local recall launches no task, while an ambiguous/LLM-only prefetch is auto-consumed even when it finishes after the first poll at `vibe/core/agent_loop_memory.py:286-377`. Extraction, consolidation, and verification remain post-turn tasks at `vibe/core/agent_loop.py:1408-1418`, but now respect their explicit flags at `agent_loop_memory.py:398-403,621-626,839-844`; event-based write signals are still absent. |
+| Memory background work | Confident local recall launches no task, while ambiguous recall uses the explicit retrieval alias and is retained for consumption. Extraction runs only after explicit remember/forget, preference, correction, or durable-decision signals; consolidation and verification remain separately configured maintenance. |
 | Compaction | Compaction swaps in a compact summary-only system prompt, suppresses tool schemas/tool choice, and reserves under the shared spend envelope with a distinct purpose. |
-| Tool manifests | Remote catalogs and a few fork tools can be deferred in `vibe/core/tools/manager.py:229-269`; selected schemas are built at `vibe/core/llm/format.py:45-86`. The active task phase does not select a small builtin manifest, and `AgentLoop._available_tools` explicitly keeps the subset tier-invariant at `vibe/core/agent_loop.py:3437-3446`. |
+| Tool manifests | Trusted task manifests select 6-8 tools for investigate, implement/verify, verify, and mechanical-edit phases. Task-bound `ToolManager` instances import canonical builtins only, skip remote/custom discovery, and apply a runtime allowlist to lookup, search, and pinning. Verify-capable phases expose `task_checks`, which runs only the prebound acceptance commands. |
 | Capability scaling | `baseline_tier_for` still uses only context-window size at `vibe/core/baseline_scaling.py:46-58`, which is not a proxy for tool-use reliability. SMALL drops long orchestration prose but retains compact investigation and verification invariants from `vibe/core/_prompt_invariants.py`. |
-| Task contracts | `TaskBrief` serializes objective, inputs, path scope, acceptance checks, optional budget/deadline, and manifest identity. The runtime rejects already-expired deadlines, but path scope, checks, per-task budgets, and manifest identity remain schema/prompt metadata rather than host-enforced constraints. Task and team entry points retain versioned legacy-string compatibility; recipes and phase manifests remain open. |
+| Task contracts | `TaskBrief` is frozen and bound out-of-band to up to eight trusted check IDs, recipe path scope, per-task spend limits, deadline, and canonical manifest digest. Tool calls and isolated candidate diffs are host-enforced; selected trusted checks run with argv and `shell=False`. Harness control-plane paths remain hard-denied. Task and team entry points retain legacy-string compatibility. |
 | Task outcomes | `TaskOutcome` has explicit succeeded/failed/blocked/retryable states and evidence fields. Team tasks persist outcomes, atomically requeue retryable work, and unlock dependencies only on success. The task tool preserves structured outcomes through asynchronous delivery; workflows preserve spend exhaustion as `BLOCKED`. |
 | Verification | An optional immutable `trusted_verification_recipe` is prebound at AgentLoop creation. After a current verifier PASS, no-argument `verify_work` executes only its exact checks and creates a durable receipt bound to task/contract/config, repository state, check definitions, and full-output hashes. Configured sessions require that receipt; unconfigured sessions retain the current recorded verifier/workflow-pass gate. `land_work` revalidates the candidate and reports the merge commit SHA without persisting a separate landing record. |
 | Tool repair | Tool argument parsing preserves bounded raw text and an exact structured diagnostic, then tries conservative fence/object/trailing-comma repair without inventing values. Schema strictness and formatter-call integration remain open. |
-| Result repair | Workflow schema failure starts a fresh `AgentLoop` for every attempt at `vibe/core/workflows/runtime.py:1031-1083,1174-1244`, so a formatting error can rebill the whole investigation. |
-| Loop detection | `LoopDetectionMiddleware` still detects identical trailing calls. The new repair controller adds canonical semantic progress snapshots, per-failure retry budgets, no-progress/oscillation detection, escalation decisions, and episode metrics; runtime call-site integration remains open. |
-| Result cache | Workflow cache identity now includes repository state, effective tool manifest, harness version, model settings, agent profile, prompt, schema, contract, and isolation. Cached write-capable work and provenance/expiry policy still need hardening. |
-| Background delivery | Large child results are persisted and clipped to a 4,000-character preview at `vibe/core/tools/_background_delivery.py:8-35`, but every completed child is still injected separately at `vibe/core/agent_loop.py:3308-3341`. |
-| Long-lived workers | One `AgentLoop` handles every team task at `vibe/core/programmatic.py:131-151`, so task history and its token cost accumulate across unrelated queue items. |
+| Result repair | Workflow schema repair reuses one `AgentLoop` conversation, applies deterministic JSON repair first, sends exact bounded diagnostics, stops on semantic repetition, and optionally routes one formatting or semantic escalation call by explicit purpose alias. |
+| Loop detection | `LoopDetectionMiddleware` still detects identical trailing calls. Workflow result repair now uses canonical semantic progress snapshots, per-failure retry budgets, no-progress/oscillation detection, escalation decisions, and episode metrics. Tool, acceptance-check, and provider retry paths retain their own bounded controllers; a single controller for every retry path remains open. |
+| Result cache | Workflow cache identity requires a host-supplied SHA-256 fingerprint covering every dependency not proven by repository state, including ignored/external reads and resolved instructions. It also includes model/provider and routing settings, read-only tool schemas/policy, harness version, prompt, schema, contract, and isolation. Missing or malformed dependency fingerprints and unknown, isolated, mutating, verifier, citation, or receipt-bearing work fail closed. |
+| Background delivery | Child output is persisted with a bounded preview, artifact path, SHA-256 digest, and size. Sibling completions are drained into one capped model message and one debounced parent continuation. |
+| Long-lived workers | The queue process retains its shared ledger, but every claimed task receives a fresh `AgentLoop`, formatter, background registry, transcript, tool state, verification state, and task budget. |
 | Hard policy | `AgentLoop._should_execute_tool` now resolves permission and honors `NEVER` before applying `bypass_tool_permissions` at `vibe/core/agent_loop.py:1912-1939`. Bash blockers at `vibe/core/tools/builtins/bash.py:643-670` and task deny rules at `vibe/core/tools/builtins/task.py:292-303` can no longer be bypassed by auto-approve mode. |
 | Evaluation | The offline `evals` package validates versioned artifacts and receipt bindings, aggregates reliability/cost/repair/utilization metrics, reports deterministic confidence intervals, and compares aligned baseline/candidate trials. `scripts/evaluate_harness.py` exits nonzero for gate failure or invalid input. Fixture execution, trusted raw-event ingestion, and paid scheduled trials remain open. |
 
@@ -213,16 +230,16 @@ transactional ledger.
   to return to its parent, but never let a child borrow past the parent hard cap.
 - [x] Default paid concurrency to one or two per provider/session. Keep the
   existing provider limiter as the outer infrastructure ceiling.
-- [ ] Route primary AgentLoop preflight, compaction, narrator, workflow, team,
+- [x] Route primary AgentLoop preflight, compaction, narrator, workflow, team,
   isolated subprocess, repair, and verifier calls through the shared broker.
 - [x] Route primary, compaction, in-process task/workflow, memory, and
   safety-judge calls through shared session admission.
-- [ ] Pass a scoped ledger path and scope IDs to isolated subprocesses. Use
+- [x] Pass a scoped ledger path and scope IDs to isolated subprocesses. Use
   file-lock-backed atomic reservations so parallel workers cannot overspend a
   shared envelope.
-- [ ] Release stale reservations after a bounded lease when a worker dies; record
+- [x] Release stale reservations after a bounded lease when a worker dies; record
   the release as an auditable event.
-- [ ] Add purpose-specific model policy: local first, configured cheap model for
+- [x] Add purpose-specific model policy: local first, configured cheap model for
   optional helpers, primary model for implementation, strong model only after an
   explicit escalation condition.
 - [ ] Make optional work fail open when its allocation is exhausted: skip memory
@@ -275,9 +292,10 @@ paid selection becomes an ambiguity fallback rather than the normal path.
 - [ ] Eliminate speculative paid prefetch. Do not start a reranker unless its
   result can be consumed in the current turn; if dispatch has started, retain its
   result for a future identical query rather than cancelling and discarding it.
-- [ ] Add deterministic write signals for explicit preference, user correction,
-  durable decision, stable environment fact, and explicit remember/forget intent.
-  Extraction runs at session close or a quiet boundary only when a signal exists.
+- [x] Add deterministic write signals for explicit preference, user correction,
+  durable decision, and explicit remember/forget intent. Environment facts require
+  explicit remember intent. Extraction runs at a quiet boundary only when a signal
+  exists.
 - [ ] Filter transient task state locally before extraction. Keep the existing
   per-session write cap as a final backstop.
 - [ ] Store optional structured assertions and provenance with a memory. Verify
@@ -323,7 +341,7 @@ orchestration program.
   tool phase, and retry policy.
 - [x] Define `TaskOutcome` with `SUCCEEDED`, `FAILED`, `BLOCKED`, and `RETRYABLE`,
   plus evidence, diagnostics, changed paths, receipt ID, and remaining work.
-- [ ] Keep lifecycle status (`PENDING`/`IN_PROGRESS`) separate from terminal
+- [x] Keep lifecycle status (`PENDING`/`IN_PROGRESS`) separate from terminal
   outcome. Migrate teams and workflows with a versioned legacy-description
   adapter.
 - [ ] Reject an empty acceptance contract unless a trusted caller creates an
@@ -334,10 +352,11 @@ orchestration program.
 - [ ] Add a typed `launch_recipe` tool. Retain model-authored
   `launch_workflow(script=...)` as an advanced, ASK-gated escape hatch, not the
   default path offered to a weak model.
-- [ ] Select 6-10 tools per phase from the task/recipe. Start with:
-  `investigate = read/grep/glob/lsp`,
-  `implement = read/edit/write_file/targeted bash`, and
-  `verify = read/grep/lsp/jailed bash`.
+- [x] Select a small trusted tool set per structured task phase. The current
+  manifests contain 6-8 tools and cover:
+  `investigate = read/grep/glob/lsp/skill/web_fetch/web_search`,
+  `implement = read/grep/glob/lsp/edit/write_file/todo/task_checks`, and
+  `verify = read/grep/glob/lsp/skill/task_checks`.
 - [ ] Send complete parameter schemas for selected tools. Hide the rest behind
   `tool_search` with concise stubs and deterministic nearest-name suggestions.
 - [ ] Make manifest identity part of prompt/result cache keys and telemetry.
@@ -346,7 +365,7 @@ orchestration program.
   window.
 - [x] Retain a compact investigation and verification invariant kernel at SMALL
   while omitting the longer orchestration prose.
-- [ ] Route mechanical operations to the cheap/grunt model only when the recipe
+- [x] Route mechanical operations to the cheap/grunt model only when the recipe
   supplies all decisions. Escalate to a stronger model after repeated semantic
   failure, not after every formatting error.
 - [x] Land the initial finite defaults: two concurrent host/task or workflow
@@ -354,14 +373,14 @@ orchestration program.
   Shared USD/call/deadline and task-risk profiles remain open.
 - [ ] Add shared USD/call/deadline envelopes, task-risk-specific caps, and bounded
   worker idle/task lifetime on top of the initial finite defaults.
-- [ ] Reset or replace the long-lived worker `AgentLoop` between queue tasks;
+- [x] Reset or replace the long-lived worker `AgentLoop` between queue tasks;
   durable state belongs in `TaskBrief`, `TaskOutcome`, TaskStore, and memory, not
   an ever-growing transcript.
-- [ ] Coalesce sibling completions into one host continuation per debounce window.
+- [x] Coalesce sibling completions into one host continuation per debounce window.
 
 ### Acceptance criteria
 
-- [ ] A worker cannot widen allowed paths, acceptance checks, budget, or tool
+- [x] A worker cannot widen allowed paths, acceptance checks, budget, or tool
   manifest in its response.
 - [ ] Every terminal task has an explicit outcome; ordinary exceptions never
   become `None` or `COMPLETED`.
@@ -451,13 +470,15 @@ Use one controller shape everywhere:
   replace it silently with `{}`.
 - [x] Apply conservative local JSON repair first: fence extraction, surrounding
   prose removal, and unambiguous syntax fixes only. Never invent a required value.
-- [ ] If local repair fails, use a tiny formatter call containing only raw output,
+- [x] If local repair fails, use a tiny formatter call containing only raw output,
   schema, and validation errors. It cannot use tools or repeat the task.
-- [ ] Reuse the existing agent conversation for semantic/schema correction so the
+- [x] Reuse the existing agent conversation for semantic/schema correction so the
   investigation and tool results remain in context. Do not construct a fresh
   loop for each output-format attempt.
-- [ ] Return exact validation errors, nearest tool/field names, allowed enum
-  values, and one minimal corrected-call example.
+- [x] Return exact validation category, failing field, expected/actual value, and
+  minimal corrective action.
+- [ ] Add deterministic nearest-name suggestions and focused enum examples where
+  the schema exposes safe candidates.
 - [ ] Migrate action strings and new/changed argument models to `Literal`,
   `StrEnum`, discriminated unions, and `extra="forbid"`. For upstream-owned tools,
   stage strictness behind compatibility telemetry before changing defaults.
@@ -467,17 +488,18 @@ Use one controller shape everywhere:
   escalate only when the failure class is eligible and budget remains.
 - [x] Give each failure class its own retry budget. Parse/schema repair should not
   consume the same allowance as test failure or provider transport retry.
-- [ ] Feed an exact failed check back to the same worker as a targeted repair
-  brief. Preserve successful checks and forbid unrelated edits.
+- [x] Feed exact bounded failed-check diagnostics back to the same worker for one
+  targeted repair turn, then rerun the full selected set. The immutable task
+  contract continues to forbid unrelated edits.
 - [ ] Map terminal repair exhaustion to `FAILED` or `BLOCKED`; use `RETRYABLE` only
   with a concrete external condition or remaining deterministic action.
 
 ### Acceptance criteria
 
 - [x] Malformed tool calls always surface the original parse/validation cause.
-- [ ] A formatting-only schema failure never repeats repository exploration or
+- [x] A formatting-only schema failure never repeats repository exploration or
   tool execution.
-- [ ] Repair call context is bounded independently of parent transcript size.
+- [x] Repair call context is bounded independently of parent transcript size.
 - [x] Repeated different commands that leave diff/check/error state unchanged are
   detected as no progress.
 - [x] Retry count, recovered/not-recovered outcome, added cost, and escalation
@@ -500,21 +522,23 @@ tool state make it sound.
   equivalent turns. Extend the existing prompt-cache invariant tests to task
   manifests and memory recall.
 - [x] Define a result-cache key from task/normalized query, effective model and
-  settings, agent/recipe version, tool-manifest fingerprint, repository HEAD/tree
-  or declared input-file hashes, schema/contract hash, and harness version.
-- [ ] Cache only declared read-only, deterministic-enough operations by default.
+  settings, agent/recipe version, tool-manifest fingerprint, repository HEAD/tree,
+  a host-supplied complete dependency fingerprint, schema/contract hash, and
+  harness version. Missing dependency provenance disables reuse.
+- [x] Cache only declared read-only, deterministic-enough operations by default.
   Never auto-replay a write-capable worker result or stale verification receipt.
-- [ ] Persist cache provenance, expiry, dependency fingerprints, usage saved, and
-  invalidation reason. A cache hit still emits a zero-cost call/result event.
+- [ ] Persist cache provenance, expiry, usage saved, and invalidation reason. The
+  dependency fingerprint is identity-bound but not separately reported. A cache
+  hit still emits a zero-cost call/result event.
 - [ ] Add local caches for memory recall, deterministic tool discovery, safety
   verdicts with immutable-policy version, formatter repair, and read-only recipe
   stages where their dependencies are complete.
-- [ ] Invalidate on changed dependency file, HEAD/tree, tool manifest, task brief,
+- [x] Invalidate on changed dependency file, HEAD/tree, tool manifest, task brief,
   model settings, policy version, or schema. Test dirty working trees explicitly.
 - [ ] Persist full child/workflow outputs once and inject a structured 1-2k-token
   digest with artifact pointer. Use deterministic extraction; do not add a summary
   model merely to save context.
-- [ ] Batch sibling completions into one injection and one host continuation.
+- [x] Batch sibling completions into one injection and one host continuation.
   Include per-child outcome/evidence pointers without concatenating full prose.
 - [ ] Feed repair/verifier agents the brief, diff, failed checks, and artifact
   pointers rather than cloning the host history.
@@ -523,11 +547,11 @@ tool state make it sound.
 
 ### Acceptance criteria
 
-- [ ] Mutation fixtures produce zero stale cache hits across commit, dirty-tree,
+- [x] Mutation fixtures produce zero stale cache hits across commit, dirty-tree,
   manifest, model, policy, and schema changes.
 - [ ] Cache-disabled behavior remains equivalent and cache corruption fails to a
   normal execution, not a task failure.
-- [ ] Background fan-out causes at most one automatic continuation per debounce
+- [x] Background fan-out causes at most one automatic continuation per debounce
   window.
 - [ ] Full results remain recoverable from their pointer after context shaping,
   session resume, and process restart.

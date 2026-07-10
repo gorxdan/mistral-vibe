@@ -14,7 +14,7 @@ import orjson
 
 from vibe.core.logger import logger
 from vibe.core.tasking import TaskOutcome
-from vibe.core.tools._background_delivery import compact_background_completion
+from vibe.core.tools._background_delivery import prepare_background_completion
 
 if TYPE_CHECKING:
     import asyncio.subprocess
@@ -30,6 +30,7 @@ _MAX_RUNNING_PROCS = 32
 _LOG_TAIL_MAX_BYTES = 1 << 20
 _LOG_DISK_CAP_BYTES = 16 << 20
 _LOG_DISK_KEEP_BYTES = 4 << 20
+_COMPLETION_DEBOUNCE_S = 0.1
 
 
 class TaskCategory(StrEnum):
@@ -88,6 +89,9 @@ class _AsyncAgentRec:
     turns_used: int = 0
     log_path: Path | None = None
     outcome: TaskOutcome | None = None
+    artifact_path: str | None = None
+    artifact_sha256: str | None = None
+    artifact_size_bytes: int = 0
 
 
 def _signal_proc_group(proc: asyncio.subprocess.Process, sig: int) -> None:
@@ -178,6 +182,8 @@ class BackgroundRegistry:
         self._loop_manager_ref: Callable[[], LoopManager | None] = lambda: None
         self._tui_bash_ref: Callable[[], asyncio.Task | None] = lambda: None
         self._completion_callback: Callable[[], Coroutine[Any, Any, None]] | None = None
+        self._completion_generation = 0
+        self._completion_notify_task: asyncio.Task[None] | None = None
 
     def attach_workflow_runner(self, ref: Callable[[], WorkflowRunner | None]) -> None:
         self._workflow_runner_ref = ref
@@ -202,14 +208,40 @@ class BackgroundRegistry:
     ) -> None:
         # Wake hook: fires when async subagent finishes so idle host auto-continues.
         self._completion_callback = callback
+        if callback is not None and self._async_completions:
+            self._notify_completion()
 
     def _notify_completion(self) -> None:
         if self._completion_callback is None:
             return
+        self._completion_generation += 1
+        if (
+            self._completion_notify_task is not None
+            and not self._completion_notify_task.done()
+        ):
+            return
         try:
-            asyncio.create_task(self._completion_callback())
+            self._completion_notify_task = asyncio.create_task(
+                self._run_completion_notifications(), name="background-wake-debounce"
+            )
         except RuntimeError:
             pass
+
+    async def _run_completion_notifications(self) -> None:
+        observed_generation = -1
+        try:
+            while observed_generation != self._completion_generation:
+                observed_generation = self._completion_generation
+                await asyncio.sleep(_COMPLETION_DEBOUNCE_S)
+                callback = self._completion_callback
+                if callback is None:
+                    return
+                try:
+                    await callback()
+                except Exception as exc:
+                    logger.warning("background completion wake failed: %s", exc)
+        finally:
+            self._completion_notify_task = None
 
     def _next_id(self) -> str:
         task_id = f"proc-{self._next_proc_id}"
@@ -355,12 +387,18 @@ class BackgroundRegistry:
                 if rec.log_path is not None
                 else None
             )
-            rec.error = compact_background_completion(error, error_path)
+            rec.error, artifact = prepare_background_completion(error, error_path)
+            rec.artifact_path = artifact.path
+            rec.artifact_sha256 = artifact.sha256
+            rec.artifact_size_bytes = artifact.size_bytes
             self._async_completions.append(rec)
             self._notify_completion()
             return
         response = str(getattr(result, "output", result) or "")
-        rec.response = compact_background_completion(response, rec.log_path)
+        rec.response, artifact = prepare_background_completion(response, rec.log_path)
+        rec.artifact_path = artifact.path
+        rec.artifact_sha256 = artifact.sha256
+        rec.artifact_size_bytes = artifact.size_bytes
         rec.completed = bool(getattr(result, "returncode", 1) == 0)
         rec.worktree_path = getattr(result, "worktree_path", None)
         rec.branch = getattr(result, "branch", None)
@@ -773,6 +811,15 @@ class BackgroundRegistry:
         return count > 0
 
     async def shutdown(self) -> None:
+        if (
+            self._completion_notify_task is not None
+            and not self._completion_notify_task.done()
+        ):
+            self._completion_notify_task.cancel()
+            try:
+                await self._completion_notify_task
+            except asyncio.CancelledError:
+                pass
         for rec in list(self._procs.values()):
             if rec.status != "running":
                 continue

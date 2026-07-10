@@ -3410,7 +3410,10 @@ class VibeApp(App):
         # via team_message); no-op when defer_builtin_tools is off.
         loop.tool_manager.pin_manifest_tools(["team_message"])
         return TeamManager(
-            loop.session_id, hooks_manager=loop.hooks_manager, hook_context=hook_context
+            loop.session_id,
+            hooks_manager=loop.hooks_manager,
+            hook_context=hook_context,
+            spend_adapter=loop.spend_adapter,
         )
 
     def _render_team_list_rows(self, members: list[Any]) -> list[str]:
@@ -5545,6 +5548,7 @@ class VibeApp(App):
             config_getter=lambda: self.config,
             audio_player=AudioPlayer(),
             telemetry_client=self.agent_loop.telemetry_client,
+            spend_adapter_getter=lambda: self.agent_loop.spend_adapter,
         )
 
     def _handle_exception(self, error: Exception) -> None:

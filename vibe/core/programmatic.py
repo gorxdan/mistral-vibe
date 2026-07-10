@@ -4,10 +4,11 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
+from functools import partial
 import os
 from pathlib import Path
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import orjson
 from pydantic import BaseModel
@@ -28,6 +29,8 @@ from vibe.core.loop import LoopManager
 from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
 from vibe.core.output_formatters import OutputFormatter, create_formatter
 from vibe.core.schedule_driver import ScheduleDriver
+from vibe.core.tasking._policy import BoundTaskContract, TaskContractAuthority
+from vibe.core.tasking._runtime_context import bind_process_runtime_context
 from vibe.core.teams import TeamManager, TeamSafetyMode
 from vibe.core.telemetry.build_metadata import build_launch_context
 from vibe.core.telemetry.types import ClientMetadata
@@ -46,7 +49,9 @@ from vibe.core.types import (
     Role,
     ScheduledLoop,
 )
+from vibe.core.usage._session import SessionSpendAdapter
 from vibe.core.utils import ConversationLimitException
+from vibe.core.verification_state import VerificationState
 from vibe.core.worktree.manager import (
     WorktreeHandle,
     worktree_enabled,
@@ -56,6 +61,9 @@ from vibe.core.worktree.manager import (
 __all__ = ["ProgrammaticOptions", "TeleportError", "run_programmatic"]
 
 _DEFAULT_CLIENT_METADATA = ClientMetadata(name="vibe_programmatic", version=__version__)
+
+if TYPE_CHECKING:
+    from vibe.core.llm.types import BackendLike
 
 
 async def _drive_scheduled_loops(
@@ -128,8 +136,42 @@ class ProgrammaticOptions:
     no_worktree: bool = False
 
 
+def _new_programmatic_loop(
+    config: VibeConfig,
+    opts: ProgrammaticOptions,
+    formatter: OutputFormatter,
+    *,
+    backend: BackendLike | None = None,
+    spend_adapter: SessionSpendAdapter | None = None,
+    task_contract: BoundTaskContract | None = None,
+) -> AgentLoop:
+    return AgentLoop(
+        config,
+        backend=backend,
+        params=AgentLoopParams(
+            agent_name=opts.agent_name,
+            message_observer=formatter.on_message_added,
+            max_turns=opts.max_turns,
+            max_price=opts.max_price,
+            max_session_tokens=opts.max_session_tokens,
+            enable_streaming=False,
+            headless=opts.headless,
+            is_subagent=opts.allow_subagent,
+            launch_context=build_launch_context(
+                agent_entrypoint="programmatic",
+                agent_version=__version__,
+                client_name=opts.client_metadata.name,
+                client_version=opts.client_metadata.version,
+            ),
+            hook_config_result=opts.hook_config_result,
+            spend_adapter=spend_adapter,
+            task_contract=task_contract,
+        ),
+    )
+
+
 async def _run_team_worker_session(
-    agent_loop: AgentLoop, formatter: OutputFormatter, bootstrap_prompt: str
+    agent_loop: AgentLoop, bootstrap_prompt: str, opts: ProgrammaticOptions
 ) -> None:
     """Claim-loop path for VIBE_TEAM_WORKER=1 (long-lived queue worker).
 
@@ -138,15 +180,75 @@ async def _run_team_worker_session(
     """
     logger.info("TEAM_WORKER bootstrap: %s", bootstrap_prompt[:500])
 
-    async def run_task(task_prompt: str) -> str | None:
-        async with aclosing(agent_loop.act(task_prompt)) as events:
-            async for event in events:
-                formatter.on_event(event)
-                if isinstance(event, AssistantEvent) and event.stopped_by_middleware:
-                    raise ConversationLimitException(event.content)
-        return formatter.finalize()
+    from vibe.core.teams._same_worker_repair import run_same_worker_repair
+    from vibe.core.teams._structured_attempt import evaluate_structured_attempt
+    from vibe.core.teams.models import Task
+    from vibe.core.teams.worker_loop import (
+        WorkerTaskAttempt,
+        run_team_worker_loop,
+        worker_task_prompt,
+    )
 
-    from vibe.core.teams.worker_loop import run_team_worker_loop
+    async def run_task(task: Task) -> WorkerTaskAttempt:
+        contract = None
+        if task.brief is not None:
+            contract = BoundTaskContract.bind(
+                task.brief,
+                authority=TaskContractAuthority.LEAD,
+                workspace_root=Path.cwd(),
+                verification_state=VerificationState.from_recipe(
+                    agent_loop.base_config.trusted_verification_recipe
+                ),
+            )
+        if contract is None:
+            task_spend = agent_loop.spend_adapter.child_agent(
+                purpose=agent_loop.spend_adapter.default_purpose
+            )
+        else:
+            task_spend = agent_loop.spend_adapter.child_task(
+                task_id=task.id,
+                purpose=agent_loop.spend_adapter.default_purpose,
+                limits=contract.spend_limits(),
+                task_brief_hash=contract.brief_hash,
+            )
+        task_formatter = create_formatter(opts.output_format)
+        task_loop = _new_programmatic_loop(
+            agent_loop.base_config.model_copy(deep=True),
+            opts,
+            task_formatter,
+            spend_adapter=task_spend,
+            task_contract=contract,
+        )
+        task_loop.parent_session_id = agent_loop.session_id
+        _wire_isolated_approval(task_loop)
+        task_background = BackgroundRegistry()
+        task_loop.background_registry = task_background
+        try:
+            await task_loop.initialize_experiments()
+            task_loop.emit_new_session_telemetry()
+            async with aclosing(task_loop.act(worker_task_prompt(task))) as events:
+                async for event in events:
+                    task_formatter.on_event(event)
+                    if (
+                        isinstance(event, AssistantEvent)
+                        and event.stopped_by_middleware
+                    ):
+                        raise ConversationLimitException(event.content)
+            summary = task_formatter.finalize()
+            outcome = None
+            if contract is not None and task.brief is not None:
+                outcome = await evaluate_structured_attempt(
+                    task.brief,
+                    contract,
+                    summary,
+                    repair=partial(run_same_worker_repair, task_loop),
+                )
+            return WorkerTaskAttempt(summary, contract, outcome)
+        finally:
+            task_loop.emit_session_closed_telemetry()
+            await task_background.shutdown()
+            await task_loop.aclose()
+            await task_loop.telemetry_client.aclose()
 
     await run_team_worker_loop(run_task)
 
@@ -218,7 +320,7 @@ async def _drive_programmatic_turn(
         from vibe.core.teams.worker_loop import is_team_worker
 
         if is_team_worker():
-            await _run_team_worker_session(agent_loop, formatter, prompt)
+            await _run_team_worker_session(agent_loop, prompt, opts)
         else:
             await _act_once(agent_loop, formatter, prompt)
 
@@ -296,25 +398,14 @@ def run_programmatic(
         if worktree_handle is not None and not config.displayed_workdir:
             config.displayed_workdir = str(worktree_handle.original_repo_root)
 
-    agent_loop = AgentLoop(
+    task_contract, spend_adapter = bind_process_runtime_context(config, Path.cwd())
+
+    agent_loop = _new_programmatic_loop(
         config,
-        params=AgentLoopParams(
-            agent_name=opts.agent_name,
-            message_observer=formatter.on_message_added,
-            max_turns=opts.max_turns,
-            max_price=opts.max_price,
-            max_session_tokens=opts.max_session_tokens,
-            enable_streaming=False,
-            headless=opts.headless,
-            is_subagent=opts.allow_subagent,
-            launch_context=build_launch_context(
-                agent_entrypoint="programmatic",
-                agent_version=__version__,
-                client_name=opts.client_metadata.name,
-                client_version=opts.client_metadata.version,
-            ),
-            hook_config_result=opts.hook_config_result,
-        ),
+        opts,
+        formatter,
+        spend_adapter=spend_adapter,
+        task_contract=task_contract,
     )
     _wire_isolated_approval(agent_loop)
     # Wire the scheduler so the `schedule` tool works headless (create/list/
@@ -350,6 +441,7 @@ def run_programmatic(
                 agent_loop.session_id,
                 hooks_manager=agent_loop.hooks_manager,
                 hook_context=hook_context,
+                spend_adapter=agent_loop.spend_adapter,
             )
             background_registry.attach_team_manager(lambda: team_manager)
         return team_manager

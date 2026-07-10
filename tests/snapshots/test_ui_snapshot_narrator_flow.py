@@ -60,6 +60,11 @@ class GatedTTSClient(FakeTTSClient):
         return await super().speak(text)
 
 
+class PassthroughSpendAdapter:
+    async def complete(self, backend: Any, request: Any, *, purpose: Any = None) -> Any:
+        return await backend.complete(request)
+
+
 class NarratorFlowApp(BaseSnapshotTestApp):
     def __init__(self) -> None:
         self.summary_gate = GatedBackend(
@@ -72,7 +77,9 @@ class NarratorFlowApp(BaseSnapshotTestApp):
         )
         # Override turn_summary and tts_client with gated test doubles.
         narrator_manager._turn_summary = TurnSummaryTracker(
-            backend=self.summary_gate, model=_TEST_MODEL
+            backend=self.summary_gate,
+            model=_TEST_MODEL,
+            spend_adapter_getter=lambda: cast(Any, PassthroughSpendAdapter()),
         )
         narrator_manager._turn_summary.on_summary = narrator_manager._on_turn_summary
         narrator_manager._tts_client = self.tts_gate

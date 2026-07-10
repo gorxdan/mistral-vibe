@@ -25,18 +25,16 @@ async def complete_auxiliary(
     spend_adapter: SessionSpendAdapter | None,
     is_retry: bool = False,
 ) -> LLMChunk | None:
+    if spend_adapter is None:
+        return None
     reservation = _reserve_local(usage_meter, request, model)
     if usage_meter is not None and reservation is None:
         return None
 
     started = time.monotonic()
     try:
-        result = (
-            await spend_adapter.complete(
-                backend, request, purpose=purpose, is_retry=is_retry
-            )
-            if spend_adapter is not None
-            else await backend.complete(request)
+        result = await spend_adapter.complete(
+            backend, request, purpose=purpose, is_retry=is_retry
         )
     except SpendBudgetExceededError:
         if usage_meter is not None and reservation is not None:

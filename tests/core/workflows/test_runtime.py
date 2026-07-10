@@ -186,18 +186,122 @@ async def test_spawn_agent_schema_retry_on_bad_json() -> None:
 
     responses = ["not json", '{"answer": "42"}']
     call_idx = [0]
+    factory_calls = [0]
+    prompts: list[str] = []
+
+    @dataclass
+    class _RepairLoop:
+        stats: MockStats = field(default_factory=lambda: MockStats(0, 0))
+
+        async def act(
+            self, prompt: str, *, response_format: Any = None
+        ) -> AsyncGenerator[AssistantEvent, None]:
+            prompts.append(prompt)
+            response = responses[min(call_idx[0], len(responses) - 1)]
+            call_idx[0] += 1
+            self.stats.session_prompt_tokens += 100
+            self.stats.session_completion_tokens += 50
+            yield AssistantEvent(content=response, message_id="a1")
 
     def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
-        resp = responses[min(call_idx[0], len(responses) - 1)]
-        call_idx[0] += 1
-        stats = MockStats()
-        return MockAgentLoop(response_text=resp, stats=stats)
+        factory_calls[0] += 1
+        return _RepairLoop()
 
     rt = WorkflowRuntime(agent_loop_factory=factory, schema_retries=2)
     result = await rt.spawn_agent("test", schema=schema)
     assert isinstance(result, dict)
     assert result["answer"] == "42"
     assert call_idx[0] == 2
+    assert factory_calls[0] == 1
+    assert "not valid JSON" in prompts[1]
+    assert "existing conversation" in prompts[1]
+
+
+async def test_spawn_agent_repairs_trailing_comma_without_retry() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(response_text='{"answer": "42",}'),
+        schema_retries=2,
+    )
+
+    result = await rt.spawn_agent("test", schema=schema)
+
+    assert result == {"answer": "42"}
+    assert rt._agent_count == 1
+
+
+async def test_schema_repair_stops_after_repeated_no_progress() -> None:
+    calls = 0
+
+    @dataclass
+    class _StuckLoop:
+        stats: MockStats = field(default_factory=lambda: MockStats(0, 0))
+
+        async def act(
+            self, prompt: str, *, response_format: Any = None
+        ) -> AsyncGenerator[AssistantEvent, None]:
+            nonlocal calls
+            calls += 1
+            self.stats.session_prompt_tokens += 10
+            self.stats.session_completion_tokens += 5
+            yield AssistantEvent(content="not json", message_id=f"a{calls}")
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        return _StuckLoop()
+
+    rt = WorkflowRuntime(agent_loop_factory=factory, schema_retries=5)
+    schema = {"type": "object", "required": ["answer"]}
+
+    result = await rt.spawn_agent("test", schema=schema)
+
+    assert isinstance(result, SchemaValidationFailure)
+    assert calls == 3
+    assert "without semantic progress" in result.error
+
+
+async def test_schema_repair_detects_oscillation() -> None:
+    responses = [
+        '{"answer": 1}',
+        '{"answer": false}',
+        '{"answer": 1}',
+        '{"answer": false}',
+        '{"answer": "would be valid"}',
+    ]
+    calls = 0
+
+    @dataclass
+    class _OscillatingLoop:
+        stats: MockStats = field(default_factory=lambda: MockStats(0, 0))
+
+        async def act(
+            self, prompt: str, *, response_format: Any = None
+        ) -> AsyncGenerator[AssistantEvent, None]:
+            nonlocal calls
+            response = responses[calls]
+            calls += 1
+            self.stats.session_prompt_tokens += 10
+            self.stats.session_completion_tokens += 5
+            yield AssistantEvent(content=response, message_id=f"a{calls}")
+
+    def factory(prompt: str, *, agent: str, parent_context: Any | None = None) -> Any:
+        return _OscillatingLoop()
+
+    rt = WorkflowRuntime(agent_loop_factory=factory, schema_retries=5)
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+
+    result = await rt.spawn_agent("test", schema=schema)
+
+    assert isinstance(result, SchemaValidationFailure)
+    assert calls == 4
+    assert "bounded stop" in result.error
 
 
 async def test_spawn_agent_schema_returns_failure_after_max_retries() -> None:
@@ -360,6 +464,7 @@ class _Always500Loop:
             model="m",
             payload_summary=_make_payload_summary(),
         )
+        yield AssistantEvent(content="unreachable", message_id="a1")
 
 
 def _make_payload_summary() -> PayloadSummary:
@@ -393,7 +498,7 @@ async def test_spawn_agent_degrades_structured_output_on_provider_rejection() ->
     assert result == {"answer": "42"}
     # First attempt rejected the format; second (degraded, no response_format)
     # returned valid JSON.
-    assert calls[0] == 2
+    assert calls[0] == 1
 
 
 async def test_spawn_agent_does_not_degrade_on_unrelated_backend_error() -> None:
@@ -1111,15 +1216,15 @@ def _retry_then_succeed_factory(per_attempt_in: int, per_attempt_out: int) -> An
 
     @dataclass
     class _RetryLoop:
-        stats: MockStats = field(
-            default_factory=lambda: MockStats(per_attempt_in, per_attempt_out)
-        )
+        stats: MockStats = field(default_factory=lambda: MockStats(0, 0))
         _text: str = ""
 
         async def act(
             self, prompt: str, *, response_format: Any = None
         ) -> AsyncGenerator[AssistantEvent, None]:
             calls[0] += 1
+            self.stats.session_prompt_tokens += per_attempt_in
+            self.stats.session_completion_tokens += per_attempt_out
             text = "not json" if calls[0] == 1 else '{"a": "ok"}'
             yield AssistantEvent(content=text, message_id="a1")
 
@@ -1145,16 +1250,15 @@ async def test_retry_tokens_accumulate_across_attempts() -> None:
     assert rt._budget.spent() == 300
 
 
-async def test_cache_hit_does_not_double_count_tokens(runtime: WorkflowRuntime) -> None:
+async def test_incomplete_host_context_disables_cache(runtime: WorkflowRuntime) -> None:
     await runtime.spawn_agent("same", agent="explore", phase="P")
-    await runtime.spawn_agent("same", agent="explore", phase="P")  # cache hit
+    await runtime.spawn_agent("same", agent="explore", phase="P")
     run = runtime.build_run()
     results = run.phases[0].agent_results
     assert len(results) == 2
-    # First real run records tokens; the cache hit records zero.
     assert results[0].tokens_in == 1000
-    assert results[1].tokens_in == 0
-    assert results[1].tokens_out == 0
+    assert results[1].tokens_in == 1000
+    assert runtime._cache == {}
 
 
 async def test_parent_context_rejects_non_subagent_agent() -> None:
@@ -1526,6 +1630,29 @@ async def test_isolation_not_cross_cached_with_inprocess() -> None:
     assert iso == "ISOLATED"
     assert inproc == "mock response"  # not the cached isolated result
     assert rt._agent_count == 2
+
+
+async def test_isolated_results_are_never_cached() -> None:
+    calls = 0
+
+    async def stub(prompt: str, agent: str, label: str | None, max_turns: int) -> str:
+        nonlocal calls
+        calls += 1
+        return f"isolated-{calls}"
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        budget_total=1_000_000,
+        max_agents=100,
+        isolated_executor=stub,
+    )
+
+    first = await rt.spawn_agent("same", agent="explore", isolation="worktree")
+    second = await rt.spawn_agent("same", agent="explore", isolation="worktree")
+
+    assert (first, second) == ("isolated-1", "isolated-2")
+    assert calls == 2
+    assert rt._cache == {}
 
 
 async def test_default_isolated_executor_spawns_subprocess(

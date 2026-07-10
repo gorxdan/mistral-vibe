@@ -142,7 +142,6 @@ class TaskStore:
                 self._tasks = tasks
                 return None
             task.status = TaskStatus.IN_PROGRESS
-            task.outcome = None
             task.assignee = assignee
             task.claimed_at = now
             task.completed_at = None
@@ -157,6 +156,7 @@ class TaskStore:
         result: str | TaskOutcome | None = None,
         *,
         actor: str | None = None,
+        authoritative: bool = False,
     ) -> Task | None:
         with self._locked():
             tasks = self._read_tasks()
@@ -169,6 +169,8 @@ class TaskStore:
             if actor is not None and (
                 task.assignee != actor or task.status != TaskStatus.IN_PROGRESS
             ):
+                return None
+            if task.structured and actor is not None and not authoritative:
                 return None
             outcome, result_text = self._resolve_outcome(task, result)
             task.result = result_text

@@ -17,12 +17,14 @@ from uuid import uuid4
 import orjson
 from pydantic import BaseModel, ConfigDict
 
+from vibe.core.failure_diagnostic import FailureCategory
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.logger import logger
+from vibe.core.repair import RepairAction, RepairController
 from vibe.core.types import AssistantEvent
 from vibe.core.usage._context import SpendPurpose, SpendScopeKind
 from vibe.core.usage._session import SpendBudgetExceededError
-from vibe.core.workflows._cache_identity import workflow_cache_context
+from vibe.core.workflows._cache_identity import workflow_cache_identity
 from vibe.core.workflows._limits import (
     DEFAULT_BUDGET_TOTAL,
     DEFAULT_ISOLATED_MAX_TURNS,
@@ -30,6 +32,12 @@ from vibe.core.workflows._limits import (
     DEFAULT_MAX_CONCURRENT,
 )
 from vibe.core.workflows._port import AgentLoopFactory
+from vibe.core.workflows._result_repair import (
+    WorkflowRepairRoute,
+    build_repair_prompt,
+    repair_progress_snapshot,
+    repair_workflow_result,
+)
 from vibe.core.workflows.budget import (
     Budget,
     BudgetExhausted,
@@ -63,15 +71,16 @@ from vibe.core.workflows.schema import (
     SchemaValidationError,
     build_prompt_fallback,
     build_response_format,
-    strip_unknown_properties,
-    validate_against_schema,
 )
 from vibe.core.workflows.security import build_namespace, validate_script
 
 if TYPE_CHECKING:
     from vibe.core.agent_loop import AgentLoop
     from vibe.core.config import VibeConfig
+    from vibe.core.tasking._process_context import TaskProcessContext
     from vibe.core.tools.base import InvokeContext
+    from vibe.core.usage._process_context import SpendProcessContext
+    from vibe.core.usage._session import SessionSpendAdapter
 
 
 class _AwaitableResult:
@@ -349,7 +358,7 @@ class _MessageBoard:
 
 
 def _fingerprint_payload(value: Any) -> str:
-    """Stable short hash for schema/contract dicts (order-insensitive via orjson)."""
+    """Stable hash for schema/contract dicts (order-insensitive via orjson)."""
     if value is None:
         return ""
     if isinstance(value, BaseModel):
@@ -360,7 +369,7 @@ def _fingerprint_payload(value: Any) -> str:
         blob = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
     except TypeError:
         blob = repr(payload).encode()
-    return hashlib.sha256(blob).hexdigest()[:12]
+    return hashlib.sha256(blob).hexdigest()
 
 
 def _record_contract_pass(runtime: WorkflowRuntime, contract: Any, report: Any) -> None:
@@ -377,7 +386,11 @@ def _synth_delivered(delivered: Any) -> ContractReport:
 
 
 async def _run_verifier_in_worktree(
-    runtime: WorkflowRuntime, wt: Any, result: Any, model: str | None
+    runtime: WorkflowRuntime,
+    wt: Any,
+    result: Any,
+    model: str | None,
+    spend_context: SpendProcessContext | None,
 ) -> bool:
     # Returns True (deliver) on VERDICT: PASS, False (block) otherwise.
     from vibe.core.agents.models import BuiltinAgentName
@@ -402,6 +415,7 @@ async def _run_verifier_in_worktree(
             deliver=False,
             stamp_wt=None,
             model=model,
+            spend_context=spend_context,
         )
     except Exception as exc:
         logger.warning("then='verifier' spawn failed: %s", exc)
@@ -436,22 +450,31 @@ def _prompt_hash(
     schema: dict | None = None,
     contract: dict | ContractSpec | None = None,
     context_fingerprint: str | None = None,
+    then: str | None = None,
+    strip_unknown: bool = True,
 ) -> str:
     # isolation is part of the identity: an isolated (subprocess/worktree) run is
     # not interchangeable with an in-process one for the same prompt/agent/phase.
     # Only fold it in when set, so ordinary keys are unchanged.
     iso = f":iso={isolation}" if isolation else ""
-    # citations gate transforms the cached response; gated != ungated.
-    cit = ":cit" if citation_spec is not None else ""
+    # Citation and repair policy transform the returned value, so their full
+    # identities are part of the key rather than a gated/ungated boolean.
+    cit = (
+        f":cit={_fingerprint_payload(citation_spec)}"
+        if citation_spec is not None
+        else ""
+    )
     # model/schema/contract change the effective agent output; omitting them
     # caused silent wrong cache hits on resume after schema/contract edits.
     mod = f":m={model}" if model else ""
     sch = f":s={_fingerprint_payload(schema)}" if schema is not None else ""
     con = f":c={_fingerprint_payload(contract)}" if contract is not None else ""
     ctx = f":ctx={context_fingerprint}" if context_fingerprint else ""
+    continuation = f":then={then}" if then is not None else ""
+    strip = f":strip={int(strip_unknown)}"
     return hashlib.sha256(
-        f"{agent}:{phase}{iso}{cit}{mod}{sch}{con}{ctx}:{prompt}".encode()
-    ).hexdigest()[:16]
+        f"{agent}:{phase}{iso}{cit}{mod}{sch}{con}{ctx}{continuation}{strip}:{prompt}".encode()
+    ).hexdigest()
 
 
 # Must match programmatic.py's sentinel; the isolated subprocess writes one
@@ -495,6 +518,8 @@ async def run_isolated_agent(
     model: str | None = None,
     log_path: Path | None = None,
     scratchpad_dir: Path | None = None,
+    spend_context: SpendProcessContext | None = None,
+    task_context: TaskProcessContext | None = None,
 ) -> IsolatedResult:
     from vibe.core.worktree.ephemeral import create_ephemeral_worktree
 
@@ -515,6 +540,8 @@ async def run_isolated_agent(
                 model=model,
                 log_path=log_path,
                 scratchpad_dir=scratchpad_dir,
+                spend_context=spend_context,
+                task_context=task_context,
             )
         except BaseException:
             _reap_on_failure(wt)
@@ -529,6 +556,8 @@ async def run_isolated_agent(
             model=model,
             log_path=log_path,
             scratchpad_dir=scratchpad_dir,
+            spend_context=spend_context,
+            task_context=task_context,
         )
         try:
             await asyncio.to_thread(
@@ -570,6 +599,8 @@ async def _spawn_isolated(
     model: str | None = None,
     log_path: Path | None = None,
     scratchpad_dir: Path | None = None,
+    spend_context: SpendProcessContext | None = None,
+    task_context: TaskProcessContext | None = None,
 ) -> IsolatedResult:
     import os
     import shlex
@@ -596,10 +627,14 @@ async def _spawn_isolated(
     ]
     if model:
         cmd += ["--model", model]
+    from vibe.core.tasking._process_context import install_task_process_context
     from vibe.core.tools.sandbox import scrub_child_env
+    from vibe.core.usage._process_context import install_spend_process_context
 
     # Provider keys stay; host git/gh/ssh/cloud creds stripped.
     env = scrub_child_env()
+    install_spend_process_context(env, spend_context)
+    install_task_process_context(env, task_context)
     env["VIBE_WORKFLOW_EMIT_STATS"] = "1"
     # Child wires an auto-yes approval callback (so write/edit/bash run instead
     # of SKIPping headless — see programmatic._isolated_auto_approve) and
@@ -705,6 +740,7 @@ class _FinalizeArgs:
     model: str | None = None
     live: _LiveAgent | None = None
     schema_errors: list[str] | None = None
+    cacheable: bool = False
 
 
 @dataclass
@@ -724,6 +760,7 @@ class WorkflowRuntime:
     agent_loop_factory: AgentLoopFactory | None = None
     workflow_source_resolver: Callable[[str], str | None] | None = None
     isolated_executor: IsolatedExecutor | None = None
+    trusted_cache_dependency_fingerprint: str | None = None
     _semaphore: asyncio.Semaphore = field(init=False)
     _budget: Budget = field(init=False)
     _agent_count: int = field(default=0, init=False)
@@ -1072,6 +1109,16 @@ class WorkflowRuntime:
         contract_spec = self._resolve_contract(contract, isolation)
         citation_spec = self._resolve_citations(citations)
         effective_phase = phase if phase is not None else self._current_phase
+        cache_context = workflow_cache_identity(
+            self.parent_context,
+            agent=agent,
+            model=model,
+            isolation=isolation,
+            then=then,
+            contract=contract_spec if contract_spec is not None else contract,
+            citations=citation_spec,
+            trusted_dependency_fingerprint=self.trusted_cache_dependency_fingerprint,
+        )
         cache_key = _prompt_hash(
             prompt,
             agent,
@@ -1081,11 +1128,11 @@ class WorkflowRuntime:
             model=model,
             schema=schema,
             contract=contract_spec if contract_spec is not None else contract,
-            context_fingerprint=workflow_cache_context(
-                self.parent_context, agent=agent, model=model
-            ),
+            context_fingerprint=cache_context,
+            then=then,
+            strip_unknown=strip_unknown,
         )
-        if cached := self._cache.get(cache_key):
+        if cache_context is not None and (cached := self._cache.get(cache_key)):
             self._log(f"cache hit: {label or agent}")
             self._record_cached_result(cached)
             return cached.response
@@ -1124,6 +1171,7 @@ class WorkflowRuntime:
                 cache_key=cache_key,
                 strip_unknown=strip_unknown,
                 citations=citation_spec,
+                cacheable=cache_context is not None,
             )
 
     async def _prepare_spawn(
@@ -1173,6 +1221,7 @@ class WorkflowRuntime:
         cache_key: str,
         strip_unknown: bool = True,
         citations: CitationSpec | None = None,
+        cacheable: bool = False,
     ) -> str | dict[str, Any] | SchemaValidationFailure | CitationFailure:
         response_format = build_response_format(schema) if schema is not None else None
         effective_prompt = prompt
@@ -1253,16 +1302,38 @@ class WorkflowRuntime:
                         )
                     )
                 raise
+        loop: AgentLoop | None = None
+        loop_closed = False
+        accounted_prompt_tokens = 0
+        accounted_completion_tokens = 0
+        repair_controller = RepairController.with_finite_defaults()
+        repair_terminal_reason: str | None = None
+        formatter_attempted = False
+        semantic_escalation_recovered = False
+        semantic_escalation_failed = False
+        unaccounted_repair_tokens = 0
+        attempts_run = 0
+
+        async def _close_loop() -> None:
+            nonlocal loop_closed
+            if loop is None or loop_closed:
+                return
+            loop_closed = True
+            with contextlib.suppress(Exception):
+                await loop.aclose()
+
         for attempt in range(self.schema_retries + 1):
+            attempts_run = attempt + 1
             accumulated = []
-            loop: AgentLoop | None = None
             try:
-                loop = self._create_loop(
-                    effective_prompt, agent=agent, model=model, base_config=base_config
-                )
-                # Point the background tool at this attempt's transcript so it can
-                # be tailed; refreshed each retry, so it follows the live log.
-                live.log_path = _loop_log_path(loop)
+                if loop is None:
+                    loop = self._create_loop(
+                        effective_prompt,
+                        agent=agent,
+                        model=model,
+                        base_config=base_config,
+                    )
+                    live.log_path = _loop_log_path(loop)
                 async with aclosing(
                     loop.act(effective_prompt, response_format=response_format)
                 ) as events:
@@ -1278,12 +1349,9 @@ class WorkflowRuntime:
                         # and break — no task.cancel() (cancelling the current
                         # task is racy if there's no real await after the break).
                         if self.agent_budget_ceiling is not None:
-                            spent = (
-                                tokens_in
-                                + getattr(loop.stats, "session_prompt_tokens", 0)
-                                + tokens_out
-                                + getattr(loop.stats, "session_completion_tokens", 0)
-                            )
+                            spent = getattr(
+                                loop.stats, "session_prompt_tokens", 0
+                            ) + getattr(loop.stats, "session_completion_tokens", 0)
                             if spent > self.agent_budget_ceiling:
                                 completed = False
                                 error_msg = (
@@ -1291,16 +1359,8 @@ class WorkflowRuntime:
                                     f"({spent} > {self.agent_budget_ceiling} tokens)"
                                 )
                                 break
-                        # Live token accounting: the real AgentLoop updates
-                        # stats at turn boundaries (between emitted events), so
-                        # polling after each event reflects spend as each turn
-                        # completes rather than only at finalize. tokens_in/out
-                        # hold prior attempts' totals; loop.stats is this
-                        # attempt's running total (fresh loop per attempt).
-                        live.tokens_in = tokens_in + getattr(
-                            loop.stats, "session_prompt_tokens", 0
-                        )
-                        live.tokens_out = tokens_out + getattr(
+                        live.tokens_in = getattr(loop.stats, "session_prompt_tokens", 0)
+                        live.tokens_out = getattr(
                             loop.stats, "session_completion_tokens", 0
                         )
             except FileNotFoundError as e:
@@ -1319,6 +1379,7 @@ class WorkflowRuntime:
                 # as failed instead. Use live.error if the watchdog pre-set a
                 # descriptive message (e.g. "agent timed out after Ns").
                 if not live.cancel_requested:
+                    completed = False
                     raise
                 completed = False
                 error_msg = live.error or "cancelled by user"
@@ -1356,23 +1417,31 @@ class WorkflowRuntime:
                 error_msg = str(e)
                 break
             finally:
-                # Reap memory tasks so they cannot outlive the agent.
-                if loop is not None:
-                    with contextlib.suppress(Exception):
-                        await loop.aclose()
+                if not completed:
+                    await _close_loop()
 
-            # Accumulate across attempts: a fresh loop is created per retry, so
-            # its stats report only that attempt. Overwriting dropped the tokens
-            # spent on failed schema attempts from the budget.
             if loop is not None:
-                tokens_in += getattr(loop.stats, "session_prompt_tokens", 0)
-                tokens_out += getattr(loop.stats, "session_completion_tokens", 0)
+                current_prompt_tokens = getattr(loop.stats, "session_prompt_tokens", 0)
+                current_completion_tokens = getattr(
+                    loop.stats, "session_completion_tokens", 0
+                )
+                attempt_prompt_tokens = max(
+                    current_prompt_tokens - accounted_prompt_tokens, 0
+                )
+                attempt_completion_tokens = max(
+                    current_completion_tokens - accounted_completion_tokens, 0
+                )
+                accounted_prompt_tokens = current_prompt_tokens
+                accounted_completion_tokens = current_completion_tokens
+                tokens_in += attempt_prompt_tokens
+                tokens_out += attempt_completion_tokens
             live.tokens_in = tokens_in
             live.tokens_out = tokens_out
 
             response_text = "".join(accumulated)
 
             if schema is None:
+                await _close_loop()
                 self._finalize_agent(
                     _FinalizeArgs(
                         prompt=prompt,
@@ -1388,50 +1457,189 @@ class WorkflowRuntime:
                         agent=agent,
                         model=model,
                         live=live,
+                        cacheable=cacheable,
                     )
                 )
                 return response_text
 
-            try:
-                parsed = orjson.loads(_strip_code_fences(response_text))
-            except orjson.JSONDecodeError as e:
-                last_errors = [f"JSON parse error: {e}"]
-            else:
-                if strip_unknown:
-                    parsed = strip_unknown_properties(parsed, schema)
-                errors = validate_against_schema(parsed, schema)
-                if not errors:
-                    if citations is not None:
-                        parsed = self._apply_citations(parsed, Path.cwd(), citations)
-                    self._finalize_agent(
-                        _FinalizeArgs(
-                            prompt=prompt,
-                            response=parsed,
-                            label=label,
-                            phase=phase,
-                            tokens_in=tokens_in,
-                            tokens_out=tokens_out,
-                            reservation=reservation,
-                            completed=completed,
-                            error=error_msg,
-                            cache_key=cache_key,
-                            agent=agent,
-                            model=model,
-                            live=live,
-                        )
-                    )
-                    return parsed
-                last_errors = [str(e) for e in errors]
+            if not completed:
+                break
 
-            if attempt < self.schema_retries:
-                error_str = "\n".join(f"  - {e}" for e in last_errors)
-                effective_prompt = (
-                    f"{prompt}\n\n"
-                    f"Your previous response had these validation errors:\n{error_str}\n"
-                    f"Please respond again with a valid JSON object matching the schema."
+            repaired = repair_workflow_result(
+                response_text, schema, strip_unknown=strip_unknown
+            )
+            if repaired.value is None:
+                last_errors = list(repaired.errors)
+                diagnostic = repaired.diagnostic
+                if diagnostic is None:
+                    raise RuntimeError(
+                        "invalid workflow result must include a diagnostic"
+                    )
+                if (
+                    self.parent_context is not None
+                    and self.parent_context.agent_manager is not None
+                ):
+                    repair_config = self.parent_context.agent_manager.config
+                else:
+                    repair_config = base_config
+                repair_adapter = cast(
+                    "SessionSpendAdapter | None", getattr(loop, "spend_adapter", None)
                 )
-                if schema is not None:
-                    effective_prompt += build_prompt_fallback(schema)
+                if repair_adapter is None and self.parent_context is not None:
+                    repair_adapter = self.parent_context.spend_adapter
+                semantic_escalation_available = bool(
+                    repaired.route is WorkflowRepairRoute.SEMANTIC
+                    and repair_config is not None
+                    and repair_config.model_routing.semantic_escalation_model
+                )
+                decision = repair_controller.observe_failure(
+                    diagnostic,
+                    repair_progress_snapshot(diagnostic, repaired.errors),
+                    caller_budget_remaining=(
+                        attempt < self.schema_retries or semantic_escalation_available
+                    ),
+                    added_tokens=(
+                        attempt_prompt_tokens
+                        + attempt_completion_tokens
+                        + unaccounted_repair_tokens
+                    ),
+                )
+                unaccounted_repair_tokens = 0
+                if (
+                    repaired.route is WorkflowRepairRoute.FORMATTER
+                    and not formatter_attempted
+                ):
+                    formatter_attempted = True
+                    if repair_config is not None:
+                        from vibe.core.workflows._formatter_repair import (
+                            format_workflow_result,
+                        )
+
+                        formatted = await format_workflow_result(
+                            repaired.handoff(schema, decision),
+                            config=repair_config,
+                            spend_adapter=repair_adapter,
+                        )
+                        if formatted.usage is not None:
+                            tokens_in += formatted.usage.prompt_tokens
+                            tokens_out += formatted.usage.completion_tokens
+                            unaccounted_repair_tokens += (
+                                formatted.usage.prompt_tokens
+                                + formatted.usage.completion_tokens
+                            )
+                            live.tokens_in = tokens_in
+                            live.tokens_out = tokens_out
+                        if formatted.content is not None:
+                            candidate = repair_workflow_result(
+                                formatted.content, schema, strip_unknown=strip_unknown
+                            )
+                            if candidate.value is not None:
+                                repaired = candidate
+                if (
+                    repaired.value is None
+                    and repaired.route is WorkflowRepairRoute.SEMANTIC
+                    and decision.action is RepairAction.ESCALATE
+                    and repair_config is not None
+                ):
+                    from vibe.core.workflows._semantic_repair import (
+                        repair_semantic_workflow_result,
+                    )
+
+                    escalated = await repair_semantic_workflow_result(
+                        repaired.handoff(schema, decision),
+                        original_prompt=prompt,
+                        config=repair_config,
+                        spend_adapter=repair_adapter,
+                    )
+                    if escalated.usage is not None:
+                        tokens_in += escalated.usage.prompt_tokens
+                        tokens_out += escalated.usage.completion_tokens
+                        unaccounted_repair_tokens += (
+                            escalated.usage.prompt_tokens
+                            + escalated.usage.completion_tokens
+                        )
+                        live.tokens_in = tokens_in
+                        live.tokens_out = tokens_out
+                    if escalated.content is not None:
+                        candidate = repair_workflow_result(
+                            escalated.content, schema, strip_unknown=strip_unknown
+                        )
+                        if candidate.value is not None:
+                            repaired = candidate
+                            semantic_escalation_recovered = True
+                        else:
+                            last_errors = list(candidate.errors)
+                            accumulated = [escalated.content]
+                            exact = (
+                                candidate.diagnostic.for_model()
+                                if candidate.diagnostic is not None
+                                else "; ".join(candidate.errors)
+                            )
+                            repair_terminal_reason = (
+                                f"semantic escalation returned an invalid result: "
+                                f"{exact}"
+                            )
+                            semantic_escalation_failed = True
+                    elif escalated.attempted:
+                        repair_terminal_reason = (
+                            "semantic escalation failed: "
+                            f"{escalated.error or 'no usable result'}"
+                        )
+                        semantic_escalation_failed = True
+                if repaired.value is None:
+                    if decision.action in {RepairAction.STOP, RepairAction.ESCALATE}:
+                        repair_terminal_reason = (
+                            repair_terminal_reason or decision.reason
+                        )
+                        break
+                    if attempt < self.schema_retries:
+                        effective_prompt = build_repair_prompt(decision)
+                    continue
+
+            parsed: dict[str, Any] | CitationFailure = repaired.value
+            repair_metrics = repair_controller.metrics(FailureCategory.RESULT_SCHEMA)
+            if semantic_escalation_recovered:
+                repair_controller.record_escalated_recovery(
+                    FailureCategory.RESULT_SCHEMA,
+                    added_tokens=unaccounted_repair_tokens,
+                )
+            elif repair_metrics.attempts and not repair_metrics.finished:
+                repair_controller.record_recovered(
+                    FailureCategory.RESULT_SCHEMA,
+                    added_tokens=unaccounted_repair_tokens,
+                )
+            if citations is not None:
+                parsed = self._apply_citations(parsed, Path.cwd(), citations)
+            citation_failed = isinstance(parsed, CitationFailure)
+            await _close_loop()
+            self._finalize_agent(
+                _FinalizeArgs(
+                    prompt=prompt,
+                    response=parsed,
+                    label=label,
+                    phase=phase,
+                    tokens_in=tokens_in,
+                    tokens_out=tokens_out,
+                    reservation=reservation,
+                    completed=not citation_failed,
+                    error=parsed.error if citation_failed else error_msg,
+                    cache_key=cache_key,
+                    agent=agent,
+                    model=model,
+                    live=live,
+                    cacheable=cacheable and not citation_failed,
+                )
+            )
+            return parsed
+
+        await _close_loop()
+
+        if semantic_escalation_failed:
+            repair_controller.record_escalation_failure(
+                FailureCategory.RESULT_SCHEMA,
+                repair_terminal_reason or "semantic escalation failed",
+                added_tokens=unaccounted_repair_tokens,
+            )
 
         if schema is None:
             # The schemaless success path returns inside the loop; reaching here
@@ -1496,9 +1704,9 @@ class WorkflowRuntime:
         # output. Record the raw text so it survives, then either raise (strict)
         # or return a structured failure so the workflow script can recover it
         # instead of losing it to None via parallel._safe.
-        schema_error_summary = (
-            f"Schema validation failed after {self.schema_retries + 1} attempts"
-        )
+        schema_error_summary = f"Schema validation failed after {attempts_run} attempts"
+        if repair_terminal_reason is not None:
+            schema_error_summary += f": {repair_terminal_reason}"
         self._finalize_agent(
             _FinalizeArgs(
                 prompt=prompt,
@@ -1519,7 +1727,7 @@ class WorkflowRuntime:
         )
         if self.strict_schema:
             raise SchemaValidationError(
-                f"Response did not match schema after {self.schema_retries + 1} attempts. "
+                f"Response did not match schema after {attempts_run} attempts. "
                 f"Last errors: {'; '.join(last_errors)}"
             )
         return SchemaValidationFailure(
@@ -1577,6 +1785,18 @@ class WorkflowRuntime:
                 prompt, agent=agent, parent_context=self.parent_context
             )
         return self._create_real_loop(agent=agent, model=model, base_config=base_config)
+
+    def _new_process_spend_context(
+        self, purpose: SpendPurpose
+    ) -> SpendProcessContext | None:
+        ctx = self.parent_context
+        if ctx is None or ctx.spend_adapter is None:
+            return None
+        return ctx.spend_adapter.child_agent(
+            group_kind=SpendScopeKind.WORKFLOW,
+            group_id=self._spend_group_id,
+            purpose=purpose,
+        ).export_process_context()
 
     def _create_real_loop(
         self,
@@ -1696,7 +1916,7 @@ class WorkflowRuntime:
                 error=args.error,
             )
 
-        if args.completed:
+        if args.completed and args.cacheable:
             self._cache[args.cache_key] = CachedAgentResult(
                 prompt_hash=args.cache_key,
                 agent=args.agent,
@@ -1956,16 +2176,8 @@ class WorkflowRuntime:
     def _parse_isolated_schema(
         output: str, schema: dict, strip_unknown: bool
     ) -> tuple[str | dict[str, Any] | None, list[str]]:
-        try:
-            parsed = orjson.loads(_strip_code_fences(output))
-        except orjson.JSONDecodeError as e:
-            return None, [f"isolated agent returned invalid JSON: {e}"]
-        if strip_unknown:
-            parsed = strip_unknown_properties(parsed, schema)
-        errors = validate_against_schema(parsed, schema)
-        if errors:
-            return None, [str(err) for err in errors]
-        return parsed, []
+        repaired = repair_workflow_result(output, schema, strip_unknown=strip_unknown)
+        return repaired.value, list(repaired.errors)
 
     async def _default_isolated_executor(
         self,
@@ -1994,6 +2206,7 @@ class WorkflowRuntime:
             scratchpad_dir=(
                 self.parent_context.scratchpad_dir if self.parent_context else None
             ),
+            spend_context=self._new_process_spend_context(SpendPurpose.WORKFLOW),
         )
         wt = result.wt
         contract_report: ContractReport | None = None
@@ -2007,7 +2220,13 @@ class WorkflowRuntime:
                 and wt is not None
                 and (contract is None or should_deliver)
             ):
-                verdict = await _run_verifier_in_worktree(self, wt, result, model)
+                verdict = await _run_verifier_in_worktree(
+                    self,
+                    wt,
+                    result,
+                    model,
+                    self._new_process_spend_context(SpendPurpose.VERIFICATION),
+                )
                 should_deliver = verdict
             if should_deliver and wt is not None:
                 if contract_report is not None:

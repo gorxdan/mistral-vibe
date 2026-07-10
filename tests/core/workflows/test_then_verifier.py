@@ -103,7 +103,7 @@ async def test_run_verifier_pass_records_and_returns_true(
     result = _FakeResult("did the work")
     wt = _FakeWT()
 
-    verdict = await _run_verifier_in_worktree(rt, wt, result, None)
+    verdict = await _run_verifier_in_worktree(rt, wt, result, None, None)
 
     assert verdict is True
     assert state.last_verifier_pass is not None
@@ -122,7 +122,9 @@ async def test_run_verifier_fail_blocks_and_returns_false(
 
     monkeypatch.setattr("vibe.core.workflows.runtime._spawn_isolated", fake_spawn)
 
-    verdict = await _run_verifier_in_worktree(rt, _FakeWT(), _FakeResult("work"), None)
+    verdict = await _run_verifier_in_worktree(
+        rt, _FakeWT(), _FakeResult("work"), None, None
+    )
 
     assert verdict is False
     assert state.last_verifier_pass is None
@@ -139,7 +141,9 @@ async def test_run_verifier_spawn_failure_blocks(
 
     monkeypatch.setattr("vibe.core.workflows.runtime._spawn_isolated", boom)
 
-    verdict = await _run_verifier_in_worktree(rt, _FakeWT(), _FakeResult("work"), None)
+    verdict = await _run_verifier_in_worktree(
+        rt, _FakeWT(), _FakeResult("work"), None, None
+    )
 
     assert verdict is False
     assert state.last_verifier_pass is None
@@ -155,7 +159,9 @@ async def test_run_verifier_noop_without_state(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr("vibe.core.workflows.runtime._spawn_isolated", fake_spawn)
 
-    verdict = await _run_verifier_in_worktree(rt, _FakeWT(), _FakeResult("work"), None)
+    verdict = await _run_verifier_in_worktree(
+        rt, _FakeWT(), _FakeResult("work"), None, None
+    )
 
     assert verdict is True
 
@@ -176,7 +182,7 @@ async def test_run_verifier_partial_blocks() -> None:
     rt_mod._spawn_isolated = mock_spawn
     try:
         verdict = await _run_verifier_in_worktree(
-            rt, _FakeWT(), _FakeResult("work"), None
+            rt, _FakeWT(), _FakeResult("work"), None, None
         )
     finally:
         rt_mod._spawn_isolated = original

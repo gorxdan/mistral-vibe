@@ -659,10 +659,28 @@ in the unconfigured mode and only for a locally validated documentation-only
 diff. Treat the recipe source as host-controlled and restart Vibe after an
 intentional recipe change.
 
+### Structured Task Contracts
+
+`task.task` also accepts a frozen `TaskBrief`: objective, named inputs, allowed
+and denied change paths, trusted acceptance-check IDs, optional token/USD/call
+budget and deadline, plus a canonical manifest identity. The host binds the
+brief to the session's trusted recipe. Workers cannot add checks, widen paths or
+budget, or reveal tools outside the bound 6-8 tool manifest. Task-bound tool
+discovery loads canonical builtins only; `.vibe/**`, `.agents/**`, `.git/**`, and
+every `AGENTS.md` are host-owned control-plane paths even under a broad recipe.
+
+Write-capable structured tasks run in an isolated worktree with shared spend
+scope. The candidate is not merged until the host inspects all changed paths,
+runs only the selected prebound argv checks with `shell=False`, and rechecks the
+path set after those checks. Foreground/background in-process structured tasks
+also require host check evidence before `SUCCEEDED`. Legacy free-form task
+strings remain supported.
+
 ### Session Spend Budget
 
-Primary, compaction, in-process task/workflow, memory-helper, and safety-judge
-model calls reserve capacity from one durable session ledger before dispatch.
+Primary, compaction, task/workflow/team, memory-helper, safety-judge, narration,
+repair, and verification model calls reserve capacity from one durable session
+ledger before dispatch.
 Child scopes cannot borrow past the session cap, and concurrent processes using
 the same ledger reserve under a file lock.
 
@@ -675,6 +693,7 @@ max_concurrent_calls = 2
 max_retries = 16
 # deadline_seconds = 3600.0
 default_max_output_tokens = 32768
+minimum_admitted_output_tokens = 256
 unpriced_input_usd_per_million = 10.0
 unpriced_output_usd_per_million = 30.0
 
@@ -707,13 +726,35 @@ per-call output controls remain finite. Missing provider usage is charged at the
 reservation estimate. Models without configured or built-in prices use the
 fallback rates above; set both to `0` for a local or subscription model that
 should not consume the USD cap. When a request omits `max_tokens`, routed
-backends receive the admitted completion bound. The `openai-chatgpt` Codex
-endpoint rejects that field, so its adapter strips it at the HTTP boundary and
-relies on reservation reconciliation.
+backends receive the affordable completion bound, reduced atomically across the
+scope hierarchy when necessary. The broker rejects the call instead of reducing
+below `minimum_admitted_output_tokens`; an explicit `max_tokens` remains a hard
+request and is never reduced. The `openai-chatgpt` Codex endpoint rejects that
+field, so its adapter strips it at the HTTP boundary and relies on reservation
+reconciliation.
 
-Isolated subprocesses, MCP sampling, narration, and backend-internal provider
-retries are explicit later integration boundaries. They do not yet reserve a
-separate call from this session ledger.
+Isolated subprocesses attach only to host-created child scopes. Generic and
+Mistral retries authorize each redispatch against the original reservation and
+configured retry window. Every authorized redispatch adds another conservative
+token/USD exposure estimate; the final attempt reconciles exact usage when it is
+available. Streaming never restarts after yielding a chunk. MCP
+sampling and non-token-priced text-to-speech remain explicit paid-call
+boundaries outside the ledger. Real-time transcription and Mistral's
+model-backed web search are also explicit unrouted paid boundaries.
+
+Purpose-specific model routing is opt-in:
+
+```toml
+[model_routing]
+formatter_model = "cheap"
+retrieval_model = "cheap"
+mechanical_model = "cheap"
+semantic_escalation_model = "strong"
+```
+
+Formatting uses one bounded no-tools call only after local JSON repair fails.
+The semantic alias is reserved for repeated semantic no-progress; it is not used
+for syntax or transport failures.
 
 ### Auxiliary Model Budget
 
@@ -752,7 +793,7 @@ max_inject_chars = 4000     # hard cap on total injected body text
 timeout = 20.0              # LLM fallback timeout; local recall has no API call
 ```
 
-Use `selector_mode = "local"` to prohibit selector API calls or `"llm"` to restore legacy LLM-only selection. Auto-extraction, consolidation, and verification run only when their explicit memory flags are enabled; effort mode does not turn them on implicitly.
+Use `selector_mode = "local"` to prohibit selector API calls or `"llm"` to restore legacy LLM-only selection. Auto-extraction, consolidation, and verification run only when their explicit memory flags are enabled; effort mode does not turn them on implicitly. Extraction additionally requires explicit remember intent, a preference/correction, or a durable-decision signal, so routine task turns do not launch it.
 
 Memories are written via the `manage_memory` tool. By default they are **global** (shared across every project). Pass `scope = "project"` to write to the current trusted project's private namespace under `~/.vibe/memory/projects/<hash>/`. The namespace is keyed by the repository's git common dir, so every session and every git worktree of one repo shares the same project memory; different repos (and non-git directories) stay isolated. Project memories never live inside the repo, so they cannot be committed, and they shadow same-id global memories for that project only. `scope = "project"` requires a trusted project directory.
 
@@ -1228,8 +1269,14 @@ dunder access blocked). Discovered from `workflow_paths` config, `.vibe/workflow
 - `/workflows stop <id|all>` — stop one or all runs
 - `/workflows snapshot <id>` — show cached results for a run
 
-Completed agent results are cached for resumability. Snapshots persist to session
-metadata for cross-session recovery.
+Workflow result reuse is disabled unless the trusted host supplies a canonical
+SHA-256 fingerprint of the complete dependency closure, including ignored or
+external read inputs and resolved system/user instructions. That fingerprint is
+bound with repository state, effective model/provider and routing policy, tool
+schemas and policy, prompt, schema/contract, and harness version. Only known
+in-process read-only profiles are eligible; isolated, mutating, verifier,
+citation, and receipt-bearing work is never replayed. A resumed snapshot must be
+given the same trusted dependency fingerprint or it misses safely.
 
 ### Effort Modes
 
@@ -1260,6 +1307,13 @@ Teammates coordinate via file-backed shared state with file locking:
 - **TaskStore**: shared task list with dependencies and claim/complete operations
 - **Mailbox**: per-recipient inbox for inter-agent messaging
 - **TeamConfig**: team metadata (members, status, PIDs)
+
+Team workers share one TEAM spend envelope but receive a fresh `AgentLoop`,
+transcript, tool state, verification state, and child budget for every claimed
+task. Structured completion and acceptance checks are harness-owned; the worker
+cannot edit team metadata or mark its own structured task complete. A failed
+selected check is returned verbatim to that same fresh loop for one bounded
+repair turn before the harness reruns the full selected check set and closes it.
 
 Team directories live under `~/.vibe/teams/<name>/` and are cleaned up on exit.
 

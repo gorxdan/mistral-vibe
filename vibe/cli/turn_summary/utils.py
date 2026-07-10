@@ -22,5 +22,9 @@ def create_narrator_backend(
         return None
     if provider.api_key_env_var and not resolve_api_key(provider.api_key_env_var):
         return None
-    backend = create_backend(provider=provider, timeout=config.api_timeout)
+    backend = create_backend(
+        provider=provider,
+        timeout=config.api_timeout,
+        retry_max_elapsed_time=config.api_retry_max_elapsed_time,
+    )
     return backend, NARRATOR_MODEL

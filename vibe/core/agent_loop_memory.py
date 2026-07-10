@@ -18,6 +18,7 @@ Attributes (set by AgentLoop.__init__):
     _mem_extract_cursor     (int)
     _late_memory_section    (str)
     _mem_extract_writes     (int)
+    _mem_signals            (list[MemorySignal])
     _mem_extract_task       (asyncio.Task[None] | None)
     _mem_prefetch_task      (asyncio.Task[list[str]] | None)
     _mem_consolidate_task   (asyncio.Task[None] | None)
@@ -42,6 +43,7 @@ from vibe.core.types import Role
 
 if TYPE_CHECKING:
     from vibe.core.config import MemoryConfig, ModelConfig, ProviderConfig, VibeConfig
+    from vibe.core.memory._signals import MemorySignal
     from vibe.core.memory.consolidator import ConsolidationAction, MemoryConsolidator
     from vibe.core.memory.extractor import MemoryExtractor
     from vibe.core.memory.local_selector import LocalMemorySelection
@@ -71,6 +73,7 @@ class AgentLoopMemoryMixin:
     _mem_extract_cursor: int
     _late_memory_section: str
     _mem_extract_writes: int
+    _mem_signals: list[MemorySignal]
     _mem_extract_task: asyncio.Task[None] | None
     _mem_prefetch_task: asyncio.Task[list[str]] | None
     _mem_consolidate_task: asyncio.Task[None] | None
@@ -116,7 +119,7 @@ class AgentLoopMemoryMixin:
         return self._memory_store
 
     def _resolve_memory_model(
-        self, alias: str | None
+        self, alias: str | None, *, require_alias_match: bool = False
     ) -> tuple[ModelConfig, ProviderConfig] | None:
         """Resolve a model + provider for a memory subprocess.
 
@@ -127,6 +130,8 @@ class AgentLoopMemoryMixin:
         model = None
         if alias:
             model = next((m for m in self.config.models if m.alias == alias), None)
+            if model is None and require_alias_match:
+                return None
         if model is None:
             model = self.config.compaction_model or self.config.get_active_model()
         if not self.config.is_model_available(model):
@@ -134,10 +139,14 @@ class AgentLoopMemoryMixin:
         return model, self.config.get_provider_for_model(model)
 
     def _resolve_memory_selector(self) -> MemorySelector | None:
+        from vibe.core.config import ModelPurpose
         from vibe.core.memory.selector import MemorySelector
 
         mem = self.config.memory
-        resolved = self._resolve_memory_model(mem.model)
+        routed = self.config.model_routing.alias_for(ModelPurpose.RETRIEVAL)
+        resolved = self._resolve_memory_model(
+            routed or mem.model, require_alias_match=routed is not None
+        )
         if resolved is None:
             return None
         model, provider = resolved
@@ -183,7 +192,7 @@ class AgentLoopMemoryMixin:
 
     async def _apply_memory_selection(self, user_msg: str) -> None:
         # Snapshot where this turn's transcript begins, for post-turn extraction.
-        self._mem_extract_cursor = len(self.messages)
+        self._prepare_memory_extraction_turn(user_msg)
         try:
             store = self._get_memory_store()
             if store is None:
@@ -288,7 +297,7 @@ class AgentLoopMemoryMixin:
 
     def _kick_memory_prefetch(self, user_msg: str) -> None:
         self._cancel_memory_prefetch()
-        self._mem_extract_cursor = len(self.messages)
+        self._prepare_memory_extraction_turn(user_msg)
         try:
             store = self._get_memory_store()
             if store is None:
@@ -399,6 +408,23 @@ class AgentLoopMemoryMixin:
             extra_body=mem.extra_body or None,
         )
 
+    def _prepare_memory_extraction_turn(self, user_msg: str) -> None:
+        user_index = max(len(self.messages) - 1, 0)
+        self._mem_extract_cursor = user_index
+        if not self.config.memory.auto_extract:
+            return
+        from vibe.core.memory._signals import detect_memory_signals
+
+        queue = self._memory_signal_queue()
+        queue.extend(detect_memory_signals(user_msg, message_index=user_index))
+
+    def _memory_signal_queue(self) -> list[MemorySignal]:
+        queue = getattr(self, "_mem_signals", None)
+        if queue is None:
+            queue = []
+            self._mem_signals = queue
+        return queue
+
     def _maybe_schedule_memory_extraction(self) -> None:
         if self._is_subagent:
             return
@@ -414,19 +440,27 @@ class AgentLoopMemoryMixin:
             # consolidation's merge/trash. Defer to the next turn.
             return
         if self._mem_extract_writes >= mem.auto_extract_max_writes:
+            self._memory_signal_queue().clear()
             return
-        start = self._mem_extract_cursor
+        from vibe.core.memory._signals import extractable_signals
+
+        queue = self._memory_signal_queue()
+        signals = extractable_signals(tuple(queue))
+        if not signals:
+            queue.clear()
+            return
+        start = min(signal.message_index for signal in signals)
         end = len(self.messages)
         # Compaction can shrink history below the cursor; fall back to the start.
         if start > end:
             start = 0
-        if end - start < mem.auto_extract_min_messages:
-            return
         if self._mem_wrote_memory_since(start, end):
             self._mem_extract_cursor = end
+            queue.clear()
             return
         self._mem_extract_cursor = end
-        task = asyncio.create_task(self._extract_memories(start, end))
+        queue.clear()
+        task = asyncio.create_task(self._extract_memories(start, end, signals=signals))
         self._mem_extract_task = task
         task.add_done_callback(self._on_extract_done)
 
@@ -461,7 +495,9 @@ class AgentLoopMemoryMixin:
             lines.append(f"{msg.role.value}: {content}")
         return "\n".join(lines)
 
-    async def _extract_memories(self, start: int, end: int) -> None:
+    async def _extract_memories(
+        self, start: int, end: int, *, signals: tuple[MemorySignal, ...] = ()
+    ) -> None:
         import datetime as _dt
 
         try:
@@ -469,9 +505,17 @@ class AgentLoopMemoryMixin:
             extractor = self._resolve_memory_extractor()
             if store is None or extractor is None:
                 return
+            signal_context = "\n".join(
+                f"- {signal.kind.value}: {signal.evidence}" for signal in signals[:4]
+            )
+            transcript = self._transcript_text(start, end)
+            if signal_context:
+                transcript = (
+                    "Locally detected durable-memory signals:\n"
+                    f"{signal_context}\n\nSignal-adjacent transcript:\n{transcript}"
+                )
             proposed = await extractor.extract(
-                self._transcript_text(start, end),
-                store.index_markdown(self.config.memory.max_entries_scanned),
+                transcript, store.index_markdown(self.config.memory.max_entries_scanned)
             )
             if not proposed:
                 return

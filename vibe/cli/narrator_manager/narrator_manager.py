@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from vibe.core.telemetry.send import TelemetryClient
     from vibe.core.tts.tts_client_port import TTSClientPort
     from vibe.core.types import BaseEvent
+    from vibe.core.usage._session import SessionSpendAdapter
 
 
 class NarratorManager:
@@ -36,13 +37,15 @@ class NarratorManager:
         config_getter: Callable[[], VibeConfig],
         audio_player: AudioPlayerPort,
         telemetry_client: TelemetryClient | None = None,
+        spend_adapter_getter: Callable[[], SessionSpendAdapter | None] | None = None,
     ) -> None:
         self._config_getter = config_getter
         self._audio_player = audio_player
         self._telemetry_client = telemetry_client
+        self._spend_adapter_getter = spend_adapter_getter
         config = config_getter()
         self._turn_summary: TurnSummaryPort = self._make_turn_summary(
-            config, telemetry_client
+            config, telemetry_client, spend_adapter_getter
         )
         self._turn_summary.on_summary = self._on_turn_summary
         self._tts_client: TTSClientPort | None = self._make_tts_client(config)
@@ -127,12 +130,16 @@ class NarratorManager:
     def sync(self) -> None:
         self.cancel()
         config = self._config_getter()
-        self.turn_summary = self._make_turn_summary(config, self._telemetry_client)
+        self.turn_summary = self._make_turn_summary(
+            config, self._telemetry_client, self._spend_adapter_getter
+        )
         self.tts_client = self._make_tts_client(config)
 
     @staticmethod
     def _make_turn_summary(
-        config: VibeConfig, telemetry_client: TelemetryClient | None = None
+        config: VibeConfig,
+        telemetry_client: TelemetryClient | None = None,
+        spend_adapter_getter: Callable[[], SessionSpendAdapter | None] | None = None,
     ) -> NoopTurnSummary | TurnSummaryTracker:
         if not config.narrator_enabled:
             return NoopTurnSummary()
@@ -148,6 +155,7 @@ class NarratorManager:
                 if telemetry_client is None
                 else telemetry_client.build_client_event_metadata
             ),
+            spend_adapter_getter=spend_adapter_getter,
         )
 
     @staticmethod

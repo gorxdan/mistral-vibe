@@ -10,7 +10,7 @@ from pydantic import ValidationError
 import pytest
 
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
-from vibe.core.config import MemoryConfig
+from vibe.core.config import MemoryConfig, PurposeModelRoutingConfig
 from vibe.core.memory.extractor import (
     ExtractedMemory,
     MemoryExtractor,
@@ -164,6 +164,17 @@ def test_selector_parse_filters_and_clamps() -> None:
     assert sel._parse('{"ids": ["a", "x", "b", "a", "c"]}', valid) == ["a", "b"]
     assert sel._parse("garbage", valid) == []
     assert sel._parse('{"ids": "notalist"}', valid) == []
+
+
+def test_explicit_retrieval_alias_fails_closed_when_missing() -> None:
+    config = build_test_vibe_config(
+        memory=MemoryConfig(selector_mode="llm"),
+        model_routing=PurposeModelRoutingConfig(retrieval_model="missing"),
+    )
+    loop = build_test_agent_loop(config=config)
+
+    assert config.is_model_available(config.get_active_model())
+    assert loop._resolve_memory_selector() is None
 
 
 @pytest.mark.asyncio
@@ -817,18 +828,15 @@ def _loop_with_auto_extract(effort_mode: str):
         memory=MemoryConfig(auto_extract=True, auto_extract_min_messages=1),
     )
     loop = build_test_agent_loop(config=config)
-    loop.messages.append(LLMMessage(role=Role.USER, content="hi"))
+    user_message = "Please remember that I prefer focused test runs."
+    loop.messages.append(LLMMessage(role=Role.USER, content=user_message))
+    loop._prepare_memory_extraction_turn(user_message)
     loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="done"))
     return loop
 
 
 @pytest.mark.asyncio
 async def test_auto_extract_runs_under_le_chaton() -> None:
-    # Le-chaton is the flagship mode and gets every benefit, memory capture
-    # included. The old blanket skip was a 429 mitigation from 3dbef2c; that
-    # commit's real fix (the per-provider concurrency limiter) is in place and
-    # protects extraction calls. Recall (prefetch) already runs ungated in
-    # le-chaton, so ungating capture removes a read/write asymmetry.
     loop = _loop_with_auto_extract("le-chaton")
     loop._maybe_schedule_memory_extraction()
     assert loop._mem_extract_task is not None
@@ -841,6 +849,20 @@ async def test_auto_extract_scheduled_under_normal_effort() -> None:
     loop._maybe_schedule_memory_extraction()
     assert loop._mem_extract_task is not None
     loop._mem_extract_task.cancel()
+
+
+def test_auto_extract_skips_turn_without_durable_signal() -> None:
+    from vibe.core.types import LLMMessage, Role
+
+    config = build_test_vibe_config(memory=MemoryConfig(auto_extract=True))
+    loop = build_test_agent_loop(config=config)
+    loop.messages.append(LLMMessage(role=Role.USER, content="Run the focused tests."))
+    loop._prepare_memory_extraction_turn("Run the focused tests.")
+    loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="Tests passed."))
+
+    loop._maybe_schedule_memory_extraction()
+
+    assert loop._mem_extract_task is None
 
 
 def test_le_chaton_respects_disabled_memory_maintenance(monkeypatch) -> None:

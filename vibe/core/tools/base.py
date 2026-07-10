@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from vibe.core.hooks.models import HookConfigResult
     from vibe.core.loop import Scheduler
     from vibe.core.skills.manager import SkillManager
+    from vibe.core.tasking._policy import BoundTaskContract
     from vibe.core.teams.models import TeamSafetyMode
     from vibe.core.telemetry.types import LaunchContext, TerminalEmulator
     from vibe.core.tools.background import BackgroundRegistry
@@ -126,9 +127,10 @@ class InvokeContext:
     # Tool manager for meta-tools (e.g. tool_search) that need to inspect or
     # adjust the active manifest without reaching back into AgentLoop.
     tool_manager: Any | None = field(default=None)
-    # Shared paid-call scope for in-process child agents. Narration, MCP sampling,
-    # auxiliary models, and isolated subprocesses are not routed through it yet.
+    # Shared paid-call scope propagated across primary, auxiliary, workflow,
+    # team, narration, verification, and observable provider-retry calls.
     spend_adapter: SessionSpendAdapter | None = field(default=None)
+    task_contract: BoundTaskContract | None = field(default=None)
 
 
 class ToolError(Exception):
@@ -234,6 +236,10 @@ class BaseTool[
     # Withholdable from the model manifest, tool_search-activated on demand
     # (defer_builtin_tools); harness-directed tools (background, exit_plan_mode) never.
     manifest_deferrable: ClassVar[bool] = False
+
+    # Host-scoped tools are registered for trusted runtime manifests but never
+    # enter an ordinary agent's catalog, even through config allowlists.
+    runtime_scoped: ClassVar[bool] = False
 
     @classmethod
     def call_is_read_only(cls, args: BaseModel, *, agent_manager: Any = None) -> bool:

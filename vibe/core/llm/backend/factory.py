@@ -31,7 +31,11 @@ def create_backend(
                 retry_max_elapsed_time=retry_max_elapsed_time,
                 enable_otel=enable_otel,
             )
-        return ctor(provider=provider, timeout=timeout)
+        return ctor(
+            provider=provider,
+            timeout=timeout,
+            retry_max_elapsed_time=retry_max_elapsed_time,
+        )
     if backend == Backend.MISTRAL:
         from vibe.core.llm.backend.mistral import MistralBackend
 
@@ -44,7 +48,11 @@ def create_backend(
     if backend == Backend.GENERIC:
         from vibe.core.llm.backend.generic import GenericBackend
 
-        return GenericBackend(provider=provider, timeout=timeout)
+        return GenericBackend(
+            provider=provider,
+            timeout=timeout,
+            retry_max_elapsed_time=retry_max_elapsed_time,
+        )
     raise ValueError(f"no backend registered for {backend!r}")
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,6 +14,7 @@ from vibe.core.config import (
     ModelConfig,
     ProviderConfig,
     SafetyJudgeConfig,
+    SpendConfig,
 )
 from vibe.core.tools.base import BaseToolState
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
@@ -25,10 +27,17 @@ from vibe.core.tools.safety_judge import (
 )
 from vibe.core.types import ApprovalResponse, Backend, LLMUsage
 from vibe.core.usage import SpendLimits, UsageMeter, UsageRecorder
+from vibe.core.usage._session import SessionSpendAdapter
 
 
 def _bash() -> Bash:
     return Bash(config_getter=lambda: BashToolConfig(), state=BaseToolState())
+
+
+def _spend_adapter(tmp_path: Path) -> SessionSpendAdapter:
+    return SessionSpendAdapter.create(
+        SpendConfig(), "safety-test", ledger_path=tmp_path / "spend-ledger"
+    )
 
 
 class _FakeJudge:
@@ -242,7 +251,9 @@ async def test_no_judge_configured_prompts_as_before() -> None:
 
 
 @pytest.mark.asyncio
-async def test_safety_judge_fails_closed_on_backend_error(monkeypatch) -> None:
+async def test_safety_judge_fails_closed_on_backend_error(
+    monkeypatch, tmp_path: Path
+) -> None:
     model = DEFAULT_MODELS[0]
 
     class _BoomBackend:
@@ -271,6 +282,7 @@ async def test_safety_judge_fails_closed_on_backend_error(monkeypatch) -> None:
         model=model,
         provider=fake_provider,  # type: ignore[arg-type]
         config=SafetyJudgeConfig(enabled=True, model=model.alias),
+        spend_adapter=_spend_adapter(tmp_path),
     )
     verdict = await judge.judge("bash", '{"command":"rm -rf /"}', ["rm -rf /"])
     assert verdict.safe is False
@@ -280,7 +292,7 @@ async def test_safety_judge_fails_closed_on_backend_error(monkeypatch) -> None:
 @pytest.mark.parametrize("model_temperature", [None, 0.0, 0.5, 1.0])
 @pytest.mark.asyncio
 async def test_judge_forwards_model_temperature_verbatim(
-    monkeypatch, model_temperature: float | None
+    monkeypatch, tmp_path: Path, model_temperature: float | None
 ) -> None:
     # The judge forwards the model's temperature unchanged. temperature=None
     # keeps the wire-omission contract (kimi rejects an explicit value), so the
@@ -307,7 +319,10 @@ async def test_judge_forwards_model_temperature_verbatim(
         async def complete(self, request: Any, **kwargs: Any) -> Any:
             captured.append(request.temperature)
             return SimpleNamespace(
-                message=SimpleNamespace(content='{"safe": true, "reason": "read-only"}')
+                message=SimpleNamespace(
+                    content='{"safe": true, "reason": "read-only"}'
+                ),
+                usage=None,
             )
 
     fake_provider = type(
@@ -334,6 +349,7 @@ async def test_judge_forwards_model_temperature_verbatim(
         model=model,
         provider=fake_provider,  # type: ignore[arg-type]
         config=config,
+        spend_adapter=_spend_adapter(tmp_path),
     )
     verdict = await judge.judge("bash", '{"command":"ls"}', ["network access"])
     assert verdict.safe is True
@@ -375,6 +391,7 @@ async def test_judge_records_auxiliary_usage(monkeypatch, tmp_path) -> None:
         provider=provider,
         config=SafetyJudgeConfig(enabled=True, model=model.alias),
         usage_meter=UsageMeter("session", recorder=recorder),
+        spend_adapter=_spend_adapter(tmp_path),
     )
 
     verdict = await judge.judge("bash", '{"command":"ls"}', [])
@@ -432,6 +449,7 @@ async def test_judge_rejects_projected_cost_before_backend_dispatch(
         provider=provider,
         config=SafetyJudgeConfig(enabled=True, model=model.alias),
         usage_meter=meter,
+        spend_adapter=_spend_adapter(tmp_path),
     )
 
     verdict = await judge.judge("bash", '{"command":"ls"}', [])
@@ -473,6 +491,7 @@ async def test_judge_timeout_reconciles_auxiliary_reservation(
         provider=provider,
         config=SafetyJudgeConfig(enabled=True, model=model.alias, timeout=0.01),
         usage_meter=meter,
+        spend_adapter=_spend_adapter(tmp_path),
     )
 
     verdict = await judge.judge("bash", '{"command":"ls"}', [])
@@ -838,7 +857,9 @@ def _kimi_temp_error(model: str) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_judge_retries_without_temperature_on_rejection(monkeypatch) -> None:
+async def test_judge_retries_without_temperature_on_rejection(
+    monkeypatch, tmp_path: Path
+) -> None:
     # 2026-07-02: every kimi judge call 400'd on temperature=1.0; the judge
     # must self-heal by retrying with it omitted.
     model = ModelConfig(
@@ -861,7 +882,8 @@ async def test_judge_retries_without_temperature_on_rejection(monkeypatch) -> No
             if request.temperature is not None:
                 raise _kimi_temp_error(request.model.name)
             return SimpleNamespace(
-                message=SimpleNamespace(content='{"safe": true, "reason": "ok"}')
+                message=SimpleNamespace(content='{"safe": true, "reason": "ok"}'),
+                usage=None,
             )
 
     fake_provider = type(
@@ -876,6 +898,7 @@ async def test_judge_retries_without_temperature_on_rejection(monkeypatch) -> No
         model=model,
         provider=fake_provider,  # type: ignore[arg-type]
         config=SafetyJudgeConfig(enabled=True, model=model.alias),
+        spend_adapter=_spend_adapter(tmp_path),
     )
     verdict = await judge.judge("write_file", '{"path":"x"}', ["flagged"])
     assert captured == [1.0, None]
@@ -884,7 +907,9 @@ async def test_judge_retries_without_temperature_on_rejection(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_judge_does_not_retry_non_temperature_400(monkeypatch) -> None:
+async def test_judge_does_not_retry_non_temperature_400(
+    monkeypatch, tmp_path: Path
+) -> None:
     model = ModelConfig(
         name="kimi-k2.7-code", provider="kimi", alias="kimi", temperature=1.0
     )
@@ -919,6 +944,7 @@ async def test_judge_does_not_retry_non_temperature_400(monkeypatch) -> None:
         model=model,
         provider=fake_provider,  # type: ignore[arg-type]
         config=SafetyJudgeConfig(enabled=True, model=model.alias),
+        spend_adapter=_spend_adapter(tmp_path),
     )
     verdict = await judge.judge("write_file", '{"path":"x"}', ["flagged"])
     assert calls == [1.0]

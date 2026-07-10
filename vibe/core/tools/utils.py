@@ -21,6 +21,31 @@ def _make_absolute(path_str: str) -> Path:
     return path
 
 
+def _team_metadata_root() -> Path | None:
+    raw = os.environ.get("VIBE_TEAM_DIR")
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
+
+
+def is_team_metadata_path(path: str | Path) -> bool:
+    root = _team_metadata_root()
+    if root is None:
+        return False
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return candidate.resolve().is_relative_to(root)
+
+
+def enforce_team_metadata_confine(path: Path) -> None:
+    if is_team_metadata_path(path):
+        raise ToolError(
+            f"Refusing to access {path.resolve()}: team coordination metadata is "
+            "host-owned"
+        )
+
+
 def resolve_path_permission(
     path_str: str, *, allowlist: list[str], denylist: list[str]
 ) -> PermissionContext | None:
@@ -77,6 +102,9 @@ def resolve_file_tool_permission(
     Checks scratchpad, then allowlist/denylist, then sensitive patterns, then workdir boundary.
     Returns PermissionContext with granular required_permissions when applicable.
     """
+    if is_team_metadata_path(path_str):
+        return PermissionContext(permission=ToolPermission.NEVER)
+
     if is_scratchpad_path(path_str):
         return PermissionContext(permission=ToolPermission.ALWAYS)
 

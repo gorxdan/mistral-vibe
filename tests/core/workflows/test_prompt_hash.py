@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from vibe.core.workflows.citations import CitationSpec
 from vibe.core.workflows.runtime import _prompt_hash
 
 
@@ -7,7 +8,7 @@ def test_prompt_hash_stable_for_identical_inputs() -> None:
     a = _prompt_hash("p", "explore", "phase1")
     b = _prompt_hash("p", "explore", "phase1")
     assert a == b
-    assert len(a) == 16
+    assert len(a) == 64
 
 
 def test_prompt_hash_differs_by_model() -> None:
@@ -43,4 +44,23 @@ def test_prompt_hash_schema_key_order_insensitive() -> None:
     }
     assert _prompt_hash("p", "explore", schema=s1) == _prompt_hash(
         "p", "explore", schema=s2
+    )
+
+
+def test_prompt_hash_binds_full_result_policy() -> None:
+    first_citations = CitationSpec(
+        items_path="findings", path_field="path", strict=False
+    )
+    second_citations = CitationSpec(
+        items_path="findings", path_field="path", strict=True
+    )
+
+    assert _prompt_hash("p", "explore", citation_spec=first_citations) != _prompt_hash(
+        "p", "explore", citation_spec=second_citations
+    )
+    assert _prompt_hash("p", "explore", strip_unknown=True) != _prompt_hash(
+        "p", "explore", strip_unknown=False
+    )
+    assert _prompt_hash("p", "explore", then=None) != _prompt_hash(
+        "p", "explore", then="verifier"
     )

@@ -25,6 +25,7 @@ class SpendConfig(BaseSettings):
     max_retries: int = Field(default=16, ge=0)
     deadline_seconds: float | None = Field(default=None, gt=0.0)
     default_max_output_tokens: int = Field(default=32_768, gt=0)
+    minimum_admitted_output_tokens: int = Field(default=256, gt=0)
     prompt_estimator_mode: PromptEstimatorMode = PromptEstimatorMode.ADAPTIVE
     unpriced_input_usd_per_million: float = Field(default=10.0, ge=0.0)
     unpriced_output_usd_per_million: float = Field(default=30.0, ge=0.0)

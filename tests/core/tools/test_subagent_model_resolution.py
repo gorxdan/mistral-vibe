@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from vibe.core.config import VibeConfig
+from vibe.core.config import PurposeModelRoutingConfig, VibeConfig
+from vibe.core.tasking import TaskBrief, TaskManifestIdentity
 from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.builtins.task import (
     TaskArgs,
@@ -68,3 +69,19 @@ def test_effective_model_non_grunt_ignores_grunt_model() -> None:
     config = VibeConfig(active_model="host", grunt_model="haiku", subagent_model="glm")
     args = TaskArgs(task="explore", agent="explore")
     assert _effective_subagent_model(args, _ctx(config)) == "glm"
+
+
+def test_mechanical_contract_forces_configured_cheap_model() -> None:
+    config = VibeConfig(
+        active_model="host",
+        model_routing=PurposeModelRoutingConfig(mechanical_model="cheap"),
+    )
+    brief = TaskBrief(
+        objective="apply mechanical edits",
+        allowed_paths=["src/**"],
+        acceptance_checks=["focused"],
+        manifest=TaskManifestIdentity(name="mechanical-edit", version="1"),
+    )
+    args = TaskArgs(task=brief, agent="worker", model="strong")
+
+    assert _effective_subagent_model(args, _ctx(config)) == "cheap"

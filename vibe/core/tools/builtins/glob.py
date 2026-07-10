@@ -214,6 +214,8 @@ class Glob(
             if not search_root.is_dir():
                 raise ToolError(f"Path is not a directory: {search_root}")
         exclude = self._collect_exclude_patterns()
+        if ctx is not None and ctx.task_contract is not None:
+            exclude.extend(ctx.task_contract.search_exclude_patterns)
         backend = self._detect_backend()
 
         if backend is GlobBackend.RIPGREP:
@@ -224,6 +226,10 @@ class Glob(
             paths = await asyncio.to_thread(
                 self._walk_files, search_root, relative_pattern, args, exclude
             )
+        if ctx is not None and ctx.task_contract is not None:
+            paths = [
+                path for path in paths if ctx.task_contract.allows_search_result(path)
+            ]
 
         cap = args.max_results or self.config.default_max_results
         ordered, was_truncated = self._sort_and_cap(paths, cap, args.offset)

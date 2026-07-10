@@ -26,6 +26,13 @@ from vibe.core.llm.backend.openai_responses import (
 from vibe.core.llm.backend.reasoning_adapter import ReasoningAdapter
 from vibe.core.llm.exceptions import BackendErrorBuilder
 from vibe.core.llm.provider_limiter import provider_slot
+from vibe.core.llm.provider_retry import (
+    ProviderRetryController,
+    SpendRetryCause,
+    authorize_provider_retry,
+    bind_provider_retry_controller,
+    iterate_provider_stream,
+)
 from vibe.core.llm.types import CompletionRequest
 from vibe.core.types import (
     AvailableTool,
@@ -357,11 +364,13 @@ class GenericBackend:
         client: httpx.AsyncClient | None = None,
         provider: ProviderConfig,
         timeout: float = 720.0,
+        retry_max_elapsed_time: float = 300.0,
     ) -> None:
         self._client = client
         self._owns_client = client is None
         self._provider = provider
         self._timeout = timeout
+        self._retry_max_elapsed_time = retry_max_elapsed_time
 
     async def __aenter__(self) -> GenericBackend:
         if self._client is None:
@@ -503,20 +512,32 @@ class GenericBackend:
 
         url = f"{req.base_url or self._provider.api_base}{req.endpoint}"
 
+        controller = ProviderRetryController(
+            max_elapsed_time=self._retry_max_elapsed_time
+        )
         try:
-            res_data, resp_headers = await self._make_request(url, req.body, headers)
+            with bind_provider_retry_controller(controller):
+                res_data, resp_headers = await self._make_request(
+                    url, req.body, headers
+                )
             if response_headers_sink is not None:
                 response_headers_sink.update(resp_headers)
             return adapter.parse_response(res_data, self._provider)
 
         except httpx.HTTPStatusError as e:
-            if (retry_body := self._retry_body_for_effort(e, req.body)) is not None:
-                res_data, resp_headers = await self._make_request(
-                    url, retry_body, headers
-                )
-                if response_headers_sink is not None:
-                    response_headers_sink.update(resp_headers)
-                return adapter.parse_response(res_data, self._provider)
+            retry_body = self._retry_body_for_effort(e, req.body)
+            if retry_body is not None:
+                with bind_provider_retry_controller(controller):
+                    allowed = await authorize_provider_retry(
+                        SpendRetryCause.REASONING_EFFORT, delay_s=0.0
+                    )
+                    if allowed:
+                        res_data, resp_headers = await self._make_request(
+                            url, retry_body, headers
+                        )
+                        if response_headers_sink is not None:
+                            response_headers_sink.update(resp_headers)
+                        return adapter.parse_response(res_data, self._provider)
             raise BackendErrorBuilder.build_http_error(
                 provider=self._provider.name,
                 endpoint=url,
@@ -577,24 +598,37 @@ class GenericBackend:
 
         url = f"{req.base_url or self._provider.api_base}{req.endpoint}"
 
+        controller = ProviderRetryController(
+            max_elapsed_time=self._retry_max_elapsed_time
+        )
         try:
-            async for res_data in self._make_streaming_request(
-                url, req.body, headers, response_headers_sink=response_headers_sink
+            async for res_data in iterate_provider_stream(
+                self._make_streaming_request(
+                    url, req.body, headers, response_headers_sink=response_headers_sink
+                ),
+                controller,
             ):
                 yield adapter.parse_response(res_data, self._provider)
 
         except httpx.HTTPStatusError as e:
-            # A rejected reasoning effort 400s before any chunk is yielded, so a
-            # one-shot resend with the nearest supported effort is safe.
-            if (retry_body := self._retry_body_for_effort(e, req.body)) is not None:
-                async for res_data in self._make_streaming_request(
-                    url,
-                    retry_body,
-                    headers,
-                    response_headers_sink=response_headers_sink,
-                ):
-                    yield adapter.parse_response(res_data, self._provider)
-                return
+            retry_body = self._retry_body_for_effort(e, req.body)
+            if retry_body is not None:
+                with bind_provider_retry_controller(controller):
+                    allowed = await authorize_provider_retry(
+                        SpendRetryCause.REASONING_EFFORT, delay_s=0.0
+                    )
+                if allowed:
+                    async for res_data in iterate_provider_stream(
+                        self._make_streaming_request(
+                            url,
+                            retry_body,
+                            headers,
+                            response_headers_sink=response_headers_sink,
+                        ),
+                        controller,
+                    ):
+                        yield adapter.parse_response(res_data, self._provider)
+                    return
             raise BackendErrorBuilder.build_http_error(
                 provider=self._provider.name,
                 endpoint=url,

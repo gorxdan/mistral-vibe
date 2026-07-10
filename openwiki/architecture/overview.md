@@ -138,17 +138,46 @@ The design doc `docs/design/compaction.md` describes the multi-stage shaper pipe
 
 **Source**: `vibe/core/usage/_broker.py`, `_ledger.py`, `_session.py`
 
-Primary, compaction, in-process task/workflow, memory-helper, and safety-judge
-calls share a durable hierarchical ledger
+Primary, compaction, task/workflow, team, memory-helper, safety-judge, narration,
+repair, and verification calls share a durable hierarchical ledger
 (`session -> workflow/team -> agent -> call`). Admission is reserved before
 backend dispatch under a file lock, so sibling agents cannot race past the
 parent cap. Provider usage reconciles the reservation; errors or missing usage
 retain the estimate. Session resume rebinds the adapter to the resumed ledger,
-and active calls renew their leases.
+and active calls renew their leases. Isolated children receive a versioned
+`VIBE_SPEND_CONTEXT` that can attach only to an existing host-created Agent
+scope. Lease replay releases provably undispatched calls and conservatively
+charges dispatched calls until exact usage arrives.
 
-The broker core is cross-process capable, but isolated subprocess, MCP sampling,
-narration, and backend-internal retry attempts are not yet routed as distinct
-calls.
+Generic and Mistral provider retries authorize every redispatch against the
+original call reservation. Each authorization conservatively charges another
+reservation estimate across the token and USD scope hierarchy; the final
+attempt reconciles exact usage when available. Retry count and policy/budget
+rejection are durable;
+streaming retries stop after the first yielded chunk. MCP sampling remains the
+documented model-call boundary outside this broker; non-token-priced
+text-to-speech and real-time transcription are also outside the token ledger.
+Mistral's model-backed web search remains an explicit unrouted paid boundary.
+
+## Bound Task Contracts
+
+**Source**: `vibe/core/tasking/_policy.py`, `_process_context.py`,
+`vibe/core/tools/_task_manifest.py`
+
+A structured `TaskBrief` is frozen, then the host binds it to the session's
+immutable trusted recipe. Acceptance values are check IDs, never commands; the
+host resolves them to prebound argv checks. Canonical manifests expose 6-8 tools
+and task-bound `ToolManager` instances import canonical builtins only before
+applying the allowlist to lookup, search, and pinning. Edit/write paths are
+checked after hook and user modification. Harness control-plane paths
+(`.vibe/**`, `.agents/**`, `.git/**`, and every `AGENTS.md`) remain host-owned.
+
+Write-capable isolated tasks return an undelivered worktree. The host inspects
+committed, staged, working, deleted, renamed, and untracked paths, runs only the
+selected trusted checks with `shell=False`, rechecks paths after those checks,
+and fast-forwards the candidate only after all gates pass. `VIBE_TASK_CONTEXT`
+binds the same frozen brief inside the subprocess; it cannot supply new checks
+or a wider manifest.
 
 ## Verification Receipts
 

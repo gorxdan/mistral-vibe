@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 import functools
 from http import HTTPStatus
@@ -8,6 +7,7 @@ import random
 
 import httpx
 
+from vibe.core.llm.provider_retry import SpendRetryCause, authorize_provider_retry
 from vibe.core.logger import logger
 
 _RETRYABLE_REQUEST_ERRORS: tuple[type[httpx.RequestError], ...] = (
@@ -44,6 +44,16 @@ def _is_retryable_http_error(e: Exception) -> bool:
     if isinstance(e, _RETRYABLE_REQUEST_ERRORS):
         return True
     return False
+
+
+def is_retryable_http_error(error: Exception) -> bool:
+    return _is_retryable_http_error(error)
+
+
+def provider_retry_cause(error: Exception) -> SpendRetryCause:
+    if isinstance(error, httpx.HTTPStatusError):
+        return SpendRetryCause.HTTP_STATUS
+    return SpendRetryCause.TRANSPORT
 
 
 # Cap on how long we'll honor a server's Retry-After (avoid pathological waits).
@@ -105,6 +115,12 @@ def _retry_delay(
     return max(0.0, base * (1.0 + _BACKOFF_JITTER * (random.random() * 2.0 - 1.0)))
 
 
+def provider_retry_delay(
+    attempt: int, delay_seconds: float, backoff_factor: float, error: Exception
+) -> float:
+    return _retry_delay(attempt, delay_seconds, backoff_factor, error)
+
+
 def _http_response_detail(exc: Exception) -> str:
     """status + Retry-After + body excerpt for an HTTP error, for retry logs.
 
@@ -161,7 +177,10 @@ def async_retry[T, **P](
                             e,
                             _http_response_detail(e),
                         )
-                        await asyncio.sleep(current_delay)
+                        if not await authorize_provider_retry(
+                            provider_retry_cause(e), delay_s=current_delay
+                        ):
+                            raise
                         continue
                     raise e
             raise RuntimeError(
@@ -209,7 +228,10 @@ def async_generator_retry[T, **P](
                             e,
                             _http_response_detail(e),
                         )
-                        await asyncio.sleep(current_delay)
+                        if not await authorize_provider_retry(
+                            provider_retry_cause(e), delay_s=current_delay
+                        ):
+                            raise
                         continue
                     raise
                 yield first_item

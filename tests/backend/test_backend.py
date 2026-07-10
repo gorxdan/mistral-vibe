@@ -533,22 +533,18 @@ class TestBackend:
 
 class TestMistralRetry:
     @staticmethod
-    def _create_test_backend(timeout: float = 720.0) -> MistralBackend:
+    def _create_test_backend(
+        timeout: float = 720.0, retry_max_elapsed_time: float = 300.0
+    ) -> MistralBackend:
         provider = ProviderConfig(
             name="test_provider",
             api_base="https://api.mistral.ai/v1",
             api_key_env_var="API_KEY",
         )
-        return MistralBackend(provider=provider, timeout=timeout)
-
-    @staticmethod
-    def _build_fast_http_retry_config() -> RetryConfig:
-        return RetryConfig(
-            strategy="backoff",
-            backoff=BackoffStrategy(
-                initial_interval=1, max_interval=1, exponent=1, max_elapsed_time=10000
-            ),
-            retry_connection_errors=True,
+        return MistralBackend(
+            provider=provider,
+            timeout=timeout,
+            retry_max_elapsed_time=retry_max_elapsed_time,
         )
 
     @pytest.mark.asyncio
@@ -566,10 +562,12 @@ class TestMistralRetry:
             assert "async_client" in call_kwargs
 
     def test_retry_budget_uses_explicit_config(self):
-        backend = self._create_test_backend(timeout=7200.0)
+        backend = self._create_test_backend(timeout=7200.0, retry_max_elapsed_time=17.0)
 
         assert backend._timeout == 7200.0
-        assert backend._retry_config.backoff.max_elapsed_time == 300000
+        assert backend._retry_max_elapsed_time == 17.0
+        assert backend._retry_config.strategy == "none"
+        assert backend._retry_config.retry_connection_errors is False
 
     def test_create_backend_passes_retry_budget(self):
         provider = ProviderConfig(
@@ -579,11 +577,14 @@ class TestMistralRetry:
             backend=Backend.MISTRAL,
         )
 
-        backend = create_backend(provider=provider, timeout=7200.0)
+        backend = create_backend(
+            provider=provider, timeout=7200.0, retry_max_elapsed_time=17.0
+        )
 
         assert isinstance(backend, MistralBackend)
         assert backend._timeout == 7200.0
-        assert backend._retry_config.backoff.max_elapsed_time == 300000
+        assert backend._retry_max_elapsed_time == 17.0
+        assert backend._retry_config.strategy == "none"
 
     @pytest.mark.asyncio
     async def test_complete_retries_retryable_http_error(self):
@@ -597,7 +598,6 @@ class TestMistralRetry:
                 ]
             )
             backend = self._create_test_backend()
-            backend._retry_config = self._build_fast_http_retry_config()
             model = ModelConfig(
                 name="model_name", provider="test_provider", alias="model_alias"
             )

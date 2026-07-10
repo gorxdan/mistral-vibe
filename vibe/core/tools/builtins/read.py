@@ -20,7 +20,11 @@ from vibe.core.tools.base import (
 )
 from vibe.core.tools.permissions import PermissionContext
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
-from vibe.core.tools.utils import enforce_isolated_confine, resolve_file_tool_permission
+from vibe.core.tools.utils import (
+    enforce_isolated_confine,
+    enforce_team_metadata_confine,
+    resolve_file_tool_permission,
+)
 from vibe.core.types import ToolStreamEvent
 from vibe.core.utils import VIBE_WARNING_TAG
 from vibe.core.utils.io import read_lines_safe_async
@@ -209,6 +213,7 @@ class Read(
         if not path.is_absolute():
             path = Path.cwd() / path
         path = path.resolve()
+        enforce_team_metadata_confine(path)
         enforce_isolated_confine(path)
 
         if not path.exists():

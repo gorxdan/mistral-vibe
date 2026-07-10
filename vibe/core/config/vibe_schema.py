@@ -18,6 +18,7 @@ from vibe.core.config._defaults import (
     DEFAULT_THEME,
     DEFAULT_VIBE_BASE_URL,
 )
+from vibe.core.config._model_routing import PurposeModelRoutingConfig
 from vibe.core.config._settings import (
     DEFAULT_ACTIVE_MODEL_CONFIG,
     DEFAULT_ACTIVE_TRANSCRIBE_MODEL_CONFIG,
@@ -91,6 +92,9 @@ class VibeConfigSchema(ConfigSchema):
     active_model: Annotated[str, WithReplaceMerge()] = DEFAULT_ACTIVE_MODEL_CONFIG.alias
     subagent_model: Annotated[str, WithReplaceMerge()] = ""
     grunt_model: Annotated[str, WithReplaceMerge()] = ""
+    model_routing: Annotated[PurposeModelRoutingConfig, WithReplaceMerge()] = Field(
+        default_factory=PurposeModelRoutingConfig
+    )
     providers: Annotated[list[ProviderConfig], WithUnionMerge(merge_key="name")] = (
         Field(default_factory=lambda: list(DEFAULT_PROVIDERS))
     )

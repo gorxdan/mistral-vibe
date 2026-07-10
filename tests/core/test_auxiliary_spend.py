@@ -133,6 +133,27 @@ def test_agent_loop_routes_memory_and_safety_with_distinct_purposes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_memory_without_broker_fails_closed_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = _BackendProbe(
+        _result('{"ids": ["one"]}', LLMUsage(prompt_tokens=12, completion_tokens=3))
+    )
+    monkeypatch.setattr(
+        "vibe.core.memory._llm_client.BACKEND_FACTORY",
+        {Backend.GENERIC: probe.backend_class()},
+    )
+    selector = MemorySelector(
+        model=_model(), provider=_provider(), max_selected=1, spend_adapter=None
+    )
+
+    selected = await selector.select(["- [one] useful"], "question", {"one"})
+
+    assert selected == []
+    assert probe.complete_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_memory_broker_rejection_fails_open_without_dispatch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

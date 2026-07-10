@@ -5,7 +5,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum, auto
-import fnmatch
 import hashlib
 from pathlib import Path, PurePosixPath
 import re
@@ -23,6 +22,7 @@ from pydantic import (
 
 from vibe import __version__
 from vibe.core.paths import VIBE_HOME
+from vibe.core.tasking._path_scope import path_matches_scope
 from vibe.core.utils.io import read_safe, write_durable
 
 if TYPE_CHECKING:
@@ -299,7 +299,7 @@ def allowed_paths_match(changed_paths: Sequence[str], patterns: Sequence[str]) -
     ):
         return False
     return all(
-        any(_path_matches(path, pattern) for pattern in normalized)
+        any(path_matches_scope(path, pattern) for pattern in normalized)
         for path in changed_paths
     )
 
@@ -717,15 +717,6 @@ def _normalize_allowed_pattern(pattern: str) -> str:
     if not normalized or path.is_absolute() or ".." in path.parts:
         raise VerificationReceiptError(f"invalid allowed-path pattern: {pattern!r}")
     return normalized
-
-
-def _path_matches(path: str, pattern: str) -> bool:
-    if fnmatch.fnmatchcase(path, pattern):
-        return True
-    if not any(character in pattern for character in "*?["):
-        prefix = pattern.rstrip("/")
-        return path == prefix or path.startswith(f"{prefix}/")
-    return False
 
 
 def _require_hash(value: str, label: str) -> None:

@@ -122,7 +122,7 @@ async def test_background_verifier_records_evidence_backed_pass(monkeypatch) -> 
     tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
 
     await tool._collect_async_isolated(
-        TaskArgs(task="verify", agent="verifier"), ctx, finish(), None
+        TaskArgs(task="verify", agent="verifier"), ctx, finish(), None, None
     )
 
     assert state.has_pass()

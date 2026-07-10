@@ -82,7 +82,9 @@ class AgentLoopFailoverMixin:
         provider = self.config.get_provider_for_model(model)
         self._fallback_model_override = model
         self.backend = create_backend(
-            provider=provider, timeout=self.config.api_timeout
+            provider=provider,
+            timeout=self.config.api_timeout,
+            retry_max_elapsed_time=self.config.api_retry_max_elapsed_time,
         )
         self.stats.update_pricing(model.input_price, model.output_price)
         self.stats.update_model_bounds(model.auto_compact_threshold)

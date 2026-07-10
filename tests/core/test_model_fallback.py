@@ -338,7 +338,10 @@ async def test_chat_model_override_uses_matching_backend_after_failover(
     alpha_backend = FakeBackend([[mock_llm_chunk(content="from-alpha")]])
 
     def fake_create_backend(
-        *, provider: ProviderConfig, timeout: float = 720.0
+        *,
+        provider: ProviderConfig,
+        timeout: float = 720.0,
+        retry_max_elapsed_time: float = 300.0,
     ) -> object:
         return alpha_backend if provider.name == "alpha" else beta_backend
 

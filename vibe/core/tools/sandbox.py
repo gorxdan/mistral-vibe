@@ -66,9 +66,11 @@ HOST_GIT_ENV_PASSTHROUGH = frozenset({
 @dataclass
 class SandboxSpec:
     write_roots: list[Path]
+    read_roots: list[Path] = field(default_factory=list)
     allow_network: bool = True
     env: dict[str, str] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
+    cwd: Path | None = None
 
 
 def _bwrap_usable() -> bool:
@@ -405,6 +407,8 @@ def _bwrap_argv(spec: SandboxSpec) -> list[str]:
     ]
     if not spec.allow_network:
         argv.append("--unshare-net")
+    for root in _canonical_roots(spec.read_roots):
+        argv += ["--ro-bind", root, root]
     for root in _canonical_roots(spec.write_roots):
         # Writable bind first, then the (possibly external) git metadata writable,
         # then layer read-only over sensitive metadata + git hooks last (bwrap is
@@ -417,7 +421,7 @@ def _bwrap_argv(spec: SandboxSpec) -> list[str]:
             argv += ["--ro-bind", sub, sub]
         for meta in readonly_git:
             argv += ["--ro-bind", meta, meta]
-    argv += ["--chdir", str(Path.cwd())]
+    argv += ["--chdir", str((spec.cwd or Path.cwd()).resolve())]
     argv += spec.extra_args
     argv.append("--")
     return argv

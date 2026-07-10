@@ -19,7 +19,9 @@ from vibe.core.tools.builtins.write_file import (
 
 
 def _enable_shared_ask(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("VIBE_TEAM_DIR", str(tmp_path))
+    team_dir = tmp_path / "team"
+    team_dir.mkdir()
+    monkeypatch.setenv("VIBE_TEAM_DIR", str(team_dir))
     monkeypatch.setenv("VIBE_TEAMMATE_NAME", "alice")
     monkeypatch.setenv(TEAM_SAFETY_MODE_ENV, "shared-ask")
 

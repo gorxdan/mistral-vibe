@@ -25,6 +25,7 @@ import tomli_w
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config._auxiliary_config import AuxiliaryBudgetConfig
 from vibe.core.config._defaults import (
+    DEFAULT_API_RETRY_MAX_ELAPSED_TIME,
     DEFAULT_API_TIMEOUT,
     DEFAULT_AUTO_COMPACT_THRESHOLD,
     DEFAULT_CONSOLE_BASE_URL,
@@ -35,6 +36,7 @@ from vibe.core.config._defaults import (
     DEFAULT_THEME,
     DEFAULT_VIBE_BASE_URL,
 )
+from vibe.core.config._model_routing import PurposeModelRoutingConfig
 from vibe.core.config._spend_config import SpendConfig
 from vibe.core.config._spend_migration import prepare_spend_migration
 from vibe.core.config._verification_config import TrustedVerificationRecipeConfig
@@ -755,6 +757,7 @@ class VibeConfig(BaseSettings):
     enable_notifications: bool = True
     enable_system_trust_store: bool = False
     api_timeout: float = DEFAULT_API_TIMEOUT
+    api_retry_max_elapsed_time: float = DEFAULT_API_RETRY_MAX_ELAPSED_TIME
     auto_compact_threshold: int = DEFAULT_AUTO_COMPACT_THRESHOLD
 
     vibe_code_enabled: bool = Field(default=True, exclude=True)
@@ -794,6 +797,9 @@ class VibeConfig(BaseSettings):
     # Default model for the `grunt` subagent (bulk/grunt work). Empty =
     # fall back to subagent_model, then the host session's model.
     grunt_model: str = ""
+    model_routing: PurposeModelRoutingConfig = Field(
+        default_factory=PurposeModelRoutingConfig
+    )
     auxiliary_budget: AuxiliaryBudgetConfig = Field(
         default_factory=AuxiliaryBudgetConfig
     )

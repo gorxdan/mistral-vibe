@@ -14,6 +14,7 @@ from vibe.core._verification_receipt import (
     ReceiptOutcome,
     VerificationReceiptError,
     VerificationReceiptStore,
+    allowed_paths_match,
     hash_payload,
     validate_receipt,
 )
@@ -97,6 +98,11 @@ def _validate(receipt, repository: Path, base_sha: str, store):
         expected_checks_hash=receipt.checks_hash,
         expected_recipe_version="test-v1",
     )
+
+
+def test_allowed_path_single_segment_glob_does_not_cross_directories() -> None:
+    assert allowed_paths_match(["src/feature.py"], ["src/*.py"])
+    assert not allowed_paths_match(["src/private/secret.py"], ["src/*.py"])
 
 
 def test_runner_persists_current_receipt_and_full_output(tmp_path: Path) -> None:

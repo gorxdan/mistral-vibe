@@ -12,7 +12,10 @@ from vibe.core.llm.models import (
     ResolvedMessage,
     ResolvedToolCall,
 )
-from vibe.core.llm.tool_call_repair import parse_tool_arguments
+from vibe.core.llm.tool_call_repair import (
+    parse_tool_arguments,
+    tool_argument_schema_diagnostic,
+)
 from vibe.core.logger import logger
 from vibe.core.types import (
     AvailableFunction,
@@ -194,11 +197,13 @@ class APIToolFormatHandler:
                     )
                 )
             except ValidationError as e:
+                diagnostic = tool_argument_schema_diagnostic(parsed_call.tool_name, e)
                 failed_calls.append(
                     FailedToolCall(
                         tool_name=parsed_call.tool_name,
                         call_id=parsed_call.call_id,
-                        error=f"Invalid arguments: {e}",
+                        error=diagnostic.for_model(),
+                        diagnostic=diagnostic,
                     )
                 )
 

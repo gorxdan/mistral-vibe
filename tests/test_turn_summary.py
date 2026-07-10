@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import logging
+from typing import Any, cast
 
 import pytest
 
@@ -18,8 +19,17 @@ from vibe.cli.turn_summary import (
 from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 from vibe.core.llm.backend.mistral import MistralBackend
 from vibe.core.types import AssistantEvent, Backend, ToolStreamEvent, UserMessageEvent
+from vibe.core.usage import SpendPurpose
 
 _TEST_MODEL = ModelConfig(name="test-model", provider="test", alias="test-model")
+
+
+class _PassthroughSpendAdapter:
+    async def complete(self, backend, request, *, purpose=None):
+        return await backend.complete(request)
+
+
+_PASSTHROUGH_SPEND = _PassthroughSpendAdapter()
 
 
 def _noop_callback(result: TurnSummaryResult) -> None:
@@ -142,7 +152,10 @@ class TestTurnSummaryTracker:
         on_summary: Callable[[TurnSummaryResult], None] = _noop_callback,
     ) -> TurnSummaryTracker:
         return TurnSummaryTracker(
-            backend=backend, model=_TEST_MODEL, on_summary=on_summary
+            backend=backend,
+            model=_TEST_MODEL,
+            on_summary=on_summary,
+            spend_adapter_getter=lambda: cast(Any, _PASSTHROUGH_SPEND),
         )
 
     @pytest.mark.asyncio
@@ -174,11 +187,52 @@ class TestTurnSummaryTracker:
         assert "do something" in summary_msgs[1].content
 
     @pytest.mark.asyncio
+    async def test_end_turn_routes_narration_through_session_spend(self):
+        backend = FakeBackend(mock_llm_chunk(content="the summary"))
+        observed: list[SpendPurpose | None] = []
+
+        class _SpendAdapter:
+            async def complete(self, routed_backend, request, *, purpose=None):
+                observed.append(purpose)
+                return await routed_backend.complete(request)
+
+        adapter = _SpendAdapter()
+        tracker = TurnSummaryTracker(
+            backend=backend,
+            model=_TEST_MODEL,
+            spend_adapter_getter=lambda: cast(Any, adapter),
+        )
+
+        tracker.start_turn("do something")
+        tracker.end_turn()
+        await asyncio.sleep(0.1)
+
+        assert observed == [SpendPurpose.NARRATION]
+        assert len(backend.requests_messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_end_turn_fails_closed_without_session_spend_adapter(self):
+        backend = FakeBackend(mock_llm_chunk(content="must not run"))
+        results: list[TurnSummaryResult] = []
+        tracker = TurnSummaryTracker(
+            backend=backend, model=_TEST_MODEL, on_summary=results.append
+        )
+
+        tracker.start_turn("do something")
+        tracker.end_turn()
+        await asyncio.sleep(0.1)
+
+        assert backend.requests_messages == []
+        assert len(results) == 1
+        assert results[0].summary is None
+
+    @pytest.mark.asyncio
     async def test_end_turn_sends_secondary_call_metadata(self):
         backend = FakeBackend(mock_llm_chunk(content="summary"))
         tracker = TurnSummaryTracker(
             backend=backend,
             model=_TEST_MODEL,
+            spend_adapter_getter=lambda: cast(Any, _PASSTHROUGH_SPEND),
             session_metadata_getter=lambda: {
                 "agent_entrypoint": "cli",
                 "agent_version": "1.0.0",
@@ -209,6 +263,7 @@ class TestTurnSummaryTracker:
         tracker = TurnSummaryTracker(
             backend=backend,
             model=_TEST_MODEL,
+            spend_adapter_getter=lambda: cast(Any, _PASSTHROUGH_SPEND),
             session_metadata_getter=lambda: {"session_id": "session-123"},
         )
 
@@ -228,6 +283,7 @@ class TestTurnSummaryTracker:
         tracker = TurnSummaryTracker(
             backend=backend,
             model=_TEST_MODEL,
+            spend_adapter_getter=lambda: cast(Any, _PASSTHROUGH_SPEND),
             session_metadata_getter=lambda: {
                 "session_id": "session-123",
                 "parent_session_id": "parent-session-456",

@@ -6,11 +6,37 @@ from typing import Any
 
 import pytest
 
+from tests.conftest import build_test_vibe_config
+from vibe.core.agents.manager import AgentManager
+from vibe.core.tools.base import InvokeContext
+from vibe.core.tools.manager import ToolManager
 from vibe.core.types import AssistantEvent as MockEvent
+from vibe.core.workflows import _cache_identity
 from vibe.core.workflows.models import WorkflowRunSnapshot, WorkflowStatus
 from vibe.core.workflows.runtime import WorkflowRuntime
 
 pytestmark = pytest.mark.asyncio
+_TRUSTED_DEPENDENCIES = "a" * 64
+
+
+@pytest.fixture(autouse=True)
+def _stable_repository(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        _cache_identity, "_repository_fingerprint", lambda: "stable-workspace"
+    )
+
+
+def _runtime(**kwargs: Any) -> WorkflowRuntime:
+    config = build_test_vibe_config()
+    agent_manager = AgentManager(lambda: config)
+    context = InvokeContext(
+        tool_call_id="workflow-cache-test",
+        active_model=config.active_model,
+        agent_manager=agent_manager,
+        tool_manager=ToolManager(lambda: config, defer_mcp=True),
+    )
+    kwargs.setdefault("trusted_cache_dependency_fingerprint", _TRUSTED_DEPENDENCIES)
+    return WorkflowRuntime(parent_context=context, **kwargs)
 
 
 @dataclass
@@ -58,7 +84,7 @@ async def test_cache_hit_skips_agent_run() -> None:
 
         return CountingLoop()
 
-    rt = WorkflowRuntime(agent_loop_factory=counting_factory, max_concurrent=2)
+    rt = _runtime(agent_loop_factory=counting_factory, max_concurrent=2)
 
     result1 = await rt.spawn_agent("same prompt", agent="explore")
     assert result1 == "ok"
@@ -90,7 +116,7 @@ async def test_different_prompts_not_cached() -> None:
 
         return CountingLoop()
 
-    rt = WorkflowRuntime(agent_loop_factory=counting_factory)
+    rt = _runtime(agent_loop_factory=counting_factory)
 
     await rt.spawn_agent("prompt A", agent="explore")
     await rt.spawn_agent("prompt B", agent="explore")
@@ -117,15 +143,15 @@ async def test_different_agents_not_cached() -> None:
 
         return CountingLoop()
 
-    rt = WorkflowRuntime(agent_loop_factory=counting_factory)
+    rt = _runtime(agent_loop_factory=counting_factory)
 
     await rt.spawn_agent("same prompt", agent="explore")
-    await rt.spawn_agent("same prompt", agent="default")
+    await rt.spawn_agent("same prompt", agent="planner")
     assert call_count[0] == 2
 
 
 async def test_snapshot_captures_cache() -> None:
-    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_concurrent=2)
+    rt = _runtime(agent_loop_factory=make_factory(), max_concurrent=2)
     await rt.spawn_agent("prompt 1", agent="explore", label="a")
     await rt.spawn_agent("prompt 2", agent="explore", label="b")
 
@@ -136,7 +162,7 @@ async def test_snapshot_captures_cache() -> None:
 
 
 async def test_restore_from_snapshot_populates_cache() -> None:
-    rt1 = WorkflowRuntime(agent_loop_factory=make_factory(), max_concurrent=2)
+    rt1 = _runtime(agent_loop_factory=make_factory(), max_concurrent=2)
     await rt1.spawn_agent("cached prompt", agent="explore", label="cached")
     snap = rt1.snapshot("wf-1", "script")
 
@@ -158,12 +184,43 @@ async def test_restore_from_snapshot_populates_cache() -> None:
 
         return CountingLoop()
 
-    rt2 = WorkflowRuntime(agent_loop_factory=counting_factory, max_concurrent=2)
+    rt2 = _runtime(agent_loop_factory=counting_factory, max_concurrent=2)
     rt2.restore_from_snapshot(snap)
 
     result = await rt2.spawn_agent("cached prompt", agent="explore")
     assert result == "ok"
     assert call_count[0] == 0
+
+
+async def test_restore_misses_when_dependency_fingerprint_changes() -> None:
+    rt1 = _runtime(agent_loop_factory=make_factory())
+    await rt1.spawn_agent("cached prompt", agent="explore")
+    snap = rt1.snapshot("wf-1", "script")
+    call_count = [0]
+
+    def counting_factory(
+        prompt: str, *, agent: str, parent_context: Any | None = None
+    ) -> Any:
+        @dataclass
+        class CountingLoop:
+            stats: MockStats = field(default_factory=MockStats)
+
+            async def act(
+                self, prompt: str, *, response_format: Any = None
+            ) -> AsyncGenerator[MockEvent, None]:
+                call_count[0] += 1
+                yield MockEvent(content="fresh")
+
+        return CountingLoop()
+
+    rt2 = _runtime(
+        agent_loop_factory=counting_factory,
+        trusted_cache_dependency_fingerprint="b" * 64,
+    )
+    rt2.restore_from_snapshot(snap)
+
+    assert await rt2.spawn_agent("cached prompt", agent="explore") == "fresh"
+    assert call_count[0] == 1
 
 
 async def test_resume_replays_cached_and_runs_rest() -> None:
@@ -184,11 +241,11 @@ async def test_resume_replays_cached_and_runs_rest() -> None:
 
         return CountingLoop()
 
-    rt1 = WorkflowRuntime(agent_loop_factory=counting_factory, max_concurrent=2)
+    rt1 = _runtime(agent_loop_factory=counting_factory, max_concurrent=2)
     await rt1.spawn_agent("cached prompt", agent="explore")
     snap = rt1.snapshot("wf-1", "script")
 
-    rt2 = WorkflowRuntime(agent_loop_factory=counting_factory, max_concurrent=2)
+    rt2 = _runtime(agent_loop_factory=counting_factory, max_concurrent=2)
     rt2.restore_from_snapshot(snap)
 
     cached_result = await rt2.spawn_agent("cached prompt", agent="explore")
@@ -201,7 +258,7 @@ async def test_resume_replays_cached_and_runs_rest() -> None:
 
 
 async def test_cached_result_recorded_in_phases() -> None:
-    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_concurrent=2)
+    rt = _runtime(agent_loop_factory=make_factory(), max_concurrent=2)
     await rt.spawn_agent("prompt", agent="explore", label="first", phase="Find")
     await rt.spawn_agent("prompt", agent="explore", label="second", phase="Find")
 
@@ -213,7 +270,7 @@ async def test_cached_result_recorded_in_phases() -> None:
 
 
 async def test_snapshot_serializes_to_json() -> None:
-    rt = WorkflowRuntime(agent_loop_factory=make_factory())
+    rt = _runtime(agent_loop_factory=make_factory())
     await rt.spawn_agent("prompt", agent="explore")
 
     snap = rt.snapshot("wf-1", "script source", args={"key": "value"})
@@ -231,14 +288,14 @@ async def test_snapshot_serializes_to_json() -> None:
 async def test_restore_from_snapshot_restores_budget_spend() -> None:
     # Resuming must not silently reset the budget cap to 0 (which would let the
     # resumed run overspend).
-    rt1 = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    rt1 = _runtime(agent_loop_factory=make_factory(), budget_total=1_000_000)
     await rt1.spawn_agent("p1", agent="explore")
     spent = rt1._budget.spent()
     assert spent > 0
     snap = rt1.snapshot("wf-1", "script")
     assert snap.budget_spent == spent
 
-    rt2 = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
+    rt2 = _runtime(agent_loop_factory=make_factory(), budget_total=1_000_000)
     assert rt2._budget.spent() == 0
     rt2.restore_from_snapshot(snap)
     assert rt2._budget.spent() == spent

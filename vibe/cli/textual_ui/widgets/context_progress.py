@@ -81,7 +81,7 @@ class ContextProgress(NoMarkupStatic):
         self.remove_class("ctx-warn", "ctx-crit")
         if new_state.max_tokens == 0:
             self._render_state = None
-            self.refresh()
+            self.refresh(layout=True)
             return
 
         ratio = min(1, new_state.current_tokens / new_state.max_tokens)
@@ -92,7 +92,7 @@ class ContextProgress(NoMarkupStatic):
             self.add_class("ctx-warn")
 
         self._render_state = new_state
-        self.refresh()
+        self.refresh(layout=True)
 
     def render(self) -> Text:
         # Override render() rather than update(): Static.update(Rich Text)

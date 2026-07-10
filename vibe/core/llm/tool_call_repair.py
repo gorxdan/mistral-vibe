@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Any
 
-import orjson
+from pydantic import ValidationError
 
 from vibe.core.failure_diagnostic import (
     FailureCategory,
     FailureDiagnostic,
     build_failure_diagnostic,
 )
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
-_RAW_PREVIEW_CHARS = 4_000
+from vibe.core.repair import repair_json_object
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,121 +23,68 @@ class ToolArgumentParse:
 
 def parse_tool_arguments(raw: str | None) -> ToolArgumentParse:
     text = raw or "{}"
-    first_error: orjson.JSONDecodeError | None = None
-    for candidate in _repair_candidates(text):
-        try:
-            value = orjson.loads(candidate)
-        except orjson.JSONDecodeError as exc:
-            if first_error is None:
-                first_error = exc
-            continue
-        if not isinstance(value, dict):
-            diagnostic = build_failure_diagnostic(
-                category=FailureCategory.TOOL_ARGUMENT_PARSE,
-                message="Tool arguments must decode to a JSON object",
-                field="arguments",
-                expected="object",
-                actual=type(value).__name__,
-                evidence_pointer="tool_call.arguments",
-                suggested_action="emit one JSON object containing the tool fields",
-            )
-            return ToolArgumentParse({}, _bounded_raw(text), diagnostic)
-        return ToolArgumentParse(value, _bounded_raw(text), repaired=candidate != text)
-
-    detail = str(first_error) if first_error is not None else "invalid JSON"
+    repaired = repair_json_object(text)
+    if repaired.value is not None:
+        return ToolArgumentParse(
+            repaired.value, repaired.raw_text, repaired=repaired.repaired
+        )
+    if repaired.actual_type is not None:
+        diagnostic = build_failure_diagnostic(
+            category=FailureCategory.TOOL_ARGUMENT_PARSE,
+            message="Tool arguments must decode to a JSON object",
+            field="arguments",
+            expected="object",
+            actual=repaired.actual_type,
+            evidence_pointer="tool_call.arguments",
+            suggested_action="emit one JSON object containing the tool fields",
+        )
+        return ToolArgumentParse({}, repaired.raw_text, diagnostic)
     diagnostic = build_failure_diagnostic(
         category=FailureCategory.TOOL_ARGUMENT_PARSE,
-        message=f"Malformed tool argument JSON: {detail}",
+        message=f"Malformed tool argument JSON: {repaired.error or 'invalid JSON'}",
         field="arguments",
         expected="valid JSON object",
-        actual=_bounded_raw(text),
+        actual=repaired.raw_text,
         evidence_pointer="tool_call.arguments",
         suggested_action="correct only the JSON syntax and retry the same tool call",
     )
-    return ToolArgumentParse({}, _bounded_raw(text), diagnostic)
+    return ToolArgumentParse({}, repaired.raw_text, diagnostic)
 
 
-def _repair_candidates(text: str) -> tuple[str, ...]:
-    candidates: list[str] = [text]
-    fenced = tuple(_FENCE_RE.finditer(text))
-    if len(fenced) == 1:
-        candidates.append(fenced[0].group(1).strip())
-    if balanced := _first_balanced_object(text):
-        candidates.append(balanced)
-    for candidate in tuple(candidates):
-        repaired = _remove_trailing_commas(candidate)
-        if repaired != candidate:
-            candidates.append(repaired)
-    return tuple(dict.fromkeys(candidates))
+def tool_argument_schema_diagnostic(
+    tool_name: str, error: ValidationError
+) -> FailureDiagnostic:
+    issues = error.errors(include_url=False)
+    first = issues[0]
+    location = ".".join(str(part) for part in first.get("loc", ())) or "arguments"
+    details = "; ".join(
+        f"{'.'.join(str(part) for part in issue.get('loc', ())) or 'arguments'}: "
+        f"{issue.get('msg', 'invalid value')}"
+        for issue in issues
+    )
+    issue_type = str(first.get("type", "validation_error"))
+    context = first.get("ctx")
+    expected = (
+        str(context.get("expected"))
+        if isinstance(context, dict) and context.get("expected") is not None
+        else str(first.get("msg", "value matching the tool schema"))
+    )
+    actual = "missing" if issue_type == "missing" else repr(first.get("input"))[:1_000]
+    return build_failure_diagnostic(
+        category=FailureCategory.TOOL_ARGUMENT_SCHEMA,
+        message=f"Invalid arguments for tool '{tool_name}': {details}",
+        field=f"arguments.{location}",
+        expected=expected,
+        actual=actual,
+        evidence_pointer=f"tool_call.arguments.{location}",
+        suggested_action=(
+            f"correct only arguments.{location} and retry the same tool call"
+        ),
+    )
 
 
-def _first_balanced_object(text: str) -> str | None:
-    start = text.find("{")
-    if start < 0:
-        return None
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(start, len(text)):
-        char = text[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                outside = text[:start] + text[index + 1 :]
-                if any(marker in outside for marker in "{}[]"):
-                    return None
-                return text[start : index + 1]
-    return None
-
-
-def _remove_trailing_commas(text: str) -> str:
-    result: list[str] = []
-    in_string = False
-    escaped = False
-    index = 0
-    while index < len(text):
-        char = text[index]
-        if in_string:
-            result.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            index += 1
-            continue
-        if char == '"':
-            in_string = True
-            result.append(char)
-            index += 1
-            continue
-        if char == ",":
-            lookahead = index + 1
-            while lookahead < len(text) and text[lookahead].isspace():
-                lookahead += 1
-            if lookahead < len(text) and text[lookahead] in "}]":
-                index += 1
-                continue
-        result.append(char)
-        index += 1
-    return "".join(result)
-
-
-def _bounded_raw(text: str) -> str:
-    if len(text) <= _RAW_PREVIEW_CHARS:
-        return text
-    omitted = len(text) - _RAW_PREVIEW_CHARS
-    return f"{text[:_RAW_PREVIEW_CHARS]}...[{omitted} chars omitted]"
+__all__ = [
+    "ToolArgumentParse",
+    "parse_tool_arguments",
+    "tool_argument_schema_diagnostic",
+]

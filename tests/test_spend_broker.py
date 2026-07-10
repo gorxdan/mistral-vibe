@@ -271,6 +271,8 @@ def test_expired_lease_commits_estimate_and_accepts_late_exact_usage(tmp_path) -
         _context("stale"), SpendAmount(prompt_tokens=60), lease_s=5
     )
     assert isinstance(reservation, SpendReservation)
+    assert broker.mark_dispatched(reservation) is True
+    assert broker.mark_dispatched(reservation) is False
 
     clock.now = 106.0
     expired = broker.reap_expired()
@@ -283,14 +285,67 @@ def test_expired_lease_commits_estimate_and_accepts_late_exact_usage(tmp_path) -
     assert isinstance(replacement, SpendReservation)
     assert broker.snapshot("session").remaining_total_tokens == 0
 
-    corrected = broker.reconcile(reservation, SpendAmount(prompt_tokens=20))
+    actual = SpendAmount(prompt_tokens=20)
+    corrected = broker.reconcile(reservation, actual)
+    duplicate = broker.reconcile(reservation, actual)
     assert corrected.applied is True
     assert corrected.estimated is False
+    assert duplicate.applied is False
     snapshot = broker.snapshot("session")
     assert snapshot.spent.prompt_tokens == 20
     assert snapshot.reserved.prompt_tokens == 40
     assert snapshot.remaining_total_tokens == 40
     assert any(event.kind == "expired" for event in broker.events())
+
+
+def test_expired_undispatched_lease_releases_reserved_capacity(tmp_path) -> None:
+    clock = _Clock(100.0)
+    broker = SpendBroker(tmp_path / "ledger", clock=clock)
+    _define_agent(
+        broker, session_limits=SpendEnvelopeLimits(max_total_tokens=10, max_calls=1)
+    )
+    reservation = broker.try_reserve(
+        _context("never-dispatched"), SpendAmount(prompt_tokens=10), lease_s=5
+    )
+    assert isinstance(reservation, SpendReservation)
+
+    clock.now = 106.0
+    expired = broker.reap_expired()
+    replacement = broker.try_reserve(
+        _context("replacement"), SpendAmount(prompt_tokens=10), lease_s=5
+    )
+
+    assert expired[0].disposition == SpendSettlementDisposition.RELEASED
+    assert expired[0].amount == SpendAmount()
+    assert expired[0].estimated is False
+    assert expired[0].reason == "undispatched reservation lease expired"
+    assert isinstance(replacement, SpendReservation)
+
+
+def test_legacy_untracked_lease_expiry_remains_conservative(tmp_path) -> None:
+    clock = _Clock(100.0)
+    ledger_path = tmp_path / "ledger"
+    broker = SpendBroker(ledger_path, clock=clock)
+    _define_agent(broker)
+    reservation = broker.try_reserve(
+        _context("legacy"), SpendAmount(prompt_tokens=10), lease_s=5
+    )
+    assert isinstance(reservation, SpendReservation)
+    reserved_path = next(
+        path
+        for path in sorted((ledger_path / "events").glob("*.json"))
+        if orjson.loads(read_safe(path).text).get("kind") == "reserved"
+    )
+    payload = orjson.loads(read_safe(reserved_path).text)
+    payload["reservation"].pop("dispatch_tracking_version")
+    write_safe(reserved_path, orjson.dumps(payload).decode())
+
+    clock.now = 106.0
+    expired = SpendBroker(ledger_path, clock=clock).reap_expired()
+
+    assert expired[0].disposition == SpendSettlementDisposition.EXPIRED
+    assert expired[0].amount == reservation.estimate
+    assert expired[0].estimated is True
 
 
 def test_renewal_and_deadline_bound_the_lease(tmp_path) -> None:

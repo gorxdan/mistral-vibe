@@ -39,6 +39,8 @@ class PromptReservationPlan:
     input_cost_usd_per_token: float
     completion_cost_usd: float
     adaptive: bool
+    allow_completion_reduction: bool = False
+    minimum_completion_tokens: int = 1
 
 
 def request_prompt_footprint(request: CompletionRequest) -> PromptFootprint:

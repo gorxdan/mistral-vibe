@@ -113,6 +113,7 @@ from vibe.core.session.session_logger import SessionLogger
 from vibe.core.session.session_migration import migrate_sessions_entrypoint
 from vibe.core.skills.manager import SkillManager
 from vibe.core.system_prompt import get_universal_system_prompt
+from vibe.core.tasking._policy import TaskContractViolation
 from vibe.core.telemetry.build_metadata import (
     build_attachment_counts,
     build_request_metadata,
@@ -127,6 +128,12 @@ from vibe.core.telemetry.types import (
 from vibe.core.teleport.errors import ServiceTeleportError
 from vibe.core.teleport.telemetry import TeleportTelemetryTracker
 from vibe.core.teleport.types import TeleportCompleteEvent
+from vibe.core.tools._background_delivery import (
+    compact_background_batch,
+    escape_background_body,
+    format_background_artifact_record,
+    format_task_outcome_record,
+)
 from vibe.core.tools.base import (
     BaseTool,
     CancellableToolResult,
@@ -233,6 +240,7 @@ from vibe.core.verification_state import VerificationState
 if TYPE_CHECKING:
     from vibe.core.loop import Scheduler
     from vibe.core.memory.store import MemoryStore
+    from vibe.core.tasking._policy import BoundTaskContract
     from vibe.core.teams.models import TeamSafetyMode
     from vibe.core.teleport.teleport import TeleportService
     from vibe.core.teleport.types import TeleportPushResponseEvent, TeleportYieldEvent
@@ -469,6 +477,7 @@ class AgentLoopParams:
     mcp_registry: MCPRegistry | None = None
     cache_store: VibeCodeCacheStore | None = None
     spend_adapter: SessionSpendAdapter | None = None
+    task_contract: BoundTaskContract | None = None
 
 
 class AgentLoop(
@@ -485,6 +494,7 @@ class AgentLoop(
         params: AgentLoopParams | None = None,
     ) -> None:
         p = params or AgentLoopParams()
+        self._task_contract = p.task_contract
         self._init_base_state(config, p.cache_store, p.headless, p.defer_heavy_init)
         self._init_registries(
             p.permission_store,
@@ -583,6 +593,10 @@ class AgentLoop(
     @property
     def base_config(self) -> VibeConfig:
         return self._base_config
+
+    @property
+    def spend_adapter(self) -> SessionSpendAdapter:
+        return self._spend_adapter
 
     @property
     def config(self) -> VibeConfig:
@@ -794,7 +808,11 @@ class AgentLoop(
     def _select_backend(self) -> BackendLike:
         provider = self.config.get_active_provider()
         timeout = self.config.api_timeout
-        return create_backend(provider=provider, timeout=timeout)
+        return create_backend(
+            provider=provider,
+            timeout=timeout,
+            retry_max_elapsed_time=self.config.api_retry_max_elapsed_time,
+        )
 
     async def _save_messages(self) -> None:
         await self.session_logger.save_interaction(
@@ -1734,6 +1752,14 @@ class AgentLoop(
                 tool_call, tool_input, decision
             )
 
+            if self._task_contract is not None:
+                try:
+                    self._task_contract.enforce_tool_call(
+                        tool_call.tool_name, tool_call.validated_args
+                    )
+                except TaskContractViolation as e:
+                    raise ToolPermissionError(str(e)) from e
+
             if decision.verdict == ToolExecutionResponse.SKIP:
                 async for ev in self._handle_tool_skip(tool_call, decision, span=span):
                     yield ev
@@ -1883,6 +1909,7 @@ class AgentLoop(
                     verification_state=self._verification_state,
                     tool_manager=self.tool_manager,
                     spend_adapter=self._spend_adapter,
+                    task_contract=self._task_contract,
                 ),
                 **tool_call.args_dict,
             ):
@@ -2125,7 +2152,11 @@ class AgentLoop(
             and provider.name
             != self.config.get_provider_for_model(self.effective_model()).name
         ):
-            backend = create_backend(provider=provider, timeout=self.config.api_timeout)
+            backend = create_backend(
+                provider=provider,
+                timeout=self.config.api_timeout,
+                retry_max_elapsed_time=self.config.api_retry_max_elapsed_time,
+            )
         backend_metadata = self._build_backend_metadata()
         spend_purpose = (
             SpendPurpose.COMPACTION if harness else self._spend_adapter.default_purpose
@@ -2544,6 +2575,7 @@ class AgentLoop(
                 defer_heavy_init=True,
                 hook_config_result=self._hook_config_result,
                 spend_adapter=self._spend_adapter.child_agent(),
+                task_contract=self._task_contract,
             ),
         )
         forked._max_output_override = self._max_output_override
@@ -2835,6 +2867,7 @@ class AgentLoop(
                     self._fallback_model_override
                 ),
                 timeout=self.config.api_timeout,
+                retry_max_elapsed_time=self.config.api_retry_max_elapsed_time,
             )
         else:
             self.backend = self.backend_factory()
@@ -2850,6 +2883,9 @@ class AgentLoop(
             mcp_registry=self.mcp_registry,
             connector_registry=self.connector_registry,
             permission_getter=self._permission_store.get_tool_permission,
+            runtime_allowlist=(
+                self._task_contract.allowed_tools if self._task_contract else None
+            ),
         )
         self.skill_manager = SkillManager(lambda: self.config)
 
@@ -2940,6 +2976,9 @@ class AgentLoop(
             connector_registry=self.connector_registry,
             defer_mcp=defer_heavy_init,
             permission_getter=self._permission_store.get_tool_permission,
+            runtime_allowlist=(
+                self._task_contract.allowed_tools if self._task_contract else None
+            ),
         )
         self.skill_manager = SkillManager(lambda: self.config)
         self.message_observer = message_observer
@@ -3441,28 +3480,43 @@ class AgentLoop(
         registry = self.background_registry
         if registry is None:
             return
-        for rec in registry.pop_async_completions():
+        completions = registry.pop_async_completions()
+        if not completions:
+            return
+        sections: list[str] = []
+        for rec in completions:
             summary = (
                 rec.response if rec.response else f"[{rec.agent} produced no output]"
             )
             if rec.error:
                 summary += f"\n[error: {rec.error}]"
+            summary = escape_background_body(summary)
+            outcome = ""
             if rec.outcome is not None:
-                summary += "\nTASK_OUTCOME_JSON:" + rec.outcome.model_dump_json(
-                    exclude_none=True
+                outcome = "\n" + format_task_outcome_record(
+                    rec.task_id, rec.outcome.model_dump(mode="json", exclude_none=True)
                 )
             label = getattr(rec, "label", None) or rec.agent
-            message = (
-                f"[background subagent {rec.task_id} ({label}) {rec.status}]\n{summary}"
+            artifact = format_background_artifact_record(
+                path=rec.artifact_path,
+                sha256=rec.artifact_sha256,
+                size_bytes=rec.artifact_size_bytes,
+                status=rec.status,
+                task_id=rec.task_id,
             )
-            self.messages.append(
-                LLMMessage(
-                    role=Role.USER,
-                    content=message,
-                    injected=True,
-                    injected_kind=InjectedMessageKind.BACKGROUND_TASK,
-                )
+            sections.append(
+                f"[background subagent {rec.task_id} ({label}) {rec.status}]\n"
+                f"{artifact}{outcome}\n{summary}"
             )
+        self.messages.append(
+            LLMMessage(
+                role=Role.USER,
+                content=compact_background_batch(sections),
+                injected=True,
+                injected_kind=InjectedMessageKind.BACKGROUND_TASK,
+            )
+        )
+        for rec in completions:
             yield BackgroundTaskCompletedEvent(
                 task_id=rec.task_id,
                 agent=rec.agent,

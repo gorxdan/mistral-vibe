@@ -5,6 +5,8 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from vibe.core.llm.provider_retry import SpendRetryCause, SpendRetryPolicyReason
+
 __all__ = [
     "DEFAULT_RESERVATION_LEASE_S",
     "MAX_RESERVATION_LEASE_S",
@@ -18,6 +20,9 @@ __all__ = [
     "SpendRejection",
     "SpendRejectionReason",
     "SpendReservation",
+    "SpendRetryAuthorization",
+    "SpendRetryCause",
+    "SpendRetryPolicyReason",
     "SpendScopeKind",
     "SpendSettlement",
     "SpendSettlementDisposition",
@@ -118,6 +123,7 @@ class SpendEnvelope(_FrozenModel):
     policy_version: int = Field(default=1, ge=1)
     limits: SpendEnvelopeLimits = Field(default_factory=SpendEnvelopeLimits)
     parent_scope_id: str | None = Field(default=None, min_length=1, max_length=256)
+    task_brief_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("scope_id")
     @classmethod
@@ -125,6 +131,12 @@ class SpendEnvelope(_FrozenModel):
         if value.startswith("call:"):
             raise ValueError("scope_id cannot use the reserved call: namespace")
         return value
+
+    @model_validator(mode="after")
+    def _validate_task_binding(self) -> Self:
+        if self.task_brief_hash is not None and self.kind is not SpendScopeKind.AGENT:
+            raise ValueError("task brief hash can bind only an agent scope")
+        return self
 
 
 class SpendContext(_FrozenModel):
@@ -145,6 +157,8 @@ class SpendReservation(_FrozenModel):
     is_retry: bool
     created_at: float = Field(ge=0.0)
     lease_expires_at: float = Field(ge=0.0)
+    # Missing from older ledger events; version 0 keeps their expiry conservative.
+    dispatch_tracking_version: int = Field(default=0, ge=0, le=1)
 
     @model_validator(mode="after")
     def _validate_scope_chain(self) -> Self:
@@ -178,6 +192,23 @@ class SpendRejection(_FrozenModel):
         return self
 
 
+class SpendRetryAuthorization(_FrozenModel):
+    reservation_id: str = Field(min_length=1, max_length=256)
+    call_scope_id: str = Field(min_length=1, max_length=512)
+    scope_chain: tuple[str, ...] = Field(min_length=2)
+    attempt: int = Field(ge=1)
+    cause: SpendRetryCause
+    timestamp: float = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_scope_chain(self) -> Self:
+        if self.call_scope_id != f"call:{self.reservation_id}":
+            raise ValueError("call_scope_id must derive from reservation_id")
+        if self.scope_chain[-1] != self.call_scope_id:
+            raise ValueError("call scope must terminate scope_chain")
+        return self
+
+
 class SpendSettlement(_FrozenModel):
     reservation_id: str = Field(min_length=1, max_length=256)
     disposition: SpendSettlementDisposition
@@ -198,6 +229,7 @@ class SpendEnvelopeSnapshot(_FrozenModel):
     rejected_calls: int = Field(ge=0)
     spent_retries: int = Field(ge=0)
     reserved_retries: int = Field(ge=0)
+    rejected_retries: int = Field(default=0, ge=0)
     remaining_prompt_tokens: int | None = Field(default=None, ge=0)
     remaining_completion_tokens: int | None = Field(default=None, ge=0)
     remaining_total_tokens: int | None = Field(default=None, ge=0)

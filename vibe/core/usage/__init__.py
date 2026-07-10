@@ -28,6 +28,9 @@ from vibe.core.usage._context import (
     SpendRejection,
     SpendRejectionReason,
     SpendReservation,
+    SpendRetryAuthorization,
+    SpendRetryCause,
+    SpendRetryPolicyReason,
     SpendScopeKind,
     SpendSettlement,
     SpendSettlementDisposition,
@@ -47,6 +50,15 @@ from vibe.core.usage._meter import (
     usage_cost,
 )
 from vibe.core.usage._pricing import ModelPricing, compute_cost, lookup_pricing
+from vibe.core.usage._process_context import (
+    SPEND_PROCESS_CONTEXT_ENV,
+    SpendProcessContext,
+    SpendProcessContextError,
+    decode_spend_process_context,
+    encode_spend_process_context,
+    install_spend_process_context,
+    load_spend_process_context,
+)
 from vibe.core.usage._rate_limits import (
     RateLimitSnapshot,
     RateLimitStore,
@@ -61,6 +73,7 @@ from vibe.core.usage._recorder import (
 from vibe.core.usage.models import UsageRecord
 
 __all__ = [
+    "SPEND_PROCESS_CONTEXT_ENV",
     "CallKind",
     "CodexCredits",
     "CodexMonthlyLimit",
@@ -84,10 +97,15 @@ __all__ = [
     "SpendLedgerCorruptError",
     "SpendLedgerError",
     "SpendLimits",
+    "SpendProcessContext",
+    "SpendProcessContextError",
     "SpendPurpose",
     "SpendRejection",
     "SpendRejectionReason",
     "SpendReservation",
+    "SpendRetryAuthorization",
+    "SpendRetryCause",
+    "SpendRetryPolicyReason",
     "SpendScopeKind",
     "SpendSettlement",
     "SpendSettlementDisposition",
@@ -99,8 +117,12 @@ __all__ = [
     "UsageSummary",
     "WindowRollup",
     "compute_cost",
+    "decode_spend_process_context",
+    "encode_spend_process_context",
     "fetch_codex_quota",
     "get_usage_recorder",
+    "install_spend_process_context",
+    "load_spend_process_context",
     "lookup_pricing",
     "parse_duration_seconds",
     "rate_limit_from_headers",

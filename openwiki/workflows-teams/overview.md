@@ -74,6 +74,14 @@ Custom JSON-schema validator (no external dependency):
 - `strip_unknown_properties()` — cleans LLM responses before validation
 - `SchemaValidationFailure` — falsy dict subclass returned (not raised) when an agent exhausts schema retries in non-strict mode
 
+Local conservative JSON repair runs before any paid retry. A schema correction
+continues in the existing worker conversation with an exact diagnostic, so the
+repository investigation is not repeated. The repair controller stops after
+semantic no-progress/oscillation. An explicitly configured formatter alias may
+receive one no-tools, 512-token syntax repair; an explicitly configured semantic
+alias may receive one bounded no-tools escalation only after repeated semantic
+failure.
+
 ### Bundled Workflows
 
 **Source**: `vibe/core/workflows/bundled/`
@@ -92,7 +100,12 @@ Custom JSON-schema validator (no external dependency):
 - `/workflows` — progress view showing all runs with status, agents, tokens, elapsed
 - `/workflows stop <id|all>` — stop one or all runs
 - `/workflows snapshot <id>` — show cached results for a run
-- Completed agent results are cached for resumability; snapshots persist to session metadata
+- Result reuse is disabled unless the trusted host supplies a SHA-256 fingerprint
+  covering the complete dependency closure, including ignored/external reads and
+  resolved instructions. The fingerprint is part of the cache identity alongside
+  repository state, model/provider and routing settings, tool schemas/policy,
+  prompt, schema/contract, and harness version. Only known in-process read-only
+  profiles are eligible; resumed runs need the same fingerprint.
 
 ### Effort Modes
 
@@ -141,10 +154,14 @@ Teammates coordinate via file-backed shared state with file locking:
 
 Protocol v2 team tasks persist a `TaskBrief` with an objective plus structured
 inputs, path scope, acceptance checks, optional budget/deadline, and tool
-manifest identity. The runtime rejects an already-expired deadline before task
-dispatch and preserves structured outcomes through asynchronous delivery. Path
-scope, acceptance checks, per-task budget, and manifest identity are currently
-schema and worker-prompt metadata, not host-enforced constraints.
+manifest identity. The host binds these values to a trusted recipe before
+dispatch. Check IDs resolve only to prebound argv checks, per-task limits become
+a child spend envelope, and the manifest becomes a runtime tool allowlist. The
+worker cannot self-complete a structured task or read/write host-owned team
+metadata or harness control-plane paths. Only the harness can execute the
+selected checks and persist success. A failed check produces one bounded repair
+turn with exact diagnostics in the same fresh worker conversation, followed by
+a full selected-check rerun before that loop closes.
 
 Terminal `TaskOutcome` values are `SUCCEEDED`, `FAILED`, `BLOCKED`, or
 `RETRYABLE`, with evidence, diagnostics, changed paths, receipt ID, remaining
@@ -169,6 +186,10 @@ hook; downstream tasks unlock only after a succeeded outcome.
 - Lazily initializes `TaskStore` and `Mailbox` via properties
 - Tracks `_teammate_tasks` (asyncio tasks) and `_teammate_procs` (subprocess processes)
 - Integrates with `HooksManager` for hook events
+- Gives each teammate process a distinct Agent scope under one TEAM spend
+  envelope
+- Creates a fresh `AgentLoop`, transcript, tools, verification state, and child
+  budget for every claimed worker task while retaining the shared process ledger
 
 ### Team Commands
 
@@ -199,7 +220,7 @@ hook; downstream tasks unlock only after a succeeded outcome.
 | **Coordination** | Tool call + result | Scripted orchestration | File-backed shared state |
 | **Use case** | Delegate a focused task | Parallel multi-agent audits | Long-running multi-agent collaboration |
 | **Isolation** | Worktree (write-capable) | Worktree (worker profile) | Full process isolation |
-| **Context** | Fresh context per subagent | Fresh context per agent | Full independent sessions |
+| **Context** | Fresh context per subagent | Fresh context per agent | Fresh loop per claimed worker task |
 
 ## Tests
 

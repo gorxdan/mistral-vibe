@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator
 import difflib
 import functools
 import hashlib
+import importlib
 import importlib.util
 import inspect
 import os
@@ -101,9 +102,11 @@ class ToolManager:
         *,
         defer_mcp: bool = False,
         permission_getter: Callable[[str], ToolPermission | None] | None = None,
+        runtime_allowlist: frozenset[str] | None = None,
     ) -> None:
         self._config_getter = config_getter
         self._permission_getter = permission_getter
+        self._runtime_allowlist = runtime_allowlist
         # None until MCP is actually needed: constructing MCPRegistry imports
         # the mcp SDK (~100ms), which must stay off the interactive cold start.
         self._mcp_registry: MCPRegistry | None = mcp_registry
@@ -113,14 +116,24 @@ class ToolManager:
         # Sticky, never LRU-capped: sharing dynamic_pinned_tool_limit would let
         # a remote activation evict an in-use builtin. Bounded (≤5) by marking.
         self._builtin_pins: set[str] = set()
-        self._search_paths: list[Path] = self._compute_search_paths(self._config)
+        self._search_paths: list[Path] = (
+            []
+            if runtime_allowlist is not None
+            else self._compute_search_paths(self._config)
+        )
         self._lock = threading.Lock()
         self._mcp_integrated = False
 
-        self._all_tools: dict[str, type[BaseTool]] = {
-            cls.get_name(): cls for cls in self._iter_tool_classes(self._search_paths)
-        }
-        if not defer_mcp:
+        if runtime_allowlist is None:
+            self._all_tools = {
+                cls.get_name(): cls
+                for cls in self._iter_tool_classes(self._search_paths)
+            }
+        else:
+            from vibe.core.tools._canonical_task_tools import canonical_task_tools
+
+            self._all_tools = canonical_task_tools(runtime_allowlist)
+        if not defer_mcp and runtime_allowlist is None:
             self.integrate_all()
 
     @property
@@ -171,20 +184,30 @@ class ToolManager:
         if name.startswith("_"):
             return
 
-        module_name = _compute_module_name(file_path)
-
-        if module_name in sys.modules:
-            module = sys.modules[module_name]
-        else:
-            spec = importlib.util.spec_from_file_location(module_name, file_path)
-            if spec is None or spec.loader is None:
-                return
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
+        canonical_name = _try_canonical_module_name(file_path)
+        if canonical_name is not None:
             try:
-                spec.loader.exec_module(module)
+                module = importlib.import_module(canonical_name)
             except Exception:
                 return
+            parent_name, _, child_name = canonical_name.rpartition(".")
+            if parent := sys.modules.get(parent_name):
+                setattr(parent, child_name, module)
+        else:
+            module_name = _compute_module_name(file_path)
+            if module_name in sys.modules:
+                module = sys.modules[module_name]
+            else:
+                spec = importlib.util.spec_from_file_location(module_name, file_path)
+                if spec is None or spec.loader is None:
+                    return
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                try:
+                    spec.loader.exec_module(module)
+                except Exception:
+                    sys.modules.pop(module_name, None)
+                    return
 
         tools = []
         for tool_obj in vars(module).values():
@@ -275,23 +298,37 @@ class ToolManager:
                 name: cls
                 for name, cls in self._all_tools.items()
                 if self._is_tool_available(cls)
+                and (not cls.runtime_scoped or self._runtime_allowlist is not None)
             }
 
         # Per-source filtering first (MCP server/connector disabled flags).
         result = self._apply_per_source_filtering(runtime_available)
 
         # Global overrides take precedence.
-        if self._config.enabled_tools:
-            return {
-                name: cls
-                for name, cls in result.items()
-                if name_matches(name, self._config.enabled_tools)
-            }
-        if self._config.disabled_tools:
-            return {
+        if self._runtime_allowlist is None:
+            if self._config.enabled_tools:
+                result = {
+                    name: cls
+                    for name, cls in result.items()
+                    if name_matches(name, self._config.enabled_tools)
+                }
+            elif self._config.disabled_tools:
+                result = {
+                    name: cls
+                    for name, cls in result.items()
+                    if not name_matches(name, self._config.disabled_tools)
+                }
+        elif self._config.disabled_tools:
+            result = {
                 name: cls
                 for name, cls in result.items()
                 if not name_matches(name, self._config.disabled_tools)
+            }
+        if self._runtime_allowlist is not None:
+            result = {
+                name: cls
+                for name, cls in result.items()
+                if name in self._runtime_allowlist
             }
         return result
 
@@ -442,6 +479,8 @@ class ToolManager:
 
     async def _integrate_mcp_async(self, *, raise_on_failure: bool = False) -> None:
         """Async MCP discovery — canonical implementation."""
+        if self._runtime_allowlist is not None:
+            return
         if self._mcp_integrated:
             return
         if not self._config.mcp_servers:
@@ -499,7 +538,7 @@ class ToolManager:
 
         Thread-safe: can be called from the deferred-init background thread.
         """
-        if self._connector_registry is None:
+        if self._runtime_allowlist is not None or self._connector_registry is None:
             return
 
         try:

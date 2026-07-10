@@ -170,6 +170,7 @@ theme = "ansi-dark"                # Default terminal theme (override via /theme
 displayed_workdir = ""            # Override the workdir label shown in the UI
 compaction_model = ...            # Alias for compaction; default unset (uses active)
 fallback_models = []              # Aliases tried if the active model errors
+model_routing = ...               # Explicit formatter/retrieval/mechanical/escalation aliases
 context_shaping = ...             # Sub-table controlling context window shaping
 safety_judge = ...                # Sub-table for the safety-judge backend (gates tools/spawns)
 auxiliary_budget = ...            # Sub-table limiting memory/safety calls per running agent
@@ -181,12 +182,12 @@ installed_components = []         # Opt-in features, e.g. ["lsp"]
 
 ### Session Spend Envelope
 
-Primary, compaction, in-process task/workflow, memory-helper, and safety-judge
-calls reserve from a shared session ledger before dispatch. Cumulative prompt,
-completion, and total token caps are omitted by default. Adaptive prompt
-estimation learns from exact usage for comparable requests with the same
-provider, model, and request shape. Strict mode disables learning and reserves
-the serialized token-bearing request byte ceiling.
+Primary, compaction, task/workflow/team, memory-helper, safety-judge, narration,
+repair, and verification calls reserve from a shared session ledger before
+dispatch. Cumulative prompt, completion, and total token caps are omitted by
+default. Adaptive prompt estimation learns from exact usage for comparable
+requests with the same provider, model, and request shape. Strict mode disables
+learning and reserves the serialized token-bearing request byte ceiling.
 
 ```toml
 [spend]
@@ -197,6 +198,7 @@ max_concurrent_calls = 2
 max_retries = 16
 # deadline_seconds = 3600.0
 default_max_output_tokens = 32768
+minimum_admitted_output_tokens = 256
 unpriced_input_usd_per_million = 10.0
 unpriced_output_usd_per_million = 30.0
 ```
@@ -211,11 +213,22 @@ remain explicit.
 Missing usage is charged at the reservation estimate. The fallback rates cover
 models without configured or built-in pricing; set both to `0` for local or
 subscription models that should not consume the USD cap. Routed requests without
-`max_tokens` receive the broker's admitted output bound, except
-`openai-chatgpt` Codex calls: that endpoint rejects the field, so its adapter
-strips it and relies on reservation reconciliation. Isolated subprocesses, MCP
-sampling, narration, and backend-internal retries are not yet routed as distinct
-calls through this ledger.
+`max_tokens` receive the affordable output bound, reduced atomically across the
+scope hierarchy when needed. Calls are rejected rather than reduced below
+`minimum_admitted_output_tokens`; explicit `max_tokens` values remain hard and
+are never reduced. `openai-chatgpt` Codex calls reject the field, so that adapter
+strips it and relies on reservation reconciliation. Isolated subprocesses attach
+to host-created child scopes; Generic/Mistral redispatches authorize against the
+original reservation and configured retry window, conservatively charging one
+additional token/USD estimate per authorization. MCP sampling remains the
+explicit unrouted model-call boundary; non-token-priced text-to-speech is also
+outside the token ledger. Real-time transcription and Mistral's model-backed web
+search are explicit unrouted paid boundaries as well.
+
+Purpose routing is opt-in: `[model_routing]` accepts `formatter_model`,
+`retrieval_model`, `mechanical_model`, and `semantic_escalation_model`. Formatting
+and semantic escalation receive bounded no-tools context. The strong semantic
+alias is used only after repeated semantic no-progress.
 
 ### Providers
 
@@ -1001,12 +1014,15 @@ cwd = "."
 timeout_seconds = 600
 ```
 
-`task.task` accepts a structured `TaskBrief` with an objective, named inputs,
-allowed and denied paths, acceptance checks, optional token/USD/call budget,
-deadline, and tool-manifest identity. An already-expired deadline is rejected
-before dispatch, and structured outcomes survive asynchronous delivery. Path
-scope, acceptance checks, per-task budgets, and manifest identity are schema and
-worker-prompt metadata in this version, not host-enforced limits. The result
+`task.task` accepts a frozen structured `TaskBrief` with an objective, named
+inputs, allowed and denied change paths, trusted acceptance-check IDs, optional
+token/USD/call budget, deadline, and canonical tool-manifest identity. The host
+binds all fields to the session's trusted recipe. A worker cannot widen them or
+discover tools outside the bound 6-8 tool manifest. Task-bound discovery imports
+canonical builtins only, and harness control-plane paths remain host-owned.
+Write-capable candidates are
+inspected and checked in their isolated worktree before fast-forward delivery;
+only selected prebound argv checks execute, with `shell=False`. The result
 includes a `TaskOutcome` status (`succeeded`, `failed`, `blocked`, or `retryable`)
 plus evidence, diagnostics, changed paths, receipt ID, and remaining work. Legacy
 free-form task strings remain supported.
@@ -1023,7 +1039,10 @@ their stdout to a log file under the scratchpad; in-process ones stream their
 partial response. Either way the Tasks pane and the `background` tool show the
 agent, model, elapsed time, turns used, worktree/branch, the prompt, and a live
 log tail / streaming response while the subagent runs — so a long-running
-background agent is observable, not a blind `asub-N` row.
+background agent is observable, not a blind `asub-N` row. Sibling completions
+produce one debounced parent continuation and one bounded message containing
+artifact paths, SHA-256 digests, sizes, outcomes, and previews rather than full
+transcripts.
 
 ## Built-in Slash Commands
 
@@ -1398,11 +1417,13 @@ with a message rather than erroring. Gated by `ToolPermission.ASK`.
 
 ### Resumability
 
-Completed agent results are cached keyed on `sha256(agent:phase:prompt)[:16]`.
-On resume, cached results are returned without re-running the agent. Snapshots
-are persisted to session metadata (`workflow_snapshots` field) for cross-session
-recovery via `/workflows resume <run-id>`. Only completed agents are cached;
-failed agents re-run on resume.
+Result reuse is off unless the trusted host supplies a SHA-256 fingerprint for
+the complete dependency closure, including ignored/external reads and resolved
+instructions. Full cache identity binds that fingerprint with repository state,
+effective model/provider and routing settings, tool schemas/policy, prompt,
+schema/contract, and harness version. Only known in-process read-only profiles
+are eligible. Snapshots persist to session metadata, but resume needs the same
+trusted dependency fingerprint or it misses safely.
 
 ### Budget
 
@@ -1522,9 +1543,11 @@ Supported by Mistral (native `json_schema` response format) and OpenAI-compatibl
 backends. Anthropic/Vertex accept but ignore it (prompt fallback handles it).
 
 When a schema is set, the backend enforces JSON schema at the API level. The
-workflow runtime adds a second validation layer: parse the response as JSON,
-validate against the schema, retry on mismatch (up to 2 retries with the
-validation error fed back to the model).
+workflow runtime applies conservative local JSON repair, validates again, and
+feeds an exact diagnostic into the existing worker conversation. Repeated
+semantic state stops at the bounded controller threshold. An explicit cheap
+formatter alias can receive one syntax-only call; an explicit strong alias can
+receive one semantic escalation after repeated no-progress.
 
 ## How to Modify Configuration
 

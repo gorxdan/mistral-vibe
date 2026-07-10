@@ -13,6 +13,9 @@ from vibe.core.usage._context import (
     SpendEnvelopeSnapshot,
     SpendRejection,
     SpendReservation,
+    SpendRetryAuthorization,
+    SpendRetryCause,
+    SpendRetryPolicyReason,
     SpendSettlement,
 )
 from vibe.core.usage._ledger import LedgerEvent, SpendLedger
@@ -41,6 +44,9 @@ class SpendBroker:
 
     def define_envelope(self, envelope: SpendEnvelope) -> SpendEnvelope:
         return self._ledger.define_envelope(envelope)
+
+    def define_or_tighten_envelope(self, envelope: SpendEnvelope) -> SpendEnvelope:
+        return self._ledger.define_or_tighten_envelope(envelope)
 
     def get_envelope(self, scope_id: str) -> SpendEnvelope | None:
         return self._ledger.get_envelope(scope_id)
@@ -92,6 +98,50 @@ class SpendBroker:
             else reservation
         )
         return self._ledger.reconcile(reservation_id, actual)
+
+    def mark_dispatched(self, reservation: SpendReservation | str) -> bool:
+        reservation_id = (
+            reservation.reservation_id
+            if isinstance(reservation, SpendReservation)
+            else reservation
+        )
+        return self._ledger.mark_dispatched(reservation_id)
+
+    def authorize_retry(
+        self, reservation: SpendReservation | str, cause: SpendRetryCause
+    ) -> SpendRetryAuthorization | SpendRejection:
+        reservation_id = (
+            reservation.reservation_id
+            if isinstance(reservation, SpendReservation)
+            else reservation
+        )
+        return self._ledger.authorize_retry(reservation_id, cause)
+
+    def reject_retry_policy(
+        self,
+        reservation: SpendReservation | str,
+        cause: SpendRetryCause,
+        reason: SpendRetryPolicyReason,
+        *,
+        elapsed_s: float,
+        max_elapsed_s: float,
+        next_delay_s: float,
+        max_retries: int,
+    ) -> None:
+        reservation_id = (
+            reservation.reservation_id
+            if isinstance(reservation, SpendReservation)
+            else reservation
+        )
+        self._ledger.reject_retry_policy(
+            reservation_id,
+            cause,
+            reason,
+            elapsed_s=elapsed_s,
+            max_elapsed_s=max_elapsed_s,
+            next_delay_s=next_delay_s,
+            max_retries=max_retries,
+        )
 
     def release(
         self, reservation: SpendReservation | str, *, reason: str

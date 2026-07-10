@@ -32,7 +32,7 @@ class TaskOutcomeStatus(StrEnum):
 
 
 class TaskBudget(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     max_tokens: int | None = Field(default=None, ge=1)
     max_cost_usd: float | None = Field(default=None, ge=0)
@@ -50,7 +50,7 @@ class TaskBudget(BaseModel):
 
 
 class TaskManifestIdentity(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
     version: str
@@ -70,13 +70,13 @@ class TaskManifestIdentity(BaseModel):
 
 
 class TaskBrief(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     objective: str
     inputs: dict[str, str] = Field(default_factory=dict)
     allowed_paths: list[str] = Field(min_length=1)
     denied_paths: list[str] = Field(default_factory=list)
-    acceptance_checks: list[str] = Field(min_length=1)
+    acceptance_checks: list[str] = Field(min_length=1, max_length=8)
     budget: TaskBudget | None = None
     deadline: datetime | None = None
     manifest: TaskManifestIdentity

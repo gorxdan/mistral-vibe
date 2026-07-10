@@ -31,6 +31,8 @@ from vibe.core.utils.io import read_safe, write_safe
 if TYPE_CHECKING:
     from vibe.core.hooks.manager import HooksManager
     from vibe.core.hooks.models import HookSessionContext
+    from vibe.core.usage._process_context import SpendProcessContext
+    from vibe.core.usage._session import SessionSpendAdapter
 
 
 def _team_dir_for(team_name: str) -> Path:
@@ -45,6 +47,7 @@ class TeamManager:
         team_name: str | None = None,
         hooks_manager: HooksManager | None = None,
         hook_context: Callable[[], HookSessionContext | None] | None = None,
+        spend_adapter: SessionSpendAdapter | None = None,
     ) -> None:
         self._team_name = team_name or f"team-{secrets.token_hex(4)}"
         self._team_dir = _team_dir_for(self._team_name)
@@ -58,7 +61,22 @@ class TeamManager:
         self._teammate_procs: dict[str, asyncio.subprocess.Process] = {}
         self._hooks_manager = hooks_manager
         self._hook_context = hook_context
+        self._spend_adapter = spend_adapter
+        self._spend_group_id = f"team:{self._team_name}"
         self._init_config()
+
+    def _new_process_spend_context(self, name: str) -> SpendProcessContext | None:
+        if self._spend_adapter is None:
+            return None
+        from vibe.core.usage._context import SpendPurpose, SpendScopeKind
+
+        adapter = self._spend_adapter.child_agent(
+            group_kind=SpendScopeKind.TEAM,
+            group_id=self._spend_group_id,
+            agent_id=(f"agent:{self._team_name}:{name}:{secrets.token_hex(4)}"),
+            purpose=SpendPurpose.TEAM,
+        )
+        return adapter.export_process_context()
 
     @property
     def team_name(self) -> str:
@@ -274,6 +292,7 @@ class TeamManager:
             from vibe.core.teams.task_store import DEFAULT_TASK_LEASE_S
             from vibe.core.teams.worker_loop import TEAM_LEASE_ENV, TEAM_WORKER_ENV
             from vibe.core.tools.sandbox import scrub_child_env
+            from vibe.core.usage._process_context import install_spend_process_context
 
             # Same as isolated agents: provider keys stay, host creds stripped.
             env = scrub_child_env()
@@ -281,6 +300,7 @@ class TeamManager:
             env["VIBE_TEAM_DIR"] = str(self._team_dir)
             env["VIBE_TEAMMATE_NAME"] = name
             env[TEAM_SAFETY_MODE_ENV] = safety_mode.value
+            install_spend_process_context(env, self._new_process_spend_context(name))
             if worker:
                 env[TEAM_WORKER_ENV] = "1"
                 env[TEAM_LEASE_ENV] = str(

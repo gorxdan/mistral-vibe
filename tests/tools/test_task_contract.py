@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,6 +11,10 @@ import pytest
 from tests.conftest import build_test_vibe_config
 from tests.mock.utils import collect_result
 from vibe.core.agents.manager import AgentManager
+from vibe.core.config import (
+    TrustedVerificationCheckConfig,
+    TrustedVerificationRecipeConfig,
+)
 from vibe.core.tasking import (
     TaskBrief,
     TaskBudget,
@@ -16,6 +22,8 @@ from vibe.core.tasking import (
     TaskOutcome,
     TaskOutcomeStatus,
 )
+from vibe.core.tasking._candidate import TaskCandidateValidation
+from vibe.core.teams._task_checks import TaskCheckEvidence
 from vibe.core.tools.background import BackgroundRegistry
 from vibe.core.tools.base import BaseToolState, InvokeContext
 from vibe.core.tools.builtins.task import Task, TaskArgs, TaskResult, TaskToolConfig
@@ -26,6 +34,21 @@ from vibe.core.types import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from vibe.core.verification_state import VerificationState
+
+
+def _recipe() -> TrustedVerificationRecipeConfig:
+    return TrustedVerificationRecipeConfig(
+        recipe_version="task-contract-v1",
+        task_brief="Implement the parser fix",
+        acceptance_contract="The focused check must pass",
+        allowed_paths=("vibe/core/parser.py", "tests/core/test_parser.py"),
+        checks=(
+            TrustedVerificationCheckConfig(
+                name="focused", argv=(sys.executable, "-c", "raise SystemExit(0)")
+            ),
+        ),
+    )
 
 
 def _brief() -> TaskBrief:
@@ -34,7 +57,7 @@ def _brief() -> TaskBrief:
         inputs={"target": "vibe/core/parser.py:10"},
         allowed_paths=["vibe/core/parser.py", "tests/core/test_parser.py"],
         denied_paths=["vibe/core/agent_loop.py"],
-        acceptance_checks=["uv run pytest tests/core/test_parser.py"],
+        acceptance_checks=["focused"],
         budget=TaskBudget(max_tokens=5_000, max_calls=6),
         manifest=TaskManifestIdentity(name="implement-verify", version="1"),
     )
@@ -45,7 +68,9 @@ def _ctx() -> InvokeContext:
         include_project_context=False, include_prompt_detail=False
     )
     return InvokeContext(
-        tool_call_id="task-contract", agent_manager=AgentManager(lambda: config)
+        tool_call_id="task-contract",
+        agent_manager=AgentManager(lambda: config),
+        verification_state=VerificationState.from_recipe(_recipe()),
     )
 
 
@@ -89,11 +114,16 @@ async def test_structured_brief_reaches_agent_and_returns_terminal_outcome() -> 
     mock_loop = MagicMock()
     mock_loop.act = mock_act
     mock_loop.messages = [LLMMessage(role=Role.ASSISTANT, content="done")]
+    ctx = _ctx()
+    spend_adapter = MagicMock()
+    ctx.spend_adapter = spend_adapter
 
     tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
-    with patch("vibe.core.tools.builtins.task.AgentLoop", return_value=mock_loop):
+    with patch(
+        "vibe.core.tools.builtins.task.AgentLoop", return_value=mock_loop
+    ) as loop_cls:
         result = await collect_result(
-            tool.run(TaskArgs(task=_brief(), agent="explore", async_run=False), _ctx())
+            tool.run(TaskArgs(task=_brief(), agent="explore", async_run=False), ctx)
         )
 
     assert isinstance(result, TaskResult)
@@ -102,6 +132,56 @@ async def test_structured_brief_reaches_agent_and_returns_terminal_outcome() -> 
     assert result.outcome.status is TaskOutcomeStatus.SUCCEEDED
     assert result.outcome.manifest == _brief().manifest
     assert prompts == [TaskArgs(task=_brief()).prompt]
+    contract = loop_cls.call_args.kwargs["params"].task_contract
+    assert contract is not None
+    assert contract.acceptance_check_ids == ("focused",)
+    assert contract.allowed_tools == {
+        "edit",
+        "glob",
+        "grep",
+        "lsp",
+        "read",
+        "task_checks",
+        "todo",
+        "write_file",
+    }
+    limits = spend_adapter.child_task.call_args.kwargs["limits"]
+    assert limits.max_total_tokens == 5_000
+    assert limits.max_calls == 6
+
+
+@pytest.mark.asyncio
+async def test_in_process_success_requires_trusted_check_evidence() -> None:
+    recipe = _recipe().model_copy(
+        update={
+            "checks": (
+                TrustedVerificationCheckConfig(
+                    name="focused",
+                    argv=(
+                        sys.executable,
+                        "-c",
+                        "import sys; print('exact check failure'); sys.exit(9)",
+                    ),
+                ),
+            )
+        }
+    )
+    ctx = _ctx()
+    ctx.verification_state = VerificationState.from_recipe(recipe)
+    tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+
+    outcome = await tool._finalize_in_process_outcome(
+        TaskArgs(task=_brief(), agent="explore"),
+        ctx,
+        "Done\nTASK_OUTCOME: SUCCEEDED",
+        completed=True,
+        forced_status=None,
+        diagnostic=None,
+    )
+
+    assert outcome.status is TaskOutcomeStatus.RETRYABLE
+    assert "exit 9" in outcome.diagnostics[0]
+    assert "exact check failure" in outcome.diagnostics[0]
 
 
 @pytest.mark.asyncio
@@ -135,7 +215,10 @@ async def test_async_isolated_task_preserves_structured_outcome() -> None:
         config_getter=lambda: TaskToolConfig(isolation="always"), state=BaseToolState()
     )
 
+    spawn_args: dict[str, object] = {}
+
     async def isolated(*args, **kwargs) -> IsolatedResult:
+        spawn_args.update(kwargs)
         return IsolatedResult(output="Could not finish.\nTASK_OUTCOME: FAILED")
 
     with patch("vibe.core.tools.builtins.task.run_isolated_agent", isolated):
@@ -149,6 +232,99 @@ async def test_async_isolated_task_preserves_structured_outcome() -> None:
     [completion] = registry.pop_async_completions()
     assert completion.outcome is not None
     assert completion.outcome.status is TaskOutcomeStatus.FAILED
+    assert spawn_args["deliver"] is False
+    assert spawn_args["keep_worktree"] is True
+    assert spawn_args["task_context"] is not None
+
+
+@pytest.mark.asyncio
+async def test_structured_isolated_scope_failure_never_delivers(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vibe.core.workflows.runtime import IsolatedResult
+    from vibe.core.worktree import ephemeral
+
+    ctx = _ctx()
+    tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+    contract = tool._bind_contract(_brief(), ctx)
+    candidate = TaskCandidateValidation(
+        changed_paths=("outside.py",),
+        scope_passed=False,
+        diagnostics=("candidate changed paths outside the task contract: outside.py",),
+    )
+    delivered: list[object] = []
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.task.validate_task_candidate", lambda *args: candidate
+    )
+    monkeypatch.setattr(
+        ephemeral, "deliver_ephemeral_worktree", lambda wt: delivered.append(wt) or True
+    )
+    monkeypatch.setattr(ephemeral, "remove_ephemeral_worktree", lambda *a, **k: False)
+    wt = SimpleNamespace(path=tmp_path, base_sha="base", branch="candidate")
+
+    result = await tool._finalize_isolated_result(
+        TaskArgs(task=_brief(), agent="worker"),
+        ctx,
+        IsolatedResult(output="Done\nTASK_OUTCOME: SUCCEEDED", returncode=0, wt=wt),
+        contract=contract,
+        verification_attempt=None,
+    )
+
+    assert delivered == []
+    assert result.outcome is not None
+    assert result.outcome.status is TaskOutcomeStatus.BLOCKED
+    assert result.outcome.changed_paths == ["outside.py"]
+    assert result.branch == "candidate"
+
+
+@pytest.mark.asyncio
+async def test_structured_isolated_failed_check_never_delivers(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vibe.core.workflows.runtime import IsolatedResult
+    from vibe.core.worktree import ephemeral
+
+    ctx = _ctx()
+    tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+    contract = tool._bind_contract(_brief(), ctx)
+    check = TaskCheckEvidence(
+        name="focused",
+        argv=("uv", "run", "pytest"),
+        cwd=str(tmp_path),
+        exit_code=7,
+        timed_out=False,
+        duration_ms=1,
+        stdout="exact failure",
+        stderr="",
+    )
+    candidate = TaskCandidateValidation(
+        changed_paths=("vibe/core/parser.py",),
+        scope_passed=True,
+        checks=(check,),
+        diagnostics=("check 'focused': exit 7\nstdout:\nexact failure",),
+    )
+    delivered: list[object] = []
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.task.validate_task_candidate", lambda *args: candidate
+    )
+    monkeypatch.setattr(
+        ephemeral, "deliver_ephemeral_worktree", lambda wt: delivered.append(wt) or True
+    )
+    monkeypatch.setattr(ephemeral, "remove_ephemeral_worktree", lambda *a, **k: False)
+    wt = SimpleNamespace(path=tmp_path, base_sha="base", branch="candidate")
+
+    result = await tool._finalize_isolated_result(
+        TaskArgs(task=_brief(), agent="worker"),
+        ctx,
+        IsolatedResult(output="Done\nTASK_OUTCOME: SUCCEEDED", returncode=0, wt=wt),
+        contract=contract,
+        verification_attempt=None,
+    )
+
+    assert delivered == []
+    assert result.outcome is not None
+    assert result.outcome.status is TaskOutcomeStatus.RETRYABLE
+    assert "exact failure" in result.outcome.diagnostics[0]
 
 
 def test_task_result_display_uses_explicit_failed_outcome() -> None:

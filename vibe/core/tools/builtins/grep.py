@@ -236,6 +236,47 @@ def _ripgrep_regex_hint(cmd: list[str], stderr: str) -> str:
     return ""
 
 
+def _normalize_search_output(
+    stdout: bytes, output_mode: GrepOutputMode, ctx: InvokeContext | None
+) -> str:
+    contract = ctx.task_contract if ctx is not None else None
+    if output_mode is GrepOutputMode.FILES_WITH_MATCHES:
+        records = ((path, b"") for path in stdout.split(b"\0") if path)
+    else:
+        parsed: list[tuple[bytes, bytes]] = []
+        cursor = 0
+        while cursor < len(stdout):
+            null_index = stdout.find(b"\0", cursor)
+            if null_index < 0:
+                break
+            path = stdout[cursor:null_index]
+            while path.startswith(b"--\n"):
+                path = path[3:]
+            line_end = stdout.find(b"\n", null_index + 1)
+            if line_end < 0:
+                line_end = len(stdout)
+            parsed.append((path, stdout[null_index + 1 : line_end]))
+            cursor = line_end + 1
+        records = iter(parsed)
+
+    lines: list[str] = []
+    for raw_path, raw_payload in records:
+        path = decode_safe(raw_path, from_subprocess=True).text
+        payload = decode_safe(raw_payload, from_subprocess=True).text
+        if not path or (
+            contract is not None and not contract.allows_search_result(path)
+        ):
+            continue
+        if output_mode is GrepOutputMode.FILES_WITH_MATCHES:
+            lines.append(path)
+        elif output_mode is GrepOutputMode.COUNT:
+            lines.append(f"{path}:{payload}")
+        else:
+            separator = ":" if re.match(r"\d+:", payload) else "-"
+            lines.append(f"{path}{separator}{payload}")
+    return "\n".join(lines)
+
+
 # A bare identifier — no regex metacharacters, operators, dots, or whitespace.
 # This is the signature of a symbol lookup that lsp answers more completely than
 # text search (grep misses imports, re-exports, aliases, overloads).
@@ -320,8 +361,11 @@ class Grep(
         self._validate_args(args)
 
         exclude_patterns = self._collect_exclude_patterns()
+        if ctx is not None and ctx.task_contract is not None:
+            exclude_patterns.extend(ctx.task_contract.search_exclude_patterns)
         cmd = self._build_command(args, exclude_patterns, backend)
         stdout = await self._execute_search(cmd)
+        stdout = _normalize_search_output(stdout, args.output_mode, ctx)
 
         result = self._parse_output(
             stdout,
@@ -387,7 +431,7 @@ class Grep(
     ) -> list[str]:
         max_matches = args.max_matches or self.config.default_max_matches
 
-        cmd = ["rg", "--no-heading", "--with-filename", "--no-binary"]
+        cmd = ["rg", "--no-heading", "--with-filename", "--null", "--no-binary"]
         cmd.append("--ignore-case" if args.case_insensitive else "--smart-case")
 
         match args.output_mode:
@@ -468,7 +512,7 @@ class Grep(
 
         max_matches = args.max_matches or self.config.default_max_matches
 
-        cmd = ["grep", "-r", "-H", "-I", "-E", f"--max-count={max_matches + 1}"]
+        cmd = ["grep", "-r", "-H", "-Z", "-I", "-E", f"--max-count={max_matches + 1}"]
 
         if args.case_insensitive or args.pattern.islower():
             cmd.append("-i")
@@ -506,7 +550,7 @@ class Grep(
             flags.append(f"-A{args.context_after}")
         return flags
 
-    async def _execute_search(self, cmd: list[str]) -> str:
+    async def _execute_search(self, cmd: list[str]) -> bytes:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -522,11 +566,6 @@ class Grep(
                     f"Search timed out after {self.config.default_timeout}s"
                 ) from e
 
-            stdout = (
-                decode_safe(stdout_bytes, from_subprocess=True).text
-                if stdout_bytes
-                else ""
-            )
             stderr = (
                 decode_safe(stderr_bytes, from_subprocess=True).text
                 if stderr_bytes
@@ -539,7 +578,7 @@ class Grep(
                     f"grep error: {error_msg}{_ripgrep_regex_hint(cmd, stderr)}"
                 )
 
-            return stdout
+            return stdout_bytes
 
         except ToolError:
             raise

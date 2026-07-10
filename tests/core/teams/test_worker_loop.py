@@ -5,9 +5,13 @@ from pathlib import Path
 import pytest
 
 from vibe.core.teams.mailbox import Mailbox
-from vibe.core.teams.models import MessageKind, TaskStatus
+from vibe.core.teams.models import MessageKind, Task, TaskStatus
 from vibe.core.teams.task_store import TaskStore
-from vibe.core.teams.worker_loop import run_team_worker_loop
+from vibe.core.teams.worker_loop import (
+    WorkerTaskAttempt,
+    run_team_worker_loop,
+    worker_task_prompt,
+)
 
 
 @pytest.mark.asyncio
@@ -21,9 +25,9 @@ async def test_worker_loop_claims_and_completes(tmp_path: Path, monkeypatch) -> 
 
     seen: list[str] = []
 
-    async def run_task(prompt: str) -> str | None:
-        seen.append(prompt)
-        return f"done:{len(seen)}"
+    async def run_task(task: Task) -> WorkerTaskAttempt:
+        seen.append(worker_task_prompt(task))
+        return WorkerTaskAttempt(f"done:{len(seen)}")
 
     summary = await run_team_worker_loop(
         run_task, idle_poll_s=0.01, max_idle_rounds=2, lease_s=900.0
@@ -46,7 +50,7 @@ async def test_worker_loop_stops_on_shutdown(tmp_path: Path, monkeypatch) -> Non
     mb = Mailbox(tmp_path)
     mb.send("lead", "worker1", "stop", kind=MessageKind.SHUTDOWN)
 
-    async def run_task(prompt: str) -> str | None:
+    async def run_task(_task: Task) -> WorkerTaskAttempt:
         raise AssertionError("should not run tasks after shutdown")
 
     await run_team_worker_loop(

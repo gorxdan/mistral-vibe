@@ -184,6 +184,54 @@ class RepairController:
             metrics=self._metrics(category, state),
         )
 
+    def record_escalated_recovery(
+        self,
+        category: FailureCategory,
+        *,
+        added_tokens: int = 0,
+        added_cost_usd: float = 0.0,
+    ) -> RepairDecision:
+        self._validate_cost(added_tokens, added_cost_usd)
+        state = self._state(category)
+        if not state.finished or state.escalation_reason is None or state.recovered:
+            raise RuntimeError(
+                f"repair episode for {category.value} has no open escalation"
+            )
+        state.added_tokens += added_tokens
+        state.added_cost_usd += added_cost_usd
+        state.recovered = True
+        state.terminal_reason = "Semantic escalation recovered the failure"
+        remaining = max(self._budgets.max_attempts_for(category) - state.attempts, 0)
+        return RepairDecision(
+            action=RepairAction.RECOVERED,
+            category=category,
+            attempt=state.attempts,
+            remaining_attempts=remaining,
+            made_progress=True,
+            no_progress_strikes=state.no_progress_strikes,
+            reason=state.terminal_reason,
+            escalation_reason=state.escalation_reason,
+            metrics=self._metrics(category, state),
+        )
+
+    def record_escalation_failure(
+        self,
+        category: FailureCategory,
+        reason: str,
+        *,
+        added_tokens: int = 0,
+        added_cost_usd: float = 0.0,
+    ) -> None:
+        self._validate_cost(added_tokens, added_cost_usd)
+        state = self._state(category)
+        if not state.finished or state.escalation_reason is None or state.recovered:
+            raise RuntimeError(
+                f"repair episode for {category.value} has no open escalation"
+            )
+        state.added_tokens += added_tokens
+        state.added_cost_usd += added_cost_usd
+        state.terminal_reason = reason
+
     def metrics(self, category: FailureCategory) -> RepairEpisodeMetrics:
         return self._metrics(category, self._state(category))
 

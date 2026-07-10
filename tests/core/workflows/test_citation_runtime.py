@@ -7,7 +7,12 @@ from typing import Any
 
 import pytest
 
+from tests.conftest import build_test_vibe_config
+from vibe.core.agents.manager import AgentManager
+from vibe.core.tools.base import InvokeContext
+from vibe.core.tools.manager import ToolManager
 from vibe.core.types import AssistantEvent, ReasoningEvent, UserMessageEvent
+from vibe.core.workflows import _cache_identity
 from vibe.core.workflows.citations import CitationFailure
 from vibe.core.workflows.runtime import WorkflowRuntime
 
@@ -38,6 +43,17 @@ def _factory(response_text: str) -> Any:
         return MockAgentLoop(response_text=response_text)
 
     return factory
+
+
+def _cache_context() -> InvokeContext:
+    config = build_test_vibe_config()
+    agent_manager = AgentManager(lambda: config)
+    return InvokeContext(
+        tool_call_id="citation-cache-test",
+        active_model=config.active_model,
+        agent_manager=agent_manager,
+        tool_manager=ToolManager(lambda: config, defer_mcp=True),
+    )
 
 
 FINDINGS_SCHEMA = {
@@ -171,3 +187,36 @@ async def test_cache_does_not_poison_gated_call(repo_files: Path) -> None:
     assert isinstance(first, dict)
     assert isinstance(second, CitationFailure)
     assert not second
+
+
+async def test_citation_checked_stage_is_never_replayed(
+    repo_files: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_cache_identity, "_repository_fingerprint", lambda: "tree")
+    response = '{"findings": [{"file": "auth.py", "line": 1}]}'
+    calls = 0
+
+    def counting_factory(
+        prompt: str, *, agent: str, parent_context: Any | None = None
+    ) -> Any:
+        nonlocal calls
+        calls += 1
+        return MockAgentLoop(response_text=response)
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=counting_factory,
+        parent_context=_cache_context(),
+        trusted_cache_dependency_fingerprint="a" * 64,
+    )
+
+    first = await rt.spawn_agent(
+        "same prompt", agent="explore", schema=FINDINGS_SCHEMA, citations=CITATIONS
+    )
+    second = await rt.spawn_agent(
+        "same prompt", agent="explore", schema=FINDINGS_SCHEMA, citations=CITATIONS
+    )
+
+    assert calls == 2
+    assert isinstance(first, dict) and first["citation_report"]["passed"] is True
+    assert isinstance(second, dict) and second["citation_report"]["passed"] is True
+    assert rt._cache == {}

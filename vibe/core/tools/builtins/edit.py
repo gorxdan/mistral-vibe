@@ -21,7 +21,11 @@ from vibe.core.tools.base import (
 )
 from vibe.core.tools.permissions import PermissionContext
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
-from vibe.core.tools.utils import enforce_isolated_confine, resolve_file_tool_permission
+from vibe.core.tools.utils import (
+    enforce_isolated_confine,
+    enforce_team_metadata_confine,
+    resolve_file_tool_permission,
+)
 from vibe.core.types import ToolResultEvent, ToolStreamEvent
 from vibe.core.utils.io import (
     ReadSafeResult,
@@ -257,6 +261,7 @@ class Edit(
         if not file_path.is_absolute():
             file_path = Path.cwd() / file_path
         file_path = file_path.resolve()
+        enforce_team_metadata_confine(file_path)
         enforce_isolated_confine(file_path)
 
         if not file_path.exists():

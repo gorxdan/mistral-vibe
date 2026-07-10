@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vibe.cli.turn_summary.models import TurnSummaryData, TurnSummaryResult
 from vibe.cli.turn_summary.turn_summary_port import TurnSummaryPort
@@ -18,6 +18,10 @@ from vibe.core.types import (
     Role,
     UserMessageEvent,
 )
+from vibe.core.usage import SpendPurpose
+
+if TYPE_CHECKING:
+    from vibe.core.usage._session import SessionSpendAdapter
 
 
 def _empty_session_metadata() -> dict[str, Any]:
@@ -32,6 +36,7 @@ class TurnSummaryTracker(TurnSummaryPort):
         on_summary: Callable[[TurnSummaryResult], None] | None = None,
         max_tokens: int = 512,
         session_metadata_getter: Callable[[], dict[str, Any]] | None = None,
+        spend_adapter_getter: Callable[[], SessionSpendAdapter | None] | None = None,
     ) -> None:
         self._backend = backend
         self._model = model
@@ -42,6 +47,7 @@ class TurnSummaryTracker(TurnSummaryPort):
             if session_metadata_getter is None
             else session_metadata_getter
         )
+        self._spend_adapter_getter = spend_adapter_getter
         self._tasks: set[asyncio.Task[Any]] = set()
         self._data: TurnSummaryData | None = None
         self._generation: int = 0
@@ -124,17 +130,28 @@ class TurnSummaryTracker(TurnSummaryPort):
                 LLMMessage(role=Role.USER, content=extraction_text),
             ]
 
-            result = await self._backend.complete(
-                CompletionRequest(
-                    model=self._model,
-                    messages=summary_messages,
-                    temperature=0.0,
-                    tools=None,
-                    tool_choice=None,
-                    max_tokens=self._max_tokens,
-                    extra_headers={},
-                    metadata=self._build_metadata(data),
-                )
+            request = CompletionRequest(
+                model=self._model,
+                messages=summary_messages,
+                temperature=0.0,
+                tools=None,
+                tool_choice=None,
+                max_tokens=self._max_tokens,
+                extra_headers={},
+                metadata=self._build_metadata(data),
+            )
+            spend_adapter = (
+                self._spend_adapter_getter()
+                if self._spend_adapter_getter is not None
+                else None
+            )
+            if spend_adapter is None:
+                logger.warning("Skipping turn summary without a session spend adapter")
+                if self._on_summary is not None:
+                    self._on_summary(TurnSummaryResult(generation=gen, summary=None))
+                return
+            result = await spend_adapter.complete(
+                self._backend, request, purpose=SpendPurpose.NARRATION
             )
 
             summary = result.message.content or ""

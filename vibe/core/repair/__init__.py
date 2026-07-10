@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from vibe.core.repair._controller import RepairController
+from vibe.core.repair._json import JsonObjectRepair, repair_json_object
 from vibe.core.repair.models import (
     FailureRetryBudget,
     ProgressSnapshot,
@@ -13,6 +14,7 @@ from vibe.core.repair.models import (
 
 __all__ = [
     "FailureRetryBudget",
+    "JsonObjectRepair",
     "ProgressSnapshot",
     "RepairAction",
     "RepairController",
@@ -20,4 +22,5 @@ __all__ = [
     "RepairEpisodeMetrics",
     "RepairEpisodeOutcome",
     "RetryBudgetSet",
+    "repair_json_object",
 ]

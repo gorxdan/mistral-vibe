@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import asyncio
+import multiprocessing
 from pathlib import Path
 import types
 from unittest.mock import patch
@@ -34,6 +36,7 @@ from vibe.core.types import (
     UnclassifiedBackendError,
 )
 from vibe.core.usage import (
+    SpendLedgerConflictError,
     UsageRecorder,
     get_usage_recorder,
     reset_usage_recorder_for_tests,
@@ -48,14 +51,23 @@ from vibe.core.usage._context import (
     SpendRejectionReason,
     SpendScopeKind,
 )
+from vibe.core.usage._process_context import (
+    SPEND_PROCESS_CONTEXT_ENV,
+    SpendProcessContext,
+    SpendProcessContextError,
+    decode_spend_process_context,
+    install_spend_process_context,
+    load_spend_process_context,
+)
 from vibe.core.usage._prompt_estimator import request_prompt_footprint
 from vibe.core.usage._session import (
     UNROUTED_PAID_CALL_BOUNDARIES,
     SessionSpendAdapter,
+    SpendAdmissionBlockedError,
     SpendBudgetExceededError,
     estimate_request_tokens,
 )
-from vibe.core.utils.io import write_safe
+from vibe.core.utils.io import read_safe, write_safe
 from vibe.core.workflows.runtime import WorkflowRuntime
 
 
@@ -146,6 +158,25 @@ def _adapter(tmp_path: Path, **overrides) -> SessionSpendAdapter:
     )
 
 
+def _attached_call_worker(encoded: str, start, results) -> None:
+    adapter = SessionSpendAdapter.attach(
+        SpendConfig(), decode_spend_process_context(encoded)
+    )
+    backend = _CountingBackend(
+        result=LLMChunk(
+            message=LLMMessage(role=Role.ASSISTANT),
+            usage=LLMUsage(prompt_tokens=2, completion_tokens=1),
+        )
+    )
+    start.wait(timeout=10)
+    try:
+        asyncio.run(adapter.complete(backend, _request(max_tokens=1)))
+    except SpendBudgetExceededError as e:
+        results.put((False, e.rejection.reason.value))
+        return
+    results.put((True, None))
+
+
 def test_spend_config_defaults_use_dynamic_token_admission() -> None:
     config = SpendConfig()
 
@@ -170,6 +201,227 @@ def test_spend_config_defaults_use_dynamic_token_admission() -> None:
         for value in (float("inf"), float("nan")):
             with pytest.raises(ValidationError):
                 SpendConfig.model_validate({field: value})
+
+
+def test_process_context_round_trip_replaces_inherited_nested_scope(tmp_path) -> None:
+    parent = _adapter(tmp_path)
+    first = parent.child_agent(agent_id="agent:first")
+    second = parent.child_agent(agent_id="agent:second", purpose=SpendPurpose.TEAM)
+    env = {SPEND_PROCESS_CONTEXT_ENV: first.export_process_context().model_dump_json()}
+
+    install_spend_process_context(env, second.export_process_context())
+    loaded = load_spend_process_context(env)
+
+    assert loaded == second.export_process_context()
+    assert loaded is not None
+    assert loaded.agent_scope_id == "agent:second"
+    assert loaded.purpose is SpendPurpose.TEAM
+    install_spend_process_context(env, None)
+    assert SPEND_PROCESS_CONTEXT_ENV not in env
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"version":2,"ledger_path":"/tmp/x","session_scope_id":"s",'
+        '"agent_scope_id":"a","purpose":"primary"}',
+        '{"version":1,"ledger_path":"relative","session_scope_id":"s",'
+        '"agent_scope_id":"a","purpose":"primary"}',
+        '{"version":1,"ledger_path":"/tmp/x","session_scope_id":"s",'
+        '"agent_scope_id":"a","purpose":"primary","extra":true}',
+    ],
+)
+def test_process_context_rejects_tampered_payload(payload: str) -> None:
+    with pytest.raises(SpendProcessContextError, match="invalid"):
+        decode_spend_process_context(payload)
+
+
+def test_attached_adapter_validates_existing_scope_kind_and_ancestry(tmp_path) -> None:
+    parent = _adapter(tmp_path)
+    child = parent.child_agent(
+        group_kind=SpendScopeKind.WORKFLOW,
+        group_id="workflow:attached",
+        agent_id="agent:attached",
+        purpose=SpendPurpose.WORKFLOW,
+    )
+    context = child.export_process_context()
+    before = len(parent.events())
+
+    attached = SessionSpendAdapter.attach(SpendConfig(max_calls=999), context)
+
+    assert attached.ledger_path == parent.ledger_path
+    assert attached.session_scope_id == parent.session_scope_id
+    assert attached.agent_scope_id == child.agent_scope_id
+    assert attached.default_purpose is SpendPurpose.WORKFLOW
+    assert len(parent.events()) == before
+
+    wrong_kind = context.model_copy(update={"agent_scope_id": parent.session_scope_id})
+    with pytest.raises(SpendAdmissionBlockedError, match="invalid agent"):
+        SessionSpendAdapter.attach(SpendConfig(), wrong_kind)
+
+    broker = SpendBroker(parent.ledger_path)
+    broker.define_envelope(
+        SpendEnvelope(scope_id="session:foreign", kind=SpendScopeKind.SESSION)
+    )
+    broker.define_envelope(
+        SpendEnvelope(
+            scope_id="agent:foreign",
+            kind=SpendScopeKind.AGENT,
+            parent_scope_id="session:foreign",
+        )
+    )
+    foreign = context.model_copy(update={"agent_scope_id": "agent:foreign"})
+    with pytest.raises(SpendAdmissionBlockedError, match="outside"):
+        SessionSpendAdapter.attach(SpendConfig(), foreign)
+
+
+def test_attach_rejects_missing_ledger_without_creating_it(tmp_path) -> None:
+    missing = tmp_path / "missing"
+    context = SpendProcessContext(
+        ledger_path=str(missing.resolve()),
+        session_scope_id="session:missing",
+        agent_scope_id="agent:missing",
+        purpose=SpendPurpose.PRIMARY,
+    )
+
+    with pytest.raises(SpendAdmissionBlockedError, match="missing ledger"):
+        SessionSpendAdapter.attach(SpendConfig(), context)
+
+    assert not missing.exists()
+
+
+def test_attach_rejects_task_hash_rebound_in_process_context(tmp_path) -> None:
+    original_hash = "a" * 64
+    tampered_hash = "b" * 64
+    limits = SpendEnvelopeLimits(max_calls=1)
+    parent = _adapter(tmp_path)
+    child = parent.child_agent(
+        agent_id="agent:task-bound", limits=limits, task_brief_hash=original_hash
+    )
+    context = child.export_process_context()
+
+    assert context.task_brief_hash == original_hash
+    attached = SessionSpendAdapter.attach(
+        SpendConfig(),
+        context,
+        required_task_brief_hash=original_hash,
+        required_limits=limits,
+    )
+    assert attached.agent_scope_id == child.agent_scope_id
+
+    tampered = context.model_copy(update={"task_brief_hash": tampered_hash})
+    with pytest.raises(SpendAdmissionBlockedError, match="agent task brief"):
+        SessionSpendAdapter.attach(
+            SpendConfig(),
+            tampered,
+            required_task_brief_hash=tampered_hash,
+            required_limits=limits,
+        )
+
+
+@pytest.mark.asyncio
+async def test_reissued_task_reuses_and_tightens_immutable_scope(tmp_path) -> None:
+    parent = _adapter(tmp_path, max_calls=10)
+    brief_hash = "c" * 64
+    first = parent.child_task(
+        task_brief_hash=brief_hash, limits=SpendEnvelopeLimits(max_calls=2)
+    )
+    await first.complete(_CountingBackend(), _request(max_tokens=1))
+
+    tightened = parent.child_task(
+        task_brief_hash=brief_hash, limits=SpendEnvelopeLimits(max_calls=1)
+    )
+    attempted_widen = parent.child_task(
+        task_brief_hash=brief_hash, limits=SpendEnvelopeLimits(max_calls=5)
+    )
+    envelope = SpendBroker(parent.ledger_path).get_envelope(first.agent_scope_id)
+
+    assert tightened.agent_scope_id == first.agent_scope_id
+    assert attempted_widen.agent_scope_id == first.agent_scope_id
+    assert envelope is not None
+    assert envelope.task_brief_hash == brief_hash
+    assert envelope.limits.max_calls == 1
+    with pytest.raises(SpendBudgetExceededError):
+        await attempted_widen.complete(_CountingBackend(), _request(max_tokens=1))
+
+    parent.child_task(
+        task_brief_hash=brief_hash,
+        task_id="host-task-1",
+        limits=SpendEnvelopeLimits(max_calls=5),
+    )
+    with pytest.raises(SpendLedgerConflictError):
+        parent.child_task(
+            task_brief_hash="d" * 64,
+            task_id="host-task-1",
+            limits=SpendEnvelopeLimits(max_calls=5),
+        )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_task_scope_creation_tightens_atomically(tmp_path) -> None:
+    parent = _adapter(tmp_path, max_calls=10)
+    brief_hash = "e" * 64
+
+    children = await asyncio.gather(
+        *(
+            asyncio.to_thread(
+                parent.child_task,
+                task_brief_hash=brief_hash,
+                limits=SpendEnvelopeLimits(max_calls=max_calls),
+            )
+            for max_calls in (5, 3, 4, 2)
+        )
+    )
+    scope_ids = {child.agent_scope_id for child in children}
+    envelope = SpendBroker(parent.ledger_path).get_envelope(children[0].agent_scope_id)
+
+    assert len(scope_ids) == 1
+    assert envelope is not None
+    assert envelope.limits.max_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_child_agent_limits_reject_without_tightening_parent(tmp_path) -> None:
+    parent = _adapter(tmp_path, max_calls=2)
+    child = parent.child_agent(
+        agent_id="agent:bounded", limits=SpendEnvelopeLimits(max_calls=0)
+    )
+    backend = _CountingBackend()
+
+    with pytest.raises(SpendBudgetExceededError) as exc_info:
+        await child.complete(backend, _request(max_tokens=1))
+    await parent.complete(_CountingBackend(), _request(max_tokens=1))
+
+    assert exc_info.value.rejection.limited_scope_id == child.agent_scope_id
+    assert backend.complete_calls == 0
+
+
+def test_attached_processes_share_parent_call_cap(tmp_path) -> None:
+    parent = _adapter(tmp_path, max_calls=1, max_concurrent_calls=2)
+    child = parent.child_agent(agent_id="agent:process")
+    encoded = child.export_process_context().model_dump_json()
+    process_context = multiprocessing.get_context("spawn")
+    start = process_context.Event()
+    results = process_context.Queue()
+    processes = [
+        process_context.Process(
+            target=_attached_call_worker, args=(encoded, start, results)
+        )
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    start.set()
+    outcomes = [results.get(timeout=15) for _ in processes]
+    for process in processes:
+        process.join(timeout=15)
+        assert process.exitcode == 0
+
+    assert sorted(accepted for accepted, _reason in outcomes) == [False, True]
+    assert [reason for accepted, reason in outcomes if not accepted] == [
+        SpendRejectionReason.CALLS.value
+    ]
+    assert parent.snapshot().spent_calls == 1
 
 
 def test_request_estimate_is_below_semantic_byte_ceiling() -> None:
@@ -845,10 +1097,72 @@ def test_task_and_workflow_in_process_children_inherit_session_adapter(
 
 def test_later_paid_call_integration_boundaries_are_explicit() -> None:
     assert UNROUTED_PAID_CALL_BOUNDARIES == {
-        "isolated_subprocess",
         "mcp_sampling",
-        "narration",
+        "transcription",
+        "tts",
+        "websearch",
     }
+
+
+def test_production_paid_calls_are_brokered_or_documented() -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    observed: list[tuple[str, str, str]] = []
+    for path in sorted((repository_root / "vibe").rglob("*.py")):
+        if "bundled" in path.parts:
+            continue
+        source = read_safe(path, raise_on_error=True).text
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr not in {
+                "complete",
+                "complete_streaming",
+                "complete_async",
+                "start_async",
+                "stream_async",
+                "transcribe_stream",
+            }:
+                continue
+            observed.append((
+                str(path.relative_to(repository_root)),
+                node.func.attr,
+                ast.unparse(node.func.value),
+            ))
+
+    assert sorted(observed) == [
+        ("vibe/cli/turn_summary/tracker.py", "complete", "spend_adapter"),
+        ("vibe/core/agent_loop.py", "complete", "self._spend_adapter"),
+        ("vibe/core/agent_loop.py", "complete_streaming", "self._spend_adapter"),
+        ("vibe/core/llm/backend/generic.py", "complete_streaming", "self"),
+        (
+            "vibe/core/llm/backend/mistral.py",
+            "complete_async",
+            "self._get_client().chat",
+        ),
+        ("vibe/core/llm/backend/mistral.py", "stream_async", "self._get_client().chat"),
+        (
+            "vibe/core/tools/builtins/websearch.py",
+            "start_async",
+            "client.beta.conversations",
+        ),
+        ("vibe/core/tools/mcp_sampling.py", "complete", "self._backend_getter()"),
+        (
+            "vibe/core/transcribe/mistral_transcribe_client.py",
+            "transcribe_stream",
+            "client.audio.realtime",
+        ),
+        (
+            "vibe/core/tts/mistral_tts_client.py",
+            "complete_async",
+            "client.audio.speech",
+        ),
+        ("vibe/core/usage/_auxiliary.py", "complete", "spend_adapter"),
+        ("vibe/core/usage/_session.py", "complete", "backend"),
+        ("vibe/core/usage/_session.py", "complete_streaming", "backend"),
+        ("vibe/core/workflows/_formatter_repair.py", "complete", "spend_adapter"),
+        ("vibe/core/workflows/_semantic_repair.py", "complete", "spend_adapter"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -898,3 +1212,42 @@ async def test_task_maps_spend_rejection_to_blocked_outcome(collect: bool) -> No
     assert outcome is not None
     assert outcome.status == TaskOutcomeStatus.BLOCKED
     assert any("calls" in diagnostic for diagnostic in outcome.diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_attached_team_task_children_preserve_group_and_shared_cap(
+    tmp_path: Path,
+) -> None:
+    root = _adapter(tmp_path, max_calls=1)
+    teammate_a = root.child_agent(
+        group_kind=SpendScopeKind.TEAM,
+        group_id="team:shared-cap",
+        agent_id="agent:teammate-a",
+        purpose=SpendPurpose.TEAM,
+    )
+    teammate_b = root.child_agent(
+        group_kind=SpendScopeKind.TEAM,
+        group_id="team:shared-cap",
+        agent_id="agent:teammate-b",
+        purpose=SpendPurpose.TEAM,
+    )
+    attached_a = SessionSpendAdapter.attach(
+        SpendConfig(), teammate_a.export_process_context()
+    )
+    attached_b = SessionSpendAdapter.attach(
+        SpendConfig(), teammate_b.export_process_context()
+    )
+    task_a = attached_a.child_agent(agent_id="agent:task-a")
+    task_b = attached_b.child_agent(agent_id="agent:task-b")
+    broker = SpendBroker(root.ledger_path)
+    scope_a = broker.get_envelope(task_a.agent_scope_id)
+    scope_b = broker.get_envelope(task_b.agent_scope_id)
+
+    assert scope_a is not None
+    assert scope_b is not None
+    assert scope_a.parent_scope_id == "team:shared-cap"
+    assert scope_b.parent_scope_id == "team:shared-cap"
+
+    await task_a.complete(_CountingBackend(), _request(max_tokens=1))
+    with pytest.raises(SpendBudgetExceededError):
+        await task_b.complete(_CountingBackend(), _request(max_tokens=1))

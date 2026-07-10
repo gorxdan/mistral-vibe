@@ -18,7 +18,7 @@ from vibe.core.agents.models import (
     BuiltinAgentName,
     profile_requires_isolation,
 )
-from vibe.core.config import SessionLoggingConfig, VibeConfig
+from vibe.core.config import ModelPurpose, SessionLoggingConfig, VibeConfig
 from vibe.core.logger import logger
 from vibe.core.tasking import (
     TaskBrief,
@@ -27,6 +27,14 @@ from vibe.core.tasking import (
     compile_task_brief,
     resolve_task_outcome,
 )
+from vibe.core.tasking._candidate import validate_task_candidate
+from vibe.core.tasking._policy import (
+    BoundTaskContract,
+    TaskContractAuthority,
+    TaskContractError,
+)
+from vibe.core.tasking._process_context import TaskProcessContext
+from vibe.core.teams._task_checks import run_guarded_task_checks, task_check_diagnostics
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -49,6 +57,7 @@ from vibe.core.types import (
     ToolResultEvent,
     ToolStreamEvent,
 )
+from vibe.core.usage import SpendProcessContext, SpendPurpose
 from vibe.core.usage._session import SpendBudgetExceededError
 from vibe.core.verification_contract import (
     VerificationReportError,
@@ -80,18 +89,26 @@ def _effective_subagent_model(args: TaskArgs, ctx: InvokeContext) -> str | None:
     # Resolve the model a subagent spawn runs on. The grunt profile has its
     # own cheap-model default (grunt_model); other profiles fall straight
     # to subagent_model. Both then fall through to the parent session's model.
-    if args.model:
-        return args.model
-    if args.agent == BuiltinAgentName.GRUNT:
-        if grunt := _configured_grunt_model(ctx):
-            return grunt
-    if sub := _configured_subagent_model(ctx):
-        return sub
-    if ctx.active_model:
-        return ctx.active_model
-    if ctx.agent_manager:
-        return ctx.agent_manager.config.active_model or None
-    return None
+    resolved: str | None = None
+    if (
+        args.brief is not None
+        and args.brief.manifest.name == "mechanical-edit"
+        and ctx.agent_manager is not None
+    ):
+        resolved = ctx.agent_manager.config.model_routing.alias_for(
+            ModelPurpose.MECHANICAL
+        )
+    if resolved is None:
+        resolved = args.model or None
+    if resolved is None and args.agent == BuiltinAgentName.GRUNT:
+        resolved = _configured_grunt_model(ctx)
+    if resolved is None:
+        resolved = _configured_subagent_model(ctx)
+    if resolved is None:
+        resolved = ctx.active_model
+    if resolved is None and ctx.agent_manager is not None:
+        resolved = ctx.agent_manager.config.active_model or None
+    return resolved
 
 
 def _subagent_error_outcome(error: Exception) -> tuple[TaskOutcomeStatus, str]:
@@ -279,10 +296,9 @@ class Task(
         "subagent has its own, often smaller, context window, so an open-ended "
         "broad search there can overflow it — give it targets, not a hunt.\n\n"
         "For structured work, pass a TaskBrief instead of a free-form string. "
-        "The serialized brief is immutable within the worker prompt, expired "
-        "deadlines are blocked before dispatch, and the worker must return an "
-        "explicit terminal outcome. Path scope, checks, and task-specific budgets "
-        "are contract metadata in this version; they are not host-enforced.\n\n"
+        "The host binds its paths, trusted check IDs, budget, deadline, and tool "
+        "manifest before dispatch. The worker cannot widen that contract and must "
+        "return an explicit terminal outcome.\n\n"
         "Execution: subagents run in the BACKGROUND by default — the call returns "
         "a task_id immediately and the subagent's result is delivered to you "
         "automatically at the start of a later turn (you are auto-resumed when it "
@@ -383,37 +399,165 @@ class Task(
         ctx: InvokeContext,
         run: Awaitable[IsolatedResult],
         verification_attempt: _VerificationAttempt | None,
+        contract: BoundTaskContract | None,
     ) -> _InProcessResult:
-        completed = True
-        forced_status: TaskOutcomeStatus | None = None
-        diagnostic: str | None = None
-        worktree_path: str | None = None
-        branch: str | None = None
         try:
             result = await run
-            response = result.output
-            completed = result.returncode == 0
-            worktree_path = result.worktree_path
-            branch = result.branch
+            return await self._finalize_isolated_result(
+                args,
+                ctx,
+                result,
+                contract=contract,
+                verification_attempt=verification_attempt,
+            )
         except Exception as e:
-            completed = False
             response = f"[Isolated subagent error: {e}]"
             forced_status, diagnostic = _subagent_error_outcome(e)
-        _maybe_record_verifier_pass(
-            args.agent, response, ctx, completed=completed, attempt=verification_attempt
-        )
         return _InProcessResult(
             output=response,
-            returncode=0 if completed else 1,
-            worktree_path=worktree_path,
-            branch=branch,
+            returncode=1,
             outcome=resolve_task_outcome(
                 args.brief,
                 response,
-                completed=completed,
+                completed=False,
                 forced_status=forced_status,
                 diagnostic=diagnostic,
             ),
+        )
+
+    @staticmethod
+    def _isolated_spend_context(
+        args: TaskArgs, ctx: InvokeContext, contract: BoundTaskContract | None
+    ) -> SpendProcessContext | None:
+        if ctx.spend_adapter is None:
+            return None
+        purpose = (
+            SpendPurpose.VERIFICATION
+            if args.agent == BuiltinAgentName.VERIFIER
+            else SpendPurpose.PRIMARY
+        )
+        if contract is not None:
+            return ctx.spend_adapter.child_task(
+                limits=contract.spend_limits(),
+                task_brief_hash=contract.brief_hash,
+                purpose=purpose,
+            ).export_process_context()
+        return ctx.spend_adapter.child_agent(purpose=purpose).export_process_context()
+
+    async def _finalize_isolated_result(
+        self,
+        args: TaskArgs,
+        ctx: InvokeContext,
+        result: IsolatedResult,
+        *,
+        contract: BoundTaskContract | None,
+        verification_attempt: _VerificationAttempt | None,
+    ) -> _InProcessResult:
+        response = result.output
+        completed = result.returncode == 0
+        preliminary = resolve_task_outcome(args.brief, response, completed=completed)
+        if contract is None:
+            _maybe_record_verifier_pass(
+                args.agent,
+                response,
+                ctx,
+                completed=completed,
+                attempt=verification_attempt,
+            )
+            return _InProcessResult(
+                output=response,
+                returncode=result.returncode,
+                worktree_path=result.worktree_path,
+                branch=result.branch,
+                outcome=preliminary,
+            )
+
+        wt = result.wt
+        if wt is None:
+            if not preliminary.succeeded:
+                return _InProcessResult(
+                    output=response, returncode=result.returncode, outcome=preliminary
+                )
+            outcome = TaskOutcome(
+                status=TaskOutcomeStatus.RETRYABLE,
+                summary="Structured isolated task could not be validated",
+                diagnostics=["isolated worker returned no candidate worktree"],
+                manifest=args.brief.manifest if args.brief else None,
+            )
+            return _InProcessResult(output=response, returncode=1, outcome=outcome)
+
+        from vibe.core.worktree.ephemeral import (
+            deliver_ephemeral_worktree,
+            remove_ephemeral_worktree,
+        )
+
+        delivered = False
+        branch: str | None = None
+        outcome = preliminary
+        try:
+            if preliminary.succeeded:
+                validation = await asyncio.to_thread(
+                    validate_task_candidate, contract, wt.path, wt.base_sha
+                )
+                evidence = [
+                    f"{check.name}: exit {check.exit_code} ({check.duration_ms} ms)"
+                    for check in validation.checks
+                ]
+                if not validation.passed:
+                    outcome = TaskOutcome(
+                        status=(
+                            TaskOutcomeStatus.RETRYABLE
+                            if validation.scope_passed
+                            else TaskOutcomeStatus.BLOCKED
+                        ),
+                        summary=(
+                            "Trusted acceptance checks failed"
+                            if validation.scope_passed
+                            else "Candidate violated the bound path scope"
+                        ),
+                        evidence=evidence,
+                        diagnostics=list(validation.diagnostics),
+                        changed_paths=list(validation.changed_paths),
+                        manifest=args.brief.manifest if args.brief else None,
+                    )
+                else:
+                    delivered = await asyncio.to_thread(deliver_ephemeral_worktree, wt)
+                    outcome = TaskOutcome(
+                        status=(
+                            TaskOutcomeStatus.SUCCEEDED
+                            if delivered
+                            else TaskOutcomeStatus.RETRYABLE
+                        ),
+                        summary=(
+                            "Structured task and trusted checks succeeded"
+                            if delivered
+                            else "Validated candidate could not be delivered"
+                        ),
+                        evidence=evidence,
+                        diagnostics=(
+                            []
+                            if delivered
+                            else ["parent repository moved or refused the fast-forward"]
+                        ),
+                        changed_paths=list(validation.changed_paths),
+                        manifest=args.brief.manifest if args.brief else None,
+                    )
+        finally:
+            removed = await asyncio.to_thread(
+                remove_ephemeral_worktree, wt, keep_if_changed=not delivered
+            )
+            if not removed:
+                branch = wt.branch
+
+        if outcome.succeeded:
+            _maybe_record_verifier_pass(
+                args.agent, response, ctx, completed=True, attempt=verification_attempt
+            )
+        return _InProcessResult(
+            output=response,
+            returncode=0 if outcome.succeeded else 1,
+            branch=branch,
+            outcome=outcome,
         )
 
     async def _run_async_isolated(
@@ -460,19 +604,27 @@ class Task(
         if log_path is not None:
             log_path.touch()
 
+        contract = self._bind_contract(args.brief, ctx) if args.brief else None
         effective_model = _effective_subagent_model(args, ctx)
         isolated_run = run_isolated_agent(
             task_text,
             args.agent,
             label=args.agent,
             max_turns=DEFAULT_ISOLATED_MAX_TURNS,
-            deliver=True,
+            deliver=contract is None,
+            keep_worktree=contract is not None,
             model=effective_model,
             log_path=log_path,
             scratchpad_dir=ctx.scratchpad_dir,
+            spend_context=self._isolated_spend_context(args, ctx, contract),
+            task_context=(
+                TaskProcessContext.from_brief(args.brief) if args.brief else None
+            ),
         )
         bg_task = asyncio.create_task(
-            self._collect_async_isolated(args, ctx, isolated_run, verification_attempt),
+            self._collect_async_isolated(
+                args, ctx, isolated_run, verification_attempt, contract
+            ),
             name=f"async-task-{args.agent}",
         )
         task_id = registry.register_async_agent(
@@ -523,6 +675,7 @@ class Task(
         response_text = ""
         worktree_path: str | None = None
         branch: str | None = None
+        outcome: TaskOutcome | None = None
         forced_status: TaskOutcomeStatus | None = None
         diagnostic: str | None = None
         try:
@@ -536,22 +689,36 @@ class Task(
                 forced_status = TaskOutcomeStatus.BLOCKED
                 diagnostic = denied
             else:
+                contract = self._bind_contract(args.brief, ctx) if args.brief else None
                 result = await run_isolated_agent(
                     task_text,
                     args.agent,
                     label=args.agent,
                     max_turns=DEFAULT_ISOLATED_MAX_TURNS,
-                    deliver=True,
+                    deliver=contract is None,
+                    keep_worktree=contract is not None,
                     # Inherit the parent's effective model (not the configured default).
                     model=_effective_subagent_model(args, ctx),
                     scratchpad_dir=ctx.scratchpad_dir,
+                    spend_context=self._isolated_spend_context(args, ctx, contract),
+                    task_context=(
+                        TaskProcessContext.from_brief(args.brief)
+                        if args.brief
+                        else None
+                    ),
                 )
-                response_text = result.output
-                worktree_path = result.worktree_path
-                branch = result.branch
-                _maybe_record_verifier_pass(
-                    args.agent, response_text, ctx, attempt=verification_attempt
+                finalized = await self._finalize_isolated_result(
+                    args,
+                    ctx,
+                    result,
+                    contract=contract,
+                    verification_attempt=verification_attempt,
                 )
+                response_text = finalized.output
+                completed = finalized.returncode == 0
+                worktree_path = finalized.worktree_path
+                branch = finalized.branch
+                outcome = finalized.outcome
         except Exception as e:
             completed = False
             response_text = f"[Isolated subagent error: {e}]"
@@ -565,12 +732,16 @@ class Task(
             isolated=True,
             worktree_path=worktree_path,
             branch=branch,
-            outcome=resolve_task_outcome(
-                args.brief,
-                response_text,
-                completed=completed,
-                forced_status=forced_status,
-                diagnostic=diagnostic,
+            outcome=(
+                outcome
+                if outcome is not None
+                else resolve_task_outcome(
+                    args.brief,
+                    response_text,
+                    completed=completed,
+                    forced_status=forced_status,
+                    diagnostic=diagnostic,
+                )
             ),
         )
 
@@ -636,6 +807,9 @@ class Task(
             )
             return
 
+        if args.brief is not None:
+            self._bind_contract(args.brief, ctx)
+
         agent_manager = ctx.agent_manager
 
         try:
@@ -691,9 +865,24 @@ class Task(
         snippet = args.summary.strip().split("\n", 1)[0][:60]
         return f"{args.agent}: {snippet}" if snippet else args.agent
 
+    @staticmethod
+    def _bind_contract(brief: TaskBrief, ctx: InvokeContext) -> BoundTaskContract:
+        try:
+            return BoundTaskContract.bind(
+                brief,
+                authority=TaskContractAuthority.LEAD,
+                workspace_root=Path.cwd(),
+                verification_state=ctx.verification_state,
+            )
+        except TaskContractError as e:
+            raise ToolError(f"Invalid structured task contract: {e}") from e
+
     def _build_subagent_loop(
         self, args: TaskArgs, ctx: InvokeContext
     ) -> tuple[AgentLoop, str]:
+        task_contract = (
+            self._bind_contract(args.brief, ctx) if args.brief is not None else None
+        )
         session_logging = SessionLoggingConfig(
             save_dir=str(ctx.session_dir / "agents") if ctx.session_dir else "",
             session_prefix=args.agent,
@@ -724,6 +913,22 @@ class Task(
             base_config.active_model,
             resolved_provider,
         )
+        spend_adapter = None
+        if ctx.spend_adapter is not None:
+            purpose = (
+                SpendPurpose.VERIFICATION
+                if args.agent == BuiltinAgentName.VERIFIER
+                else SpendPurpose.PRIMARY
+            )
+            spend_adapter = (
+                ctx.spend_adapter.child_task(
+                    limits=task_contract.spend_limits(),
+                    task_brief_hash=task_contract.brief_hash,
+                    purpose=purpose,
+                )
+                if task_contract is not None
+                else ctx.spend_adapter.child_agent(purpose=purpose)
+            )
         # Subagents inherit the parent worktree; never call worktree_manager.enter().
         subagent_loop = AgentLoop(
             config=base_config,
@@ -738,11 +943,8 @@ class Task(
                 permission_store=ctx.permission_store,
                 hook_config_result=ctx.hook_config_result,
                 max_turns=DEFAULT_ISOLATED_MAX_TURNS,
-                spend_adapter=(
-                    ctx.spend_adapter.child_agent()
-                    if ctx.spend_adapter is not None
-                    else None
-                ),
+                spend_adapter=spend_adapter,
+                task_contract=task_contract,
             ),
         )
         if ctx.session_id:
@@ -806,20 +1008,78 @@ class Task(
                 await subagent_loop.aclose()
 
         response = "".join(accumulated_response)
-        _maybe_record_verifier_pass(
-            args.agent, response, ctx, completed=completed, attempt=verification_attempt
+        outcome = await self._finalize_in_process_outcome(
+            args,
+            ctx,
+            response,
+            completed=completed,
+            forced_status=forced_status,
+            diagnostic=diagnostic,
         )
+        if outcome.succeeded:
+            _maybe_record_verifier_pass(
+                args.agent,
+                response,
+                ctx,
+                completed=completed,
+                attempt=verification_attempt,
+            )
         yield TaskResult(
             response=response,
             turns_used=turns_used,
             completed=completed,
-            outcome=resolve_task_outcome(
-                args.brief,
-                response,
-                completed=completed,
-                forced_status=forced_status,
-                diagnostic=diagnostic,
-            ),
+            outcome=outcome,
+        )
+
+    async def _finalize_in_process_outcome(
+        self,
+        args: TaskArgs,
+        ctx: InvokeContext,
+        response: str,
+        *,
+        completed: bool,
+        forced_status: TaskOutcomeStatus | None,
+        diagnostic: str | None,
+    ) -> TaskOutcome:
+        outcome = resolve_task_outcome(
+            args.brief,
+            response,
+            completed=completed,
+            forced_status=forced_status,
+            diagnostic=diagnostic,
+        )
+        if args.brief is None or not outcome.succeeded:
+            return outcome
+
+        contract = self._bind_contract(args.brief, ctx)
+        evidence, mutation = await asyncio.to_thread(
+            run_guarded_task_checks, contract.trusted_checks, contract.workspace_root
+        )
+        summaries = [
+            f"{item.name}: exit {item.exit_code} ({item.duration_ms} ms)"
+            for item in evidence
+        ]
+        if mutation is not None:
+            return TaskOutcome(
+                status=TaskOutcomeStatus.BLOCKED,
+                summary="Trusted checks violated the candidate boundary",
+                evidence=summaries,
+                diagnostics=[mutation],
+                manifest=args.brief.manifest,
+            )
+        if evidence and all(item.passed for item in evidence):
+            return TaskOutcome(
+                status=TaskOutcomeStatus.SUCCEEDED,
+                summary="Structured task and trusted checks succeeded",
+                evidence=summaries,
+                manifest=args.brief.manifest,
+            )
+        return TaskOutcome(
+            status=TaskOutcomeStatus.RETRYABLE,
+            summary="Trusted acceptance checks failed",
+            evidence=summaries,
+            diagnostics=list(task_check_diagnostics(evidence)),
+            manifest=args.brief.manifest,
         )
 
     async def _run_in_process_collect(
@@ -861,19 +1121,26 @@ class Task(
             with suppress(Exception):
                 await subagent_loop.aclose()
         response = "".join(accumulated_response)
-        _maybe_record_verifier_pass(
-            args.agent, response, ctx, completed=completed, attempt=verification_attempt
+        outcome = await self._finalize_in_process_outcome(
+            args,
+            ctx,
+            response,
+            completed=completed,
+            forced_status=forced_status,
+            diagnostic=diagnostic,
         )
+        if outcome.succeeded:
+            _maybe_record_verifier_pass(
+                args.agent,
+                response,
+                ctx,
+                completed=completed,
+                attempt=verification_attempt,
+            )
         return _InProcessResult(
             output=response,
-            returncode=0 if completed else 1,
-            outcome=resolve_task_outcome(
-                args.brief,
-                response,
-                completed=completed,
-                forced_status=forced_status,
-                diagnostic=diagnostic,
-            ),
+            returncode=0 if completed and outcome.succeeded else 1,
+            outcome=outcome,
         )
 
     async def _run_in_process_async(

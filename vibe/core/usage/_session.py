@@ -4,12 +4,18 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from pathlib import Path
 import time
 from uuid import uuid4
 
 from vibe.core.config._spend_config import PromptEstimatorMode, SpendConfig
 from vibe.core.config.models import ModelConfig
+from vibe.core.llm.provider_retry import (
+    SpendRetryCause,
+    SpendRetryPolicyReason,
+    bind_retry_attempt_admission,
+)
 from vibe.core.llm.types import BackendLike, CompletionRequest
 from vibe.core.paths import VIBE_HOME
 from vibe.core.types import LLMChunk, LLMUsage
@@ -29,6 +35,7 @@ from vibe.core.usage._context import (
 )
 from vibe.core.usage._ledger import LedgerEvent
 from vibe.core.usage._pricing import compute_cost, lookup_pricing
+from vibe.core.usage._process_context import SpendProcessContext
 from vibe.core.usage._prompt_estimator import (
     PromptReservationPlan,
     estimate_prompt_tokens,
@@ -46,9 +53,10 @@ __all__ = [
 
 
 UNROUTED_PAID_CALL_BOUNDARIES = frozenset({
-    "isolated_subprocess",
     "mcp_sampling",
-    "narration",
+    "transcription",
+    "tts",
+    "websearch",
 })
 SPEND_SESSION_ID_METADATA_KEY = "spend_session_id"
 _RESERVATION_LEASE_S = DEFAULT_RESERVATION_LEASE_S
@@ -205,6 +213,28 @@ def _bounded_by_total(limit: int | None, total: int | None) -> int | None:
     return min(limit, total)
 
 
+def _limits_are_within(
+    actual: SpendEnvelopeLimits, required: SpendEnvelopeLimits
+) -> bool:
+    for field_name in (
+        "max_prompt_tokens",
+        "max_completion_tokens",
+        "max_total_tokens",
+        "max_cost_usd",
+        "max_calls",
+        "max_concurrent_calls",
+        "max_retries",
+        "deadline_at",
+    ):
+        required_value = getattr(required, field_name)
+        if required_value is None:
+            continue
+        actual_value = getattr(actual, field_name)
+        if actual_value is None or actual_value > required_value:
+            return False
+    return True
+
+
 @dataclass(slots=True)
 class _AdmissionState:
     config: SpendConfig
@@ -221,7 +251,33 @@ class _SessionSpendCall:
     settled: bool = False
 
     def mark_dispatched(self) -> None:
+        self.adapter._broker.mark_dispatched(self.reservation)
         self.dispatched = True
+
+    def authorize_retry(self, cause: SpendRetryCause) -> None:
+        decision = self.adapter._broker.authorize_retry(self.reservation, cause)
+        if isinstance(decision, SpendRejection):
+            raise SpendBudgetExceededError(decision)
+
+    def reject_retry_policy(
+        self,
+        cause: SpendRetryCause,
+        reason: SpendRetryPolicyReason,
+        *,
+        elapsed_s: float,
+        max_elapsed_s: float,
+        next_delay_s: float,
+        max_retries: int,
+    ) -> None:
+        self.adapter._broker.reject_retry_policy(
+            self.reservation,
+            cause,
+            reason,
+            elapsed_s=elapsed_s,
+            max_elapsed_s=max_elapsed_s,
+            next_delay_s=next_delay_s,
+            max_retries=max_retries,
+        )
 
     async def renew_while_active(self) -> None:
         while True:
@@ -262,9 +318,8 @@ class _SessionSpendCall:
 class SessionSpendAdapter:
     """Scoped paid-call admission for one agent in a shared session ledger.
 
-    Narration, MCP sampling, and isolated subprocesses remain explicit later
-    integration boundaries. They do not silently borrow this session adapter's
-    scope.
+    MCP sampling remains an explicit integration boundary. Narration and
+    isolated subprocesses attach to host-created child scopes.
     """
 
     def __init__(
@@ -373,6 +428,84 @@ class SessionSpendAdapter:
     def spend_session_id(self) -> str:
         return self.session_scope_id.removeprefix("session:")
 
+    def export_process_context(self) -> SpendProcessContext:
+        agent = self._broker.get_envelope(self.agent_scope_id)
+        if agent is None or agent.kind is not SpendScopeKind.AGENT:
+            raise SpendAdmissionBlockedError(
+                "cannot export spend context for an invalid agent scope"
+            )
+        return SpendProcessContext(
+            ledger_path=str(self.ledger_path.resolve()),
+            session_scope_id=self.session_scope_id,
+            agent_scope_id=self.agent_scope_id,
+            purpose=self.default_purpose,
+            task_brief_hash=agent.task_brief_hash,
+        )
+
+    @classmethod
+    def attach(
+        cls,
+        config: SpendConfig,
+        context: SpendProcessContext,
+        *,
+        clock: Callable[[], float] = time.time,
+        required_task_brief_hash: str | None = None,
+        required_limits: SpendEnvelopeLimits | None = None,
+    ) -> SessionSpendAdapter:
+        ledger_path = Path(context.ledger_path)
+        if not (ledger_path / "events").is_dir():
+            raise SpendAdmissionBlockedError(
+                f"spend process context references missing ledger {ledger_path}"
+            )
+        broker = SpendBroker(ledger_path, clock=clock)
+        session = broker.get_envelope(context.session_scope_id)
+        if session is None or session.kind is not SpendScopeKind.SESSION:
+            raise SpendAdmissionBlockedError(
+                "spend process context references an invalid session scope"
+            )
+        agent = broker.get_envelope(context.agent_scope_id)
+        if agent is None or agent.kind is not SpendScopeKind.AGENT:
+            raise SpendAdmissionBlockedError(
+                "spend process context references an invalid agent scope"
+            )
+        if context.task_brief_hash != agent.task_brief_hash:
+            raise SpendAdmissionBlockedError(
+                "spend process context is not bound to its agent task brief"
+            )
+        if required_task_brief_hash is not None:
+            if context.task_brief_hash != required_task_brief_hash:
+                raise SpendAdmissionBlockedError(
+                    "spend process context is not bound to the task brief"
+                )
+            if required_limits is None or not _limits_are_within(
+                agent.limits, required_limits
+            ):
+                raise SpendAdmissionBlockedError(
+                    "spend process context agent limits exceed the task budget"
+                )
+        current = agent
+        visited: set[str] = set()
+        while current.scope_id != context.session_scope_id:
+            if current.scope_id in visited or current.parent_scope_id is None:
+                raise SpendAdmissionBlockedError(
+                    "spend process context agent is outside the session ancestry"
+                )
+            visited.add(current.scope_id)
+            parent = broker.get_envelope(current.parent_scope_id)
+            if parent is None:
+                raise SpendAdmissionBlockedError(
+                    "spend process context ancestry references a missing scope"
+                )
+            current = parent
+        return cls(
+            broker=broker,
+            config=config,
+            session_scope_id=context.session_scope_id,
+            agent_scope_id=context.agent_scope_id,
+            default_purpose=context.purpose,
+            clock=clock,
+        )
+
     def tighten_limits(
         self,
         config: SpendConfig,
@@ -407,12 +540,14 @@ class SessionSpendAdapter:
         group_id: str | None = None,
         agent_id: str | None = None,
         purpose: SpendPurpose | None = None,
+        limits: SpendEnvelopeLimits | None = None,
+        task_brief_hash: str | None = None,
     ) -> SessionSpendAdapter:
         if group_kind not in {None, SpendScopeKind.WORKFLOW, SpendScopeKind.TEAM}:
             raise ValueError("child group must be a workflow or team scope")
         if group_kind is None and group_id is not None:
             raise ValueError("group_id requires group_kind")
-        parent_scope_id = self.session_scope_id
+        parent_scope_id = self._child_parent_scope_id()
         if group_kind is not None:
             resolved_group_id = group_id or f"{group_kind.value}:{uuid4().hex}"
             self._broker.define_envelope(
@@ -429,6 +564,8 @@ class SessionSpendAdapter:
                 scope_id=resolved_agent_id,
                 kind=SpendScopeKind.AGENT,
                 parent_scope_id=parent_scope_id,
+                limits=limits or SpendEnvelopeLimits(),
+                task_brief_hash=task_brief_hash,
             )
         )
         return SessionSpendAdapter(
@@ -440,6 +577,51 @@ class SessionSpendAdapter:
             clock=self._clock,
             admission_state=self._admission_state,
         )
+
+    def child_task(
+        self,
+        *,
+        task_brief_hash: str,
+        task_id: str | None = None,
+        purpose: SpendPurpose | None = None,
+        limits: SpendEnvelopeLimits | None = None,
+    ) -> SessionSpendAdapter:
+        if task_id == "":
+            raise ValueError("task_id cannot be empty")
+        parent_scope_id = self._child_parent_scope_id()
+        stable_identity = task_id or task_brief_hash
+        digest = sha256(f"{parent_scope_id}\0{stable_identity}".encode()).hexdigest()
+        agent_scope_id = f"agent:task:{digest}"
+        self._broker.define_or_tighten_envelope(
+            SpendEnvelope(
+                scope_id=agent_scope_id,
+                kind=SpendScopeKind.AGENT,
+                parent_scope_id=parent_scope_id,
+                limits=limits or SpendEnvelopeLimits(),
+                task_brief_hash=task_brief_hash,
+            )
+        )
+        return SessionSpendAdapter(
+            broker=self._broker,
+            config=self._config,
+            session_scope_id=self.session_scope_id,
+            agent_scope_id=agent_scope_id,
+            default_purpose=purpose or self.default_purpose,
+            clock=self._clock,
+            admission_state=self._admission_state,
+        )
+
+    def _child_parent_scope_id(self) -> str:
+        current_agent = self._broker.get_envelope(self.agent_scope_id)
+        if current_agent is None or current_agent.parent_scope_id is None:
+            return self.session_scope_id
+        current_parent = self._broker.get_envelope(current_agent.parent_scope_id)
+        if current_parent is None or current_parent.kind not in {
+            SpendScopeKind.WORKFLOW,
+            SpendScopeKind.TEAM,
+        }:
+            return self.session_scope_id
+        return current_parent.scope_id
 
     def _completion_token_estimate(self, request: CompletionRequest) -> int:
         if request.max_tokens is not None:
@@ -474,6 +656,8 @@ class SessionSpendAdapter:
             adaptive=(
                 self._config.prompt_estimator_mode is PromptEstimatorMode.ADAPTIVE
             ),
+            allow_completion_reduction=request.max_tokens is None,
+            minimum_completion_tokens=self._config.minimum_admitted_output_tokens,
         )
         decision = self._broker.try_reserve_prompt(
             SpendContext(
@@ -484,11 +668,12 @@ class SessionSpendAdapter:
         )
         if isinstance(decision, SpendRejection):
             raise SpendBudgetExceededError(decision)
-        self.last_admitted_completion_tokens = completion_tokens
+        admitted_completion_tokens = decision.estimate.completion_tokens
+        self.last_admitted_completion_tokens = admitted_completion_tokens
         admitted_request = (
             request
             if request.max_tokens is not None
-            else replace(request, max_tokens=completion_tokens)
+            else replace(request, max_tokens=admitted_completion_tokens)
         )
         return _SessionSpendCall(
             adapter=self,
@@ -515,12 +700,17 @@ class SessionSpendAdapter:
     ) -> LLMChunk:
         resolved_purpose = purpose or self.default_purpose
         call = self._reserve(request, purpose=resolved_purpose, is_retry=is_retry)
-        call.mark_dispatched()
+        try:
+            call.mark_dispatched()
+        except BaseException:
+            call.settle(None)
+            raise
         renewal = asyncio.create_task(call.renew_while_active())
         try:
-            result = await backend.complete(
-                call.request, response_headers_sink=response_headers_sink
-            )
+            with bind_retry_attempt_admission(call):
+                result = await backend.complete(
+                    call.request, response_headers_sink=response_headers_sink
+                )
         except BaseException:
             try:
                 await self._stop_renewal(renewal)
@@ -545,12 +735,22 @@ class SessionSpendAdapter:
         resolved_purpose = purpose or self.default_purpose
         call = self._reserve(request, purpose=resolved_purpose, is_retry=is_retry)
         final_usage: LLMUsage | None = None
-        call.mark_dispatched()
-        renewal = asyncio.create_task(call.renew_while_active())
         try:
-            async for chunk in backend.complete_streaming(
-                call.request, response_headers_sink=response_headers_sink
-            ):
+            call.mark_dispatched()
+        except BaseException:
+            call.settle(None)
+            raise
+        renewal = asyncio.create_task(call.renew_while_active())
+        stream = backend.complete_streaming(
+            call.request, response_headers_sink=response_headers_sink
+        )
+        try:
+            while True:
+                try:
+                    with bind_retry_attempt_admission(call):
+                        chunk = await anext(stream)
+                except StopAsyncIteration:
+                    break
                 if chunk.usage is not None:
                     final_usage = (
                         chunk.usage
@@ -560,6 +760,8 @@ class SessionSpendAdapter:
                 yield chunk
         except BaseException:
             try:
+                with suppress(Exception):
+                    await stream.aclose()
                 await self._stop_renewal(renewal)
             finally:
                 call.settle(None)

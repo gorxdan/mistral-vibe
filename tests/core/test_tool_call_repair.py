@@ -75,3 +75,18 @@ def test_multiple_json_objects_are_not_repaired_to_the_first() -> None:
     assert parsed.parse_error is not None
     assert parsed.repaired is False
     assert parsed.raw_text == raw
+
+
+def test_tool_argument_schema_failure_is_structured() -> None:
+    config = build_test_vibe_config(enabled_tools=["bash"])
+    manager = ToolManager(lambda: config, defer_mcp=True)
+    parsed = APIToolFormatHandler().parse_message(_message('{"command": 42}'))
+
+    resolved = APIToolFormatHandler().resolve_tool_calls(parsed, manager)
+
+    [failed] = resolved.failed_calls
+    assert failed.diagnostic is not None
+    assert failed.diagnostic.category == FailureCategory.TOOL_ARGUMENT_SCHEMA
+    assert failed.diagnostic.field == "arguments.command"
+    assert "valid string" in failed.error
+    assert "correct only arguments.command" in failed.error

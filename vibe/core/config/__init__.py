@@ -8,6 +8,7 @@ from vibe.core.config._defaults import (
     DEFAULT_THEME,
     DEFAULT_VIBE_BASE_URL,
 )
+from vibe.core.config._model_routing import ModelPurpose, PurposeModelRoutingConfig
 from vibe.core.config._settings import (
     DEFAULT_MODELS,
     DEFAULT_PROVIDERS,
@@ -152,12 +153,14 @@ __all__ = [
     "MissingAPIKeyError",
     "MissingPromptFileError",
     "ModelConfig",
+    "ModelPurpose",
     "OtelSpanExporterConfig",
     "PatchOp",
     "ProjectContextConfig",
     "PromptEstimatorMode",
     "ProviderCacheConfig",
     "ProviderConfig",
+    "PurposeModelRoutingConfig",
     "RawConfig",
     "RemoveOperationPatch",
     "ReplaceOperationPatch",

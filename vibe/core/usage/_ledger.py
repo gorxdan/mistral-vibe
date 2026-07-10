@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 import time
 from typing import Annotated, Literal, final
@@ -22,6 +23,9 @@ from vibe.core.usage._context import (
     SpendRejection,
     SpendRejectionReason,
     SpendReservation,
+    SpendRetryAuthorization,
+    SpendRetryCause,
+    SpendRetryPolicyReason,
     SpendScopeKind,
     SpendSettlement,
     SpendSettlementDisposition,
@@ -110,6 +114,12 @@ class _ReservedEvent(_EventBase):
 
 
 @final
+class _DispatchStartedEvent(_EventBase):
+    kind: Literal["dispatch_started"] = "dispatch_started"
+    reservation_id: str
+
+
+@final
 class _ReconciledEvent(_EventBase):
     kind: Literal["reconciled"] = "reconciled"
     reservation_id: str
@@ -128,6 +138,7 @@ class _ReleasedEvent(_EventBase):
 class _ExpiredEvent(_EventBase):
     kind: Literal["expired"] = "expired"
     reservation_id: str
+    charge_estimate: bool = True
 
 
 @final
@@ -143,16 +154,47 @@ class _RejectedEvent(_EventBase):
     rejection: SpendRejection
 
 
+@final
+class _RetryAuthorizedEvent(_EventBase):
+    kind: Literal["retry_authorized"] = "retry_authorized"
+    authorization: SpendRetryAuthorization
+
+
+@final
+class _RetryBudgetRejectedEvent(_EventBase):
+    kind: Literal["retry_budget_rejected"] = "retry_budget_rejected"
+    cause: SpendRetryCause
+    attempt: int = Field(ge=1)
+    rejection: SpendRejection
+
+
+@final
+class _RetryPolicyRejectedEvent(_EventBase):
+    kind: Literal["retry_policy_rejected"] = "retry_policy_rejected"
+    reservation_id: str = Field(min_length=1, max_length=256)
+    cause: SpendRetryCause
+    attempt: int = Field(ge=1)
+    reason: SpendRetryPolicyReason
+    elapsed_s: float = Field(ge=0.0)
+    max_elapsed_s: float = Field(ge=0.0)
+    next_delay_s: float = Field(ge=0.0)
+    max_retries: int = Field(ge=0)
+
+
 LedgerEvent = Annotated[
     _ScopeDefinedEvent
     | _EnvelopeTightenedEvent
     | _EnvelopePolicyMigratedEvent
     | _ReservedEvent
+    | _DispatchStartedEvent
     | _ReconciledEvent
     | _ReleasedEvent
     | _ExpiredEvent
     | _LeaseRenewedEvent
-    | _RejectedEvent,
+    | _RejectedEvent
+    | _RetryAuthorizedEvent
+    | _RetryBudgetRejectedEvent
+    | _RetryPolicyRejectedEvent,
     Field(discriminator="kind"),
 ]
 _EVENT_ADAPTER = TypeAdapter(LedgerEvent)
@@ -168,6 +210,7 @@ class _Totals:
     rejected_calls: int = 0
     spent_retries: int = 0
     reserved_retries: int = 0
+    rejected_retries: int = 0
 
 
 @dataclass(slots=True)
@@ -176,8 +219,14 @@ class _State:
     scopes: dict[str, SpendEnvelope] = field(default_factory=dict)
     reservations: dict[str, SpendReservation] = field(default_factory=dict)
     active: set[str] = field(default_factory=set)
+    dispatched: set[str] = field(default_factory=set)
     settlements: dict[str, SpendSettlement] = field(default_factory=dict)
     rejections: list[SpendRejection] = field(default_factory=list)
+    retry_authorizations: list[SpendRetryAuthorization] = field(default_factory=list)
+    retry_budget_rejections: list[SpendRejection] = field(default_factory=list)
+    retry_policy_rejections: list[_RetryPolicyRejectedEvent] = field(
+        default_factory=list
+    )
     prompt_observations: dict[str, list[PromptObservation]] = field(
         default_factory=dict
     )
@@ -304,42 +353,216 @@ class SpendLedger:
             state.reservations[reservation.reservation_id] = reservation
             state.active.add(reservation.reservation_id)
             return
-        if isinstance(event, _LeaseRenewedEvent):
-            reservation = self._active_reservation(state, event.reservation_id)
-            state.reservations[event.reservation_id] = reservation.model_copy(
-                update={"lease_expires_at": event.lease_expires_at}
-            )
+        if isinstance(event, (_DispatchStartedEvent, _LeaseRenewedEvent)):
+            self._apply_active_update(state, event)
             return
-        if isinstance(event, _ReleasedEvent):
-            self._active_reservation(state, event.reservation_id)
-            state.active.remove(event.reservation_id)
-            state.settlements[event.reservation_id] = SpendSettlement(
-                reservation_id=event.reservation_id,
-                disposition=SpendSettlementDisposition.RELEASED,
-                amount=SpendAmount(),
-                estimated=False,
-                applied=True,
-                timestamp=event.timestamp,
-                reason=event.reason,
-            )
+        if isinstance(event, (_ReleasedEvent, _ExpiredEvent, _ReconciledEvent)):
+            self._apply_settlement_event(state, event)
             return
+        if isinstance(event, _RejectedEvent):
+            state.rejections.append(event.rejection)
+            return
+        self._apply_retry_event(state, event)
+
+    def _apply_settlement_event(
+        self, state: _State, event: _ReleasedEvent | _ExpiredEvent | _ReconciledEvent
+    ) -> None:
         if isinstance(event, _ExpiredEvent):
-            reservation = self._active_reservation(state, event.reservation_id)
-            state.active.remove(event.reservation_id)
-            state.settlements[event.reservation_id] = SpendSettlement(
-                reservation_id=event.reservation_id,
-                disposition=SpendSettlementDisposition.EXPIRED,
-                amount=reservation.estimate,
-                estimated=True,
-                applied=True,
-                timestamp=event.timestamp,
-                reason="reservation lease expired",
-            )
+            self._apply_expiration(state, event)
             return
         if isinstance(event, _ReconciledEvent):
             self._apply_reconciliation(state, event)
             return
-        state.rejections.append(event.rejection)
+        self._active_reservation(state, event.reservation_id)
+        state.active.remove(event.reservation_id)
+        state.settlements[event.reservation_id] = SpendSettlement(
+            reservation_id=event.reservation_id,
+            disposition=SpendSettlementDisposition.RELEASED,
+            amount=SpendAmount(),
+            estimated=False,
+            applied=True,
+            timestamp=event.timestamp,
+            reason=event.reason,
+        )
+
+    def _apply_retry_event(
+        self,
+        state: _State,
+        event: _RetryAuthorizedEvent
+        | _RetryBudgetRejectedEvent
+        | _RetryPolicyRejectedEvent,
+    ) -> None:
+        if isinstance(event, _RetryAuthorizedEvent):
+            self._apply_retry_authorization(state, event.authorization)
+            return
+        if isinstance(event, _RetryBudgetRejectedEvent):
+            self._apply_retry_budget_rejection(state, event)
+            return
+        self._apply_retry_policy_denial(state, event)
+
+    def _apply_active_update(
+        self, state: _State, event: _DispatchStartedEvent | _LeaseRenewedEvent
+    ) -> None:
+        reservation = self._active_reservation(state, event.reservation_id)
+        if isinstance(event, _DispatchStartedEvent):
+            if event.reservation_id in state.dispatched:
+                raise SpendLedgerCorruptError("reservation dispatched more than once")
+            state.dispatched.add(event.reservation_id)
+            return
+        state.reservations[event.reservation_id] = reservation.model_copy(
+            update={"lease_expires_at": event.lease_expires_at}
+        )
+
+    def _apply_retry_authorization(
+        self, state: _State, authorization: SpendRetryAuthorization
+    ) -> None:
+        reservation = self._retry_reservation(state, authorization.reservation_id)
+        if authorization.call_scope_id != reservation.call_scope_id:
+            raise SpendLedgerCorruptError("retry references the wrong call scope")
+        if authorization.scope_chain != reservation.scope_chain:
+            raise SpendLedgerCorruptError("retry scope chain is invalid")
+        if authorization.attempt != self._next_retry_attempt(
+            state, authorization.reservation_id
+        ):
+            raise SpendLedgerCorruptError("retry attempt is out of order")
+        if (
+            self._retry_budget_denial(state, reservation, authorization.timestamp)
+            is not None
+        ):
+            raise SpendLedgerCorruptError("retry authorization exceeds its envelope")
+        state.retry_authorizations.append(authorization)
+
+    def _apply_retry_budget_rejection(
+        self, state: _State, event: _RetryBudgetRejectedEvent
+    ) -> None:
+        reservation = self._retry_reservation(state, event.rejection.call_id)
+        if event.attempt != self._next_retry_attempt(state, reservation.reservation_id):
+            raise SpendLedgerCorruptError("retry rejection attempt is out of order")
+        expected = self._retry_budget_denial(state, reservation, event.timestamp)
+        if expected is None or expected != event.rejection:
+            raise SpendLedgerCorruptError("retry budget rejection is invalid")
+        state.retry_budget_rejections.append(event.rejection)
+
+    def _apply_retry_policy_denial(
+        self, state: _State, event: _RetryPolicyRejectedEvent
+    ) -> None:
+        reservation = self._retry_reservation(state, event.reservation_id)
+        if event.attempt != self._next_retry_attempt(state, reservation.reservation_id):
+            raise SpendLedgerCorruptError("retry rejection attempt is out of order")
+        authorized = event.attempt - 1
+        if (
+            event.reason is SpendRetryPolicyReason.ATTEMPT_LIMIT
+            and authorized < event.max_retries
+        ):
+            raise SpendLedgerCorruptError("retry attempt-limit rejection is invalid")
+        if (
+            event.reason is SpendRetryPolicyReason.ELAPSED_LIMIT
+            and event.elapsed_s + event.next_delay_s < event.max_elapsed_s
+        ):
+            raise SpendLedgerCorruptError("retry elapsed-limit rejection is invalid")
+        state.retry_policy_rejections.append(event)
+
+    @staticmethod
+    def _retry_reservation(state: _State, reservation_id: str) -> SpendReservation:
+        reservation = SpendLedger._active_reservation(state, reservation_id)
+        if reservation_id not in state.dispatched:
+            raise SpendLedgerCorruptError(
+                "retry references an undispatched reservation"
+            )
+        return reservation
+
+    @staticmethod
+    def _next_retry_attempt(state: _State, reservation_id: str) -> int:
+        return (
+            sum(
+                authorization.reservation_id == reservation_id
+                for authorization in state.retry_authorizations
+            )
+            + 1
+        )
+
+    def _retry_budget_denial(
+        self, state: _State, reservation: SpendReservation, now: float
+    ) -> SpendRejection | None:
+        reason: SpendRejectionReason | None = None
+        limited_scope_id: str | None = None
+        for scope_id in reservation.scope_chain[:-1]:
+            limits = state.scopes[scope_id].limits
+            totals = self._totals(state, scope_id)
+            projected = _add_amount(
+                _add_amount(totals.spent, totals.reserved), reservation.estimate
+            )
+            if limits.deadline_at is not None and now >= limits.deadline_at:
+                reason = SpendRejectionReason.DEADLINE
+            elif (
+                limits.max_prompt_tokens is not None
+                and projected.prompt_tokens > limits.max_prompt_tokens
+            ):
+                reason = SpendRejectionReason.PROMPT_TOKENS
+            elif (
+                limits.max_completion_tokens is not None
+                and projected.completion_tokens > limits.max_completion_tokens
+            ):
+                reason = SpendRejectionReason.COMPLETION_TOKENS
+            elif (
+                limits.max_total_tokens is not None
+                and projected.total_tokens > limits.max_total_tokens
+            ):
+                reason = SpendRejectionReason.TOTAL_TOKENS
+            elif (
+                limits.max_cost_usd is not None
+                and projected.cost_usd > limits.max_cost_usd
+            ):
+                reason = SpendRejectionReason.COST_USD
+            elif (
+                limits.max_retries is not None
+                and totals.spent_retries + totals.reserved_retries + 1
+                > limits.max_retries
+            ):
+                reason = SpendRejectionReason.RETRIES
+            if reason is not None:
+                limited_scope_id = scope_id
+                break
+        if reason is None:
+            return None
+        return SpendRejection(
+            call_id=reservation.reservation_id,
+            scope_id=reservation.scope_id,
+            scope_chain=reservation.scope_chain[:-1],
+            purpose=reservation.purpose,
+            estimate=reservation.estimate,
+            is_retry=True,
+            reason=reason,
+            limited_scope_id=limited_scope_id,
+            timestamp=now,
+        )
+
+    def _apply_expiration(self, state: _State, event: _ExpiredEvent) -> None:
+        reservation = self._active_reservation(state, event.reservation_id)
+        expected_charge = (
+            reservation.dispatch_tracking_version == 0
+            or event.reservation_id in state.dispatched
+        )
+        if event.charge_estimate != expected_charge:
+            raise SpendLedgerCorruptError("expired reservation disposition is invalid")
+        state.active.remove(event.reservation_id)
+        state.settlements[event.reservation_id] = SpendSettlement(
+            reservation_id=event.reservation_id,
+            disposition=(
+                SpendSettlementDisposition.EXPIRED
+                if event.charge_estimate
+                else SpendSettlementDisposition.RELEASED
+            ),
+            amount=reservation.estimate if event.charge_estimate else SpendAmount(),
+            estimated=event.charge_estimate,
+            applied=True,
+            timestamp=event.timestamp,
+            reason=(
+                "dispatched reservation lease expired"
+                if event.charge_estimate
+                else "undispatched reservation lease expired"
+            ),
+        )
 
     def _apply_scope(self, state: _State, scope: SpendEnvelope) -> None:
         if scope.scope_id in state.scopes:
@@ -508,6 +731,43 @@ class SpendLedger:
             )
             return scope
 
+    def define_or_tighten_envelope(self, scope: SpendEnvelope) -> SpendEnvelope:
+        if scope.kind == SpendScopeKind.CALL:
+            raise SpendLedgerConflictError("call scopes are created by reservations")
+        with self._locked():
+            state = self._load()
+            existing = state.scopes.get(scope.scope_id)
+            if existing is None:
+                self._validate_new_scope(state, scope)
+                self._append(
+                    state,
+                    _ScopeDefinedEvent(
+                        sequence=state.sequence + 1,
+                        event_id=uuid4().hex,
+                        timestamp=self._clock(),
+                        envelope=scope,
+                    ),
+                )
+                return scope
+            if existing.model_copy(update={"limits": scope.limits}) != scope:
+                raise SpendLedgerConflictError(
+                    f"scope {scope.scope_id!r} already has a different definition"
+                )
+            limits = _tighten_limits(existing.limits, scope.limits)
+            if limits == existing.limits:
+                return existing
+            self._append(
+                state,
+                _EnvelopeTightenedEvent(
+                    sequence=state.sequence + 1,
+                    event_id=uuid4().hex,
+                    timestamp=self._clock(),
+                    scope_id=scope.scope_id,
+                    limits=limits,
+                ),
+            )
+            return state.scopes[scope.scope_id]
+
     def get_envelope(self, scope_id: str) -> SpendEnvelope | None:
         with self._locked():
             return self._load().scopes.get(scope_id)
@@ -626,15 +886,38 @@ class SpendLedger:
             raise ValueError(f"lease_s must be in (0, {MAX_RESERVATION_LEASE_S:g}]")
         with self._locked():
             state = self._load()
+            self._expire_stale(state, self._clock())
             prompt_estimate = estimate_prompt_tokens(
                 plan, state.prompt_observations.get(plan.footprint.profile_key, [])
             )
+            completion_tokens = plan.completion_tokens
+            completion_cost_per_token = (
+                plan.completion_cost_usd / plan.completion_tokens
+                if plan.completion_tokens > 0
+                else 0.0
+            )
+            if plan.allow_completion_reduction:
+                chain = self._known_scope_chain(state, context.scope_id)
+                affordable = self._affordable_completion_tokens(
+                    state,
+                    chain,
+                    prompt_tokens=prompt_estimate.estimated_tokens,
+                    input_cost_usd_per_token=plan.input_cost_usd_per_token,
+                    completion_cost_usd_per_token=completion_cost_per_token,
+                    desired=completion_tokens,
+                )
+                minimum = min(plan.minimum_completion_tokens, completion_tokens)
+                completion_tokens = (
+                    min(completion_tokens, affordable)
+                    if affordable >= minimum
+                    else minimum
+                )
             estimate = SpendAmount(
                 prompt_tokens=prompt_estimate.estimated_tokens,
-                completion_tokens=plan.completion_tokens,
+                completion_tokens=completion_tokens,
                 cost_usd=(
                     prompt_estimate.estimated_tokens * plan.input_cost_usd_per_token
-                    + plan.completion_cost_usd
+                    + completion_tokens * completion_cost_per_token
                 ),
             )
             return self._try_reserve_loaded(
@@ -644,6 +927,48 @@ class SpendLedger:
                 lease_s=lease_s,
                 prompt_estimate=prompt_estimate,
             )
+
+    def _affordable_completion_tokens(
+        self,
+        state: _State,
+        chain: tuple[str, ...],
+        *,
+        prompt_tokens: int,
+        input_cost_usd_per_token: float,
+        completion_cost_usd_per_token: float,
+        desired: int,
+    ) -> int:
+        affordable = desired
+        prompt_cost = prompt_tokens * input_cost_usd_per_token
+        for scope_id in chain:
+            limits = state.scopes[scope_id].limits
+            totals = self._totals(state, scope_id)
+            used = _add_amount(totals.spent, totals.reserved)
+            if limits.max_completion_tokens is not None:
+                affordable = min(
+                    affordable,
+                    max(limits.max_completion_tokens - used.completion_tokens, 0),
+                )
+            if limits.max_total_tokens is not None:
+                affordable = min(
+                    affordable,
+                    max(limits.max_total_tokens - used.total_tokens - prompt_tokens, 0),
+                )
+            if limits.max_cost_usd is not None:
+                remaining_cost = limits.max_cost_usd - used.cost_usd - prompt_cost
+                if completion_cost_usd_per_token > 0:
+                    affordable = min(
+                        affordable,
+                        max(
+                            math.floor(
+                                max(remaining_cost, 0.0) / completion_cost_usd_per_token
+                            ),
+                            0,
+                        ),
+                    )
+                elif remaining_cost < 0:
+                    affordable = 0
+        return max(affordable, 0)
 
     def _try_reserve_loaded(
         self,
@@ -686,6 +1011,7 @@ class SpendLedger:
             is_retry=context.is_retry,
             created_at=now,
             lease_expires_at=lease_expires_at,
+            dispatch_tracking_version=1,
         )
         self._append(
             state,
@@ -697,6 +1023,114 @@ class SpendLedger:
             ),
         )
         return reservation
+
+    def mark_dispatched(self, reservation_id: str) -> bool:
+        with self._locked():
+            state = self._load()
+            now = self._clock()
+            self._expire_stale(state, now)
+            if reservation_id not in state.active:
+                raise SpendLedgerConflictError(
+                    f"unknown active reservation {reservation_id!r}"
+                )
+            if reservation_id in state.dispatched:
+                return False
+            self._append(
+                state,
+                _DispatchStartedEvent(
+                    sequence=state.sequence + 1,
+                    event_id=uuid4().hex,
+                    timestamp=now,
+                    reservation_id=reservation_id,
+                ),
+            )
+            return True
+
+    def authorize_retry(
+        self, reservation_id: str, cause: SpendRetryCause
+    ) -> SpendRetryAuthorization | SpendRejection:
+        with self._locked():
+            state = self._load()
+            now = self._clock()
+            self._expire_stale(state, now)
+            if (
+                reservation_id not in state.active
+                or reservation_id not in state.dispatched
+            ):
+                raise SpendLedgerConflictError(
+                    f"unknown dispatched reservation {reservation_id!r}"
+                )
+            reservation = state.reservations[reservation_id]
+            attempt = self._next_retry_attempt(state, reservation_id)
+            rejection = self._retry_budget_denial(state, reservation, now)
+            if rejection is not None:
+                self._append(
+                    state,
+                    _RetryBudgetRejectedEvent(
+                        sequence=state.sequence + 1,
+                        event_id=uuid4().hex,
+                        timestamp=now,
+                        cause=cause,
+                        attempt=attempt,
+                        rejection=rejection,
+                    ),
+                )
+                return rejection
+            authorization = SpendRetryAuthorization(
+                reservation_id=reservation_id,
+                call_scope_id=reservation.call_scope_id,
+                scope_chain=reservation.scope_chain,
+                attempt=attempt,
+                cause=cause,
+                timestamp=now,
+            )
+            self._append(
+                state,
+                _RetryAuthorizedEvent(
+                    sequence=state.sequence + 1,
+                    event_id=uuid4().hex,
+                    timestamp=now,
+                    authorization=authorization,
+                ),
+            )
+            return authorization
+
+    def reject_retry_policy(
+        self,
+        reservation_id: str,
+        cause: SpendRetryCause,
+        reason: SpendRetryPolicyReason,
+        *,
+        elapsed_s: float,
+        max_elapsed_s: float,
+        next_delay_s: float,
+        max_retries: int,
+    ) -> None:
+        with self._locked():
+            state = self._load()
+            now = self._clock()
+            self._expire_stale(state, now)
+            if (
+                reservation_id not in state.active
+                or reservation_id not in state.dispatched
+            ):
+                raise SpendLedgerConflictError(
+                    f"unknown dispatched reservation {reservation_id!r}"
+                )
+            event = _RetryPolicyRejectedEvent(
+                sequence=state.sequence + 1,
+                event_id=uuid4().hex,
+                timestamp=now,
+                reservation_id=reservation_id,
+                cause=cause,
+                attempt=self._next_retry_attempt(state, reservation_id),
+                reason=reason,
+                elapsed_s=elapsed_s,
+                max_elapsed_s=max_elapsed_s,
+                next_delay_s=next_delay_s,
+                max_retries=max_retries,
+            )
+            self._append(state, event)
 
     def _known_scope_chain(self, state: _State, scope_id: str) -> tuple[str, ...]:
         if scope_id not in state.scopes:
@@ -973,6 +1407,11 @@ class SpendLedger:
             if state.reservations[reservation_id].lease_expires_at <= now
         )
         for reservation_id in expired_ids:
+            reservation = state.reservations[reservation_id]
+            charge_estimate = (
+                reservation.dispatch_tracking_version == 0
+                or reservation_id in state.dispatched
+            )
             self._append(
                 state,
                 _ExpiredEvent(
@@ -980,6 +1419,7 @@ class SpendLedger:
                     event_id=uuid4().hex,
                     timestamp=now,
                     reservation_id=reservation_id,
+                    charge_estimate=charge_estimate,
                 ),
             )
         return expired_ids
@@ -1004,6 +1444,7 @@ class SpendLedger:
                 rejected_calls=totals.rejected_calls,
                 spent_retries=totals.spent_retries,
                 reserved_retries=totals.reserved_retries,
+                rejected_retries=totals.rejected_retries,
                 remaining_prompt_tokens=_remaining(
                     limits.max_prompt_tokens, used.prompt_tokens
                 ),
@@ -1050,6 +1491,18 @@ class SpendLedger:
                 continue
             totals.rejected = _add_amount(totals.rejected, rejection.estimate)
             totals.rejected_calls += 1
+        for authorization in state.retry_authorizations:
+            if scope_id in authorization.scope_chain:
+                reservation = state.reservations[authorization.reservation_id]
+                totals.spent = _add_amount(totals.spent, reservation.estimate)
+                totals.spent_retries += 1
+        for rejection in state.retry_budget_rejections:
+            if scope_id in rejection.scope_chain:
+                totals.rejected_retries += 1
+        for rejection in state.retry_policy_rejections:
+            reservation = state.reservations[rejection.reservation_id]
+            if scope_id in reservation.scope_chain:
+                totals.rejected_retries += 1
         return totals
 
     def events(self) -> list[LedgerEvent]:

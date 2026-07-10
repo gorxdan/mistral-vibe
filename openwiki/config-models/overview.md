@@ -14,8 +14,8 @@ Vibe uses a layered TOML configuration system built on Pydantic settings. Config
 
 | Category | Fields |
 |---|---|
-| **Models/Providers** | `providers: list[ProviderConfig]`, `models: list[ModelConfig]`, `active_model: str`, `fallback_models: list[str]`, `compaction_model`, `subagent_model`, `grunt_model` |
-| **Limits** | `api_timeout`, `auto_compact_threshold`, `max_output_escalation`, `context_shaping`, `spend`, `auxiliary_budget` |
+| **Models/Providers** | `providers: list[ProviderConfig]`, `models: list[ModelConfig]`, `active_model: str`, `fallback_models: list[str]`, `compaction_model`, `subagent_model`, `grunt_model`, `model_routing` |
+| **Limits** | `api_timeout`, `api_retry_max_elapsed_time`, `auto_compact_threshold`, `max_output_escalation`, `context_shaping`, `spend`, `auxiliary_budget` |
 | **Subsystems** | `memory: MemoryConfig`, `safety_judge: SafetyJudgeConfig`, `project_context: ProjectContextConfig`, `experiments: ExperimentsConfig`, `worktree: WorktreeConfig` |
 | **Tools** | `tools` (dict), `tool_paths`, `enabled_tools`, `disabled_tools` |
 | **UI/Behavior** | `theme`, `vim_keybindings`, `bypass_tool_permissions`, `enable_telemetry`, `caveman_thinking`, `include_project_context` |
@@ -59,6 +59,8 @@ From `vibe/core/config/__init__.py`:
 - `EffortLevel` — normal / le-chaton
 - `LSPServer` — LSP server configuration
 - `ToolManifestConfig` — tool manifest pins
+- `PurposeModelRoutingConfig` — explicit aliases for formatting, retrieval
+  ambiguity, mechanical work, and semantic escalation
 
 ### Custom Agents
 
@@ -212,7 +214,9 @@ Durable cross-session notes as plain `*.md` files under `~/.vibe/memory/`.
 ### How It Works
 
 1. **Turn start**: `LocalMemorySelector` ranks the `MemoryStore` index by id, title, description, tags, and index metadata. In the default `hybrid` mode, the standalone LLM `MemorySelector` runs only when local candidates tie near the selection cutoff. A confident match (including a confident empty result) uses no selector API call.
-2. **After turn**: `MemoryExtractor` proposes new/updated memories from transcript → `MemoryStore` persists.
+2. **After turn**: `MemoryExtractor` runs only when local detection sees explicit
+   remember intent, a preference/correction, or a durable decision; routine task
+   prose causes no extractor call.
 3. **Periodically**: `MemoryConsolidator` merges duplicates → `MemoryStore.trash()` for reversibility.
 4. **Verification**: `MemoryVerifier` re-checks factual claims against current codebase → tags `STALE`/`BROKEN`.
 
@@ -229,15 +233,17 @@ the shared session ledger. Restarting Vibe creates a fresh auxiliary envelope.
 
 `SpendConfig` leaves cumulative prompt, completion, and total token caps unset by
 default. The finite defaults remain $10, 128 calls, two concurrent calls, 16
-retries, and a 32,768-token per-call output bound. Explicit `max_prompt_tokens`,
-`max_completion_tokens`, and `max_total_tokens` values are preflight admission
-caps; runtime `max_price` and `max_session_tokens` can tighten the USD and token
-envelopes. Adaptive estimates can reconcile above the remaining allowance by one
-unexpectedly token-dense call. Strict mode is the most conservative option when
-minimizing that overshoot risk matters.
+retries, a 32,768-token per-call output bound, and a 256-token minimum admitted
+output. Explicit `max_prompt_tokens`, `max_completion_tokens`, and
+`max_total_tokens` values are preflight admission caps; runtime `max_price` and
+`max_session_tokens` can tighten the USD and token envelopes. Adaptive estimates
+can reconcile above the remaining allowance by one unexpectedly token-dense
+call. Strict mode is the most conservative option when minimizing that overshoot
+risk matters.
 
 `SessionSpendAdapter` reserves against a file-lock-backed hierarchy before
-primary, compaction, in-process task/workflow, memory, and safety-judge dispatch,
+primary, compaction, task/workflow/team, memory, safety-judge, narration, repair,
+and verification dispatch,
 then reconciles provider usage. The default `prompt_estimator_mode = "adaptive"`
 starts conservatively and learns from exact reconciliations persisted in the
 ledger. Observations are isolated by provider, model, and request shape, and only
@@ -251,13 +257,42 @@ Customized or partial tables remain explicit hard limits. Existing ledgers can
 relax matching legacy defaults only for fields omitted after migration; normal
 envelope changes remain tighten-only.
 
-Routed requests that omit `max_tokens` receive the admitted completion bound,
-except `openai-chatgpt` Codex requests: that endpoint rejects the field, so its
-adapter strips it and the broker enforces the reservation through reconciliation
-rather than an HTTP output cap.
+Routed requests that omit `max_tokens` receive the affordable completion bound,
+which is reduced atomically across active scope limits when necessary. The
+broker rejects instead of reducing below `minimum_admitted_output_tokens`
+(default 256). An explicit `max_tokens` is a hard request and is never reduced.
+The `openai-chatgpt` Codex endpoint rejects the field, so its adapter strips it
+and the broker enforces the reservation through reconciliation rather than an
+HTTP output cap.
 
-Isolated subprocesses, MCP sampling, narration, and backend-internal retry
-attempts remain explicit unrouted boundaries.
+Isolated subprocesses attach to existing child scopes through
+`VIBE_SPEND_CONTEXT`. Generic/Mistral redispatches authorize retry count, elapsed
+policy, and another conservative token/USD exposure estimate against the
+original reservation; opaque Mistral SDK retries are disabled. MCP sampling
+remains the explicit unrouted boundary.
+Non-token-priced text-to-speech is also an explicit paid-call boundary outside
+the token ledger, as are real-time transcription and Mistral's model-backed web
+search.
+
+## Purpose Model Routing
+
+Aliases are opt-in and must name configured models:
+
+```toml
+[model_routing]
+formatter_model = "cheap"
+retrieval_model = "cheap"
+mechanical_model = "cheap"
+semantic_escalation_model = "strong"
+```
+
+Formatting receives only bounded raw output, schema, and diagnostics. Retrieval
+routing is used only for ambiguous local memory matches. `mechanical_model`
+overrides model requests for the trusted mechanical-edit manifest. The semantic
+alias is used only after the bounded repair controller detects repeated semantic
+no-progress.
+An unavailable explicit optional alias fails closed; retrieval skips instead of
+falling back to the active model.
 
 ## Trusted Verification Recipe
 

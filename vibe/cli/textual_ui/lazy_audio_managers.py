@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
     from vibe.core.telemetry.send import TelemetryClient
     from vibe.core.types import BaseEvent
+    from vibe.core.usage._session import SessionSpendAdapter
 
 
 class LazyVoiceManager:
@@ -186,11 +187,15 @@ def create_default_voice_manager(
 
 
 def create_default_narrator_manager(
-    config_getter: Callable[[], VibeConfig], telemetry_client: TelemetryClient | None
+    config_getter: Callable[[], VibeConfig],
+    telemetry_client: TelemetryClient | None,
+    spend_adapter_getter: Callable[[], SessionSpendAdapter | None] | None = None,
 ) -> NarratorManagerPort:
     return LazyNarratorManager(
         config_getter,
-        lambda: _create_real_narrator_manager(config_getter, telemetry_client),
+        lambda: _create_real_narrator_manager(
+            config_getter, telemetry_client, spend_adapter_getter
+        ),
     )
 
 
@@ -222,7 +227,9 @@ def _create_real_voice_manager(
 
 
 def _create_real_narrator_manager(
-    config_getter: Callable[[], VibeConfig], telemetry_client: TelemetryClient | None
+    config_getter: Callable[[], VibeConfig],
+    telemetry_client: TelemetryClient | None,
+    spend_adapter_getter: Callable[[], SessionSpendAdapter | None] | None,
 ) -> NarratorManagerPort:
     from vibe.cli.narrator_manager.narrator_manager import NarratorManager
     from vibe.core.audio_player.audio_player import AudioPlayer
@@ -231,4 +238,5 @@ def _create_real_narrator_manager(
         config_getter=config_getter,
         audio_player=AudioPlayer(),
         telemetry_client=telemetry_client,
+        spend_adapter_getter=spend_adapter_getter,
     )

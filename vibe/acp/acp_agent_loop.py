@@ -803,6 +803,7 @@ class VibeAcpAgentLoop(AcpAgent):
                     session.agent_loop.session_id,
                     hooks_manager=session.agent_loop.hooks_manager,
                     hook_context=hook_context,
+                    spend_adapter=session.agent_loop.spend_adapter,
                 )
                 registry = session.agent_loop.background_registry
                 if registry is not None:

@@ -36,6 +36,7 @@ import orjson
 
 from vibe.core.config import resolve_api_key
 from vibe.core.llm.backend._image import to_data_uri as _to_data_uri
+from vibe.core.llm.backend._mistral_retry import complete_with_retry, stream_with_retry
 from vibe.core.llm.backend.adapter_port import memory_tail_relocated_before_user
 from vibe.core.llm.exceptions import BackendErrorBuilder
 from vibe.core.llm.types import CompletionRequest
@@ -253,18 +254,19 @@ class MistralBackend:
             )
         self._server_url = server_url
         self._timeout = timeout
+        self._retry_max_elapsed_time = retry_max_elapsed_time
         self._retry_config = self._build_retry_config()
 
     def _build_retry_config(self) -> RetryConfig:
         return RetryConfig(
-            strategy="backoff",
+            strategy="none",
             backoff=BackoffStrategy(
                 initial_interval=500,
                 max_interval=30000,
                 exponent=1.5,
-                max_elapsed_time=300000,
+                max_elapsed_time=0,
             ),
-            retry_connection_errors=True,
+            retry_connection_errors=False,
         )
 
     async def __aenter__(self) -> MistralBackend:
@@ -336,27 +338,30 @@ class MistralBackend:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
             if reasoning_effort is not None:
                 temperature = 1.0
-            response = await self._get_client().chat.complete_async(
-                model=model.name,
-                messages=[
-                    self._mapper.prepare_message(
-                        msg, include_reasoning_content=model.thinking != "off"
-                    )
-                    for msg in messages
-                ],
-                temperature=temperature,
-                tools=[self._mapper.prepare_tool(tool) for tool in tools]
-                if tools
-                else None,
-                max_tokens=max_tokens,
-                tool_choice=self._mapper.prepare_tool_choice(tool_choice)
-                if tool_choice
-                else None,
-                http_headers=extra_headers,
-                metadata=metadata,
-                stream=False,
-                reasoning_effort=reasoning_effort,
-                response_format=cast(Any, response_format),
+            response = await complete_with_retry(
+                lambda: self._get_client().chat.complete_async(
+                    model=model.name,
+                    messages=[
+                        self._mapper.prepare_message(
+                            msg, include_reasoning_content=model.thinking != "off"
+                        )
+                        for msg in messages
+                    ],
+                    temperature=temperature,
+                    tools=[self._mapper.prepare_tool(tool) for tool in tools]
+                    if tools
+                    else None,
+                    max_tokens=max_tokens,
+                    tool_choice=self._mapper.prepare_tool_choice(tool_choice)
+                    if tool_choice
+                    else None,
+                    http_headers=extra_headers,
+                    metadata=metadata,
+                    stream=False,
+                    reasoning_effort=reasoning_effort,
+                    response_format=cast(Any, response_format),
+                ),
+                max_elapsed_time=self._retry_max_elapsed_time,
             )
 
             message = response.choices[0].message
@@ -414,40 +419,38 @@ class MistralBackend:
         messages = memory_tail_relocated_before_user(request.messages)
         temperature = request.temperature
         tools = request.tools
-        max_tokens = request.max_tokens
         tool_choice = request.tool_choice
-        extra_headers = request.extra_headers
-        metadata = request.metadata
-        response_format = request.response_format
         del response_headers_sink  # generic-backend only; ignored here
         try:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
             if reasoning_effort is not None:
                 temperature = 1.0
 
-            stream = await self._get_client().chat.stream_async(
-                model=model.name,
-                messages=[
-                    self._mapper.prepare_message(
-                        msg, include_reasoning_content=model.thinking != "off"
-                    )
-                    for msg in messages
-                ],
-                temperature=temperature,
-                tools=[self._mapper.prepare_tool(tool) for tool in tools]
-                if tools
-                else None,
-                max_tokens=max_tokens,
-                tool_choice=self._mapper.prepare_tool_choice(tool_choice)
-                if tool_choice
-                else None,
-                http_headers=extra_headers,
-                metadata=metadata,
-                reasoning_effort=reasoning_effort,
-                response_format=cast(Any, response_format),
-            )
-            correlation_id = stream.response.headers.get("mistral-correlation-id")
-            async for chunk in stream:
+            async for stream, chunk in stream_with_retry(
+                lambda: self._get_client().chat.stream_async(
+                    model=model.name,
+                    messages=[
+                        self._mapper.prepare_message(
+                            msg, include_reasoning_content=model.thinking != "off"
+                        )
+                        for msg in messages
+                    ],
+                    temperature=temperature,
+                    tools=[self._mapper.prepare_tool(tool) for tool in tools]
+                    if tools
+                    else None,
+                    max_tokens=request.max_tokens,
+                    tool_choice=self._mapper.prepare_tool_choice(tool_choice)
+                    if tool_choice
+                    else None,
+                    http_headers=request.extra_headers,
+                    metadata=request.metadata,
+                    reasoning_effort=reasoning_effort,
+                    response_format=cast(Any, request.response_format),
+                ),
+                max_elapsed_time=self._retry_max_elapsed_time,
+            ):
+                correlation_id = stream.response.headers.get("mistral-correlation-id")
                 parsed = (
                     self._mapper.parse_content(chunk.data.choices[0].delta.content)
                     if chunk.data.choices[0].delta.content
