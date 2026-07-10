@@ -80,7 +80,7 @@ def wait_for_rendered_text(
         if needle in strip_ansi(captured.getvalue()):
             return
         try:
-            child.expect(r"\S", timeout=0.1)
+            child.read_nonblocking(size=4096, timeout=0.1)
         except pexpect.TIMEOUT:
             pass
         except pexpect.EOF as exc:
