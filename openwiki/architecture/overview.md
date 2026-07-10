@@ -157,10 +157,17 @@ calls.
 
 Trusted local checks create immutable receipts bound to the task brief,
 acceptance contract, repository identity and state, configuration, check set,
-and full-output artifact hashes. `land_work` revalidates the receipt against the
-candidate before merging and records the landed commit. Model-authored verifier
-prose cannot authorize a merge; the only non-receipt path is a locally validated
-documentation-only trivial waiver.
+and full-output artifact hashes. A configured `trusted_verification_recipe` is
+frozen into `VerificationState` when `AgentLoop` starts. After a current verifier
+PASS, no-argument `verify_work` executes only that prebound plan against the
+active candidate and current main HEAD. `land_work` revalidates its receipt,
+merges, and reports the merge commit SHA; it does not persist a separate landing
+record.
+
+Without a configured recipe, a current workspace-bound verifier or workflow
+contract PASS remains the compatibility authorization path. Model-authored or
+pasted verification prose never authorizes a merge. The documentation-only
+`trivial: <reason>` waiver is available only in this unconfigured mode.
 
 ## System Prompt Assembly
 

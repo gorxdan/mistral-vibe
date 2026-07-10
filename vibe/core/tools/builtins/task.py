@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -54,7 +54,11 @@ from vibe.core.verification_contract import (
     VerificationReportError,
     parse_verification_report,
 )
-from vibe.core.workflows.runtime import DEFAULT_ISOLATED_MAX_TURNS, run_isolated_agent
+from vibe.core.workflows.runtime import (
+    DEFAULT_ISOLATED_MAX_TURNS,
+    IsolatedResult,
+    run_isolated_agent,
+)
 
 
 def workspace_fingerprint() -> str | None:
@@ -380,9 +384,7 @@ class Task(
         self,
         args: TaskArgs,
         ctx: InvokeContext,
-        task_text: str,
-        effective_model: str | None,
-        log_path: Path | None,
+        run: Awaitable[IsolatedResult],
         verification_attempt: _VerificationAttempt | None,
     ) -> _InProcessResult:
         completed = True
@@ -391,16 +393,7 @@ class Task(
         worktree_path: str | None = None
         branch: str | None = None
         try:
-            result = await run_isolated_agent(
-                task_text,
-                args.agent,
-                label=args.agent,
-                max_turns=DEFAULT_ISOLATED_MAX_TURNS,
-                deliver=True,
-                model=effective_model,
-                log_path=log_path,
-                scratchpad_dir=ctx.scratchpad_dir,
-            )
+            result = await run
             response = result.output
             completed = result.returncode == 0
             worktree_path = result.worktree_path
@@ -471,10 +464,18 @@ class Task(
             log_path.touch()
 
         effective_model = _effective_subagent_model(args, ctx)
+        isolated_run = run_isolated_agent(
+            task_text,
+            args.agent,
+            label=args.agent,
+            max_turns=DEFAULT_ISOLATED_MAX_TURNS,
+            deliver=True,
+            model=effective_model,
+            log_path=log_path,
+            scratchpad_dir=ctx.scratchpad_dir,
+        )
         bg_task = asyncio.create_task(
-            self._collect_async_isolated(
-                args, ctx, task_text, effective_model, log_path, verification_attempt
-            ),
+            self._collect_async_isolated(args, ctx, isolated_run, verification_attempt),
             name=f"async-task-{args.agent}",
         )
         task_id = registry.register_async_agent(

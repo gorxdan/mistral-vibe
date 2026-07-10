@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -71,6 +72,26 @@ def test_structured_task_persists_brief_and_legacy_description(tmp_path: Path) -
     assert persisted.brief == brief
     assert persisted.outcome is None
     assert "TASK_BRIEF_JSON:" in persisted.prompt
+
+
+def test_expired_structured_task_is_blocked_before_team_claim(tmp_path: Path) -> None:
+    store = TaskStore(tmp_path)
+    brief = _brief().model_copy(
+        update={"deadline": datetime.now(UTC) - timedelta(seconds=1)}
+    )
+    task = store.add_task(brief)
+
+    assert store.claim_task(task.id, "worker") is None
+
+    store.reload()
+    current = store.get_task(task.id)
+    assert current is not None
+    assert current.status is TaskStatus.COMPLETED
+    assert current.assignee is None
+    assert current.outcome is not None
+    assert current.outcome.status is TaskOutcomeStatus.BLOCKED
+    assert current.outcome.manifest == brief.manifest
+    assert "deadline" in current.outcome.diagnostics[0]
 
 
 def test_structured_plain_prose_cannot_complete_or_succeed(tmp_path: Path) -> None:

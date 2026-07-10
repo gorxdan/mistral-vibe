@@ -139,12 +139,17 @@ Teammates coordinate via file-backed shared state with file locking:
 
 ### Structured Task Protocol
 
-Protocol v2 team tasks persist a `TaskBrief` with an objective, inputs, allowed
-and denied paths, acceptance checks, optional finite budget/deadline, and tool
-manifest identity. Terminal `TaskOutcome` values are `SUCCEEDED`, `FAILED`,
-`BLOCKED`, or `RETRYABLE`, with evidence, diagnostics, changed paths, receipt ID,
-remaining work, and manifest identity. Legacy description/result records remain
-loadable through the protocol-v1 adapter.
+Protocol v2 team tasks persist a `TaskBrief` with an objective plus structured
+inputs, path scope, acceptance checks, optional budget/deadline, and tool
+manifest identity. The runtime rejects an already-expired deadline before task
+dispatch and preserves structured outcomes through asynchronous delivery. Path
+scope, acceptance checks, per-task budget, and manifest identity are currently
+schema and worker-prompt metadata, not host-enforced constraints.
+
+Terminal `TaskOutcome` values are `SUCCEEDED`, `FAILED`, `BLOCKED`, or
+`RETRYABLE`, with evidence, diagnostics, changed paths, receipt ID, remaining
+work, and manifest identity. Legacy description/result records remain loadable
+through the protocol-v1 adapter.
 
 Lifecycle (`PENDING`, `IN_PROGRESS`, terminal) is separate from outcome. A
 retryable result is atomically requeued and does not fire a terminal completion

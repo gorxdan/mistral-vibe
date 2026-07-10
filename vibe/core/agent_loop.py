@@ -212,7 +212,11 @@ from vibe.core.usage import (
     rate_limit_from_headers,
 )
 from vibe.core.usage._context import SpendPurpose
-from vibe.core.usage._session import SessionSpendAdapter, SpendBudgetExceededError
+from vibe.core.usage._session import (
+    SPEND_SESSION_ID_METADATA_KEY,
+    SessionSpendAdapter,
+    SpendBudgetExceededError,
+)
 from vibe.core.utils import (
     TOOL_ERROR_TAG,
     VIBE_STOP_EVENT_TAG,
@@ -589,8 +593,15 @@ class AgentLoop(
         return self.config.bypass_tool_permissions
 
     def refresh_config(self) -> None:
-        self._base_config = VibeConfig.load()
+        self._base_config = self._verification_state.preserve_recipe_in_config(
+            VibeConfig.load()
+        )
         self.agent_manager.invalidate_config()
+        self._spend_adapter.tighten_limits(
+            self.config.spend,
+            runtime_max_cost_usd=self._max_price,
+            runtime_max_total_tokens=self._max_session_tokens,
+        )
 
     def _drain_pending_injections(self) -> bool:
         staged = False
@@ -1801,11 +1812,11 @@ class AgentLoop(
     ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent | HookEvent]:
         self.stats.tool_calls_agreed += 1
 
-        if (
-            tool_call.tool_name != "land_work"
-            and not tool_call.tool_class.call_is_read_only(
-                tool_call.validated_args, agent_manager=self.agent_manager
-            )
+        if tool_call.tool_name not in {
+            "land_work",
+            "verify_work",
+        } and not tool_call.tool_class.call_is_read_only(
+            tool_call.validated_args, agent_manager=self.agent_manager
         ):
             self._verification_state.clear()
 
@@ -2486,6 +2497,10 @@ class AgentLoop(
         self.session_logger.reset_session(
             self.session_id, parent_session_id=parent_session_id
         )
+        if self.session_logger.session_metadata is not None:
+            self.session_logger.session_metadata.environment[
+                SPEND_SESSION_ID_METADATA_KEY
+            ] = self._spend_adapter.spend_session_id
         self._files_read.clear()
         self._files_read_reconstructed = False
         self._agents_md_fingerprint = None
@@ -2498,13 +2513,21 @@ class AgentLoop(
         self.session_id = session_id
         self.parent_session_id = parent_session_id
         self._usage_meter.rebind_session(session_id)
+        self.session_logger.resume_existing_session(session_id, session_path)
+        spend_session_id = session_id
+        if self.session_logger.session_metadata is not None:
+            spend_session_id = (
+                self.session_logger.session_metadata.environment.get(
+                    SPEND_SESSION_ID_METADATA_KEY
+                )
+                or session_id
+            )
         self._spend_adapter = SessionSpendAdapter.create(
             self.config.spend,
-            session_id,
+            spend_session_id,
             runtime_max_cost_usd=self._max_price,
             runtime_max_total_tokens=self._max_session_tokens,
         )
-        self.session_logger.resume_existing_session(session_id, session_path)
 
     async def fork(self, message_id: str | None = None) -> AgentLoop:
         messages = self._messages_for_fork(message_id)
@@ -2542,6 +2565,10 @@ class AgentLoop(
         forked.session_logger.reset_session(
             forked.session_id, parent_session_id=self.session_id
         )
+        if forked.session_logger.session_metadata is not None:
+            forked.session_logger.session_metadata.environment[
+                SPEND_SESSION_ID_METADATA_KEY
+            ] = forked._spend_adapter.spend_session_id
         forked.messages.extend(messages)
         await forked.session_logger.save_interaction(
             forked.messages,
@@ -2763,8 +2790,18 @@ class AgentLoop(
         model_changed = False
         if base_config is not None:
             model_changed = base_config.active_model != self._base_config.active_model
-            self._base_config = base_config
+            self._base_config = self._verification_state.preserve_recipe_in_config(
+                base_config
+            )
             self.agent_manager.invalidate_config()
+
+        self._spend_adapter.tighten_limits(
+            self.config.spend,
+            runtime_max_cost_usd=max_price
+            if max_price is not None
+            else self._max_price,
+            runtime_max_total_tokens=self._max_session_tokens,
+        )
 
         # Drop the rate-limit/fallback override ONLY when the reload makes a
         # different configured model authoritative — otherwise the stale override
@@ -2949,7 +2986,9 @@ class AgentLoop(
         self._files_read: dict[str, str] = {}
         self._files_read_reconstructed: bool = False
         self._agents_md_fingerprint: str | None = None
-        self._verification_state = VerificationState()
+        self._verification_state = VerificationState.from_recipe(
+            self._base_config.trusted_verification_recipe
+        )
 
         self._system_prompt_tier = self._current_baseline_tier()
 
@@ -3384,9 +3423,13 @@ class AgentLoop(
         if self._response_too_long_attempts > esc.max_attempts:
             return None
         cap = model.max_output_tokens or esc.cap
-        current = self._max_output_override or esc.base
+        current = (
+            self._max_output_override
+            or self._spend_adapter.last_admitted_completion_tokens
+            or esc.base
+        )
         next_val = min(int(current * esc.factor), cap)
-        if next_val <= (self._max_output_override or 0):
+        if next_val <= current:
             # Already at cap; a further retry would request the same size.
             return None
         self._max_output_override = next_val

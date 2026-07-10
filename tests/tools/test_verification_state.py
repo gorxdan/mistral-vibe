@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import cast
 
 import pytest
 
 from vibe.core.agents.manager import AgentManager
-from vibe.core.tools.base import InvokeContext, ToolError
+from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
 from vibe.core.tools.builtins.land_work import LandWorkArgs, _require_verification_note
 from vibe.core.tools.builtins.task import (
+    Task,
+    TaskArgs,
+    TaskToolConfig,
     _maybe_record_verifier_pass,
-    _record_background_isolated_verifier_pass,
     _start_verification_attempt,
 )
 from vibe.core.verification_contract import parse_verification_report
@@ -58,16 +59,15 @@ def _report(verdict: str = "PASS", result: str = "PASS") -> str:
 
 
 def test_no_pass_and_no_note_raises_when_subsystem_on() -> None:
-    with pytest.raises(ToolError, match="verification_note"):
+    with pytest.raises(ToolError, match="session-recorded"):
         _require_verification_note(LandWorkArgs(), _ctx(VerificationState()))
 
 
-def test_recorded_verifier_pass_does_not_authorize_landing() -> None:
+def test_recorded_verifier_pass_authorizes_unconfigured_legacy_landing() -> None:
     state = VerificationState()
     state.record_verifier_pass(parse_verification_report(_report()))
 
-    with pytest.raises(ToolError, match="receipt"):
-        _require_verification_note(LandWorkArgs(), _ctx(state))
+    _require_verification_note(LandWorkArgs(), _ctx(state))
 
 
 def test_recorded_pass_is_invalid_after_workspace_changes(monkeypatch) -> None:
@@ -95,12 +95,11 @@ def test_recorded_pass_fails_closed_without_workspace_fingerprint(monkeypatch) -
     assert not state.has_pass()
 
 
-def test_recorded_contract_pass_does_not_authorize_landing() -> None:
+def test_recorded_contract_pass_authorizes_unconfigured_legacy_landing() -> None:
     state = VerificationState()
     state.record_contract_pass("contract ok")
 
-    with pytest.raises(ToolError, match="receipt"):
-        _require_verification_note(LandWorkArgs(), _ctx(state))
+    _require_verification_note(LandWorkArgs(), _ctx(state))
 
 
 def test_state_rejects_nonpassing_verifier_report() -> None:
@@ -112,19 +111,19 @@ def test_state_rejects_nonpassing_verifier_report() -> None:
 
 
 @pytest.mark.asyncio
-async def test_background_verifier_records_evidence_backed_pass() -> None:
+async def test_background_verifier_records_evidence_backed_pass(monkeypatch) -> None:
     state = VerificationState()
     ctx = _ctx(state)
 
-    async def finish() -> IsolatedResult:
+    async def finish(*args, **kwargs) -> IsolatedResult:
         return IsolatedResult(output=_report())
 
-    task = asyncio.create_task(finish())
-    task.add_done_callback(
-        lambda done: _record_background_isolated_verifier_pass(done, "verifier", ctx)
+    monkeypatch.setattr("vibe.core.tools.builtins.task.run_isolated_agent", finish)
+    tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+
+    await tool._collect_async_isolated(
+        TaskArgs(task="verify", agent="verifier"), ctx, finish(), None
     )
-    await task
-    await asyncio.sleep(0)
 
     assert state.has_pass()
 
@@ -237,6 +236,16 @@ def test_land_work_rejects_model_supplied_structured_pass_note() -> None:
     with pytest.raises(ToolError, match="cannot authorize"):
         _require_verification_note(
             LandWorkArgs(verification_note=_report()), _ctx(VerificationState())
+        )
+
+
+def test_pasted_report_is_rejected_even_with_current_legacy_pass() -> None:
+    state = VerificationState()
+    state.record_verifier_pass(parse_verification_report(_report()))
+
+    with pytest.raises(ToolError, match="cannot authorize"):
+        _require_verification_note(
+            LandWorkArgs(verification_note=_report()), _ctx(state)
         )
 
 

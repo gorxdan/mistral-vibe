@@ -33,6 +33,10 @@ from vibe.core.config._settings import (
     resolve_theme_name,
 )
 from vibe.core.config._spend_config import SpendConfig
+from vibe.core.config._verification_config import (
+    TrustedVerificationCheckConfig,
+    TrustedVerificationRecipeConfig,
+)
 from vibe.core.config.layer import (
     ConfigLayer,
     ConfigLayerError,
@@ -171,6 +175,8 @@ __all__ = [
     "TranscribeProviderConfig",
     "TrustNotResolvedError",
     "TrustResolutionError",
+    "TrustedVerificationCheckConfig",
+    "TrustedVerificationRecipeConfig",
     "UntrustedLayerError",
     "Verbosity",
     "VibeConfig",

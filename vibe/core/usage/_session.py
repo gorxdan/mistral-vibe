@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import time
 from uuid import uuid4
@@ -32,8 +32,10 @@ from vibe.core.usage._ledger import LedgerEvent
 from vibe.core.usage._pricing import compute_cost, lookup_pricing
 
 __all__ = [
+    "SPEND_SESSION_ID_METADATA_KEY",
     "UNROUTED_PAID_CALL_BOUNDARIES",
     "SessionSpendAdapter",
+    "SpendAdmissionBlockedError",
     "SpendBudgetExceededError",
     "estimate_request_tokens",
 ]
@@ -44,6 +46,7 @@ UNROUTED_PAID_CALL_BOUNDARIES = frozenset({
     "mcp_sampling",
     "narration",
 })
+SPEND_SESSION_ID_METADATA_KEY = "spend_session_id"
 _RESERVATION_LEASE_S = DEFAULT_RESERVATION_LEASE_S
 _RESERVATION_RENEW_INTERVAL_S = DEFAULT_RESERVATION_LEASE_S / 3
 
@@ -56,6 +59,10 @@ class SpendBudgetExceededError(RuntimeError):
             f"Spend budget rejected {rejection.purpose.value} call "
             f"({rejection.reason.value}) at scope {limited_scope!r}."
         )
+
+
+class SpendAdmissionBlockedError(RuntimeError):
+    pass
 
 
 def estimate_request_tokens(request: CompletionRequest) -> int:
@@ -103,11 +110,52 @@ def _cost(model: ModelConfig, usage: LLMUsage, config: SpendConfig) -> float:
     )
 
 
+def _session_limits(
+    config: SpendConfig,
+    *,
+    now: float,
+    runtime_max_cost_usd: float | None,
+    runtime_max_total_tokens: int | None,
+) -> SpendEnvelopeLimits:
+    max_total_tokens = min(
+        config.max_total_tokens,
+        max(runtime_max_total_tokens, 0)
+        if runtime_max_total_tokens is not None
+        else config.max_total_tokens,
+    )
+    max_cost_usd = min(
+        config.max_cost_usd,
+        max(runtime_max_cost_usd, 0.0)
+        if runtime_max_cost_usd is not None
+        else config.max_cost_usd,
+    )
+    deadline_at = (
+        now + config.deadline_seconds if config.deadline_seconds is not None else None
+    )
+    return SpendEnvelopeLimits(
+        max_prompt_tokens=min(config.max_prompt_tokens, max_total_tokens),
+        max_completion_tokens=min(config.max_completion_tokens, max_total_tokens),
+        max_total_tokens=max_total_tokens,
+        max_cost_usd=max_cost_usd,
+        max_calls=config.max_calls,
+        max_concurrent_calls=config.max_concurrent_calls,
+        max_retries=config.max_retries,
+        deadline_at=deadline_at,
+    )
+
+
+@dataclass(slots=True)
+class _AdmissionState:
+    config: SpendConfig
+    error: SpendAdmissionBlockedError | None = None
+
+
 @dataclass(slots=True)
 class _SessionSpendCall:
     adapter: SessionSpendAdapter
     request: CompletionRequest
     reservation: SpendReservation
+    config: SpendConfig
     dispatched: bool = False
     settled: bool = False
 
@@ -140,7 +188,7 @@ class _SessionSpendCall:
         if usage is None:
             self.adapter._broker.reconcile(self.reservation, None)
             return
-        cost = _cost(self.request.model, usage, self.adapter._config)
+        cost = _cost(self.request.model, usage, self.config)
         actual = SpendAmount(
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
@@ -165,12 +213,20 @@ class SessionSpendAdapter:
         session_scope_id: str,
         agent_scope_id: str,
         default_purpose: SpendPurpose,
+        clock: Callable[[], float],
+        admission_state: _AdmissionState | None = None,
     ) -> None:
         self._broker = broker
-        self._config = config
         self.session_scope_id = session_scope_id
         self.agent_scope_id = agent_scope_id
         self.default_purpose = default_purpose
+        self._clock = clock
+        self._admission_state = admission_state or _AdmissionState(config=config)
+        self.last_admitted_completion_tokens: int | None = None
+
+    @property
+    def _config(self) -> SpendConfig:
+        return self._admission_state.config
 
     @classmethod
     def create(
@@ -186,37 +242,14 @@ class SessionSpendAdapter:
         path = ledger_path or VIBE_HOME.path / "spend" / session_id
         broker = SpendBroker(path, clock=clock)
         session_scope_id = f"session:{session_id}"
-        deadline_at = (
-            clock() + config.deadline_seconds
-            if config.deadline_seconds is not None
-            else None
-        )
-        max_total_tokens = min(
-            config.max_total_tokens,
-            max(runtime_max_total_tokens, 0)
-            if runtime_max_total_tokens is not None
-            else config.max_total_tokens,
-        )
-        max_cost_usd = min(
-            config.max_cost_usd,
-            max(runtime_max_cost_usd, 0.0)
-            if runtime_max_cost_usd is not None
-            else config.max_cost_usd,
-        )
         session_envelope = SpendEnvelope(
             scope_id=session_scope_id,
             kind=SpendScopeKind.SESSION,
-            limits=SpendEnvelopeLimits(
-                max_prompt_tokens=min(config.max_prompt_tokens, max_total_tokens),
-                max_completion_tokens=min(
-                    config.max_completion_tokens, max_total_tokens
-                ),
-                max_total_tokens=max_total_tokens,
-                max_cost_usd=max_cost_usd,
-                max_calls=config.max_calls,
-                max_concurrent_calls=config.max_concurrent_calls,
-                max_retries=config.max_retries,
-                deadline_at=deadline_at,
+            limits=_session_limits(
+                config,
+                now=clock(),
+                runtime_max_cost_usd=runtime_max_cost_usd,
+                runtime_max_total_tokens=runtime_max_total_tokens,
             ),
         )
         existing_session_envelope = broker.get_envelope(session_scope_id)
@@ -240,11 +273,43 @@ class SessionSpendAdapter:
             session_scope_id=session_scope_id,
             agent_scope_id=agent_scope_id,
             default_purpose=SpendPurpose.PRIMARY,
+            clock=clock,
         )
 
     @property
     def ledger_path(self) -> Path:
         return self._broker.ledger_path
+
+    @property
+    def spend_session_id(self) -> str:
+        return self.session_scope_id.removeprefix("session:")
+
+    def tighten_limits(
+        self,
+        config: SpendConfig,
+        *,
+        runtime_max_cost_usd: float | None = None,
+        runtime_max_total_tokens: int | None = None,
+    ) -> None:
+        self._admission_state.error = SpendAdmissionBlockedError(
+            "spend admission is blocked while limits are updating"
+        )
+        try:
+            self._broker.tighten_envelope(
+                self.session_scope_id,
+                _session_limits(
+                    config,
+                    now=self._clock(),
+                    runtime_max_cost_usd=runtime_max_cost_usd,
+                    runtime_max_total_tokens=runtime_max_total_tokens,
+                ),
+            )
+        except Exception as e:
+            error = SpendAdmissionBlockedError(f"spend admission is blocked: {e}")
+            self._admission_state.error = error
+            raise error from e
+        self._admission_state.config = config
+        self._admission_state.error = None
 
     def child_agent(
         self,
@@ -283,6 +348,8 @@ class SessionSpendAdapter:
             session_scope_id=self.session_scope_id,
             agent_scope_id=resolved_agent_id,
             default_purpose=purpose or self.default_purpose,
+            clock=self._clock,
+            admission_state=self._admission_state,
         )
 
     def _completion_token_estimate(self, request: CompletionRequest) -> int:
@@ -300,6 +367,8 @@ class SessionSpendAdapter:
     def _reserve(
         self, request: CompletionRequest, *, purpose: SpendPurpose, is_retry: bool
     ) -> _SessionSpendCall:
+        if self._admission_state.error is not None:
+            raise self._admission_state.error
         prompt_tokens = estimate_request_tokens(request)
         completion_tokens = self._completion_token_estimate(request)
         estimated_usage = LLMUsage(
@@ -320,7 +389,18 @@ class SessionSpendAdapter:
         )
         if isinstance(decision, SpendRejection):
             raise SpendBudgetExceededError(decision)
-        return _SessionSpendCall(adapter=self, request=request, reservation=decision)
+        self.last_admitted_completion_tokens = completion_tokens
+        admitted_request = (
+            request
+            if request.max_tokens is not None
+            else replace(request, max_tokens=completion_tokens)
+        )
+        return _SessionSpendCall(
+            adapter=self,
+            request=admitted_request,
+            reservation=decision,
+            config=self._config,
+        )
 
     @staticmethod
     async def _stop_renewal(task: asyncio.Task[None]) -> None:

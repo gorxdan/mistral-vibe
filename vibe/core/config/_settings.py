@@ -36,6 +36,7 @@ from vibe.core.config._defaults import (
     DEFAULT_VIBE_BASE_URL,
 )
 from vibe.core.config._spend_config import SpendConfig
+from vibe.core.config._verification_config import TrustedVerificationRecipeConfig
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.config.models import (
     THINKING_LEVELS as THINKING_LEVELS,
@@ -1002,6 +1003,14 @@ class VibeConfig(BaseSettings):
             "before non-trivial work is reported done. The verifier profile "
             "itself is always available; this gates the host-side nudge and "
             "contract section."
+        ),
+    )
+    trusted_verification_recipe: TrustedVerificationRecipeConfig | None = Field(
+        default=None,
+        description=(
+            "Optional host-authored verification plan. AgentLoop freezes this recipe "
+            "at session creation; verify_work executes its exact checks without "
+            "accepting model-supplied commands or paths."
         ),
     )
     investigation_subsystem: bool = Field(

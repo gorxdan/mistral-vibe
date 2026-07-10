@@ -233,10 +233,34 @@ retries. `SessionSpendAdapter` reserves against a file-lock-backed hierarchy
 before primary, compaction, in-process task/workflow, memory, and safety-judge
 dispatch, then reconciles provider usage. Missing usage is charged at the
 estimate. Runtime `max_price` and `max_session_tokens` values can only reduce the
-configured session envelope.
+configured session envelope. Routed requests that omit `max_tokens` receive the
+admitted completion bound, except `openai-chatgpt` Codex requests: that endpoint
+rejects the field, so its adapter strips it and the broker must enforce the
+reservation through reconciliation rather than an HTTP output cap.
 
 Isolated subprocesses, MCP sampling, narration, and backend-internal retry
 attempts remain explicit unrouted boundaries.
+
+## Trusted Verification Recipe
+
+**Sources**: `vibe/core/config/_verification_config.py`,
+`vibe/core/tools/builtins/verify_work.py`, `vibe/core/verification_state.py`
+
+`trusted_verification_recipe` is an optional frozen config model containing a
+recipe version, task brief, acceptance contract, allowed-path patterns, and one
+or more exact `argv`/`cwd`/timeout checks. `AgentLoop` copies it into session
+state at creation and preserves that original value across config reloads.
+
+In an active worktree, a current verifier PASS makes the no-argument
+`verify_work` tool eligible to execute the prebound plan. The tool has no command
+or path fields in its model-visible schema. A passing receipt is bound to the
+current main HEAD, candidate repository state, task, contract, recipe, and check
+evidence. `land_work` revalidates it and reports the resulting merge commit.
+
+When no recipe was bound at session start, `land_work` instead accepts a current
+state-recorded verifier/workflow PASS or a locally checked documentation-only
+trivial waiver. Pasted verification prose is rejected in either mode. Restart
+Vibe to adopt an intentional recipe change.
 
 ### Memory Types
 

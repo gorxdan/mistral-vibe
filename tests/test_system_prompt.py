@@ -665,6 +665,51 @@ def test_verification_contract_section_absent_when_subsystem_disabled() -> None:
     assert "## Verification contract" not in prompt_off
 
 
+def test_verification_contract_requires_receipt_for_configured_recipe() -> None:
+    from vibe.core.baseline_scaling import BaselineTier
+    from vibe.core.config import (
+        TrustedVerificationCheckConfig,
+        TrustedVerificationRecipeConfig,
+    )
+
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+        trusted_verification_recipe=TrustedVerificationRecipeConfig(
+            recipe_version="test-v1",
+            task_brief="Implement the requested change",
+            acceptance_contract="The focused checks pass",
+            allowed_paths=("vibe/**", "tests/**"),
+            checks=(
+                TrustedVerificationCheckConfig(
+                    name="focused", argv=("uv", "run", "pytest", "-q")
+                ),
+            ),
+        ),
+    )
+    tool_manager = ToolManager(lambda: config)
+    skill_manager = SkillManager(lambda: config)
+    agent_manager = AgentManager(lambda: config)
+
+    large = get_universal_system_prompt(
+        tool_manager, config, skill_manager, agent_manager
+    )
+    small = get_universal_system_prompt(
+        tool_manager, config, skill_manager, agent_manager, tier=BaselineTier.SMALL
+    )
+
+    for prompt in (large, small):
+        assert "prebound" in prompt
+        assert "verify_work" in prompt
+        assert "current durable receipt" in prompt
+        assert "trivial" in prompt
+        assert "waivers cannot replace" in prompt
+
+
 def test_investigation_contract_section_present_when_subsystem_enabled() -> None:
     common = {
         "system_prompt_id": "tests",

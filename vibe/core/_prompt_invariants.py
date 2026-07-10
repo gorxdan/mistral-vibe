@@ -5,8 +5,18 @@ COMPACT_VERIFICATION_INVARIANT = """\
 
 Before claiming non-trivial work complete, run the `verifier` subagent. Only an
 evidence-backed `VERDICT: PASS` is success; fix `FAIL`, and report `PARTIAL` or a
-missing verdict as incomplete. `land_work` requires that pass or an explicit
-`trivial: <reason>` waiver that it validates against a documentation-only diff."""
+missing verdict as incomplete. With no trusted recipe configured, `land_work`
+accepts the current recorded verifier/workflow pass or an explicit
+`trivial: <reason>` documentation-only waiver, never pasted report prose."""
+
+COMPACT_VERIFICATION_RECIPE_INVARIANT = """\
+## Verification invariant
+
+Before claiming non-trivial work complete, run the `verifier` subagent. Only an
+evidence-backed `VERDICT: PASS` is success; fix `FAIL`, and report `PARTIAL` or a
+missing verdict as incomplete. This session has a prebound trusted recipe: after
+the verifier PASS, call no-argument `verify_work`. `land_work` then requires its
+current durable receipt; pasted prose and trivial waivers cannot replace it."""
 
 COMPACT_INVESTIGATION_INVARIANT = """\
 ## Investigation invariant

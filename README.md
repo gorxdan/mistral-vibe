@@ -619,6 +619,46 @@ How it fits the existing controls:
 
 > **Security note.** An LLM judge is a probabilistic gate, not a guarantee. The tool call it evaluates is authored by the (untrusted) main model, so a compromised or jailbroken main model could in principle craft a call designed to fool the judge. Keep your denylist authoritative, prefer a judge model from a different provider than your active model, and treat this as convenience, not a sandbox.
 
+### Trusted Verification Recipe
+
+For worktree sessions, a host can define the exact local checks that may create
+a durable verification receipt. The recipe is frozen when `AgentLoop` starts;
+editing or reloading project configuration cannot change that session's task,
+contract, commands, working directories, timeouts, or path scope.
+
+```toml
+[trusted_verification_recipe]
+recipe_version = "core-v1"
+task_brief = "Implement and validate the requested core change"
+acceptance_contract = "Focused tests, lint, and type checks pass"
+allowed_paths = ["vibe/**", "tests/**", "docs/**", "openwiki/**"]
+
+[[trusted_verification_recipe.checks]]
+name = "focused-tests"
+argv = ["uv", "run", "pytest", "-q", "tests/tools"]
+cwd = "."
+timeout_seconds = 600
+
+[[trusted_verification_recipe.checks]]
+name = "lint"
+argv = ["uv", "run", "ruff", "check", "."]
+cwd = "."
+timeout_seconds = 300
+```
+
+After a current verifier `PASS`, the no-argument `verify_work` tool executes the
+prebound recipe against the active candidate and current main `HEAD`. It accepts
+no model-selected commands or paths. `land_work` then requires the current
+receipt, revalidates it, performs the merge, and reports the merge commit SHA;
+there is no separate durable landing record.
+
+Without a configured recipe, the compatibility gate accepts a current
+session-recorded verifier or workflow-contract pass. Pasted `verification_note`
+prose is rejected in both modes; a `trivial: <reason>` waiver is available only
+in the unconfigured mode and only for a locally validated documentation-only
+diff. Treat the recipe source as host-controlled and restart Vibe after an
+intentional recipe change.
+
 ### Session Spend Budget
 
 Primary, compaction, in-process task/workflow, memory-helper, and safety-judge
@@ -645,7 +685,10 @@ unpriced_output_usd_per_million = 30.0
 Missing provider usage is charged at the reservation estimate. Models without
 configured or built-in prices use the conservative fallback rates above; set
 both fallback rates to `0` for a local or subscription model that should not be
-USD-limited.
+USD-limited. When a request omits `max_tokens`, routed backends receive the
+broker's admitted completion bound. The `openai-chatgpt` Codex endpoint rejects
+that field, so its adapter strips the bound at the HTTP boundary and relies on
+reservation plus usage reconciliation instead of a provider-enforced cap.
 
 Isolated subprocesses, MCP sampling, narration, and backend-internal provider
 retries are explicit later integration boundaries. They do not yet reserve a

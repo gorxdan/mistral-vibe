@@ -12,12 +12,14 @@ from vibe.core._verification_receipt import (
     ReceiptValidation,
     VerificationReceipt,
     VerificationReceiptStore,
+    hash_payload,
     validate_receipt_id,
 )
 from vibe.core.verification_contract import VerificationReport
 
 if TYPE_CHECKING:
     from vibe.core._verification_runner import TrustedCheck
+    from vibe.core.config import TrustedVerificationRecipeConfig, VibeConfig
 
 
 def workspace_fingerprint() -> str | None:
@@ -49,6 +51,41 @@ class VerificationReceiptReference:
     recorded_at: float = field(default_factory=time.monotonic)
 
 
+@dataclass(frozen=True, slots=True)
+class BoundVerificationRecipe:
+    config: TrustedVerificationRecipeConfig
+    checks: tuple[TrustedCheck, ...]
+    recipe_version: str
+    task_brief_hash: str
+    contract_hash: str
+    configuration_hash: str
+    allowed_paths: tuple[str, ...]
+
+    @classmethod
+    def from_config(
+        cls, recipe: TrustedVerificationRecipeConfig
+    ) -> BoundVerificationRecipe:
+        from vibe.core._verification_runner import TrustedCheck
+
+        return cls(
+            config=recipe.model_copy(deep=True),
+            checks=tuple(
+                TrustedCheck(
+                    name=check.name,
+                    argv=check.argv,
+                    cwd=check.cwd,
+                    timeout_seconds=check.timeout_seconds,
+                )
+                for check in recipe.checks
+            ),
+            recipe_version=recipe.recipe_version,
+            task_brief_hash=hash_payload(recipe.task_brief),
+            contract_hash=hash_payload(recipe.acceptance_contract),
+            configuration_hash=hash_payload(recipe),
+            allowed_paths=recipe.allowed_paths,
+        )
+
+
 @dataclass
 class VerificationState:
     receipt_store: VerificationReceiptStore = field(
@@ -58,12 +95,35 @@ class VerificationState:
     last_receipt_validation: ReceiptValidation | None = None
     last_contract_pass: VerificationPass | None = None
     last_verifier_pass: VerificationPass | None = None
+    trusted_recipe: BoundVerificationRecipe | None = None
+
+    @classmethod
+    def from_recipe(
+        cls, recipe: TrustedVerificationRecipeConfig | None
+    ) -> VerificationState:
+        return cls(
+            trusted_recipe=(
+                BoundVerificationRecipe.from_config(recipe)
+                if recipe is not None
+                else None
+            )
+        )
 
     def record_contract_pass(self, summary: str) -> None:
         self.last_contract_pass = VerificationPass(
             source="workflow-contract",
             summary=summary,
             workspace_fingerprint=workspace_fingerprint(),
+        )
+
+    def preserve_recipe_in_config(self, config: VibeConfig) -> VibeConfig:
+        recipe = self.trusted_recipe
+        return config.model_copy(
+            update={
+                "trusted_verification_recipe": (
+                    recipe.config if recipe is not None else None
+                )
+            }
         )
 
     def record_verifier_pass(self, report: VerificationReport) -> None:
@@ -119,6 +179,25 @@ class VerificationState:
             self.record_receipt(receipt)
         return receipt
 
+    def run_bound_recipe(
+        self, *, repository_path: Path, base_sha: str
+    ) -> VerificationReceipt:
+        recipe = self.trusted_recipe
+        if recipe is None:
+            raise ValueError("no trusted verification recipe is bound to this session")
+        self.receipt_reference = None
+        self.last_receipt_validation = None
+        return self.run_trusted_checks(
+            recipe.checks,
+            repository_path=repository_path,
+            base_sha=base_sha,
+            task_brief_hash=recipe.task_brief_hash,
+            recipe_version=recipe.recipe_version,
+            contract_hash=recipe.contract_hash,
+            configuration_hash=recipe.configuration_hash,
+            allowed_paths=recipe.allowed_paths,
+        )
+
     def has_valid_receipt(
         self,
         *,
@@ -165,13 +244,22 @@ class VerificationState:
         return validation.valid
 
     def has_pass(self) -> bool:
-        """Return the legacy in-session observation; never use this to authorize."""
+        """Return whether a legacy pass still matches the current workspace."""
         current = workspace_fingerprint()
         if current is None:
             return False
         return any(
             recorded is not None and recorded.workspace_fingerprint == current
             for recorded in (self.last_contract_pass, self.last_verifier_pass)
+        )
+
+    def has_verifier_pass(self) -> bool:
+        current = workspace_fingerprint()
+        recorded = self.last_verifier_pass
+        return bool(
+            current is not None
+            and recorded is not None
+            and recorded.workspace_fingerprint == current
         )
 
     def latest(self) -> VerificationPass | None:
@@ -205,6 +293,7 @@ def _receipt_reference(receipt: VerificationReceipt) -> VerificationReceiptRefer
 
 
 __all__ = [
+    "BoundVerificationRecipe",
     "VerificationPass",
     "VerificationReceiptReference",
     "VerificationState",

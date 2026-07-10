@@ -13,7 +13,7 @@ from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from tests.mock.utils import collect_result, mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core.agents.manager import AgentManager
-from vibe.core.config import ModelConfig, SpendConfig
+from vibe.core.config import ModelConfig, SessionLoggingConfig, SpendConfig
 from vibe.core.llm.types import CompletionRequest
 from vibe.core.tasking import TaskBrief, TaskManifestIdentity, TaskOutcomeStatus
 from vibe.core.tools.base import BaseToolState, InvokeContext
@@ -223,15 +223,22 @@ def test_request_estimate_includes_file_image_base64_expansion(tmp_path) -> None
 
 
 @pytest.mark.asyncio
-async def test_none_max_tokens_is_omitted_but_reservation_has_output_bound(
-    tmp_path,
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_none_max_tokens_dispatches_admitted_bound_without_mutating_caller(
+    tmp_path, streaming: bool
 ) -> None:
     adapter = _adapter(tmp_path, default_max_output_tokens=123)
     backend = _CountingBackend()
+    request = _request()
 
-    await adapter.complete(backend, _request())
+    if streaming:
+        _ = [chunk async for chunk in adapter.complete_streaming(backend, request)]
+    else:
+        await adapter.complete(backend, request)
 
-    assert backend.requests[0].max_tokens is None
+    assert request.max_tokens is None
+    assert backend.requests[0] is not request
+    assert backend.requests[0].max_tokens == 123
     reserved = next(event for event in adapter.events() if event.kind == "reserved")
     assert reserved.reservation.estimate.completion_tokens == 123
 
@@ -433,6 +440,48 @@ def test_resume_rebinds_usage_and_spend_to_loaded_session(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_compaction_rotation_resume_reuses_root_spend_ledger(tmp_path) -> None:
+    config = build_test_vibe_config(
+        session_logging=SessionLoggingConfig(
+            enabled=True, save_dir=str(tmp_path / "sessions")
+        ),
+        spend=SpendConfig(max_calls=1),
+    )
+    root_adapter = SessionSpendAdapter.create(config.spend, "root-spend-session")
+    await root_adapter.complete(_CountingBackend(), _request(max_tokens=1))
+    agent = build_test_agent_loop(config=config, spend_adapter=root_adapter)
+    old_session_id = agent.session_id
+
+    await agent._reset_session()
+    rotated_session_id = agent.session_id
+    agent.messages.append(LLMMessage(role=Role.USER, content="continue after compact"))
+    await agent.session_logger.save_interaction(
+        agent.messages,
+        agent.stats,
+        agent.base_config,
+        agent.tool_manager,
+        agent.agent_profile,
+    )
+    session_path = agent.session_logger.session_dir
+    assert session_path is not None
+    assert agent.session_logger.session_metadata is not None
+    assert (
+        agent.session_logger.session_metadata.environment["spend_session_id"]
+        == "root-spend-session"
+    )
+
+    backend = _CountingBackend()
+    resumed = build_test_agent_loop(config=config, backend=backend)
+    resumed.resume_existing_session(rotated_session_id, old_session_id, session_path)
+
+    assert resumed._spend_adapter.ledger_path == root_adapter.ledger_path
+    assert resumed._spend_adapter.session_scope_id == "session:root-spend-session"
+    with pytest.raises(SpendBudgetExceededError):
+        await resumed._chat()
+    assert backend.complete_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_reopening_session_tightens_caps_and_preserves_deadline(tmp_path) -> None:
     now = 100.0
 
@@ -465,6 +514,79 @@ async def test_reopening_session_tightens_caps_and_preserves_deadline(tmp_path) 
     backend = _CountingBackend()
     with pytest.raises(SpendBudgetExceededError):
         await resumed.complete(backend, _request(max_tokens=1))
+    assert backend.complete_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_live_config_reload_tightens_current_spend_adapter(tmp_path) -> None:
+    initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
+    adapter = SessionSpendAdapter.create(
+        initial.spend, "reload-session", ledger_path=tmp_path / "reload-ledger"
+    )
+    agent = build_test_agent_loop(config=initial, spend_adapter=adapter)
+    await adapter.complete(_CountingBackend(), _request(max_tokens=1))
+    tightened = initial.model_copy(update={"spend": SpendConfig(max_calls=1)})
+
+    await agent.reload_with_initial_messages(base_config=tightened)
+
+    assert agent._spend_adapter is adapter
+    assert adapter.snapshot().envelope.limits.max_calls == 1
+    backend = _CountingBackend()
+    with pytest.raises(SpendBudgetExceededError):
+        await adapter.complete(backend, _request(max_tokens=1))
+    assert backend.complete_calls == 0
+
+    await agent.reload_with_initial_messages(base_config=initial)
+    assert adapter.snapshot().envelope.limits.max_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_config_refresh_tightens_current_spend_adapter(tmp_path) -> None:
+    initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
+    adapter = SessionSpendAdapter.create(
+        initial.spend, "refresh-session", ledger_path=tmp_path / "refresh-ledger"
+    )
+    agent = build_test_agent_loop(config=initial, spend_adapter=adapter)
+    await adapter.complete(_CountingBackend(), _request(max_tokens=1))
+    tightened = initial.model_copy(update={"spend": SpendConfig(max_calls=1)})
+
+    with patch("vibe.core.agent_loop.VibeConfig.load", return_value=tightened):
+        agent.refresh_config()
+
+    assert agent.base_config == tightened
+    assert adapter.snapshot().envelope.limits.max_calls == 1
+    backend = _CountingBackend()
+    with pytest.raises(SpendBudgetExceededError):
+        await adapter.complete(backend, _request(max_tokens=1))
+    assert backend.complete_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_live_spend_tightening_blocks_later_dispatches(tmp_path) -> None:
+    initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
+    adapter = SessionSpendAdapter.create(
+        initial.spend, "failed-reload", ledger_path=tmp_path / "failed-ledger"
+    )
+    child = adapter.child_agent()
+    agent = build_test_agent_loop(config=initial, spend_adapter=adapter)
+    tightened = initial.model_copy(update={"spend": SpendConfig(max_calls=1)})
+
+    with (
+        patch.object(
+            adapter._broker,
+            "tighten_envelope",
+            side_effect=RuntimeError("ledger unavailable"),
+        ),
+        pytest.raises(RuntimeError, match="ledger unavailable"),
+    ):
+        await agent.reload_with_initial_messages(base_config=tightened)
+
+    backend = _CountingBackend()
+    with pytest.raises(RuntimeError, match="spend admission is blocked"):
+        await adapter.complete(backend, _request(max_tokens=1))
+    assert backend.complete_calls == 0
+    with pytest.raises(RuntimeError, match="spend admission is blocked"):
+        await child.complete(backend, _request(max_tokens=1))
     assert backend.complete_calls == 0
 
 

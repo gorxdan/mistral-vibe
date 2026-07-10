@@ -70,9 +70,9 @@ Initial release gates, to be tightened after the baseline is recorded:
 | Compaction | Compaction swaps in a compact summary-only system prompt, suppresses tool schemas/tool choice, and reserves under the shared spend envelope with a distinct purpose. |
 | Tool manifests | Remote catalogs and a few fork tools can be deferred in `vibe/core/tools/manager.py:229-269`; selected schemas are built at `vibe/core/llm/format.py:45-86`. The active task phase does not select a small builtin manifest, and `AgentLoop._available_tools` explicitly keeps the subset tier-invariant at `vibe/core/agent_loop.py:3437-3446`. |
 | Capability scaling | `baseline_tier_for` still uses only context-window size at `vibe/core/baseline_scaling.py:46-58`, which is not a proxy for tool-use reliability. SMALL drops long orchestration prose but retains compact investigation and verification invariants from `vibe/core/_prompt_invariants.py`. |
-| Task contracts | `TaskBrief` supplies objective, inputs, path scope, acceptance checks, optional finite budget/deadline, and manifest identity. Task and team entry points retain versioned legacy-string compatibility. Recipes, phase manifests, and several planned brief fields remain open; workflow `ContractSpec` can still be empty. |
-| Task outcomes | `TaskOutcome` has explicit succeeded/failed/blocked/retryable states and evidence fields. Team tasks persist outcomes, atomically requeue retryable work, and unlock dependencies only on success. The task tool emits structured outcomes; workflows preserve budget exhaustion as `BLOCKED` while ordinary child exceptions still degrade to `None`. |
-| Verification | Trusted local checks create durable immutable receipts bound to task/contract/config, repository state, check definitions, and full-output hashes. `VerificationState` stores receipt references, and `land_work` revalidates the candidate and records the landed commit. Model verifier reports remain observational rather than merge authorization. |
+| Task contracts | `TaskBrief` serializes objective, inputs, path scope, acceptance checks, optional budget/deadline, and manifest identity. The runtime rejects already-expired deadlines, but path scope, checks, per-task budgets, and manifest identity remain schema/prompt metadata rather than host-enforced constraints. Task and team entry points retain versioned legacy-string compatibility; recipes and phase manifests remain open. |
+| Task outcomes | `TaskOutcome` has explicit succeeded/failed/blocked/retryable states and evidence fields. Team tasks persist outcomes, atomically requeue retryable work, and unlock dependencies only on success. The task tool preserves structured outcomes through asynchronous delivery; workflows preserve spend exhaustion as `BLOCKED`. |
+| Verification | An optional immutable `trusted_verification_recipe` is prebound at AgentLoop creation. After a current verifier PASS, no-argument `verify_work` executes only its exact checks and creates a durable receipt bound to task/contract/config, repository state, check definitions, and full-output hashes. Configured sessions require that receipt; unconfigured sessions retain the current recorded verifier/workflow-pass gate. `land_work` revalidates the candidate and reports the merge commit SHA without persisting a separate landing record. |
 | Tool repair | Tool argument parsing preserves bounded raw text and an exact structured diagnostic, then tries conservative fence/object/trailing-comma repair without inventing values. Schema strictness and formatter-call integration remain open. |
 | Result repair | Workflow schema failure starts a fresh `AgentLoop` for every attempt at `vibe/core/workflows/runtime.py:1031-1083,1174-1244`, so a formatting error can rebill the whole investigation. |
 | Loop detection | `LoopDetectionMiddleware` still detects identical trailing calls. The new repair controller adds canonical semantic progress snapshots, per-failure retry budgets, no-progress/oscillation detection, escalation decisions, and episode metrics; runtime call-site integration remains open. |
@@ -199,6 +199,10 @@ transactional ledger.
 - [x] Reserve estimated worst-case spend before dispatch and reconcile provider
   usage/cost afterward. Treat missing usage as the reserved estimate and expose an
   `estimated=true` diagnostic.
+- [x] Send the admitted completion bound to routed backends when `max_tokens` is
+  omitted. The `openai-chatgpt` Codex endpoint rejects that field, so this
+  backend remains reservation-and-reconciliation enforced rather than
+  provider-capped.
 - [ ] Allocate default session capacity as 80% primary work, 15% repair and
   verification, and at most 5% optional maintenance. Permit unused child capacity
   to return to its parent, but never let a child borrow past the parent hard cap.
@@ -374,9 +378,10 @@ being delivered.
 - [x] Parse verifier output into structured verdict plus nonempty command/output
   evidence, require one final verdict, reject contradictory PASS/FAIL evidence,
   and record only a complete successful verifier run.
-- [x] Reject model-authored `land_work` attestations and pasted reports; accept
-  only a current workspace-bound recorded pass or a `trivial: <reason>` waiver
-  whose committed paths are locally validated as documentation-only.
+- [x] Reject model-authored `land_work` attestations and pasted reports. In
+  unconfigured sessions, accept only a current workspace-bound recorded pass or
+  a locally validated documentation-only `trivial: <reason>` waiver; configured
+  sessions require their trusted receipt.
 - [x] Bind the current in-memory pass to HEAD, index, working-tree diff, and
   untracked content. Invalidate it on workspace changes, mutating tools, session
   reset, or failed isolated-worktree delivery.
@@ -387,15 +392,16 @@ being delivered.
 - [x] Record each check as argv, cwd, timeout, exit code, bounded stdout/stderr
   excerpts, full-output artifact hash/path, and duration. Never trust a prose
   claim that a command ran.
-- [x] Run trusted acceptance commands, path/diff invariants, lint/type checks, and
-  required artifact hashes locally. Refuse a pass for an empty check set unless a
-  trusted trivial waiver is present.
+- [x] Run the prebound trusted acceptance commands and path/diff invariants
+  locally, recording required artifact hashes. Configured recipes reject an
+  empty check set; their commands, working directories, timeouts, and path scope
+  cannot come from model tool arguments.
 - [x] Invalidate the receipt on HEAD, index, working-tree, task-brief, contract, or
   relevant configuration change. Either require a clean candidate tree or bind a
   deterministic dirty-tree hash.
-- [x] Replace `VerificationState` pass flags with receipt references and validation
-  status. Keep a migration path for current in-session flags, but never let a
-  legacy flag land newly changed work.
+- [x] Add receipt references and validation status to `VerificationState` while
+  retaining current workspace-bound in-session flags as the unconfigured
+  compatibility path. Workspace changes invalidate those flags.
 - [ ] Convert the parsed report into a strict persisted receipt schema and bind it
   to trusted execution evidence. Regex recognition alone is no longer an
   authorization mechanism, but the current report still describes model-claimed
@@ -403,11 +409,13 @@ being delivered.
 - [ ] Invoke one model verifier only for high-risk or semantically ambiguous work.
   Give it the task brief, diff, deterministic results, and targeted artifacts,
   not the entire conversation.
-- [x] Make `land_work` require a valid receipt for the candidate branch. Replace
-  arbitrary nonempty `verification_note` with receipt ID or a harness-created
-  trivial waiver.
-- [x] After merge, record the merge SHA and verify that the receipt candidate is
-  an ancestor/parent of the landed commit.
+- [x] Make `land_work` require a valid receipt for a configured session's
+  candidate branch. Unconfigured sessions accept their current recorded pass or
+  a harness-validated documentation-only trivial waiver; arbitrary nonempty
+  `verification_note` remains rejected.
+- [x] After merge, return the merge SHA and verify that the receipt candidate is
+  a parent of the reported merge commit. No separate durable landing record is
+  implemented.
 
 ### Acceptance criteria
 
@@ -415,7 +423,7 @@ being delivered.
   change, contract edit, or check-command change.
 - [x] A bare `VERDICT: PASS` string and an arbitrary nonempty verification note
   cannot authorize landing.
-- [ ] Check commands come only from the trusted brief/recipe/config allowlist; a
+- [x] Check commands come only from the session-prebound trusted recipe; a
   worker response cannot inject a shell command into verification.
 - [ ] Deterministic low-risk tasks use zero verifier-model calls.
 - [ ] High-risk verification receives bounded context and at most one normal

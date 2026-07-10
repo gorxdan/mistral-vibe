@@ -161,6 +161,7 @@ active_tts_model = "voxtral-tts"
 effort_mode = "normal"            # "normal" or "le-chaton" (max thinking + auto-workflow)
 disable_workflows = false         # Disable all workflow features
 verification_subsystem = true     # Host verification layer (todo nudge + contract section → verifier subagent)
+# trusted_verification_recipe is omitted by default; configure its table before session startup when durable receipts are required
 investigation_subsystem = true    # Host investigation layer (contract section: reproduce-before-fix guidance)
 workflow_paths = []               # Additional dirs to search for workflow scripts
 
@@ -203,9 +204,12 @@ unpriced_output_usd_per_million = 30.0
 
 Missing usage is charged at the reservation estimate. The fallback rates cover
 models without configured or built-in pricing; set both to `0` for local or
-subscription models that should not consume a USD cap. Isolated subprocesses,
-MCP sampling, narration, and backend-internal retries are not yet routed as
-distinct calls through this ledger.
+subscription models that should not consume a USD cap. Routed requests without
+`max_tokens` receive the broker's admitted output bound, except
+`openai-chatgpt` Codex calls: that endpoint rejects the field, so its adapter
+strips it and relies on reservation reconciliation. Isolated subprocesses, MCP
+sampling, narration, and backend-internal retries are not yet routed as distinct
+calls through this ledger.
 
 ### Providers
 
@@ -965,17 +969,40 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
   command evidence. The host verification contract (on by default via
   `verification_subsystem`) requires spawning it before reporting non-trivial
   work done; the todo tool appends a nudge when a 3+ item list closes without a
-  verify step. A verifier's prose is observational: `land_work` requires a
-  harness-created durable receipt from trusted local checks, bound to the current
-  task contract, repository state, configuration, and check set.
+  verify step. With a `trusted_verification_recipe`, the no-argument `verify_work`
+  tool runs its session-prebound checks after the verifier PASS and records the
+  durable receipt required by `land_work`. Without a recipe, the current recorded
+  verifier/workflow PASS can authorize landing. Pasted report prose is rejected
+  in either mode. `land_work` reports the merge commit SHA; it does not persist a
+  separate landing record.
 
 Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 
-For bounded delegation, `task.task` accepts a structured `TaskBrief` with an
-objective, named inputs, allowed and denied paths, acceptance checks, optional
-token/USD/call budget, deadline, and tool-manifest identity. The result includes
-a `TaskOutcome` status (`succeeded`, `failed`, `blocked`, or `retryable`) plus
-evidence, diagnostics, changed paths, receipt ID, and remaining work. Legacy
+For a durable receipt path, configure the host-controlled recipe before starting
+the session:
+
+```toml
+[trusted_verification_recipe]
+recipe_version = "core-v1"
+task_brief = "Implement and validate the requested core change"
+acceptance_contract = "Focused tests and lint pass"
+allowed_paths = ["vibe/**", "tests/**"]
+
+[[trusted_verification_recipe.checks]]
+name = "focused-tests"
+argv = ["uv", "run", "pytest", "-q", "tests/tools"]
+cwd = "."
+timeout_seconds = 600
+```
+
+`task.task` accepts a structured `TaskBrief` with an objective, named inputs,
+allowed and denied paths, acceptance checks, optional token/USD/call budget,
+deadline, and tool-manifest identity. An already-expired deadline is rejected
+before dispatch, and structured outcomes survive asynchronous delivery. Path
+scope, acceptance checks, per-task budgets, and manifest identity are schema and
+worker-prompt metadata in this version, not host-enforced limits. The result
+includes a `TaskOutcome` status (`succeeded`, `failed`, `blocked`, or `retryable`)
+plus evidence, diagnostics, changed paths, receipt ID, and remaining work. Legacy
 free-form task strings remain supported.
 
 ### Async subagents (background delegation)

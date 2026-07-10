@@ -43,6 +43,7 @@ from vibe.core.config._settings import (
     resolve_theme_name,
 )
 from vibe.core.config._spend_config import SpendConfig
+from vibe.core.config._verification_config import TrustedVerificationRecipeConfig
 from vibe.core.config.models import (
     ConnectorConfig,
     ExperimentsConfig,
@@ -320,6 +321,15 @@ class VibeConfigSchema(ConfigSchema):
             "before non-trivial work is reported done. The verifier profile "
             "itself is always available; this gates the host-side nudge and "
             "contract section."
+        ),
+    )
+    trusted_verification_recipe: Annotated[
+        TrustedVerificationRecipeConfig | None, WithReplaceMerge()
+    ] = Field(
+        default=None,
+        description=(
+            "Optional host-authored verification plan frozen into each AgentLoop "
+            "session and executed only by verify_work."
         ),
     )
     investigation_subsystem: Annotated[bool, WithReplaceMerge()] = Field(

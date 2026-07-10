@@ -82,9 +82,10 @@ class LandWork(
         "merge commit, executed by the unsandboxed host process (the bash tool's "
         "sandbox makes the main checkout read-only, so this is the only path that "
         "can write it). Call this ONCE when your work is complete, committed, and "
-        "verified. When verification_subsystem is on, use a harness-created "
-        "verification receipt or pass verification_note with a docs-only "
-        "'trivial: <reason>'. Merge preserves original "
+        "verified. A session with a trusted verification recipe requires its "
+        "current receipt. Without a recipe, a current recorded verifier/workflow "
+        "PASS or a docs-only 'trivial: <reason>' waiver satisfies the gate; pasted "
+        "verification prose never does. Merge preserves original "
         "commit SHAs and is revertable via `git revert -m 1 <merge-sha>`. "
         "Requires user approval. Refuses if main is dirty or the branch is "
         "already merged. Only available inside an active worktree isolation session."
@@ -238,6 +239,12 @@ def _require_verification_note(
         return None
 
     state = ctx.verification_state
+    recipe_required = bool(
+        state is not None and state.trusted_recipe is not None
+    ) or bool(
+        getattr(ctx.agent_manager.config, "trusted_verification_recipe", None)
+        is not None
+    )
     requested_receipt = args.verification_receipt_id
     selected_receipt = requested_receipt or (
         state.receipt_reference.receipt_id
@@ -267,6 +274,12 @@ def _require_verification_note(
         )
 
     note = (args.verification_note or "").strip()
+    if recipe_required:
+        raise ToolError(
+            "land_work requires the current trusted verification receipt for this "
+            "session recipe. Record a verifier PASS, then run verify_work. "
+            "Pasted verification prose and trivial waivers cannot replace the receipt."
+        )
     if is_trivial_verification_note(note):
         if changed_paths is not None and is_trivial_change_set(changed_paths):
             return None
@@ -279,20 +292,16 @@ def _require_verification_note(
         raise ToolError(
             "land_work rejected verification_note: model-supplied verification "
             "reports cannot authorize a merge. Run harness-trusted acceptance "
-            "checks so a durable receipt is recorded."
+            "checks or use the session-recorded verification state."
         )
-    hint = (
-        " A parsed verifier report or legacy workflow pass is observational only; "
-        "it must be converted into a harness-created receipt backed by locally "
-        "executed checks."
-    )
+    if state is not None and state.has_pass():
+        return None
     raise ToolError(
-        "land_work requires verification_note when verification_subsystem is "
-        "on. Provide a current verification_receipt_id, run the harness-trusted "
-        "acceptance checks, or pass 'trivial: <reason>' for a committed "
-        "documentation-only diff. Set "
-        "verification_subsystem = "
-        "false to disable this gate." + hint
+        "land_work requires a current session-recorded verifier or workflow PASS "
+        "when verification_subsystem is on and no trusted recipe is configured. "
+        "Run verification again, or pass 'trivial: <reason>' for a committed "
+        "documentation-only diff. Pasted verification prose is not accepted. Set "
+        "verification_subsystem = false to disable this gate."
     )
 
 

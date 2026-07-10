@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from vibe.core._prompt_invariants import (
     COMPACT_INVESTIGATION_INVARIANT,
     COMPACT_VERIFICATION_INVARIANT,
+    COMPACT_VERIFICATION_RECIPE_INVARIANT,
 )
 from vibe.core.baseline_scaling import (
     BaselineTier,
@@ -369,12 +370,27 @@ def _get_orchestration_section() -> str:
     return _ORCHESTRATION_SECTION
 
 
-def _get_verification_contract_section() -> str:
+def _get_verification_contract_section(*, trusted_recipe: bool = False) -> str:
     """Host-agent verification contract. Pairs with the structural nudge in the
     todo tool and the ``verifier`` subagent profile: defines when independent
     verification is required before the host may report work done. Gated on the
     ``verification_subsystem`` config flag at the call site.
     """
+    landing = (
+        "This session has a host-configured recipe frozen at startup. After the "
+        "verifier PASS, call no-argument `verify_work`; it executes only the "
+        "prebound commands and paths. `land_work` requires the resulting current "
+        "durable receipt. Pasted verification prose and `trivial:` waivers cannot "
+        "replace that receipt."
+        if trusted_recipe
+        else (
+            "No trusted recipe is configured for this session. A current verifier "
+            "or workflow-contract PASS is recorded automatically and may authorize "
+            "`land_work`; a report pasted into tool arguments is not accepted. A "
+            "`trivial: <reason>` waiver is accepted only when `land_work` confirms "
+            "a committed documentation-only diff."
+        )
+    )
     return (
         "## Verification contract\n\n"
         "Before reporting non-trivial work done (3+ files, backend/API, "
@@ -389,10 +405,7 @@ def _get_verification_contract_section() -> str:
         "not success.\n"
         "- **No VERDICT / subagent error** → not a pass; respawn once with "
         "a tighter brief, else tell the user verification could not complete.\n"
-        "A valid verifier or contract PASS is recorded automatically for "
-        "`land_work`; a report pasted into tool arguments is not accepted. A "
-        "`trivial: <reason>` waiver is accepted only when `land_work` confirms "
-        "a committed documentation-only diff."
+        + landing
     )
 
 
@@ -621,10 +634,15 @@ def _build_prompt_detail_sections(
         if section_enabled(tier, "orchestration_prose"):
             sections.append(_get_orchestration_section())
         if getattr(config, "verification_subsystem", True):
+            trusted_recipe = config.trusted_verification_recipe is not None
             sections.append(
-                _get_verification_contract_section()
+                _get_verification_contract_section(trusted_recipe=trusted_recipe)
                 if section_enabled(tier, "verification_contract")
-                else COMPACT_VERIFICATION_INVARIANT
+                else (
+                    COMPACT_VERIFICATION_RECIPE_INVARIANT
+                    if trusted_recipe
+                    else COMPACT_VERIFICATION_INVARIANT
+                )
             )
         if getattr(config, "investigation_subsystem", True):
             sections.append(

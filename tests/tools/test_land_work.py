@@ -157,7 +157,7 @@ class TestLandWorkVerificationNote:
                 AgentManager, _FakeAgentManager(verification_subsystem=True)
             ),
         )
-        with pytest.raises(ToolError, match="verification_note"):
+        with pytest.raises(ToolError, match="current session-recorded"):
             _require_verification_note(LandWorkArgs(), ctx)
 
     def test_accepts_trivial_note_with_reason(self):

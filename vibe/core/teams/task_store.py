@@ -117,10 +117,34 @@ class TaskStore:
                 return None
             if not self._dependencies_met(task, tasks):
                 return None
+            now = time.time()
+            if (
+                task.brief is not None
+                and task.brief.deadline is not None
+                and task.brief.deadline.timestamp() <= now
+            ):
+                diagnostic = (
+                    f"task deadline {task.brief.deadline.isoformat()} expired "
+                    "before team claim"
+                )
+                task.status = TaskStatus.COMPLETED
+                task.outcome = TaskOutcome(
+                    status=TaskOutcomeStatus.BLOCKED,
+                    summary="Task deadline expired before dispatch",
+                    diagnostics=[diagnostic],
+                    manifest=task.brief.manifest,
+                )
+                task.assignee = None
+                task.claimed_at = None
+                task.completed_at = now
+                task.result = diagnostic
+                self._write_tasks(tasks)
+                self._tasks = tasks
+                return None
             task.status = TaskStatus.IN_PROGRESS
             task.outcome = None
             task.assignee = assignee
-            task.claimed_at = time.time()
+            task.claimed_at = now
             task.completed_at = None
             task.result = None
             self._write_tasks(tasks)
