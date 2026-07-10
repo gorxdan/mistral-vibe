@@ -152,7 +152,15 @@ class TestACPNewSession:
         assert thinking_config.id == "thinking"
         assert thinking_config.category == "thinking"
         assert thinking_config.current_value == "off"
-        assert len(thinking_config.options) == 5
+        thinking_option_values = {opt.value for opt in thinking_config.options}
+        assert thinking_option_values == {
+            "off",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }
 
     @pytest.mark.asyncio
     async def test_new_session_rejects_invalid_additional_directory(
