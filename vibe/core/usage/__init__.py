@@ -10,12 +10,33 @@ from vibe.core.usage._aggregator import (
     session_records,
     summarize,
 )
+from vibe.core.usage._broker import SpendBroker
 from vibe.core.usage._codex_quota import (
     CodexCredits,
     CodexMonthlyLimit,
     CodexQuotaSnapshot,
     CodexQuotaWindow,
     fetch_codex_quota,
+)
+from vibe.core.usage._context import (
+    SpendAmount,
+    SpendContext,
+    SpendEnvelope,
+    SpendEnvelopeLimits,
+    SpendEnvelopeSnapshot,
+    SpendPurpose,
+    SpendRejection,
+    SpendRejectionReason,
+    SpendReservation,
+    SpendScopeKind,
+    SpendSettlement,
+    SpendSettlementDisposition,
+)
+from vibe.core.usage._ledger import (
+    SpendLedgerBusyError,
+    SpendLedgerConflictError,
+    SpendLedgerCorruptError,
+    SpendLedgerError,
 )
 from vibe.core.usage._meter import (
     CallKind,
@@ -52,7 +73,24 @@ __all__ = [
     "ProviderBreakdown",
     "RateLimitSnapshot",
     "RateLimitStore",
+    "SpendAmount",
+    "SpendBroker",
+    "SpendContext",
+    "SpendEnvelope",
+    "SpendEnvelopeLimits",
+    "SpendEnvelopeSnapshot",
+    "SpendLedgerBusyError",
+    "SpendLedgerConflictError",
+    "SpendLedgerCorruptError",
+    "SpendLedgerError",
     "SpendLimits",
+    "SpendPurpose",
+    "SpendRejection",
+    "SpendRejectionReason",
+    "SpendReservation",
+    "SpendScopeKind",
+    "SpendSettlement",
+    "SpendSettlementDisposition",
     "SpendSnapshot",
     "UsageMeter",
     "UsageRecord",

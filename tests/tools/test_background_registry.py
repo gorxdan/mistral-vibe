@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from vibe.core.tasking import TaskOutcome, TaskOutcomeStatus
 from vibe.core.teams.models import TeamSafetyMode
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory, _team_status
 from vibe.core.utils.io import read_safe
@@ -713,6 +714,7 @@ class _FakeIsolatedResult:
     returncode: int = 0
     worktree_path: str | None = None
     branch: str | None = None
+    outcome: TaskOutcome | None = None
 
 
 @pytest.mark.asyncio
@@ -763,6 +765,28 @@ async def test_async_agent_completion_queued_and_drained():
     assert drained[0].response == "result text"
     # Second drain is empty — pop clears the queue.
     assert reg.pop_async_completions() == []
+
+
+@pytest.mark.asyncio
+async def test_async_agent_preserves_failed_structured_outcome():
+    reg = BackgroundRegistry()
+    outcome = TaskOutcome(
+        status=TaskOutcomeStatus.FAILED,
+        summary="Subagent reported that the task failed",
+        diagnostics=["acceptance check failed"],
+    )
+
+    async def quick() -> _FakeIsolatedResult:
+        return _FakeIsolatedResult(output="TASK_OUTCOME: FAILED", outcome=outcome)
+
+    reg.register_async_agent("worker", asyncio.create_task(quick()))
+    await asyncio.sleep(0.05)
+
+    [entry] = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
+    [completion] = reg.pop_async_completions()
+    assert entry.status == "failed"
+    assert entry.detail["outcome"]["status"] == TaskOutcomeStatus.FAILED.value
+    assert completion.outcome == outcome
 
 
 @pytest.mark.asyncio

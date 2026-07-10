@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from vibe.core.failure_diagnostic import FailureDiagnostic
 from vibe.core.tools.base import BaseTool
 
 
@@ -11,6 +12,9 @@ class ParsedToolCall(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     tool_name: str
     raw_args: dict[str, Any]
+    raw_text: str = ""
+    parse_error: FailureDiagnostic | None = None
+    repaired: bool = False
     call_id: str = ""
 
 
@@ -31,6 +35,7 @@ class FailedToolCall(BaseModel):
     tool_name: str
     call_id: str
     error: str
+    diagnostic: FailureDiagnostic | None = None
 
 
 class ParsedMessage(BaseModel):

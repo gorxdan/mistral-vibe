@@ -211,6 +211,12 @@ from vibe.core.usage import (
     lookup_pricing,
     rate_limit_from_headers,
 )
+from vibe.core.usage._context import SpendPurpose
+from vibe.core.usage._session import (
+    SPEND_SESSION_ID_METADATA_KEY,
+    SessionSpendAdapter,
+    SpendBudgetExceededError,
+)
 from vibe.core.utils import (
     TOOL_ERROR_TAG,
     VIBE_STOP_EVENT_TAG,
@@ -462,6 +468,7 @@ class AgentLoopParams:
     permission_store: PermissionStore | None = None
     mcp_registry: MCPRegistry | None = None
     cache_store: VibeCodeCacheStore | None = None
+    spend_adapter: SessionSpendAdapter | None = None
 
 
 class AgentLoop(
@@ -496,7 +503,9 @@ class AgentLoop(
         self._init_session_state(
             p.is_subagent, p.launch_context, p.terminal_emulator, config
         )
-        self._init_telemetry(config, p.is_subagent)
+        self._init_telemetry(
+            config, p.is_subagent, p.spend_adapter, p.max_price, p.max_session_tokens
+        )
         self._init_hooks(p.hook_config_result)
         self._init_rewind()
 
@@ -584,8 +593,15 @@ class AgentLoop(
         return self.config.bypass_tool_permissions
 
     def refresh_config(self) -> None:
-        self._base_config = VibeConfig.load()
+        self._base_config = self._verification_state.preserve_recipe_in_config(
+            VibeConfig.load()
+        )
         self.agent_manager.invalidate_config()
+        self._spend_adapter.tighten_limits(
+            self.config.spend,
+            runtime_max_cost_usd=self._max_price,
+            runtime_max_total_tokens=self._max_session_tokens,
+        )
 
     def _drain_pending_injections(self) -> bool:
         staged = False
@@ -1135,6 +1151,7 @@ class AgentLoop(
         auto_title: str | None = None,
         images: list[ImageAttachment] | None = None,
     ) -> AsyncGenerator[BaseEvent]:
+        self._spend_retry_purposes.clear()
         if not self._files_read_reconstructed:
             self._reconstruct_files_read()
         await self._check_agents_md_changed()
@@ -1795,11 +1812,11 @@ class AgentLoop(
     ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent | HookEvent]:
         self.stats.tool_calls_agreed += 1
 
-        if (
-            tool_call.tool_name != "land_work"
-            and not tool_call.tool_class.call_is_read_only(
-                tool_call.validated_args, agent_manager=self.agent_manager
-            )
+        if tool_call.tool_name not in {
+            "land_work",
+            "verify_work",
+        } and not tool_call.tool_class.call_is_read_only(
+            tool_call.validated_args, agent_manager=self.agent_manager
         ):
             self._verification_state.clear()
 
@@ -1865,6 +1882,7 @@ class AgentLoop(
                     files_read=self._files_read,
                     verification_state=self._verification_state,
                     tool_manager=self.tool_manager,
+                    spend_adapter=self._spend_adapter,
                 ),
                 **tool_call.args_dict,
             ):
@@ -2109,6 +2127,11 @@ class AgentLoop(
         ):
             backend = create_backend(provider=provider, timeout=self.config.api_timeout)
         backend_metadata = self._build_backend_metadata()
+        spend_purpose = (
+            SpendPurpose.COMPACTION if harness else self._spend_adapter.default_purpose
+        )
+        spend_is_retry = spend_purpose in self._spend_retry_purposes
+        self._spend_retry_purposes.discard(spend_purpose)
 
         available_tools = None if harness else self._available_tools(active_model)
         tool_choice = None if harness else self.format_handler.get_tool_choice()
@@ -2138,7 +2161,8 @@ class AgentLoop(
             ) as _span:
                 start_time = time.perf_counter()
                 extra_headers, turn_state_sink = self._codex_routing(provider)
-                result = await backend.complete(
+                result = await self._spend_adapter.complete(
+                    backend,
                     CompletionRequest(
                         model=active_model,
                         messages=self._messages_for_backend(
@@ -2152,6 +2176,8 @@ class AgentLoop(
                         metadata=backend_metadata.model_dump(exclude_none=True),
                         response_format=None if harness else self._response_format,
                     ),
+                    purpose=spend_purpose,
+                    is_retry=spend_is_retry,
                     response_headers_sink=turn_state_sink,
                 )
                 end_time = time.perf_counter()
@@ -2182,6 +2208,7 @@ class AgentLoop(
             # Raise before committing the truncated turn to history so the
             # escalation retry (larger max_tokens) starts from a clean message list.
             if result.stop and result.stop.is_truncated:
+                self._spend_retry_purposes.add(spend_purpose)
                 raise ResponseTooLongError(provider.name, active_model.name)
             self.messages.append(processed_message)
             if result.stop and result.stop.is_refusal:
@@ -2190,7 +2217,10 @@ class AgentLoop(
                 message=processed_message, usage=result.usage, stop=result.stop
             )
 
+        except SpendBudgetExceededError:
+            raise
         except Exception as e:
+            self._spend_retry_purposes.add(spend_purpose)
             _raise_for_backend_error(e, provider.name, active_model.name)
 
     async def _chat_streaming(
@@ -2200,6 +2230,9 @@ class AgentLoop(
             max_tokens = self._max_output_override
         active_model, provider = self._resolve_active_model()
         backend_metadata = self._build_backend_metadata()
+        spend_purpose = self._spend_adapter.default_purpose
+        initial_spend_retry = spend_purpose in self._spend_retry_purposes
+        self._spend_retry_purposes.discard(spend_purpose)
 
         available_tools = self._available_tools(active_model)
         tool_choice = self.format_handler.get_tool_choice()
@@ -2235,7 +2268,8 @@ class AgentLoop(
                     chunk_acc = LLMChunkAccumulator()
                     extra_headers, turn_state_sink = self._codex_routing(provider)
                     stream_tracer.stream_started(self)
-                    async for chunk in self.backend.complete_streaming(
+                    async for chunk in self._spend_adapter.complete_streaming(
+                        self.backend,
                         CompletionRequest(
                             model=active_model,
                             messages=self._messages_for_backend(active_model),
@@ -2247,6 +2281,8 @@ class AgentLoop(
                             metadata=backend_metadata.model_dump(exclude_none=True),
                             response_format=self._response_format,
                         ),
+                        purpose=spend_purpose,
+                        is_retry=initial_spend_retry or attempt > 0,
                         response_headers_sink=turn_state_sink,
                     ):
                         stream_tracer.chunk_received(self)
@@ -2297,6 +2333,7 @@ class AgentLoop(
                 # Raise before committing the truncated turn so the escalation
                 # retry re-streams from a clean message list (mirrors _chat).
                 if chunk_agg.stop and chunk_agg.stop.is_truncated:
+                    self._spend_retry_purposes.add(spend_purpose)
                     raise ResponseTooLongError(provider.name, active_model.name)
                 self.messages.append(chunk_agg.message)
                 if chunk_agg.stop and chunk_agg.stop.is_refusal:
@@ -2314,7 +2351,10 @@ class AgentLoop(
                     )
                     continue
                 raise
+            except SpendBudgetExceededError:
+                raise
             except Exception as e:
+                self._spend_retry_purposes.add(spend_purpose)
                 _raise_for_backend_error(e, provider.name, active_model.name)
 
     def _update_stats(
@@ -2445,16 +2485,49 @@ class AgentLoop(
         suffix = extract_suffix(self.session_id)
         self.session_id = generate_session_id(suffix=suffix)
         self._usage_meter.rebind_session(self.session_id)
+        if lifecycle_reason is not None:
+            self._spend_adapter = SessionSpendAdapter.create(
+                self.config.spend,
+                self.session_id,
+                runtime_max_cost_usd=self._max_price,
+                runtime_max_total_tokens=self._max_session_tokens,
+            )
         parent_session_id = old_session_id if keep_parent else None
         self.parent_session_id = parent_session_id
         self.session_logger.reset_session(
             self.session_id, parent_session_id=parent_session_id
         )
+        if self.session_logger.session_metadata is not None:
+            self.session_logger.session_metadata.environment[
+                SPEND_SESSION_ID_METADATA_KEY
+            ] = self._spend_adapter.spend_session_id
         self._files_read.clear()
         self._files_read_reconstructed = False
         self._agents_md_fingerprint = None
         await self.initialize_experiments()
         self.emit_new_session_telemetry()
+
+    def resume_existing_session(
+        self, session_id: str, parent_session_id: str | None, session_path: Path
+    ) -> None:
+        self.session_id = session_id
+        self.parent_session_id = parent_session_id
+        self._usage_meter.rebind_session(session_id)
+        self.session_logger.resume_existing_session(session_id, session_path)
+        spend_session_id = session_id
+        if self.session_logger.session_metadata is not None:
+            spend_session_id = (
+                self.session_logger.session_metadata.environment.get(
+                    SPEND_SESSION_ID_METADATA_KEY
+                )
+                or session_id
+            )
+        self._spend_adapter = SessionSpendAdapter.create(
+            self.config.spend,
+            spend_session_id,
+            runtime_max_cost_usd=self._max_price,
+            runtime_max_total_tokens=self._max_session_tokens,
+        )
 
     async def fork(self, message_id: str | None = None) -> AgentLoop:
         messages = self._messages_for_fork(message_id)
@@ -2470,6 +2543,7 @@ class AgentLoop(
                 terminal_emulator=self.terminal_emulator,
                 defer_heavy_init=True,
                 hook_config_result=self._hook_config_result,
+                spend_adapter=self._spend_adapter.child_agent(),
             ),
         )
         forked._max_output_override = self._max_output_override
@@ -2491,6 +2565,10 @@ class AgentLoop(
         forked.session_logger.reset_session(
             forked.session_id, parent_session_id=self.session_id
         )
+        if forked.session_logger.session_metadata is not None:
+            forked.session_logger.session_metadata.environment[
+                SPEND_SESSION_ID_METADATA_KEY
+            ] = forked._spend_adapter.spend_session_id
         forked.messages.extend(messages)
         await forked.session_logger.save_interaction(
             forked.messages,
@@ -2712,8 +2790,18 @@ class AgentLoop(
         model_changed = False
         if base_config is not None:
             model_changed = base_config.active_model != self._base_config.active_model
-            self._base_config = base_config
+            self._base_config = self._verification_state.preserve_recipe_in_config(
+                base_config
+            )
             self.agent_manager.invalidate_config()
+
+        self._spend_adapter.tighten_limits(
+            self.config.spend,
+            runtime_max_cost_usd=max_price
+            if max_price is not None
+            else self._max_price,
+            runtime_max_total_tokens=self._max_session_tokens,
+        )
 
         # Drop the rate-limit/fallback override ONLY when the reload makes a
         # different configured model authoritative — otherwise the stale override
@@ -2898,7 +2986,9 @@ class AgentLoop(
         self._files_read: dict[str, str] = {}
         self._files_read_reconstructed: bool = False
         self._agents_md_fingerprint: str | None = None
-        self._verification_state = VerificationState()
+        self._verification_state = VerificationState.from_recipe(
+            self._base_config.trusted_verification_recipe
+        )
 
         self._system_prompt_tier = self._current_baseline_tier()
 
@@ -2955,6 +3045,7 @@ class AgentLoop(
         # the turn with a larger max_tokens. Per-turn override + attempt counter.
         self._max_output_override: int | None = None
         self._response_too_long_attempts: int = 0
+        self._spend_retry_purposes: set[SpendPurpose] = set()
         # True while inside a Stop-hook-induced continuation (passed to the next
         # Stop invocation so a hook can avoid an infinite continue loop).
         self._stop_hook_active: bool = False
@@ -2991,7 +3082,14 @@ class AgentLoop(
             launch_context.terminal_emulator if launch_context else None
         )
 
-    def _init_telemetry(self, config: VibeConfig, is_subagent: bool) -> None:
+    def _init_telemetry(
+        self,
+        config: VibeConfig,
+        is_subagent: bool,
+        spend_adapter: SessionSpendAdapter | None,
+        max_price: float | None,
+        max_session_tokens: int | None,
+    ) -> None:
         try:
             active_model = config.get_active_model()
             self.stats.input_price_per_million = active_model.input_price
@@ -3000,6 +3098,12 @@ class AgentLoop(
             pass
 
         self._usage_recorder = get_usage_recorder()
+        self._spend_adapter = spend_adapter or SessionSpendAdapter.create(
+            config.spend,
+            self.session_id,
+            runtime_max_cost_usd=max_price,
+            runtime_max_total_tokens=max_session_tokens,
+        )
         self._usage_meter = UsageMeter(
             self.session_id,
             limits=SpendLimits(
@@ -3319,9 +3423,13 @@ class AgentLoop(
         if self._response_too_long_attempts > esc.max_attempts:
             return None
         cap = model.max_output_tokens or esc.cap
-        current = self._max_output_override or esc.base
+        current = (
+            self._max_output_override
+            or self._spend_adapter.last_admitted_completion_tokens
+            or esc.base
+        )
         next_val = min(int(current * esc.factor), cap)
-        if next_val <= (self._max_output_override or 0):
+        if next_val <= current:
             # Already at cap; a further retry would request the same size.
             return None
         self._max_output_override = next_val
@@ -3339,10 +3447,13 @@ class AgentLoop(
             )
             if rec.error:
                 summary += f"\n[error: {rec.error}]"
+            if rec.outcome is not None:
+                summary += "\nTASK_OUTCOME_JSON:" + rec.outcome.model_dump_json(
+                    exclude_none=True
+                )
             label = getattr(rec, "label", None) or rec.agent
             message = (
-                f"[background subagent {rec.task_id} ({label}) "
-                f"{'completed' if rec.completed else 'failed'}]\n{summary}"
+                f"[background subagent {rec.task_id} ({label}) {rec.status}]\n{summary}"
             )
             self.messages.append(
                 LLMMessage(
@@ -3360,6 +3471,7 @@ class AgentLoop(
                 worktree_path=rec.worktree_path,
                 branch=rec.branch,
                 error=rec.error,
+                outcome=rec.outcome,
             )
 
     def _apply_tool_result_budget(self, tool_call: ResolvedToolCall, text: str) -> str:

@@ -2946,10 +2946,8 @@ class VibeApp(App):
             msg for msg in loaded_messages if msg.role != Role.SYSTEM
         ]
 
-        self.agent_loop.session_id = session.session_id
-        self.agent_loop.parent_session_id = metadata.get("parent_session_id")
-        self.agent_loop.session_logger.resume_existing_session(
-            session.session_id, session_path
+        self.agent_loop.resume_existing_session(
+            session.session_id, metadata.get("parent_session_id"), session_path
         )
         await self.agent_loop.hydrate_experiments_from_session()
         current_system_messages = [
@@ -3955,15 +3953,15 @@ class VibeApp(App):
         from vibe.core.workflows.models import WorkflowStatus
 
         summary = result.summary
-        # A failed run returns a WorkflowResult with FAILED status (the script
-        # exception is swallowed in WorkflowRuntime.run); surface it as an error
-        # rather than styling it as a successful completion. A STOPPED run
-        # (cancelled by the user) is neither success nor error — render it as a
-        # neutral note so it isn't styled red like a crash.
+        # Failed and budget-blocked runs are not successful completions. A STOPPED
+        # run (cancelled by the user) is neither success nor error.
         status = getattr(result.run, "status", None)
         run_id = getattr(result.run, "run_id", "workflow")
-        if status == WorkflowStatus.FAILED:
-            label = f"Workflow Result — {run_id} (failed)"
+        if isinstance(status, WorkflowStatus) and status in {
+            WorkflowStatus.FAILED,
+            WorkflowStatus.BLOCKED,
+        }:
+            label = f"Workflow Result — {run_id} ({status.value})"
             await self._mount_and_scroll(
                 SubagentResponseMessage(summary, label=label, collapsed=False)
             )

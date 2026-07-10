@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from vibe.core.memory.verifier import MemoryVerifier
     from vibe.core.types import MessageList
     from vibe.core.usage import UsageMeter
+    from vibe.core.usage._session import SessionSpendAdapter
 
 
 class AgentLoopMemoryMixin:
@@ -75,6 +76,7 @@ class AgentLoopMemoryMixin:
     _mem_consolidate_task: asyncio.Task[None] | None
     _mem_verify_task: asyncio.Task[None] | None
     _usage_meter: UsageMeter
+    _spend_adapter: SessionSpendAdapter
 
     # ``config`` is a @property on the host (AgentLoop), so the mixin must
     # declare it the same way rather than as a plain class attribute, or the
@@ -145,6 +147,7 @@ class AgentLoopMemoryMixin:
             max_selected=mem.max_selected,
             timeout=mem.timeout,
             usage_meter=self._usage_meter,
+            spend_adapter=self._spend_adapter,
             extra_headers=self._get_extra_headers(provider),
             extra_body=mem.extra_body or None,
         )
@@ -391,6 +394,7 @@ class AgentLoopMemoryMixin:
             provider=provider,
             timeout=mem.auto_extract_timeout,
             usage_meter=self._usage_meter,
+            spend_adapter=self._spend_adapter,
             extra_headers=self._get_extra_headers(provider),
             extra_body=mem.extra_body or None,
         )
@@ -614,6 +618,7 @@ class AgentLoopMemoryMixin:
             max_actions=mem.consolidate_max_actions,
             timeout=mem.consolidate_timeout,
             usage_meter=self._usage_meter,
+            spend_adapter=self._spend_adapter,
             extra_headers=self._get_extra_headers(provider),
             extra_body=mem.extra_body or None,
         )
@@ -832,6 +837,7 @@ class AgentLoopMemoryMixin:
             project_root=Path.cwd(),
             timeout=mem.verify_timeout,
             usage_meter=self._usage_meter,
+            spend_adapter=self._spend_adapter,
             extra_headers=self._get_extra_headers(provider),
             extra_body=mem.extra_body or None,
         )

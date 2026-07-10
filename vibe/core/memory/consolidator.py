@@ -24,7 +24,8 @@ from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.logger import logger
 from vibe.core.memory._llm_client import _MemoryLLMClient
 from vibe.core.types import LLMMessage, Role
-from vibe.core.usage import CallKind, UsageMeter
+from vibe.core.usage import CallKind, SpendPurpose, UsageMeter
+from vibe.core.usage._session import SessionSpendAdapter
 
 _SYSTEM_PROMPT = """\
 You reconcile fragmented and duplicate durable memories into fewer, cleaner
@@ -186,6 +187,7 @@ class MemoryConsolidator(_MemoryLLMClient):
         max_actions: int = 5,
         timeout: float = 45.0,
         usage_meter: UsageMeter | None = None,
+        spend_adapter: SessionSpendAdapter | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
@@ -194,7 +196,9 @@ class MemoryConsolidator(_MemoryLLMClient):
             provider=provider,
             timeout=timeout,
             call_kind=CallKind.MEMORY_CONSOLIDATE,
+            spend_purpose=SpendPurpose.MEMORY_CONSOLIDATE,
             usage_meter=usage_meter,
+            spend_adapter=spend_adapter,
             extra_headers=extra_headers,
             extra_body=extra_body,
         )

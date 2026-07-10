@@ -43,7 +43,7 @@ AgentLoop(AgentLoopMemoryMixin, AgentLoopFailoverMixin, AgentLoopSafetyJudgeMixi
 1. `_init_base_state` — stores config, cache store, headless flag
 2. `_init_registries` — sets up permission store, MCP registry, tool manager, agent manager, skill manager, turn/price/token limits
 3. `_init_backend` — creates the LLM backend via `create_backend()` factory
-4. `_init_session_identity` / `_init_messages` / `_init_session_state` — session ID, message list, telemetry
+4. `_init_session_identity` / `_init_messages` / `_init_session_state` — session ID, message list, telemetry, shared spend adapter
 5. `_init_hooks` — hooks manager
 6. `_init_rewind` — file snapshot/rewind system
 7. Optionally defers heavy init (MCP integration, system prompt assembly) to a background thread
@@ -103,7 +103,7 @@ AgentLoop (agent_loop.py)
     │   └── ProjectContextProvider → git status, worktree, tools, skills, agents
     │
     ├── LLM Backend (llm/backend/factory.py → MistralBackend | GenericBackend)
-    │   └── CompletionRequest → LLMChunk (streaming or non-streaming)
+    │   └── Spend reservation → CompletionRequest → LLMChunk → reconciliation
     │
     ├── Tool Execution Flow:
     │   ├── Parse LLM response → ParsedToolCall → ResolvedToolCall (via ToolManager)
@@ -133,6 +133,41 @@ The middleware pipeline applies transformations to the conversation state before
 - **Loop detection** — detect and break repetitive agent loops
 
 The design doc `docs/design/compaction.md` describes the multi-stage shaper pipeline (snip + microcompact) in detail.
+
+## Spend Admission
+
+**Source**: `vibe/core/usage/_broker.py`, `_ledger.py`, `_session.py`
+
+Primary, compaction, in-process task/workflow, memory-helper, and safety-judge
+calls share a durable hierarchical ledger
+(`session -> workflow/team -> agent -> call`). Admission is reserved before
+backend dispatch under a file lock, so sibling agents cannot race past the
+parent cap. Provider usage reconciles the reservation; errors or missing usage
+retain the estimate. Session resume rebinds the adapter to the resumed ledger,
+and active calls renew their leases.
+
+The broker core is cross-process capable, but isolated subprocess, MCP sampling,
+narration, and backend-internal retry attempts are not yet routed as distinct
+calls.
+
+## Verification Receipts
+
+**Source**: `vibe/core/_verification_receipt.py`,
+`vibe/core/_verification_runner.py`, `vibe/core/verification_state.py`
+
+Trusted local checks create immutable receipts bound to the task brief,
+acceptance contract, repository identity and state, configuration, check set,
+and full-output artifact hashes. A configured `trusted_verification_recipe` is
+frozen into `VerificationState` when `AgentLoop` starts. After a current verifier
+PASS, no-argument `verify_work` executes only that prebound plan against the
+active candidate and current main HEAD. `land_work` revalidates its receipt,
+merges, and reports the merge commit SHA; it does not persist a separate landing
+record.
+
+Without a configured recipe, a current workspace-bound verifier or workflow
+contract PASS remains the compatibility authorization path. Model-authored or
+pasted verification prose never authorizes a merge. The documentation-only
+`trivial: <reason>` waiver is available only in this unconfigured mode.
 
 ## System Prompt Assembly
 

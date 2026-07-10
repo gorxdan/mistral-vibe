@@ -13,15 +13,15 @@ this base only owns model/provider/timeout storage and the completion call.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
 from vibe.core.llm.types import CompletionRequest
-from vibe.core.types import LLMMessage, LLMUsage
-from vibe.core.usage import CallKind, UsageMeter, usage_cost
-from vibe.core.utils.tokens import approx_token_count
+from vibe.core.types import LLMMessage
+from vibe.core.usage import CallKind, SpendPurpose, UsageMeter
+from vibe.core.usage._auxiliary import complete_auxiliary
+from vibe.core.usage._session import SessionSpendAdapter
 
 
 class _MemoryLLMClient:
@@ -37,7 +37,9 @@ class _MemoryLLMClient:
     _extra_headers: dict[str, str]
     _extra_body: dict[str, Any] | None
     _call_kind: CallKind
+    _spend_purpose: SpendPurpose
     _usage_meter: UsageMeter | None
+    _spend_adapter: SessionSpendAdapter | None
 
     def __init__(
         self,
@@ -46,7 +48,9 @@ class _MemoryLLMClient:
         provider: ProviderConfig,
         timeout: float,
         call_kind: CallKind,
+        spend_purpose: SpendPurpose,
         usage_meter: UsageMeter | None = None,
+        spend_adapter: SessionSpendAdapter | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
@@ -54,7 +58,9 @@ class _MemoryLLMClient:
         self._provider = provider
         self._timeout = timeout
         self._call_kind = call_kind
+        self._spend_purpose = spend_purpose
         self._usage_meter = usage_meter
+        self._spend_adapter = spend_adapter
         self._extra_headers = extra_headers or {}
         self._extra_body = extra_body or None
 
@@ -78,50 +84,18 @@ class _MemoryLLMClient:
             response_format={"type": "json_object"},
             extra_body=self._extra_body,
         )
-        if self._usage_meter is None:
-            backend_cls = BACKEND_FACTORY[self._provider.backend]
-            async with backend_cls(
-                provider=self._provider, timeout=self._timeout
-            ) as backend:
-                result = await backend.complete(request)
-            return result.message.content
-
-        estimated_prompt_tokens = sum(
-            approx_token_count(message.content or "") for message in messages
-        )
-        estimated_usage = LLMUsage(
-            prompt_tokens=estimated_prompt_tokens, completion_tokens=max_tokens
-        )
-        reservation = self._usage_meter.try_reserve(
-            estimated_prompt_tokens + max_tokens,
-            estimated_cost_usd=usage_cost(self._model, estimated_usage),
-        )
-        if reservation is None:
-            return None
-        started = time.monotonic()
-        try:
-            backend_cls = BACKEND_FACTORY[self._provider.backend]
-            async with backend_cls(
-                provider=self._provider, timeout=self._timeout
-            ) as backend:
-                result = await backend.complete(request)
-        except BaseException:
-            self._usage_meter.reconcile(
-                reservation,
-                usage=None,
+        backend_cls = BACKEND_FACTORY[self._provider.backend]
+        async with backend_cls(
+            provider=self._provider, timeout=self._timeout
+        ) as backend:
+            result = await complete_auxiliary(
+                backend,
+                request,
                 model=self._model,
                 provider=self._provider,
                 call_kind=self._call_kind,
-                duration_s=time.monotonic() - started,
+                purpose=self._spend_purpose,
+                usage_meter=self._usage_meter,
+                spend_adapter=self._spend_adapter,
             )
-            raise
-        self._usage_meter.reconcile(
-            reservation,
-            usage=result.usage,
-            model=self._model,
-            provider=self._provider,
-            call_kind=self._call_kind,
-            duration_s=time.monotonic() - started,
-            result_used=True,
-        )
-        return result.message.content
+        return result.message.content if result is not None else None

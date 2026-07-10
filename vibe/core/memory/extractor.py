@@ -19,7 +19,8 @@ from vibe.core.logger import logger
 from vibe.core.memory._llm_client import _MemoryLLMClient
 from vibe.core.memory.models import MemoryType
 from vibe.core.types import LLMMessage, Role
-from vibe.core.usage import CallKind, UsageMeter
+from vibe.core.usage import CallKind, SpendPurpose, UsageMeter
+from vibe.core.usage._session import SessionSpendAdapter
 
 _SYSTEM_PROMPT = """\
 You extract durable, cross-session memories from a coding-assistant transcript.
@@ -108,6 +109,7 @@ class MemoryExtractor(_MemoryLLMClient):
         provider: ProviderConfig,
         timeout: float = 30.0,
         usage_meter: UsageMeter | None = None,
+        spend_adapter: SessionSpendAdapter | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
@@ -116,7 +118,9 @@ class MemoryExtractor(_MemoryLLMClient):
             provider=provider,
             timeout=timeout,
             call_kind=CallKind.MEMORY_EXTRACT,
+            spend_purpose=SpendPurpose.MEMORY_EXTRACT,
             usage_meter=usage_meter,
+            spend_adapter=spend_adapter,
             extra_headers=extra_headers,
             extra_body=extra_body,
         )

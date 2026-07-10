@@ -171,7 +171,7 @@ async def test_chat_passes_override_to_backend_but_not_compaction() -> None:
     await loop._chat()  # main-turn call inherits override
     await loop._chat(model_override=loop.config.get_active_model())  # compaction-like
 
-    assert seen == [16384, None]
+    assert seen == [16384, 32768]
 
 
 @pytest.mark.asyncio
@@ -274,9 +274,9 @@ async def test_codex_truncation_goes_terminal_without_retrying() -> None:
     )
     with pytest.raises(ResponseTooLongError):
         _ = [e async for e in loop._conversation_loop("hi")]
-    # Codex strips max_output_tokens from the wire, so an escalated retry would
-    # re-send an identical request: exactly one attempt, then terminal.
-    assert backend.requests_max_tokens == [None]
+    # Codex strips max_output_tokens after admission, so an escalated retry would
+    # re-send an identical wire request: exactly one attempt, then terminal.
+    assert backend.requests_max_tokens == [32768]
     assert loop._max_output_override is None
 
 
@@ -288,7 +288,7 @@ async def test_escalation_capable_adapter_still_retries_with_larger_caps() -> No
     )
     with pytest.raises(ResponseTooLongError):
         _ = [e async for e in loop._conversation_loop("hi")]
-    assert backend.requests_max_tokens == [None, 16384, 32768, 65536]
+    assert backend.requests_max_tokens == [32768, 65536]
 
 
 def test_adapter_capability_flags() -> None:

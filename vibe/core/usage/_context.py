@@ -1,0 +1,186 @@
+from __future__ import annotations
+
+from enum import StrEnum, auto
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+__all__ = [
+    "DEFAULT_RESERVATION_LEASE_S",
+    "MAX_RESERVATION_LEASE_S",
+    "SpendAmount",
+    "SpendContext",
+    "SpendEnvelope",
+    "SpendEnvelopeLimits",
+    "SpendEnvelopeSnapshot",
+    "SpendPurpose",
+    "SpendRejection",
+    "SpendRejectionReason",
+    "SpendReservation",
+    "SpendScopeKind",
+    "SpendSettlement",
+    "SpendSettlementDisposition",
+]
+
+DEFAULT_RESERVATION_LEASE_S = 300.0
+MAX_RESERVATION_LEASE_S = 3600.0
+
+
+class SpendScopeKind(StrEnum):
+    SESSION = auto()
+    WORKFLOW = auto()
+    TEAM = auto()
+    AGENT = auto()
+    CALL = auto()
+
+
+class SpendPurpose(StrEnum):
+    PRIMARY = auto()
+    COMPACTION = auto()
+    MEMORY_RECALL = auto()
+    MEMORY_EXTRACT = auto()
+    MEMORY_CONSOLIDATE = auto()
+    MEMORY_VERIFY = auto()
+    SAFETY_JUDGE = auto()
+    NARRATION = auto()
+    WORKFLOW = auto()
+    TEAM = auto()
+    REPAIR = auto()
+    VERIFICATION = auto()
+
+
+class SpendRejectionReason(StrEnum):
+    UNKNOWN_SCOPE = auto()
+    DUPLICATE_CALL = auto()
+    DEADLINE = auto()
+    PROMPT_TOKENS = auto()
+    COMPLETION_TOKENS = auto()
+    TOTAL_TOKENS = auto()
+    COST_USD = auto()
+    CALLS = auto()
+    CONCURRENT_CALLS = auto()
+    RETRIES = auto()
+
+
+class SpendSettlementDisposition(StrEnum):
+    RECONCILED = auto()
+    RELEASED = auto()
+    EXPIRED = auto()
+
+
+class _FrozenModel(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+
+class SpendAmount(_FrozenModel):
+    prompt_tokens: int = Field(default=0, ge=0)
+    completion_tokens: int = Field(default=0, ge=0)
+    cost_usd: float = Field(default=0.0, ge=0.0)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+class SpendEnvelopeLimits(_FrozenModel):
+    max_prompt_tokens: int | None = Field(default=None, ge=0)
+    max_completion_tokens: int | None = Field(default=None, ge=0)
+    max_total_tokens: int | None = Field(default=None, ge=0)
+    max_cost_usd: float | None = Field(default=None, ge=0.0)
+    max_calls: int | None = Field(default=None, ge=0)
+    max_concurrent_calls: int | None = Field(default=None, ge=0)
+    max_retries: int | None = Field(default=None, ge=0)
+    deadline_at: float | None = Field(default=None, ge=0.0)
+
+
+class SpendEnvelope(_FrozenModel):
+    scope_id: str = Field(min_length=1, max_length=256)
+    kind: SpendScopeKind
+    limits: SpendEnvelopeLimits = Field(default_factory=SpendEnvelopeLimits)
+    parent_scope_id: str | None = Field(default=None, min_length=1, max_length=256)
+
+    @field_validator("scope_id")
+    @classmethod
+    def _reserve_call_namespace(cls, value: str) -> str:
+        if value.startswith("call:"):
+            raise ValueError("scope_id cannot use the reserved call: namespace")
+        return value
+
+
+class SpendContext(_FrozenModel):
+    scope_id: str = Field(min_length=1, max_length=256)
+    purpose: SpendPurpose
+    call_id: str | None = Field(default=None, min_length=1, max_length=256)
+    is_retry: bool = False
+
+
+class SpendReservation(_FrozenModel):
+    reservation_id: str = Field(min_length=1, max_length=256)
+    call_scope_id: str = Field(min_length=1, max_length=512)
+    scope_id: str = Field(min_length=1, max_length=256)
+    scope_chain: tuple[str, ...] = Field(min_length=2)
+    purpose: SpendPurpose
+    estimate: SpendAmount
+    is_retry: bool
+    created_at: float = Field(ge=0.0)
+    lease_expires_at: float = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_scope_chain(self) -> Self:
+        if self.call_scope_id != f"call:{self.reservation_id}":
+            raise ValueError("call_scope_id must derive from reservation_id")
+        if self.scope_chain[-1] != self.call_scope_id:
+            raise ValueError("call scope must terminate scope_chain")
+        if self.scope_chain[-2] != self.scope_id:
+            raise ValueError("agent scope must precede call scope")
+        if self.lease_expires_at <= self.created_at:
+            raise ValueError("reservation lease must expire after creation")
+        return self
+
+
+class SpendRejection(_FrozenModel):
+    call_id: str = Field(min_length=1, max_length=256)
+    scope_id: str = Field(min_length=1, max_length=256)
+    scope_chain: tuple[str, ...] = ()
+    purpose: SpendPurpose
+    estimate: SpendAmount
+    is_retry: bool
+    reason: SpendRejectionReason
+    limited_scope_id: str | None = Field(default=None, min_length=1, max_length=256)
+    timestamp: float = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_scope_chain(self) -> Self:
+        if self.scope_chain and self.scope_chain[-1] != self.scope_id:
+            raise ValueError("rejection scope must terminate scope_chain")
+        return self
+
+
+class SpendSettlement(_FrozenModel):
+    reservation_id: str = Field(min_length=1, max_length=256)
+    disposition: SpendSettlementDisposition
+    amount: SpendAmount
+    estimated: bool
+    applied: bool
+    timestamp: float = Field(ge=0.0)
+    reason: str | None = Field(default=None, max_length=512)
+
+
+class SpendEnvelopeSnapshot(_FrozenModel):
+    envelope: SpendEnvelope
+    spent: SpendAmount
+    reserved: SpendAmount
+    rejected: SpendAmount
+    spent_calls: int = Field(ge=0)
+    reserved_calls: int = Field(ge=0)
+    rejected_calls: int = Field(ge=0)
+    spent_retries: int = Field(ge=0)
+    reserved_retries: int = Field(ge=0)
+    remaining_prompt_tokens: int | None = Field(default=None, ge=0)
+    remaining_completion_tokens: int | None = Field(default=None, ge=0)
+    remaining_total_tokens: int | None = Field(default=None, ge=0)
+    remaining_cost_usd: float | None = Field(default=None, ge=0.0)
+    remaining_calls: int | None = Field(default=None, ge=0)
+    remaining_concurrent_calls: int | None = Field(default=None, ge=0)
+    remaining_retries: int | None = Field(default=None, ge=0)
+    deadline_at: float | None = Field(default=None, ge=0.0)

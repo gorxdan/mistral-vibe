@@ -62,11 +62,23 @@ def _shutdown_pending(mailbox: Mailbox, name: str) -> bool:
 
 
 def _task_prompt(task: Task) -> str:
+    if task.structured:
+        return (
+            "You are a team worker. Complete this claimed task and then stop "
+            "(the worker loop will claim the next one).\n\n"
+            f"Task id: {task.id}\n"
+            f"Structured contract:\n{task.prompt}\n\n"
+            "When finished, call the team tool action=complete_task with "
+            f"task_id={task.id!r}. Its result description must end with exactly "
+            "one terminal line: TASK_OUTCOME: SUCCEEDED, TASK_OUTCOME: FAILED, "
+            "TASK_OUTCOME: BLOCKED, or TASK_OUTCOME: RETRYABLE. Do not claim "
+            "other tasks yourself — the harness does that."
+        )
     return (
         f"You are a team worker. Complete this claimed task and then stop "
         f"(the worker loop will claim the next one).\n\n"
         f"Task id: {task.id}\n"
-        f"Description:\n{task.description}\n\n"
+        f"Description:\n{task.prompt}\n\n"
         f"When finished, call the team tool action=complete_task with "
         f"task_id={task.id!r} and a short result summary. Do not claim other "
         f"tasks yourself — the harness does that."
@@ -150,6 +162,16 @@ async def _worker_main(
             continue
 
         last_summary = await _run_claimed(run_task, store, name, claimed)
+        await asyncio.to_thread(store.reload)
+        current = store.get_task(claimed.id)
+        if (
+            current is not None
+            and current.status is TaskStatus.PENDING
+            and current.outcome is not None
+            and current.outcome.retryable
+        ):
+            logger.info("Team worker %s queued %s for retry", name, claimed.id)
+            break
     return last_summary
 
 

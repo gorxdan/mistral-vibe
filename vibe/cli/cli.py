@@ -246,9 +246,9 @@ def _resume_previous_session(
 
     _, metadata = SessionLoader.load_session(session_path)
     session_id = metadata.get("session_id", agent_loop.session_id)
-    agent_loop.session_id = session_id
-    agent_loop.parent_session_id = metadata.get("parent_session_id")
-    agent_loop.session_logger.resume_existing_session(session_id, session_path)
+    agent_loop.resume_existing_session(
+        session_id, metadata.get("parent_session_id"), session_path
+    )
 
     logger.info(
         "Resumed session %s with %d messages", session_id, len(non_system_messages)

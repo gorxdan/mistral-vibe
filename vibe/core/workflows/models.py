@@ -11,6 +11,7 @@ class WorkflowStatus(StrEnum):
     PAUSED = auto()
     COMPLETED = auto()
     COMPLETED_WITH_FAILURES = auto()
+    BLOCKED = auto()
     FAILED = auto()
     STOPPED = auto()
 

@@ -42,6 +42,8 @@ from vibe.core.config._settings import (
     resolve_api_key,
     resolve_theme_name,
 )
+from vibe.core.config._spend_config import SpendConfig
+from vibe.core.config._verification_config import TrustedVerificationRecipeConfig
 from vibe.core.config.models import (
     ConnectorConfig,
     ExperimentsConfig,
@@ -321,6 +323,15 @@ class VibeConfigSchema(ConfigSchema):
             "contract section."
         ),
     )
+    trusted_verification_recipe: Annotated[
+        TrustedVerificationRecipeConfig | None, WithReplaceMerge()
+    ] = Field(
+        default=None,
+        description=(
+            "Optional host-authored verification plan frozen into each AgentLoop "
+            "session and executed only by verify_work."
+        ),
+    )
     investigation_subsystem: Annotated[bool, WithReplaceMerge()] = Field(
         default=True,
         description=(
@@ -413,6 +424,9 @@ class VibeConfigSchema(ConfigSchema):
     )
     auxiliary_budget: Annotated[AuxiliaryBudgetConfig, WithReplaceMerge()] = Field(
         default_factory=AuxiliaryBudgetConfig
+    )
+    spend: Annotated[SpendConfig, WithReplaceMerge()] = Field(
+        default_factory=SpendConfig
     )
     memory: Annotated[MemoryConfig, WithReplaceMerge()] = Field(
         default_factory=MemoryConfig

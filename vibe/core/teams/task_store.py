@@ -9,8 +9,19 @@ from filelock import FileLock, Timeout
 import orjson
 
 from vibe.core.logger import logger
+from vibe.core.tasking import (
+    TaskBrief,
+    TaskOutcome,
+    TaskOutcomeStatus,
+    resolve_task_outcome,
+)
 from vibe.core.teams.errors import TeamStorageBusyError
-from vibe.core.teams.models import Task, TaskStatus
+from vibe.core.teams.models import (
+    LEGACY_TASK_PROTOCOL_VERSION,
+    STRUCTURED_TASK_PROTOCOL_VERSION,
+    Task,
+    TaskStatus,
+)
 from vibe.core.utils.io import read_safe, write_safe
 
 # Default lease for IN_PROGRESS claims. Workers that die mid-task leave the
@@ -65,7 +76,7 @@ class TaskStore:
 
     def add_task(
         self,
-        description: str,
+        description: str | TaskBrief,
         *,
         dependencies: list[str] | None = None,
         task_id: str | None = None,
@@ -73,9 +84,19 @@ class TaskStore:
         with self._locked():
             tasks = self._read_tasks()
             task_id = task_id or f"task-{len(tasks) + 1}"
+            if isinstance(description, TaskBrief):
+                brief = description
+                description_text = description.objective
+                protocol_version = STRUCTURED_TASK_PROTOCOL_VERSION
+            else:
+                brief = None
+                description_text = description
+                protocol_version = LEGACY_TASK_PROTOCOL_VERSION
             task = Task(
                 id=task_id,
-                description=description,
+                description=description_text,
+                protocol_version=protocol_version,
+                brief=brief,
                 dependencies=dependencies or [],
                 created_at=time.time(),
             )
@@ -96,15 +117,46 @@ class TaskStore:
                 return None
             if not self._dependencies_met(task, tasks):
                 return None
+            now = time.time()
+            if (
+                task.brief is not None
+                and task.brief.deadline is not None
+                and task.brief.deadline.timestamp() <= now
+            ):
+                diagnostic = (
+                    f"task deadline {task.brief.deadline.isoformat()} expired "
+                    "before team claim"
+                )
+                task.status = TaskStatus.COMPLETED
+                task.outcome = TaskOutcome(
+                    status=TaskOutcomeStatus.BLOCKED,
+                    summary="Task deadline expired before dispatch",
+                    diagnostics=[diagnostic],
+                    manifest=task.brief.manifest,
+                )
+                task.assignee = None
+                task.claimed_at = None
+                task.completed_at = now
+                task.result = diagnostic
+                self._write_tasks(tasks)
+                self._tasks = tasks
+                return None
             task.status = TaskStatus.IN_PROGRESS
+            task.outcome = None
             task.assignee = assignee
-            task.claimed_at = time.time()
+            task.claimed_at = now
+            task.completed_at = None
+            task.result = None
             self._write_tasks(tasks)
             self._tasks = tasks
             return task
 
     def complete_task(
-        self, task_id: str, result: str | None = None, *, actor: str | None = None
+        self,
+        task_id: str,
+        result: str | TaskOutcome | None = None,
+        *,
+        actor: str | None = None,
     ) -> Task | None:
         with self._locked():
             tasks = self._read_tasks()
@@ -118,13 +170,58 @@ class TaskStore:
                 task.assignee != actor or task.status != TaskStatus.IN_PROGRESS
             ):
                 return None
+            outcome, result_text = self._resolve_outcome(task, result)
+            task.result = result_text
+            task.outcome = outcome
+            if outcome.retryable:
+                task.status = TaskStatus.PENDING
+                task.assignee = None
+                task.claimed_at = None
+                task.completed_at = None
+                self._write_tasks(tasks)
+                self._tasks = tasks
+                return task
             task.status = TaskStatus.COMPLETED
             task.completed_at = time.time()
             task.claimed_at = None
-            task.result = result
             self._write_tasks(tasks)
             self._tasks = tasks
             return task
+
+    @staticmethod
+    def _resolve_outcome(
+        task: Task, result: str | TaskOutcome | None
+    ) -> tuple[TaskOutcome, str | None]:
+        if isinstance(result, TaskOutcome):
+            outcome = result
+            result_text = result.summary
+        else:
+            result_text = result.strip() if result is not None else None
+            if task.brief is not None:
+                outcome = resolve_task_outcome(
+                    task.brief, result_text or "", completed=True
+                )
+            else:
+                outcome = TaskOutcome(
+                    status=TaskOutcomeStatus.SUCCEEDED,
+                    summary=result_text or "Legacy task completed",
+                )
+        if task.brief is None:
+            return outcome, result_text
+        if outcome.manifest is not None and outcome.manifest != task.brief.manifest:
+            return (
+                TaskOutcome(
+                    status=TaskOutcomeStatus.RETRYABLE,
+                    summary="Task outcome did not match the assigned manifest",
+                    diagnostics=["Outcome manifest identity mismatch"],
+                    manifest=task.brief.manifest,
+                ),
+                result_text,
+            )
+        return (
+            outcome.model_copy(update={"manifest": task.brief.manifest}),
+            result_text,
+        )
 
     def reclaim_stale(
         self, lease_s: float = DEFAULT_TASK_LEASE_S, *, now: float | None = None
@@ -180,7 +277,7 @@ class TaskStore:
             return True
         for dep_id in task.dependencies:
             dep = tasks.get(dep_id)
-            if dep is None or dep.status != TaskStatus.COMPLETED:
+            if dep is None or dep.outcome is None or not dep.outcome.succeeded:
                 return False
         return True
 

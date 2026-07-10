@@ -15,9 +15,16 @@ from filelock import FileLock
 
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
+from vibe.core.tasking import TaskBrief, TaskOutcome
 from vibe.core.teams._safety import TEAM_SAFETY_MODE_ENV
 from vibe.core.teams.mailbox import Mailbox, validate_member_name
-from vibe.core.teams.models import Task, TeamConfig, TeamMember, TeamSafetyMode
+from vibe.core.teams.models import (
+    Task,
+    TaskStatus,
+    TeamConfig,
+    TeamMember,
+    TeamSafetyMode,
+)
 from vibe.core.teams.task_store import TaskStore
 from vibe.core.utils.io import read_safe, write_safe
 
@@ -147,7 +154,7 @@ class TeamManager:
 
     async def add_team_task(
         self,
-        description: str,
+        description: str | TaskBrief,
         *,
         dependencies: list[str] | None = None,
         task_id: str | None = None,
@@ -167,12 +174,12 @@ class TeamManager:
         return task
 
     async def complete_team_task(
-        self, task_id: str, result: str | None = None
+        self, task_id: str, result: str | TaskOutcome | None = None
     ) -> Task | None:
         task = await asyncio.to_thread(
             self.task_store.complete_task, task_id, result=result
         )
-        if task is not None:
+        if task is not None and task.status is TaskStatus.COMPLETED:
             await self._dispatch_hook(
                 "task_completed",
                 task_id=task.id,
