@@ -617,18 +617,30 @@ class AgentLoop(
             runtime_max_total_tokens=self._max_session_tokens,
         )
 
-    def reset_spend(self) -> str:
-        self._spend_adapter = SessionSpendAdapter.create(
+    async def reset_spend(self) -> str:
+        new_adapter = SessionSpendAdapter.create(
             self.config.spend,
             generate_session_id(suffix=extract_suffix(self.session_id)),
             runtime_max_cost_usd=self._max_price,
             runtime_max_total_tokens=self._max_session_tokens,
         )
-        if self.session_logger.session_metadata is not None:
-            self.session_logger.session_metadata.environment[
-                SPEND_SESSION_ID_METADATA_KEY
-            ] = self._spend_adapter.spend_session_id
-        return self._spend_adapter.spend_session_id
+        metadata = self.session_logger.session_metadata
+        if metadata is not None:
+            had_previous = SPEND_SESSION_ID_METADATA_KEY in metadata.environment
+            previous = metadata.environment.get(SPEND_SESSION_ID_METADATA_KEY)
+            metadata.environment[SPEND_SESSION_ID_METADATA_KEY] = (
+                new_adapter.spend_session_id
+            )
+            try:
+                await self.session_logger.persist_environment()
+            except Exception:
+                if had_previous:
+                    metadata.environment[SPEND_SESSION_ID_METADATA_KEY] = previous
+                else:
+                    metadata.environment.pop(SPEND_SESSION_ID_METADATA_KEY, None)
+                raise
+        self._spend_adapter = new_adapter
+        return new_adapter.spend_session_id
 
     def _drain_pending_injections(self) -> bool:
         staged = False
@@ -1850,14 +1862,6 @@ class AgentLoop(
         span: trace.Span,
     ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent | HookEvent]:
         self.stats.tool_calls_agreed += 1
-
-        if tool_call.tool_name not in {
-            "land_work",
-            "verify_work",
-        } and not tool_call.tool_class.call_is_read_only(
-            tool_call.validated_args, agent_manager=self.agent_manager
-        ):
-            self._verification_state.clear()
 
         # Snapshot read (rewind/undo) does blocking file I/O; run it off the
         # event loop so a write tool on a large file doesn't stall concurrent

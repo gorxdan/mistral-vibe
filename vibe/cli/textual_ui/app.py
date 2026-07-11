@@ -2719,10 +2719,17 @@ class VibeApp(App):
             )
         )
 
+    def _rebind_spend_dependents(self) -> None:
+        spend_adapter = self.agent_loop.spend_adapter
+        if self._team_manager is not None:
+            self._team_manager.rebind_spend_adapter(spend_adapter)
+        self._workflow_runner.rebind_spend_adapter(spend_adapter)
+
     async def _spend_command(self, cmd_args: str = "", **kwargs: Any) -> None:
         cmd_args = cmd_args.strip().lower()
         if cmd_args == "reset":
-            new_session_id = self.agent_loop.reset_spend()
+            new_session_id = await self.agent_loop.reset_spend()
+            self._rebind_spend_dependents()
             await self._mount_and_scroll(
                 UserCommandMessage(
                     "Spend ledger reset. "
@@ -3020,6 +3027,7 @@ class VibeApp(App):
         self.agent_loop.resume_existing_session(
             session.session_id, metadata.get("parent_session_id"), session_path
         )
+        self._rebind_spend_dependents()
         await self.agent_loop.hydrate_experiments_from_session()
         current_system_messages = [
             msg for msg in self.agent_loop.messages if msg.role == Role.SYSTEM
@@ -3361,6 +3369,7 @@ class VibeApp(App):
             if self._chat_input_container:
                 self._chat_input_container.set_custom_border(None)
             await self.agent_loop.clear_history()
+            self._rebind_spend_dependents()
             if self.event_handler:
                 await self.event_handler.finalize_streaming()
             await self._messages_area.remove_children()
@@ -3792,6 +3801,8 @@ class VibeApp(App):
             hook_config_result=loop._hook_config_result,
             session_id=loop.session_id,
             terminal_emulator=loop.terminal_emulator,
+            verification_state=loop._verification_state,
+            spend_adapter=loop._spend_adapter,
             # Hand the runtime the host's judge resolver so each isolated
             # agent's prompt is judged at spawn (the subprocess itself runs
             # auto-approved and can't prompt the host per-tool).

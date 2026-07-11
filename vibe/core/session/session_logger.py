@@ -391,6 +391,24 @@ class SessionLogger:
             SessionLogger._persist_metadata_sync, metadata, session_dir
         )
 
+    async def persist_environment(self) -> None:
+        session_info = self._get_session_info()
+        if session_info is None:
+            return
+        session_dir, session_metadata = session_info
+        metadata_path = session_dir / METADATA_FILENAME
+        if not metadata_path.exists():
+            return
+        try:
+            raw = (await read_safe_async(metadata_path)).text
+            metadata = orjson.loads(raw)
+        except (OSError, orjson.JSONDecodeError) as e:
+            raise RuntimeError(
+                f"Failed to read session metadata at {metadata_path}: {e}"
+            ) from e
+        metadata["environment"] = session_metadata.environment
+        await SessionLogger.persist_metadata(metadata, session_dir)
+
     @staticmethod
     def _persist_metadata_sync(metadata: Any, session_dir: Path) -> None:
         metadata_filepath = session_dir / METADATA_FILENAME

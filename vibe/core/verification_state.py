@@ -28,11 +28,27 @@ def workspace_fingerprint() -> str | None:
     return calculate()
 
 
+def landing_base_sha() -> str | None:
+    from git import Repo
+    from git.exc import GitError
+
+    from vibe.core.worktree.manager import worktree_manager
+
+    handle = worktree_manager.active
+    if handle is None:
+        return None
+    try:
+        return Repo(str(handle.original_repo_root)).head.commit.hexsha
+    except (GitError, OSError, ValueError):
+        return None
+
+
 @dataclass
 class VerificationPass:
     source: str
     summary: str
     workspace_fingerprint: str | None
+    base_sha: str | None
     report: VerificationReport | None = None
     recorded_at: float = field(default_factory=time.monotonic)
 
@@ -93,9 +109,9 @@ class VerificationState:
     )
     receipt_reference: VerificationReceiptReference | None = None
     last_receipt_validation: ReceiptValidation | None = None
-    last_contract_pass: VerificationPass | None = None
     last_verifier_pass: VerificationPass | None = None
     trusted_recipe: BoundVerificationRecipe | None = None
+    verifier_attempt_generation: int = 0
 
     @classmethod
     def from_recipe(
@@ -109,12 +125,15 @@ class VerificationState:
             )
         )
 
-    def record_contract_pass(self, summary: str) -> None:
-        self.last_contract_pass = VerificationPass(
-            source="workflow-contract",
-            summary=summary,
-            workspace_fingerprint=workspace_fingerprint(),
-        )
+    def begin_verifier_attempt(self) -> int:
+        self.verifier_attempt_generation += 1
+        self.receipt_reference = None
+        self.last_receipt_validation = None
+        self.last_verifier_pass = None
+        return self.verifier_attempt_generation
+
+    def is_current_verifier_attempt(self, generation: int) -> bool:
+        return generation == self.verifier_attempt_generation
 
     def preserve_recipe_in_config(self, config: VibeConfig) -> VibeConfig:
         recipe = self.trusted_recipe
@@ -126,13 +145,22 @@ class VerificationState:
             }
         )
 
-    def record_verifier_pass(self, report: VerificationReport) -> None:
+    def record_verifier_pass(
+        self,
+        report: VerificationReport,
+        *,
+        verified_workspace_fingerprint: str | None = None,
+        verified_base_sha: str | None = None,
+    ) -> None:
         if not report.passed:
             raise ValueError("only a passing verifier report can satisfy the gate")
         self.last_verifier_pass = VerificationPass(
             source="verifier-subagent",
             summary=report.summary(),
-            workspace_fingerprint=workspace_fingerprint(),
+            workspace_fingerprint=(
+                verified_workspace_fingerprint or workspace_fingerprint()
+            ),
+            base_sha=verified_base_sha or landing_base_sha(),
             report=report,
         )
 
@@ -243,39 +271,49 @@ class VerificationState:
             self.receipt_reference = _receipt_reference(validation.receipt)
         return validation.valid
 
-    def has_pass(self) -> bool:
+    def has_pass(self, *, expected_base_sha: str | None = None) -> bool:
         """Return whether a legacy pass still matches the current workspace."""
         current = workspace_fingerprint()
         if current is None:
             return False
-        return any(
-            recorded is not None and recorded.workspace_fingerprint == current
-            for recorded in (self.last_contract_pass, self.last_verifier_pass)
-        )
+        return _pass_matches(self.last_verifier_pass, current, expected_base_sha)
 
-    def has_verifier_pass(self) -> bool:
+    def has_verifier_pass(self, *, expected_base_sha: str | None = None) -> bool:
         current = workspace_fingerprint()
-        recorded = self.last_verifier_pass
-        return bool(
-            current is not None
-            and recorded is not None
-            and recorded.workspace_fingerprint == current
+        return current is not None and _pass_matches(
+            self.last_verifier_pass, current, expected_base_sha
         )
 
-    def latest(self) -> VerificationPass | None:
-        c = self.last_contract_pass
-        v = self.last_verifier_pass
-        if c is None:
-            return v
-        if v is None:
-            return c
-        return c if c.recorded_at >= v.recorded_at else v
+    def latest(
+        self, *, expected_base_sha: str | None = None
+    ) -> VerificationPass | None:
+        current = workspace_fingerprint()
+        if current is None:
+            return None
+        v = (
+            self.last_verifier_pass
+            if _pass_matches(self.last_verifier_pass, current, expected_base_sha)
+            else None
+        )
+        return v
 
     def clear(self) -> None:
+        self.verifier_attempt_generation += 1
         self.receipt_reference = None
         self.last_receipt_validation = None
-        self.last_contract_pass = None
         self.last_verifier_pass = None
+
+
+def _pass_matches(
+    recorded: VerificationPass | None,
+    current_fingerprint: str,
+    expected_base_sha: str | None,
+) -> bool:
+    return bool(
+        recorded is not None
+        and recorded.workspace_fingerprint == current_fingerprint
+        and (expected_base_sha is None or recorded.base_sha == expected_base_sha)
+    )
 
 
 def _receipt_reference(receipt: VerificationReceipt) -> VerificationReceiptReference:
@@ -297,5 +335,6 @@ __all__ = [
     "VerificationPass",
     "VerificationReceiptReference",
     "VerificationState",
+    "landing_base_sha",
     "workspace_fingerprint",
 ]

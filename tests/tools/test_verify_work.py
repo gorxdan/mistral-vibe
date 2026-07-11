@@ -182,7 +182,7 @@ def test_verify_work_uses_prebound_plan_and_receipt_reaches_land_work(
     }
 
 
-def test_verify_work_requires_verifier_pass_not_workflow_pass(
+def test_verify_work_requires_verifier_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _linked_candidate(tmp_path)
@@ -190,7 +190,6 @@ def test_verify_work_requires_verifier_pass_not_workflow_pass(
     monkeypatch.setattr(
         "vibe.core.verification_state.workspace_fingerprint", lambda: "candidate"
     )
-    state.record_contract_pass("workflow contract passed")
     ctx = InvokeContext(
         tool_call_id="verify",
         agent_manager=cast(AgentManager, _FakeAgentManager(_recipe())),

@@ -83,8 +83,8 @@ class LandWork(
         "sandbox makes the main checkout read-only, so this is the only path that "
         "can write it). Call this ONCE when your work is complete, committed, and "
         "verified. A session with a trusted verification recipe requires its "
-        "current receipt. Without a recipe, a current recorded verifier/workflow "
-        "PASS or a docs-only 'trivial: <reason>' waiver satisfies the gate; pasted "
+        "current receipt. Without a recipe, a current recorded verifier PASS or "
+        "a docs-only 'trivial: <reason>' waiver satisfies the gate; pasted "
         "verification prose never does. Merge preserves original "
         "commit SHAs and is revertable via `git revert -m 1 <merge-sha>`. "
         "Requires user approval. Refuses if main is dirty or the branch is "
@@ -294,11 +294,11 @@ def _require_verification_note(
             "reports cannot authorize a merge. Run harness-trusted acceptance "
             "checks or use the session-recorded verification state."
         )
-    if state is not None and state.has_pass():
+    if state is not None and state.has_pass(expected_base_sha=expected_base_sha):
         return None
     raise ToolError(
-        "land_work requires a current session-recorded verifier or workflow PASS "
-        "when verification_subsystem is on and no trusted recipe is configured. "
+        "land_work requires a current session-recorded verifier PASS when "
+        "verification_subsystem is on and no trusted recipe is configured. "
         "Run verification again, or pass 'trivial: <reason>' for a committed "
         "documentation-only diff. Pasted verification prose is not accepted. Set "
         "verification_subsystem = false to disable this gate."

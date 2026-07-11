@@ -836,6 +836,13 @@ class SpendLedger:
             scope = state.scopes.get(scope_id)
             if scope is None:
                 raise SpendLedgerConflictError(f"unknown scope {scope_id!r}")
+            limits = limits.model_copy(
+                update={
+                    "deadline_at": _tighter_limit(
+                        scope.limits.deadline_at, limits.deadline_at
+                    )
+                }
+            )
             if limits == scope.limits:
                 return scope
             self._append(

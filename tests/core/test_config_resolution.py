@@ -785,6 +785,34 @@ class TestMigrateKimiGlmPreservedThinking:
 
 
 class TestMigrateSpendDynamicTokenDefaults:
+    def test_migrates_released_128_call_generated_defaults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        released_defaults = {
+            "max_prompt_tokens": 400_000,
+            "max_completion_tokens": 100_000,
+            "max_total_tokens": 500_000,
+            "max_cost_usd": 10.0,
+            "max_calls": 128,
+            "max_concurrent_calls": 2,
+            "max_retries": 16,
+            "default_max_output_tokens": 32_768,
+            "unpriced_input_usd_per_million": 10.0,
+            "unpriced_output_usd_per_million": 30.0,
+        }
+        write_safe(config_file, tomli_w.dumps({"spend": released_defaults}))
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        result = tomllib.loads(read_safe(config_file).text)
+        assert result["spend"]["max_calls"] == 128
+        assert not any(key in result["spend"] for key in LEGACY_SPEND_TOKEN_LIMITS)
+        assert result["applied_migrations"] == [SPEND_DYNAMIC_DEFAULTS_MIGRATION]
+
     def test_migrates_exact_generated_defaults_once(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

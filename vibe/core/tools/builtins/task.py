@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import fnmatch
 from pathlib import Path
 import time
-from typing import ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,9 +66,18 @@ from vibe.core.verification_contract import (
 from vibe.core.workflows._limits import DEFAULT_ISOLATED_MAX_TURNS
 from vibe.core.workflows.runtime import IsolatedResult, run_isolated_agent
 
+if TYPE_CHECKING:
+    from vibe.core.verification_state import VerificationState
+
 
 def workspace_fingerprint() -> str | None:
     from vibe.core._workspace_verification import workspace_fingerprint as calculate
+
+    return calculate()
+
+
+def landing_base_sha() -> str | None:
+    from vibe.core.verification_state import landing_base_sha as calculate
 
     return calculate()
 
@@ -125,35 +134,97 @@ def _maybe_record_verifier_pass(
     *,
     completed: bool = True,
     attempt: _VerificationAttempt | None = None,
-) -> None:
+) -> str | None:
     # Only the verifier subagent may set the verifier flag.
-    if agent != BuiltinAgentName.VERIFIER or not response or not completed:
-        return
+    if agent != BuiltinAgentName.VERIFIER:
+        return None
+    if not response or not completed:
+        reason = "response was empty" if not response else "task did not complete"
+        return f"Verifier result was not recorded: {reason}"
     state = ctx.verification_state
     if state is None:
-        return
-    if attempt is not None and (
-        attempt.workspace_fingerprint is None
-        or workspace_fingerprint() != attempt.workspace_fingerprint
-    ):
-        return
+        return "Verifier result was not recorded: session verification state is unavailable"
+    if attempt is not None:
+        changed: str | None = None
+        if attempt.generation is not None and not state.is_current_verifier_attempt(
+            attempt.generation
+        ):
+            changed = "verifier attempt was superseded"
+        elif (
+            attempt.workspace_fingerprint is None
+            or workspace_fingerprint() != attempt.workspace_fingerprint
+        ):
+            changed = "workspace changed during verification"
+        elif landing_base_sha() != attempt.base_sha:
+            changed = "landing base changed during verification"
+        if changed is not None:
+            return f"Verifier result was not recorded: {changed}"
     try:
         report = parse_verification_report(response)
-    except VerificationReportError:
-        return
+    except VerificationReportError as exc:
+        return f"Verifier result was not recorded: {exc}"
     if report.passed:
-        state.record_verifier_pass(report)
+        state.record_verifier_pass(
+            report,
+            verified_workspace_fingerprint=(
+                attempt.workspace_fingerprint if attempt is not None else None
+            ),
+            verified_base_sha=attempt.base_sha if attempt is not None else None,
+        )
+    return (
+        None
+        if report.passed
+        else (
+            "Verifier did not authorize landing: "
+            f"VERDICT: {report.verdict.value.upper()}"
+        )
+    )
+
+
+def _with_verification_result(
+    outcome: TaskOutcome, agent: str, diagnostic: str | None
+) -> TaskOutcome:
+    if agent != BuiltinAgentName.VERIFIER:
+        return outcome
+    if diagnostic is None:
+        return outcome.model_copy(
+            update={
+                "summary": "Verifier PASS recorded for the current candidate",
+                "evidence": [
+                    *outcome.evidence,
+                    "Session verification state recorded the evidence-backed PASS",
+                ],
+            }
+        )
+    status = TaskOutcomeStatus.RETRYABLE if outcome.succeeded else outcome.status
+    summary = (
+        "Verifier report did not satisfy the landing gate"
+        if outcome.succeeded
+        else outcome.summary
+    )
+    return outcome.model_copy(
+        update={
+            "status": status,
+            "summary": summary,
+            "diagnostics": [*outcome.diagnostics, diagnostic],
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class _VerificationAttempt:
     workspace_fingerprint: str | None
+    base_sha: str | None
+    generation: int | None
 
 
-def _start_verification_attempt(agent: str) -> _VerificationAttempt | None:
+def _start_verification_attempt(
+    agent: str, state: VerificationState | None = None
+) -> _VerificationAttempt | None:
     if agent != BuiltinAgentName.VERIFIER:
         return None
-    return _VerificationAttempt(workspace_fingerprint())
+    generation = state.begin_verifier_attempt() if state is not None else None
+    return _VerificationAttempt(workspace_fingerprint(), landing_base_sha(), generation)
 
 
 @dataclass
@@ -457,12 +528,16 @@ class Task(
         completed = result.returncode == 0
         preliminary = resolve_task_outcome(args.brief, response, completed=completed)
         if contract is None:
-            _maybe_record_verifier_pass(
+            preliminary = _with_verification_result(
+                preliminary,
                 args.agent,
-                response,
-                ctx,
-                completed=completed,
-                attempt=verification_attempt,
+                _maybe_record_verifier_pass(
+                    args.agent,
+                    response,
+                    ctx,
+                    completed=completed and preliminary.succeeded,
+                    attempt=verification_attempt,
+                ),
             )
             return _InProcessResult(
                 output=response,
@@ -549,10 +624,17 @@ class Task(
             if not removed:
                 branch = wt.branch
 
-        if outcome.succeeded:
+        outcome = _with_verification_result(
+            outcome,
+            args.agent,
             _maybe_record_verifier_pass(
-                args.agent, response, ctx, completed=True, attempt=verification_attempt
-            )
+                args.agent,
+                response,
+                ctx,
+                completed=outcome.succeeded,
+                attempt=verification_attempt,
+            ),
+        )
         return _InProcessResult(
             output=response,
             returncode=0 if outcome.succeeded else 1,
@@ -571,7 +653,9 @@ class Task(
         if registry is None:
             # No registry wired (e.g. tests, programmatic runner without TUI).
             # Fall back to the blocking isolated path rather than failing hard.
-            async for result in self._run_isolated(args, ctx):
+            async for result in self._run_isolated(
+                args, ctx, verification_attempt=verification_attempt
+            ):
                 yield result
             return
 
@@ -836,7 +920,9 @@ class Task(
         should_isolate = isolation_mode == "always" or (
             isolation_mode == "auto" and profile_requires_isolation(agent_profile)
         )
-        verification_attempt = _start_verification_attempt(args.agent)
+        verification_attempt = _start_verification_attempt(
+            args.agent, ctx.verification_state
+        )
         if args.async_run:
             if should_isolate:
                 async for result in self._run_async_isolated(
@@ -1016,14 +1102,17 @@ class Task(
             forced_status=forced_status,
             diagnostic=diagnostic,
         )
-        if outcome.succeeded:
+        outcome = _with_verification_result(
+            outcome,
+            args.agent,
             _maybe_record_verifier_pass(
                 args.agent,
                 response,
                 ctx,
-                completed=completed,
+                completed=completed and outcome.succeeded,
                 attempt=verification_attempt,
-            )
+            ),
+        )
         yield TaskResult(
             response=response,
             turns_used=turns_used,
@@ -1129,14 +1218,17 @@ class Task(
             forced_status=forced_status,
             diagnostic=diagnostic,
         )
-        if outcome.succeeded:
+        outcome = _with_verification_result(
+            outcome,
+            args.agent,
             _maybe_record_verifier_pass(
                 args.agent,
                 response,
                 ctx,
-                completed=completed,
+                completed=completed and outcome.succeeded,
                 attempt=verification_attempt,
-            )
+            ),
+        )
         return _InProcessResult(
             output=response,
             returncode=0 if completed and outcome.succeeded else 1,

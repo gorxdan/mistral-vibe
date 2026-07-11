@@ -65,6 +65,9 @@ class TeamManager:
         self._spend_group_id = f"team:{self._team_name}"
         self._init_config()
 
+    def rebind_spend_adapter(self, spend_adapter: SessionSpendAdapter) -> None:
+        self._spend_adapter = spend_adapter
+
     def _new_process_spend_context(self, name: str) -> SpendProcessContext | None:
         if self._spend_adapter is None:
             return None

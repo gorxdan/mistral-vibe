@@ -39,11 +39,22 @@ class VerificationReportError(ValueError):
     pass
 
 
-_CHECK_RE = re.compile(r"^\s*#{2,6}\s+Check:\s*(?P<check>\S.*)\s*$", re.IGNORECASE)
-_COMMAND_RE = re.compile(r"^\s*(?:\*\*)?Command run:(?:\*\*)?\s*$", re.IGNORECASE)
-_OUTPUT_RE = re.compile(r"^\s*(?:\*\*)?Output observed:(?:\*\*)?\s*$", re.IGNORECASE)
+_CHECK_RE = re.compile(
+    r"^\s*#{2,6}\s+Check(?:\s+(?:\d+|\([^)]{1,40}\)))?:"
+    r"\s*(?P<check>\S.*)\s*$",
+    re.IGNORECASE,
+)
+_HEADING_RE = re.compile(r"^\s*#{2,6}\s+\S.*$")
+_COMMAND_RE = re.compile(
+    r"^\s*(?:\*\*)?Command run:(?:\*\*)?(?P<inline>.*)$", re.IGNORECASE
+)
+_OUTPUT_RE = re.compile(
+    r"^\s*(?:\*\*)?Output observed:(?:\*\*)?(?P<inline>.*)$", re.IGNORECASE
+)
 _RESULT_RE = re.compile(
-    r"^\s*(?:\*\*)?Result:\s*(?P<result>PASS|FAIL)(?:\*\*)?\s*$", re.IGNORECASE
+    r"^\s*(?:\*\*)?Result:\s*(?P<result>PASS|FAIL)(?:\*\*)?"
+    r"(?:\s+(?:[-—:]|\().*)?\s*$",
+    re.IGNORECASE,
 )
 _VERDICT_RE = re.compile(
     r"^\s*VERDICT:\s*(?P<verdict>PASS|FAIL|PARTIAL)\s*$", re.IGNORECASE
@@ -91,11 +102,14 @@ def _parse_evidence(lines: list[str]) -> list[CommandEvidence]:
         index for index, line in enumerate(lines) if _CHECK_RE.fullmatch(line)
     ]
     evidence: list[CommandEvidence] = []
-    for position, start in enumerate(check_indexes):
-        end = (
-            check_indexes[position + 1]
-            if position + 1 < len(check_indexes)
-            else len(lines)
+    for start in check_indexes:
+        end = next(
+            (
+                index
+                for index in range(start + 1, len(lines))
+                if _HEADING_RE.fullmatch(lines[index])
+            ),
+            len(lines),
         )
         evidence.append(_parse_check(lines[start:end]))
     return evidence
@@ -106,8 +120,8 @@ def _parse_check(lines: list[str]) -> CommandEvidence:
     if check_match is None:
         raise VerificationReportError("invalid check heading")
 
-    command_index = _find_heading(lines, _COMMAND_RE, 1, "Command run")
-    output_index = _find_heading(
+    command_index, command_match = _find_heading(lines, _COMMAND_RE, 1, "Command run")
+    output_index, output_match = _find_heading(
         lines, _OUTPUT_RE, command_index + 1, "Output observed"
     )
     result_indexes = [
@@ -121,8 +135,12 @@ def _parse_check(lines: list[str]) -> CommandEvidence:
         )
     result_index = result_indexes[0]
 
-    command = _clean_block(lines[command_index + 1 : output_index])
-    output = _clean_block(lines[output_index + 1 : result_index])
+    command = _clean_value(
+        command_match.group("inline"), lines[command_index + 1 : output_index]
+    )
+    output = _clean_value(
+        output_match.group("inline"), lines[output_index + 1 : result_index]
+    )
     if not command:
         raise VerificationReportError(
             f"check '{check_match.group('check')}' has an empty command"
@@ -145,15 +163,29 @@ def _parse_check(lines: list[str]) -> CommandEvidence:
 
 def _find_heading(
     lines: list[str], pattern: re.Pattern[str], start: int, heading: str
-) -> int:
-    indexes = [
-        index for index in range(start, len(lines)) if pattern.fullmatch(lines[index])
+) -> tuple[int, re.Match[str]]:
+    matches = [
+        (index, match)
+        for index in range(start, len(lines))
+        if (match := pattern.fullmatch(lines[index])) is not None
     ]
-    if len(indexes) != 1:
+    if len(matches) != 1:
         raise VerificationReportError(
             f"each check must contain exactly one '{heading}' heading"
         )
-    return indexes[0]
+    return matches[0]
+
+
+def _clean_value(inline: str, block: list[str]) -> str:
+    values = [value for value in (_clean_inline(inline), _clean_block(block)) if value]
+    return "\n".join(values)
+
+
+def _clean_inline(value: str) -> str:
+    cleaned = value.strip()
+    if cleaned.startswith("`") and cleaned.endswith("`"):
+        return cleaned[1:-1].strip()
+    return cleaned
 
 
 def _clean_block(lines: list[str]) -> str:
