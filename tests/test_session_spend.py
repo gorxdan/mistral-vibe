@@ -184,7 +184,7 @@ def test_spend_config_defaults_use_dynamic_token_admission() -> None:
     assert config.max_completion_tokens is None
     assert config.max_total_tokens is None
     assert config.max_cost_usd == 10.0
-    assert config.max_calls == 128
+    assert config.max_calls == 512
     assert config.max_concurrent_calls == 2
     assert config.max_retries == 16
     assert config.deadline_seconds is None

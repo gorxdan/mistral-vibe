@@ -20,7 +20,7 @@ class SpendConfig(BaseSettings):
     max_completion_tokens: int | None = Field(default=None, ge=0)
     max_total_tokens: int | None = Field(default=None, ge=0)
     max_cost_usd: float = Field(default=10.0, ge=0.0)
-    max_calls: int = Field(default=128, ge=0)
+    max_calls: int = Field(default=512, ge=0)
     max_concurrent_calls: int = Field(default=2, ge=0)
     max_retries: int = Field(default=16, ge=0)
     deadline_seconds: float | None = Field(default=None, gt=0.0)
