@@ -688,7 +688,7 @@ the same ledger reserve under a file lock.
 [spend]
 prompt_estimator_mode = "adaptive" # "adaptive" or "strict"
 max_cost_usd = 10.0
-max_calls = 128
+max_calls = 512
 max_concurrent_calls = 2
 max_retries = 16
 # deadline_seconds = 3600.0
@@ -721,7 +721,7 @@ legacy 400,000/100,000/500,000 token caps; customized or partial tables remain
 explicit. Matching legacy ledger caps are relaxed only for omitted fields. Other
 envelope changes remain tighten-only for the life of that root session.
 
-The default $10, 128-call, two-concurrent-call, 16-retry, and 32,768-token
+The default $10, 512-call, two-concurrent-call, 16-retry, and 32,768-token
 per-call output controls remain finite. Missing provider usage is charged at the
 reservation estimate. Models without configured or built-in prices use the
 fallback rates above; set both to `0` for a local or subscription model that
