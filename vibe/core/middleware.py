@@ -699,32 +699,89 @@ def _trailing_tool_call_fingerprints(
     return fingerprints
 
 
-class LoopDetectionMiddleware:
-    """Detects an agent stuck repeating identical tool calls.
+def _trailing_tool_call_names(messages: MessageList, limit: int) -> str | None:
+    """Tool name if the last ``limit`` trailing tool calls all target the same
+    tool; otherwise None.
 
-    A hard turn cap (:class:`TurnLimitMiddleware`) bounds total work but won't
-    notice a model re-emitting the exact same call (re-reading an unchanged
-    file, re-running a failing build) until the cap. Strike 1 injects a nudge to
-    change approach; strike 2 stops the turn. Pure history inspection — no
-    extra model calls.
+    Unlike the exact-fingerprint check, this compares names only — varying
+    arguments count as the same call. The window breaks at any assistant message
+    carrying text content without a tool call, since narration or reflection
+    signals the model changed approach.
+    """
+    names: list[str] = []
+    for msg in reversed(messages):
+        if msg.role != Role.ASSISTANT:
+            continue
+        if not msg.tool_calls:
+            break
+        for tc in reversed(msg.tool_calls):
+            names.append(tc.function.name or "")
+            if len(names) >= limit:
+                break
+        if len(names) >= limit:
+            break
+    if len(names) < limit or len(set(names)) != 1:
+        return None
+    return names[0]
+
+
+class LoopDetectionMiddleware:
+    """Detects an agent stuck repeating tool calls without progress.
+
+    Two tiers, both pure history inspection (no extra model calls):
+
+    - Exact tier: ``threshold`` trailing calls with identical canonical args.
+      A single different call resets this state. Catches a model re-emitting the
+      exact same call (re-reading an unchanged file, re-running a failing build).
+    - Name tier: ``threshold + 2`` trailing calls to the *same tool*, regardless
+      of arguments, with no intervening assistant text. Closes the variant-args
+      gap where a model re-fetches the same data with slightly different filters
+      or offsets (``git diff | head`` vs ``| tail``, ``read`` at different
+      offsets). The wider window avoids false positives on legitimate repeated
+      reads of distinct files.
+
+    Each tier strikes once with an injected nudge, then stops the turn.
     """
 
     def __init__(self, threshold: int = 5) -> None:
         self._threshold = threshold
+        self._name_threshold = threshold + 2
         self._warned = False
+        self._name_warned = False
 
     async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
-        fingerprints = _trailing_tool_call_fingerprints(
-            context.messages, self._threshold
-        )
-        # Need a full window of identical calls to call it a loop; a single
-        # different call resets the stuck state so a later loop can warn again.
-        if len(fingerprints) < self._threshold or len(set(fingerprints)) > 1:
-            self._warned = False
-            return MiddlewareResult()
-        name = fingerprints[-1][0]
+        exact_name, name_name = self._detect(context.messages)
+        if exact_name is not None:
+            return self._resolve_exact(exact_name)
+        self._warned = False
+        if name_name is not None:
+            return self._resolve_name(name_name)
+        self._name_warned = False
+        return MiddlewareResult()
+
+    def _detect(self, messages: MessageList) -> tuple[str | None, str | None]:
+        """Return ``(exact_loop_tool, name_loop_tool)`` from trailing history.
+
+        ``(name, None)`` — exact-args loop at the configured threshold.
+        ``(None, name)`` — name-only loop at ``threshold + 2``.
+        ``(None, None)`` — no loop.
+        """
+        fingerprints = _trailing_tool_call_fingerprints(messages, self._threshold)
+        if (
+            len(fingerprints) >= self._threshold
+            and len({fp[0] for fp in fingerprints}) == 1
+            and len(set(fingerprints)) == 1
+        ):
+            return fingerprints[-1][0], None
+        name_window = _trailing_tool_call_names(messages, self._name_threshold)
+        if name_window is not None:
+            return None, name_window
+        return None, None
+
+    def _resolve_exact(self, name: str) -> MiddlewareResult:
         if not self._warned:
             self._warned = True
+            self._name_warned = True
             return MiddlewareResult(
                 action=MiddlewareAction.INJECT_MESSAGE,
                 message=(
@@ -739,8 +796,30 @@ class LoopDetectionMiddleware:
             reason=f"Tool-call loop detected: {name} repeated {self._threshold}+ times",
         )
 
+    def _resolve_name(self, name: str) -> MiddlewareResult:
+        if not self._name_warned:
+            self._name_warned = True
+            return MiddlewareResult(
+                action=MiddlewareAction.INJECT_MESSAGE,
+                message=(
+                    f"<{VIBE_WARNING_TAG}>You appear to be stuck calling the same "
+                    f"tool ({name}) repeatedly with different arguments. You are "
+                    f"likely re-fetching data you already have. Change your approach: "
+                    f"use a different tool, inspect a different target, or report what "
+                    f"is blocking you.</{VIBE_WARNING_TAG}>"
+                ),
+            )
+        return MiddlewareResult(
+            action=MiddlewareAction.STOP,
+            reason=(
+                f"Tool-call loop detected: {name} called "
+                f"{self._name_threshold}+ times with varying arguments"
+            ),
+        )
+
     def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
         self._warned = False
+        self._name_warned = False
 
 
 def make_plan_agent_reminder(

@@ -9,6 +9,7 @@ from vibe.core.middleware import (
     MiddlewareAction,
     _canonical_tool_args,
     _trailing_tool_call_fingerprints,
+    _trailing_tool_call_names,
 )
 from vibe.core.types import (
     AgentStats,
@@ -186,3 +187,128 @@ class TestLoopDetectionMiddleware:
         # After reset, the same looping history warns again rather than STOPs.
         result = await mw.before_turn(ctx)
         assert result.action == MiddlewareAction.INJECT_MESSAGE
+
+
+class TestTrailingToolCallNames:
+    def test_same_name_returns_name(self) -> None:
+        messages = MessageList([
+            _assistant_call("read", f'{{"path": "f{i}.py"}}') for i in range(7)
+        ])
+        assert _trailing_tool_call_names(messages, limit=7) == "read"
+
+    def test_too_few_returns_none(self) -> None:
+        messages = MessageList([
+            _assistant_call("read", f'{{"path": "f{i}.py"}}') for i in range(5)
+        ])
+        assert _trailing_tool_call_names(messages, limit=7) is None
+
+    def test_mixed_names_returns_none(self) -> None:
+        messages = MessageList(
+            [_assistant_call("read", '{"path": "a.py"}') for _ in range(5)]
+            + [
+                _assistant_call("grep", '{"pattern": "x"}'),
+                _assistant_call("grep", '{"pattern": "y"}'),
+            ]
+        )
+        assert _trailing_tool_call_names(messages, limit=7) is None
+
+    def test_text_message_breaks_window(self) -> None:
+        messages = MessageList(
+            [_assistant_call("read", f'{{"path": "f{i}.py"}}') for i in range(3)]
+            + [LLMMessage(role=Role.ASSISTANT, content="let me think")]
+            + [_assistant_call("read", f'{{"path": "g{i}.py"}}') for i in range(4)]
+        )
+        assert _trailing_tool_call_names(messages, limit=7) is None
+
+
+class TestNameFrequencyTier:
+    @pytest.mark.asyncio
+    async def test_variant_args_warns_at_name_threshold(
+        self, ctx: ConversationContext
+    ) -> None:
+        mw = LoopDetectionMiddleware(threshold=5)
+        # 7 calls (threshold + 2) to read with different paths — variant-args
+        # loop, the gap the name tier closes.
+        ctx.messages = MessageList([
+            _assistant_call("read", f'{{"path": "f{i}.py"}}') for i in range(7)
+        ])
+        result = await mw.before_turn(ctx)
+        assert result.action == MiddlewareAction.INJECT_MESSAGE
+        assert "read" in (result.message or "")
+        assert "different arguments" in (result.message or "")
+
+    @pytest.mark.asyncio
+    async def test_variant_args_stops_on_second_strike(
+        self, ctx: ConversationContext
+    ) -> None:
+        mw = LoopDetectionMiddleware(threshold=5)
+        ctx.messages = MessageList([
+            _assistant_call("read", f'{{"path": "f{i}.py"}}') for i in range(7)
+        ])
+        await mw.before_turn(ctx)  # strike 1
+        result = await mw.before_turn(ctx)  # strike 2
+        assert result.action == MiddlewareAction.STOP
+        assert "varying arguments" in (result.reason or "")
+
+    @pytest.mark.asyncio
+    async def test_variant_args_below_name_threshold_continues(
+        self, ctx: ConversationContext
+    ) -> None:
+        mw = LoopDetectionMiddleware(threshold=5)
+        # 5 distinct-path reads: below both tiers, must not trip.
+        ctx.messages = MessageList([
+            _assistant_call("read", f'{{"path": "f{i}.py"}}') for i in range(5)
+        ])
+        result = await mw.before_turn(ctx)
+        assert result.action == MiddlewareAction.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_text_message_resets_name_tier(
+        self, ctx: ConversationContext
+    ) -> None:
+        mw = LoopDetectionMiddleware(threshold=5)
+        ctx.messages = MessageList(
+            [_assistant_call("read", f'{{"path": "f{i}.py"}}') for i in range(3)]
+            + [LLMMessage(role=Role.ASSISTANT, content="analyzing results")]
+            + [_assistant_call("read", f'{{"path": "g{i}.py"}}') for i in range(4)]
+        )
+        result = await mw.before_turn(ctx)
+        assert result.action == MiddlewareAction.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_exact_tier_takes_precedence_over_name_tier(
+        self, ctx: ConversationContext
+    ) -> None:
+        mw = LoopDetectionMiddleware(threshold=5)
+        # 7 identical calls: both tiers qualify, exact should win and its
+        # nudge should mention "same tool call" not "different arguments".
+        ctx.messages = MessageList([
+            _assistant_call("read", '{"path": "a.py"}') for _ in range(7)
+        ])
+        result = await mw.before_turn(ctx)
+        assert result.action == MiddlewareAction.INJECT_MESSAGE
+        assert "same tool call" in (result.message or "")
+        assert "different arguments" not in (result.message or "")
+
+    @pytest.mark.asyncio
+    async def test_bash_variant_args_caught_by_name_tier(
+        self, ctx: ConversationContext
+    ) -> None:
+        mw = LoopDetectionMiddleware(threshold=5)
+        # Mirrors the example-session failure: same git diff fetched with
+        # different pipe filters. Different canonical args per call.
+        cmds = [
+            "git diff HEAD~1 | head -100",
+            "git diff HEAD~1 | tail -200",
+            "git diff HEAD~1 | wc -l",
+            "git diff HEAD~1 | head -50",
+            "git diff HEAD~1 | tail -50",
+            "git diff HEAD~1 | grep foo",
+            "git diff HEAD~1 | head -10",
+        ]
+        ctx.messages = MessageList([
+            _assistant_call("bash", f'{{"command": "{c}"}}') for c in cmds
+        ])
+        result = await mw.before_turn(ctx)
+        assert result.action == MiddlewareAction.INJECT_MESSAGE
+        assert "bash" in (result.message or "")
