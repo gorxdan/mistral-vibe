@@ -14,7 +14,7 @@ LEGACY_GENERATED_SPEND_DEFAULTS: dict[str, int | float] = {
     "max_completion_tokens": 100_000,
     "max_total_tokens": 500_000,
     "max_cost_usd": 10.0,
-    "max_calls": 128,
+    "max_calls": 512,
     "max_concurrent_calls": 2,
     "max_retries": 16,
     "default_max_output_tokens": 32_768,

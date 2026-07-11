@@ -193,7 +193,7 @@ learning and reserves the serialized token-bearing request byte ceiling.
 [spend]
 prompt_estimator_mode = "adaptive" # "adaptive" or "strict"
 max_cost_usd = 10.0
-max_calls = 128
+max_calls = 512
 max_concurrent_calls = 2
 max_retries = 16
 # deadline_seconds = 3600.0
@@ -203,7 +203,7 @@ unpriced_input_usd_per_million = 10.0
 unpriced_output_usd_per_million = 30.0
 ```
 
-The $10, 128-call, two-concurrent-call, 16-retry, and per-call output controls
+The $10, 512-call, two-concurrent-call, 16-retry, and per-call output controls
 remain finite. Explicit token values and runtime `max_session_tokens` are
 preflight admission caps; runtime `max_price` can further tighten USD. An
 unexpectedly token-dense adaptive call can reconcile above the remaining cap by
