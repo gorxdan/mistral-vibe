@@ -2719,6 +2719,77 @@ class VibeApp(App):
             )
         )
 
+    async def _spend_command(self, cmd_args: str = "", **kwargs: Any) -> None:
+        cmd_args = cmd_args.strip().lower()
+        if cmd_args == "reset":
+            new_session_id = self.agent_loop.reset_spend()
+            await self._mount_and_scroll(
+                UserCommandMessage(
+                    "Spend ledger reset. "
+                    f"New spend session: {new_session_id}. "
+                    "Cumulative call/cost/token counters start fresh; "
+                    "conversation history is preserved."
+                )
+            )
+            return
+
+        if cmd_args and cmd_args != "status":
+            await self._mount_and_scroll(
+                ErrorMessage(
+                    "Unknown `/spend` subcommand. "
+                    "Use `/spend` (status) or `/spend reset`."
+                )
+            )
+            return
+
+        snapshot = self.agent_loop.spend_adapter.snapshot()
+        env = snapshot.envelope
+        lines = [f"### Spend budget — scope `{env.scope_id}`", ""]
+
+        def pct(remaining: float | int | None, used: float | int) -> str:
+            if remaining is None:
+                return "no limit"
+            total = remaining + used
+            if total <= 0:
+                return "—"
+            return f"{(used / total) * 100:.0f}%"
+
+        spent_calls = snapshot.spent_calls
+        remaining_calls = snapshot.remaining_calls
+        lines.append(
+            f"- **Calls**: {spent_calls} used"
+            + (
+                f" of {spent_calls + remaining_calls} ({pct(remaining_calls, spent_calls)})"
+                if remaining_calls is not None
+                else ""
+            )
+        )
+        spent_cost = snapshot.spent.cost_usd
+        remaining_cost = snapshot.remaining_cost_usd
+        lines.append(
+            f"- **Cost**: ${spent_cost:.4f} used"
+            + (
+                f" of ${spent_cost + remaining_cost:.4f}"
+                if remaining_cost is not None
+                else ""
+            )
+        )
+        spent_total = snapshot.spent.total_tokens
+        remaining_total = snapshot.remaining_total_tokens
+        lines.append(
+            f"- **Tokens**: {spent_total:,} used"
+            + (
+                f" of {spent_total + remaining_total:,}"
+                if remaining_total is not None
+                else ""
+            )
+        )
+        lines.append("")
+        lines.append(
+            "Run `/spend reset` to start a fresh ledger (keeps conversation history)."
+        )
+        await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
+
     async def _show_config(self, **kwargs: Any) -> None:
         if self._current_bottom_app == BottomApp.Config:
             return

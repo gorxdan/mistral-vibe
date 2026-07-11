@@ -184,6 +184,10 @@ class SpendRejection(_FrozenModel):
     reason: SpendRejectionReason
     limited_scope_id: str | None = Field(default=None, min_length=1, max_length=256)
     timestamp: float = Field(ge=0.0)
+    projected_cost_usd: float | None = Field(default=None, ge=0.0)
+    limit_cost_usd: float | None = Field(default=None, ge=0.0)
+    projected_calls: int | None = Field(default=None, ge=0)
+    limit_calls: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _validate_scope_chain(self) -> Self:

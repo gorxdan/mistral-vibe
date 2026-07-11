@@ -100,13 +100,30 @@ def _spend_rejection_message(rejection: SpendRejection) -> str:
                 "configured total-token limit."
             )
         case SpendRejectionReason.COST_USD:
-            detail = (
-                "before dispatch, the uncached "
-                f"reservation estimate of ${rejection.estimate.cost_usd:.4f} would "
-                "exceed the configured USD limit."
-            )
+            projected = rejection.projected_cost_usd
+            limit = rejection.limit_cost_usd
+            if projected is not None and limit is not None:
+                detail = (
+                    "before dispatch, the projected session spend "
+                    f"of ${projected:.4f} would exceed the configured "
+                    f"USD limit of ${limit:.4f}."
+                )
+            else:
+                detail = (
+                    "before dispatch, the uncached "
+                    f"reservation estimate of ${rejection.estimate.cost_usd:.4f} would "
+                    "exceed the configured USD limit."
+                )
         case SpendRejectionReason.CALLS:
-            detail = "the configured call limit is reached."
+            projected = rejection.projected_calls
+            limit = rejection.limit_calls
+            if projected is not None and limit is not None:
+                detail = (
+                    f"the configured call limit is reached "
+                    f"(projected {projected} > limit {limit})."
+                )
+            else:
+                detail = "the configured call limit is reached."
         case SpendRejectionReason.CONCURRENT_CALLS:
             detail = (
                 "the paid-call concurrency "
@@ -518,6 +535,33 @@ class SessionSpendAdapter:
         )
         try:
             self._broker.tighten_envelope(
+                self.session_scope_id,
+                _session_limits(
+                    config,
+                    now=self._clock(),
+                    runtime_max_cost_usd=runtime_max_cost_usd,
+                    runtime_max_total_tokens=runtime_max_total_tokens,
+                ),
+            )
+        except Exception as e:
+            error = SpendAdmissionBlockedError(f"spend admission is blocked: {e}")
+            self._admission_state.error = error
+            raise error from e
+        self._admission_state.config = config
+        self._admission_state.error = None
+
+    def set_limits(
+        self,
+        config: SpendConfig,
+        *,
+        runtime_max_cost_usd: float | None = None,
+        runtime_max_total_tokens: int | None = None,
+    ) -> None:
+        self._admission_state.error = SpendAdmissionBlockedError(
+            "spend admission is blocked while limits are updating"
+        )
+        try:
+            self._broker.replace_envelope_limits(
                 self.session_scope_id,
                 _session_limits(
                     config,

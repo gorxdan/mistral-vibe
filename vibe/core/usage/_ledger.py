@@ -108,6 +108,13 @@ class _EnvelopePolicyMigratedEvent(_EventBase):
 
 
 @final
+class _EnvelopeLimitsReplacedEvent(_EventBase):
+    kind: Literal["envelope_limits_replaced"] = "envelope_limits_replaced"
+    scope_id: str
+    limits: SpendEnvelopeLimits
+
+
+@final
 class _ReservedEvent(_EventBase):
     kind: Literal["reserved"] = "reserved"
     reservation: SpendReservation
@@ -185,6 +192,7 @@ LedgerEvent = Annotated[
     _ScopeDefinedEvent
     | _EnvelopeTightenedEvent
     | _EnvelopePolicyMigratedEvent
+    | _EnvelopeLimitsReplacedEvent
     | _ReservedEvent
     | _DispatchStartedEvent
     | _ReconciledEvent
@@ -211,6 +219,14 @@ class _Totals:
     spent_retries: int = 0
     reserved_retries: int = 0
     rejected_retries: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectionDetail:
+    projected_cost_usd: float | None = None
+    limit_cost_usd: float | None = None
+    projected_calls: int | None = None
+    limit_calls: int | None = None
 
 
 @dataclass(slots=True)
@@ -329,14 +345,21 @@ class SpendLedger:
         state.sequence = event.sequence
         if isinstance(
             event,
-            (_ScopeDefinedEvent, _EnvelopeTightenedEvent, _EnvelopePolicyMigratedEvent),
+            (
+                _ScopeDefinedEvent,
+                _EnvelopeTightenedEvent,
+                _EnvelopePolicyMigratedEvent,
+                _EnvelopeLimitsReplacedEvent,
+            ),
         ):
             if isinstance(event, _ScopeDefinedEvent):
                 self._apply_scope(state, event.envelope)
             elif isinstance(event, _EnvelopeTightenedEvent):
                 self._apply_tightening(state, event)
-            else:
+            elif isinstance(event, _EnvelopePolicyMigratedEvent):
                 self._apply_policy_migration(state, event)
+            else:
+                self._apply_limits_replacement(state, event)
             return
         if isinstance(event, _ReservedEvent):
             reservation = event.reservation
@@ -637,6 +660,16 @@ class SpendLedger:
         )
         state.envelope_policy_migrations.add(event.scope_id)
 
+    def _apply_limits_replacement(
+        self, state: _State, event: _EnvelopeLimitsReplacedEvent
+    ) -> None:
+        scope = state.scopes.get(event.scope_id)
+        if scope is None:
+            raise SpendLedgerCorruptError(
+                "envelope limits replacement references unknown scope"
+            )
+        state.scopes[event.scope_id] = scope.model_copy(update={"limits": event.limits})
+
     @staticmethod
     def _valid_parent(kind: SpendScopeKind, parent_kind: SpendScopeKind) -> bool:
         if kind in {SpendScopeKind.WORKFLOW, SpendScopeKind.TEAM}:
@@ -786,6 +819,28 @@ class SpendLedger:
             self._append(
                 state,
                 _EnvelopeTightenedEvent(
+                    sequence=state.sequence + 1,
+                    event_id=uuid4().hex,
+                    timestamp=self._clock(),
+                    scope_id=scope_id,
+                    limits=limits,
+                ),
+            )
+            return state.scopes[scope_id]
+
+    def replace_envelope_limits(
+        self, scope_id: str, limits: SpendEnvelopeLimits
+    ) -> SpendEnvelope:
+        with self._locked():
+            state = self._load()
+            scope = state.scopes.get(scope_id)
+            if scope is None:
+                raise SpendLedgerConflictError(f"unknown scope {scope_id!r}")
+            if limits == scope.limits:
+                return scope
+            self._append(
+                state,
+                _EnvelopeLimitsReplacedEvent(
                     sequence=state.sequence + 1,
                     event_id=uuid4().hex,
                     timestamp=self._clock(),
@@ -1163,15 +1218,16 @@ class SpendLedger:
     ) -> SpendRejection | None:
         reason: SpendRejectionReason | None = None
         limited_scope_id: str | None = None
+        detail: _ProjectionDetail | None = None
         if not chain or state.scopes[chain[-1]].kind != SpendScopeKind.AGENT:
             reason = SpendRejectionReason.UNKNOWN_SCOPE
         elif call_id in state.reservations:
             reason = SpendRejectionReason.DUPLICATE_CALL
             limited_scope_id = context.scope_id
         else:
-            limit = self._first_exceeded_limit(state, chain, estimate, context, now)
-            if limit is not None:
-                reason, limited_scope_id = limit
+            exceeded = self._first_exceeded_limit(state, chain, estimate, context, now)
+            if exceeded is not None:
+                reason, limited_scope_id, detail = exceeded
         if reason is None:
             return None
         return SpendRejection(
@@ -1185,6 +1241,10 @@ class SpendLedger:
             reason=reason,
             limited_scope_id=limited_scope_id,
             timestamp=now,
+            projected_cost_usd=detail.projected_cost_usd if detail else None,
+            limit_cost_usd=detail.limit_cost_usd if detail else None,
+            projected_calls=detail.projected_calls if detail else None,
+            limit_calls=detail.limit_calls if detail else None,
         )
 
     def _first_exceeded_limit(
@@ -1194,7 +1254,7 @@ class SpendLedger:
         estimate: SpendAmount,
         context: SpendContext,
         now: float,
-    ) -> tuple[SpendRejectionReason, str] | None:
+    ) -> tuple[SpendRejectionReason, str, _ProjectionDetail] | None:
         for scope_id in chain:
             limits = state.scopes[scope_id].limits
             totals = self._totals(state, scope_id)
@@ -1202,7 +1262,17 @@ class SpendLedger:
                 limits, totals, estimate, context.is_retry, now
             )
             if reason is not None:
-                return reason, scope_id
+                projected = _add_amount(
+                    _add_amount(totals.spent, totals.reserved), estimate
+                )
+                projected_calls = totals.spent_calls + totals.reserved_calls + 1
+                detail = _ProjectionDetail(
+                    projected_cost_usd=projected.cost_usd,
+                    limit_cost_usd=limits.max_cost_usd,
+                    projected_calls=projected_calls,
+                    limit_calls=limits.max_calls,
+                )
+                return reason, scope_id, detail
         return None
 
     @staticmethod

@@ -290,6 +290,15 @@ class CommandRegistry:
                 handler="_show_theme",
                 safe_while_busy=True,
             ),
+            "spend": Command(
+                aliases=frozenset(["/spend"]),
+                description=(
+                    "Show spend budget or reset the session spend ledger. "
+                    "Use `/spend` for status, `/spend reset` to start a fresh "
+                    "budget without clearing conversation history."
+                ),
+                handler="_spend_command",
+            ),
         }
 
     @property

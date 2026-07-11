@@ -56,6 +56,11 @@ class SpendBroker:
     ) -> SpendEnvelope:
         return self._ledger.tighten_envelope(scope_id, limits)
 
+    def replace_envelope_limits(
+        self, scope_id: str, limits: SpendEnvelopeLimits
+    ) -> SpendEnvelope:
+        return self._ledger.replace_envelope_limits(scope_id, limits)
+
     def migrate_legacy_default_token_limits(
         self,
         scope_id: str,

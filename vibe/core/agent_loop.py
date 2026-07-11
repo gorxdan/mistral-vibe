@@ -611,11 +611,24 @@ class AgentLoop(
             VibeConfig.load()
         )
         self.agent_manager.invalidate_config()
-        self._spend_adapter.tighten_limits(
+        self._spend_adapter.set_limits(
             self.config.spend,
             runtime_max_cost_usd=self._max_price,
             runtime_max_total_tokens=self._max_session_tokens,
         )
+
+    def reset_spend(self) -> str:
+        self._spend_adapter = SessionSpendAdapter.create(
+            self.config.spend,
+            generate_session_id(suffix=extract_suffix(self.session_id)),
+            runtime_max_cost_usd=self._max_price,
+            runtime_max_total_tokens=self._max_session_tokens,
+        )
+        if self.session_logger.session_metadata is not None:
+            self.session_logger.session_metadata.environment[
+                SPEND_SESSION_ID_METADATA_KEY
+            ] = self._spend_adapter.spend_session_id
+        return self._spend_adapter.spend_session_id
 
     def _drain_pending_injections(self) -> bool:
         staged = False
@@ -2827,7 +2840,7 @@ class AgentLoop(
             )
             self.agent_manager.invalidate_config()
 
-        self._spend_adapter.tighten_limits(
+        self._spend_adapter.set_limits(
             self.config.spend,
             runtime_max_cost_usd=max_price
             if max_price is not None

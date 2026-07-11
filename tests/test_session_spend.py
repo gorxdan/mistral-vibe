@@ -964,7 +964,7 @@ def test_reopening_legacy_session_preserves_explicit_default_token_caps(
 
 
 @pytest.mark.asyncio
-async def test_live_config_reload_tightens_current_spend_adapter(tmp_path) -> None:
+async def test_live_config_reload_sets_current_spend_adapter(tmp_path) -> None:
     initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
     adapter = SessionSpendAdapter.create(
         initial.spend, "reload-session", ledger_path=tmp_path / "reload-ledger"
@@ -982,12 +982,14 @@ async def test_live_config_reload_tightens_current_spend_adapter(tmp_path) -> No
         await adapter.complete(backend, _request(max_tokens=1))
     assert backend.complete_calls == 0
 
+    # set_limits can raise, unlike tighten: reloading back to the original
+    # higher limit must take effect so a session can recover from a cap.
     await agent.reload_with_initial_messages(base_config=initial)
-    assert adapter.snapshot().envelope.limits.max_calls == 1
+    assert adapter.snapshot().envelope.limits.max_calls == 2
 
 
 @pytest.mark.asyncio
-async def test_sync_config_refresh_tightens_current_spend_adapter(tmp_path) -> None:
+async def test_sync_config_refresh_sets_current_spend_adapter(tmp_path) -> None:
     initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
     adapter = SessionSpendAdapter.create(
         initial.spend, "refresh-session", ledger_path=tmp_path / "refresh-ledger"
@@ -1008,7 +1010,7 @@ async def test_sync_config_refresh_tightens_current_spend_adapter(tmp_path) -> N
 
 
 @pytest.mark.asyncio
-async def test_failed_live_spend_tightening_blocks_later_dispatches(tmp_path) -> None:
+async def test_failed_live_spend_set_blocks_later_dispatches(tmp_path) -> None:
     initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
     adapter = SessionSpendAdapter.create(
         initial.spend, "failed-reload", ledger_path=tmp_path / "failed-ledger"
@@ -1020,7 +1022,7 @@ async def test_failed_live_spend_tightening_blocks_later_dispatches(tmp_path) ->
     with (
         patch.object(
             adapter._broker,
-            "tighten_envelope",
+            "replace_envelope_limits",
             side_effect=RuntimeError("ledger unavailable"),
         ),
         pytest.raises(RuntimeError, match="ledger unavailable"),
@@ -1034,6 +1036,75 @@ async def test_failed_live_spend_tightening_blocks_later_dispatches(tmp_path) ->
     with pytest.raises(RuntimeError, match="spend admission is blocked"):
         await child.complete(backend, _request(max_tokens=1))
     assert backend.complete_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_reset_spend_starts_fresh_ledger_without_clearing_history(
+    tmp_path,
+) -> None:
+    initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
+    adapter = SessionSpendAdapter.create(
+        initial.spend, "reset-session", ledger_path=tmp_path / "reset-ledger"
+    )
+    agent = build_test_agent_loop(config=initial, spend_adapter=adapter)
+    await adapter.complete(_CountingBackend(), _request(max_tokens=1))
+    assert adapter.snapshot().spent_calls == 1
+
+    old_session_id = adapter.spend_session_id
+    new_session_id = agent.reset_spend()
+
+    assert new_session_id != old_session_id
+    assert agent._spend_adapter.spend_session_id == new_session_id
+    assert agent._spend_adapter.snapshot().spent_calls == 0
+    # Fresh ledger has the full configured budget again.
+    assert (
+        agent._spend_adapter.snapshot().envelope.limits.max_calls
+        == initial.spend.max_calls
+    )
+    # A call that would have exceeded the old budget now succeeds.
+    await agent._spend_adapter.complete(_CountingBackend(), _request(max_tokens=1))
+    assert agent._spend_adapter.snapshot().spent_calls == 1
+
+
+def test_cost_usd_rejection_message_quotes_projected_total(tmp_path) -> None:
+    from vibe.core.usage._session import _spend_rejection_message
+
+    rejection = SpendRejection(
+        call_id="c1",
+        scope_id="agent:s:test:primary",
+        scope_chain=("session:test", "agent:s:test:primary"),
+        purpose=SpendPurpose.PRIMARY,
+        estimate=SpendAmount(cost_usd=1.0),
+        is_retry=False,
+        reason=SpendRejectionReason.COST_USD,
+        timestamp=0.0,
+        projected_cost_usd=9.50,
+        limit_cost_usd=8.00,
+    )
+    message = _spend_rejection_message(rejection)
+    assert "$9.5000" in message
+    assert "$8.0000" in message
+    assert "$1.0000" not in message
+
+
+def test_calls_rejection_message_quotes_projected_and_limit() -> None:
+    from vibe.core.usage._session import _spend_rejection_message
+
+    rejection = SpendRejection(
+        call_id="c1",
+        scope_id="agent:s:test:primary",
+        scope_chain=("session:test", "agent:s:test:primary"),
+        purpose=SpendPurpose.PRIMARY,
+        estimate=SpendAmount(),
+        is_retry=False,
+        reason=SpendRejectionReason.CALLS,
+        timestamp=0.0,
+        projected_calls=129,
+        limit_calls=128,
+    )
+    message = _spend_rejection_message(rejection)
+    assert "129" in message
+    assert "128" in message
 
 
 @pytest.mark.asyncio
