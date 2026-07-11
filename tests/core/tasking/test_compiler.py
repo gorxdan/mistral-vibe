@@ -40,6 +40,13 @@ def test_compile_task_brief_is_compact_deterministic_json() -> None:
     assert first.endswith("TASK_OUTCOME: SUCCEEDED|FAILED|BLOCKED|RETRYABLE")
 
 
+def test_compile_verifier_task_brief_requires_only_terminal_verdict() -> None:
+    prompt = compile_task_brief(_brief(), verifier=True)
+
+    assert prompt.endswith("VERDICT: PASS|FAIL|PARTIAL")
+    assert "End the response with exactly one terminal line: TASK_OUTCOME" not in prompt
+
+
 def test_resolve_task_outcome_reads_only_final_marker() -> None:
     brief = _brief()
     outcome = resolve_task_outcome(

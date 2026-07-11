@@ -92,3 +92,28 @@ class TestArgumentGate:
     def test_non_find_safe(self):
         assert allowlisted_argument_is_unsafe("git status") is None
         assert allowlisted_argument_is_unsafe("ls -la") is None
+
+    def test_ruff_requires_an_explicit_read_only_mode(self):
+        assert allowlisted_argument_is_unsafe("ruff check --no-fix .") is None
+        assert allowlisted_argument_is_unsafe("ruff format --check .") is None
+        assert allowlisted_argument_is_unsafe("ruff format --diff .") is None
+        assert allowlisted_argument_is_unsafe("ruff check .") is not None
+
+    def test_ruff_global_options_do_not_hide_mutating_subcommands(self):
+        assert allowlisted_argument_is_unsafe("ruff --isolated format .") is not None
+        assert (
+            allowlisted_argument_is_unsafe("ruff --config pyproject.toml clean")
+            is not None
+        )
+
+    def test_ruff_read_only_check_rejects_output_and_source_writes(self):
+        assert (
+            allowlisted_argument_is_unsafe(
+                "ruff check --no-fix --output-file report.json ."
+            )
+            is not None
+        )
+        assert (
+            allowlisted_argument_is_unsafe("ruff check --no-fix --add-noqa .")
+            is not None
+        )

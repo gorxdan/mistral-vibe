@@ -88,6 +88,7 @@ if TYPE_CHECKING:
     from vibe.core.tools.base import InvokeContext
     from vibe.core.usage._process_context import SpendProcessContext
     from vibe.core.usage._session import SessionSpendAdapter
+    from vibe.core.workflows._verified_delivery import VerifiedCandidate
 
 
 class _AwaitableResult:
@@ -380,34 +381,52 @@ def _fingerprint_payload(value: Any) -> str:
 
 
 def _verifier_recording_diagnostic(
-    runtime: WorkflowRuntime, result: _VerifierResult
+    runtime: WorkflowRuntime, result: _VerifierResult, *, delivered: bool = False
 ) -> str | None:
     ctx = runtime.parent_context
+    diagnostic: str | None = None
+    if result.report is None:
+        diagnostic = "verifier report was unavailable"
+    elif landing_base_sha() != result.base_sha:
+        diagnostic = "landing base changed before verifier authorization was recorded"
+    elif result.candidate is None:
+        diagnostic = "verified candidate binding was unavailable"
+    else:
+        from vibe.core.workflows._verified_delivery import verified_candidate_diagnostic
+
+        diagnostic = verified_candidate_diagnostic(
+            result.candidate, delivered=delivered
+        )
+    if diagnostic is not None:
+        return diagnostic
     if ctx is None or ctx.verification_state is None:
         return None
-    state = ctx.verification_state
-    if result.report is None:
-        return "verifier report was unavailable"
     if result.generation is None:
         return "verifier attempt generation was unavailable"
-    if not state.is_current_verifier_attempt(result.generation):
+    if not ctx.verification_state.is_current_verifier_attempt(result.generation):
         return "verifier attempt was superseded before landing authorization"
-    if landing_base_sha() != result.base_sha:
-        return "landing base changed before verifier authorization was recorded"
     return None
 
 
 def _record_verifier_pass(
     runtime: WorkflowRuntime, result: _VerifierResult
 ) -> str | None:
-    diagnostic = _verifier_recording_diagnostic(runtime, result)
+    diagnostic = _verifier_recording_diagnostic(runtime, result, delivered=True)
     if diagnostic is not None:
         return diagnostic
     ctx = runtime.parent_context
     if ctx is None or ctx.verification_state is None or result.report is None:
         return None
     state = ctx.verification_state
-    state.record_verifier_pass(result.report, verified_base_sha=result.base_sha)
+    if result.candidate is None:
+        return "verified candidate binding was unavailable"
+    state.record_verifier_pass(
+        result.report,
+        verified_workspace_fingerprint=(
+            result.candidate.candidate_workspace_fingerprint
+        ),
+        verified_base_sha=result.base_sha,
+    )
     return None
 
 
@@ -422,6 +441,7 @@ class _VerifierResult:
     error: str | None = None
     base_sha: str | None = None
     generation: int | None = None
+    candidate: VerifiedCandidate | None = None
 
     @property
     def passed(self) -> bool:
@@ -434,6 +454,7 @@ async def _run_verifier_in_worktree(
     result: Any,
     model: str | None,
     spend_context: SpendProcessContext | None,
+    candidate: VerifiedCandidate | None = None,
 ) -> _VerifierResult:
     from vibe.core.agents.models import BuiltinAgentName
 
@@ -467,6 +488,7 @@ async def _run_verifier_in_worktree(
             error=f"verifier subprocess failed: {exc}",
             base_sha=base_sha,
             generation=generation,
+            candidate=candidate,
         )
     response = v_result.output or ""
     try:
@@ -477,6 +499,7 @@ async def _run_verifier_in_worktree(
             error=f"verifier report rejected: {exc}",
             base_sha=base_sha,
             generation=generation,
+            candidate=candidate,
         )
     if not report.passed:
         return _VerifierResult(
@@ -484,8 +507,11 @@ async def _run_verifier_in_worktree(
             error=f"verifier returned VERDICT: {report.verdict.value.upper()}",
             base_sha=base_sha,
             generation=generation,
+            candidate=candidate,
         )
-    return _VerifierResult(report=report, base_sha=base_sha, generation=generation)
+    return _VerifierResult(
+        report=report, base_sha=base_sha, generation=generation, candidate=candidate
+    )
 
 
 def _prompt_hash(
@@ -2283,13 +2309,24 @@ class WorkflowRuntime:
                 and wt is not None
                 and (contract is None or should_deliver)
             ):
-                verifier_result = await _run_verifier_in_worktree(
-                    self,
-                    wt,
-                    result,
-                    model,
-                    self._new_process_spend_context(SpendPurpose.VERIFICATION),
+                from vibe.core.workflows._verified_delivery import (
+                    VerifiedCandidateError,
+                    prepare_verified_candidate,
                 )
+
+                try:
+                    candidate = await asyncio.to_thread(prepare_verified_candidate, wt)
+                except VerifiedCandidateError as exc:
+                    verifier_result = _VerifierResult(error=str(exc))
+                else:
+                    verifier_result = await _run_verifier_in_worktree(
+                        self,
+                        wt,
+                        result,
+                        model,
+                        self._new_process_spend_context(SpendPurpose.VERIFICATION),
+                        candidate,
+                    )
                 should_deliver = verifier_result.passed
                 recording_diagnostic = _verifier_recording_diagnostic(
                     self, verifier_result
@@ -2301,6 +2338,7 @@ class WorkflowRuntime:
                         error=recording_diagnostic,
                         base_sha=verifier_result.base_sha,
                         generation=verifier_result.generation,
+                        candidate=verifier_result.candidate,
                     )
                 if not should_deliver:
                     contract_report = ContractReport(

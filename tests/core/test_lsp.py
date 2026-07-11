@@ -524,12 +524,20 @@ def test_preset_matches_root_walks_up_to_git_root(tmp_path) -> None:
     assert preset_matches_root(_GOPLS, subdir) is True
 
 
-def test_preset_matches_root_no_git_ancestor_stays_single_dir(tmp_path) -> None:
+def test_preset_matches_root_no_git_ancestor_stays_single_dir(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from vibe.core.lsp._defaults import _PYRIGHT, preset_matches_root
 
     (tmp_path / "pyproject.toml").write_text("")
     subdir = tmp_path / "sub"
     subdir.mkdir()
+    real_exists = Path.exists
+
+    def exists_without_git(path: Path) -> bool:
+        return False if path.name == ".git" else real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", exists_without_git)
     # No .git anywhere above, so a marker only in the parent must NOT match.
     assert preset_matches_root(_PYRIGHT, subdir) is False
 

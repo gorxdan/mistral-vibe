@@ -40,16 +40,17 @@ class VerificationReportError(ValueError):
 
 
 _CHECK_RE = re.compile(
-    r"^\s*#{2,6}\s+Check(?:\s+(?:\d+|\([^)]{1,40}\)))?:"
+    r"^\s*#{2,6}\s+Check(?:\s+(?:[A-Z0-9]{1,40}|\([^)]{1,40}\)))?:"
     r"\s*(?P<check>\S.*)\s*$",
     re.IGNORECASE,
 )
+_CHECK_LIKE_RE = re.compile(r"^\s*#{2,6}\s+Check\b.*$", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^\s*#{2,6}\s+\S.*$")
 _COMMAND_RE = re.compile(
-    r"^\s*(?:\*\*)?Command run:(?:\*\*)?(?P<inline>.*)$", re.IGNORECASE
+    r"^\s*(?:\*\*)?Command(?: run)?:(?:\*\*)?(?P<inline>.*)$", re.IGNORECASE
 )
 _OUTPUT_RE = re.compile(
-    r"^\s*(?:\*\*)?Output observed:(?:\*\*)?(?P<inline>.*)$", re.IGNORECASE
+    r"^\s*(?:\*\*)?Output(?: observed)?:(?:\*\*)?(?P<inline>.*)$", re.IGNORECASE
 )
 _RESULT_RE = re.compile(
     r"^\s*(?:\*\*)?Result:\s*(?P<result>PASS|FAIL)(?:\*\*)?"
@@ -98,6 +99,12 @@ def parse_verification_report(response: str) -> VerificationReport:
 
 
 def _parse_evidence(lines: list[str]) -> list[CommandEvidence]:
+    if any(
+        _CHECK_LIKE_RE.fullmatch(line) and not _CHECK_RE.fullmatch(line)
+        for line in lines
+    ):
+        raise VerificationReportError("invalid check heading")
+
     check_indexes = [
         index for index, line in enumerate(lines) if _CHECK_RE.fullmatch(line)
     ]

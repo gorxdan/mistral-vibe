@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from tests.conftest import build_test_vibe_config
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
-from vibe.core.agents.models import BuiltinAgentName
+from vibe.core.agents.models import BUILTIN_AGENTS, BuiltinAgentName
 from vibe.core.config import (
     TrustedVerificationCheckConfig,
     TrustedVerificationRecipeConfig,
@@ -16,13 +18,16 @@ from vibe.core.output_formatters import create_formatter
 from vibe.core.programmatic import (
     ProgrammaticOptions,
     _new_programmatic_loop,
+    _validate_team_task_contract,
     run_programmatic,
 )
 from vibe.core.tasking import TaskBrief, TaskBudget, TaskManifestIdentity
+from vibe.core.tasking._policy import BoundTaskContract, TaskContractError
 from vibe.core.tasking._process_context import (
     TASK_PROCESS_CONTEXT_ENV,
     TaskProcessContext,
 )
+from vibe.core.tools._task_manifest import resolve_task_manifest
 from vibe.core.types import OutputFormat
 from vibe.core.usage import SpendPurpose
 from vibe.core.usage._process_context import (
@@ -56,6 +61,31 @@ def _task_config():
         ),
     )
     return build_test_vibe_config(trusted_verification_recipe=recipe)
+
+
+def _contract_with_manifest(name: str) -> BoundTaskContract:
+    manifest = resolve_task_manifest(TaskManifestIdentity(name=name, version="1"))
+    return cast(BoundTaskContract, SimpleNamespace(manifest=manifest))
+
+
+def test_team_worker_rejects_structured_verifier_protocol() -> None:
+    with pytest.raises(TaskContractError, match="TASK_OUTCOME protocol"):
+        _validate_team_task_contract(
+            _contract_with_manifest("verify"), BUILTIN_AGENTS[BuiltinAgentName.VERIFIER]
+        )
+
+
+def test_team_worker_rejects_write_manifest_for_read_only_profile() -> None:
+    with pytest.raises(TaskContractError, match="write-capable manifest"):
+        _validate_team_task_contract(
+            _contract_with_manifest("implement-verify"),
+            BUILTIN_AGENTS[BuiltinAgentName.REVIEWER],
+        )
+
+    _validate_team_task_contract(
+        _contract_with_manifest("investigate"),
+        BUILTIN_AGENTS[BuiltinAgentName.REVIEWER],
+    )
 
 
 def test_programmatic_startup_rejects_malformed_spend_context(

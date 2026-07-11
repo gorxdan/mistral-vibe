@@ -21,7 +21,11 @@ _STATS_SENTINEL = "__VIBE_WORKFLOW_STATS__"
 
 from vibe import __version__
 from vibe.core.agent_loop import AgentLoop, AgentLoopParams, TeleportError
-from vibe.core.agents.models import BuiltinAgentName
+from vibe.core.agents.models import (
+    AgentProfile,
+    BuiltinAgentName,
+    profile_requires_isolation,
+)
 from vibe.core.config import SandboxConfig, VibeConfig
 from vibe.core.hooks.models import HookConfigResult, HookSessionContext
 from vibe.core.logger import logger
@@ -29,7 +33,11 @@ from vibe.core.loop import LoopManager
 from vibe.core.lsp._lifecycle import setup_lsp_for_config, teardown_lsp_async
 from vibe.core.output_formatters import OutputFormatter, create_formatter
 from vibe.core.schedule_driver import ScheduleDriver
-from vibe.core.tasking._policy import BoundTaskContract, TaskContractAuthority
+from vibe.core.tasking._policy import (
+    BoundTaskContract,
+    TaskContractAuthority,
+    TaskContractError,
+)
 from vibe.core.tasking._runtime_context import bind_process_runtime_context
 from vibe.core.teams import TeamManager, TeamSafetyMode
 from vibe.core.telemetry.build_metadata import build_launch_context
@@ -37,6 +45,10 @@ from vibe.core.telemetry.types import ClientMetadata
 from vibe.core.teleport.types import (
     TeleportPushRequiredEvent,
     TeleportPushResponseEvent,
+)
+from vibe.core.tools._task_manifest import (
+    TaskManifestError,
+    validate_task_manifest_for_agent,
 )
 from vibe.core.tools.background import BackgroundRegistry
 from vibe.core.tools.permissions import RequiredPermission
@@ -48,6 +60,7 @@ from vibe.core.types import (
     OutputFormat,
     Role,
     ScheduledLoop,
+    ToolResultEvent,
 )
 from vibe.core.usage._session import SessionSpendAdapter
 from vibe.core.utils import ConversationLimitException
@@ -71,6 +84,8 @@ async def _drive_scheduled_loops(
     scheduler: LoopManager,
     formatter: OutputFormatter,
     keep_alive_seconds: int,
+    *,
+    fail_on_skipped_tool: bool = False,
 ) -> None:
     """Fire due scheduled loops as further turns until they drain (one-shots)
     or the deadline passes (so recurring loops don't run forever in -p).
@@ -81,6 +96,7 @@ async def _drive_scheduled_loops(
         async with aclosing(agent_loop.act(due.prompt)) as events:
             async for event in events:
                 formatter.on_event(event)
+                _raise_for_skipped_verifier_tool(event, enabled=fail_on_skipped_tool)
 
     driver = ScheduleDriver(scheduler, can_fire=lambda: True, fire=_fire)
     deadline = asyncio.get_running_loop().time() + keep_alive_seconds
@@ -100,21 +116,38 @@ async def _isolated_auto_approve(
     required_permissions: list[RequiredPermission] | None,
     judge_deferral: str | None,
 ) -> tuple[ApprovalResponse, str | None, dict[str, Any] | None]:
-    """Auto-yes every ASK-gated tool in an isolated subprocess.
+    """Auto-yes ASK-gated tools for a write-capable isolated subprocess.
 
     The spawn was pre-judged (task._judge_isolated_spawn / workflow runtime) and
     write/edit/read are confined to the worktree (enforce_isolated_confine), so
     the host's unreachable per-tool gate can be bypassed. Without this the
     isolated worker/editor/grunt SKIPs every write/edit/bash and silently produces no
-    work — see programmatic.run_programmatic for the env-flag handshake.
+    work. Read-only profiles use a rejecting callback so ASK cannot bypass their
+    jailed allowlist — see programmatic.run_programmatic for the env handshake.
     """
     return ApprovalResponse.YES, None, None
 
 
+async def _isolated_reject_approval(
+    tool_name: str,
+    args: BaseModel,
+    tool_call_id: str,
+    required_permissions: list[RequiredPermission] | None,
+    judge_deferral: str | None,
+) -> tuple[ApprovalResponse, str | None, dict[str, Any] | None]:
+    return ApprovalResponse.NO, None, None
+
+
 def _wire_isolated_approval(agent_loop: AgentLoop) -> None:
-    """Wire the auto-yes callback when running as an isolated subprocess."""
-    if os.environ.get("VIBE_ISOLATED_AUTO_APPROVE") == "1":
-        agent_loop.set_approval_callback(_isolated_auto_approve)
+    """Wire an isolation-aware callback when running as a child process."""
+    if os.environ.get("VIBE_ISOLATED_AUTO_APPROVE") != "1":
+        return
+    callback = (
+        _isolated_reject_approval
+        if not profile_requires_isolation(agent_loop.agent_profile)
+        else _isolated_auto_approve
+    )
+    agent_loop.set_approval_callback(callback)
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +233,7 @@ async def _run_team_worker_session(
                     agent_loop.base_config.trusted_verification_recipe
                 ),
             )
+            _validate_team_task_contract(contract, agent_loop.agent_profile)
         if contract is None:
             task_spend = agent_loop.spend_adapter.child_agent(
                 purpose=agent_loop.spend_adapter.default_purpose
@@ -229,6 +263,11 @@ async def _run_team_worker_session(
             async with aclosing(task_loop.act(worker_task_prompt(task))) as events:
                 async for event in events:
                     task_formatter.on_event(event)
+                    _raise_for_skipped_verifier_tool(
+                        event,
+                        enabled=task_loop.agent_profile.name
+                        == BuiltinAgentName.VERIFIER,
+                    )
                     if (
                         isinstance(event, AssistantEvent)
                         and event.stopped_by_middleware
@@ -251,6 +290,24 @@ async def _run_team_worker_session(
             await task_loop.telemetry_client.aclose()
 
     await run_team_worker_loop(run_task)
+
+
+def _validate_team_task_contract(
+    contract: BoundTaskContract, agent_profile: AgentProfile
+) -> None:
+    if agent_profile.name == BuiltinAgentName.VERIFIER:
+        raise TaskContractError(
+            "structured verifier assignments are not supported by the team worker "
+            "TASK_OUTCOME protocol; use the task or workflow verifier path"
+        )
+    try:
+        validate_task_manifest_for_agent(
+            contract.manifest,
+            agent=agent_profile.name,
+            read_only=not profile_requires_isolation(agent_profile),
+        )
+    except TaskManifestError as exc:
+        raise TaskContractError(str(exc)) from exc
 
 
 async def _run_session(
@@ -322,20 +379,41 @@ async def _drive_programmatic_turn(
         if is_team_worker():
             await _run_team_worker_session(agent_loop, prompt, opts)
         else:
-            await _act_once(agent_loop, formatter, prompt)
+            await _act_once(
+                agent_loop,
+                formatter,
+                prompt,
+                fail_on_skipped_tool=opts.agent_name == BuiltinAgentName.VERIFIER,
+            )
 
     if opts.keep_alive_seconds and scheduler.loops:
         await _drive_scheduled_loops(
-            agent_loop, scheduler, formatter, opts.keep_alive_seconds
+            agent_loop,
+            scheduler,
+            formatter,
+            opts.keep_alive_seconds,
+            fail_on_skipped_tool=opts.agent_name == BuiltinAgentName.VERIFIER,
         )
 
 
+def _raise_for_skipped_verifier_tool(event: object, *, enabled: bool) -> None:
+    if not enabled or not isinstance(event, ToolResultEvent) or not event.skipped:
+        return
+    reason = event.skip_reason or event.error or "tool call was skipped"
+    raise RuntimeError(f"Verifier tool call {event.tool_name!r} did not run: {reason}")
+
+
 async def _act_once(
-    agent_loop: AgentLoop, formatter: OutputFormatter, prompt: str
+    agent_loop: AgentLoop,
+    formatter: OutputFormatter,
+    prompt: str,
+    *,
+    fail_on_skipped_tool: bool = False,
 ) -> None:
     async with aclosing(agent_loop.act(prompt)) as events:
         async for event in events:
             formatter.on_event(event)
+            _raise_for_skipped_verifier_tool(event, enabled=fail_on_skipped_tool)
             if isinstance(event, AssistantEvent) and event.stopped_by_middleware:
                 raise ConversationLimitException(event.content)
 

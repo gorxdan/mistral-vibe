@@ -308,6 +308,10 @@ _EFFORT_ORDER: tuple[str, ...] = (
     "minimal",
     "none",
 )
+_REJECTED_EFFORT_FIELD_RE = re.compile(
+    r"unsupported value:\s*'reasoning_effort'\s+does not support\s*'([^']+)'",
+    re.IGNORECASE,
+)
 _REJECTED_EFFORT_RE = re.compile(r"unsupported value:\s*'([^']+)'", re.IGNORECASE)
 _SUPPORTED_EFFORTS_RE = re.compile(r"supported values are:\s*([^.]+)", re.IGNORECASE)
 
@@ -316,7 +320,9 @@ def _nearest_supported_effort(error_text: str) -> str | None:
     """For an 'unsupported reasoning effort' 400 body, return the supported
     effort nearest the rejected one (ties favour the higher tier), else None.
     """
-    rejected_m = _REJECTED_EFFORT_RE.search(error_text)
+    rejected_m = _REJECTED_EFFORT_FIELD_RE.search(
+        error_text
+    ) or _REJECTED_EFFORT_RE.search(error_text)
     supported_m = _SUPPORTED_EFFORTS_RE.search(error_text)
     if not rejected_m or not supported_m:
         return None

@@ -3,7 +3,8 @@ from __future__ import annotations
 COMPACT_VERIFICATION_INVARIANT = """\
 ## Verification invariant
 
-Before claiming non-trivial work complete, run the `verifier` subagent. Only an
+Before claiming non-trivial work complete, freeze all intended edits and commits, then run
+the `verifier` subagent without mutating the candidate while it runs. Only an
 evidence-backed `VERDICT: PASS` is success; fix `FAIL`, and report `PARTIAL` or a
 missing verdict as incomplete. With no trusted recipe configured, `land_work`
 accepts the current recorded verifier PASS or an explicit
@@ -12,7 +13,8 @@ accepts the current recorded verifier PASS or an explicit
 COMPACT_VERIFICATION_RECIPE_INVARIANT = """\
 ## Verification invariant
 
-Before claiming non-trivial work complete, run the `verifier` subagent. Only an
+Before claiming non-trivial work complete, freeze all intended edits and commits, then run
+the `verifier` subagent without mutating the candidate while it runs. Only an
 evidence-backed `VERDICT: PASS` is success; fix `FAIL`, and report `PARTIAL` or a
 missing verdict as incomplete. This session has a prebound trusted recipe: after
 the verifier PASS, call no-argument `verify_work`. `land_work` then requires its

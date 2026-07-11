@@ -63,6 +63,29 @@ def test_parse_accepts_common_verifier_markdown_variants() -> None:
     assert report.evidence[0].output == "8 passed"
 
 
+def test_parse_accepts_alphanumeric_check_labels_and_heading_aliases() -> None:
+    checks = []
+    for label in ("A", "B2", "C", "D4", "E"):
+        checks.append(
+            f"### Check {label}: probe {label}\n"
+            f"**Command:** `pytest -k probe_{label.lower()}`\n"
+            "**Output:** 1 passed\n"
+            "**Result: PASS**"
+        )
+
+    report = parse_verification_report("\n\n".join(checks) + "\n\nVERDICT: PASS")
+
+    assert [item.check for item in report.evidence] == [
+        "probe A",
+        "probe B2",
+        "probe C",
+        "probe D4",
+        "probe E",
+    ]
+    assert report.evidence[1].command == "pytest -k probe_b2"
+    assert report.evidence[1].output == "1 passed"
+
+
 def test_parse_ignores_non_evidence_sections_after_checks() -> None:
     report = parse_verification_report(
         "### Check: focused tests\n"
@@ -106,6 +129,21 @@ def test_parse_accepts_fail_when_a_check_failed() -> None:
 
     assert report.verdict == VerificationVerdict.FAIL
     assert report.passed is False
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "### Check A - missing colon",
+        "### Check alpha beta: unsupported label",
+        "### Check:",
+    ],
+)
+def test_parse_rejects_malformed_check_like_headings(heading: str) -> None:
+    response = _report().replace("Verification notes before the evidence.", heading)
+
+    with pytest.raises(VerificationReportError, match="invalid check heading"):
+        parse_verification_report(response)
 
 
 @pytest.mark.parametrize(

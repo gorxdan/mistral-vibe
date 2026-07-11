@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.agent_loop import AgentLoop, AgentLoopParams
 from vibe.core.agents.models import (
+    AgentProfile,
     AgentType,
     BuiltinAgentName,
     profile_requires_isolation,
@@ -35,6 +36,11 @@ from vibe.core.tasking._policy import (
 )
 from vibe.core.tasking._process_context import TaskProcessContext
 from vibe.core.teams._task_checks import run_guarded_task_checks, task_check_diagnostics
+from vibe.core.tools._task_manifest import (
+    TaskManifestError,
+    resolve_task_manifest,
+    validate_task_manifest_for_agent,
+)
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -61,6 +67,7 @@ from vibe.core.usage import SpendProcessContext, SpendPurpose
 from vibe.core.usage._session import SpendBudgetExceededError
 from vibe.core.verification_contract import (
     VerificationReportError,
+    VerificationVerdict,
     parse_verification_report,
 )
 from vibe.core.workflows._limits import DEFAULT_ISOLATED_MAX_TURNS
@@ -133,11 +140,14 @@ def _maybe_record_verifier_pass(
     ctx: InvokeContext,
     *,
     completed: bool = True,
+    authorized: bool = True,
     attempt: _VerificationAttempt | None = None,
 ) -> str | None:
     # Only the verifier subagent may set the verifier flag.
     if agent != BuiltinAgentName.VERIFIER:
         return None
+    # Execution completion and host authorization are independent: a strict PASS
+    # still cannot land when a bound trusted check or candidate gate failed.
     if not response or not completed:
         reason = "response was empty" if not response else "task did not complete"
         return f"Verifier result was not recorded: {reason}"
@@ -163,7 +173,7 @@ def _maybe_record_verifier_pass(
         report = parse_verification_report(response)
     except VerificationReportError as exc:
         return f"Verifier result was not recorded: {exc}"
-    if report.passed:
+    if report.passed and authorized:
         state.record_verifier_pass(
             report,
             verified_workspace_fingerprint=(
@@ -171,14 +181,17 @@ def _maybe_record_verifier_pass(
             ),
             verified_base_sha=attempt.base_sha if attempt is not None else None,
         )
-    return (
-        None
-        if report.passed
-        else (
+        recording_diagnostic = None
+    elif report.passed:
+        recording_diagnostic = (
+            "Verifier PASS was not recorded: trusted task outcome did not succeed"
+        )
+    else:
+        recording_diagnostic = (
             "Verifier did not authorize landing: "
             f"VERDICT: {report.verdict.value.upper()}"
         )
-    )
+    return recording_diagnostic
 
 
 def _with_verification_result(
@@ -202,12 +215,11 @@ def _with_verification_result(
         if outcome.succeeded
         else outcome.summary
     )
+    diagnostics = list(outcome.diagnostics)
+    if diagnostic not in diagnostics:
+        diagnostics.append(diagnostic)
     return outcome.model_copy(
-        update={
-            "status": status,
-            "summary": summary,
-            "diagnostics": [*outcome.diagnostics, diagnostic],
-        }
+        update={"status": status, "summary": summary, "diagnostics": diagnostics}
     )
 
 
@@ -238,12 +250,83 @@ class _InProcessResult:
     outcome: TaskOutcome | None = None
 
 
+def _resolve_initial_task_outcome(
+    args: TaskArgs,
+    response: str,
+    *,
+    completed: bool,
+    forced_status: TaskOutcomeStatus | None = None,
+    diagnostic: str | None = None,
+) -> TaskOutcome:
+    if (
+        args.brief is None
+        or args.agent != BuiltinAgentName.VERIFIER
+        or forced_status is not None
+        or not completed
+    ):
+        return resolve_task_outcome(
+            args.brief,
+            response,
+            completed=completed,
+            forced_status=forced_status,
+            diagnostic=diagnostic,
+        )
+
+    try:
+        report = parse_verification_report(response)
+    except VerificationReportError as exc:
+        parse_diagnostic = f"Verifier result was not recorded: {exc}"
+        return TaskOutcome(
+            status=TaskOutcomeStatus.RETRYABLE,
+            summary="Structured verifier report was invalid",
+            diagnostics=[item for item in (diagnostic, parse_diagnostic) if item],
+            manifest=args.brief.manifest,
+        )
+
+    match report.verdict:
+        case VerificationVerdict.PASS:
+            status = TaskOutcomeStatus.SUCCEEDED
+            summary = "Verifier reported that checks passed"
+        case VerificationVerdict.FAIL:
+            status = TaskOutcomeStatus.FAILED
+            summary = "Verifier reported that checks failed"
+        case VerificationVerdict.PARTIAL:
+            status = TaskOutcomeStatus.RETRYABLE
+            summary = "Verifier reported partial verification"
+    return TaskOutcome(
+        status=status,
+        summary=summary,
+        diagnostics=[diagnostic] if diagnostic else [],
+        manifest=args.brief.manifest,
+    )
+
+
+def _with_scratchpad_context(
+    agent: str, task_text: str, scratchpad_dir: Path | None
+) -> str:
+    if scratchpad_dir is None:
+        return task_text
+    guidance = (
+        "It is cleaned automatically. Do not create, copy, move, link, or remove "
+        "files there; leave any permitted-tool artifacts in place."
+        if agent == BuiltinAgentName.VERIFIER
+        else (
+            "Tools permitted for your profile may use it without additional path "
+            "permission prompts; do not assume unavailable write tools."
+        )
+    )
+    return f"Scratchpad directory: {scratchpad_dir}\n{guidance}\n\n{task_text}"
+
+
 class TaskArgs(BaseModel):
     model_config = ConfigDict(extra="ignore")
     task: str | TaskBrief = Field(
         description=(
             "The task to delegate. Pass a string for legacy free-form delegation "
-            "or a TaskBrief object for validated metadata and explicit outcomes."
+            "or a TaskBrief object for recipe-bound metadata and explicit outcomes. "
+            "Do not JSON-encode a TaskBrief into the string form. Structured tasks "
+            "require a trusted verification recipe; a structured verifier uses the "
+            "canonical verify@1 manifest and reports a terminal VERDICT."
         )
     )
     agent: str = Field(
@@ -282,7 +365,9 @@ class TaskArgs(BaseModel):
     @property
     def prompt(self) -> str:
         if isinstance(self.task, TaskBrief):
-            return compile_task_brief(self.task)
+            return compile_task_brief(
+                self.task, verifier=self.agent == BuiltinAgentName.VERIFIER
+            )
         return self.task
 
     @property
@@ -369,7 +454,10 @@ class Task(
         "For structured work, pass a TaskBrief instead of a free-form string. "
         "The host binds its paths, trusted check IDs, budget, deadline, and tool "
         "manifest before dispatch. The worker cannot widen that contract and must "
-        "return an explicit terminal outcome.\n\n"
+        "return an explicit terminal outcome. Pass the brief as an object, not a "
+        "JSON string. Structured tasks require a trusted recipe; structured "
+        "verifiers require the canonical verify@1 manifest and return VERDICT, "
+        "while read-only profiles reject write-capable manifests.\n\n"
         "Execution: subagents run in the BACKGROUND by default — the call returns "
         "a task_id immediately and the subagent's result is delivered to you "
         "automatically at the start of a later turn (you are auto-resumed when it "
@@ -396,6 +484,14 @@ class Task(
             or agent_manager is None
         ):
             return False
+        brief = getattr(args, "brief", None)
+        if isinstance(brief, TaskBrief):
+            try:
+                manifest = resolve_task_manifest(brief.manifest)
+            except TaskManifestError:
+                return False
+            if manifest.write_capable_tools:
+                return False
         get_agent = getattr(agent_manager, "get_agent", None)
         if get_agent is None:
             return False
@@ -526,7 +622,7 @@ class Task(
     ) -> _InProcessResult:
         response = result.output
         completed = result.returncode == 0
-        preliminary = resolve_task_outcome(args.brief, response, completed=completed)
+        preliminary = _resolve_initial_task_outcome(args, response, completed=completed)
         if contract is None:
             preliminary = _with_verification_result(
                 preliminary,
@@ -535,7 +631,8 @@ class Task(
                     args.agent,
                     response,
                     ctx,
-                    completed=completed and preliminary.succeeded,
+                    completed=completed,
+                    authorized=preliminary.succeeded,
                     attempt=verification_attempt,
                 ),
             )
@@ -549,17 +646,31 @@ class Task(
 
         wt = result.wt
         if wt is None:
-            if not preliminary.succeeded:
-                return _InProcessResult(
-                    output=response, returncode=result.returncode, outcome=preliminary
+            outcome = preliminary
+            if preliminary.succeeded:
+                outcome = TaskOutcome(
+                    status=TaskOutcomeStatus.RETRYABLE,
+                    summary="Structured isolated task could not be validated",
+                    diagnostics=["isolated worker returned no candidate worktree"],
+                    manifest=args.brief.manifest if args.brief else None,
                 )
-            outcome = TaskOutcome(
-                status=TaskOutcomeStatus.RETRYABLE,
-                summary="Structured isolated task could not be validated",
-                diagnostics=["isolated worker returned no candidate worktree"],
-                manifest=args.brief.manifest if args.brief else None,
+            outcome = _with_verification_result(
+                outcome,
+                args.agent,
+                _maybe_record_verifier_pass(
+                    args.agent,
+                    response,
+                    ctx,
+                    completed=completed,
+                    authorized=outcome.succeeded,
+                    attempt=verification_attempt,
+                ),
             )
-            return _InProcessResult(output=response, returncode=1, outcome=outcome)
+            return _InProcessResult(
+                output=response,
+                returncode=0 if outcome.succeeded else 1,
+                outcome=outcome,
+            )
 
         from vibe.core.worktree.ephemeral import (
             deliver_ephemeral_worktree,
@@ -631,7 +742,8 @@ class Task(
                 args.agent,
                 response,
                 ctx,
-                completed=outcome.succeeded,
+                completed=completed,
+                authorized=outcome.succeeded,
                 attempt=verification_attempt,
             ),
         )
@@ -659,13 +771,9 @@ class Task(
                 yield result
             return
 
-        task_text = args.prompt
-        if ctx.scratchpad_dir:
-            task_text = (
-                f"Scratchpad directory: {ctx.scratchpad_dir}\n"
-                "You can read and write files here without permission prompts.\n\n"
-                f"{task_text}"
-            )
+        task_text = _with_scratchpad_context(
+            args.agent, args.prompt, ctx.scratchpad_dir
+        )
 
         denied = await self._judge_isolated_spawn(task_text, args.agent, ctx)
         if denied is not None:
@@ -743,13 +851,9 @@ class Task(
         *,
         verification_attempt: _VerificationAttempt | None = None,
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
-        task_text = args.prompt
-        if ctx.scratchpad_dir:
-            task_text = (
-                f"Scratchpad directory: {ctx.scratchpad_dir}\n"
-                "You can read and write files here without permission prompts.\n\n"
-                f"{task_text}"
-            )
+        task_text = _with_scratchpad_context(
+            args.agent, args.prompt, ctx.scratchpad_dir
+        )
         yield ToolStreamEvent(
             tool_name=self.get_name(),
             message=f"Running {args.agent} agent (isolated worktree)",
@@ -891,9 +995,6 @@ class Task(
             )
             return
 
-        if args.brief is not None:
-            self._bind_contract(args.brief, ctx)
-
         agent_manager = ctx.agent_manager
 
         try:
@@ -906,6 +1007,12 @@ class Task(
                 f"Agent '{args.agent}' is a {agent_profile.agent_type.value} agent. "
                 f"Only subagents can be used with the task tool. "
                 f"This is a security constraint to prevent recursive spawning."
+            )
+
+        if args.brief is not None:
+            contract = self._bind_contract(args.brief, ctx)
+            self._validate_contract_for_agent(
+                contract, agent=args.agent, agent_profile=agent_profile
             )
 
         if args.model is not None:
@@ -962,6 +1069,19 @@ class Task(
             )
         except TaskContractError as e:
             raise ToolError(f"Invalid structured task contract: {e}") from e
+
+    @staticmethod
+    def _validate_contract_for_agent(
+        contract: BoundTaskContract, *, agent: str, agent_profile: AgentProfile
+    ) -> None:
+        try:
+            validate_task_manifest_for_agent(
+                contract.manifest,
+                agent=agent,
+                read_only=not profile_requires_isolation(agent_profile),
+            )
+        except TaskManifestError as exc:
+            raise ToolError(str(exc)) from exc
 
     def _build_subagent_loop(
         self, args: TaskArgs, ctx: InvokeContext
@@ -1037,13 +1157,9 @@ class Task(
             subagent_loop.parent_session_id = ctx.session_id
         if ctx.approval_callback:
             subagent_loop.set_approval_callback(ctx.approval_callback)
-        task_text = args.prompt
-        if ctx.scratchpad_dir:
-            task_text = (
-                f"Scratchpad directory: {ctx.scratchpad_dir}\n"
-                "You can read and write files here without permission prompts.\n\n"
-                f"{task_text}"
-            )
+        task_text = _with_scratchpad_context(
+            args.agent, args.prompt, ctx.scratchpad_dir
+        )
         return subagent_loop, task_text
 
     async def _run_in_process(
@@ -1109,7 +1225,8 @@ class Task(
                 args.agent,
                 response,
                 ctx,
-                completed=completed and outcome.succeeded,
+                completed=completed,
+                authorized=outcome.succeeded,
                 attempt=verification_attempt,
             ),
         )
@@ -1130,8 +1247,8 @@ class Task(
         forced_status: TaskOutcomeStatus | None,
         diagnostic: str | None,
     ) -> TaskOutcome:
-        outcome = resolve_task_outcome(
-            args.brief,
+        outcome = _resolve_initial_task_outcome(
+            args,
             response,
             completed=completed,
             forced_status=forced_status,
@@ -1225,7 +1342,8 @@ class Task(
                 args.agent,
                 response,
                 ctx,
-                completed=completed and outcome.succeeded,
+                completed=completed,
+                authorized=outcome.succeeded,
                 attempt=verification_attempt,
             ),
         )

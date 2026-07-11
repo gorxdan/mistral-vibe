@@ -1518,6 +1518,9 @@ class VibeConfig(BaseSettings):
         if cls._migrate_kimi_temperature(data):
             changed = True
 
+        if cls._migrate_kimi_reasoning_effort(data):
+            changed = True
+
         if changed:
             cls.dump_config(data)
 
@@ -1569,6 +1572,26 @@ class VibeConfig(BaseSettings):
         data["applied_migrations"] = [*applied, cls._KIMI_TEMPERATURE_MIGRATION]
         return True
 
+    @classmethod
+    def _migrate_kimi_reasoning_effort(cls, data: dict[str, Any]) -> bool:
+        applied = data.get("applied_migrations", [])
+        if cls._KIMI_REASONING_EFFORT_MIGRATION in applied:
+            return False
+        has_capped_model = False
+        for model in data.get("models", []):
+            if (
+                model.get("provider") != "kimi"
+                or model.get("name") not in cls._KIMI_CAPPED_REASONING_MODELS
+            ):
+                continue
+            has_capped_model = True
+            if model.get("thinking") in {"max", "xhigh"}:
+                model["thinking"] = "high"
+        if not has_capped_model:
+            return False
+        data["applied_migrations"] = [*applied, cls._KIMI_REASONING_EFFORT_MIGRATION]
+        return True
+
     # One-shot id: syncs an existing bash allowlist up to the current default
     # read-only commands once, so users keep the ability to remove any of them.
     _BASH_READ_ONLY_MIGRATION: ClassVar[str] = "bash_read_only_defaults_v1"
@@ -1606,6 +1629,13 @@ class VibeConfig(BaseSettings):
     # One-shot id: normalizes kimi provider models to temperature="omit" so they
     # stop 400ing on the explicit default 1.0 (Moonshot only accepts omission).
     _KIMI_TEMPERATURE_MIGRATION: ClassVar[str] = "kimi_temperature_omit_v1"
+
+    # One-shot id: Kimi K2.7 supports reasoning effort only through "high".
+    _KIMI_REASONING_EFFORT_MIGRATION: ClassVar[str] = "kimi_reasoning_effort_high_v1"
+    _KIMI_CAPPED_REASONING_MODELS: ClassVar[frozenset[str]] = frozenset({
+        "kimi-for-coding",
+        "kimi-k2.7-code",
+    })
 
     # Old tool name -> new tool name. The new tools replaced these in-place, so
     # existing user configs keyed by the old names need their settings moved over.

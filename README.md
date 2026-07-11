@@ -530,7 +530,7 @@ To use a **ChatGPT Plus/Pro subscription** instead (no per-token billing), pick 
 
 #### Adding OpenAI-compatible providers (Kimi K2.7, GLM-5.2/ZAI)
 
-Most third-party coding models expose an OpenAI-compatible `/chat/completions` endpoint and stream reasoning in a `reasoning_content` field — the exact shape Vibe's generic backend expects, so no code changes are required. Use `api_style = "openai"` (the default): Vibe captures the streamed `reasoning_content` and displays it, and both Kimi and GLM default to thinking **enabled**, so reasoning works without Vibe needing to send any effort parameter.
+Most third-party coding models expose an OpenAI-compatible `/chat/completions` endpoint and stream reasoning in a `reasoning_content` field — the exact shape Vibe's generic backend expects, so no code changes are required. Use `api_style = "openai"` (the default): Vibe captures the streamed `reasoning_content`, displays it, and sends the configured thinking level as `reasoning_effort` when thinking is enabled.
 
 > Do **not** use `api_style = "reasoning"` for these: Vibe's reasoning adapter parses content blocks and would drop the streamed `reasoning_content` field, hiding the model's thinking.
 
@@ -591,7 +591,7 @@ ZAI_API_KEY=...
 Notes:
 
 - **Reasoning display**: with `api_style = "openai"` (recommended), reasoning shows automatically as the model streams `reasoning_content`. Set `reasoning_field_name` only if a provider uses a different field name.
-- **Thinking effort**: Vibe's `openai` style does not send `reasoning_effort`, so the in-app thinking slider won't change provider effort for these — each model uses its own default thinking level. GLM-5.2 additionally accepts a `thinking: { type }` parameter, which Vibe does not currently send; default thinking stays enabled.
+- **Thinking effort**: Vibe's `openai` style sends the selected level as `reasoning_effort`. If a provider rejects a tier and lists supported values, Vibe retries with the nearest supported tier. Kimi K2.7 tops out at `high`; GLM-5.2 additionally accepts a `thinking: { type }` parameter, which Vibe does not currently send.
 - **Endpoint base**: `api_base` includes the version segment (`/v1` or `/api/paas/v4`) but **not** `/chat/completions`; Vibe appends that automatically.
 - **Multi-turn reasoning**: if a provider rejects an assistant turn on long conversations because of how reasoning is replayed, set `thinking = "off"` for that model or report it — a dedicated adapter may be needed.
 - **Wrong endpoint looks like "rate limit"**: a ZAI Coding Plan key sent to the pay-as-you-go `/api/paas/v4` endpoint returns HTTP 429 with `code 1113` "Insufficient balance or no resource package", which Vibe surfaces as a rate-limit error. If GLM reports rate limits you can't explain, check `api_base` matches your plan (`/api/coding/paas/v4` for the Coding Plan).
@@ -646,11 +646,15 @@ cwd = "."
 timeout_seconds = 300
 ```
 
-After a current verifier `PASS`, the no-argument `verify_work` tool executes the
-prebound recipe against the active candidate and current main `HEAD`. It accepts
-no model-selected commands or paths. `land_work` then requires the current
-receipt, revalidates it, performs the merge, and reports the merge commit SHA;
-there is no separate durable landing record.
+Complete every intended candidate edit and any commit required by the current
+workflow before spawning the verifier, and do not mutate the candidate while it
+runs. Verifier scratch artifacts are removed by the host; the verifier leaves
+them in place instead of issuing cleanup commands. After a current verifier
+`PASS`, the no-argument `verify_work` tool executes the prebound recipe against
+the active candidate and current main `HEAD`. It accepts no model-selected
+commands or paths. `land_work` then requires the current receipt, revalidates
+it, performs the merge, and reports the merge commit SHA; there is no separate
+durable landing record.
 
 Without a configured recipe, the compatibility gate accepts a current
 session-recorded verifier PASS. Model-authored workflow contracts can gate
@@ -662,13 +666,18 @@ intentional recipe change.
 
 ### Structured Task Contracts
 
-`task.task` also accepts a frozen `TaskBrief`: objective, named inputs, allowed
-and denied change paths, trusted acceptance-check IDs, optional token/USD/call
-budget and deadline, plus a canonical manifest identity. The host binds the
-brief to the session's trusted recipe. Workers cannot add checks, widen paths or
-budget, or reveal tools outside the bound 6-8 tool manifest. Task-bound tool
-discovery loads canonical builtins only; `.vibe/**`, `.agents/**`, `.git/**`, and
-every `AGENTS.md` are host-owned control-plane paths even under a broad recipe.
+`task.task` also accepts a frozen `TaskBrief` object: objective, named inputs,
+allowed and denied change paths, trusted acceptance-check IDs, optional
+token/USD/call budget and deadline, plus a canonical manifest identity. The
+host binds the brief to the session's trusted recipe. Workers cannot add checks,
+widen paths or budget, or reveal tools outside the bound 6-8 tool manifest.
+Task-bound tool discovery loads canonical builtins only; `.vibe/**`,
+`.agents/**`, `.git/**`, and every `AGENTS.md` are host-owned control-plane paths
+even under a broad recipe. Pass the brief as an object, not JSON-encoded task
+prose. JSON strings remain legacy free-form tasks and receive no structured
+contract authority. A structured verifier requires `verify@1` and ends with
+`VERDICT: PASS|FAIL|PARTIAL` instead of `TASK_OUTCOME`; read-only profiles reject
+manifests containing edit/write tools.
 
 Write-capable structured tasks run in an isolated worktree with shared spend
 scope. The candidate is not merged until the host inspects all changed paths,

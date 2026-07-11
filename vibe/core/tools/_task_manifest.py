@@ -6,7 +6,14 @@ import json
 
 from vibe.core.tasking.models import TaskManifestIdentity
 
-__all__ = ["TaskManifestError", "TaskToolManifest", "resolve_task_manifest"]
+__all__ = [
+    "TaskManifestError",
+    "TaskToolManifest",
+    "resolve_task_manifest",
+    "validate_task_manifest_for_agent",
+]
+
+_WRITE_CAPABLE_TOOLS = frozenset({"edit", "write_file"})
 
 
 class TaskManifestError(ValueError):
@@ -25,6 +32,10 @@ class TaskToolManifest:
         return TaskManifestIdentity(
             name=self.name, version=self.version, digest=self.digest
         )
+
+    @property
+    def write_capable_tools(self) -> frozenset[str]:
+        return _WRITE_CAPABLE_TOOLS & set(self.tools)
 
 
 def _manifest(name: str, version: str, tools: tuple[str, ...]) -> TaskToolManifest:
@@ -86,3 +97,17 @@ def resolve_task_manifest(identity: TaskManifestIdentity) -> TaskToolManifest:
             f"task manifest digest mismatch for {identity.name}@{identity.version}"
         )
     return manifest
+
+
+def validate_task_manifest_for_agent(
+    manifest: TaskToolManifest, *, agent: str, read_only: bool
+) -> None:
+    if agent == "verifier" and (manifest.name != "verify" or manifest.version != "1"):
+        raise TaskManifestError("structured verifier tasks require manifest verify@1")
+    if not read_only or not manifest.write_capable_tools:
+        return
+    tools = ", ".join(sorted(manifest.write_capable_tools))
+    raise TaskManifestError(
+        f"structured task for read-only agent '{agent}' uses write-capable "
+        f"manifest tools: {tools}"
+    )

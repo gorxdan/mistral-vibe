@@ -120,7 +120,7 @@ def profile_requires_isolation(profile: AgentProfile) -> bool:
     - No ``enabled_tools`` allowlist -> full tool set (incl. write) -> isolate.
     - Allowlist contains a write tool (write_file/edit) -> isolate.
     - Allowlist contains ``bash`` *without* a denylist jail -> isolate. The
-      reviewer/debugger/security profiles ship a read-only bash jail
+      reviewer/debugger/security/verifier profiles ship a read-only bash jail
       (``overrides['tools']['bash']['denylist']`` hard-denies rm/git reset/etc.),
       so they are safe in-process; an un-jailed bash can rm -rf, so isolate.
     """
@@ -151,7 +151,7 @@ def _plan_overrides() -> dict[str, Any]:
     }
 
 
-# Read-only review agents (reviewer / debugger / security) get `bash` so they
+# Read-only review agents (reviewer / debugger / security / verifier) get `bash` so they
 # can run git inspection and tests — but they must NOT mutate the user's code.
 # This is a hard policy jail on bash, enforced by the tool's AST-split
 # allow/deny engine (every command node in a compound command is checked):
@@ -242,6 +242,17 @@ _REVIEW_BASH_ALLOWLIST = [
     "make test",
     "make check",
     "make lint",
+]
+_REVIEW_UV_RUN_ALLOWLIST = [
+    "uv run pytest",
+    "uv run python -m pytest",
+    "uv run python3 -m pytest",
+    "uv run tox",
+    "uv run ruff",
+    "uv run mypy",
+    "uv run pyright",
+    "uv run flake8",
+    "uv run bandit",
 ]
 _REVIEW_BASH_DENYLIST = [
     # git mutation / network
@@ -343,8 +354,11 @@ def _review_bash_overrides() -> dict[str, Any]:
     return {
         "tools": {
             "bash": {
-                "allowlist": list(_REVIEW_BASH_ALLOWLIST),
-                "denylist": list(_REVIEW_BASH_DENYLIST),
+                "allowlist": [*_REVIEW_BASH_ALLOWLIST, *_REVIEW_UV_RUN_ALLOWLIST],
+                "denylist": [
+                    *_REVIEW_BASH_DENYLIST,
+                    *(f"uv run {command}" for command in _REVIEW_BASH_DENYLIST),
+                ],
             }
         }
     }

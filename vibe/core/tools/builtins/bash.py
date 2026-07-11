@@ -31,6 +31,7 @@ from vibe.core.tools.base import (
 from vibe.core.tools.command_safety import (
     allowlisted_argument_is_unsafe,
     destructive_command_reason,
+    unwrapped_command,
 )
 from vibe.core.tools.permissions import (
     PermissionContext,
@@ -518,8 +519,16 @@ class Bash(
         )
 
     def _find_denylist_match(self, command: str) -> str | None:
+        candidates = [command]
+        if (unwrapped := unwrapped_command(command)) and unwrapped != command:
+            candidates.append(unwrapped)
         return next(
-            (p for p in self.config.denylist if _matches_pattern(command, p)), None
+            (
+                pattern
+                for pattern in self.config.denylist
+                if any(_matches_pattern(candidate, pattern) for candidate in candidates)
+            ),
+            None,
         )
 
     def _is_standalone_denylisted(self, command: str) -> bool:

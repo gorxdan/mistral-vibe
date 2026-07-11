@@ -5,7 +5,11 @@ import orjson
 import pytest
 import respx
 
-from tests.constants import OPENAI_BASE_URL, OPENAI_RESPONSES_PATH
+from tests.constants import (
+    CHAT_COMPLETIONS_PATH,
+    OPENAI_BASE_URL,
+    OPENAI_RESPONSES_PATH,
+)
 from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.llm.backend.generic import (
     GenericBackend,
@@ -27,6 +31,10 @@ _NONE_REJECTED = (
     "Unsupported value: 'none' is not supported with the 'gpt-5.3-codex-spark' "
     "model. Supported values are: 'low', 'medium', 'high', and 'xhigh'."
 )
+_KIMI_MAX_REJECTED = (
+    "Unsupported value: 'reasoning_effort' does not support 'max' with this model. "
+    "Supported values are: 'low', 'medium', 'high'."
+)
 
 
 class TestNearestSupportedEffort:
@@ -39,6 +47,9 @@ class TestNearestSupportedEffort:
     def test_lifts_unsupported_none_to_floor(self):
         # none is below the supported floor -> nearest is the lowest offered.
         assert _nearest_supported_effort(_NONE_REJECTED) == "low"
+
+    def test_parses_kimi_field_oriented_error(self):
+        assert _nearest_supported_effort(_KIMI_MAX_REJECTED) == "high"
 
     def test_non_effort_400_is_ignored(self):
         err = "Unsupported value: 'banana'. Supported values are: 'apple', 'pear'."
@@ -125,3 +136,48 @@ async def test_streaming_retries_with_downgraded_effort():
     assert first["reasoning"]["effort"] == "max"
     assert second["reasoning"]["effort"] == "high"  # nearest supported to max
     assert any(c.message.content == "ok" for c in out)
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_retries_kimi_error_with_downgraded_effort():
+    provider = ProviderConfig(name="kimi", api_base=f"{OPENAI_BASE_URL}/v1")
+    model = ModelConfig(
+        name="kimi-k2.7-code", provider="kimi", alias="kimi", thinking="max"
+    )
+    response = {
+        "id": "cmpl-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "kimi-k2.7-code",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    with respx.mock(base_url=OPENAI_BASE_URL) as mock_api:
+        route = mock_api.post(CHAT_COMPLETIONS_PATH).mock(
+            side_effect=[
+                httpx.Response(
+                    400,
+                    content=orjson.dumps({"error": {"message": _KIMI_MAX_REJECTED}}),
+                ),
+                httpx.Response(200, json=response),
+            ]
+        )
+        backend = GenericBackend(provider=provider)
+        out = await backend.complete(
+            CompletionRequest(
+                model=model, messages=[LLMMessage(role=Role.USER, content="hi")]
+            )
+        )
+
+    assert len(route.calls) == 2
+    first = orjson.loads(route.calls[0].request.content)
+    second = orjson.loads(route.calls[1].request.content)
+    assert first["reasoning_effort"] == "max"
+    assert second["reasoning_effort"] == "high"
+    assert out.message.content == "ok"

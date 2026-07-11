@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import sys
 from typing import cast
 
 import pytest
 
 from vibe.core.agents.manager import AgentManager
+from vibe.core.config import (
+    TrustedVerificationCheckConfig,
+    TrustedVerificationRecipeConfig,
+)
+from vibe.core.tasking import TaskBrief, TaskManifestIdentity, TaskOutcomeStatus
 from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
 from vibe.core.tools.builtins.land_work import LandWorkArgs, _require_verification_note
 from vibe.core.tools.builtins.task import (
@@ -15,7 +21,7 @@ from vibe.core.tools.builtins.task import (
     _maybe_record_verifier_pass,
     _start_verification_attempt,
 )
-from vibe.core.types import AssistantEvent
+from vibe.core.types import AssistantEvent, ToolResultEvent
 from vibe.core.verification_contract import parse_verification_report
 from vibe.core.verification_state import VerificationState
 from vibe.core.workflows.runtime import IsolatedResult
@@ -59,6 +65,31 @@ def _report(verdict: str = "PASS", result: str = "PASS") -> str:
         "  8 passed\n"
         f"**Result: {result}**\n\n"
         f"VERDICT: {verdict}"
+    )
+
+
+def _recipe(*, passing: bool = True) -> TrustedVerificationRecipeConfig:
+    exit_code = 0 if passing else 9
+    return TrustedVerificationRecipeConfig(
+        recipe_version="verifier-task-v1",
+        task_brief="Verify the candidate",
+        acceptance_contract="The focused check must pass",
+        allowed_paths=("vibe/core/tools/builtins/task.py",),
+        checks=(
+            TrustedVerificationCheckConfig(
+                name="focused",
+                argv=(sys.executable, "-c", f"raise SystemExit({exit_code})"),
+            ),
+        ),
+    )
+
+
+def _structured_verifier_brief() -> TaskBrief:
+    return TaskBrief(
+        objective="Verify the candidate",
+        allowed_paths=["vibe/core/tools/builtins/task.py"],
+        acceptance_checks=["focused"],
+        manifest=TaskManifestIdentity(name="verify", version="1"),
     )
 
 
@@ -371,6 +402,105 @@ async def test_in_process_incomplete_verifier_surfaces_landing_diagnostic(
         "Verifier result was not recorded: task did not complete"
     )
     assert state.last_verifier_pass is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (_report(), TaskOutcomeStatus.SUCCEEDED),
+        (_report(verdict="FAIL", result="FAIL"), TaskOutcomeStatus.FAILED),
+        (_report(verdict="PARTIAL"), TaskOutcomeStatus.RETRYABLE),
+        ("VERDICT: PASS", TaskOutcomeStatus.RETRYABLE),
+        (_report() + "\nTASK_OUTCOME: SUCCEEDED", TaskOutcomeStatus.RETRYABLE),
+    ],
+)
+async def test_structured_verifier_outcome_comes_from_strict_verdict(
+    response: str, expected: TaskOutcomeStatus
+) -> None:
+    state = VerificationState.from_recipe(_recipe())
+    ctx = _ctx(state)
+    tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+
+    outcome = await tool._finalize_in_process_outcome(
+        TaskArgs(task=_structured_verifier_brief(), agent="verifier"),
+        ctx,
+        response,
+        completed=True,
+        forced_status=None,
+        diagnostic=None,
+    )
+
+    assert outcome.status is expected
+
+
+@pytest.mark.asyncio
+async def test_structured_verifier_pass_is_not_recorded_when_trusted_check_fails() -> (
+    None
+):
+    state = VerificationState.from_recipe(_recipe(passing=False))
+    ctx = _ctx(state)
+    tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+    outcome = await tool._finalize_in_process_outcome(
+        TaskArgs(task=_structured_verifier_brief(), agent="verifier"),
+        ctx,
+        _report(),
+        completed=True,
+        forced_status=None,
+        diagnostic=None,
+    )
+
+    diagnostic = _maybe_record_verifier_pass(
+        "verifier", _report(), ctx, completed=True, authorized=outcome.succeeded
+    )
+
+    assert outcome.status is TaskOutcomeStatus.RETRYABLE
+    assert diagnostic == (
+        "Verifier PASS was not recorded: trusted task outcome did not succeed"
+    )
+    assert not state.has_pass()
+
+
+@pytest.mark.asyncio
+async def test_skipped_verifier_tool_stays_failed_despite_later_pass(
+    monkeypatch,
+) -> None:
+    class _SkippedVerifierLoop:
+        async def act(self, task: str):
+            yield ToolResultEvent(
+                tool_name="bash",
+                tool_class=None,
+                tool_call_id="denied-cleanup",
+                skipped=True,
+                skip_reason="policy denied",
+            )
+            yield AssistantEvent(content=_report())
+
+        async def aclose(self) -> None:
+            return None
+
+    state = VerificationState()
+    ctx = _ctx(state)
+    tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+    monkeypatch.setattr(
+        tool,
+        "_build_subagent_loop",
+        lambda args, invoke_ctx: (_SkippedVerifierLoop(), args.prompt),
+    )
+
+    result = await tool._run_in_process_collect(
+        TaskArgs(task="verify", agent="verifier"),
+        ctx,
+        verification_attempt=_start_verification_attempt("verifier"),
+    )
+
+    assert result.returncode == 1
+    assert result.outcome is not None
+    assert result.outcome.status is TaskOutcomeStatus.FAILED
+    assert result.outcome.diagnostics[-1] == (
+        "Verifier result was not recorded: task did not complete"
+    )
+    assert not state.has_pass()
 
 
 @pytest.mark.parametrize(

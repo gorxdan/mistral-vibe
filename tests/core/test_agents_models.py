@@ -24,12 +24,13 @@ def test_read_only_profiles_stay_in_process() -> None:
 
 
 def test_read_jailed_bash_profiles_stay_in_process() -> None:
-    # reviewer/debugger/security carry bash but ship a denylist jail that
+    # reviewer/debugger/security/verifier carry bash but ship a denylist jail that
     # hard-NEVERs rm/git reset/etc. Their bash is read-only by enforcement,
     # not convention, so they do not need isolation.
     assert not profile_requires_isolation(BUILTIN_AGENTS[BuiltinAgentName.REVIEWER])
     assert not profile_requires_isolation(BUILTIN_AGENTS[BuiltinAgentName.DEBUGGER])
     assert not profile_requires_isolation(BUILTIN_AGENTS[BuiltinAgentName.SECURITY])
+    assert not profile_requires_isolation(BUILTIN_AGENTS[BuiltinAgentName.VERIFIER])
 
 
 def _profile(overrides: dict | None = None) -> AgentProfile:

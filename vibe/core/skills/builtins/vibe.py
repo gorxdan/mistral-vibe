@@ -991,8 +991,13 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
   works by trying to break it, emitting a strict PASS/FAIL/PARTIAL verdict with
   command evidence. The host verification contract (on by default via
   `verification_subsystem`) requires spawning it before reporting non-trivial
-  work done; the todo tool appends a nudge when a 3+ item list closes without a
-  verify step. With a `trusted_verification_recipe`, the no-argument `verify_work`
+  work done. Freeze every intended edit and commit before spawning it, and do not mutate
+  the candidate while it runs; use a foreground task when immediate landing is
+  intended. Its session scratchpad is removed by the host, so the verifier must
+  leave scratch artifacts in place rather than attempting cleanup commands. Any
+  denied or skipped tool call invalidates that verifier run. The todo tool
+  appends a nudge when a 3+ item list closes without a verify step. With a
+  `trusted_verification_recipe`, the no-argument `verify_work`
   tool runs its session-prebound checks after the verifier PASS and records the
   durable receipt required by `land_work`. Without a recipe, the current recorded
   verifier PASS can authorize landing. Model-authored workflow contracts gate delivery
@@ -1019,10 +1024,12 @@ cwd = "."
 timeout_seconds = 600
 ```
 
-`task.task` accepts a frozen structured `TaskBrief` with an objective, named
+`task.task` accepts a frozen structured `TaskBrief` object with an objective, named
 inputs, allowed and denied change paths, trusted acceptance-check IDs, optional
 token/USD/call budget, deadline, and canonical tool-manifest identity. The host
-binds all fields to the session's trusted recipe. A worker cannot widen them or
+binds all fields to the session's trusted recipe. Do not JSON-encode a brief into
+a free-form task string. Structured verifier briefs use the canonical `verify@1`
+manifest, and read-only profiles reject write-capable manifests. A worker cannot widen them or
 discover tools outside the bound 6-8 tool manifest. Task-bound discovery imports
 canonical builtins only, and harness control-plane paths remain host-owned.
 Write-capable candidates are
@@ -1291,7 +1298,7 @@ A workflow script is a `.py` file with an `async def main()` function. Optional
 YAML frontmatter (`name:`, `description:`) precedes the Python source. The
 runtime injects these functions into the script's namespace:
 
-- `agent(prompt, *, agent="explore", model=None, label=None, phase=None, schema=None, budget_estimate=None, isolation=None, contract=None)` — spawn a subagent. Pass `isolation="worktree"` to run the agent as a `vibe -p` subprocess in a fresh git worktree (for parallel file-mutating agents that would otherwise conflict); its branch is kept for manual `git merge` if it changed files, else removed. Note: isolated agents run auto-approved/trusted (no interactive prompts reach a subprocess) — the worktree bounds file conflicts, not arbitrary command execution. Agent profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `debugger` (+bash; root-cause analysis), `planner` (grep/read; phased plan), `security` (+bash; vuln audit), `editor` (read/grep/write/edit, no bash/MCP — **requires** `isolation="worktree"`), `grunt` (full tool set like worker, but routes onto a cheap model via `grunt_model` and ships a no-decisions prompt for bulk/mechanical work — **requires** `isolation="worktree"`), or `worker` for the full tool set including any configured MCP tools (no allowlist — **requires** `isolation="worktree"`, where it runs auto-approved in its own worktree so its tools actually execute and writes can't race other agents). Pass `contract={...}` (requires `isolation="worktree"`) to validate the agent's FILES before delivery: `outputs` (path/must_contain/must_not_contain/must_match/must_not_match/min_size/max_size), `invariants` (grep pattern must or must not match across the tree), and `tests` (command + optional expected stdout). On pass the work is ff-merged into the parent repo; on fail a falsy `ContractFailure` (mirroring `SchemaValidationFailure`) carries the violations and the work is held back. Unlike `schema=`, which validates the agent's JSON return value, `contract=` validates the code it wrote. The bundled `/verify-contract` workflow demonstrates the pattern.
+- `agent(prompt, *, agent="explore", model=None, label=None, phase=None, schema=None, budget_estimate=None, isolation=None, contract=None, then=None)` — spawn a subagent. Pass `isolation="worktree"` to run the agent as a `vibe -p` subprocess in a fresh git worktree (for parallel file-mutating agents that would otherwise conflict); its branch is kept for manual `git merge` if it changed files, else removed. Write-capable isolated profiles auto-approve ASK-gated tools inside their confined worktree; read-only profiles reject ASK and run only their explicitly allowlisted checks. Agent profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `debugger` (+bash; root-cause analysis), `planner` (grep/read; phased plan), `security` (+bash; vuln audit), `editor` (read/grep/write/edit, no bash/MCP — **requires** `isolation="worktree"`), `grunt` (full tool set like worker, but routes onto a cheap model via `grunt_model` and ships a no-decisions prompt for bulk/mechanical work — **requires** `isolation="worktree"`), or `worker` for the full tool set including any configured MCP tools (no allowlist — **requires** `isolation="worktree"`, where it runs auto-approved in its own worktree so its tools actually execute and writes can't race other agents). Pass `contract={...}` (requires `isolation="worktree"`) to validate the agent's FILES before delivery: `outputs` (path/must_contain/must_not_contain/must_match/must_not_match/min_size/max_size), `invariants` (grep pattern must or must not match across the tree), and `tests` (command + optional expected stdout). On pass the work is ff-merged into the parent repo; on fail a falsy `ContractFailure` (mirroring `SchemaValidationFailure`) carries the violations and the work is held back. Unlike `schema=`, which validates the agent's JSON return value, `contract=` validates the code it wrote. Set `then="verifier"` only with worktree isolation to freeze and verify the candidate before delivery; it requires a clean unchanged parent and records authorization only when the delivered workspace exactly matches the verified candidate. The bundled `/verify-contract` workflow demonstrates the contract pattern.
 - `parallel(*items, max_concurrency=None)` (or `parallel([items])`) — run items concurrently, results in argument order; an item that raises yields `None` (filter the results), so one failure does not abort the batch. Each item may be a **coroutine** (`parallel(agent("a"), agent("b"))`) or a zero-arg thunk (`parallel(lambda: agent("a"))`) — both work, since Python coroutines are lazy and bound concurrency identically. Pass `max_concurrency=N` to cap in-flight items (e.g. `3` when a provider limits concurrency) instead of hand-rolling chunked waves.
 - `pipeline(items, *stages, max_concurrency=None)` — run each item through all stages independently with no barrier between stages (item A can be in stage 3 while item B is still in stage 1); each stage receives `(prev, item, index)` and a stage that raises drops that item to `None`. A single stage behaves as a concurrent map. `max_concurrency=N` caps in-flight items.
 - `phase(name)` — declare a phase for progress tracking

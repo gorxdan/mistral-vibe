@@ -20,10 +20,13 @@ These run *after* hard denials (denylist) and never relax an existing NEVER.
 
 from __future__ import annotations
 
+import shlex
+
 # Command prefixes that wrap another command. Unwrapped before danger analysis
 # so `sudo rm -rf /` is treated as `rm -rf /`. `env` also swallows VAR=val
 # assignments and its own flags between the keyword and the real command.
 _WRAPPERS = {"sudo", "nohup", "time", "command", "exec", "nice", "ionice"}
+_UV_RUN_MIN_TOKENS = 3
 
 # chmod modes that broadly open permissions or wipe them — a security smell worth
 # an explicit prompt rather than silent auto-approval.
@@ -47,6 +50,29 @@ _DEVICE_STEMS = ("sd", "nvme", "vd", "hd", "disk", "mmcblk", "loop")
 # (it routes them through a session-approvable RequiredPermission); these are the
 # write/output predicates that should likewise not be auto-approved.
 _FIND_WRITE_PREDICATES = {"-delete", "-fls", "-fprint", "-fprint0", "-fprintf"}
+_RUFF_GLOBAL_FLAGS = {
+    "-h",
+    "--help",
+    "-V",
+    "--version",
+    "-v",
+    "--verbose",
+    "-q",
+    "--quiet",
+    "-s",
+    "--silent",
+    "--isolated",
+}
+_RUFF_GLOBAL_VALUE_OPTIONS = {"--config", "--color"}
+_RUFF_WRITE_OPTIONS = {
+    "--fix",
+    "--fix-only",
+    "--add-noqa",
+    "--output-file",
+    "-o",
+    "--watch",
+    "-w",
+}
 
 
 def _unwrap(tokens: list[str]) -> list[str]:
@@ -54,10 +80,19 @@ def _unwrap(tokens: list[str]) -> list[str]:
     out = list(tokens)
     while out:
         head = out[0]
-        if head in _WRAPPERS:
+        basename = head.rsplit("/", 1)[-1]
+        if (
+            basename == "uv"
+            and len(out) >= _UV_RUN_MIN_TOKENS
+            and out[1] == "run"
+            and (out[2] == "--" or not out[2].startswith("-"))
+        ):
+            out = out[3:] if out[2] == "--" else out[2:]
+            continue
+        if basename in _WRAPPERS:
             out = out[1:]
             continue
-        if head == "env":
+        if basename == "env":
             out = out[1:]
             while out and (out[0].startswith("-") or "=" in out[0]):
                 out = out[1:]
@@ -68,6 +103,56 @@ def _unwrap(tokens: list[str]) -> list[str]:
             continue
         break
     return out
+
+
+def unwrapped_command(command: str) -> str | None:
+    try:
+        tokens = _unwrap(shlex.split(command, posix=True))
+    except ValueError:
+        return None
+    return shlex.join(tokens) if tokens else None
+
+
+def _ruff_subcommand(args: list[str]) -> tuple[str, list[str]] | None:
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token in _RUFF_GLOBAL_FLAGS:
+            index += 1
+            continue
+        if token in _RUFF_GLOBAL_VALUE_OPTIONS:
+            if index + 1 >= len(args):
+                return None
+            index += 2
+            continue
+        if any(token.startswith(f"{option}=") for option in _RUFF_GLOBAL_VALUE_OPTIONS):
+            index += 1
+            continue
+        if token.startswith("-"):
+            return None
+        return token, args[index + 1 :]
+    return None
+
+
+def _ruff_is_read_only(args: list[str]) -> bool:
+    parsed = _ruff_subcommand(args)
+    if parsed is None:
+        return False
+    subcommand, subcommand_args = parsed
+    if any(
+        arg in _RUFF_WRITE_OPTIONS
+        or arg.startswith("--fix=")
+        or arg.startswith("--fix-only=")
+        or arg.startswith("--add-noqa=")
+        or arg.startswith("--output-file=")
+        for arg in subcommand_args
+    ):
+        return False
+    if subcommand == "check":
+        return "--no-fix" in subcommand_args or "--diff" in subcommand_args
+    if subcommand == "format":
+        return "--check" in subcommand_args or "--diff" in subcommand_args
+    return False
 
 
 def _rm_is_destructive(args: list[str]) -> bool:
@@ -113,8 +198,7 @@ def _dd_is_destructive(args: list[str]) -> bool:
     return False
 
 
-def _single_command_destructive_reason(command: str) -> str | None:
-    tokens = _unwrap(command.split())
+def _destructive_reason_for_tokens(command: str, tokens: list[str]) -> str | None:
     if not tokens:
         return None
     name = tokens[0]
@@ -144,6 +228,14 @@ def _single_command_destructive_reason(command: str) -> str | None:
     return None
 
 
+def _single_command_destructive_reason(command: str) -> str | None:
+    try:
+        tokens = _unwrap(shlex.split(command, posix=True))
+    except ValueError:
+        return f"`{command}` could not be tokenized safely; it is not auto-approved."
+    return _destructive_reason_for_tokens(command, tokens)
+
+
 def destructive_command_reason(command_parts: list[str]) -> str | None:
     """Return a danger reason if any sub-command is inherently destructive.
 
@@ -162,10 +254,14 @@ def allowlisted_argument_is_unsafe(command: str) -> str | None:
     """Argument gate for a command whose leading words match the allowlist.
 
     Returns a reason when the arguments turn an otherwise-allowlisted binary
-    into something that should not be auto-approved (currently: ``find`` with a
-    write/output predicate). None means the arguments are safe to auto-approve.
+    into something that should not be auto-approved (``find`` with a
+    write/output predicate or a mutating ``ruff`` mode). None means the
+    arguments are safe to auto-approve.
     """
-    tokens = _unwrap(command.split())
+    try:
+        tokens = _unwrap(shlex.split(command, posix=True))
+    except ValueError:
+        return f"`{command}` could not be tokenized safely; it is not auto-approved."
     if not tokens:
         return None
     name = tokens[0].rsplit("/", 1)[-1]
@@ -175,4 +271,12 @@ def allowlisted_argument_is_unsafe(command: str) -> str | None:
             "modify, or delete files; it is not auto-approved even though `find` "
             "is allowlisted."
         )
+    if name == "ruff":
+        args = tokens[1:]
+        if not _ruff_is_read_only(args):
+            return (
+                f"`{command}` is not an explicitly read-only ruff invocation; "
+                "use `ruff check --no-fix ...`, `ruff check --diff ...`, or "
+                "`ruff format --check/--diff ...`."
+            )
     return None

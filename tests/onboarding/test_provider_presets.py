@@ -201,6 +201,12 @@ def test_kimi_preset_does_not_discover_models() -> None:
     assert preset.provider.discover_models is False
 
 
+def test_kimi_preset_uses_supported_thinking_effort() -> None:
+    preset = next(p for p in PRESETS if p.key == "kimi")
+    assert preset.model is not None
+    assert preset.model.thinking == "high"
+
+
 _KIMI_CHAT_RESPONSE = {
     "id": "cmpl-1",
     "object": "chat.completion",

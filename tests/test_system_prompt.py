@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-import sys
 
 import pytest
 
@@ -16,7 +15,12 @@ from vibe.core.tools.manager import ToolManager
 def test_get_universal_system_prompt_includes_windows_prompt_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "platform", "win32")
+    # Mutating process-global sys.platform can poison platform-specific imports
+    # in another test collected by the same xdist worker.
+    monkeypatch.setattr("vibe.core.system_prompt.is_windows", lambda: True)
+    monkeypatch.setattr(
+        "vibe.core.system_prompt.get_platform_display_name", lambda: "Windows"
+    )
     monkeypatch.setenv("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
 
     config = build_test_vibe_config(
@@ -76,6 +80,7 @@ def test_small_tier_drops_gated_sections_large_keeps_them() -> None:
     # The subagents list itself stays (tool subset is tier-invariant).
     assert "# Available Subagents" in small
     assert "## Verification invariant" in small
+    assert "freeze all intended edits and commits" in small
     assert "## Investigation invariant" in small
     assert "## Verification contract" not in small
     assert "## Investigation contract" not in small
@@ -620,6 +625,14 @@ def test_verifier_subagent_registered_with_verdict_prompt() -> None:
     assert "Reading is not verification" in sp
     # Mandatory command evidence on every PASS.
     assert "Command run" in sp
+    # The verifier must not invalidate a run by attempting denied cleanup or
+    # network commands after successful checks.
+    assert "cleaned automatically" in sp
+    assert "leave every scratchpad artifact in place" in sp
+    assert "do not create helper files" in sp
+    assert "denied or skipped" in sp
+    assert "clean up after yourself" not in sp
+    assert "curl" not in sp.lower()
 
 
 def test_verification_contract_section_present_when_subsystem_enabled() -> None:
@@ -642,6 +655,10 @@ def test_verification_contract_section_present_when_subsystem_enabled() -> None:
     # Structural land_work gate is part of the contract.
     assert "report pasted into tool arguments is not accepted" in prompt_on
     assert "documentation-only diff" in prompt_on
+    assert "finish and freeze the candidate" in prompt_on
+    assert "Do not JSON-encode a `TaskBrief`" in prompt_on
+    assert "do not edit, commit" in prompt_on
+    assert "async_run=false" in prompt_on
     # The verifier profile appears in the subagents picker.
     assert "- `verifier` —" in prompt_on
 

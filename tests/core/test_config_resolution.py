@@ -646,6 +646,73 @@ class TestMigrateKimiTemperatureOmit:
         assert result["models"][0]["temperature"] == 0.6
 
 
+class TestMigrateKimiReasoningEffort:
+    @pytest.mark.parametrize("legacy_effort", ["max", "xhigh"])
+    def test_normalizes_unsupported_kimi_effort_to_high(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_effort: str
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "applied_migrations": [
+                VibeConfig._KIMI_GLM_REASONING_MIGRATION,
+                VibeConfig._KIMI_TEMPERATURE_MIGRATION,
+            ],
+            "models": [
+                {
+                    "name": "kimi-k2.7-code",
+                    "provider": "kimi",
+                    "thinking": legacy_effort,
+                },
+                {"name": "future-kimi-model", "provider": "kimi", "thinking": "max"},
+                {"name": "other", "provider": "custom", "thinking": "max"},
+            ],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        kimi, future_kimi, other = result["models"]
+        assert kimi["thinking"] == "high"
+        assert future_kimi["thinking"] == "max"
+        assert other["thinking"] == "max"
+        assert (
+            VibeConfig._KIMI_REASONING_EFFORT_MIGRATION in result["applied_migrations"]
+        )
+
+    def test_one_shot_preserves_later_user_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "applied_migrations": [VibeConfig._KIMI_REASONING_EFFORT_MIGRATION],
+            "models": [
+                {"name": "kimi-k2.7-code", "provider": "kimi", "thinking": "max"}
+            ],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        assert result["models"][0]["thinking"] == "max"
+
+    def test_no_kimi_models_is_a_true_noop(self) -> None:
+        data = {"models": [{"name": "other", "provider": "custom", "thinking": "max"}]}
+        assert VibeConfig._migrate_kimi_reasoning_effort(data) is False
+        assert "applied_migrations" not in data
+
+
 class TestMigrateBashReadOnlyDefaults:
     def test_merges_read_only_commands_into_existing_allowlist(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

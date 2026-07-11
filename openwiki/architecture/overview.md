@@ -171,6 +171,11 @@ and task-bound `ToolManager` instances import canonical builtins only before
 applying the allowlist to lookup, search, and pinning. Edit/write paths are
 checked after hook and user modification. Harness control-plane paths
 (`.vibe/**`, `.agents/**`, `.git/**`, and every `AGENTS.md`) remain host-owned.
+Callers pass the brief as an object. Serialized JSON strings remain legacy
+free-form tasks and receive no structured contract authority. Structured
+verifier work is pinned to `verify@1`, uses the strict terminal `VERDICT`
+protocol, and cannot be paired with a write-capable manifest; other read-only
+profiles likewise reject edit/write manifests.
 
 Write-capable isolated tasks return an undelivered worktree. The host inspects
 committed, staged, working, deleted, renamed, and untracked paths, runs only the
@@ -193,10 +198,23 @@ active candidate and current main HEAD. `land_work` revalidates its receipt,
 merges, and reports the merge commit SHA; it does not persist a separate landing
 record.
 
-Without a configured recipe, a current workspace-bound verifier or workflow
-contract PASS remains the compatibility authorization path. Model-authored or
-pasted verification prose never authorizes a merge. The documentation-only
-`trivial: <reason>` waiver is available only in this unconfigured mode.
+The host finishes all intended candidate edits and any commit required by the
+current workflow before verifier dispatch, then does not mutate it while
+verification runs. Workspace, landing-base, and attempt
+generation changes invalidate the result. Session scratch artifacts are cleaned
+by the host, so the verifier leaves them in place; denied or skipped tool calls
+invalidate the run.
+
+Without a configured recipe, only a current workspace- and base-bound verifier
+PASS remains the compatibility authorization path. A workflow contract can gate
+candidate delivery, but its model-authored PASS cannot authorize landing; a
+workflow `then="verifier"` stage may do so only by recording an actual current
+verifier PASS. It commits and fingerprints the isolated candidate before the
+verifier runs, requires a clean and unchanged parent workspace, and records
+authorization only when the delivered workspace exactly matches that candidate.
+Pasted verification prose never authorizes a merge. The
+documentation-only `trivial: <reason>` waiver is available only in this
+unconfigured mode.
 
 ## System Prompt Assembly
 
