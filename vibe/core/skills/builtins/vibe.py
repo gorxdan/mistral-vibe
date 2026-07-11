@@ -208,8 +208,12 @@ remain finite. Explicit token values and runtime `max_session_tokens` are
 preflight admission caps; runtime `max_price` can further tighten USD. An
 unexpectedly token-dense adaptive call can reconcile above the remaining cap by
 that one call, so use strict mode for the most conservative behavior. Exact
-untouched legacy generated defaults are removed once, while customized values
-remain explicit.
+untouched legacy generated defaults with the released 128-call signature are
+removed once, while customized values remain explicit. Config reload can raise
+or lower configured ceilings, but the original absolute deadline can only stay
+fixed or become earlier. `/spend` shows the current envelope; `/spend reset`
+durably starts a fresh ledger without clearing conversation history and rebinds
+later teammate launches.
 Missing usage is charged at the reservation estimate. The fallback rates cover
 models without configured or built-in pricing; set both to `0` for local or
 subscription models that should not consume the USD cap. Routed requests without
@@ -991,7 +995,8 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
   verify step. With a `trusted_verification_recipe`, the no-argument `verify_work`
   tool runs its session-prebound checks after the verifier PASS and records the
   durable receipt required by `land_work`. Without a recipe, the current recorded
-  verifier/workflow PASS can authorize landing. Pasted report prose is rejected
+  verifier PASS can authorize landing. Model-authored workflow contracts gate delivery
+  but cannot authorize landing. Pasted report prose is rejected
   in either mode. `land_work` reports the merge commit SHA; it does not persist a
   separate landing record.
 
@@ -1052,6 +1057,7 @@ transcripts.
 - `/thinking` - Select thinking level
 - `/theme` - Select Textual UI theme (persisted in config)
 - `/reload` - Reload configuration, agent instructions, and skills from disk
+- `/spend` - Show the spend envelope; `/spend reset` starts a fresh ledger
 - `/clear` - Clear conversation history
 - `/log` - Show path to current interaction log file
 - `/debug` - Toggle debug console

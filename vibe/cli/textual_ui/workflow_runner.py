@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from textual.widget import Widget
 
@@ -18,6 +18,9 @@ from vibe.core.workflows.models import (
     WorkflowStatus,
 )
 from vibe.core.workflows.runtime import WorkflowRuntime
+
+if TYPE_CHECKING:
+    from vibe.core.usage._session import SessionSpendAdapter
 
 _MIN_PARTS_FOR_STOP = 2
 
@@ -163,6 +166,13 @@ class WorkflowRunner:
     @property
     def completed_runs(self) -> list[WorkflowRunEntry]:
         return [r for r in self._runs if r.status != WorkflowStatus.RUNNING]
+
+    def rebind_spend_adapter(self, spend_adapter: SessionSpendAdapter) -> None:
+        for entry in self._runs:
+            if entry.result is not None or entry.error is not None:
+                continue
+            if entry.runtime.parent_context is not None:
+                entry.runtime.parent_context.spend_adapter = spend_adapter
 
     def launch(
         self, script_source: str, *, runtime: WorkflowRuntime, args: Any = None

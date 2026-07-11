@@ -232,7 +232,7 @@ the shared session ledger. Restarting Vibe creates a fresh auxiliary envelope.
 **Source**: `vibe/core/usage/`, `vibe/core/config/_spend_config.py`
 
 `SpendConfig` leaves cumulative prompt, completion, and total token caps unset by
-default. The finite defaults remain $10, 128 calls, two concurrent calls, 16
+default. The finite defaults remain $10, 512 calls, two concurrent calls, 16
 retries, a 32,768-token per-call output bound, and a 256-token minimum admitted
 output. Explicit `max_prompt_tokens`, `max_completion_tokens`, and
 `max_total_tokens` values are preflight admission caps; runtime `max_price` and
@@ -251,11 +251,15 @@ comparable request sizes calibrate one another. `"strict"` mode disables learnin
 and reserves the serialized token-bearing request byte ceiling. Missing usage is
 charged at the reservation estimate.
 
-An exact, untouched legacy generated `[spend]` table is migrated once by removing
-its old 400,000 prompt, 100,000 completion, and 500,000 total token defaults.
-Customized or partial tables remain explicit hard limits. Existing ledgers can
-relax matching legacy defaults only for fields omitted after migration; normal
-envelope changes remain tighten-only.
+An exact, untouched legacy generated `[spend]` table with the released 128-call
+signature is migrated once by removing its old 400,000 prompt, 100,000
+completion, and 500,000 total token defaults. Customized or partial tables
+remain explicit hard limits. Existing ledgers can relax matching legacy defaults
+only for fields omitted after migration. Config reload can raise or lower the
+configured token, cost, call, concurrency, and retry ceilings; an existing
+absolute deadline remains fixed or tightens. `/spend` reports the active
+envelope, while `/spend reset` durably starts a fresh ledger without clearing the
+conversation and rebinds subsequent team launches.
 
 Routed requests that omit `max_tokens` receive the affordable completion bound,
 which is reduced atomically across active scope limits when necessary. The
@@ -311,7 +315,7 @@ current main HEAD, candidate repository state, task, contract, recipe, and check
 evidence. `land_work` revalidates it and reports the resulting merge commit.
 
 When no recipe was bound at session start, `land_work` instead accepts a current
-state-recorded verifier/workflow PASS or a locally checked documentation-only
+state-recorded verifier PASS or a locally checked documentation-only
 trivial waiver. Pasted verification prose is rejected in either mode. Restart
 Vibe to adopt an intentional recipe change.
 

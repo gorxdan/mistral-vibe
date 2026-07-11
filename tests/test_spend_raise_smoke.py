@@ -37,6 +37,31 @@ def test_replaced_limits_persist_across_reload(tmp_path: Path) -> None:
     assert reloaded_env.limits.max_calls == 1000
 
 
+def test_replaced_limits_preserve_or_tighten_absolute_deadline(tmp_path: Path) -> None:
+    ledger = SpendLedger(tmp_path)
+    ledger.define_envelope(
+        SpendEnvelope(
+            scope_id="session:t",
+            kind=SpendScopeKind.SESSION,
+            limits=SpendEnvelopeLimits(deadline_at=100.0),
+        )
+    )
+
+    ledger.replace_envelope_limits(
+        "session:t", SpendEnvelopeLimits(max_calls=500, deadline_at=200.0)
+    )
+    extended = ledger.get_envelope("session:t")
+    assert extended is not None
+    assert extended.limits.deadline_at == 100.0
+
+    ledger.replace_envelope_limits(
+        "session:t", SpendEnvelopeLimits(max_calls=500, deadline_at=90.0)
+    )
+    tightened = SpendLedger(tmp_path).get_envelope("session:t")
+    assert tightened is not None
+    assert tightened.limits.deadline_at == 90.0
+
+
 def test_tighten_still_cannot_raise(tmp_path: Path) -> None:
     ledger = SpendLedger(tmp_path)
     ledger.define_envelope(

@@ -97,12 +97,6 @@ class VerifyWork(
                 "verify_work has no trusted recipe prebound to this session; "
                 "restart Vibe after configuring one"
             )
-        if not state.has_verifier_pass():
-            raise ToolError(
-                "verify_work requires a current recorded verifier PASS for this "
-                "candidate workspace"
-            )
-
         try:
             main_repo = Repo(str(handle.original_repo_root))
             candidate_repo = Repo(str(handle.worktree_path))
@@ -117,6 +111,11 @@ class VerifyWork(
             raise ToolError(
                 "verify_work active branch does not match the worktree session: "
                 f"expected {handle.branch}, found {candidate_branch}"
+            )
+        if not state.has_verifier_pass(expected_base_sha=base_sha):
+            raise ToolError(
+                "verify_work requires a current recorded verifier PASS for this "
+                "candidate workspace and landing base"
             )
 
         try:

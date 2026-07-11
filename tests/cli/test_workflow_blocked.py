@@ -9,6 +9,15 @@ from vibe.cli.textual_ui.widgets.messages import SubagentResponseMessage
 from vibe.core.workflows.models import WorkflowResult, WorkflowRun, WorkflowStatus
 
 
+def test_workflow_parent_context_shares_verification_and_spend_state() -> None:
+    app = build_test_vibe_app()
+
+    context = app._build_workflow_parent_context("test")
+
+    assert context.verification_state is app.agent_loop._verification_state
+    assert context.spend_adapter is app.agent_loop._spend_adapter
+
+
 @pytest.mark.asyncio
 async def test_blocked_workflow_is_not_labeled_completed(
     monkeypatch: pytest.MonkeyPatch,

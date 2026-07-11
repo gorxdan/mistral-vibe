@@ -24,6 +24,12 @@ from vibe.core.repair import RepairAction, RepairController
 from vibe.core.types import AssistantEvent
 from vibe.core.usage._context import SpendPurpose, SpendScopeKind
 from vibe.core.usage._session import SpendBudgetExceededError
+from vibe.core.verification_contract import (
+    VerificationReport,
+    VerificationReportError,
+    parse_verification_report,
+)
+from vibe.core.verification_state import landing_base_sha
 from vibe.core.workflows._cache_identity import workflow_cache_identity
 from vibe.core.workflows._limits import (
     DEFAULT_BUDGET_TOTAL,
@@ -54,6 +60,7 @@ from vibe.core.workflows.contract import (
     ContractFailure,
     ContractReport,
     ContractSpec,
+    ContractViolation,
     verify_contract,
 )
 from vibe.core.workflows.models import (
@@ -372,17 +379,53 @@ def _fingerprint_payload(value: Any) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
-def _record_contract_pass(runtime: WorkflowRuntime, contract: Any, report: Any) -> None:
+def _verifier_recording_diagnostic(
+    runtime: WorkflowRuntime, result: _VerifierResult
+) -> str | None:
     ctx = runtime.parent_context
     if ctx is None or ctx.verification_state is None:
-        return
-    summary = report.summary() if hasattr(report, "summary") else "contract passed"
-    ctx.verification_state.record_contract_pass(summary)
+        return None
+    state = ctx.verification_state
+    if result.report is None:
+        return "verifier report was unavailable"
+    if result.generation is None:
+        return "verifier attempt generation was unavailable"
+    if not state.is_current_verifier_attempt(result.generation):
+        return "verifier attempt was superseded before landing authorization"
+    if landing_base_sha() != result.base_sha:
+        return "landing base changed before verifier authorization was recorded"
+    return None
+
+
+def _record_verifier_pass(
+    runtime: WorkflowRuntime, result: _VerifierResult
+) -> str | None:
+    diagnostic = _verifier_recording_diagnostic(runtime, result)
+    if diagnostic is not None:
+        return diagnostic
+    ctx = runtime.parent_context
+    if ctx is None or ctx.verification_state is None or result.report is None:
+        return None
+    state = ctx.verification_state
+    state.record_verifier_pass(result.report, verified_base_sha=result.base_sha)
+    return None
 
 
 def _synth_delivered(delivered: Any) -> ContractReport:
     report = ContractReport(passed=True, delivered=bool(delivered))
     return report
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifierResult:
+    report: VerificationReport | None = None
+    error: str | None = None
+    base_sha: str | None = None
+    generation: int | None = None
+
+    @property
+    def passed(self) -> bool:
+        return self.report is not None and self.report.passed
 
 
 async def _run_verifier_in_worktree(
@@ -391,21 +434,22 @@ async def _run_verifier_in_worktree(
     result: Any,
     model: str | None,
     spend_context: SpendProcessContext | None,
-) -> bool:
-    # Returns True (deliver) on VERDICT: PASS, False (block) otherwise.
+) -> _VerifierResult:
     from vibe.core.agents.models import BuiltinAgentName
-    from vibe.core.tools.base import InvokeContext
-    from vibe.core.tools.builtins.task import _maybe_record_verifier_pass
 
-    ctx = runtime.parent_context
-    invoke_ctx: InvokeContext | None = ctx if isinstance(ctx, InvokeContext) else None
-    state = ctx.verification_state if ctx is not None else None
+    state = (
+        runtime.parent_context.verification_state
+        if runtime.parent_context is not None
+        else None
+    )
+    generation = state.begin_verifier_attempt() if state is not None else None
     v_prompt = (
         f"Verify the work just produced in this worktree. The worker prompt was:\n"
         f"{result.output or '(empty)'}\n\n"
         "Inspect the diff/files, run targeted tests, and emit a strict "
         "VERDICT: PASS | FAIL | PARTIAL with command evidence."
     )
+    base_sha = landing_base_sha()
     try:
         v_result = await _spawn_isolated(
             wt,
@@ -419,24 +463,29 @@ async def _run_verifier_in_worktree(
         )
     except Exception as exc:
         logger.warning("then='verifier' spawn failed: %s", exc)
-        return False
+        return _VerifierResult(
+            error=f"verifier subprocess failed: {exc}",
+            base_sha=base_sha,
+            generation=generation,
+        )
     response = v_result.output or ""
-    from vibe.core.verification_contract import (
-        VerificationReportError,
-        parse_verification_report,
-    )
-
     try:
         report = parse_verification_report(response)
-        passed = report.passed
-    except VerificationReportError:
-        passed = False
-    if passed and invoke_ctx is not None and state is not None:
-        _maybe_record_verifier_pass(BuiltinAgentName.VERIFIER, response, invoke_ctx)
-    if not passed:
-        logger.info("then='verifier' verdict blocked deliver: %s", response[:200])
-        return False
-    return True
+    except VerificationReportError as exc:
+        logger.info("then='verifier' report rejected: %s", exc)
+        return _VerifierResult(
+            error=f"verifier report rejected: {exc}",
+            base_sha=base_sha,
+            generation=generation,
+        )
+    if not report.passed:
+        return _VerifierResult(
+            report=report,
+            error=f"verifier returned VERDICT: {report.verdict.value.upper()}",
+            base_sha=base_sha,
+            generation=generation,
+        )
+    return _VerifierResult(report=report, base_sha=base_sha, generation=generation)
 
 
 def _prompt_hash(
@@ -2210,32 +2259,84 @@ class WorkflowRuntime:
         )
         wt = result.wt
         contract_report: ContractReport | None = None
+        contract_base_sha: str | None = None
+        verifier_result: _VerifierResult | None = None
         should_deliver = False
         try:
             if contract is not None and wt is not None:
+                contract_base_sha = landing_base_sha()
                 contract_report = verify_contract(wt.path, contract)
                 should_deliver = contract_report.passed
+                if should_deliver and landing_base_sha() != contract_base_sha:
+                    should_deliver = False
+                    contract_report = ContractReport(
+                        passed=False,
+                        violations=[
+                            ContractViolation(
+                                category="contract",
+                                message="landing base changed during contract validation",
+                            )
+                        ],
+                    )
             if (
                 then == "verifier"
                 and wt is not None
                 and (contract is None or should_deliver)
             ):
-                verdict = await _run_verifier_in_worktree(
+                verifier_result = await _run_verifier_in_worktree(
                     self,
                     wt,
                     result,
                     model,
                     self._new_process_spend_context(SpendPurpose.VERIFICATION),
                 )
-                should_deliver = verdict
+                should_deliver = verifier_result.passed
+                recording_diagnostic = _verifier_recording_diagnostic(
+                    self, verifier_result
+                )
+                if should_deliver and recording_diagnostic is not None:
+                    should_deliver = False
+                    verifier_result = _VerifierResult(
+                        report=verifier_result.report,
+                        error=recording_diagnostic,
+                        base_sha=verifier_result.base_sha,
+                        generation=verifier_result.generation,
+                    )
+                if not should_deliver:
+                    contract_report = ContractReport(
+                        passed=False,
+                        violations=[
+                            ContractViolation(
+                                category="verifier",
+                                message=(
+                                    verifier_result.error
+                                    or "verifier did not return a passing report"
+                                ),
+                            )
+                        ],
+                    )
             if should_deliver and wt is not None:
-                if contract_report is not None:
-                    _record_contract_pass(self, contract, contract_report)
                 delivered = await asyncio.to_thread(deliver_ephemeral_worktree, wt)
                 if contract_report is not None:
                     contract_report.delivered = delivered
                 elif then == "verifier":
                     contract_report = _synth_delivered(delivered)
+                if (
+                    delivered
+                    and verifier_result is not None
+                    and verifier_result.report is not None
+                ):
+                    recording_diagnostic = _record_verifier_pass(self, verifier_result)
+                    if recording_diagnostic is not None:
+                        contract_report = ContractReport(
+                            passed=False,
+                            delivered=True,
+                            violations=[
+                                ContractViolation(
+                                    category="verifier", message=recording_diagnostic
+                                )
+                            ],
+                        )
         finally:
             if wt is not None:
                 await asyncio.to_thread(
@@ -2243,8 +2344,6 @@ class WorkflowRuntime:
                     wt,
                     keep_if_changed=not (contract_report and contract_report.delivered),
                 )
-        if contract is not None and contract_report and contract_report.delivered:
-            _record_contract_pass(self, contract, contract_report)
         return result.output, result.stats, contract_report
 
     def parallel(

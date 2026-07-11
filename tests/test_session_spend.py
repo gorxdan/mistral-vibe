@@ -989,6 +989,38 @@ async def test_live_config_reload_sets_current_spend_adapter(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_config_reload_preserves_or_tightens_absolute_deadline(
+    tmp_path,
+) -> None:
+    now = 100.0
+
+    def clock() -> float:
+        return now
+
+    initial = build_test_vibe_config(spend=SpendConfig(deadline_seconds=10.0))
+    adapter = SessionSpendAdapter.create(
+        initial.spend,
+        "reload-deadline",
+        ledger_path=tmp_path / "reload-deadline-ledger",
+        clock=clock,
+    )
+    agent = build_test_agent_loop(config=initial, spend_adapter=adapter)
+    assert adapter.snapshot().deadline_at == 110.0
+
+    now = 105.0
+    await agent.reload_with_initial_messages(base_config=initial)
+    assert adapter.snapshot().deadline_at == 110.0
+
+    tightened = initial.model_copy(update={"spend": SpendConfig(deadline_seconds=2.0)})
+    await agent.reload_with_initial_messages(base_config=tightened)
+    assert adapter.snapshot().deadline_at == 107.0
+
+    without_deadline = initial.model_copy(update={"spend": SpendConfig()})
+    await agent.reload_with_initial_messages(base_config=without_deadline)
+    assert adapter.snapshot().deadline_at == 107.0
+
+
+@pytest.mark.asyncio
 async def test_sync_config_refresh_sets_current_spend_adapter(tmp_path) -> None:
     initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
     adapter = SessionSpendAdapter.create(
@@ -1051,7 +1083,7 @@ async def test_reset_spend_starts_fresh_ledger_without_clearing_history(
     assert adapter.snapshot().spent_calls == 1
 
     old_session_id = adapter.spend_session_id
-    new_session_id = agent.reset_spend()
+    new_session_id = await agent.reset_spend()
 
     assert new_session_id != old_session_id
     assert agent._spend_adapter.spend_session_id == new_session_id
@@ -1064,6 +1096,33 @@ async def test_reset_spend_starts_fresh_ledger_without_clearing_history(
     # A call that would have exceeded the old budget now succeeds.
     await agent._spend_adapter.complete(_CountingBackend(), _request(max_tokens=1))
     assert agent._spend_adapter.snapshot().spent_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reset_spend_persists_ledger_for_session_resume(tmp_path) -> None:
+    config = build_test_vibe_config(
+        session_logging=SessionLoggingConfig(
+            enabled=True, save_dir=str(tmp_path / "sessions")
+        )
+    )
+    agent = build_test_agent_loop(config=config)
+    agent.messages.append(LLMMessage(role=Role.USER, content="persist this session"))
+    await agent.session_logger.save_interaction(
+        agent.messages,
+        agent.stats,
+        agent.base_config,
+        agent.tool_manager,
+        agent.agent_profile,
+    )
+    session_path = agent.session_logger.session_dir
+    assert session_path is not None
+
+    new_spend_session_id = await agent.reset_spend()
+
+    resumed = build_test_agent_loop(config=config)
+    resumed.resume_existing_session(agent.session_id, None, session_path)
+    assert resumed.spend_adapter.spend_session_id == new_spend_session_id
+    assert resumed.spend_adapter.ledger_path == agent.spend_adapter.ledger_path
 
 
 def test_cost_usd_rejection_message_quotes_projected_total(tmp_path) -> None:

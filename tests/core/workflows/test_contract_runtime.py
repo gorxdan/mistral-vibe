@@ -81,9 +81,32 @@ async def test_default_executor_contract_passes_and_delivers(
     assert report is not None
     assert report.passed
     assert report.delivered
-    assert verification_state.has_pass()
+    assert not verification_state.has_pass()
     # Delivery ff-merged the worktree into the parent; the file landed.
     assert (root / "auth.py").read_text().startswith("JWT_TOKEN")
+
+
+@pytest.mark.asyncio
+async def test_model_authored_noop_contract_cannot_authorize_landing(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_repo(tmp_path, monkeypatch, _FAKE_VIBE_NOOP)
+    verification_state = VerificationState()
+    rt = WorkflowRuntime(
+        parent_context=InvokeContext(
+            tool_call_id="test", verification_state=verification_state
+        )
+    )
+    contract = ContractSpec.model_validate({"outputs": [{"path": "f.txt"}]})
+
+    _, _, report = await rt._default_isolated_executor(
+        "noop", "auto-approve", "lbl", 40, contract=contract
+    )
+
+    assert report is not None
+    assert report.passed
+    assert report.delivered
+    assert not verification_state.has_pass()
 
 
 @pytest.mark.asyncio
@@ -109,6 +132,35 @@ async def test_default_executor_does_not_record_pass_when_delivery_fails(
     assert report is not None
     assert report.passed
     assert not report.delivered
+    assert not verification_state.has_pass()
+
+
+@pytest.mark.asyncio
+async def test_default_executor_rejects_contract_when_landing_base_moves(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup_repo(tmp_path, monkeypatch, _FAKE_VIBE_WRITE)
+    bases = iter(["base-a", "base-b"])
+    monkeypatch.setattr(
+        "vibe.core.workflows.runtime.landing_base_sha", lambda: next(bases)
+    )
+    verification_state = VerificationState()
+    rt = WorkflowRuntime(
+        parent_context=InvokeContext(
+            tool_call_id="test", verification_state=verification_state
+        )
+    )
+    contract = ContractSpec.model_validate({"outputs": [{"path": "auth.py"}]})
+
+    _, _, report = await rt._default_isolated_executor(
+        "impl", "auto-approve", "lbl", 40, contract=contract
+    )
+
+    assert report is not None
+    assert not report.passed
+    assert report.violations[0].message == (
+        "landing base changed during contract validation"
+    )
     assert not verification_state.has_pass()
 
 

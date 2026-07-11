@@ -9,12 +9,13 @@ from vibe.core.config.harness_files import HarnessFilesManager
 from vibe.core.utils.io import read_safe, write_safe
 
 SPEND_DYNAMIC_DEFAULTS_MIGRATION = "spend_dynamic_token_defaults_v1"
+# Frozen signature of the generated table shipped before dynamic token admission.
 LEGACY_GENERATED_SPEND_DEFAULTS: dict[str, int | float] = {
     "max_prompt_tokens": 400_000,
     "max_completion_tokens": 100_000,
     "max_total_tokens": 500_000,
     "max_cost_usd": 10.0,
-    "max_calls": 512,
+    "max_calls": 128,
     "max_concurrent_calls": 2,
     "max_retries": 16,
     "default_max_output_tokens": 32_768,

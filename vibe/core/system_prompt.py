@@ -385,7 +385,7 @@ def _get_verification_contract_section(*, trusted_recipe: bool = False) -> str:
         if trusted_recipe
         else (
             "No trusted recipe is configured for this session. A current verifier "
-            "or workflow-contract PASS is recorded automatically and may authorize "
+            "PASS is recorded automatically and may authorize "
             "`land_work`; a report pasted into tool arguments is not accepted. A "
             "`trivial: <reason>` waiver is accepted only when `land_work` confirms "
             "a committed documentation-only diff."

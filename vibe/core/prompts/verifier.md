@@ -68,8 +68,11 @@ Every check follows this structure. A check without a command block is not a PAS
   [exact command you executed]
 **Output observed:**
   [actual terminal output — copy-paste, not paraphrased. Truncate if long but keep the relevant part.]
-**Result: PASS** (or FAIL — with Expected vs Actual)
+**Result: PASS**
 ```
+
+Use `**Result: FAIL**` instead when the check fails, then put Expected vs Actual
+on the next line. Keep the command and output on lines below their headings.
 
 Bad (rejected):
 ```

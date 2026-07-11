@@ -6,7 +6,7 @@ COMPACT_VERIFICATION_INVARIANT = """\
 Before claiming non-trivial work complete, run the `verifier` subagent. Only an
 evidence-backed `VERDICT: PASS` is success; fix `FAIL`, and report `PARTIAL` or a
 missing verdict as incomplete. With no trusted recipe configured, `land_work`
-accepts the current recorded verifier/workflow pass or an explicit
+accepts the current recorded verifier PASS or an explicit
 `trivial: <reason>` documentation-only waiver, never pasted report prose."""
 
 COMPACT_VERIFICATION_RECIPE_INVARIANT = """\

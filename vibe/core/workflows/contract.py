@@ -5,9 +5,9 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
-from typing import Any
+from typing import Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from vibe.core.utils.io import read_safe
 
@@ -52,6 +52,12 @@ class ContractSpec(BaseModel):
     outputs: list[ContractOutput] = Field(default_factory=list)
     invariants: list[ContractInvariant] = Field(default_factory=list)
     tests: list[ContractTest] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_assertion(self) -> Self:
+        if self.outputs or self.invariants or self.tests:
+            return self
+        raise ValueError("contract must define at least one output, invariant, or test")
 
 
 class ContractViolation(BaseModel):

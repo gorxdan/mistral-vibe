@@ -653,7 +653,8 @@ receipt, revalidates it, performs the merge, and reports the merge commit SHA;
 there is no separate durable landing record.
 
 Without a configured recipe, the compatibility gate accepts a current
-session-recorded verifier or workflow-contract pass. Pasted `verification_note`
+session-recorded verifier PASS. Model-authored workflow contracts can gate
+worktree delivery but cannot authorize landing. Pasted `verification_note`
 prose is rejected in both modes; a `trivial: <reason>` waiver is available only
 in the unconfigured mode and only for a locally validated documentation-only
 diff. Treat the recipe source as host-controlled and restart Vibe after an
@@ -716,10 +717,14 @@ the token and USD envelopes further. Adaptive mode reserves before dispatch, but
 an unexpectedly token-dense call can reconcile above the remaining cap by that
 one call; later calls are blocked. Use `prompt_estimator_mode = "strict"` for the
 most conservative preflight behavior. Existing generated configs whose complete
-`[spend]` table still matches the old defaults are migrated once by removing the
-legacy 400,000/100,000/500,000 token caps; customized or partial tables remain
-explicit. Matching legacy ledger caps are relaxed only for omitted fields. Other
-envelope changes remain tighten-only for the life of that root session.
+`[spend]` table still matches the released 128-call defaults are migrated once
+by removing the legacy 400,000/100,000/500,000 token caps; customized or partial
+tables remain explicit. Matching legacy ledger caps are relaxed only for omitted
+fields. A config reload can raise or lower configured token, cost, call,
+concurrency, and retry ceilings, while the original absolute deadline can only
+stay fixed or become earlier. `/spend` shows the current envelope. `/spend reset`
+starts a durably recorded fresh ledger without clearing conversation history;
+an existing team manager uses the new ledger for later teammates.
 
 The default $10, 512-call, two-concurrent-call, 16-retry, and 32,768-token
 per-call output controls remain finite. Missing provider usage is charged at the

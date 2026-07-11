@@ -49,6 +49,39 @@ def test_parse_accepts_fenced_multiline_command() -> None:
     assert report.evidence[0].command == "uv run pytest"
 
 
+def test_parse_accepts_common_verifier_markdown_variants() -> None:
+    report = parse_verification_report(
+        "### Check 1: focused tests\n"
+        "**Command run:** `uv run pytest -q`\n"
+        "**Output observed:** 8 passed\n"
+        "**Result: PASS** — Expected a green suite and got one.\n\n"
+        "VERDICT: PASS"
+    )
+
+    assert report.evidence[0].check == "focused tests"
+    assert report.evidence[0].command == "uv run pytest -q"
+    assert report.evidence[0].output == "8 passed"
+
+
+def test_parse_ignores_non_evidence_sections_after_checks() -> None:
+    report = parse_verification_report(
+        "### Check: focused tests\n"
+        "**Command run:** `uv run pytest -q`\n"
+        "**Output observed:** 8 passed\n"
+        "**Result: PASS**\n\n"
+        "### Check (adversarial): no-op behavior\n"
+        "**Command run:** `uv run pytest -k noop`\n"
+        "**Output observed:** 1 passed\n"
+        "**Result: PASS**\n\n"
+        "### Observations\n"
+        "No blocking findings.\n\n"
+        "VERDICT: PASS"
+    )
+
+    assert len(report.evidence) == 2
+    assert report.evidence[1].check == "no-op behavior"
+
+
 @pytest.mark.parametrize(
     ("response", "error"),
     [

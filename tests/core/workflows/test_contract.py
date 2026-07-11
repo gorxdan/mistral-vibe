@@ -21,6 +21,11 @@ def _spec(**overrides: object) -> ContractSpec:
     return ContractSpec.model_validate(overrides)
 
 
+def test_empty_contract_is_rejected() -> None:
+    with pytest.raises(ValueError, match="at least one output, invariant, or test"):
+        ContractSpec()
+
+
 def test_passes_when_all_checks_hold(root: Path) -> None:
     report = verify_contract(
         root,
