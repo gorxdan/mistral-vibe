@@ -9,6 +9,7 @@ import subprocess
 
 from vibe.core.config import LSPServer
 from vibe.core.logger import logger
+from vibe.core.lsp._environment import language_server_env
 from vibe.core.paths import VIBE_HOME
 
 _MANAGED_CACHE_DIR = VIBE_HOME.path / "lsp-servers"
@@ -283,6 +284,7 @@ def _probe(preset: ServerPreset, root_path: Path | None = None) -> PresetProbe:
             text=True,
             timeout=_PROBE_TIMEOUT,
             check=False,
+            env=language_server_env({}),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return PresetProbe(preset=preset, status="broken", stderr=str(exc))

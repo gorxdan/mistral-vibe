@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from enum import StrEnum, auto
 from pathlib import Path
 import time
@@ -12,9 +13,25 @@ from pydantic import BaseModel, ConfigDict, Field
 from vibe.core.logger import logger
 from vibe.core.lsp import LSPNotConnectedError, get_lsp_manager
 from vibe.core.lsp._adherence import record_lsp_call
+from vibe.core.lsp._manager import current_lsp_generation
+from vibe.core.lsp._pagination import (
+    LspContinuationError,
+    LspContinuationPage,
+    LspContinuationReloadRequired,
+    LspContinuationStore,
+    LspQueryBinding,
+)
+from vibe.core.lsp._positions import (
+    codepoint_position_to_utf16,
+    split_lsp_lines,
+    utf16_range_to_codepoint,
+)
+from vibe.core.lsp._symbols import NormalizedSymbol, normalize_document_symbols
 from vibe.core.lsp._types import (
     LSPError,
     LSPProtocolError,
+    Position,
+    Range,
     path_from_uri,
     uri_from_path,
 )
@@ -28,6 +45,12 @@ from vibe.core.tools.base import (
 )
 from vibe.core.tools.permissions import PermissionContext
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
+from vibe.core.tools.utils import (
+    enforce_isolated_confine,
+    enforce_team_metadata_confine,
+    isolated_worktree_root,
+    resolve_file_tool_permission,
+)
 from vibe.core.types import ToolStreamEvent
 from vibe.core.utils.io import read_safe_async
 
@@ -36,6 +59,10 @@ if TYPE_CHECKING:
     from vibe.core.types import ToolResultEvent
 
 _MAX_FILE_BYTES = 10 * 1024 * 1024
+_MAX_LOCATION_RESULTS = 50
+_MAX_SYMBOL_RESULTS = 100
+_MAX_CALL_RESULTS = 50
+_MAX_CONTINUATION_TOKEN_LENGTH = 256
 _METHOD_NOT_FOUND = -32601
 _CALL_HIERARCHY_RETRIES = 4
 _CALL_HIERARCHY_BACKOFF = (0.2, 0.4, 0.8)
@@ -49,7 +76,18 @@ _SYMBOL_KIND_CLASS = 5
 # mtime so any edit invalidates instantly; the TTL bounds cross-file staleness
 # (a references/call-hierarchy result can shift when *another* file changes).
 _RESULT_CACHE_TTL = 3.0
+_RESULT_CACHE_MAX_ENTRIES = 128
 _CALL_HIERARCHY_OPS = frozenset({
+    "prepare_call_hierarchy",
+    "incoming_calls",
+    "outgoing_calls",
+})
+_PAGEABLE_OPS = frozenset({
+    "go_to_definition",
+    "find_references",
+    "document_symbol",
+    "workspace_symbol",
+    "go_to_implementation",
     "prepare_call_hierarchy",
     "incoming_calls",
     "outgoing_calls",
@@ -57,6 +95,7 @@ _CALL_HIERARCHY_OPS = frozenset({
 
 
 class LspOperation(StrEnum):
+    STATUS = auto()
     GO_TO_DEFINITION = auto()
     FIND_REFERENCES = auto()
     HOVER = auto()
@@ -75,17 +114,20 @@ class LspArgs(BaseModel):
             "LSP operation to perform. Position-based operations "
             "(go_to_definition, find_references, hover, go_to_implementation, "
             "prepare_call_hierarchy, incoming_calls, outgoing_calls) require "
-            "line and character. document_symbol needs only file_path. "
+            "line and character. status accepts an optional file_path and "
+            "reports live server readiness without starting a server. "
+            "document_symbol needs only file_path. "
             "workspace_symbol needs only query and may omit file_path "
             "(it is workspace-wide; all configured servers are queried and "
-            "their results merged)."
+            "their results merged). workspace_symbol is unavailable under a "
+            "path-scoped task contract."
         )
     )
     file_path: str | None = Field(
         default=None,
         description=(
             "Absolute path to the source file. Required for every operation "
-            "except workspace_symbol."
+            "except workspace_symbol and status."
         ),
     )
     line: int | None = Field(
@@ -96,10 +138,21 @@ class LspArgs(BaseModel):
     character: int | None = Field(
         default=None,
         ge=1,
-        description="1-based character column. Required for position-based operations.",
+        description=(
+            "1-based Unicode code-point column; tabs count as one character. "
+            "Required for position-based operations."
+        ),
     )
     query: str | None = Field(
         default=None, description="Symbol query string. Required for workspace_symbol."
+    )
+    continuation_token: str | None = Field(
+        default=None,
+        max_length=_MAX_CONTINUATION_TOKEN_LENGTH,
+        description=(
+            "Opaque token returned by a previous page. Repeat the exact original "
+            "operation, path, position, and query when supplying it."
+        ),
     )
 
 
@@ -109,10 +162,22 @@ class LspResult(BaseModel):
     summary: str = Field(description="Short human/machine-readable result text.")
     locations: list[dict[str, Any]] = Field(default_factory=list)
     symbol_names: list[str] = Field(default_factory=list)
+    symbols: list[dict[str, Any]] = Field(default_factory=list)
+    total_count: int | None = None
+    returned_count: int | None = None
+    was_truncated: bool = False
+    has_more: bool = False
+    page_offset: int = 0
+    continuation_token: str | None = None
+    readiness: dict[str, Any] | None = None
 
 
 class LspConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ALWAYS
+    sensitive_patterns: list[str] = Field(
+        default=["**/.env", "**/.env.*"],
+        description="File patterns that trigger ASK even when permission is ALWAYS.",
+    )
 
 
 class LspState(BaseToolState):
@@ -126,7 +191,8 @@ class Lsp(
     description: ClassVar[str] = (
         "Query a language server for semantic code intelligence: "
         "go-to-definition, find-references, hover (type info), "
-        "document/workspace symbols, go-to-implementation, and call hierarchy. "
+        "document/workspace symbols, go-to-implementation, call hierarchy, and "
+        "live readiness by file type. "
         "Prefer this over grep when you need to resolve a symbol, trace its "
         "callers/callees, or read its type — it understands imports, overloads, "
         "and generated code that textual search cannot."
@@ -134,11 +200,22 @@ class Lsp(
 
     @classmethod
     def is_available(cls, config: VibeConfig | None = None) -> bool:
+        if isolated_worktree_root() is not None:
+            return False
         if config is None:
             return True
         return "lsp" in getattr(config, "installed_components", [])
 
     def resolve_permission(self, args: LspArgs) -> PermissionContext | None:
+        if args.file_path is not None:
+            return resolve_file_tool_permission(
+                args.file_path,
+                tool_name=self.get_name(),
+                allowlist=self.config.allowlist,
+                denylist=self.config.denylist,
+                config_permission=self.config.permission,
+                sensitive_patterns=self.config.sensitive_patterns,
+            )
         return PermissionContext(permission=self.config.permission)
 
     @staticmethod
@@ -150,6 +227,8 @@ class Lsp(
         return "lsp" in VibeConfig.load().installed_components
 
     def _ensure_manager(self) -> Any:
+        if isolated_worktree_root() is not None:
+            return None
         manager = get_lsp_manager()
         if manager is not None:
             return manager
@@ -165,6 +244,11 @@ class Lsp(
         self, args: LspArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | LspResult, None]:
         if (
+            args.continuation_token is not None
+            and args.operation.value not in _PAGEABLE_OPS
+        ):
+            raise ToolError(f"{args.operation.value} does not return pageable results")
+        if (
             ctx is not None
             and ctx.task_contract is not None
             and args.operation is LspOperation.WORKSPACE_SYMBOL
@@ -174,6 +258,12 @@ class Lsp(
             )
         manager = self._ensure_manager()
         if manager is None:
+            if isolated_worktree_root() is not None:
+                raise ToolError(
+                    "LSP is disabled for isolated subagents until language "
+                    "servers can run inside the worktree sandbox. Use read, "
+                    "grep, and glob in this execution mode."
+                )
             installed = self._lsp_installed()
             if installed:
                 raise ToolError(
@@ -182,18 +272,42 @@ class Lsp(
                     "typescript-language-server/etc. on PATH and run /lspstall."
                 )
             raise ToolError("LSP is not enabled. Run /lspstall to enable it.")
+        if args.operation is LspOperation.STATUS:
+            file_path = (
+                self._resolve_readiness_path(args.file_path)
+                if args.file_path is not None
+                else None
+            )
+            snapshot = manager.readiness(file_path)
+            yield self._format_readiness(snapshot)
+            return
         raw_path = args.file_path
         if raw_path is None:
             if args.operation is LspOperation.WORKSPACE_SYMBOL:
                 if not args.query:
                     raise ToolError("workspace_symbol requires a non-empty query.")
-                yield await self._workspace_symbol(manager, args.query or "")
+                binding = self._query_binding(manager, args, None, ctx)
+                result = await self._workspace_symbol(
+                    manager,
+                    args.query or "",
+                    binding=binding,
+                    continuation_token=args.continuation_token,
+                )
+                record_lsp_call(args.operation.value, ctx=ctx, cache_hit=False)
+                yield result
                 return
             raise ToolError(
                 f"{args.operation.value} requires file_path. Only "
-                "workspace_symbol may omit it (workspace/symbol is workspace-wide)."
+                "workspace_symbol and status may omit it."
             )
         file_path = self._resolve_path(raw_path)
+        binding = self._query_binding(manager, args, file_path, ctx)
+        if args.continuation_token is not None:
+            resumed = self._resume_page(args, binding)
+            if resumed is not None:
+                record_lsp_call(args.operation.value, ctx=ctx, cache_hit=True)
+                yield resumed
+                return
         server = manager.get_server_for_file(file_path)
         if server is None:
             raise ToolError(
@@ -217,9 +331,8 @@ class Lsp(
             )
         if args.operation is LspOperation.WORKSPACE_SYMBOL and not args.query:
             raise ToolError("workspace_symbol requires a non-empty query.")
-
         async for event in self._execute(
-            manager, args, file_path, position_required, server, ctx
+            manager, args, file_path, position_required, server, ctx, binding
         ):
             yield event
 
@@ -231,6 +344,7 @@ class Lsp(
         position_required: bool,
         server: Any,
         ctx: InvokeContext | None,
+        binding: LspQueryBinding,
     ) -> AsyncGenerator[ToolStreamEvent | LspResult, None]:
         try:
             text = await read_safe_async(Path(file_path))
@@ -240,12 +354,8 @@ class Lsp(
                 text.text,
                 server.config.language_id_for(Path(file_path).suffix),
             )
-            position = (
-                {"line": (args.line or 1) - 1, "character": (args.character or 1) - 1}
-                if position_required
-                else None
-            )
-            if position is not None:
+            position: dict[str, int] | None = None
+            if position_required:
                 try:
                     self._validate_position(
                         Path(file_path), args.line or 1, args.character or 1, text.text
@@ -262,16 +372,32 @@ class Lsp(
                         ),
                     )
                     return
-            # Memoize repeat queries on an unchanged file. workspace_symbol is
-            # global (no single-file mtime to invalidate on), so never cache it.
+                protocol_position = codepoint_position_to_utf16(
+                    text.text,
+                    Position(
+                        line=(args.line or 1) - 1, character=(args.character or 1) - 1
+                    ),
+                )
+                position = {
+                    "line": protocol_position.line,
+                    "character": protocol_position.character,
+                }
+            # Hover is scalar and memoizable; pageable ops are snapshot-backed and
+            # must revalidate continuation binding (never cache token-bearing pages).
             cache_key: tuple[Any, ...] | None = None
-            if args.operation is not LspOperation.WORKSPACE_SYMBOL:
+            if args.operation is LspOperation.HOVER:
                 cache_key = (
                     file_path,
                     Path(file_path).stat().st_mtime_ns,
                     str(args.operation),
                     args.line,
                     args.character,
+                    args.query,
+                    args.continuation_token,
+                    binding.session_id,
+                    binding.task_brief_hash,
+                    binding.lsp_generation,
+                    binding.workspace_root,
                 )
                 hit = self._result_cache_get(cache_key)
                 if hit is not None and time.monotonic() - hit[0] < _RESULT_CACHE_TTL:
@@ -280,6 +406,7 @@ class Lsp(
                         args.operation.value,
                         (time.perf_counter() - server_t0) * 1000.0,
                     )
+                    record_lsp_call(args.operation.value, ctx=ctx, cache_hit=True)
                     yield self._scope_result(hit[1], ctx)
                     return
             if ctx is not None and args.operation.value in _CALL_HIERARCHY_OPS:
@@ -293,13 +420,15 @@ class Lsp(
                         "be indexing on first use"
                     ),
                 )
-            result = await self._dispatch(manager, args, file_path, position)
+            result = await self._dispatch(
+                manager, args, file_path, position, binding, ctx
+            )
             logger.debug(
                 "lsp %s %.1fms",
                 args.operation.value,
                 (time.perf_counter() - server_t0) * 1000.0,
             )
-            record_lsp_call(args.operation.value)
+            record_lsp_call(args.operation.value, ctx=ctx, cache_hit=False)
             if cache_key is not None:
                 self._result_cache_put(cache_key, result)
         except LSPNotConnectedError as exc:
@@ -329,9 +458,42 @@ class Lsp(
                 )
             )
         ]
+        if len(locations) == len(result.locations):
+            return result
         first_line = result.summary.splitlines()[0]
         label = first_line.split(" (", 1)[0].removesuffix(":")
-        return self._format_locations(label, locations)
+        scoped = self._format_locations(label, locations)
+        if result.was_truncated:
+            scoped.total_count = result.total_count
+            scoped.returned_count = len(locations)
+            scoped.was_truncated = True
+            omitted = (result.total_count or len(result.locations)) - len(
+                result.locations
+            )
+            scoped.summary += (
+                f"\n  [truncated before task scoping: at least {omitted} "
+                "additional result(s) omitted]"
+            )
+        scoped.page_offset = result.page_offset
+        scoped.continuation_token = result.continuation_token
+        return scoped
+
+    @staticmethod
+    def _filter_task_locations(
+        locations: list[dict[str, Any]], ctx: InvokeContext | None
+    ) -> list[dict[str, Any]]:
+        if ctx is None or ctx.task_contract is None:
+            return locations
+        return [
+            location
+            for location in locations
+            if ctx.task_contract.allows_search_result(
+                path_from_uri(
+                    location.get("uri", "")
+                    or (location.get("data") or {}).get("uri", "")
+                )
+            )
+        ]
 
     async def _dispatch(
         self,
@@ -339,6 +501,8 @@ class Lsp(
         args: LspArgs,
         file_path: str,
         position: dict[str, int] | None,
+        binding: LspQueryBinding | None = None,
+        ctx: InvokeContext | None = None,
     ) -> LspResult:
         uri = uri_from_path(file_path)
         text_doc = {"textDocument": {"uri": uri}}
@@ -352,9 +516,27 @@ class Lsp(
             else:
                 params = {**text_doc, **(extra or {})}
                 raw, _ = await manager.send_request(file_path, method, params)
-            if formatter is self._format_locations:
+            if formatter == self._format_locations:
                 filtered = await self._filter_gitignored(self._as_location_list(raw))
-                return formatter(label, filtered)
+                filtered = self._filter_task_locations(filtered, ctx)
+                normalized = await self._normalize_location_positions(filtered)
+                page = self._page_items(
+                    normalized,
+                    binding=binding
+                    or self._query_binding(manager, args, file_path, ctx),
+                    continuation_token=args.continuation_token,
+                    page_size=_MAX_LOCATION_RESULTS,
+                )
+                return formatter(label, list(page.items), page=page)
+            if formatter == self._format_symbols:
+                symbols = await self._normalize_symbols(raw, uri)
+                return self._page_symbol_records(
+                    label,
+                    symbols,
+                    binding=binding
+                    or self._query_binding(manager, args, file_path, ctx),
+                    continuation_token=args.continuation_token,
+                )
             return formatter(label, raw)
         if args.operation is LspOperation.HOVER:
             raw = await self._request_at_identifier(
@@ -366,8 +548,13 @@ class Lsp(
             raw, _ = await manager.send_request(
                 file_path, "workspace/symbol", {"query": query}
             )
-            return self._format_symbols(
-                f"Workspace symbols matching '{query}'", raw, query=query
+            symbols = await self._normalize_symbols(raw, "")
+            return self._page_symbol_records(
+                f"Workspace symbols matching '{query}'",
+                symbols,
+                binding=binding or self._query_binding(manager, args, file_path, ctx),
+                continuation_token=args.continuation_token,
+                query=query,
             )
         if args.operation in {
             LspOperation.PREPARE_CALL_HIERARCHY,
@@ -375,7 +562,7 @@ class Lsp(
             LspOperation.OUTGOING_CALLS,
         }:
             return await self._call_hierarchy(
-                manager, args, file_path, text_doc, position or {}
+                manager, args, file_path, text_doc, position or {}, binding, ctx
             )
         raise ToolError(f"Unsupported operation: {args.operation}")
 
@@ -390,17 +577,95 @@ class Lsp(
                 "Try find_references to list usages, or workspace_symbol to "
                 "locate subclasses by name."
             )
-        return (
-            "Try find_references as a fallback — it returns the same "
-            "caller/callee info via a different method."
+        if operation in {
+            LspOperation.PREPARE_CALL_HIERARCHY,
+            LspOperation.INCOMING_CALLS,
+            LspOperation.OUTGOING_CALLS,
+        }:
+            return (
+                "Try find_references to list usages. It does not preserve "
+                "caller/callee direction, so confirm direction by reading the "
+                "returned sites."
+            )
+        return "Try find_references to list usages, or document_symbol for an outline."
+
+    @staticmethod
+    def _format_readiness(snapshot: Any) -> LspResult:
+        lines = [f"LSP readiness: {snapshot.state.value} — {snapshot.reason}"]
+        for server in snapshot.servers:
+            extensions = ", ".join(server.extensions) or "no extensions"
+            operations = (
+                "unknown until initialized"
+                if server.operations is None
+                else ", ".join(server.operations) or "no semantic providers advertised"
+            )
+            lines.append(
+                f"  {server.name}: {server.state.value} ({extensions}); {operations}"
+            )
+            if server.error:
+                lines.append(f"    error: {server.error}")
+        return LspResult(
+            operation="status",
+            summary="\n".join(lines),
+            readiness=snapshot.model_dump(mode="json"),
         )
 
-    async def _workspace_symbol(self, manager: Any, query: str) -> LspResult:
+    def _resume_page(self, args: LspArgs, binding: LspQueryBinding) -> LspResult | None:
+        token = args.continuation_token
+        if token is None:
+            return None
+        try:
+            page = self._continuation_store().get_page(token, binding)
+        except LspContinuationReloadRequired:
+            return None
+        except LspContinuationError as exc:
+            raise ToolError(str(exc)) from exc
+
+        items = list(page.items)
+        location_label = {
+            LspOperation.GO_TO_DEFINITION: "Definitions",
+            LspOperation.GO_TO_IMPLEMENTATION: "Implementations",
+            LspOperation.FIND_REFERENCES: "References",
+            LspOperation.INCOMING_CALLS: "Incoming calls",
+            LspOperation.OUTGOING_CALLS: "Outgoing calls",
+        }.get(args.operation)
+        if location_label is not None:
+            result = self._format_locations(location_label, items, page=page)
+        elif args.operation is LspOperation.DOCUMENT_SYMBOL:
+            result = self._format_symbol_dicts("Document symbols", items, page=page)
+        elif args.operation is LspOperation.WORKSPACE_SYMBOL:
+            label = f"Workspace symbols matching '{args.query or ''}'"
+            result = self._format_symbol_dicts(label, items, page=page)
+        elif args.operation is LspOperation.PREPARE_CALL_HIERARCHY:
+            result = self._format_call_items("Call hierarchy items", items, page=page)
+        else:
+            result = None
+        return result
+
+    async def _workspace_symbol(
+        self,
+        manager: Any,
+        query: str,
+        *,
+        binding: LspQueryBinding,
+        continuation_token: str | None,
+    ) -> LspResult:
+        label = f"Workspace symbols matching '{query}'"
+        if continuation_token is not None:
+            try:
+                page = self._continuation_store().get_page(continuation_token, binding)
+            except LspContinuationReloadRequired:
+                pass
+            except LspContinuationError as exc:
+                raise ToolError(str(exc)) from exc
+            else:
+                return self._format_symbol_dicts(label, list(page.items), page=page)
         servers = manager.servers
         if not servers:
             raise ToolError(
-                "No LSP servers are configured. Run /lspstall to install one, "
-                "or pass file_path to route to a server by file extension."
+                "No LSP servers are configured. Install a language server such "
+                "as pyright or typescript-language-server on PATH and run "
+                "/lspstall to re-detect it, or add a matching [[lsp_servers]] entry."
             )
         # workspace/symbol is workspace-wide and a workspace may span several
         # languages (pyright + gopls + ...). With no file_path to route by
@@ -416,7 +681,7 @@ class Lsp(
             return_exceptions=True,
         )
         merged, supported = self._merge_symbol_batches(batches)
-        if not merged:
+        if not merged and continuation_token is None:
             if not supported:
                 raise ToolError(
                     "No configured server supports workspace_symbol. "
@@ -427,14 +692,19 @@ class Lsp(
                 operation="symbols",
                 summary=f"Workspace symbols matching '{query}': none found.",
             )
-        return self._format_symbols(
-            f"Workspace symbols matching '{query}'", merged, query=query
+        symbols = await self._normalize_symbols(merged, "")
+        return self._page_symbol_records(
+            label,
+            symbols,
+            binding=binding,
+            continuation_token=continuation_token,
+            query=query,
         )
 
     @staticmethod
     def _merge_symbol_batches(batches: Any) -> tuple[list[dict[str, Any]], bool]:
         merged: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, ...]] = set()
         supported = False
         for batch in batches:
             if isinstance(batch, BaseException):
@@ -445,13 +715,37 @@ class Lsp(
             for sym in batch or []:
                 if not isinstance(sym, dict):
                     continue
-                uri = str((sym.get("location") or {}).get("uri", ""))
-                key = (str(sym.get("name", "")), uri)
-                if uri and key in seen:
+                key = Lsp._workspace_symbol_identity(sym)
+                if key is not None and key in seen:
                     continue
-                seen.add(key)
+                if key is not None:
+                    seen.add(key)
                 merged.append(sym)
         return merged, supported
+
+    @staticmethod
+    def _workspace_symbol_identity(symbol: dict[str, Any]) -> tuple[str, ...] | None:
+        location = symbol.get("location")
+        if not isinstance(location, dict):
+            return None
+        uri = str(location.get("uri", ""))
+        range_ = location.get("range")
+        if not uri or not isinstance(range_, dict):
+            return None
+        start = range_.get("start")
+        end = range_.get("end")
+        if not isinstance(start, dict) or not isinstance(end, dict):
+            return None
+        return (
+            str(symbol.get("name", "")),
+            uri,
+            str(start.get("line", "")),
+            str(start.get("character", "")),
+            str(end.get("line", "")),
+            str(end.get("character", "")),
+            str(symbol.get("kind", "")),
+            str(symbol.get("containerName", "")),
+        )
 
     def _simple_dispatch_table(
         self,
@@ -490,7 +784,11 @@ class Lsp(
         file_path: str,
         text_doc: dict[str, Any],
         position: dict[str, int],
+        binding: LspQueryBinding | None = None,
+        ctx: InvokeContext | None = None,
     ) -> LspResult:
+        if binding is None:
+            binding = self._query_binding(manager, args, file_path, ctx)
         items = await self._prepare_call_hierarchy_at(
             manager, file_path, text_doc, position
         )
@@ -509,7 +807,17 @@ class Lsp(
                 )
 
         if args.operation is LspOperation.PREPARE_CALL_HIERARCHY:
-            return self._format_call_items("Call hierarchy items", items)
+            items = self._filter_task_locations(items, ctx)
+            items = await self._normalize_location_positions(items)
+            page = self._page_items(
+                items,
+                binding=binding,
+                continuation_token=args.continuation_token,
+                page_size=_MAX_CALL_RESULTS,
+            )
+            return self._format_call_items(
+                "Call hierarchy items", list(page.items), page=page
+            )
 
         label = (
             "Incoming calls"
@@ -522,7 +830,8 @@ class Lsp(
                 summary=(
                     f"{label}: no callable at line {position.get('line', 0) + 1}. "
                     "Set character to the function/method name, or use "
-                    "find_references (carries the same caller info) as a fallback."
+                    "find_references to list usages (it does not preserve "
+                    "caller/callee direction)."
                 ),
             )
         method = (
@@ -565,7 +874,15 @@ class Lsp(
                 retries_used += 1
                 await asyncio.sleep(_CALL_HIERARCHY_BACKOFF[attempt])
         out = await self._filter_gitignored(out)
-        result = self._format_locations(label, out)
+        out = self._filter_task_locations(out, ctx)
+        out = await self._normalize_location_positions(out)
+        page = self._page_items(
+            out,
+            binding=binding,
+            continuation_token=args.continuation_token,
+            page_size=_MAX_CALL_RESULTS,
+        )
+        result = self._format_locations(label, list(page.items), page=page)
         if retries_used:
             # The server was still indexing (call edges resolved only after
             # backoff). Flag it so the caller does not mistake a thin or empty
@@ -692,19 +1009,44 @@ class Lsp(
             return False
         return True
 
-    def _format_locations(self, label: str, raw: Any) -> LspResult:
+    def _format_locations(
+        self, label: str, raw: Any, *, page: LspContinuationPage | None = None
+    ) -> LspResult:
         items = self._as_location_list(raw)
         if not items:
-            return LspResult(operation="locations", summary=f"{label}: none found.")
-        lines: list[str] = [f"{label} ({len(items)}):"]
-        for loc in items[:50]:
+            return LspResult(
+                operation="locations",
+                summary=f"{label}: none found.",
+                total_count=0,
+                returned_count=0,
+            )
+        returned = items if page is not None else items[:_MAX_LOCATION_RESULTS]
+        total = page.total_count if page is not None else len(items)
+        offset = page.offset if page is not None else 0
+        lines: list[str] = [
+            self._counted_header(label, total, len(returned), offset=offset)
+        ]
+        for loc in returned:
             path = path_from_uri(loc.get("uri", ""))
             start = (loc.get("range") or {}).get("start") or {}
-            lines.append(
-                f"  {path}:{start.get('line', 0) + 1}:{start.get('character', 0) + 1}"
+            encoding_note = (
+                " [UTF-16 column]" if loc.get("position_encoding") == "utf-16" else ""
             )
+            lines.append(
+                f"  {path}:{start.get('line', 0) + 1}:"
+                f"{start.get('character', 0) + 1}{encoding_note}"
+            )
+        self._append_page_notice(lines, total, len(returned), offset, page)
         return LspResult(
-            operation="locations", summary="\n".join(lines), locations=items[:50]
+            operation="locations",
+            summary="\n".join(lines),
+            locations=returned,
+            total_count=total,
+            returned_count=len(returned),
+            was_truncated=offset > 0 or len(returned) < total,
+            has_more=page.has_more if page is not None else False,
+            page_offset=offset,
+            continuation_token=page.continuation_token if page is not None else None,
         )
 
     def _format_hover(self, raw: Any) -> LspResult:
@@ -717,55 +1059,236 @@ class Lsp(
     def _format_symbols(
         self, label: str, raw: Any, query: str | None = None
     ) -> LspResult:
-        if not raw:
-            return LspResult(operation="symbols", summary=f"{label}: none found.")
-        items = list(raw)
-        if query:
-            items = sorted(items, key=lambda s: self._symbol_rank(s, query))
-        names: list[str] = []
-        lines: list[str] = [f"{label} ({len(items)}):"]
-        for sym in items[:100]:
-            if "name" in sym:
-                name = str(sym.get("name", ""))
-                names.append(name)
-                container = sym.get("containerName")
-                suffix = f" in {container}" if container else ""
-                loc = sym.get("location") or {}
-                start = ((loc.get("range") or {}).get("start")) or {}
-                coord = (
-                    f" at {path_from_uri(loc.get('uri', ''))}:"
-                    f"{start.get('line', 0) + 1}"
-                    if loc
-                    else ""
-                )
-                lines.append(f"  {name}{suffix}{coord}")
-            elif "selectionRange" in sym:
-                name = str(sym.get("name", ""))
-                names.append(name)
-                rng = sym.get("selectionRange") or {}
-                start = rng.get("start") or {}
-                lines.append(f"  {name} at :{start.get('line', 0) + 1}")
-        return LspResult(
-            operation="symbols", summary="\n".join(lines), symbol_names=names
+        return self._format_symbol_records(
+            label, normalize_document_symbols(raw, ""), query=query
         )
 
-    def _format_call_items(self, label: str, raw: Any) -> LspResult:
+    def _format_symbol_records(
+        self, label: str, records: list[NormalizedSymbol], query: str | None = None
+    ) -> LspResult:
+        if not records:
+            return LspResult(
+                operation="symbols",
+                summary=f"{label}: none found.",
+                total_count=0,
+                returned_count=0,
+            )
+        items = list(records)
+        if query:
+            items = sorted(
+                items,
+                key=lambda symbol: self._normalized_symbol_sort_key(symbol, query),
+            )
+        symbols = [self._symbol_dict(symbol) for symbol in items]
+        return self._format_symbol_dicts(label, symbols, query=None)
+
+    def _page_symbol_records(
+        self,
+        label: str,
+        records: list[NormalizedSymbol],
+        *,
+        binding: LspQueryBinding,
+        continuation_token: str | None,
+        query: str | None = None,
+    ) -> LspResult:
+        items = list(records)
+        if query:
+            items.sort(
+                key=lambda symbol: self._normalized_symbol_sort_key(symbol, query)
+            )
+        page = self._page_items(
+            [self._symbol_dict(symbol) for symbol in items],
+            binding=binding,
+            continuation_token=continuation_token,
+            page_size=_MAX_SYMBOL_RESULTS,
+        )
+        return self._format_symbol_dicts(label, list(page.items), page=page)
+
+    def _format_symbol_dicts(
+        self,
+        label: str,
+        symbols: list[dict[str, Any]],
+        *,
+        query: str | None = None,
+        page: LspContinuationPage | None = None,
+    ) -> LspResult:
+        if query:
+            symbols = sorted(
+                symbols, key=lambda symbol: self._symbol_rank(symbol, query)
+            )
+        returned = symbols if page is not None else symbols[:_MAX_SYMBOL_RESULTS]
+        total = page.total_count if page is not None else len(symbols)
+        offset = page.offset if page is not None else 0
+        names = [str(symbol.get("name", "")) for symbol in returned]
+        lines = [self._counted_header(label, total, len(returned), offset=offset)]
+        for symbol in returned:
+            container = symbol.get("container_name")
+            suffix = f" in {container}" if container else ""
+            path = path_from_uri(str(symbol.get("uri", "")))
+            selection_range = symbol.get("selection_range")
+            if isinstance(selection_range, dict):
+                start = selection_range.get("start") or {}
+                encoding_note = (
+                    " [UTF-16 column]"
+                    if symbol.get("position_encoding") == "utf-16"
+                    else ""
+                )
+                coord = (
+                    f" at {path}:{int(start.get('line', 0)) + 1}:"
+                    f"{int(start.get('character', 0)) + 1}{encoding_note}"
+                )
+            else:
+                coord = f" at {path}" if path else " (position unavailable)"
+            indent = "  " * (int(symbol.get("depth", 0)) + 1)
+            lines.append(f"{indent}{symbol.get('name', '')}{suffix}{coord}")
+        self._append_page_notice(lines, total, len(returned), offset, page)
+        return LspResult(
+            operation="symbols",
+            summary="\n".join(lines),
+            symbol_names=names,
+            symbols=returned,
+            total_count=total,
+            returned_count=len(returned),
+            was_truncated=offset > 0 or len(returned) < total,
+            has_more=page.has_more if page is not None else False,
+            page_offset=offset,
+            continuation_token=page.continuation_token if page is not None else None,
+        )
+
+    @staticmethod
+    def _symbol_dict(symbol: NormalizedSymbol) -> dict[str, Any]:
+        selection_range = symbol.selection_range
+        return {
+            "name": symbol.name,
+            "kind": symbol.kind,
+            "detail": symbol.detail,
+            "uri": symbol.uri,
+            "selection_range": (
+                {
+                    "start": {
+                        "line": selection_range.start.line,
+                        "character": selection_range.start.character,
+                    },
+                    "end": {
+                        "line": selection_range.end.line,
+                        "character": selection_range.end.character,
+                    },
+                }
+                if selection_range is not None
+                else None
+            ),
+            "depth": symbol.depth,
+            "container_path": list(symbol.container_path),
+            "container_name": symbol.container_name,
+            "hierarchical": symbol.hierarchical,
+            "position_encoding": symbol.position_encoding,
+        }
+
+    async def _normalize_symbols(
+        self, raw: Any, document_uri: str
+    ) -> list[NormalizedSymbol]:
+        symbols = normalize_document_symbols(raw, document_uri)
+        texts: dict[str, str | None] = {}
+        normalized: list[NormalizedSymbol] = []
+        for symbol in symbols:
+            uri = symbol.uri
+            if uri not in texts:
+                path = Path(path_from_uri(uri))
+                if not uri.startswith("file:") or not path.is_file():
+                    texts[uri] = None
+                else:
+                    try:
+                        texts[uri] = (await read_safe_async(path)).text
+                    except OSError:
+                        texts[uri] = None
+            text = texts[uri]
+            if text is None or symbol.selection_range is None:
+                normalized.append(symbol)
+                continue
+            try:
+                selection_range = utf16_range_to_codepoint(text, symbol.selection_range)
+            except (TypeError, ValueError):
+                normalized.append(symbol)
+                continue
+            normalized.append(
+                replace(
+                    symbol,
+                    selection_range=selection_range,
+                    position_encoding="unicode-codepoint",
+                )
+            )
+        return normalized
+
+    def _format_call_items(
+        self, label: str, raw: Any, *, page: LspContinuationPage | None = None
+    ) -> LspResult:
         if not raw:
             return LspResult(
-                operation="call_hierarchy", summary=f"{label}: none at position."
+                operation="call_hierarchy",
+                summary=f"{label}: none at position.",
+                total_count=0,
+                returned_count=0,
             )
-        lines = [f"{label} ({len(raw)}):"]
-        for item in raw[:50]:
+        items = list(raw)
+        returned = items if page is not None else items[:_MAX_CALL_RESULTS]
+        total = page.total_count if page is not None else len(items)
+        offset = page.offset if page is not None else 0
+        lines = [self._counted_header(label, total, len(returned), offset=offset)]
+        for item in returned:
             name = item.get("name", "?")
             uri = item.get("uri") or (item.get("data") or {}).get("uri", "")
             rng = item.get("range") or {}
             start = rng.get("start") or {}
             lines.append(f"  {name} at {path_from_uri(uri)}:{start.get('line', 0) + 1}")
+        self._append_page_notice(lines, total, len(returned), offset, page)
         return LspResult(
             operation="call_hierarchy",
             summary="\n".join(lines),
-            locations=list(raw[:50]),
+            locations=returned,
+            total_count=total,
+            returned_count=len(returned),
+            was_truncated=offset > 0 or len(returned) < total,
+            has_more=page.has_more if page is not None else False,
+            page_offset=offset,
+            continuation_token=page.continuation_token if page is not None else None,
         )
+
+    @staticmethod
+    def _counted_header(
+        label: str, total: int, returned: int, *, offset: int = 0
+    ) -> str:
+        if total == returned and offset == 0:
+            return f"{label} ({total}):"
+        if returned == 0:
+            return f"{label} ({total} total; page at offset {offset} is empty):"
+        return f"{label} ({total} total; showing {offset + 1}–{offset + returned}):"
+
+    @staticmethod
+    def _append_truncation_notice(lines: list[str], total: int, returned: int) -> None:
+        omitted = total - returned
+        if omitted > 0:
+            lines.append(
+                f"  [truncated: {omitted} omitted; do not assume complete coverage]"
+            )
+
+    @classmethod
+    def _append_page_notice(
+        cls,
+        lines: list[str],
+        total: int,
+        returned: int,
+        offset: int,
+        page: LspContinuationPage | None,
+    ) -> None:
+        if page is None:
+            cls._append_truncation_notice(lines, total, returned)
+            return
+        if page.continuation_token is not None:
+            remaining = total - offset - returned
+            lines.append(
+                f"  [{remaining} more result(s); repeat the exact query with "
+                "continuation_token to continue]"
+            )
 
     @staticmethod
     def _as_location_list(raw: Any) -> list[dict[str, Any]]:
@@ -790,6 +1313,59 @@ class Lsp(
             out.extend(Lsp._as_location_list(item))
         return out
 
+    async def _normalize_location_positions(
+        self, locations: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        texts: dict[str, str | None] = {}
+        normalized: list[dict[str, Any]] = []
+        for location in locations:
+            uri = str(
+                location.get("uri", "") or (location.get("data") or {}).get("uri", "")
+            )
+            range_keys = [
+                key
+                for key in ("range", "selectionRange")
+                if isinstance(location.get(key), dict)
+            ]
+            if not uri or not range_keys:
+                normalized.append(location)
+                continue
+            if uri not in texts:
+                path = Path(path_from_uri(uri))
+                if not uri.startswith("file:") or not path.is_file():
+                    texts[uri] = None
+                else:
+                    try:
+                        texts[uri] = (await read_safe_async(path)).text
+                    except OSError:
+                        texts[uri] = None
+            text = texts[uri]
+            if text is None:
+                normalized.append({**location, "position_encoding": "utf-16"})
+                continue
+            converted_location = dict(location)
+            try:
+                for key in range_keys:
+                    converted = utf16_range_to_codepoint(
+                        text, Range.from_lsp(location.get(key))
+                    )
+                    converted_location[key] = {
+                        "start": {
+                            "line": converted.start.line,
+                            "character": converted.start.character,
+                        },
+                        "end": {
+                            "line": converted.end.line,
+                            "character": converted.end.character,
+                        },
+                    }
+            except (TypeError, ValueError):
+                normalized.append({**location, "position_encoding": "utf-16"})
+                continue
+            converted_location["position_encoding"] = "unicode-codepoint"
+            normalized.append(converted_location)
+        return normalized
+
     def _result_cache_get(self, key: tuple[Any, ...]) -> tuple[float, LspResult] | None:
         cache = getattr(self, "_result_cache_store", None)
         if cache is None:
@@ -804,7 +1380,59 @@ class Lsp(
                 self._result_cache_store = cache
             except AttributeError:
                 return
+        if key not in cache and len(cache) >= _RESULT_CACHE_MAX_ENTRIES:
+            cache.pop(next(iter(cache)))
         cache[key] = (time.monotonic(), result)
+
+    def _continuation_store(self) -> LspContinuationStore:
+        store = getattr(self, "_lsp_continuation_store", None)
+        if store is None:
+            store = LspContinuationStore()
+            self._lsp_continuation_store = store
+        return store
+
+    @staticmethod
+    def _query_binding(
+        manager: Any, args: LspArgs, file_path: str | None, ctx: InvokeContext | None
+    ) -> LspQueryBinding:
+        task_hash = (
+            ctx.task_contract.brief_hash
+            if ctx is not None and ctx.task_contract is not None
+            else None
+        )
+        root_path = getattr(manager, "root_path", None)
+        return LspQueryBinding(
+            operation=args.operation.value,
+            file_path=file_path,
+            line=args.line,
+            character=args.character,
+            query=args.query,
+            session_id=ctx.session_id if ctx is not None else None,
+            task_brief_hash=task_hash,
+            lsp_generation=getattr(manager, "generation", current_lsp_generation()),
+            workspace_root=str(root_path) if root_path is not None else str(Path.cwd()),
+        )
+
+    def _page_items(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        binding: LspQueryBinding,
+        continuation_token: str | None,
+        page_size: int,
+    ) -> LspContinuationPage:
+        store = self._continuation_store()
+        try:
+            if continuation_token is None:
+                return store.first_page(binding, items, page_size=page_size)
+            try:
+                return store.get_page(continuation_token, binding)
+            except LspContinuationReloadRequired:
+                return store.get_page(continuation_token, binding, reloaded_items=items)
+        except LspContinuationError as exc:
+            raise ToolError(str(exc)) from exc
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
 
     _GIT_CHECK_BATCH = 50
     _GIT_CHECK_TIMEOUT = 5.0
@@ -952,12 +1580,7 @@ class Lsp(
         return str(contents).strip()
 
     def _resolve_path(self, raw_path: str) -> str:
-        if not raw_path.strip():
-            raise ToolError("file_path cannot be empty")
-        path = Path(raw_path).expanduser()
-        if not path.is_absolute():
-            path = Path.cwd() / path
-        path = path.resolve()
+        path = Path(self._resolve_readiness_path(raw_path))
         if not path.exists():
             raise ToolError(f"File not found at: {path}")
         if path.is_dir():
@@ -971,8 +1594,20 @@ class Lsp(
         return str(path)
 
     @staticmethod
+    def _resolve_readiness_path(raw_path: str) -> str:
+        if not raw_path.strip():
+            raise ToolError("file_path cannot be empty")
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        path = path.resolve()
+        enforce_team_metadata_confine(path)
+        enforce_isolated_confine(path)
+        return str(path)
+
+    @staticmethod
     def _validate_position(path: Path, line: int, character: int, text: str) -> None:
-        lines = text.splitlines()
+        lines = split_lsp_lines(text)
         line_count = len(lines)
         if line < 1 or line > line_count:
             raise ToolError(
@@ -990,7 +1625,7 @@ class Lsp(
 
     @staticmethod
     def _symbol_rank(sym: Any, query: str) -> tuple[int, str]:
-        name = str(sym.get("name", "")) if isinstance(sym, dict) else ""
+        name = str(sym.get("name", "")) if isinstance(sym, dict) else str(sym)
         lower = name.lower()
         ql = query.lower()
         if lower == ql:
@@ -1004,6 +1639,24 @@ class Lsp(
         if lower.startswith("test_") or lower.startswith("test "):
             tier += 10
         return tier, lower
+
+    @classmethod
+    def _normalized_symbol_sort_key(
+        cls, symbol: NormalizedSymbol, query: str
+    ) -> tuple[int, str, str, int, int, str, int]:
+        tier, name = cls._symbol_rank(symbol.name, query)
+        start = (
+            symbol.selection_range.start if symbol.selection_range is not None else None
+        )
+        return (
+            tier,
+            name,
+            symbol.uri,
+            start.line if start is not None else -1,
+            start.character if start is not None else -1,
+            symbol.container_name or "",
+            symbol.kind if symbol.kind is not None else -1,
+        )
 
     @classmethod
     def format_call_display(cls, args: LspArgs) -> ToolCallDisplay:

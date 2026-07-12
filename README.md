@@ -802,6 +802,10 @@ stay fixed or become earlier. `/spend` shows the current envelope. `/spend reset
 starts a durably recorded fresh ledger without clearing conversation history;
 an existing team manager uses the new ledger for later teammates.
 
+A positive `max_concurrent_calls` limit is backpressure, not budget exhaustion:
+agents, workflow/task subagents, and attached team processes queue until an
+active paid call settles. Set it to `0` only to deny paid-call admission.
+
 The default $10, 512-call, two-concurrent-call, 16-retry, and 32,768-token
 per-call output controls remain finite. Missing provider usage is charged at the
 reservation estimate. Models without configured or built-in prices use the
@@ -1114,7 +1118,7 @@ tool_timeout_sec = 120
 
 Vibe can talk to language servers for semantic code intelligence: go-to-definition, find-references, hover, document/workspace symbols, implementation lookup, and call hierarchy. It also surfaces diagnostics (errors, warnings) from the server into the agent's next turn after you edit a file, so the model sees compile/type errors without an explicit tool call.
 
-The feature is **opt-in**. Install it with `/lspstall` (run `/unlspstall` to remove). Then declare one `[[lsp_servers]]` entry per language you want supported. Each entry owns one or more file extensions; declare one entry per language. The server binary must be on your `PATH` — Vibe does not install language servers for you.
+The feature is **opt-in**. Install it with `/lspstall` (run `/unlspstall` to remove). Vibe auto-discovers installed builtin servers from project manifests; use `[[lsp_servers]]` entries for custom definitions. Each entry owns one or more file extensions. The server binary must be on your `PATH` — Vibe does not install language servers for you.
 
 ```toml
 # Python via pyright (npm install -g pyright  OR  pip install pyright)
@@ -1148,7 +1152,18 @@ Key fields:
 - `root_uri`: Workspace root URI (defaults to the current project directory).
 - `startup_timeout_sec` (default 20), `request_timeout_sec` (default 10).
 
-Once configured, the `lsp` tool becomes available to the model and `/lsp` shows server state. Diagnostics published by servers are automatically surfaced to the model on the next turn after any `edit` or `write_file` call.
+Server probes and subprocesses inherit a restricted execution/toolchain environment instead of the full host environment. Put any additional variables a server needs in its `env` map. Because language servers do not yet run inside the OS process sandbox, `lsp` is unavailable in parent-spawned isolated-worktree subagents and workflows (ordinary top-level programmatic worktrees are unaffected); those agents use `read`, `grep`, and `glob`.
+
+Once configured, the `lsp` tool becomes available to the model. `lsp status`
+reports live readiness for an optional file, while `/lsp` shows the same server
+state, extension coverage, advertised operations, and errors. Semantic result
+sets are losslessly paged with opaque continuation tokens, nested document
+symbols retain their hierarchy, and human code-point columns are converted to
+the protocol's UTF-16 positions. Nearest manifest roots select distinct server
+instances in monorepos. Continuation tokens are short-lived and bound to the
+current session, task scope, workspace, and LSP manager generation; an invalid
+or expired token restarts from the original query. Diagnostics published by servers are automatically
+surfaced to the model on the next turn after any `edit` or `write_file` call.
 
 ### Hooks (Experimental)
 

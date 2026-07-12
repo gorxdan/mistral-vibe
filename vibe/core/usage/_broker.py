@@ -91,8 +91,14 @@ class SpendBroker:
         plan: PromptReservationPlan,
         *,
         lease_s: float = DEFAULT_RESERVATION_LEASE_S,
+        record_concurrency_rejection: bool = True,
     ) -> SpendReservation | SpendRejection:
-        return self._ledger.try_reserve_prompt(context, plan, lease_s=lease_s)
+        return self._ledger.try_reserve_prompt(
+            context,
+            plan,
+            lease_s=lease_s,
+            record_concurrency_rejection=record_concurrency_rejection,
+        )
 
     def reconcile(
         self,

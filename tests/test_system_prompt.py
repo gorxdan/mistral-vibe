@@ -109,8 +109,12 @@ def test_default_tier_is_large() -> None:
     assert default == large
 
 
-def test_orchestration_section_present_in_normal_mode() -> None:
+def test_orchestration_section_present_in_normal_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "vibe.core.system_prompt.lsp_running_extensions", lambda: (".py",)
+    )
     config = build_test_vibe_config(
+        installed_components=["lsp"],
         system_prompt_id="tests",
         include_project_context=False,
         include_prompt_detail=True,
@@ -146,8 +150,31 @@ def test_orchestration_section_present_in_normal_mode() -> None:
     assert "le chaton effort mode" not in prompt
 
 
-def test_le_chaton_requires_local_reconnaissance_before_workflows() -> None:
+def test_orchestration_section_uses_grep_when_lsp_is_unavailable() -> None:
     config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+    )
+    tool_manager = ToolManager(lambda: config)
+    prompt = get_universal_system_prompt(
+        tool_manager, config, SkillManager(lambda: config), AgentManager(lambda: config)
+    )
+
+    assert "locate central symbols and callers with `grep`" in prompt
+    assert "symbols and callers with `lsp`" not in prompt
+    assert "`read`/`grep`/`glob` directly" in prompt
+
+
+def test_le_chaton_requires_local_reconnaissance_before_workflows(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "vibe.core.system_prompt.lsp_running_extensions", lambda: (".py",)
+    )
+    config = build_test_vibe_config(
+        installed_components=["lsp"],
         system_prompt_id="tests",
         include_project_context=False,
         include_prompt_detail=True,
@@ -171,6 +198,27 @@ def test_le_chaton_requires_local_reconnaissance_before_workflows() -> None:
     # workflow path must carry the same narrow-brief steer as the task-tool prose
     assert "give each agent one question" in prompt
     assert "breadth comes from more agents, not bigger prompts" in prompt
+
+
+def test_le_chaton_reconnaissance_uses_grep_without_lsp() -> None:
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+        effort_mode="le-chaton",
+    )
+    prompt = get_universal_system_prompt(
+        ToolManager(lambda: config),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+    )
+
+    assert "First use local `glob` and `grep`" in prompt
+    assert "First use local `glob` and `lsp`" not in prompt
 
 
 def test_le_chaton_recovery_and_monitor_prose_moved_to_workflow_skill() -> None:
@@ -313,7 +361,13 @@ def test_debugger_subagent_registered_with_systematic_prompt() -> None:
 
     debugger = BUILTIN_AGENTS[BuiltinAgentName.DEBUGGER]
     assert debugger.agent_type == AgentType.SUBAGENT
-    assert debugger.overrides["enabled_tools"] == ["read", "grep", "lsp", "bash"]
+    assert debugger.overrides["enabled_tools"] == [
+        "read",
+        "grep",
+        "glob",
+        "lsp",
+        "bash",
+    ]
     assert debugger.overrides["system_prompt_id"] == "debugger"
 
     # The dedicated prompt embeds the systematic debugging methodology
@@ -335,10 +389,10 @@ def test_planner_security_editor_registered() -> None:
     from vibe.core.prompts import load_system_prompt
 
     expected = {
-        "planner": (["read", "grep", "lsp"], "Clarify the goal"),
-        "security": (["read", "grep", "lsp", "bash"], "threat-model"),
+        "planner": (["read", "grep", "glob", "lsp"], "Clarify the goal"),
+        "security": (["read", "grep", "glob", "lsp", "bash"], "threat-model"),
         "editor": (
-            ["read", "grep", "lsp", "write_file", "edit"],
+            ["read", "grep", "glob", "lsp", "write_file", "edit"],
             "Read before editing",
         ),
     }
@@ -515,7 +569,9 @@ def test_current_date_placeholder_substituted_in_prompt() -> None:
     assert "$current_date" not in prompt
 
 
-def test_lsp_priority_section_absent_unless_lsp_installed() -> None:
+def test_lsp_priority_section_requires_exposure_and_running_coverage(
+    monkeypatch,
+) -> None:
     common = {
         "system_prompt_id": "tests",
         "include_project_context": False,
@@ -536,10 +592,20 @@ def test_lsp_priority_section_absent_unless_lsp_installed() -> None:
     assert heading not in prompt_off
 
     on = build_test_vibe_config(installed_components=["lsp"], **common)
+    prompt_cold = get_universal_system_prompt(
+        ToolManager(lambda: on), on, SkillManager(lambda: on), AgentManager(lambda: on)
+    )
+    assert heading not in prompt_cold
+
+    monkeypatch.setattr(
+        "vibe.core.system_prompt.lsp_running_extensions", lambda: (".py", ".pyi")
+    )
     prompt_on = get_universal_system_prompt(
         ToolManager(lambda: on), on, SkillManager(lambda: on), AgentManager(lambda: on)
     )
     assert heading in prompt_on
+    assert "running language-server route for `.py`, `.pyi`" in prompt_on
+    assert "use only an advertised operation" in prompt_on
     # Trigger→action pairs: the question names the lsp operation, not emphasis.
     assert "who calls X / what does X call" in prompt_on
     assert "where is X defined / what type is X" in prompt_on
@@ -612,7 +678,13 @@ def test_verifier_subagent_registered_with_verdict_prompt() -> None:
 
     verifier = BUILTIN_AGENTS[BuiltinAgentName.VERIFIER]
     assert verifier.agent_type == AgentType.SUBAGENT
-    assert verifier.overrides["enabled_tools"] == ["read", "grep", "lsp", "bash"]
+    assert verifier.overrides["enabled_tools"] == [
+        "read",
+        "grep",
+        "glob",
+        "lsp",
+        "bash",
+    ]
     assert verifier.overrides["system_prompt_id"] == "verifier"
 
     sp = load_system_prompt("verifier")

@@ -21,6 +21,7 @@ from vibe.core.lsp._types import (
     Position,
     Range,
     ServerState,
+    path_from_uri,
 )
 
 
@@ -208,7 +209,9 @@ def test_method_not_found_surfaces_actionable_tool_error(monkeypatch, tmp_path) 
     )
     monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
 
-    async def fake_dispatch(self, manager, args, file_path, position):
+    async def fake_dispatch(
+        self, manager, args, file_path, position, binding=None, ctx=None
+    ):
         raise LSPProtocolError("method not found", code=-32601)
 
     monkeypatch.setattr(Lsp, "_dispatch", fake_dispatch)
@@ -280,7 +283,9 @@ def test_method_not_found_implementation_does_not_promise_caller_callee(
     )
     monkeypatch.setattr(Lsp, "_lsp_installed", staticmethod(lambda: True))
 
-    async def fake_dispatch(self, manager, args, file_path, position):
+    async def fake_dispatch(
+        self, manager, args, file_path, position, binding=None, ctx=None
+    ):
         raise LSPProtocolError("method not found", code=-32601)
 
     monkeypatch.setattr(Lsp, "_dispatch", fake_dispatch)
@@ -874,6 +879,19 @@ def test_jsonrpc_trace_flag_is_off_by_default(monkeypatch) -> None:
     assert jsonrpc_mod._TRACE is False
 
 
+def test_client_advertises_workspace_symbols_in_workspace_capabilities() -> None:
+    capabilities = LanguageServer._client_capabilities()
+
+    assert "symbol" in capabilities["workspace"]
+    assert "workspaceSymbol" not in capabilities["textDocument"]
+
+
+def test_path_from_uri_preserves_unc_authority() -> None:
+    assert path_from_uri("file://server/share/My%20File.py") == (
+        "//server/share/My File.py"
+    )
+
+
 @pytest.mark.asyncio
 async def test_filter_gitignored_drops_gitignored_locations(
     tmp_path, monkeypatch
@@ -970,7 +988,7 @@ def test_validate_position_rejects_line_beyond_file_end(tmp_path) -> None:
     f = tmp_path / "small.py"
     f.write_text("x = 1\ny = 2\n")
     tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
-    with pytest.raises(ToolError, match="line 99.*2 lines"):
+    with pytest.raises(ToolError, match="line 99.*3 lines"):
         tool._validate_position(f, 99, 1, "x = 1\ny = 2\n")
 
 
@@ -1168,6 +1186,41 @@ async def test_workspace_symbol_merges_ignoring_unsupported_server(monkeypatch) 
     result = collected[0]
     assert isinstance(result, LspResult)
     assert "PyClass" in result.summary
+
+
+def test_workspace_symbol_merge_preserves_same_name_at_distinct_ranges() -> None:
+    from vibe.core.tools.builtins.lsp import Lsp
+
+    def symbol(line: int) -> dict[str, Any]:
+        return {
+            "name": "overload",
+            "kind": 12,
+            "location": {
+                "uri": "file:///workspace/module.py",
+                "range": {
+                    "start": {"line": line, "character": 0},
+                    "end": {"line": line, "character": 8},
+                },
+            },
+        }
+
+    first = symbol(1)
+    second = symbol(5)
+    merged, supported = Lsp._merge_symbol_batches([[first, second], [first]])
+
+    assert supported
+    assert merged == [first, second]
+
+
+def test_workspace_symbol_merge_keeps_uri_only_entries_losslessly() -> None:
+    from vibe.core.tools.builtins.lsp import Lsp
+
+    symbol = {"name": "target", "location": {"uri": "file:///workspace/module.py"}}
+
+    merged, supported = Lsp._merge_symbol_batches([[symbol], [symbol]])
+
+    assert supported
+    assert merged == [symbol, symbol]
 
 
 @pytest.mark.asyncio

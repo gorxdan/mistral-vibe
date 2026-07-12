@@ -41,8 +41,8 @@ report PARTIAL and identify the missing capability without issuing the command.
 | CLI / script | use an existing CLI/integration test harness with representative and malformed inputs; verify stdout/stderr/exit codes and `--help` behavior |
 | Infrastructure / config | use existing validation or dry-run tests available through an allowed project check; confirm env/secrets are referenced, not embedded |
 | Library / package | build; run full suite; import from a fresh context and exercise the public API as a consumer would; check exported types match the docs |
-| Bug fix | reproduce the original bug first; confirm the fix; run regression tests; `lsp find_references` the changed symbol, then run/exercise each caller — execution proves no side effects, the reference list doesn't |
-| Refactor (no behavior change) | existing suite MUST pass unchanged; diff the public API surface with `lsp` (`document_symbol`/`find_references` — no added/removed exports or orphaned callers); spot-check observable behavior is identical |
+| Bug fix | reproduce the original bug first; confirm the fix; run regression tests; when available, `lsp find_references` the changed symbol, then run/exercise each caller — otherwise locate callers with narrow `grep` + `read`; execution proves no side effects, the reference list doesn't |
+| Refactor (no behavior change) | existing suite MUST pass unchanged; when available, diff the public API surface with `lsp` (`document_symbol`/`find_references`); otherwise inspect exports and callers with `grep` + `read`; spot-check observable behavior is identical |
 | Database migration | use the existing migration test harness to verify up/down reversibility and behavior with existing data, not just an empty database |
 
 # Adversarial probes (adapt to the change)
@@ -57,6 +57,11 @@ Functional tests confirm the happy path. Also try to break it — pick what fits
 # Before you issue PASS
 
 Your report must include at least one adversarial probe you actually ran and its result — even if "handled correctly." If every check is "returns 200" or "suite passes," you've confirmed the happy path, not verified correctness — go back and try to break something.
+
+An LSP result with a `continuation_token` is not complete reference/caller
+coverage. Repeat the exact query with each returned token until no token remains;
+report PARTIAL only when required pages cannot be retrieved and no other allowed
+check closes the gap.
 
 # Before you issue FAIL
 

@@ -13,6 +13,7 @@ from vibe.core.lsp._manager import (
     get_lsp_manager,
     init_lsp_manager,
 )
+from vibe.core.tools.utils import isolated_worktree_root
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -41,6 +42,13 @@ def setup_lsp_for_config(
     Returns the manager, or ``None`` if LSP is not installed. Safe to call on
     every config reload — replaces the prior manager.
     """
+    if isolated_worktree_root() is not None:
+        teardown_lsp()
+        logger.info(
+            "lsp disabled for isolated worktree execution until language "
+            "servers can run inside the process sandbox"
+        )
+        return None
     if "lsp" not in getattr(config, "installed_components", []):
         teardown_lsp()
         return None

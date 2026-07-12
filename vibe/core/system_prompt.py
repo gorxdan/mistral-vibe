@@ -26,6 +26,7 @@ from vibe.core.config import VibeConfig
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.experiments import ExperimentName
 from vibe.core.logger import logger
+from vibe.core.lsp._integration import running_extensions as lsp_running_extensions
 from vibe.core.paths import VIBE_HOME
 from vibe.core.prompts import MissingPromptFileError, UtilityPrompt, load_system_prompt
 from vibe.core.utils import (
@@ -362,12 +363,14 @@ land on a branch you inspect and merge. Use them for workflow-scale edits or \
 when isolation is the point; for a one-off edit, edit directly."""
 
 
-def _get_orchestration_section() -> str:
-    """Normal-mode orchestration directive — instructs the host to delegate
-    cross-file investigation/review to subagents via the task tool. Shown
-    whenever subagents exist (le-chaton layers workflows on top of this).
-    """
-    return _ORCHESTRATION_SECTION
+def _get_orchestration_section(tool_manager: ToolManager) -> str:
+    """Normal-mode orchestration guidance using only callable local tools."""
+    if _live_lsp_extensions(tool_manager):
+        return _ORCHESTRATION_SECTION
+    return _ORCHESTRATION_SECTION.replace(
+        "resolve central symbols and callers with `lsp`",
+        "locate central symbols and callers with `grep`",
+    ).replace("`read`/`grep`/`lsp`", "`read`/`grep`/`glob`")
 
 
 def _get_verification_contract_section(*, trusted_recipe: bool = False) -> str:
@@ -500,25 +503,26 @@ def _get_headless_section() -> str:
 
 
 def _get_lsp_priority_section(tool_manager: ToolManager) -> str:
-    """Symbol-level routing, gated on the ``lsp`` tool being registered.
+    """Symbol routing gated on tool exposure and live server readiness.
 
-    Gate is ``"lsp" in tool_manager.manifest_tools`` — the precondition for
-    teaching lsp routing is that the tool is present and callable, which the
-    manifest reflects. LSP enters the manifest only once the user opts in via
-    ``/lspstall`` (``Lsp.is_available`` checks ``installed_components``), so the
-    two gates coincide today; gating on the manifest stays correct if that
-    contract ever decouples and avoids advertising a tool that isn't there.
     Trigger→action pairs over emphasis prose: the "hard requirement" layer did
     not move usage, but pairing the question to the operation does.
     """
-    if "lsp" not in tool_manager.manifest_tools:
+    extensions = _live_lsp_extensions(tool_manager)
+    if not extensions:
         return ""
+    coverage = ", ".join(f"`{extension}`" for extension in extensions)
     return (
         "## LSP is available — use it for symbol-level work\n\n"
-        "A language server is running for this project's languages. `grep` and "
-        "`read` only see raw text; `lsp` resolves imports, re-exports, aliases, "
-        "overloads, and generated code they miss. Before reasoning about a "
-        "symbol, use the `lsp` operation that answers the question:\n\n"
+        f"The `lsp` tool has at least one running language-server route for {coverage}. "
+        "A nested workspace can select a different route, so use `status` with "
+        "the target file when exact readiness matters. The status response lists "
+        "the operations that route actually advertises; use only an advertised "
+        "operation. "
+        "`grep` and `read` only see raw text; a matching "
+        "language server resolves imports, re-exports, aliases, overloads, and "
+        "generated code they miss. Before reasoning about a symbol, use the "
+        "supported `lsp` operation that answers the question:\n\n"
         "- where is X defined / what type is X → `go_to_definition` / `hover`\n"
         "- who calls X / what does X call → `find_references` / "
         "`incoming_calls` / `outgoing_calls`\n"
@@ -527,9 +531,15 @@ def _get_lsp_priority_section(tool_manager: ToolManager) -> str:
         "- implementations of an interface → `go_to_implementation`\n\n"
         "`grep` stays for literal text (error messages, log lines, string "
         "literals, config values, regex); `glob` finds files by name. If `lsp` "
-        "reports no server for an extension, that language isn't configured — "
+        "reports no matching ready provider, that route cannot answer the query — "
         "fall back to `grep` only then."
     )
+
+
+def _live_lsp_extensions(tool_manager: ToolManager) -> tuple[str, ...]:
+    if "lsp" not in tool_manager.manifest_tools:
+        return ()
+    return lsp_running_extensions()
 
 
 def _get_config_reference_section() -> str:
@@ -639,7 +649,7 @@ def _build_prompt_detail_sections(
     if subagents_section:
         sections.append(subagents_section)
         if section_enabled(tier, "orchestration_prose"):
-            sections.append(_get_orchestration_section())
+            sections.append(_get_orchestration_section(tool_manager))
         if getattr(config, "verification_subsystem", True):
             trusted_recipe = config.trusted_verification_recipe is not None
             sections.append(
@@ -771,7 +781,7 @@ def get_universal_system_prompt(
         and not getattr(config, "disable_workflows", False)
         and section_enabled(tier, "le_chaton_long")
     ):
-        sections.append(_get_le_chaton_section())
+        sections.append(_get_le_chaton_section(tool_manager))
 
     from vibe.core.tools.utils import isolated_worktree_root
     from vibe.core.worktree.manager import worktree_manager
@@ -834,7 +844,12 @@ def get_universal_system_prompt(
     return "\n\n".join(sections)
 
 
-def _get_le_chaton_section() -> str:
+def _get_le_chaton_section(tool_manager: ToolManager) -> str:
+    discovery_tools = (
+        "`glob` and `lsp`"
+        if _live_lsp_extensions(tool_manager)
+        else "`glob` and `grep`"
+    )
     return (
         "## Le Chaton Mode\n\n"
         "Max thinking + workflow orchestration. For substantive tasks "
@@ -842,7 +857,7 @@ def _get_le_chaton_section() -> str:
         "multi-file refactors), write a workflow script that orchestrates "
         "parallel agents instead of working turn-by-turn. Do not launch a "
         "workflow as the first repository-discovery step. First use local "
-        "`glob` and `lsp` to map the repository, identify central symbols and "
+        f"{discovery_tools} to map the repository, identify central symbols and "
         "callers, and read entry points. A broad label such as 'analyze this "
         "repo' does not by itself justify a workflow. File count alone is not "
         "a reason to delegate; prefer a workflow after reconnaissance when 3+ "

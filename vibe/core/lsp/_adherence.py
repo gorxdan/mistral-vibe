@@ -18,18 +18,25 @@ opened, recording is a silent no-op, never a crash.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import logging
 from logging.handlers import RotatingFileHandler
+from typing import TYPE_CHECKING
 
 from vibe.core.logger import StructuredLogFormatter
 from vibe.core.paths import LOG_DIR
 
-_COUNTS: dict[str, int] = {
-    "symbol_grep_miss": 0,
-    "lsp_call": 0,
-    # Consecutive misses since last lsp hit; resets on record_lsp_call.
-    "consecutive_symbol_grep_miss": 0,
-}
+if TYPE_CHECKING:
+    from vibe.core.tools.base import InvokeContext
+
+
+def _new_counts() -> dict[str, int]:
+    return {"symbol_grep_miss": 0, "lsp_call": 0, "consecutive_symbol_grep_miss": 0}
+
+
+_COUNTS = _new_counts()
+_MAX_SCOPED_SESSIONS = 512
+_SCOPED_COUNTS: OrderedDict[tuple[str, str], dict[str, int]] = OrderedDict()
 
 # Soft NOTE below this; ESCALATION at/above (no intervening lsp call).
 ESCALATE_AFTER = 2
@@ -78,7 +85,57 @@ def _emit(message: str) -> None:
     _log.info(message)
 
 
-def record_symbol_grep_miss() -> int:
+def _scope_key(ctx: InvokeContext | None) -> tuple[str, str] | None:
+    if ctx is None:
+        return None
+    if ctx.session_id:
+        return ("session", ctx.session_id)
+    if ctx.session_dir is not None:
+        return ("session_dir", str(ctx.session_dir))
+    return ("tool_call", ctx.tool_call_id)
+
+
+def _counts_for(ctx: InvokeContext | None) -> dict[str, int]:
+    key = _scope_key(ctx)
+    if key is None:
+        return _COUNTS
+    counts = _SCOPED_COUNTS.get(key)
+    if counts is None:
+        counts = _new_counts()
+        _SCOPED_COUNTS[key] = counts
+        while len(_SCOPED_COUNTS) > _MAX_SCOPED_SESSIONS:
+            _SCOPED_COUNTS.popitem(last=False)
+    else:
+        _SCOPED_COUNTS.move_to_end(key)
+    return counts
+
+
+def _log_value(value: object) -> str:
+    text = "_".join(str(value).split())
+    return text[:128]
+
+
+def _log_dimensions(ctx: InvokeContext | None) -> str:
+    if ctx is None:
+        return ""
+
+    dimensions: list[tuple[str, object]] = []
+    if ctx.session_id:
+        dimensions.append(("session", ctx.session_id))
+    if ctx.agent_manager is not None:
+        profile = getattr(ctx.agent_manager.active_profile, "name", None)
+        if profile is not None:
+            dimensions.append(("profile", profile))
+    if ctx.launch_context is not None:
+        entrypoint = getattr(ctx.launch_context, "agent_entrypoint", None)
+        if entrypoint is not None:
+            dimensions.append(("entrypoint", entrypoint))
+    if not dimensions:
+        return ""
+    return " " + " ".join(f"{name}={_log_value(value)}" for name, value in dimensions)
+
+
+def record_symbol_grep_miss(*, ctx: InvokeContext | None = None) -> int:
     """A grep ran for a symbol-shaped pattern while LSP was available.
 
     That is the routing miss this harness tries to reduce: lsp would have
@@ -86,50 +143,71 @@ def record_symbol_grep_miss() -> int:
 
     Returns the new consecutive-miss count (for hint escalation).
     """
-    _COUNTS["symbol_grep_miss"] += 1
-    _COUNTS["consecutive_symbol_grep_miss"] += 1
-    consecutive = _COUNTS["consecutive_symbol_grep_miss"]
-    _emit(f"lsp_adherence miss kind=symbol_grep consecutive={consecutive}")
+    counts = _counts_for(ctx)
+    counts["symbol_grep_miss"] += 1
+    counts["consecutive_symbol_grep_miss"] += 1
+    consecutive = counts["consecutive_symbol_grep_miss"]
+    _emit(
+        f"lsp_adherence miss kind=symbol_grep consecutive={consecutive}"
+        f"{_log_dimensions(ctx)}"
+    )
     return consecutive
 
 
-def record_lsp_call(operation: str) -> None:
+def record_lsp_call(
+    operation: str, *, ctx: InvokeContext | None = None, cache_hit: bool | None = None
+) -> None:
     """A successful lsp call — the intended choice for a symbol query."""
-    _COUNTS["lsp_call"] += 1
-    # Corrected path: clear the consecutive streak so the next miss is soft again.
-    _COUNTS["consecutive_symbol_grep_miss"] = 0
-    _emit(f"lsp_adherence hit op={operation}")
+    counts = _counts_for(ctx)
+    counts["lsp_call"] += 1
+    counts["consecutive_symbol_grep_miss"] = 0
+    cache_dimension = (
+        "" if cache_hit is None else f" cache_hit={str(cache_hit).lower()}"
+    )
+    _emit(
+        f"lsp_adherence hit op={_log_value(operation)}{cache_dimension}"
+        f"{_log_dimensions(ctx)}"
+    )
 
 
-def consecutive_symbol_grep_misses() -> int:
-    return _COUNTS["consecutive_symbol_grep_miss"]
+def consecutive_symbol_grep_misses(*, ctx: InvokeContext | None = None) -> int:
+    return _counts_for(ctx)["consecutive_symbol_grep_miss"]
 
 
-def should_escalate_symbol_grep() -> bool:
-    return _COUNTS["consecutive_symbol_grep_miss"] >= ESCALATE_AFTER
+def should_escalate_symbol_grep(*, ctx: InvokeContext | None = None) -> bool:
+    return consecutive_symbol_grep_misses(ctx=ctx) >= ESCALATE_AFTER
 
 
-def symbol_grep_hint(pattern: str, *, consecutive: int | None = None) -> str:
+def symbol_grep_hint(
+    pattern: str, *, consecutive: int | None = None, ctx: InvokeContext | None = None
+) -> str:
     """Model-visible routing hint after a symbol-shaped grep while LSP is up.
 
-    Bare identifiers → ``workspace_symbol`` first (no file/position needed).
-    Position-based ops only after a hit. Escalates after ``ESCALATE_AFTER``
-    consecutive misses without an intervening lsp call.
+    Bare identifiers use ``workspace_symbol`` first unless a bound task contract
+    requires file-scoped queries. Escalates after ``ESCALATE_AFTER`` consecutive
+    misses without an intervening lsp call.
     """
     n = (
         consecutive
         if consecutive is not None
-        else _COUNTS["consecutive_symbol_grep_miss"]
+        else consecutive_symbol_grep_misses(ctx=ctx)
     )
     bare = _is_bare_identifier(pattern)
-    first_step = (
-        f"`lsp` `workspace_symbol` query={pattern!r} (no file_path needed)"
-        if bare
-        else (
-            "`lsp` `workspace_symbol` for the name, or `go_to_definition` / "
-            "`find_references` once you have file_path + 1-based position"
+    if ctx is not None and ctx.task_contract is not None:
+        first_step = (
+            "`lsp` `document_symbol` with an in-scope file_path, or "
+            "`go_to_definition` / `find_references` with an in-scope file_path "
+            "+ 1-based position"
         )
-    )
+    else:
+        first_step = (
+            f"`lsp` `workspace_symbol` query={pattern!r} (no file_path needed)"
+            if bare
+            else (
+                "`lsp` `workspace_symbol` for the name, or `go_to_definition` / "
+                "`find_references` once you have file_path + 1-based position"
+            )
+        )
     if n >= ESCALATE_AFTER:
         return (
             f"ESCALATION: {n} consecutive symbol greps while LSP is available "
@@ -150,9 +228,9 @@ def _is_bare_identifier(pattern: str) -> bool:
     return bool(pattern) and pattern.isidentifier()
 
 
-def snapshot() -> dict[str, int]:
+def snapshot(*, ctx: InvokeContext | None = None) -> dict[str, int]:
     """Current session counters (copy). For tests and ad-hoc inspection."""
-    return dict(_COUNTS)
+    return dict(_counts_for(ctx))
 
 
 def reset_for_test() -> None:
@@ -163,5 +241,6 @@ def reset_for_test() -> None:
         _handler = None
     _handler_unavailable = False
     _enabled = True
+    _SCOPED_COUNTS.clear()
     for k in _COUNTS:
         _COUNTS[k] = 0

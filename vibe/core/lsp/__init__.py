@@ -8,6 +8,12 @@ from vibe.core.lsp._manager import (
     get_lsp_manager,
     init_lsp_manager,
 )
+from vibe.core.lsp._readiness import (
+    LSPReadinessSnapshot,
+    LSPReadinessState,
+    LSPServerReadiness,
+    build_lsp_readiness,
+)
 from vibe.core.lsp._registry import DiagnosticRegistry, format_diagnostics_for_model
 from vibe.core.lsp._server import LanguageServer, ServerConfig
 from vibe.core.lsp._stale import FILTERS_BY_SOURCE, StaleDiagnosticFilter
@@ -31,7 +37,10 @@ __all__ = [
     "LSPManager",
     "LSPNotConnectedError",
     "LSPProtocolError",
+    "LSPReadinessSnapshot",
+    "LSPReadinessState",
     "LSPServerCrashedError",
+    "LSPServerReadiness",
     "LSPServerSource",
     "LSPTimeoutError",
     "LanguageServer",
@@ -41,6 +50,7 @@ __all__ = [
     "ServerConfig",
     "ServerState",
     "StaleDiagnosticFilter",
+    "build_lsp_readiness",
     "clear_lsp_manager",
     "format_diagnostics_for_model",
     "get_lsp_manager",

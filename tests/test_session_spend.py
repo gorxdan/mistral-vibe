@@ -703,6 +703,195 @@ async def test_inflight_call_renews_lease_until_provider_finishes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_concurrency_saturation_queues_child_call(
+    tmp_path: Path, streaming: bool
+) -> None:
+    root = _adapter(tmp_path, max_calls=10, max_concurrent_calls=2)
+    host_gate = asyncio.Event()
+    child_gate = asyncio.Event()
+    host_backend = _CountingBackend(gate=host_gate)
+    first_backend = _CountingBackend(gate=child_gate)
+    second_backend = _CountingBackend()
+    first = root.child_agent(
+        group_kind=SpendScopeKind.WORKFLOW,
+        group_id="workflow:queue",
+        agent_id="agent:first",
+        purpose=SpendPurpose.WORKFLOW,
+    )
+    second = root.child_agent(
+        group_kind=SpendScopeKind.WORKFLOW,
+        group_id="workflow:queue",
+        agent_id="agent:second",
+        purpose=SpendPurpose.WORKFLOW,
+    )
+
+    host_task = asyncio.create_task(root.complete(host_backend, _request(max_tokens=1)))
+    while host_backend.complete_calls == 0:
+        await asyncio.sleep(0)
+    first_task = asyncio.create_task(
+        first.complete(first_backend, _request(max_tokens=1))
+    )
+    while first_backend.complete_calls == 0:
+        await asyncio.sleep(0)
+
+    async def invoke_second() -> None:
+        if streaming:
+            _ = [
+                chunk
+                async for chunk in second.complete_streaming(
+                    second_backend, _request(max_tokens=1)
+                )
+            ]
+            return
+        await second.complete(second_backend, _request(max_tokens=1))
+
+    second_task = asyncio.create_task(invoke_second())
+
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(second_task), 0.05)
+        assert second_backend.complete_calls == 0
+
+        child_gate.set()
+        await first_task
+        await asyncio.wait_for(second_task, 1)
+        assert second_backend.complete_calls + second_backend.streaming_calls == 1
+    finally:
+        child_gate.set()
+        host_gate.set()
+        await asyncio.gather(host_task, first_task, second_task, return_exceptions=True)
+
+    snapshot = root.snapshot()
+    assert snapshot.spent_calls == 3
+    assert snapshot.rejected_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_queued_concurrency_call_is_cancellation_safe(tmp_path: Path) -> None:
+    adapter = _adapter(tmp_path, max_concurrent_calls=1)
+    gate = asyncio.Event()
+    active_backend = _CountingBackend(gate=gate)
+    queued_backend = _CountingBackend()
+    active_task = asyncio.create_task(
+        adapter.complete(active_backend, _request(max_tokens=1))
+    )
+    while active_backend.complete_calls == 0:
+        await asyncio.sleep(0)
+    queued_task = asyncio.create_task(
+        adapter.complete(queued_backend, _request(max_tokens=1))
+    )
+
+    try:
+        await asyncio.sleep(0.06)
+        assert not queued_task.done()
+        queued_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await queued_task
+        assert queued_backend.complete_calls == 0
+    finally:
+        gate.set()
+        await asyncio.gather(active_task, queued_task, return_exceptions=True)
+
+    snapshot = adapter.snapshot()
+    assert snapshot.reserved_calls == 0
+    assert snapshot.spent_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_zero_concurrency_limit_remains_a_hard_rejection(tmp_path: Path) -> None:
+    adapter = _adapter(tmp_path, max_concurrent_calls=0)
+    backend = _CountingBackend()
+
+    with pytest.raises(SpendBudgetExceededError) as exc_info:
+        await adapter.complete(backend, _request(max_tokens=1))
+
+    assert exc_info.value.rejection.reason is SpendRejectionReason.CONCURRENT_CALLS
+    assert backend.complete_calls == 0
+    assert adapter.snapshot().rejected_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_limit_rejects_while_concurrency_is_saturated(
+    tmp_path: Path,
+) -> None:
+    adapter = _adapter(tmp_path, max_concurrent_calls=1, max_retries=0)
+    gate = asyncio.Event()
+    active_backend = _CountingBackend(gate=gate)
+    retry_backend = _CountingBackend()
+    active_task = asyncio.create_task(
+        adapter.complete(active_backend, _request(max_tokens=1))
+    )
+    while active_backend.complete_calls == 0:
+        await asyncio.sleep(0)
+
+    try:
+        with pytest.raises(SpendBudgetExceededError) as exc_info:
+            await asyncio.wait_for(
+                adapter.complete(retry_backend, _request(max_tokens=1), is_retry=True),
+                0.1,
+            )
+        assert exc_info.value.rejection.reason is SpendRejectionReason.RETRIES
+        assert retry_backend.complete_calls == 0
+    finally:
+        gate.set()
+        await active_task
+
+
+@pytest.mark.asyncio
+async def test_attached_adapters_queue_on_shared_concurrency_limit(
+    tmp_path: Path,
+) -> None:
+    root = _adapter(tmp_path, max_concurrent_calls=1)
+    first_child = root.child_agent(
+        group_kind=SpendScopeKind.TEAM,
+        group_id="team:queue",
+        agent_id="agent:team:first",
+        purpose=SpendPurpose.TEAM,
+    )
+    second_child = root.child_agent(
+        group_kind=SpendScopeKind.TEAM,
+        group_id="team:queue",
+        agent_id="agent:team:second",
+        purpose=SpendPurpose.TEAM,
+    )
+    first = SessionSpendAdapter.attach(
+        SpendConfig(), first_child.export_process_context()
+    )
+    second = SessionSpendAdapter.attach(
+        SpendConfig(), second_child.export_process_context()
+    )
+    gate = asyncio.Event()
+    first_backend = _CountingBackend(gate=gate)
+    second_backend = _CountingBackend()
+    first_task = asyncio.create_task(
+        first.complete(first_backend, _request(max_tokens=1))
+    )
+    while first_backend.complete_calls == 0:
+        await asyncio.sleep(0)
+    second_task = asyncio.create_task(
+        second.complete(second_backend, _request(max_tokens=1))
+    )
+
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(second_task), 0.05)
+        assert second_backend.complete_calls == 0
+
+        gate.set()
+        await first_task
+        await asyncio.wait_for(second_task, 1)
+        assert second_backend.complete_calls == 1
+    finally:
+        gate.set()
+        await asyncio.gather(first_task, second_task, return_exceptions=True)
+
+    snapshot = root.snapshot()
+    assert snapshot.spent_calls == 2
+    assert snapshot.rejected_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_child_workflow_adapter_cannot_borrow_past_parent_cap(tmp_path) -> None:
     parent = _adapter(tmp_path, max_calls=1)
     child = parent.child_agent(

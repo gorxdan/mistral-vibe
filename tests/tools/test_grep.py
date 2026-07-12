@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import shutil
 import types
+from typing import Any, cast
 
 import pytest
 
 from tests.mock.utils import collect_result
-from vibe.core.tools.base import BaseToolState, ToolError
+from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
 from vibe.core.tools.builtins.grep import (
     Grep,
     GrepArgs,
@@ -676,7 +677,9 @@ def test_hint_private_attr_excluded_from_model_dump():
 @pytest.mark.asyncio
 async def test_symbol_grep_sets_hint_when_lsp_available(grep, tmp_path, monkeypatch):
     (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
-    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: True
+    )
 
     result = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
 
@@ -693,7 +696,9 @@ async def test_symbol_grep_sets_hint_when_lsp_available(grep, tmp_path, monkeypa
 @pytest.mark.asyncio
 async def test_non_symbol_grep_sets_no_hint(grep, tmp_path, monkeypatch):
     (tmp_path / "test.py").write_text("error: boom\n")
-    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: True
+    )
 
     result = await collect_result(grep.run(GrepArgs(pattern="error: boom")))
 
@@ -704,7 +709,9 @@ async def test_non_symbol_grep_sets_no_hint(grep, tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_symbol_grep_no_hint_when_lsp_unavailable(grep, tmp_path, monkeypatch):
     (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
-    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: False)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: False
+    )
 
     result = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
 
@@ -718,7 +725,9 @@ async def test_symbol_grep_escalates_on_second_miss(grep, tmp_path, monkeypatch)
 
     adherence.reset_for_test()
     (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
-    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: True
+    )
 
     first = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
     second = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
@@ -727,3 +736,129 @@ async def test_symbol_grep_escalates_on_second_miss(grep, tmp_path, monkeypatch)
     assert second._hint.startswith("ESCALATION:")
     assert "workspace_symbol" in second._hint
     assert adherence.snapshot()["consecutive_symbol_grep_miss"] == 2
+
+
+def test_lsp_availability_prefers_active_manifest(monkeypatch):
+    from vibe.core.config import VibeConfig
+    from vibe.core.tools.builtins.grep import _lsp_available
+
+    def fail_load(cls, **overrides):
+        raise AssertionError("persisted config should not be consulted")
+
+    monkeypatch.setattr(VibeConfig, "load", classmethod(fail_load))
+    manager = types.SimpleNamespace(has_running_server_for=lambda **_kwargs: True)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep.get_lsp_manager", lambda: manager
+    )
+
+    unavailable = InvokeContext(
+        tool_call_id="unavailable",
+        tool_manager=types.SimpleNamespace(manifest_tools={"grep": object()}),
+    )
+    available = InvokeContext(
+        tool_call_id="available",
+        tool_manager=types.SimpleNamespace(
+            manifest_tools={"grep": object(), "lsp": object()}
+        ),
+    )
+
+    assert not _lsp_available(unavailable)
+    assert _lsp_available(available)
+
+
+def test_lsp_availability_requires_live_server_after_persisted_config(monkeypatch):
+    from vibe.core.config import VibeConfig
+    from vibe.core.tools.builtins.grep import _lsp_available
+
+    config = types.SimpleNamespace(installed_components=["lsp"])
+    monkeypatch.setattr(
+        VibeConfig, "load", classmethod(lambda cls, **overrides: config)
+    )
+
+    monkeypatch.setattr("vibe.core.tools.builtins.grep.get_lsp_manager", lambda: None)
+    assert not _lsp_available()
+    manager = types.SimpleNamespace(has_running_server_for=lambda **_kwargs: True)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep.get_lsp_manager", lambda: manager
+    )
+    assert _lsp_available()
+    config.installed_components = []
+    assert not _lsp_available()
+
+
+def test_lsp_availability_understands_brace_globs_and_ripgrep_types(monkeypatch):
+    from vibe.core.tools.builtins.grep import _lsp_available
+
+    calls: list[dict[str, object]] = []
+
+    def has_running_server_for(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    manager = types.SimpleNamespace(has_running_server_for=has_running_server_for)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep.get_lsp_manager", lambda: manager
+    )
+    ctx = InvokeContext(
+        tool_call_id="available",
+        tool_manager=types.SimpleNamespace(
+            manifest_tools={"grep": object(), "lsp": object()}
+        ),
+    )
+
+    assert _lsp_available(ctx, args=GrepArgs(pattern="Thing", glob="*.{ts,tsx}"))
+    assert calls[-1]["extensions"] == (".ts", ".tsx")
+    assert calls[-1]["operation"] == "workspace_symbol"
+
+    assert _lsp_available(ctx, args=GrepArgs(pattern="Thing", type="py"))
+    assert calls[-1]["language_id"] == "python"
+
+
+@pytest.mark.asyncio
+async def test_symbol_grep_streak_isolated_by_invoke_context(
+    grep, tmp_path, monkeypatch
+):
+    from vibe.core.lsp import _adherence as adherence
+
+    adherence.reset_for_test()
+    (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: True
+    )
+    first_ctx = InvokeContext(tool_call_id="first", session_id="first-session")
+    second_ctx = InvokeContext(tool_call_id="second", session_id="second-session")
+
+    first = await collect_result(grep.run(GrepArgs(pattern="FooBar"), first_ctx))
+    second = await collect_result(grep.run(GrepArgs(pattern="FooBar"), second_ctx))
+
+    assert first._hint.startswith("NOTE:")
+    assert second._hint.startswith("NOTE:")
+    assert adherence.snapshot(ctx=first_ctx)["consecutive_symbol_grep_miss"] == 1
+    assert adherence.snapshot(ctx=second_ctx)["consecutive_symbol_grep_miss"] == 1
+
+
+@pytest.mark.asyncio
+async def test_bound_task_symbol_hint_avoids_workspace_query(
+    grep, tmp_path, monkeypatch
+):
+    class Contract:
+        search_exclude_patterns: tuple[str, ...] = ()
+
+        def allows_search_result(self, path):
+            return True
+
+    (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: True
+    )
+    ctx = InvokeContext(
+        tool_call_id="bound",
+        session_id="bound-session",
+        task_contract=cast(Any, Contract()),
+    )
+
+    result = await collect_result(grep.run(GrepArgs(pattern="FooBar"), ctx))
+
+    assert result._hint.startswith("NOTE:")
+    assert "workspace_symbol" not in result._hint
+    assert "find_references" in result._hint

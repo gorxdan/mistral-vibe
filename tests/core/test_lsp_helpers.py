@@ -88,6 +88,24 @@ def test_format_locations_with_items() -> None:
     assert "x.py:5:3" in result.summary
 
 
+def test_format_locations_reports_truncation() -> None:
+    raw = [
+        {
+            "uri": f"file:///item-{index}.py",
+            "range": {"start": {"line": index, "character": 0}},
+        }
+        for index in range(51)
+    ]
+
+    result = _tool()._format_locations("References", raw)
+
+    assert len(result.locations) == 50
+    assert result.total_count == 51
+    assert result.returned_count == 50
+    assert result.was_truncated
+    assert "1 omitted" in result.summary
+
+
 def test_format_hover_empty() -> None:
     result = _tool()._format_hover(None)
     assert "No hover information" in result.summary
@@ -117,9 +135,32 @@ def test_format_symbols_symbol_information() -> None:
 
 
 def test_format_symbols_document_symbol_selection_range() -> None:
-    raw = [{"name": "fn", "selectionRange": {"start": {"line": 5}}}]
+    raw = [
+        {
+            "name": "fn",
+            "selectionRange": {
+                "start": {"line": 5, "character": 4},
+                "end": {"line": 5, "character": 6},
+            },
+        }
+    ]
     result = _tool()._format_symbols("Doc", raw)
     assert "fn" in result.symbol_names
+
+
+def test_format_symbols_reports_truncation() -> None:
+    raw = [
+        {"name": f"symbol_{index}", "location": {"uri": f"file:///symbol-{index}.py"}}
+        for index in range(101)
+    ]
+
+    result = _tool()._format_symbols("Symbols", raw)
+
+    assert len(result.symbol_names) == 100
+    assert result.total_count == 101
+    assert result.returned_count == 100
+    assert result.was_truncated
+    assert "1 omitted" in result.summary
 
 
 def test_format_call_items_empty() -> None:
@@ -138,6 +179,25 @@ def test_format_call_items_with_data_uri_fallback() -> None:
     result = _tool()._format_call_items("Incoming", raw)
     assert "caller" in result.summary
     assert "y.py" in result.summary
+
+
+def test_format_call_items_reports_truncation() -> None:
+    raw = [
+        {
+            "name": f"caller_{index}",
+            "uri": f"file:///caller-{index}.py",
+            "range": {"start": {"line": index, "character": 0}},
+        }
+        for index in range(51)
+    ]
+
+    result = _tool()._format_call_items("Incoming", raw)
+
+    assert len(result.locations) == 50
+    assert result.total_count == 51
+    assert result.returned_count == 50
+    assert result.was_truncated
+    assert "1 omitted" in result.summary
 
 
 # --------------------------------------------------------------------------- #
@@ -277,6 +337,13 @@ def test_format_call_display_workspace() -> None:
 
 def test_get_status_text() -> None:
     assert "language server" in Lsp.get_status_text().lower()
+
+
+def test_call_hierarchy_method_fallback_does_not_promise_equivalent_graph() -> None:
+    hint = Lsp._method_not_found_hint(LspOperation.INCOMING_CALLS)
+
+    assert "same caller/callee info" not in hint
+    assert "usages" in hint
 
 
 # --------------------------------------------------------------------------- #

@@ -8,6 +8,21 @@ from vibe.core.logger import logger
 from vibe.core.lsp._manager import get_lsp_manager
 
 _MAX_NOTIFY_BYTES = 10 * 1024 * 1024
+_MAX_UTF8_BYTES_PER_CODEPOINT = 4
+
+
+def readiness_fingerprint() -> tuple[object, ...]:
+    manager = get_lsp_manager()
+    if manager is None:
+        return ("inactive",)
+    return manager.readiness_fingerprint()
+
+
+def running_extensions() -> tuple[str, ...]:
+    manager = get_lsp_manager()
+    if manager is None:
+        return ()
+    return manager.running_extensions()
 
 
 async def notify_file_changed(path: str | Path, text: str) -> None:
@@ -21,13 +36,18 @@ async def notify_file_changed(path: str | Path, text: str) -> None:
     manager = get_lsp_manager()
     if manager is None:
         return
-    if len(text) > _MAX_NOTIFY_BYTES:
-        return
     try:
+        p = str(path)
+        manager.clear_diagnostics_for(p)
+        text_length = len(text)
+        if text_length > _MAX_NOTIFY_BYTES or (
+            text_length > _MAX_NOTIFY_BYTES // _MAX_UTF8_BYTES_PER_CODEPOINT
+            and len(text.encode("utf-8")) > _MAX_NOTIFY_BYTES
+        ):
+            return
         server = manager.get_server_for_file(path)
         if server is None:
             return
-        p = str(path)
         await server.ensure_started()
         if not server.is_open(p):
             language_id = server.config.language_id_for(Path(path).suffix)

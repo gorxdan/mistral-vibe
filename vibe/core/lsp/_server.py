@@ -4,16 +4,19 @@ import asyncio
 from dataclasses import dataclass, field
 import hashlib
 import os
+from pathlib import Path
 from typing import Any
 
 from vibe import __version__
 from vibe.core.logger import logger
+from vibe.core.lsp._environment import language_server_env
 from vibe.core.lsp._jsonrpc import JsonRpcConnection
 from vibe.core.lsp._types import (
     LSPError,
     LSPProtocolError,
     LSPServerCrashedError,
     ServerState,
+    path_from_uri,
     uri_from_path,
 )
 
@@ -61,6 +64,7 @@ class LanguageServer:
         self._proc: asyncio.subprocess.Process | None = None
         self._conn: JsonRpcConnection | None = None
         self._capabilities: dict[str, Any] = {}
+        self._position_encoding = "utf-16"
         self._open_docs: dict[str, int] = {}
         self._open_hashes: dict[str, str] = {}
         self._start_lock = asyncio.Lock()
@@ -78,6 +82,10 @@ class LanguageServer:
     @property
     def capabilities(self) -> dict[str, Any]:
         return self._capabilities
+
+    @property
+    def position_encoding(self) -> str:
+        return self._position_encoding
 
     @property
     def last_error(self) -> str | None:
@@ -136,10 +144,12 @@ class LanguageServer:
             pass
 
     async def _spawn(self) -> None:
-        env = {**os.environ, **self.config.env}
+        env = language_server_env(self.config.env)
         cwd = self.config.cwd or None
         logger.debug(
-            "lsp starting server %s: %s", self.config.name, self.config.command
+            "lsp starting server %s: %s",
+            self.config.name,
+            self.config.command[0] if self.config.command else "<missing executable>",
         )
         self._proc = await asyncio.create_subprocess_exec(
             *self.config.command,
@@ -183,9 +193,22 @@ class LanguageServer:
             "initialize", params, timeout=self.config.startup_timeout
         )
         self._capabilities = (result or {}).get("capabilities", {})
+        position_encoding = str(
+            self._capabilities.get("positionEncoding", "utf-16")
+        ).lower()
+        if position_encoding != "utf-16":
+            raise LSPProtocolError(
+                f"{self.config.name} selected unsupported position encoding "
+                f"{position_encoding!r}; this client offered only 'utf-16'"
+            )
+        self._position_encoding = position_encoding
         await self._conn.notify("initialized", {})
         self._conn.on_notification(
             "workspace/configuration", lambda _params: self._config_response()
+        )
+        self._conn.on_notification(
+            "workspace/workspaceFolders",
+            lambda _params: self._workspace_folders_response(),
         )
 
     @staticmethod
@@ -193,8 +216,9 @@ class LanguageServer:
         return {
             "workspace": {
                 "configuration": False,
-                "workspaceFolders": False,
+                "workspaceFolders": True,
                 "applyEdit": False,
+                "symbol": {"symbolKind": {"valueSet": list(range(1, 27))}},
             },
             "window": {"workDoneProgress": False},
             "textDocument": {
@@ -212,7 +236,6 @@ class LanguageServer:
                     "hierarchicalDocumentSymbolSupport": True,
                     "symbolKind": {"valueSet": list(range(1, 27))},
                 },
-                "workspaceSymbol": {"symbolKind": {"valueSet": list(range(1, 27))}},
                 "callHierarchy": {"dynamicRegistration": False},
                 "publishDiagnostics": {
                     "relatedInformation": True,
@@ -226,6 +249,13 @@ class LanguageServer:
 
     async def _config_response(self) -> list[Any]:
         return [{}]
+
+    async def _workspace_folders_response(self) -> list[dict[str, str]] | None:
+        root_uri = self.config.root_uri
+        if root_uri is None:
+            return None
+        root_name = Path(path_from_uri(root_uri)).name or "workspace"
+        return [{"uri": root_uri, "name": root_name}]
 
     async def _watch_exit(self) -> None:
         proc = self._proc
@@ -385,6 +415,8 @@ class LanguageServer:
         await self._force_kill()
         self._open_docs.clear()
         self._open_hashes.clear()
+        self._capabilities.clear()
+        self._position_encoding = "utf-16"
 
     async def _force_kill(self) -> None:
         proc = self._proc

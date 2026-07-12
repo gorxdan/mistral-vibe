@@ -64,6 +64,35 @@ async def test_prompt_not_rebuilt_when_tier_unchanged(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_prompt_rebuilt_once_when_lsp_readiness_changes(monkeypatch) -> None:
+    loop = build_test_agent_loop(
+        backend=FakeBackend([
+            [mock_llm_chunk(content="one")],
+            [mock_llm_chunk(content="two")],
+        ])
+    )
+    rebuilds = 0
+    real_builder = agent_loop_module.get_universal_system_prompt
+
+    def counting_builder(*args, **kwargs):
+        nonlocal rebuilds
+        rebuilds += 1
+        return real_builder(*args, **kwargs)
+
+    monkeypatch.setattr(
+        agent_loop_module, "get_universal_system_prompt", counting_builder
+    )
+    monkeypatch.setattr(
+        agent_loop_module, "readiness_fingerprint", lambda: ("ready", ".py")
+    )
+
+    [_ async for _ in loop.act("first")]
+    [_ async for _ in loop.act("second")]
+
+    assert rebuilds == 1
+
+
+@pytest.mark.asyncio
 async def test_no_unawaited_coroutine_warnings() -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

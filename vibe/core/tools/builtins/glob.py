@@ -179,7 +179,8 @@ class Glob(
     description: ClassVar[str] = (
         "Find files by glob pattern (e.g. '**/*.py'), most recently modified first. "
         "Respects .gitignore and .vibeignore. Use this instead of bash find/ls. "
-        "Finds files by name/path; use `grep` for contents, `lsp` for symbols."
+        "Finds files by name/path; use `grep` for contents and `lsp` for symbols "
+        "when available."
     )
 
     def resolve_permission(self, args: GlobArgs) -> PermissionContext | None:

@@ -61,8 +61,10 @@ In-process workflow agents also reserve under the parent session spend broker.
 Exhausting either the workflow-local token budget or the shared session envelope
 terminates the run as `WorkflowStatus.BLOCKED`; direct, schema, isolated,
 parallel, and pipeline paths preserve that status instead of degrading it to a
-`None` result. Ordinary child exceptions retain the existing recoverable
-`None`/`COMPLETED_WITH_FAILURES` behavior.
+`None` result. Saturating a positive shared concurrency limit queues the paid
+call until capacity is available instead of blocking the run. Ordinary child
+exceptions retain the existing recoverable `None`/`COMPLETED_WITH_FAILURES`
+behavior.
 
 ### Schema Validation
 

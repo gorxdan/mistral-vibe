@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, ClassVar
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from vibe.core.lsp._adherence import record_symbol_grep_miss, symbol_grep_hint
+from vibe.core.lsp._manager import get_lsp_manager
 from vibe.core.paths import VIBE_HOME
 from vibe.core.tools.base import (
     BaseTool,
@@ -299,16 +300,97 @@ def _is_symbol_shaped(pattern: str) -> bool:
     return False
 
 
-def _lsp_available() -> bool:
-    # Same gate the lsp tool and the system-prompt section use: opted in via
-    # installed_components. If a language has no server configured, the lsp call
-    # itself reports that and the agent falls back — the hint just opens the door.
+def _lsp_exposed(ctx: InvokeContext | None = None) -> bool:
+    if ctx is not None and ctx.tool_manager is not None:
+        try:
+            return "lsp" in ctx.tool_manager.manifest_tools
+        except Exception:
+            return False
+
     try:
         from vibe.core.config import VibeConfig
 
         return "lsp" in VibeConfig.load().installed_components
     except Exception:
         return False
+
+
+def _glob_extensions(pattern: str | None) -> tuple[str, ...]:
+    if not pattern:
+        return ()
+    extensions = {f".{match}" for match in re.findall(r"\.([\w+-]+)", pattern)}
+    for group in re.findall(r"\{([^{}]+)\}", pattern):
+        extensions.update(
+            f".{value.strip().lstrip('*.')}"
+            for value in group.split(",")
+            if value.strip().lstrip("*.")
+        )
+    return tuple(sorted(extensions))
+
+
+_RIPGREP_TYPE_LANGUAGE_IDS = {
+    "js": "javascript",
+    "jsx": "javascriptreact",
+    "py": "python",
+    "rs": "rust",
+    "ts": "typescript",
+    "tsx": "typescriptreact",
+}
+
+
+def _lsp_available(
+    ctx: InvokeContext | None = None,
+    *,
+    args: GrepArgs | None = None,
+    result: GrepResult | None = None,
+) -> bool:
+    if not _lsp_exposed(ctx):
+        return False
+    manager = get_lsp_manager()
+    if manager is None:
+        return False
+
+    required_operation = (
+        "document_symbol"
+        if ctx is not None and ctx.task_contract is not None
+        else "workspace_symbol"
+    )
+    available: bool | None = None
+    if result is not None:
+        paths = {match.path for match in result.parsed_matches}
+        if result.output_mode is GrepOutputMode.FILES_WITH_MATCHES:
+            paths.update(line for line in result.matches.splitlines() if line)
+        if paths:
+            available = any(
+                manager.has_running_server_for(
+                    file_path=path, operation=required_operation
+                )
+                for path in paths
+            )
+
+    if available is None:
+        if args is None:
+            available = manager.has_running_server_for(operation=required_operation)
+        else:
+            search_path = Path(args.path).expanduser()
+            if not search_path.is_absolute():
+                search_path = Path.cwd() / search_path
+            if search_path.is_file():
+                available = manager.has_running_server_for(
+                    file_path=search_path, operation=required_operation
+                )
+            elif extensions := _glob_extensions(args.glob):
+                available = manager.has_running_server_for(
+                    extensions=extensions, operation=required_operation
+                )
+            elif args.type:
+                language_id = _RIPGREP_TYPE_LANGUAGE_IDS.get(args.type, args.type)
+                available = manager.has_running_server_for(
+                    language_id=language_id, operation=required_operation
+                )
+            else:
+                available = manager.has_running_server_for(operation=required_operation)
+    return available
 
 
 class Grep(
@@ -373,9 +455,13 @@ class Grep(
             output_mode=args.output_mode,
             head_limit=args.head_limit,
         )
-        if _is_symbol_shaped(args.pattern) and _lsp_available():
-            consecutive = record_symbol_grep_miss()
-            result._hint = symbol_grep_hint(args.pattern, consecutive=consecutive)
+        if _is_symbol_shaped(args.pattern) and _lsp_available(
+            ctx, args=args, result=result
+        ):
+            consecutive = record_symbol_grep_miss(ctx=ctx)
+            result._hint = symbol_grep_hint(
+                args.pattern, consecutive=consecutive, ctx=ctx
+            )
         yield result
 
     def get_result_extra(self, result: GrepResult) -> str | None:

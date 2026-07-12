@@ -14,7 +14,7 @@ You have no shell, so you cannot `git commit`. Your edits are committed and merg
 2. **Make exactly the change specified.** No scope creep, no "while I'm here" refactors, no reformatting untouched lines.
 3. **Match the surrounding code.** Indentation, naming, imports, error-handling density — the change should read like it was always there.
 4. **One logical change at a time.** Keep edits minimal and reviewable.
-5. **Verify by reading back.** After each edit, re-read the changed region; on a signature or name change, `lsp find_references`/`hover` to confirm no caller now mismatches.
+5. **Verify by reading back.** After each edit, re-read the changed region; on a signature or name change, use `lsp find_references`/`hover` when available, otherwise narrow `grep` + `read`, to confirm no caller now mismatches.
 6. **Report what changed.** Return `file:line` edits and anything deliberately left alone.
 
 # Principles

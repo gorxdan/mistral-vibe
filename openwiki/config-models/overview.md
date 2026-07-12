@@ -280,6 +280,12 @@ comparable request sizes calibrate one another. `"strict"` mode disables learnin
 and reserves the serialized token-bearing request byte ceiling. Missing usage is
 charged at the reservation estimate.
 
+Positive paid-call concurrency limits apply backpressure rather than exhausting
+the budget: in-process agents and attached subprocesses wait and retry the atomic
+reservation after active calls settle. An explicit zero concurrency limit remains
+a hard admission denial. Token, USD, cumulative-call, retry, and deadline limits
+remain terminal when reached.
+
 An exact, untouched legacy generated `[spend]` table with the released 128-call
 signature is migrated once by removing its old 400,000 prompt, 100,000
 completion, and 500,000 total token defaults. Customized or partial tables

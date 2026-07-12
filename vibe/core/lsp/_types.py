@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum, auto
 from pathlib import Path
+import re
 from typing import Any
+
+_WINDOWS_DRIVE_HOST_RE = re.compile(r"^[A-Za-z]:$")
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^/[A-Za-z]:")
 
 
 class LSPError(Exception):
@@ -154,12 +158,21 @@ def uri_from_path(path: str | Path) -> str:
 
 
 def path_from_uri(uri: str) -> str:
+    import os
     from urllib.parse import unquote, urlparse
 
     if not uri.startswith("file:"):
         return uri
     parsed = urlparse(uri)
-    return unquote(parsed.path)
+    path = unquote(parsed.path)
+    host = unquote(parsed.netloc)
+    if host and host.casefold() != "localhost":
+        if _WINDOWS_DRIVE_HOST_RE.fullmatch(host):
+            return f"{host}{path}"
+        return f"//{host}{path}"
+    if os.name == "nt" and _WINDOWS_DRIVE_PATH_RE.match(path):
+        return path[1:]
+    return path
 
 
 _UTF16_SURROGATE_THRESHOLD = 0xFFFF
