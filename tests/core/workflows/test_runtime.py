@@ -2075,7 +2075,7 @@ async def test_run_isolated_agent_uses_pipe_when_log_path_unset(
 async def test_isolated_agent_charges_real_tokens_when_stats_present() -> None:
     async def stub(
         prompt: str, agent: str, label: str | None, max_turns: int
-    ) -> tuple[str, dict[str, int]]:
+    ) -> tuple[str, dict[str, int | float | bool]]:
         return ("done", {"prompt_tokens": 100, "completion_tokens": 50})
 
     rt = WorkflowRuntime(

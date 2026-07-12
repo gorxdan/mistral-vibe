@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum, auto
 import threading
 import time
 
 from vibe.core.config import ModelConfig, ProviderConfig
+from vibe.core.logger import logger
 from vibe.core.types import LLMUsage
-from vibe.core.usage._pricing import compute_cost, lookup_pricing
+from vibe.core.usage._pricing_policy import (
+    CostQuote,
+    quote_cold_reservation,
+    quote_usage,
+)
 from vibe.core.usage._recorder import UsageRecorder, get_usage_recorder
 from vibe.core.usage.models import UsageRecord
+
+_DEFAULT_UNPRICED_INPUT_USD_PER_MILLION = 10.0
+_DEFAULT_UNPRICED_OUTPUT_USD_PER_MILLION = 30.0
 
 
 class CallKind(StrEnum):
@@ -48,21 +57,19 @@ class UsageReservation:
     active: bool = True
 
 
-def usage_cost(model: ModelConfig, usage: LLMUsage) -> float:
-    if model.input_price > 0 or model.output_price > 0:
-        return (
-            usage.prompt_tokens * model.input_price
-            + usage.completion_tokens * model.output_price
-        ) / 1_000_000
-    pricing = lookup_pricing(model.name)
-    if pricing is None:
-        return 0.0
-    return compute_cost(
-        prompt_tokens=usage.prompt_tokens,
-        completion_tokens=usage.completion_tokens,
-        cached_tokens=usage.cached_tokens,
-        pricing=pricing,
-    )
+def usage_cost(
+    model: ModelConfig,
+    usage: LLMUsage,
+    *,
+    unpriced_input_usd_per_million: float = _DEFAULT_UNPRICED_INPUT_USD_PER_MILLION,
+    unpriced_output_usd_per_million: float = _DEFAULT_UNPRICED_OUTPUT_USD_PER_MILLION,
+) -> float:
+    return quote_usage(
+        model,
+        usage,
+        unpriced_input_price=max(unpriced_input_usd_per_million, 0.0),
+        unpriced_output_price=max(unpriced_output_usd_per_million, 0.0),
+    ).cost_usd
 
 
 class UsageMeter:
@@ -79,6 +86,9 @@ class UsageMeter:
         *,
         limits: SpendLimits | None = None,
         recorder: UsageRecorder | None = None,
+        unpriced_input_usd_per_million: float = _DEFAULT_UNPRICED_INPUT_USD_PER_MILLION,
+        unpriced_output_usd_per_million: float = _DEFAULT_UNPRICED_OUTPUT_USD_PER_MILLION,
+        on_reconcile: Callable[[LLMUsage, float, bool], None] | None = None,
     ) -> None:
         self.session_id = session_id
         self.limits = limits or SpendLimits()
@@ -88,7 +98,29 @@ class UsageMeter:
         self._calls = 0
         self._reserved_tokens = 0
         self._reserved_cost_usd = 0.0
+        self._unpriced_input_usd_per_million = max(unpriced_input_usd_per_million, 0.0)
+        self._unpriced_output_usd_per_million = max(
+            unpriced_output_usd_per_million, 0.0
+        )
+        self._on_reconcile = on_reconcile
         self._lock = threading.Lock()
+
+    def quote(self, model: ModelConfig, usage: LLMUsage) -> CostQuote:
+        return quote_usage(
+            model,
+            usage,
+            unpriced_input_price=self._unpriced_input_usd_per_million,
+            unpriced_output_price=self._unpriced_output_usd_per_million,
+        )
+
+    def quote_reservation(self, model: ModelConfig, usage: LLMUsage) -> CostQuote:
+        return quote_cold_reservation(
+            model,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            unpriced_input_price=self._unpriced_input_usd_per_million,
+            unpriced_output_price=self._unpriced_output_usd_per_million,
+        )
 
     def try_reserve(
         self, estimated_tokens: int = 0, *, estimated_cost_usd: float = 0.0
@@ -150,7 +182,19 @@ class UsageMeter:
             usage = LLMUsage(
                 prompt_tokens=reservation.estimated_tokens, completion_tokens=0
             )
-        cost = usage_cost(model, usage)
+        quote = self.quote(model, usage)
+        usage = usage.model_copy(
+            update={
+                "prompt_tokens": quote.prompt_tokens,
+                "cached_tokens": quote.cached_tokens,
+                "cache_write_tokens": quote.cache_write_tokens,
+                "completion_tokens": quote.completion_tokens,
+                "reasoning_tokens": min(
+                    usage.reasoning_tokens, quote.completion_tokens
+                ),
+            }
+        )
+        cost = quote.cost_usd
         if usage_was_missing:
             cost = max(cost, reservation.estimated_cost_usd)
         with self._lock:
@@ -161,6 +205,12 @@ class UsageMeter:
             self._reserved_cost_usd -= reservation.estimated_cost_usd
             self._tokens += usage.prompt_tokens + usage.completion_tokens
             self._cost_usd += cost
+        estimated = usage_was_missing or quote.estimated
+        if self._on_reconcile is not None:
+            try:
+                self._on_reconcile(usage, cost, estimated)
+            except Exception:
+                logger.warning("Usage reconciliation observer failed", exc_info=True)
         self._recorder.record(
             UsageRecord.from_usage(
                 timestamp=time.time(),
@@ -170,6 +220,8 @@ class UsageMeter:
                 cost_usd=cost,
                 duration_s=duration_s,
                 session_id=reservation.session_id,
+                cost_estimated=estimated,
+                pricing_mode=quote.pricing_mode,
                 harness=True,
                 call_kind=call_kind.value,
                 result_used=result_used,

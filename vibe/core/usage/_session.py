@@ -17,6 +17,7 @@ from vibe.core.llm.provider_retry import (
     bind_retry_attempt_admission,
 )
 from vibe.core.llm.types import BackendLike, CompletionRequest
+from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
 from vibe.core.types import LLMChunk, LLMUsage
 from vibe.core.usage._broker import SpendBroker
@@ -32,9 +33,14 @@ from vibe.core.usage._context import (
     SpendRejectionReason,
     SpendReservation,
     SpendScopeKind,
+    SpendSettlement,
 )
 from vibe.core.usage._ledger import LedgerEvent
-from vibe.core.usage._pricing import compute_cost, lookup_pricing
+from vibe.core.usage._pricing_policy import (
+    CostQuote,
+    quote_cold_reservation,
+    quote_usage,
+)
 from vibe.core.usage._process_context import SpendProcessContext
 from vibe.core.usage._prompt_estimator import (
     PromptReservationPlan,
@@ -158,23 +164,12 @@ def estimate_request_tokens(request: CompletionRequest) -> int:
     return estimate_prompt_tokens(plan, []).estimated_tokens
 
 
-def _cost(model: ModelConfig, usage: LLMUsage, config: SpendConfig) -> float:
-    if model.input_price > 0 or model.output_price > 0:
-        return (
-            usage.prompt_tokens * model.input_price
-            + usage.completion_tokens * model.output_price
-        ) / 1_000_000
-    pricing = lookup_pricing(model.name)
-    if pricing is None:
-        return (
-            usage.prompt_tokens * config.unpriced_input_usd_per_million
-            + usage.completion_tokens * config.unpriced_output_usd_per_million
-        ) / 1_000_000
-    return compute_cost(
-        prompt_tokens=usage.prompt_tokens,
-        completion_tokens=usage.completion_tokens,
-        cached_tokens=usage.cached_tokens,
-        pricing=pricing,
+def _quote(model: ModelConfig, usage: LLMUsage, config: SpendConfig) -> CostQuote:
+    return quote_usage(
+        model,
+        usage,
+        unpriced_input_price=config.unpriced_input_usd_per_million,
+        unpriced_output_price=config.unpriced_output_usd_per_million,
     )
 
 
@@ -310,7 +305,12 @@ class _SessionSpendCall:
                     "expired while its provider call was still active."
                 )
 
-    def settle(self, usage: LLMUsage | None) -> None:
+    def settle(
+        self,
+        usage: LLMUsage | None,
+        *,
+        missing_usage_sink: Callable[[SpendSettlement], None] | None = None,
+    ) -> None:
         if self.settled:
             return
         self.settled = True
@@ -320,16 +320,26 @@ class _SessionSpendCall:
             )
             return
         if usage is None or (usage.prompt_tokens == 0 and usage.completion_tokens == 0):
-            self.adapter._broker.reconcile(self.reservation, None)
+            settlement = self.adapter._broker.reconcile(self.reservation, None)
+            if missing_usage_sink is not None:
+                try:
+                    missing_usage_sink(settlement)
+                except Exception:
+                    logger.warning(
+                        "Missing-usage settlement observer failed", exc_info=True
+                    )
             return
-        cost = _cost(self.request.model, usage, self.config)
+        quote = _quote(self.request.model, usage, self.config)
         actual = SpendAmount(
-            prompt_tokens=usage.prompt_tokens,
-            cached_tokens=max(0, min(usage.cached_tokens, usage.prompt_tokens)),
-            completion_tokens=usage.completion_tokens,
-            cost_usd=cost,
+            prompt_tokens=quote.prompt_tokens,
+            cached_tokens=quote.cached_tokens,
+            cache_write_tokens=quote.cache_write_tokens,
+            completion_tokens=quote.completion_tokens,
+            cost_usd=quote.cost_usd,
         )
-        self.adapter._broker.reconcile(self.reservation, actual)
+        self.adapter._broker.reconcile(
+            self.reservation, actual, estimated=quote.estimated
+        )
 
 
 class SessionSpendAdapter:
@@ -689,14 +699,20 @@ class SessionSpendAdapter:
         plan = PromptReservationPlan(
             footprint=footprint,
             completion_tokens=completion_tokens,
-            input_cost_usd_per_token=_cost(
-                request.model, LLMUsage(prompt_tokens=1), self._config
-            ),
-            completion_cost_usd=_cost(
+            input_cost_usd_per_token=quote_cold_reservation(
                 request.model,
-                LLMUsage(completion_tokens=completion_tokens),
-                self._config,
-            ),
+                prompt_tokens=1,
+                completion_tokens=0,
+                unpriced_input_price=self._config.unpriced_input_usd_per_million,
+                unpriced_output_price=self._config.unpriced_output_usd_per_million,
+            ).cost_usd,
+            completion_cost_usd=quote_cold_reservation(
+                request.model,
+                prompt_tokens=0,
+                completion_tokens=completion_tokens,
+                unpriced_input_price=self._config.unpriced_input_usd_per_million,
+                unpriced_output_price=self._config.unpriced_output_usd_per_million,
+            ).cost_usd,
             adaptive=(
                 self._config.prompt_estimator_mode is PromptEstimatorMode.ADAPTIVE
             ),
@@ -741,13 +757,14 @@ class SessionSpendAdapter:
         purpose: SpendPurpose | None = None,
         is_retry: bool = False,
         response_headers_sink: dict[str, str] | None = None,
+        missing_usage_sink: Callable[[SpendSettlement], None] | None = None,
     ) -> LLMChunk:
         resolved_purpose = purpose or self.default_purpose
         call = self._reserve(request, purpose=resolved_purpose, is_retry=is_retry)
         try:
             call.mark_dispatched()
         except BaseException:
-            call.settle(None)
+            call.settle(None, missing_usage_sink=missing_usage_sink)
             raise
         renewal = asyncio.create_task(call.renew_while_active())
         try:
@@ -759,12 +776,12 @@ class SessionSpendAdapter:
             try:
                 await self._stop_renewal(renewal)
             finally:
-                call.settle(None)
+                call.settle(None, missing_usage_sink=missing_usage_sink)
             raise
         try:
             await self._stop_renewal(renewal)
         finally:
-            call.settle(result.usage)
+            call.settle(result.usage, missing_usage_sink=missing_usage_sink)
         return result
 
     async def complete_streaming(
@@ -775,6 +792,7 @@ class SessionSpendAdapter:
         purpose: SpendPurpose | None = None,
         is_retry: bool = False,
         response_headers_sink: dict[str, str] | None = None,
+        missing_usage_sink: Callable[[SpendSettlement], None] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         resolved_purpose = purpose or self.default_purpose
         call = self._reserve(request, purpose=resolved_purpose, is_retry=is_retry)
@@ -782,7 +800,7 @@ class SessionSpendAdapter:
         try:
             call.mark_dispatched()
         except BaseException:
-            call.settle(None)
+            call.settle(None, missing_usage_sink=missing_usage_sink)
             raise
         renewal = asyncio.create_task(call.renew_while_active())
         stream = backend.complete_streaming(
@@ -808,12 +826,12 @@ class SessionSpendAdapter:
                     await stream.aclose()
                 await self._stop_renewal(renewal)
             finally:
-                call.settle(None)
+                call.settle(None, missing_usage_sink=missing_usage_sink)
             raise
         try:
             await self._stop_renewal(renewal)
         finally:
-            call.settle(final_usage)
+            call.settle(final_usage, missing_usage_sink=missing_usage_sink)
 
     def snapshot(self) -> SpendEnvelopeSnapshot:
         return self._broker.snapshot(self.session_scope_id)

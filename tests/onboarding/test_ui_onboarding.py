@@ -1427,7 +1427,7 @@ async def test_provider_selection_glm_preset_persists_config_and_key(
 
 
 @pytest.mark.asyncio
-async def test_provider_selection_kimi_preset_carries_user_agent_header() -> None:
+async def test_provider_selection_kimi_preset_uses_real_client_identity() -> None:
     api_key_value = "sk-kimi-onboarding-test-key"
     app = OnboardingApp()
 
@@ -1444,7 +1444,10 @@ async def test_provider_selection_kimi_preset_carries_user_agent_header() -> Non
     config = _config_toml_dict()
     assert config["active_model"] == "kimi"
     kimi_providers = [p for p in config["providers"] if p.get("name") == "kimi"]
-    assert kimi_providers and kimi_providers[0]["extra_headers"]["User-Agent"]
+    assert kimi_providers
+    provider = kimi_providers[0]
+    assert "User-Agent" not in provider.get("extra_headers", {})
+    assert provider["cache"]["session_keyed"] is True
 
 
 @pytest.mark.asyncio

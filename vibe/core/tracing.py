@@ -419,6 +419,7 @@ def _set_usage_attrs(
     input_tokens: int,
     output_tokens: int,
     cached_tokens: int,
+    cache_write_tokens: int = 0,
     reasoning_tokens: int = 0,
 ) -> None:
     # cached/reasoning tokens have no stable gen_ai constant; emit vibe-namespaced.
@@ -426,6 +427,7 @@ def _set_usage_attrs(
         span.set_attribute(gen_ai_attributes.GEN_AI_USAGE_INPUT_TOKENS, input_tokens)
         span.set_attribute(gen_ai_attributes.GEN_AI_USAGE_OUTPUT_TOKENS, output_tokens)
         span.set_attribute("gen_ai.usage.cached_input_tokens", cached_tokens)
+        span.set_attribute("gen_ai.usage.cache_write_input_tokens", cache_write_tokens)
         span.set_attribute("gen_ai.usage.reasoning_tokens", reasoning_tokens)
     except Exception:
         pass
@@ -437,6 +439,7 @@ def set_usage(span: trace.Span, usage: LLMUsage) -> None:
         input_tokens=usage.prompt_tokens,
         output_tokens=usage.completion_tokens,
         cached_tokens=usage.cached_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
         reasoning_tokens=usage.reasoning_tokens,
     )
 
@@ -500,13 +503,21 @@ def set_finish_reason(span: trace.Span, reason: str | None) -> None:
 
 
 def set_agent_usage(
-    span: trace.Span, *, input_tokens: int, output_tokens: int, cached_tokens: int
+    span: trace.Span,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    cache_write_tokens: int = 0,
+    reasoning_tokens: int = 0,
 ) -> None:
     _set_usage_attrs(
         span,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_tokens=cached_tokens,
+        cache_write_tokens=cache_write_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
 
 

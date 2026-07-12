@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import shlex
 import time
-from typing import ClassVar, Literal, final
+from typing import ClassVar, Literal, NamedTuple, final
 
 from pydantic import BaseModel, ConfigDict, Field
 from tree_sitter import Language, Node, Parser
@@ -46,6 +46,7 @@ from vibe.core.tools.sandbox import (
     scrub_env,
 )
 from vibe.core.tools.sandbox_seccomp import build_seccomp_bpf, open_seccomp_fd
+from vibe.core.tools.tool_result_store import ToolResultStore
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
 from vibe.core.tools.utils import (
     is_path_within_workdir,
@@ -380,6 +381,165 @@ def _sandbox_failure_hint(stderr: str) -> str | None:
     return None
 
 
+def _format_full_output(
+    command: str,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    stdout_bytes: int,
+    stderr_bytes: int,
+) -> str:
+    return (
+        f"command: {command}\n"
+        f"returncode: {returncode}\n"
+        "format: decoded text (newline-normalized; not byte-exact)\n"
+        f"stdout_bytes: {stdout_bytes}\n"
+        f"stdout_chars: {len(stdout)}\n"
+        f"stderr_bytes: {stderr_bytes}\n"
+        f"stderr_chars: {len(stderr)}\n"
+        f"--- stdout ---\n{stdout}\n"
+        f"--- stderr ---\n{stderr}"
+    )
+
+
+def _persist_full_output(
+    ctx: InvokeContext | None,
+    *,
+    command: str,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    stdout_bytes: int,
+    stderr_bytes: int,
+) -> Path | None:
+    if ctx is None:
+        return None
+    content = _format_full_output(
+        command, returncode, stdout, stderr, stdout_bytes, stderr_bytes
+    )
+    isolated_root = isolated_worktree_root()
+    isolated_scratch = isolated_scratchpad_root()
+    roots = (
+        (ctx.scratchpad_dir, ctx.session_dir)
+        if isolated_root is not None
+        else (ctx.session_dir, ctx.scratchpad_dir)
+    )
+    previous_root: Path | None = None
+    for root in roots:
+        if root is None or root == previous_root:
+            continue
+        previous_root = root
+        if isolated_root is not None:
+            resolved = root.resolve()
+            if not resolved.is_relative_to(isolated_root) and (
+                isolated_scratch is None
+                or not resolved.is_relative_to(isolated_scratch)
+            ):
+                continue
+        store = ToolResultStore(lambda root=root: root)
+        if path := store.persist(f"{ctx.tool_call_id}-bash-full", content):
+            return path
+    return None
+
+
+def _tiny_truncation_preview(stream: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if max_chars == 1:
+        return "…"
+    preview_chars = max_chars - 1
+    head_chars = (preview_chars * 3 + 3) // 4
+    tail_chars = preview_chars - head_chars
+    tail = stream[-tail_chars:] if tail_chars else ""
+    return f"{stream[:head_chars]}…{tail}"
+
+
+def _truncate_stream(
+    stream: str,
+    *,
+    label: str,
+    max_chars: int,
+    total_bytes: int,
+    artifact_path: Path | None,
+) -> str:
+    if len(stream) <= max_chars:
+        return stream
+
+    prefix = (
+        f"…[{label} truncated: {len(stream):,} characters / "
+        f"{total_bytes:,} bytes total; "
+    )
+    recovery = "full decoded-text artifact unavailable"
+    if artifact_path is not None:
+        recovery = (
+            f"full decoded text persisted to {artifact_path}; use the `read` tool "
+            "to retrieve it"
+        )
+    marker = f"{prefix}{recovery}]…"
+    if artifact_path is not None and len(marker) > max_chars:
+        marker = f"{prefix}full decoded text saved; see full_output_path]…"
+    if len(marker) > max_chars:
+        return _tiny_truncation_preview(stream, max_chars)
+
+    preview_chars = max_chars - len(marker) - 4
+    if preview_chars <= 0:
+        return marker
+    head_chars = preview_chars * 3 // 4
+    tail_chars = preview_chars - head_chars
+    head = stream[:head_chars]
+    tail = stream[-tail_chars:] if tail_chars else ""
+    return "\n\n".join(part for part in (head, marker, tail) if part)
+
+
+class _ShapedOutput(NamedTuple):
+    stdout: str
+    stderr: str
+    full_output_path: Path | None
+
+
+def _shape_output(
+    ctx: InvokeContext | None,
+    *,
+    command: str,
+    returncode: int,
+    stdout_bytes: bytes,
+    stderr_bytes: bytes,
+    max_chars: int,
+) -> _ShapedOutput:
+    stdout_full = (
+        decode_safe(stdout_bytes, from_subprocess=True).text if stdout_bytes else ""
+    )
+    stderr_full = (
+        decode_safe(stderr_bytes, from_subprocess=True).text if stderr_bytes else ""
+    )
+    artifact_path = None
+    if len(stdout_full) > max_chars or len(stderr_full) > max_chars:
+        artifact_path = _persist_full_output(
+            ctx,
+            command=command,
+            returncode=returncode,
+            stdout=stdout_full,
+            stderr=stderr_full,
+            stdout_bytes=len(stdout_bytes),
+            stderr_bytes=len(stderr_bytes),
+        )
+    stdout = _truncate_stream(
+        stdout_full,
+        label="stdout",
+        max_chars=max_chars,
+        total_bytes=len(stdout_bytes),
+        artifact_path=artifact_path,
+    )
+    stderr = _truncate_stream(
+        stderr_full,
+        label="stderr",
+        max_chars=max_chars,
+        total_bytes=len(stderr_bytes),
+        artifact_path=artifact_path,
+    )
+    return _ShapedOutput(stdout, stderr, artifact_path)
+
+
 def _auto_approval_blocker(command: str) -> str | None:
     for op in _SIDE_EFFECTING_OPERATORS:
         if op in command:
@@ -401,7 +561,13 @@ def _auto_approval_blocker(command: str) -> str | None:
 class BashToolConfig(BaseToolConfig):
     permission: ToolPermission = ToolPermission.ASK
     max_output_bytes: int = Field(
-        default=16_000, description="Maximum bytes to capture from stdout and stderr."
+        default=16_000,
+        ge=0,
+        description=(
+            "Maximum decoded-text characters from each stream to show inline. "
+            "This is a character cap retained under its legacy config key, not a "
+            "raw-byte capture limit."
+        ),
     )
     default_timeout: int = Field(
         default=300, description="Default timeout for commands in seconds."
@@ -456,6 +622,7 @@ class BashResult(BaseModel):
     stdout: str
     stderr: str
     returncode: int
+    full_output_path: str | None = None
     background_task_id: str | None = None
     pid: int | None = None
 
@@ -726,6 +893,7 @@ class Bash(
         stdout: str,
         stderr: str,
         returncode: int,
+        full_output_path: Path | None = None,
         sandbox_active: bool = False,
     ) -> BashResult:
         if returncode != 0:
@@ -735,12 +903,18 @@ class Bash(
                 error_msg += f"\nStderr: {stderr}"
             if stdout:
                 error_msg += f"\nStdout: {stdout}"
+            if full_output_path is not None:
+                error_msg += f"\nFull decoded-text output: {full_output_path}"
             if sandbox_active and (hint := _sandbox_failure_hint(stderr)):
                 error_msg += f"\nHint: {hint}"
             raise ToolError(error_msg.strip())
 
         return BashResult(
-            command=command, stdout=stdout, stderr=stderr, returncode=returncode
+            command=command,
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+            full_output_path=str(full_output_path) if full_output_path else None,
         )
 
     def _resolve_sandbox(
@@ -1029,22 +1203,21 @@ class Bash(
                 await kill_async_subprocess(proc)
                 raise self._build_timeout_error(args.command, timeout) from None
 
-            stdout = (
-                decode_safe(stdout_bytes, from_subprocess=True).text[:max_bytes]
-                if stdout_bytes
-                else ""
-            )
-            stderr = (
-                decode_safe(stderr_bytes, from_subprocess=True).text[:max_bytes]
-                if stderr_bytes
-                else ""
+            shaped_output = _shape_output(
+                ctx,
+                command=args.command,
+                returncode=proc.returncode or 0,
+                stdout_bytes=stdout_bytes,
+                stderr_bytes=stderr_bytes,
+                max_chars=max_bytes,
             )
 
             yield self._build_result(
                 command=args.command,
-                stdout=stdout,
-                stderr=stderr,
+                stdout=shaped_output.stdout,
+                stderr=shaped_output.stderr,
                 returncode=proc.returncode or 0,
+                full_output_path=shaped_output.full_output_path,
                 sandbox_active=ran_sandboxed,
             )
 

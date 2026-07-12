@@ -153,7 +153,18 @@ class OpenAIAdapter(APIAdapter):
         provider = params.provider
         extra_body = params.extra_body
         field_name = provider.reasoning_field_name
-        converted_messages = [self._to_api_message(msg, field_name) for msg in messages]
+        converted_messages = [
+            self._to_api_message(msg, field_name)
+            for msg in messages
+            if not (
+                # OpenRouter can route to Cohere, which rejects this otherwise
+                # invisible assistant turn. Other generic providers replay it.
+                provider.name == "openrouter"
+                and msg.role == Role.ASSISTANT
+                and not (msg.content or "").strip()
+                and not msg.tool_calls
+            )
+        ]
 
         # Provider cache hints. Default is explicit/passthrough but inert unless
         # the provider sets extra_body/cache_key (empty fragment is skipped below).
@@ -231,17 +242,20 @@ class OpenAIAdapter(APIAdapter):
             message = LLMMessage(role=Role.ASSISTANT, content="")
 
         usage_data = data.get("usage") or {}
-        prompt_details = usage_data.get("prompt_tokens_details") or {}
-        cached = (
-            prompt_details.get("cached_tokens") or usage_data.get("cached_tokens") or 0
+        from vibe.core.llm.backend._usage_fields import (
+            cache_read_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+            reported_cost_usd,
         )
-        completion_details = usage_data.get("completion_tokens_details") or {}
-        reasoning = completion_details.get("reasoning_tokens") or 0
+
         usage = LLMUsage(
             prompt_tokens=usage_data.get("prompt_tokens", 0),
             completion_tokens=usage_data.get("completion_tokens", 0),
-            cached_tokens=cached,
-            reasoning_tokens=reasoning,
+            cached_tokens=cache_read_tokens(usage_data),
+            cache_write_tokens=cache_write_tokens(usage_data),
+            reasoning_tokens=reasoning_tokens(usage_data),
+            reported_cost_usd=reported_cost_usd(usage_data),
         )
 
         return LLMChunk(

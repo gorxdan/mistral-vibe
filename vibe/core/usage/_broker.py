@@ -95,14 +95,18 @@ class SpendBroker:
         return self._ledger.try_reserve_prompt(context, plan, lease_s=lease_s)
 
     def reconcile(
-        self, reservation: SpendReservation | str, actual: SpendAmount | None
+        self,
+        reservation: SpendReservation | str,
+        actual: SpendAmount | None,
+        *,
+        estimated: bool | None = None,
     ) -> SpendSettlement:
         reservation_id = (
             reservation.reservation_id
             if isinstance(reservation, SpendReservation)
             else reservation
         )
-        return self._ledger.reconcile(reservation_id, actual)
+        return self._ledger.reconcile(reservation_id, actual, estimated=estimated)
 
     def mark_dispatched(self, reservation: SpendReservation | str) -> bool:
         reservation_id = (

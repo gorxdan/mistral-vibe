@@ -79,12 +79,10 @@ def test_non_openai_provider_gets_no_auto_cache_key() -> None:
 
 
 def test_session_keyed_provider_prefers_session_id() -> None:
-    # An OpenAI-compatible provider that opts in via cache.session_keyed gets the
-    # same per-conversation pin as OpenAI (zai/GLM, whose cache scatters under
-    # concurrency). session_id is the routing key when threaded through.
+    # Documented opt-ins use the threaded session_id as their routing key.
     p = ProviderConfig(
-        name="zai",
-        api_base="https://api.z.ai/api/coding/paas/v4",
+        name="documented-provider",
+        api_base="https://example.test/v1",
         cache=ProviderCacheConfig(session_keyed=True),
     )
     msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
@@ -139,9 +137,9 @@ def test_openai_falls_back_to_content_hash_without_session_id() -> None:
     assert hint["prompt_cache_key"].startswith("vibe-")
 
 
-def test_sakana_gets_stable_per_conversation_prompt_cache_key() -> None:
-    # Sakana uses the OpenAI Responses wire format and needs the same partition
-    # pinning that OpenAI does.
+def test_sakana_does_not_get_an_undocumented_prompt_cache_key() -> None:
+    # Sakana stays key-less without a documented prompt-cache-key contract,
+    # even though its endpoint resembles OpenAI's.
     p = ProviderConfig(name="sakana", api_base="https://api.sakana.ai/v1")
     msgs = [
         {"role": "system", "content": "You are vibe."},
@@ -149,26 +147,30 @@ def test_sakana_gets_stable_per_conversation_prompt_cache_key() -> None:
     ]
     hint = build_cache_hint(p, msgs)
     assert hint is not None
-    assert "prompt_cache_key" in hint
-    key = hint["prompt_cache_key"]
+    assert "prompt_cache_key" not in hint
 
-    # Stable across the conversation's turns (prefix unchanged as history grows).
-    grown = msgs + [
-        {"role": "assistant", "content": "hi"},
-        {"role": "user", "content": "follow up"},
-    ]
-    grown_hint = build_cache_hint(p, grown)
-    assert grown_hint is not None
-    assert grown_hint["prompt_cache_key"] == key
 
-    # Distinct per conversation (different opening turn -> different partition).
-    other = [
-        {"role": "system", "content": "You are vibe."},
-        {"role": "user", "content": "a different opener"},
-    ]
-    other_hint = build_cache_hint(p, other)
-    assert other_hint is not None
-    assert other_hint["prompt_cache_key"] != key
+def test_session_key_field_can_use_openrouter_session_id() -> None:
+    cache = ProviderCacheConfig(session_keyed=True, session_key_field="session_id")
+    p = ProviderConfig(
+        name="openrouter", api_base="https://openrouter.ai/api/v1", cache=cache
+    )
+    hint = build_cache_hint(
+        p,
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        session_id="session-123",
+    )
+    assert hint == {"session_id": "session-123"}
+
+
+def test_cache_mode_off_suppresses_configured_session_routing() -> None:
+    cache = ProviderCacheConfig(mode="off", session_keyed=True)
+    hint = build_cache_hint(
+        _provider(cache),
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        session_id="session-123",
+    )
+    assert hint is None
 
 
 def test_explicit_cache_key_overrides_auto_openai_key() -> None:

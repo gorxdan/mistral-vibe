@@ -16,7 +16,6 @@ from vibe.core.config import (
 
 ZAI_API_BASE = "https://api.z.ai/api/coding/paas/v4"
 KIMI_API_BASE = "https://api.kimi.com/coding/v1"
-KIMI_USER_AGENT = "KimiCLI/1.47.0"
 ZAI_HELP_URL = "https://z.ai"
 KIMI_HELP_URL = "https://kimi.com"
 MINIMAX_API_BASE = "https://api.minimax.io/v1"
@@ -80,10 +79,6 @@ PRESETS: list[ProviderPreset] = [
             api_base=ZAI_API_BASE,
             api_key_env_var="ZAI_API_KEY",
             discover_models=False,
-            # ZAI's prefix cache load-balances across nodes; pin each
-            # conversation to one partition so concurrent sessions stop evicting
-            # each other's history tail.
-            cache=ProviderCacheConfig(session_keyed=True),
         ),
         model=ModelConfig(
             name="glm-5.2",
@@ -94,6 +89,7 @@ PRESETS: list[ProviderPreset] = [
             preserve_reasoning=True,
             input_price=0.0,
             output_price=0.0,
+            pricing_mode="subscription",
             auto_compact_threshold=880000,
             context_window=KNOWN_MODEL_CONTEXT_WINDOWS[("zai", "glm-5.2")],
         ),
@@ -102,7 +98,7 @@ PRESETS: list[ProviderPreset] = [
         key="kimi",
         label="Kimi (Moonshot)",
         description=(
-            "Kimi K2.7 Code via the Kimi coding endpoint. Requires a KIMI_API_KEY."
+            "Kimi for Coding via the Kimi coding endpoint. Requires a KIMI_API_KEY."
         ),
         requires_api_key=True,
         help_url=KIMI_HELP_URL,
@@ -110,20 +106,21 @@ PRESETS: list[ProviderPreset] = [
             name="kimi",
             api_base=KIMI_API_BASE,
             api_key_env_var="KIMI_API_KEY",
-            extra_headers={"User-Agent": KIMI_USER_AGENT},
             # api.kimi.com serves only the kimi family; discovery adds mislabelled
             # siblings of the model already configured here.
             discover_models=False,
+            cache=ProviderCacheConfig(session_keyed=True),
         ),
         model=ModelConfig(
-            name="kimi-k2.7-code",
+            name="kimi-for-coding",
             provider="kimi",
             alias="kimi",
             temperature=None,
             thinking="high",
             preserve_reasoning=True,
-            input_price=0.95,
-            output_price=4.0,
+            input_price=0.0,
+            output_price=0.0,
+            pricing_mode="subscription",
             supports_images=True,
             auto_compact_threshold=200000,
         ),
@@ -151,6 +148,7 @@ PRESETS: list[ProviderPreset] = [
             thinking="high",
             input_price=0.0,
             output_price=0.0,
+            pricing_mode="subscription",
             supports_images=True,
             auto_compact_threshold=400000,
         ),
@@ -172,6 +170,7 @@ PRESETS: list[ProviderPreset] = [
             api_key_env_var="OPENAI_API_KEY",
             api_style="openai-responses",
             discover_models=True,
+            cache=ProviderCacheConfig(session_keyed=True),
         ),
         model=ModelConfig(
             name="gpt-5.5",
@@ -183,6 +182,7 @@ PRESETS: list[ProviderPreset] = [
             # model in config if you want cost tracking.
             input_price=0.0,
             output_price=0.0,
+            pricing_mode="api",
             supports_images=True,
             auto_compact_threshold=400000,
         ),
@@ -209,12 +209,14 @@ PRESETS: list[ProviderPreset] = [
             # single model block below remains the default; discovery fills the
             # picker with everything the plan permits.
             discover_models=True,
+            cache=ProviderCacheConfig(session_keyed=True),
         ),
         model=ModelConfig(
             name="gpt-5.5",
             provider="openai-chatgpt",
             alias="gpt-5.5",
             thinking="high",
+            pricing_mode="subscription",
             supports_images=True,
             auto_compact_threshold=400000,
         ),
@@ -246,6 +248,7 @@ PRESETS: list[ProviderPreset] = [
             # Pricing left at 0.0; override per model in config for cost tracking.
             input_price=0.0,
             output_price=0.0,
+            pricing_mode="unknown",
             supports_images=True,
             # 1M-token context window; compact well before the ceiling.
             auto_compact_threshold=880000,
@@ -260,6 +263,7 @@ PRESETS: list[ProviderPreset] = [
                 # Pricing left at 0.0; override per model in config for cost tracking.
                 input_price=0.0,
                 output_price=0.0,
+                pricing_mode="unknown",
                 supports_images=True,
                 # Same 1M-token context window as fugu; compact before the ceiling.
                 auto_compact_threshold=880000,
@@ -290,6 +294,7 @@ PRESETS: list[ProviderPreset] = [
             provider="longcat",
             alias="longcat",
             temperature=1.0,
+            pricing_mode="unknown",
             # 1M-token context window (128K output). Compact well before the
             # ceiling, matching the other 1M-window presets.
             auto_compact_threshold=880000,
@@ -317,6 +322,9 @@ PRESETS: list[ProviderPreset] = [
             # OpenRouter fronts hundreds of models behind one key; discovery
             # fills the picker with everything the key can reach.
             discover_models=True,
+            cache=ProviderCacheConfig(
+                session_keyed=True, session_key_field="session_id"
+            ),
         ),
         model=ModelConfig(
             # Owl Alpha: OpenRouter's own agentic coding foundation model.
@@ -330,6 +338,7 @@ PRESETS: list[ProviderPreset] = [
             # pricing. Override per model in config for cost tracking.
             input_price=0.0,
             output_price=0.0,
+            pricing_mode="free",
             # 1.05M-token context window; compact well before the ceiling,
             # matching the other ~1M-window presets.
             auto_compact_threshold=880000,
@@ -345,6 +354,7 @@ PRESETS: list[ProviderPreset] = [
                 thinking="high",
                 input_price=0.06,
                 output_price=0.12,
+                pricing_mode="api",
                 auto_compact_threshold=200000,
                 context_window=262144,
             ),
@@ -381,6 +391,7 @@ PRESETS: list[ProviderPreset] = [
             name="anthropic.claude-opus-4-8",
             provider="bedrock",
             alias="bedrock",
+            pricing_mode="unknown",
             supports_images=True,
             auto_compact_threshold=200000,
         ),
@@ -389,6 +400,7 @@ PRESETS: list[ProviderPreset] = [
                 name="anthropic.claude-haiku-4-5",
                 provider="bedrock",
                 alias="bedrock-haiku",
+                pricing_mode="unknown",
                 supports_images=True,
                 auto_compact_threshold=200000,
             ),
@@ -396,6 +408,7 @@ PRESETS: list[ProviderPreset] = [
                 name="anthropic.claude-opus-4-7",
                 provider="bedrock",
                 alias="bedrock-opus-4-7",
+                pricing_mode="unknown",
                 supports_images=True,
                 auto_compact_threshold=200000,
             ),
@@ -403,6 +416,7 @@ PRESETS: list[ProviderPreset] = [
                 name="anthropic.claude-fable-5",
                 provider="bedrock",
                 alias="bedrock-fable",
+                pricing_mode="unknown",
                 supports_images=True,
                 auto_compact_threshold=200000,
             ),

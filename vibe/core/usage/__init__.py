@@ -50,6 +50,11 @@ from vibe.core.usage._meter import (
     usage_cost,
 )
 from vibe.core.usage._pricing import ModelPricing, compute_cost, lookup_pricing
+from vibe.core.usage._pricing_policy import (
+    CostQuote,
+    quote_cold_reservation,
+    quote_usage,
+)
 from vibe.core.usage._process_context import (
     SPEND_PROCESS_CONTEXT_ENV,
     SpendProcessContext,
@@ -79,6 +84,7 @@ __all__ = [
     "CodexMonthlyLimit",
     "CodexQuotaSnapshot",
     "CodexQuotaWindow",
+    "CostQuote",
     "DailyBucket",
     "HarnessSplit",
     "ModelBreakdown",
@@ -125,6 +131,8 @@ __all__ = [
     "load_spend_process_context",
     "lookup_pricing",
     "parse_duration_seconds",
+    "quote_cold_reservation",
+    "quote_usage",
     "rate_limit_from_headers",
     "reset_usage_recorder_for_tests",
     "session_records",

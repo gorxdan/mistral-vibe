@@ -78,11 +78,12 @@ class ProviderCacheConfig(BaseModel):
     style: Literal["off", "anthropic-compat", "passthrough"] = "passthrough"
     extra_body: dict[str, Any] = Field(default_factory=dict)
     cache_key: str | None = None
-    # Opt a passthrough provider into a per-conversation ``prompt_cache_key``.
-    # OpenAI/sakana auto-enable by endpoint; set this for any other
-    # OpenAI-compatible provider whose prefix cache load-balances across nodes
-    # and misses without a routing pin (e.g. zai/GLM under concurrency).
+    # Opt into a documented per-conversation routing key. Canonical OpenAI and
+    # ChatGPT retain their established default behavior.
     session_keyed: bool = False
+    session_key_field: Literal["prompt_cache_key", "session_id"] = "prompt_cache_key"
+    # Anthropic cache breakpoint lifetime. Omitted uses the provider's 5m default.
+    ttl: Literal["5m", "1h"] | None = None
 
 
 class ProviderConfig(BaseModel):
@@ -360,6 +361,7 @@ def _default_alias_to_name(data: Any) -> Any:
 ThinkingLevel = Literal["off", "low", "medium", "high", "xhigh", "max"]
 THINKING_LEVELS: list[str] = list(get_args(ThinkingLevel))
 Verbosity = Literal["low", "medium", "high"]
+PricingMode = Literal["auto", "api", "subscription", "free", "unknown"]
 
 # TOML has no null; persists temperature=None past dump_config's None-stripping.
 TEMPERATURE_OMIT_SENTINEL = "omit"
@@ -375,8 +377,13 @@ class ModelConfig(BaseModel):
     # matches the active model's 1.0 so secondary models (devstral-small, local)
     # and the safety judge (which forwards this verbatim) stay consistent.
     temperature: float | None = 1.0
-    input_price: float = 0.0  # Price per million input tokens
-    output_price: float = 0.0  # Price per million output tokens
+    input_price: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
+    output_price: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
+    cached_input_price: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
+    cache_write_input_price: float | None = Field(
+        default=None, ge=0.0, allow_inf_nan=False
+    )
+    pricing_mode: PricingMode = "auto"
     thinking: ThinkingLevel = "off"
     verbosity: Verbosity | None = None
     supports_images: bool = False

@@ -66,11 +66,8 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         self.credentials = VertexCredentials()
 
     def prepare_request(self, params: RequestParams) -> PreparedRequest:
-        messages = params.messages
-        enable_streaming = params.enable_streaming
         provider = params.provider
         _ = params.response_format  # interface parity; unused by Vertex path
-        _ = params.extra_body  # interface parity; unused by Vertex path
         project_id = provider.project_id
         region = provider.region
 
@@ -79,7 +76,9 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         if not region:
             raise ValueError("region is required in provider config for Vertex AI")
 
-        system_prompt, converted_messages = self._mapper.prepare_messages(messages)
+        system_prompt, converted_messages = self._mapper.prepare_messages(
+            params.messages
+        )
         converted_tools = self._mapper.prepare_tools(params.tools)
         converted_tool_choice = self._mapper.prepare_tool_choice(params.tool_choice)
 
@@ -94,7 +93,11 @@ class VertexAnthropicAdapter(AnthropicAdapter):
             thinking=params.thinking,
         )
 
-        if system_blocks := self._build_system_blocks(system_prompt):
+        cache = provider.cache
+        cache_enabled = cache.mode == "explicit" and cache.style != "off"
+        if system_blocks := self._build_system_blocks(
+            system_prompt, cache_enabled=cache_enabled, cache_ttl=cache.ttl
+        ):
             payload["system"] = system_blocks
 
         if converted_tools:
@@ -103,12 +106,17 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         if converted_tool_choice:
             payload["tool_choice"] = converted_tool_choice
 
-        if enable_streaming:
+        if params.enable_streaming:
             payload["stream"] = True
 
-        self._add_cache_control_to_last_user_message(
-            converted_messages, trailing_ephemeral_count(messages)
-        )
+        if cache_enabled:
+            self._add_cache_control_to_last_user_message(
+                converted_messages, trailing_ephemeral_count(params.messages), cache.ttl
+            )
+        if cache_enabled and cache.extra_body:
+            payload.update(cache.extra_body)
+        if params.extra_body:
+            payload.update(params.extra_body)
 
         headers = {
             "Content-Type": "application/json",
@@ -116,10 +124,11 @@ class VertexAnthropicAdapter(AnthropicAdapter):
             "anthropic-beta": self.BETA_FEATURES,
         }
 
-        endpoint = build_vertex_endpoint(
-            region, project_id, params.model_name, streaming=enable_streaming
+        return PreparedRequest(
+            build_vertex_endpoint(
+                region, project_id, params.model_name, streaming=params.enable_streaming
+            ),
+            headers,
+            orjson.dumps(payload),
+            base_url=build_vertex_base_url(region),
         )
-        base_url = build_vertex_base_url(region)
-
-        body = orjson.dumps(payload)
-        return PreparedRequest(endpoint, headers, body, base_url=base_url)

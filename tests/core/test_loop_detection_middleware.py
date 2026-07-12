@@ -30,6 +30,16 @@ def _assistant_call(name: str, arguments: str, index: int = 0) -> LLMMessage:
     )
 
 
+def _assistant_calls(name: str, arguments: list[str]) -> LLMMessage:
+    return LLMMessage(
+        role=Role.ASSISTANT,
+        tool_calls=[
+            ToolCall(index=index, function=FunctionCall(name=name, arguments=value))
+            for index, value in enumerate(arguments)
+        ],
+    )
+
+
 def _tool_result() -> LLMMessage:
     return LLMMessage(role=Role.TOOL, content="ok")
 
@@ -67,10 +77,18 @@ class TestTrailingFingerprints:
             _assistant_call("read", '{"path": "a.py"}'),
             _tool_result(),
             _assistant_call("grep", '{"pattern": "x"}'),
-            LLMMessage(role=Role.ASSISTANT, content="thinking"),
         ])
         fps = _trailing_tool_call_fingerprints(messages, limit=10)
         assert fps == [("read", '{"path": "a.py"}'), ("grep", '{"pattern": "x"}')]
+
+    def test_assistant_response_breaks_window(self) -> None:
+        messages = MessageList(
+            [_assistant_call("read", '{"path": "a.py"}') for _ in range(5)]
+            + [LLMMessage(role=Role.ASSISTANT, content="synthesis")]
+            + [LLMMessage(role=Role.USER, content="continue from hook", injected=True)]
+        )
+
+        assert _trailing_tool_call_fingerprints(messages, limit=5) == []
 
     def test_truncates_to_limit(self, vibe_config: VibeConfig) -> None:
         messages = MessageList([
@@ -113,15 +131,15 @@ class TestLoopDetectionMiddleware:
         assert "stuck" in (result.message or "").lower()
 
     @pytest.mark.asyncio
-    async def test_strike_two_stops(self, ctx: ConversationContext) -> None:
+    async def test_strike_two_forces_synthesis(self, ctx: ConversationContext) -> None:
         mw = LoopDetectionMiddleware(threshold=5)
         ctx.messages = MessageList([
             _assistant_call("read", '{"path": "a.py"}') for _ in range(5)
         ])
         await mw.before_turn(ctx)  # strike 1
         result = await mw.before_turn(ctx)  # strike 2, still looping
-        assert result.action == MiddlewareAction.STOP
-        assert "read" in (result.reason or "")
+        assert result.action == MiddlewareAction.FINALIZE
+        assert "Do not call tools" in (result.message or "")
 
     @pytest.mark.asyncio
     async def test_different_call_resets_warning(
@@ -220,6 +238,20 @@ class TestTrailingToolCallNames:
         )
         assert _trailing_tool_call_names(messages, limit=7) is None
 
+    def test_parallel_same_tool_batch_counts_as_one_round(self) -> None:
+        messages = MessageList([
+            _assistant_calls("read", [f'{{"path": "f{i}.py"}}' for i in range(7)])
+        ])
+        assert _trailing_tool_call_names(messages, limit=7) is None
+
+    def test_real_user_message_breaks_window(self) -> None:
+        messages = MessageList(
+            [_assistant_call("read", f'{{"path": "f{i}.py"}}') for i in range(6)]
+            + [LLMMessage(role=Role.USER, content="new request")]
+            + [_assistant_call("read", '{"path": "new.py"}')]
+        )
+        assert _trailing_tool_call_names(messages, limit=7) is None
+
 
 class TestNameFrequencyTier:
     @pytest.mark.asyncio
@@ -238,7 +270,7 @@ class TestNameFrequencyTier:
         assert "different arguments" in (result.message or "")
 
     @pytest.mark.asyncio
-    async def test_variant_args_stops_on_second_strike(
+    async def test_variant_args_continue_after_advisory(
         self, ctx: ConversationContext
     ) -> None:
         mw = LoopDetectionMiddleware(threshold=5)
@@ -247,8 +279,8 @@ class TestNameFrequencyTier:
         ])
         await mw.before_turn(ctx)  # strike 1
         result = await mw.before_turn(ctx)  # strike 2
-        assert result.action == MiddlewareAction.STOP
-        assert "varying arguments" in (result.reason or "")
+        assert result.action == MiddlewareAction.CONTINUE
+        assert result.message is None
 
     @pytest.mark.asyncio
     async def test_variant_args_below_name_threshold_continues(
@@ -312,3 +344,43 @@ class TestNameFrequencyTier:
         result = await mw.before_turn(ctx)
         assert result.action == MiddlewareAction.INJECT_MESSAGE
         assert "bash" in (result.message or "")
+        assert "inspect a different target" not in (result.message or "")
+
+    @pytest.mark.asyncio
+    async def test_distinct_git_show_targets_remain_advisory(
+        self, ctx: ConversationContext
+    ) -> None:
+        mw = LoopDetectionMiddleware(threshold=5)
+        targets = [
+            "verification_state.py",
+            "verification_contract.py",
+            "task.py",
+            "middleware.py",
+            "agent_loop.py",
+            "runtime.py",
+            "manager.py",
+        ]
+        ctx.messages = MessageList([
+            _assistant_call("bash", f'{{"command": "git show HEAD -- {target}"}}')
+            for target in targets
+        ])
+
+        warning = await mw.before_turn(ctx)
+        recovery = await mw.before_turn(ctx)
+
+        assert warning.action == MiddlewareAction.INJECT_MESSAGE
+        assert recovery.action == MiddlewareAction.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_exact_calls_before_current_user_do_not_carry_over(
+        self, ctx: ConversationContext
+    ) -> None:
+        mw = LoopDetectionMiddleware(threshold=5)
+        ctx.messages = MessageList(
+            [_assistant_call("read", '{"file_path": "old.py"}') for _ in range(5)]
+            + [LLMMessage(role=Role.USER, content="new request")]
+        )
+
+        result = await mw.before_turn(ctx)
+
+        assert result.action == MiddlewareAction.CONTINUE

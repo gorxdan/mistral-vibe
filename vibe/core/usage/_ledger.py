@@ -132,6 +132,7 @@ class _ReconciledEvent(_EventBase):
     reservation_id: str
     amount: SpendAmount
     estimated: bool
+    usage_reported: bool = False
 
 
 @final
@@ -253,6 +254,7 @@ def _add_amount(left: SpendAmount, right: SpendAmount) -> SpendAmount:
     return SpendAmount(
         prompt_tokens=left.prompt_tokens + right.prompt_tokens,
         cached_tokens=left.cached_tokens + right.cached_tokens,
+        cache_write_tokens=left.cache_write_tokens + right.cache_write_tokens,
         completion_tokens=left.completion_tokens + right.completion_tokens,
         cost_usd=left.cost_usd + right.cost_usd,
     )
@@ -691,6 +693,7 @@ class SpendLedger:
         previous = state.settlements.get(reservation_id)
         if reservation_id not in state.active and (
             previous is None
+            or previous.usage_reported
             or not previous.estimated
             or previous.disposition == SpendSettlementDisposition.RELEASED
         ):
@@ -701,12 +704,13 @@ class SpendLedger:
             disposition=SpendSettlementDisposition.RECONCILED,
             amount=event.amount,
             estimated=event.estimated,
+            usage_reported=event.usage_reported or not event.estimated,
             applied=True,
             timestamp=event.timestamp,
         )
         prompt_estimate = state.reservations[reservation_id].prompt_estimate
         if (
-            not event.estimated
+            (event.usage_reported or not event.estimated)
             and prompt_estimate is not None
             and event.amount.prompt_tokens > 0
         ):
@@ -1359,7 +1363,11 @@ class SpendLedger:
         return min(deadlines) if deadlines else None
 
     def reconcile(
-        self, reservation_id: str, actual: SpendAmount | None
+        self,
+        reservation_id: str,
+        actual: SpendAmount | None,
+        *,
+        estimated: bool | None = None,
     ) -> SpendSettlement:
         with self._locked():
             state = self._load()
@@ -1372,10 +1380,18 @@ class SpendLedger:
                 )
             previous = state.settlements.get(reservation_id)
             amount = actual or reservation.estimate
-            estimated = actual is None
+            settlement_estimated = actual is None if estimated is None else estimated
+            if actual is None:
+                settlement_estimated = True
             if previous is not None:
                 return self._reconcile_settled(
-                    state, reservation_id, amount, estimated, previous, now
+                    state,
+                    reservation_id,
+                    amount,
+                    settlement_estimated,
+                    actual is not None,
+                    previous,
+                    now,
                 )
             event = _ReconciledEvent(
                 sequence=state.sequence + 1,
@@ -1383,7 +1399,8 @@ class SpendLedger:
                 timestamp=now,
                 reservation_id=reservation_id,
                 amount=amount,
-                estimated=estimated,
+                estimated=settlement_estimated,
+                usage_reported=actual is not None,
             )
             self._append(state, event)
             return state.settlements[reservation_id]
@@ -1394,16 +1411,17 @@ class SpendLedger:
         reservation_id: str,
         amount: SpendAmount,
         estimated: bool,
+        usage_reported: bool,
         previous: SpendSettlement,
         now: float,
     ) -> SpendSettlement:
         if previous.disposition == SpendSettlementDisposition.RELEASED:
             raise SpendLedgerConflictError("released reservation cannot be reconciled")
-        if not previous.estimated:
-            if previous.amount != amount or estimated:
+        if previous.usage_reported or not previous.estimated:
+            if previous.amount != amount or previous.estimated != estimated:
                 raise SpendLedgerConflictError("exact usage already reconciled")
             return previous.model_copy(update={"applied": False})
-        if estimated:
+        if estimated and not usage_reported:
             return previous.model_copy(update={"applied": False})
         self._append(
             state,
@@ -1413,7 +1431,8 @@ class SpendLedger:
                 timestamp=now,
                 reservation_id=reservation_id,
                 amount=amount,
-                estimated=False,
+                estimated=estimated,
+                usage_reported=usage_reported,
             ),
         )
         return state.settlements[reservation_id]

@@ -39,6 +39,7 @@ def test_openai_preset_provider_config() -> None:
     assert provider.api_style == "openai-responses"
     # Live model discovery should fill the picker from /v1/models.
     assert provider.discover_models is True
+    assert provider.cache.session_keyed is True
 
 
 def test_openai_preset_model_config() -> None:
@@ -49,6 +50,37 @@ def test_openai_preset_model_config() -> None:
     assert model.supports_images is True
     # GPT-5.x are reasoning models; the adapter omits temperature for them.
     assert model.thinking != "off"
+
+
+def test_presets_declare_billing_semantics() -> None:
+    models = {preset.key: preset.model for preset in PRESETS if preset.model}
+    assert models["zai"].pricing_mode == "subscription"
+    assert models["kimi"].pricing_mode == "subscription"
+    assert models["kimi"].input_price == 0.0
+    assert models["kimi"].output_price == 0.0
+    assert models["minimax"].pricing_mode == "subscription"
+    assert models["openai"].pricing_mode == "api"
+    assert models["openai-chatgpt"].pricing_mode == "subscription"
+    assert models["openrouter"].pricing_mode == "free"
+    assert models["longcat"].pricing_mode == "unknown"
+
+    sakana = next(preset for preset in PRESETS if preset.key == "sakana")
+    assert all(
+        model.pricing_mode == "unknown"
+        for model in (sakana.model, *sakana.extra_models)
+        if model is not None
+    )
+    bedrock = next(preset for preset in PRESETS if preset.key == "bedrock")
+    assert all(
+        model.pricing_mode == "unknown"
+        for model in (bedrock.model, *bedrock.extra_models)
+        if model is not None
+    )
+    openrouter = next(preset for preset in PRESETS if preset.key == "openrouter")
+    laguna = next(
+        model for model in openrouter.extra_models if model.alias == "laguna-xs-2.1"
+    )
+    assert laguna.pricing_mode == "api"
 
 
 def test_preset_for_provider_name_resolves_openai() -> None:
@@ -64,6 +96,7 @@ def test_openai_chatgpt_preset_discovers_models() -> None:
     # Discovery queries the codex /models endpoint via the stored OAuth token,
     # so the picker reflects the subscription's full model set.
     assert preset.provider.discover_models is True
+    assert preset.provider.cache.session_keyed is True
 
 
 def test_apply_openai_preset_persists_provider_and_model(
@@ -185,13 +218,11 @@ def test_zai_preset_does_not_discover_models() -> None:
     assert preset.provider.discover_models is False
 
 
-def test_zai_preset_is_session_keyed() -> None:
-    # ZAI's prefix cache scatters across nodes under concurrency; the preset pins
-    # each conversation to one partition via a per-session prompt_cache_key.
+def test_zai_preset_does_not_send_an_undocumented_cache_key() -> None:
     preset = next((p for p in PRESETS if p.key == "zai"), None)
     assert preset is not None
     assert preset.provider is not None
-    assert preset.provider.cache.session_keyed is True
+    assert preset.provider.cache.session_keyed is False
 
 
 def test_kimi_preset_does_not_discover_models() -> None:
@@ -199,6 +230,15 @@ def test_kimi_preset_does_not_discover_models() -> None:
     assert preset is not None
     assert preset.provider is not None
     assert preset.provider.discover_models is False
+
+
+def test_kimi_preset_uses_documented_cache_and_identity_contract() -> None:
+    preset = next(p for p in PRESETS if p.key == "kimi")
+    assert preset.provider is not None
+    assert preset.model is not None
+    assert preset.provider.cache.session_keyed is True
+    assert "User-Agent" not in preset.provider.extra_headers
+    assert preset.model.name == "kimi-for-coding"
 
 
 def test_kimi_preset_uses_supported_thinking_effort() -> None:
@@ -211,7 +251,7 @@ _KIMI_CHAT_RESPONSE = {
     "id": "cmpl-1",
     "object": "chat.completion",
     "created": 0,
-    "model": "kimi-k2.7-code",
+    "model": "kimi-for-coding",
     "choices": [
         {
             "index": 0,
@@ -248,10 +288,12 @@ async def test_kimi_preset_temperature_none_survives_round_trip(
                 model=kimi_model,
                 messages=[LLMMessage(role=Role.USER, content="hi")],
                 temperature=kimi_model.temperature,
+                metadata={"session_id": "kimi-session-42"},
             )
         )
     sent = json.loads(route.calls.last.request.content)
     assert "temperature" not in sent
+    assert sent["prompt_cache_key"] == "kimi-session-42"
 
 
 def test_minimax_preset_discovers_models() -> None:
@@ -333,6 +375,8 @@ def test_openrouter_preset_provider_config() -> None:
     assert provider.api_key_env_var == "OPENROUTER_API_KEY"
     # OpenAI-compatible chat-completions endpoint; the default openai adapter.
     assert provider.api_style == "openai"
+    assert provider.cache.session_keyed is True
+    assert provider.cache.session_key_field == "session_id"
     # Multi-model router; discovery fills the picker with available models.
     assert provider.discover_models is True
 

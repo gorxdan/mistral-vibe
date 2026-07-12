@@ -5,7 +5,7 @@ import json
 import pytest
 
 from tests.constants import ANTHROPIC_BASE_URL, ANTHROPIC_MESSAGES_PATH
-from vibe.core.config import ProviderConfig
+from vibe.core.config import ProviderCacheConfig, ProviderConfig
 from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.anthropic import AnthropicAdapter, AnthropicMapper
 from vibe.core.types import (
@@ -371,6 +371,64 @@ class TestAdapterPrepareRequest:
         )
         payload = json.loads(req.body)
         assert payload["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_cache_mode_off_removes_markers_and_keeps_request_extra_body(
+        self, adapter, provider
+    ):
+        provider = provider.model_copy(
+            update={
+                "cache": ProviderCacheConfig(
+                    mode="off", extra_body={"provider_cache_option": True}
+                )
+            }
+        )
+        req = adapter.prepare_request(
+            RequestParams(
+                model_name="claude-sonnet-4-20250514",
+                messages=[
+                    LLMMessage(role=Role.SYSTEM, content="Be helpful."),
+                    LLMMessage(role=Role.USER, content="Hello"),
+                ],
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
+                extra_body={"request_option": True},
+            )
+        )
+
+        payload = json.loads(req.body)
+        assert "cache_control" not in payload["system"][0]
+        assert "cache_control" not in payload["messages"][0]["content"][-1]
+        assert "provider_cache_option" not in payload
+        assert payload["request_option"] is True
+
+    def test_one_hour_cache_ttl_reaches_system_and_user_breakpoints(
+        self, adapter, provider
+    ):
+        provider = provider.model_copy(update={"cache": ProviderCacheConfig(ttl="1h")})
+        req = adapter.prepare_request(
+            RequestParams(
+                model_name="claude-sonnet-4-20250514",
+                messages=[
+                    LLMMessage(role=Role.SYSTEM, content="Be helpful."),
+                    LLMMessage(role=Role.USER, content="Hello"),
+                ],
+                temperature=0.5,
+                tools=None,
+                max_tokens=1024,
+                tool_choice=None,
+                enable_streaming=False,
+                provider=provider,
+            )
+        )
+
+        payload = json.loads(req.body)
+        expected = {"type": "ephemeral", "ttl": "1h"}
+        assert payload["system"][0]["cache_control"] == expected
+        assert payload["messages"][0]["content"][-1]["cache_control"] == expected
 
     def test_with_tools(self, adapter, provider):
         messages = [LLMMessage(role=Role.USER, content="Hello")]

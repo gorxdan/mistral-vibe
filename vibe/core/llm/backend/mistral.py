@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 import types
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
@@ -30,6 +30,7 @@ from mistralai.client.models import (
     UsageInfo,
     UserMessage,
 )
+from mistralai.client.types import UNSET, OptionalNullable
 from mistralai.client.utils.retries import BackoffStrategy, RetryConfig
 from mistralai.extra.observability.telemetry import configure_telemetry
 import orjson
@@ -79,6 +80,23 @@ def cached_tokens_from_usage(usage: UsageInfo | None) -> int:
         if isinstance(cached, int):
             return cached
     return 0
+
+
+def _prompt_cache_key_for_request(
+    provider: ProviderConfig,
+    messages: Sequence[LLMMessage],
+    metadata: dict[str, str] | None,
+) -> OptionalNullable[str]:
+    from vibe.core.llm.backend.cache_hints import build_cache_routing_hint
+
+    routing_messages = [
+        {"role": message.role.value, "content": message.content or ""}
+        for message in messages
+    ]
+    routing = build_cache_routing_hint(
+        provider, routing_messages, (metadata or {}).get("session_id")
+    )
+    return routing.get("prompt_cache_key", UNSET)
 
 
 class MistralMapper:
@@ -338,6 +356,9 @@ class MistralBackend:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
             if reasoning_effort is not None:
                 temperature = 1.0
+            prompt_cache_key = _prompt_cache_key_for_request(
+                self._provider, messages, metadata
+            )
             response = await complete_with_retry(
                 lambda: self._get_client().chat.complete_async(
                     model=model.name,
@@ -360,6 +381,7 @@ class MistralBackend:
                     stream=False,
                     reasoning_effort=reasoning_effort,
                     response_format=cast(Any, response_format),
+                    prompt_cache_key=prompt_cache_key,
                 ),
                 max_elapsed_time=self._retry_max_elapsed_time,
             )
@@ -420,11 +442,15 @@ class MistralBackend:
         temperature = request.temperature
         tools = request.tools
         tool_choice = request.tool_choice
+        metadata = request.metadata
         del response_headers_sink  # generic-backend only; ignored here
         try:
             reasoning_effort = _THINKING_TO_REASONING_EFFORT.get(model.thinking)
             if reasoning_effort is not None:
                 temperature = 1.0
+            prompt_cache_key = _prompt_cache_key_for_request(
+                self._provider, messages, metadata
+            )
 
             async for stream, chunk in stream_with_retry(
                 lambda: self._get_client().chat.stream_async(
@@ -444,9 +470,10 @@ class MistralBackend:
                     if tool_choice
                     else None,
                     http_headers=request.extra_headers,
-                    metadata=request.metadata,
+                    metadata=metadata,
                     reasoning_effort=reasoning_effort,
                     response_format=cast(Any, request.response_format),
+                    prompt_cache_key=prompt_cache_key,
                 ),
                 max_elapsed_time=self._retry_max_elapsed_time,
             ):

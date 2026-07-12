@@ -484,6 +484,10 @@ backend = "generic"
 api_style = "openai"
 reasoning_field_name = "reasoning_content"
 
+[providers.cache]
+session_keyed = true
+session_key_field = "prompt_cache_key"
+
 # A model references a provider by name.
 #   - name      : model id sent to the API (the "model" field)
 #   - provider  : must match a [[providers]] name above
@@ -492,12 +496,11 @@ reasoning_field_name = "reasoning_content"
 #   - supports_images : enable image input
 #   - auto_compact_threshold : token count that triggers auto-compaction (the effective per-model context budget; set ~80% of the model's real context window)
 [[models]]
-name = "kimi-k2.7-code"
+name = "kimi-for-coding"
 provider = "kimi"
 alias = "kimi"
 thinking = "high"
-input_price = 0.95
-output_price = 4.0
+pricing_mode = "subscription"
 
 # Select the default model by alias:
 active_model = "kimi"
@@ -522,48 +525,58 @@ provider = "openai"
 alias = "gpt-5.5"
 thinking = "high"
 supports_images = true
+pricing_mode = "api"
 ```
 
 Put `OPENAI_API_KEY=sk-...` in `~/.vibe/.env`. This is **pay-per-token** platform billing. The model picker live-discovers the available models from `/v1/models`, so the `[[models]]` block above just sets a starting default.
 
 To use a **ChatGPT Plus/Pro subscription** instead (no per-token billing), pick **Sign in with ChatGPT** in `--setup` — it runs the OAuth sign-in and stores tokens in `$VIBE_HOME/auth/openai.json`. This routes through OpenAI's unofficial ChatGPT backend and is provided as a convenience; it can break if OpenAI changes that endpoint.
 
-#### Adding OpenAI-compatible providers (Kimi K2.7, GLM-5.2/ZAI)
+#### Adding OpenAI-compatible providers (Kimi, GLM-5.2/ZAI)
 
 Most third-party coding models expose an OpenAI-compatible `/chat/completions` endpoint and stream reasoning in a `reasoning_content` field — the exact shape Vibe's generic backend expects, so no code changes are required. Use `api_style = "openai"` (the default): Vibe captures the streamed `reasoning_content`, displays it, and sends the configured thinking level as `reasoning_effort` when thinking is enabled.
 
 > Do **not** use `api_style = "reasoning"` for these: Vibe's reasoning adapter parses content blocks and would drop the streamed `reasoning_content` field, hiding the model's thinking.
 
-**Kimi K2.7 Code (Moonshot)** — `name` and prices from the Kimi platform; context 256k; supports text, image, and video input:
+**Kimi for Coding (Moonshot)** — the Kimi Code subscription endpoint uses a
+plan-scoped model id and quota rather than per-token API billing:
 
 ```toml
 [[providers]]
 name = "kimi"
 api_base = "https://api.kimi.com/coding/v1"   # Kimi Code platform (coding-plan); Moonshot keys use https://api.moonshot.cn/v1
 api_key_env_var = "KIMI_API_KEY"
+discover_models = false
+
+[providers.cache]
+session_keyed = true
+session_key_field = "prompt_cache_key"
 
 # Standard model
 [[models]]
-name = "kimi-k2.7-code"          # ~180 tok/s; use "kimi-k2.7-code-highspeed" for the faster variant
+name = "kimi-for-coding"
 provider = "kimi"
 alias = "kimi"
 thinking = "high"
-input_price = 0.95               # cache miss; cache hit is $0.19/1M
-output_price = 4.0
+pricing_mode = "subscription"
 supports_images = true
 auto_compact_threshold = 200000   # 256k context; compaction trigger (~76% of window)
 
 [[models]]
-name = "kimi-k2.7-code-highspeed"
+name = "kimi-for-coding-highspeed"
 provider = "kimi"
 alias = "kimi-fast"
 thinking = "high"
-input_price = 1.90               # cache miss; cache hit is $0.38/1M
-output_price = 8.0
+pricing_mode = "subscription"
 supports_images = true
 ```
 
-**GLM-5.2 (ZAI / Zhipu / Z.ai)** — 1M context, text input only; the ZAI coding plan is a flat subscription so per-token prices are set to `0.0` for usage tracking:
+Use the real Vibe user agent on the coding endpoint; do not copy another
+client's `User-Agent`. Pay-as-you-go Moonshot endpoints use different model ids
+and should be configured with `pricing_mode = "api"` and their published
+input, cached-input, and output rates.
+
+**GLM-5.2 (ZAI / Zhipu / Z.ai)** — 1M context, text input only; the ZAI coding plan is a flat subscription:
 
 ```toml
 [[providers]]
@@ -576,8 +589,7 @@ name = "glm-5.2"
 provider = "zai"
 alias = "glm"
 thinking = "high"
-input_price = 0.0                # coding plan = flat subscription
-output_price = 0.0
+pricing_mode = "subscription"
 auto_compact_threshold = 880000   # 1M context, 128k max output; compaction trigger (~84% of window)
 ```
 
@@ -595,7 +607,62 @@ Notes:
 - **Endpoint base**: `api_base` includes the version segment (`/v1` or `/api/paas/v4`) but **not** `/chat/completions`; Vibe appends that automatically.
 - **Multi-turn reasoning**: if a provider rejects an assistant turn on long conversations because of how reasoning is replayed, set `thinking = "off"` for that model or report it — a dedicated adapter may be needed.
 - **Wrong endpoint looks like "rate limit"**: a ZAI Coding Plan key sent to the pay-as-you-go `/api/paas/v4` endpoint returns HTTP 429 with `code 1113` "Insufficient balance or no resource package", which Vibe surfaces as a rate-limit error. If GLM reports rate limits you can't explain, check `api_base` matches your plan (`/api/coding/paas/v4` for the Coding Plan).
-- **Kimi User-Agent gate**: the Kimi coding endpoint only serves approved clients, so its provider needs `extra_headers = { User-Agent = "KimiCLI/1.47.0" }`. A missing/odd User-Agent returns `403 access_terminated_error`.
+- **Cache routing**: the Kimi coding endpoint uses `prompt_cache_key`. ZAI caching is automatic; Vibe intentionally does not send an undocumented cache-key field to the coding-plan endpoint.
+
+#### Prompt caching and billing
+
+Vibe keeps each conversation on a stable provider cache partition when the
+provider documents a routing field. Third-party OpenAI-compatible endpoints are
+not assumed to understand OpenAI-specific fields; opt them in only when their
+contract documents the key.
+
+| Provider path | Vibe behavior |
+| --- | --- |
+| Mistral API | Sends the conversation id as `prompt_cache_key`; reads use the configured cached-input rate. |
+| OpenAI API / ChatGPT | Sends `prompt_cache_key`; the ChatGPT backend also uses its session/thread routing headers. |
+| Kimi Code | Sends `prompt_cache_key`; the coding plan is recorded as subscription usage. |
+| OpenRouter | Sends its documented top-level `session_id` and uses the provider-reported charged cost when available. |
+| Anthropic-compatible | Supports explicit `cache_control` breakpoints, optional 5-minute/1-hour TTLs, and records cache reads and writes. |
+| ZAI Coding Plan | Relies on automatic caching and sends no undocumented key. |
+
+For a documented custom provider:
+
+```toml
+[providers.cache]
+mode = "explicit"                # "off" disables all Vibe cache hints
+style = "passthrough"            # or "anthropic-compat"
+session_keyed = true
+session_key_field = "prompt_cache_key" # OpenRouter uses "session_id"
+ttl = "1h"                       # Anthropic only; omit for its 5m default
+# extra_body = { provider_specific_flag = true }
+```
+
+Model billing is explicit and independent of cache routing:
+
+```toml
+[[models]]
+name = "example-model"
+provider = "example"
+alias = "example"
+pricing_mode = "api"             # "auto" | "api" | "subscription" | "free" | "unknown"
+input_price = 1.0                 # USD per million tokens
+cached_input_price = 0.1
+cache_write_input_price = 1.25
+output_price = 5.0
+```
+
+`auto` uses a verified built-in price when one exists, otherwise the configured
+unpriced fallback and marks the amount estimated. `api` means metered billing;
+missing rates are still estimated. `subscription` and `free` are exact zero
+incremental USD, while `unknown` always uses and labels the fallback estimate.
+Cache reads and writes are tracked separately throughout the session ledger,
+workflows, usage history, tracing, ACP, and `/status`.
+
+Vibe does not make a speculative model request merely to warm the cache at
+session creation. Such a request consumes API money or plan quota and cannot
+reduce the total cost of a single-turn session; at best it can hide some
+first-turn latency while the user types. The first real request warms the
+provider cache, and the stable routing above maximizes reuse on later turns.
 
 ### Safety Judge (experimental)
 
@@ -738,7 +805,8 @@ an existing team manager uses the new ledger for later teammates.
 The default $10, 512-call, two-concurrent-call, 16-retry, and 32,768-token
 per-call output controls remain finite. Missing provider usage is charged at the
 reservation estimate. Models without configured or built-in prices use the
-fallback rates above; set both to `0` for a local or subscription model that
+fallback rates above and remain visibly estimated. Set `pricing_mode = "free"`
+for local models or `pricing_mode = "subscription"` for flat-rate plans that
 should not consume the USD cap. When a request omits `max_tokens`, routed
 backends receive the affordable completion bound, reduced atomically across the
 scope hierarchy when necessary. The broker rejects the call instead of reducing

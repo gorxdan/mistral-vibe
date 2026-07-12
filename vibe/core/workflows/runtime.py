@@ -17,11 +17,13 @@ from uuid import uuid4
 import orjson
 from pydantic import BaseModel, ConfigDict
 
+from vibe.core.config import ModelPurpose
 from vibe.core.failure_diagnostic import FailureCategory
 from vibe.core.llm.exceptions import BackendError
 from vibe.core.logger import logger
 from vibe.core.repair import RepairAction, RepairController
-from vibe.core.types import AssistantEvent
+from vibe.core.types import AssistantEvent, LLMUsage
+from vibe.core.usage import CostQuote, quote_usage
 from vibe.core.usage._context import SpendPurpose, SpendScopeKind
 from vibe.core.usage._session import SpendBudgetExceededError
 from vibe.core.verification_contract import (
@@ -286,8 +288,9 @@ def _loop_log_path(loop: Any) -> Path | None:
 
 # A custom executor owns the whole spawn contract incl. the scratchpad grant
 # (VIBE_ISOLATED_SCRATCHPAD_DIR); without it children are worktree-confined only.
+type IsolatedStats = dict[str, int | float | bool]
 IsolatedExecutor = Callable[
-    [str, str, str | None, int], Awaitable["str | tuple[str, dict[str, int] | None]"]
+    [str, str, str | None, int], Awaitable["str | tuple[str, IsolatedStats | None]"]
 ]
 
 
@@ -320,6 +323,9 @@ class _LiveAgent:
     status: str = "running"
     tokens_in: int = 0
     tokens_out: int = 0
+    cost_usd: float = 0.0
+    cost_initialized: bool = False
+    cost_estimated: bool = False
     started_at: float = field(default_factory=time.monotonic)
     error: str | None = None
     prompt: str = ""
@@ -557,15 +563,25 @@ def _prompt_hash(
 _ISOLATED_STATS_SENTINEL = "__VIBE_WORKFLOW_STATS__"
 
 
-def _parse_stats(stderr_text: str) -> dict[str, int] | None:
+def _parse_stats(stderr_text: str) -> IsolatedStats | None:
     for line in reversed(stderr_text.splitlines()):
         if line.startswith(_ISOLATED_STATS_SENTINEL):
             try:
                 data = orjson.loads(line[len(_ISOLATED_STATS_SENTINEL) :])
-                return {
+                stats: IsolatedStats = {
                     "prompt_tokens": int(data.get("prompt_tokens", 0)),
                     "completion_tokens": int(data.get("completion_tokens", 0)),
                 }
+                for key in ("cached_tokens", "cache_write_tokens", "reasoning_tokens"):
+                    if key in data:
+                        stats[key] = max(int(data[key]), 0)
+                raw_cost = data.get("cost_usd")
+                if isinstance(raw_cost, int | float) and not isinstance(raw_cost, bool):
+                    stats["cost_usd"] = max(float(raw_cost), 0.0)
+                for key in ("cost_initialized", "cost_estimated"):
+                    if isinstance(data.get(key), bool):
+                        stats[key] = data[key]
+                return stats
             except (orjson.JSONDecodeError, ValueError, TypeError, AttributeError):
                 return None
     return None
@@ -575,7 +591,7 @@ def _parse_stats(stderr_text: str) -> dict[str, int] | None:
 class IsolatedResult:
     output: str
     returncode: int = 0
-    stats: dict[str, int] | None = None
+    stats: IsolatedStats | None = None
     delivered: bool = False
     worktree_path: str | None = None
     branch: str | None = None
@@ -1388,6 +1404,23 @@ class WorkflowRuntime:
         semantic_escalation_failed = False
         unaccounted_repair_tokens = 0
         attempts_run = 0
+        repair_cost_usd = 0.0
+        repair_cost_estimated = False
+
+        def _sync_live_cost() -> None:
+            if loop is None:
+                return
+            session_cost = getattr(loop.stats, "session_cost", None)
+            if not isinstance(session_cost, int | float) or isinstance(
+                session_cost, bool
+            ):
+                return
+            live.cost_usd = max(float(session_cost), 0.0) + repair_cost_usd
+            live.cost_initialized = True
+            live.cost_estimated = (
+                bool(getattr(loop.stats, "cost_is_estimated", False))
+                or repair_cost_estimated
+            )
 
         async def _close_loop() -> None:
             nonlocal loop_closed
@@ -1492,6 +1525,7 @@ class WorkflowRuntime:
                 error_msg = str(e)
                 break
             finally:
+                _sync_live_cost()
                 if not completed:
                     await _close_loop()
 
@@ -1598,6 +1632,15 @@ class WorkflowRuntime:
                         if formatted.usage is not None:
                             tokens_in += formatted.usage.prompt_tokens
                             tokens_out += formatted.usage.completion_tokens
+                            repair_quote = self._quote_repair_usage(
+                                repair_config, ModelPurpose.FORMATTER, formatted.usage
+                            )
+                            if repair_quote is not None:
+                                repair_cost_usd += repair_quote.cost_usd
+                                repair_cost_estimated = (
+                                    repair_cost_estimated or repair_quote.estimated
+                                )
+                                _sync_live_cost()
                             unaccounted_repair_tokens += (
                                 formatted.usage.prompt_tokens
                                 + formatted.usage.completion_tokens
@@ -1629,6 +1672,17 @@ class WorkflowRuntime:
                     if escalated.usage is not None:
                         tokens_in += escalated.usage.prompt_tokens
                         tokens_out += escalated.usage.completion_tokens
+                        repair_quote = self._quote_repair_usage(
+                            repair_config,
+                            ModelPurpose.SEMANTIC_ESCALATION,
+                            escalated.usage,
+                        )
+                        if repair_quote is not None:
+                            repair_cost_usd += repair_quote.cost_usd
+                            repair_cost_estimated = (
+                                repair_cost_estimated or repair_quote.estimated
+                            )
+                            _sync_live_cost()
                         unaccounted_repair_tokens += (
                             escalated.usage.prompt_tokens
                             + escalated.usage.completion_tokens
@@ -1947,25 +2001,67 @@ class WorkflowRuntime:
                 return content
         return None
 
+    @staticmethod
+    def _quote_config_usage(
+        config: VibeConfig, alias: str | None, usage: LLMUsage
+    ) -> CostQuote | None:
+        target_alias = alias or config.active_model
+        model = next(
+            (item for item in config.models if target_alias in {item.alias, item.name}),
+            None,
+        )
+        if model is None:
+            return None
+        return quote_usage(
+            model,
+            usage,
+            unpriced_input_price=config.spend.unpriced_input_usd_per_million,
+            unpriced_output_price=config.spend.unpriced_output_usd_per_million,
+        )
+
+    @classmethod
+    def _quote_repair_usage(
+        cls, config: VibeConfig, purpose: ModelPurpose, usage: LLMUsage
+    ) -> CostQuote | None:
+        return cls._quote_config_usage(
+            config, config.model_routing.alias_for(purpose), usage
+        )
+
     def _compute_cost(
         self, tokens_in: int, tokens_out: int, model: str | None
     ) -> float:
+        quote = self._compute_cost_quote(tokens_in, tokens_out, model)
+        return quote.cost_usd if quote is not None else 0.0
+
+    def _compute_cost_quote(
+        self, tokens_in: int, tokens_out: int, model: str | None
+    ) -> CostQuote | None:
         ctx = self.parent_context
         if not ctx or not ctx.agent_manager:
-            return 0.0
+            return None
         config = ctx.agent_manager.config
-        target_alias = model or config.active_model
-        for m in config.models:
-            if m.alias == target_alias:
-                return (tokens_in / 1_000_000) * m.input_price + (
-                    tokens_out / 1_000_000
-                ) * m.output_price
-        return 0.0
+        return self._quote_config_usage(
+            config,
+            model,
+            LLMUsage(prompt_tokens=tokens_in, completion_tokens=tokens_out),
+        )
 
     def _finalize_agent(self, args: _FinalizeArgs) -> None:
         self._budget.reconcile(args.reservation, args.tokens_in, args.tokens_out)
 
-        cost = self._compute_cost(args.tokens_in, args.tokens_out, args.model)
+        if args.live is not None and args.live.cost_initialized:
+            cost = args.live.cost_usd
+            cost_estimated = args.live.cost_estimated
+        else:
+            quote = self._compute_cost_quote(
+                args.tokens_in, args.tokens_out, args.model
+            )
+            cost = quote.cost_usd if quote is not None else 0.0
+            cost_estimated = (
+                quote.estimated
+                if quote is not None
+                else args.tokens_in + args.tokens_out > 0
+            )
         schema_errs = args.schema_errors or []
         result = AgentResult(
             label=args.label,
@@ -1976,6 +2072,7 @@ class WorkflowRuntime:
             tokens_in=args.tokens_in,
             tokens_out=args.tokens_out,
             cost=cost,
+            cost_estimated=cost_estimated,
             completed=args.completed,
             error=args.error,
             schema_errors=schema_errs,
@@ -2109,6 +2206,7 @@ class WorkflowRuntime:
         tokens_in, tokens_out = self._charge_isolated_tokens(
             stats, reservation, completed, label, agent
         )
+        self._apply_isolated_cost(live, stats)
         self._finalize_agent(
             _FinalizeArgs(
                 prompt=prompt,
@@ -2148,7 +2246,7 @@ class WorkflowRuntime:
         *,
         model: str | None = None,
         then: str | None = None,
-    ) -> tuple[str, dict[str, int] | None, ContractReport | None, bool, str | None]:
+    ) -> tuple[str, IsolatedStats | None, ContractReport | None, bool, str | None]:
         try:
             if self.isolated_executor is not None:
                 raw = await self.isolated_executor(
@@ -2202,7 +2300,7 @@ class WorkflowRuntime:
 
     def _charge_isolated_tokens(
         self,
-        stats: dict[str, int] | None,
+        stats: IsolatedStats | None,
         reservation: Reservation,
         completed: bool,
         label: str | None,
@@ -2222,6 +2320,19 @@ class WorkflowRuntime:
                 reservation.estimate,
             )
         return 0, reservation.estimate
+
+    @staticmethod
+    def _apply_isolated_cost(live: _LiveAgent, stats: IsolatedStats | None) -> None:
+        if stats is None:
+            return
+        raw_cost = stats.get("cost_usd")
+        if stats.get("cost_initialized") is False:
+            return
+        if not isinstance(raw_cost, int | float) or isinstance(raw_cost, bool):
+            return
+        live.cost_usd = max(float(raw_cost), 0.0)
+        live.cost_initialized = True
+        live.cost_estimated = bool(stats.get("cost_estimated", False))
 
     def _isolated_failure_value(
         self,
@@ -2264,7 +2375,7 @@ class WorkflowRuntime:
         contract: ContractSpec | None = None,
         model: str | None = None,
         then: str | None = None,
-    ) -> tuple[str, dict[str, int] | None, ContractReport | None]:
+    ) -> tuple[str, IsolatedStats | None, ContractReport | None]:
         from vibe.core.worktree.ephemeral import (
             deliver_ephemeral_worktree,
             remove_ephemeral_worktree,
@@ -2787,9 +2898,10 @@ class WorkflowRuntime:
         run.finished_at = time.monotonic()
         run.budget = self._budget.snapshot()
 
+        cost_prefix = "~" if run.cost_estimated else ""
         summary = (
             f"Workflow {status.value}: {self._agent_count} agents, "
-            f"{run.tokens_total} tokens, ${run.cost_total:.4f}"
+            f"{run.tokens_total} tokens, {cost_prefix}${run.cost_total:.4f}"
         )
         if error:
             summary += f" — error: {error}"

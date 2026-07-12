@@ -43,7 +43,11 @@ from vibe.core.agent_loop_limits import (
     TOOL_RESULT_PREVIEW_CHARS,
     tool_result_hard_cap,
 )
-from vibe.core.agent_loop_memory import AgentLoopMemoryMixin
+from vibe.core.agent_loop_memory import (
+    AgentLoopMemoryMixin,
+    late_memory_insert_index,
+    late_memory_tail_insert_index,
+)
 from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
 from vibe.core.agent_loop_safety_judge import AgentLoopSafetyJudgeMixin
 from vibe.core.agents.manager import AgentManager
@@ -211,11 +215,11 @@ from vibe.core.usage import (
     CallKind,
     RateLimitStore,
     SpendLimits,
+    SpendSettlement,
     UsageMeter,
     UsageRecord,
-    compute_cost,
     get_usage_recorder,
-    lookup_pricing,
+    quote_usage,
     rate_limit_from_headers,
 )
 from vibe.core.usage._context import SpendPurpose
@@ -946,6 +950,8 @@ class AgentLoop(
                 prompt0 = self.stats.session_prompt_tokens
                 completion0 = self.stats.session_completion_tokens
                 cached0 = self.stats.session_cached_tokens
+                cache_write0 = self.stats.session_cache_write_tokens
+                reasoning0 = self.stats.session_reasoning_tokens
                 try:
                     async with contextlib.AsyncExitStack() as turn_stack:
                         turn_stack.enter_context(
@@ -971,6 +977,10 @@ class AgentLoop(
                         output_tokens=self.stats.session_completion_tokens
                         - completion0,
                         cached_tokens=self.stats.session_cached_tokens - cached0,
+                        cache_write_tokens=self.stats.session_cache_write_tokens
+                        - cache_write0,
+                        reasoning_tokens=self.stats.session_reasoning_tokens
+                        - reasoning0,
                     )
         finally:
             self._response_format = None
@@ -1122,7 +1132,7 @@ class AgentLoop(
                     stopped_by_middleware=True,
                 )
 
-            case MiddlewareAction.INJECT_MESSAGE:
+            case MiddlewareAction.INJECT_MESSAGE | MiddlewareAction.FINALIZE:
                 if result.message:
                     injected_message = LLMMessage(
                         role=Role.USER,
@@ -1131,6 +1141,8 @@ class AgentLoop(
                         injected_kind=InjectedMessageKind.MIDDLEWARE,
                     )
                     self.messages.append(injected_message)
+                if result.action == MiddlewareAction.FINALIZE:
+                    self._force_toolless_response = True
 
             case MiddlewareAction.COMPACT:
                 old_tokens = result.metadata.get(
@@ -1303,7 +1315,7 @@ class AgentLoop(
                     # yielded to the event loop; never blocks the first call.
                     self._consume_memory_prefetch()
                 try:
-                    async for event in self._perform_llm_turn():
+                    async for event in self._perform_llm_turn_and_reset_recovery():
                         if is_user_cancellation_event(event):
                             user_cancelled = True
                         yield event
@@ -1474,6 +1486,7 @@ class AgentLoop(
             # so it must wait on consolidation's writes and extraction's upserts.
             self._maybe_schedule_verification()
         finally:
+            self._force_toolless_response = False
             # Abandon any prefetch that never settled so it can't leak across
             # turns or race the next kick.
             self._cancel_memory_prefetch()
@@ -1517,6 +1530,18 @@ class AgentLoop(
 
         return None
 
+    async def _perform_llm_turn_and_reset_recovery(
+        self,
+    ) -> AsyncGenerator[BaseEvent, None]:
+        completed = False
+        try:
+            async for event in self._perform_llm_turn():
+                yield event
+            completed = True
+        finally:
+            if completed and self.messages and self.messages[-1].role == Role.ASSISTANT:
+                self._force_toolless_response = False
+
     async def _perform_llm_turn(self) -> AsyncGenerator[BaseEvent, None]:
         if self.enable_streaming:
             async for event in self._stream_assistant_events():
@@ -1527,6 +1552,29 @@ class AgentLoop(
                 yield assistant_event
 
         last_message = self.messages[-1]
+        visible_content = (last_message.content or "").strip()
+        if self._force_toolless_response and (
+            last_message.tool_calls or not visible_content
+        ):
+            content = (
+                str(last_message.content)
+                if visible_content
+                else (
+                    f"<{VIBE_STOP_EVENT_TAG}>Tool-free recovery did not produce a "
+                    f"final response.</{VIBE_STOP_EVENT_TAG}>"
+                )
+            )
+            self.messages.replace_at(
+                len(self.messages) - 1,
+                last_message.model_copy(
+                    update={"content": content, "tool_calls": None}
+                ),
+            )
+            if not visible_content:
+                yield AssistantEvent(
+                    content=content, message_id=last_message.message_id
+                )
+            return
 
         parsed = self.format_handler.parse_message(last_message)
         resolved = self.format_handler.resolve_tool_calls(parsed, self.tool_manager)
@@ -1577,11 +1625,12 @@ class AgentLoop(
             if reasoning_message_id is None:
                 reasoning_message_id = chunk.message.reasoning_message_id
 
-            for event in self._build_tool_call_events(
-                chunk.message.tool_calls, emitted_tool_call_ids
-            ):
-                emitted_tool_call_ids.add(event.tool_call_id)
-                yield event
+            if not self._force_toolless_response:
+                for event in self._build_tool_call_events(
+                    chunk.message.tool_calls, emitted_tool_call_ids
+                ):
+                    emitted_tool_call_ids.add(event.tool_call_id)
+                    yield event
 
             if chunk.message.reasoning_content:
                 yield ReasoningEvent(
@@ -2181,8 +2230,11 @@ class AgentLoop(
         spend_is_retry = spend_purpose in self._spend_retry_purposes
         self._spend_retry_purposes.discard(spend_purpose)
 
-        available_tools = None if harness else self._available_tools(active_model)
-        tool_choice = None if harness else self.format_handler.get_tool_choice()
+        tools_disabled = harness or self._force_toolless_response
+        available_tools = (
+            None if tools_disabled else self._available_tools(active_model)
+        )
+        tool_choice = None if tools_disabled else self.format_handler.get_tool_choice()
 
         last_user_message = self._last_user_message()
         self.telemetry_client.send_request_sent(
@@ -2227,12 +2279,22 @@ class AgentLoop(
                     purpose=spend_purpose,
                     is_retry=spend_is_retry,
                     response_headers_sink=turn_state_sink,
+                    missing_usage_sink=lambda settlement: self._record_missing_usage(
+                        settlement,
+                        provider=provider,
+                        model=active_model,
+                        duration_s=time.perf_counter() - start_time,
+                        harness=harness,
+                    ),
                 )
                 end_time = time.perf_counter()
                 self._capture_codex_turn_state(turn_state_sink)
                 self._capture_rate_limits(provider, turn_state_sink)
 
-                if result.usage is None:
+                if result.usage is None or (
+                    result.usage.prompt_tokens == 0
+                    and result.usage.completion_tokens == 0
+                ):
                     raise AgentLoopLLMResponseError(
                         "Usage data missing in non-streaming completion response"
                     )
@@ -2282,8 +2344,12 @@ class AgentLoop(
         initial_spend_retry = spend_purpose in self._spend_retry_purposes
         self._spend_retry_purposes.discard(spend_purpose)
 
-        available_tools = self._available_tools(active_model)
-        tool_choice = self.format_handler.get_tool_choice()
+        if self._force_toolless_response:
+            available_tools = None
+            tool_choice = None
+        else:
+            available_tools = self._available_tools(active_model)
+            tool_choice = self.format_handler.get_tool_choice()
 
         last_user_message = self._last_user_message()
         self.telemetry_client.send_request_sent(
@@ -2332,6 +2398,14 @@ class AgentLoop(
                         purpose=spend_purpose,
                         is_retry=initial_spend_retry or attempt > 0,
                         response_headers_sink=turn_state_sink,
+                        missing_usage_sink=lambda settlement, started_at=start_time: (
+                            self._record_missing_usage(
+                                settlement,
+                                provider=provider,
+                                model=active_model,
+                                duration_s=time.perf_counter() - started_at,
+                            )
+                        ),
                     ):
                         stream_tracer.chunk_received(self)
                         if chunk.correlation_id:
@@ -2352,7 +2426,14 @@ class AgentLoop(
                     self._capture_rate_limits(provider, turn_state_sink)
 
                     chunk_agg = chunk_acc.build()
-                    if chunk_agg is None or chunk_agg.usage is None:
+                    if (
+                        chunk_agg is None
+                        or chunk_agg.usage is None
+                        or (
+                            chunk_agg.usage.prompt_tokens == 0
+                            and chunk_agg.usage.completion_tokens == 0
+                        )
+                    ):
                         raise AgentLoopLLMResponseError(
                             "Usage data missing in final chunk of streamed completion"
                         )
@@ -2362,7 +2443,10 @@ class AgentLoop(
                     # response yields inert empty chunks upstream, so the retry
                     # with a fresh accumulator is clean.
                     degenerate_reason = _degenerate_response_reason(chunk_agg)
-                    if degenerate_reason is not None:
+                    if (
+                        degenerate_reason is not None
+                        and not self._force_toolless_response
+                    ):
                         raise InvalidStreamError(degenerate_reason)
                     self._update_stats(
                         usage=chunk_acc.usage,
@@ -2414,6 +2498,24 @@ class AgentLoop(
         model: ModelConfig,
         harness: bool = False,
     ) -> None:
+        spend = self.config.spend
+        quote = quote_usage(
+            model,
+            usage,
+            unpriced_input_price=spend.unpriced_input_usd_per_million,
+            unpriced_output_price=spend.unpriced_output_usd_per_million,
+        )
+        usage = usage.model_copy(
+            update={
+                "prompt_tokens": quote.prompt_tokens,
+                "cached_tokens": quote.cached_tokens,
+                "cache_write_tokens": quote.cache_write_tokens,
+                "completion_tokens": quote.completion_tokens,
+                "reasoning_tokens": min(
+                    usage.reasoning_tokens, quote.completion_tokens
+                ),
+            }
+        )
         self.stats.last_turn_duration = time_seconds
         self.stats.last_turn_prompt_tokens = usage.prompt_tokens
         self.stats.last_turn_completion_tokens = usage.completion_tokens
@@ -2421,42 +2523,30 @@ class AgentLoop(
         self.stats.session_completion_tokens += usage.completion_tokens
         self.stats.last_turn_cached_tokens = usage.cached_tokens
         self.stats.session_cached_tokens += usage.cached_tokens
+        self.stats.last_turn_cache_write_tokens = usage.cache_write_tokens
+        self.stats.session_cache_write_tokens += usage.cache_write_tokens
+        self.stats.last_turn_reasoning_tokens = usage.reasoning_tokens
+        self.stats.session_reasoning_tokens += usage.reasoning_tokens
         self.stats.context_tokens = usage.prompt_tokens + usage.completion_tokens
         if time_seconds > 0 and usage.completion_tokens > 0:
             self.stats.tokens_per_second = usage.completion_tokens / time_seconds
 
-        # Persist the call for cross-session usage windows (/status). Best-effort:
-        # a recorder failure never affects the turn. Cost precedence: a user's
-        # explicit per-model config prices win; otherwise the built-in pricing
-        # table supplies verified rates; both absent → cost_usd=0 (card shows —).
-        if model.input_price > 0 or model.output_price > 0:
-            cost = (
-                usage.prompt_tokens * model.input_price
-                + usage.completion_tokens * model.output_price
-            ) / 1_000_000
-        else:
-            pricing = lookup_pricing(model.name)
-            if pricing is not None:
-                cost = compute_cost(
-                    prompt_tokens=usage.prompt_tokens,
-                    completion_tokens=usage.completion_tokens,
-                    cached_tokens=usage.cached_tokens,
-                    pricing=pricing,
-                )
-            else:
-                cost = 0.0
         # Accrue the exact per-call cost so session_cost survives a mid-session
         # model switch without repricing the whole session against the new model.
-        self.stats.accumulated_cost_usd += cost
+        self.stats.accumulated_cost_usd += quote.cost_usd
+        self.stats.accumulated_cost_initialized = True
+        self.stats.cost_is_estimated |= quote.estimated
         self._usage_recorder.record(
             UsageRecord.from_usage(
                 timestamp=time.time(),
                 provider=provider.name,
                 model=model.name,
                 usage=usage,
-                cost_usd=cost,
+                cost_usd=quote.cost_usd,
                 duration_s=time_seconds,
                 session_id=self.session_id,
+                cost_estimated=quote.estimated,
+                pricing_mode=quote.pricing_mode,
                 harness=harness,
                 call_kind=(
                     CallKind.COMPACTION.value
@@ -2467,6 +2557,73 @@ class AgentLoop(
                         else CallKind.MAIN.value
                     )
                 ),
+            )
+        )
+
+    def _update_auxiliary_stats(
+        self, usage: LLMUsage, cost_usd: float, estimated: bool
+    ) -> None:
+        self._add_session_usage(usage, cost_usd, estimated)
+
+    def _add_session_usage(
+        self, usage: LLMUsage, cost_usd: float, estimated: bool
+    ) -> None:
+        self.stats.session_prompt_tokens += usage.prompt_tokens
+        self.stats.session_completion_tokens += usage.completion_tokens
+        self.stats.session_cached_tokens += usage.cached_tokens
+        self.stats.session_cache_write_tokens += usage.cache_write_tokens
+        self.stats.session_reasoning_tokens += usage.reasoning_tokens
+        self.stats.accumulated_cost_usd += cost_usd
+        self.stats.accumulated_cost_initialized = True
+        self.stats.cost_is_estimated |= estimated
+
+    def _record_missing_usage(
+        self,
+        settlement: SpendSettlement,
+        *,
+        provider: ProviderConfig,
+        model: ModelConfig,
+        duration_s: float,
+        harness: bool = False,
+    ) -> None:
+        if settlement.usage_reported:
+            return
+        amount = settlement.amount
+        usage = LLMUsage(
+            prompt_tokens=amount.prompt_tokens,
+            completion_tokens=amount.completion_tokens,
+            cached_tokens=amount.cached_tokens,
+            cache_write_tokens=amount.cache_write_tokens,
+        )
+        self._add_session_usage(usage, amount.cost_usd, estimated=True)
+        quote = quote_usage(
+            model,
+            usage,
+            unpriced_input_price=self.config.spend.unpriced_input_usd_per_million,
+            unpriced_output_price=self.config.spend.unpriced_output_usd_per_million,
+        )
+        self._usage_recorder.record(
+            UsageRecord.from_usage(
+                timestamp=time.time(),
+                provider=provider.name,
+                model=model.name,
+                usage=usage,
+                cost_usd=amount.cost_usd,
+                duration_s=max(duration_s, 0.0),
+                session_id=self.session_id,
+                cost_estimated=True,
+                pricing_mode=quote.pricing_mode,
+                harness=harness,
+                call_kind=(
+                    CallKind.COMPACTION.value
+                    if harness
+                    else (
+                        CallKind.SUBAGENT.value
+                        if self._is_subagent
+                        else CallKind.MAIN.value
+                    )
+                ),
+                result_used=False,
             )
         )
 
@@ -3101,6 +3258,7 @@ class AgentLoop(
         # the turn with a larger max_tokens. Per-turn override + attempt counter.
         self._max_output_override: int | None = None
         self._response_too_long_attempts: int = 0
+        self._force_toolless_response: bool = False
         self._spend_retry_purposes: set[SpendPurpose] = set()
         # True while inside a Stop-hook-induced continuation (passed to the next
         # Stop invocation so a hook can avoid an infinite continue loop).
@@ -3168,6 +3326,13 @@ class AgentLoop(
                 max_calls=config.auxiliary_budget.max_calls,
             ),
             recorder=self._usage_recorder,
+            unpriced_input_usd_per_million=(
+                config.spend.unpriced_input_usd_per_million
+            ),
+            unpriced_output_usd_per_million=(
+                config.spend.unpriced_output_usd_per_million
+            ),
+            on_reconcile=self._update_auxiliary_stats,
         )
         self._rate_limit_store = RateLimitStore()
 
@@ -3594,14 +3759,10 @@ class AgentLoop(
             injected_kind=InjectedMessageKind.MEMORY,
         )
         msgs = list(self.messages)
-        if self.config.memory.late_anchor == "tail":
-            # Absolute tail: adapters rely on trailing MEMORY message(s) being the
-            # request's suffix when placing the history cache breakpoint.
-            msgs.append(mem_msg)
-            return msgs
-        insert_at = next(
-            (i for i in range(len(msgs) - 1, -1, -1) if msgs[i].role == Role.USER),
-            len(msgs),
+        insert_at = (
+            late_memory_tail_insert_index(msgs)
+            if self.config.memory.late_anchor == "tail"
+            else late_memory_insert_index(msgs)
         )
         msgs.insert(insert_at, mem_msg)
         return msgs

@@ -42,6 +42,7 @@ def responses_temperature_supported(model_name: str) -> bool:
 
 class _ResponsesInputTokensDetails(TypedDict, total=False):
     cached_tokens: int
+    cache_write_tokens: int
 
 
 class _ResponsesOutputTokensDetails(TypedDict, total=False):
@@ -197,6 +198,7 @@ class _OpenAIResponsesStreamParser:
             prompt_tokens=usage.get("input_tokens", 0),
             completion_tokens=usage.get("output_tokens", 0),
             cached_tokens=input_details.get("cached_tokens", 0),
+            cache_write_tokens=input_details.get("cache_write_tokens", 0),
             reasoning_tokens=output_details.get("reasoning_tokens", 0),
         )
 
@@ -613,24 +615,12 @@ class OpenAIResponsesAdapter(APIAdapter):
         enable_streaming: bool,
         verbosity: str | None = None,
         response_format: dict[str, Any] | None = None,
-        cache_session_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model_name,
             "input": input_items,
             "store": False,
         }
-        # Pin the conversation to one cache partition (OpenAI's prefix auto-cache
-        # load-balances across machines and misses without a routing key; Sakana
-        # shares the same need). Prefer the stable per-conversation session id
-        # (codex keys prompt_cache_key on its thread_id, and we send the same id
-        # as the thread-id header so routing and the body key agree); fall back
-        # to a content hash of the prefix for one-shot callers with no session.
-        # Responses adapters cover OpenAI and Sakana, so no gating needed.
-        from vibe.core.llm.backend.cache_hints import prefix_cache_key
-
-        if cache_key := (cache_session_id or prefix_cache_key(input_items)):
-            payload["prompt_cache_key"] = cache_key
 
         if temperature is not None and self._is_temperature_supported(model_name):
             payload["temperature"] = temperature
@@ -692,8 +682,6 @@ class OpenAIResponsesAdapter(APIAdapter):
         api_key = params.api_key
         thinking = params.thinking
         response_format = params.response_format
-        extra_body = params.extra_body
-        del extra_body  # generic-backend feature; not used by this path
         input_items = self._convert_messages(messages)
 
         payload = self.build_payload(
@@ -707,8 +695,16 @@ class OpenAIResponsesAdapter(APIAdapter):
             verbosity=params.verbosity,
             enable_streaming=enable_streaming,
             response_format=response_format,
-            cache_session_id=params.cache_session_id,
         )
+        from vibe.core.llm.backend.cache_hints import build_cache_hint
+
+        cache_hint = build_cache_hint(
+            params.provider, input_items, session_id=params.cache_session_id
+        )
+        if cache_hint:
+            payload.update(cache_hint)
+        if params.extra_body:
+            payload.update(params.extra_body)
 
         headers = self.build_headers(api_key)
         body = orjson.dumps(payload)

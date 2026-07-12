@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from vibe.core.config import ProviderConfig
+from vibe.core.config import ProviderCacheConfig, ProviderConfig
 from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.bedrock import (
     BEDROCK_MANTLE_SERVICE,
@@ -73,6 +73,24 @@ class TestBuildBaseUrl:
 
 
 class TestPrepareRequest:
+    def test_cache_mode_off_removes_markers(self, adapter, provider) -> None:
+        provider = provider.model_copy(
+            update={"cache": ProviderCacheConfig(mode="off")}
+        )
+        req = adapter.prepare_request(
+            _params(
+                provider,
+                messages=[
+                    LLMMessage(role=Role.SYSTEM, content="Be helpful."),
+                    LLMMessage(role=Role.USER, content="Hello"),
+                ],
+            )
+        )
+
+        payload = json.loads(req.body)
+        assert "cache_control" not in payload["system"][0]
+        assert "cache_control" not in payload["messages"][0]["content"][-1]
+
     def test_base_url_set_from_region(self, adapter, provider) -> None:
         req = adapter.prepare_request(_params(provider))
 

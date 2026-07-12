@@ -86,6 +86,33 @@ class TestPromptResponseUsage:
         assert response.usage.cached_write_tokens is None
 
     @pytest.mark.asyncio
+    async def test_prompt_usage_reports_cache_and_thought_breakdown(self) -> None:
+        backend = FakeBackend(
+            LLMChunk(
+                message=LLMMessage(role=Role.ASSISTANT, content="Hi"),
+                usage=LLMUsage(
+                    prompt_tokens=100,
+                    completion_tokens=50,
+                    cached_tokens=60,
+                    cache_write_tokens=20,
+                    reasoning_tokens=30,
+                ),
+            )
+        )
+        agent = _make_acp_agent(backend)
+        session = await agent.new_session(cwd=str(Path.cwd()), mcp_servers=[])
+
+        response = await agent.prompt(
+            session_id=session.session_id,
+            prompt=[TextContentBlock(type="text", text="Hello")],
+        )
+
+        assert response.usage is not None
+        assert response.usage.cached_read_tokens == 60
+        assert response.usage.cached_write_tokens == 20
+        assert response.usage.thought_tokens == 30
+
+    @pytest.mark.asyncio
     async def test_prompt_usage_accumulates_across_turns(self) -> None:
         backend = _make_backend(prompt_tokens=100, completion_tokens=50)
         agent = _make_acp_agent(backend)
@@ -148,9 +175,14 @@ class TestUsageUpdateNotification:
         )
         session = await agent.new_session(cwd=str(Path.cwd()), mcp_servers=[])
 
-        # Set pricing directly on the session stats (config loading uses fixture defaults)
+        # Configure the model quote source; ACP must report the accumulated quote,
+        # not independently re-price the token counters from display-only stats.
         acp_session = agent.sessions[session.session_id]
-        acp_session.agent_loop.stats.update_pricing(input_price=0.4, output_price=2.0)
+        active_model = acp_session.agent_loop.base_config.get_active_model()
+        active_model.input_price = 0.4
+        active_model.output_price = 2.0
+        active_model.pricing_mode = "api"
+        acp_session.agent_loop.agent_manager.invalidate_config()
 
         await agent.prompt(
             session_id=session.session_id,
@@ -179,6 +211,25 @@ class TestUsageUpdateNotification:
         usage_updates = _get_usage_updates(_get_fake_client(agent))
         assert len(usage_updates) == 1
         assert usage_updates[0].cost is None
+
+    @pytest.mark.asyncio
+    async def test_usage_update_sends_exact_zero_but_omits_estimated_cost(self) -> None:
+        agent = _make_acp_agent(_make_backend())
+        session = await agent.new_session(cwd=str(Path.cwd()), mcp_servers=[])
+        acp_session = agent.sessions[session.session_id]
+        stats = acp_session.agent_loop.stats
+        stats.accumulated_cost_usd = 0.0
+        stats.accumulated_cost_initialized = True
+        stats.cost_is_estimated = False
+
+        exact = agent._build_usage_update(acp_session)
+
+        assert exact.cost is not None
+        assert exact.cost.amount == 0.0
+
+        stats.cost_is_estimated = True
+
+        assert agent._build_usage_update(acp_session).cost is None
 
     @pytest.mark.asyncio
     async def test_usage_update_sent_per_prompt(self) -> None:

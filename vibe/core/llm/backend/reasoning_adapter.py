@@ -237,9 +237,20 @@ class ReasoningAdapter(APIAdapter):
             message = LLMMessage(role=Role.ASSISTANT, content="")
 
         usage_data = data.get("usage") or {}
+        from vibe.core.llm.backend._usage_fields import (
+            cache_read_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+            reported_cost_usd,
+        )
+
         usage = LLMUsage(
             prompt_tokens=usage_data.get("prompt_tokens", 0),
             completion_tokens=usage_data.get("completion_tokens", 0),
+            cached_tokens=cache_read_tokens(usage_data),
+            cache_write_tokens=cache_write_tokens(usage_data),
+            reasoning_tokens=reasoning_tokens(usage_data),
+            reported_cost_usd=reported_cost_usd(usage_data),
         )
 
         return LLMChunk(

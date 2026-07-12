@@ -24,6 +24,7 @@ class MiddlewareAction(StrEnum):
     STOP = auto()
     COMPACT = auto()
     INJECT_MESSAGE = auto()
+    FINALIZE = auto()
 
 
 class ResetReason(StrEnum):
@@ -687,8 +688,12 @@ def _trailing_tool_call_fingerprints(
     """
     fingerprints: list[tuple[str, str]] = []
     for msg in reversed(messages):
-        if msg.role != Role.ASSISTANT or not msg.tool_calls:
+        if msg.role == Role.USER and not msg.injected:
+            break
+        if msg.role != Role.ASSISTANT:
             continue
+        if not msg.tool_calls:
+            break
         for tc in reversed(msg.tool_calls):
             name = tc.function.name or ""
             fingerprints.append((name, _canonical_tool_args(tc.function.arguments)))
@@ -700,24 +705,27 @@ def _trailing_tool_call_fingerprints(
 
 
 def _trailing_tool_call_names(messages: MessageList, limit: int) -> str | None:
-    """Tool name if the last ``limit`` trailing tool calls all target the same
-    tool; otherwise None.
+    """Tool name if the last ``limit`` tool-calling assistant rounds all target
+    the same tool; otherwise None.
 
-    Unlike the exact-fingerprint check, this compares names only — varying
-    arguments count as the same call. The window breaks at any assistant message
-    carrying text content without a tool call, since narration or reflection
-    signals the model changed approach.
+    Unlike the exact-fingerprint check, this compares names only. A parallel
+    same-tool batch counts as one round; varying arguments across serial rounds
+    still count together. The window breaks at any assistant message carrying
+    text content without a tool call, since narration or reflection signals the
+    model changed approach.
     """
     names: list[str] = []
     for msg in reversed(messages):
+        if msg.role == Role.USER and not msg.injected:
+            break
         if msg.role != Role.ASSISTANT:
             continue
         if not msg.tool_calls:
             break
-        for tc in reversed(msg.tool_calls):
-            names.append(tc.function.name or "")
-            if len(names) >= limit:
-                break
+        batch_names = {tc.function.name or "" for tc in msg.tool_calls}
+        if len(batch_names) != 1:
+            return None
+        names.append(batch_names.pop())
         if len(names) >= limit:
             break
     if len(names) < limit or len(set(names)) != 1:
@@ -733,14 +741,18 @@ class LoopDetectionMiddleware:
     - Exact tier: ``threshold`` trailing calls with identical canonical args.
       A single different call resets this state. Catches a model re-emitting the
       exact same call (re-reading an unchanged file, re-running a failing build).
-    - Name tier: ``threshold + 2`` trailing calls to the *same tool*, regardless
-      of arguments, with no intervening assistant text. Closes the variant-args
-      gap where a model re-fetches the same data with slightly different filters
-      or offsets (``git diff | head`` vs ``| tail``, ``read`` at different
-      offsets). The wider window avoids false positives on legitimate repeated
-      reads of distinct files.
+    - Name tier: ``threshold + 2`` serial assistant rounds targeting the *same
+      tool*, regardless of arguments, with no intervening assistant text. Closes
+      the variant-args gap where a model re-fetches the same data with slightly
+      different filters or offsets (``git diff | head`` vs ``| tail``, ``read``
+      at different offsets). Parallel same-tool batches count as one round.
 
-    Each tier strikes once with an injected nudge, then stops the turn.
+    Exact repetition strikes once with an injected nudge, then forces a
+    tool-free synthesis response. The broader name-only tier is advisory: it
+    warns once, then lets the model continue because varying targets can be
+    legitimate review work. Turn, token, price, and spend guards remain the
+    hard limits; tool-name frequency alone is not proof that no progress
+    occurred.
     """
 
     def __init__(self, threshold: int = 5) -> None:
@@ -792,8 +804,14 @@ class LoopDetectionMiddleware:
                 ),
             )
         return MiddlewareResult(
-            action=MiddlewareAction.STOP,
-            reason=f"Tool-call loop detected: {name} repeated {self._threshold}+ times",
+            action=MiddlewareAction.FINALIZE,
+            message=(
+                f"<{VIBE_WARNING_TAG}>Do not call tools again this turn. Answer the "
+                f"user now using the evidence already collected. State any "
+                f"unresolved fact or blocker explicitly instead of retrying "
+                f"{name}.</{VIBE_WARNING_TAG}>"
+            ),
+            reason=f"Repeated {name} call requires synthesis",
         )
 
     def _resolve_name(self, name: str) -> MiddlewareResult:
@@ -802,20 +820,14 @@ class LoopDetectionMiddleware:
             return MiddlewareResult(
                 action=MiddlewareAction.INJECT_MESSAGE,
                 message=(
-                    f"<{VIBE_WARNING_TAG}>You appear to be stuck calling the same "
-                    f"tool ({name}) repeatedly with different arguments. You are "
-                    f"likely re-fetching data you already have. Change your approach: "
-                    f"use a different tool, inspect a different target, or report what "
-                    f"is blocking you.</{VIBE_WARNING_TAG}>"
+                    f"<{VIBE_WARNING_TAG}>You have made many consecutive {name} "
+                    f"calls with different arguments. Check whether each call is "
+                    f"still adding new evidence. If you have enough, synthesize now. "
+                    f"Otherwise continue only for a specific missing fact, batching "
+                    f"related checks when the tool supports it.</{VIBE_WARNING_TAG}>"
                 ),
             )
-        return MiddlewareResult(
-            action=MiddlewareAction.STOP,
-            reason=(
-                f"Tool-call loop detected: {name} called "
-                f"{self._name_threshold}+ times with varying arguments"
-            ),
-        )
+        return MiddlewareResult()
 
     def reset(self, reset_reason: ResetReason = ResetReason.STOP) -> None:
         self._warned = False
@@ -933,7 +945,11 @@ class MiddlewarePipeline:
             result = await mw.before_turn(context)
             if result.action == MiddlewareAction.INJECT_MESSAGE and result.message:
                 messages_to_inject.append(result.message)
-            elif result.action in {MiddlewareAction.STOP, MiddlewareAction.COMPACT}:
+            elif result.action in {
+                MiddlewareAction.STOP,
+                MiddlewareAction.COMPACT,
+                MiddlewareAction.FINALIZE,
+            }:
                 return result
         if messages_to_inject:
             combined_message = "\n\n".join(messages_to_inject)

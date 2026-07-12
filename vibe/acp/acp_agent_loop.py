@@ -1230,8 +1230,11 @@ class VibeAcpAgentLoop(AcpAgent):
     def _build_usage(self, session: AcpSessionLoop) -> Usage:
         stats = session.agent_loop.stats
         return Usage(
+            cached_read_tokens=stats.session_cached_tokens or None,
+            cached_write_tokens=stats.session_cache_write_tokens or None,
             input_tokens=stats.session_prompt_tokens,
             output_tokens=stats.session_completion_tokens,
+            thought_tokens=stats.session_reasoning_tokens or None,
             total_tokens=stats.session_total_llm_tokens,
         )
 
@@ -1240,7 +1243,7 @@ class VibeAcpAgentLoop(AcpAgent):
         active_model = session.agent_loop.config.get_active_model()
         cost = (
             Cost(amount=stats.session_cost, currency="USD")
-            if stats.input_price_per_million > 0 or stats.output_price_per_million > 0
+            if stats.accumulated_cost_initialized and not stats.cost_is_estimated
             else None
         )
         return UsageUpdate(

@@ -37,6 +37,7 @@ from vibe.core.config._defaults import (
     DEFAULT_VIBE_BASE_URL,
 )
 from vibe.core.config._model_routing import PurposeModelRoutingConfig
+from vibe.core.config._provider_contract_migration import migrate_provider_contracts
 from vibe.core.config._spend_config import SpendConfig
 from vibe.core.config._spend_migration import prepare_spend_migration
 from vibe.core.config._verification_config import TrustedVerificationRecipeConfig
@@ -50,6 +51,7 @@ from vibe.core.config.models import (
     ModelConfig,
     OtelSpanExporterConfig,
     ProjectContextConfig,
+    ProviderCacheConfig,
     ProviderConfig,
     SessionLoggingConfig,
     ThinkingLevel,
@@ -332,8 +334,8 @@ class MemoryConfig(BaseSettings):
     # placed per late_anchor below, so only the small tail is reprocessed.
     # Live glm-5.2 A/B on a selection flip: 8.7% cached (system) -> 96.3% (late).
     inject_mode: Literal["system", "late"] = "late"
-    # "tail": memory block after the FINAL message — history stays a stable cache
-    # prefix (adapters skip the tail); "before-user": legacy placement (rollback).
+    # "tail" preserves the request prefix before continuations and tool output;
+    # "before-user" restores the legacy placement.
     late_anchor: Literal["tail", "before-user"] = "tail"
     max_entries_scanned: int = 200
     # Char cap per always-injected index line (id/tag/title/scope kept verbatim;
@@ -609,6 +611,7 @@ DEFAULT_PROVIDERS = [
         browser_auth_base_url=DEFAULT_MISTRAL_BROWSER_AUTH_BASE_URL,
         browser_auth_api_base_url=DEFAULT_MISTRAL_BROWSER_AUTH_API_BASE_URL,
         backend=Backend.MISTRAL,
+        cache=ProviderCacheConfig(session_keyed=True),
     ),
     ProviderConfig(
         name="llamacpp",
@@ -624,6 +627,8 @@ DEFAULT_ACTIVE_MODEL_CONFIG = ModelConfig(
     temperature=1.0,
     input_price=1.5,
     output_price=7.5,
+    cached_input_price=0.15,
+    pricing_mode="api",
     thinking="high",
     supports_images=True,
 )
@@ -636,6 +641,8 @@ DEFAULT_MODELS = [
         alias="devstral-small",
         input_price=0.1,
         output_price=0.3,
+        cached_input_price=0.01,
+        pricing_mode="api",
     ),
     ModelConfig(
         name="devstral",
@@ -643,6 +650,7 @@ DEFAULT_MODELS = [
         alias="local",
         input_price=0.0,
         output_price=0.0,
+        pricing_mode="free",
     ),
 ]
 
@@ -1509,23 +1517,76 @@ class VibeConfig(BaseSettings):
         if cls._migrate_renamed_tools(data):
             changed = True
 
-        if cls._migrate_kimi_glm_reasoning(data):
-            changed = True
-
-        if cls._migrate_context_window_backfill(data):
-            changed = True
-
-        if cls._migrate_kimi_temperature(data):
-            changed = True
-
-        if cls._migrate_kimi_reasoning_effort(data):
-            changed = True
+        for migration in (
+            cls._migrate_kimi_glm_reasoning,
+            cls._migrate_openrouter_temperature,
+            cls._migrate_context_window_backfill,
+            cls._migrate_kimi_temperature,
+            cls._migrate_kimi_reasoning_effort,
+            migrate_provider_contracts,
+        ):
+            changed = migration(data) or changed
 
         if changed:
             cls.dump_config(data)
 
     # GLM temperature left at the generic ModelConfig default by old presets.
     _GLM_LEGACY_TEMPERATURE: ClassVar[float] = 0.2
+    _OPENROUTER_LEGACY_TEMPERATURE: ClassVar[float] = 0.2
+    _OPENROUTER_LEGACY_TEMPLATE_NAMES: ClassVar[frozenset[str]] = frozenset({
+        "anthropic/claude-sonnet-4.5",
+        "openrouter/owl-alpha",
+    })
+
+    @staticmethod
+    def _is_discovered_openrouter_model(model: dict[str, Any]) -> bool:
+        name = model.get("name")
+        alias = model.get("alias")
+        return isinstance(name, str) and alias in {name, f"openrouter/{name}"}
+
+    @classmethod
+    def _migrate_openrouter_temperature(cls, data: dict[str, Any]) -> bool:
+        applied = data.get("applied_migrations", [])
+        if cls._OPENROUTER_TEMPERATURE_MIGRATION in applied:
+            return False
+
+        models = data.get("models", [])
+        # A stale canonical preset identifies inherited defaults; custom aliases
+        # stay untouched while discovery-generated aliases are upgraded.
+        has_openrouter_template = any(
+            model.get("provider") == "openrouter"
+            and model.get("alias") == "openrouter"
+            and model.get("name") in cls._OPENROUTER_LEGACY_TEMPLATE_NAMES
+            for model in models
+        )
+        if not has_openrouter_template:
+            return False
+
+        has_legacy_template = any(
+            model.get("provider") == "openrouter"
+            and model.get("alias") == "openrouter"
+            and model.get("name") in cls._OPENROUTER_LEGACY_TEMPLATE_NAMES
+            and model.get("temperature") == cls._OPENROUTER_LEGACY_TEMPERATURE
+            for model in models
+        )
+        if has_legacy_template:
+            for model in models:
+                is_canonical_template = (
+                    model.get("alias") == "openrouter"
+                    and model.get("name") in cls._OPENROUTER_LEGACY_TEMPLATE_NAMES
+                )
+                if (
+                    model.get("provider") == "openrouter"
+                    and model.get("temperature") == cls._OPENROUTER_LEGACY_TEMPERATURE
+                    and (
+                        is_canonical_template
+                        or cls._is_discovered_openrouter_model(model)
+                    )
+                ):
+                    model["temperature"] = 1.0
+
+        data["applied_migrations"] = [*applied, cls._OPENROUTER_TEMPERATURE_MIGRATION]
+        return True
 
     @classmethod
     def _migrate_kimi_glm_reasoning(cls, data: dict[str, Any]) -> bool:
@@ -1599,6 +1660,12 @@ class VibeConfig(BaseSettings):
     # One-shot id: backfills preserve_reasoning + GLM temperature on configs
     # written before the Kimi/GLM Preserved-Thinking fix.
     _KIMI_GLM_REASONING_MIGRATION: ClassVar[str] = "kimi_glm_preserve_reasoning_v1"
+
+    # One-shot id: lifts the old OpenRouter preset's materialized generic 0.2
+    # temperature and all discovered siblings that inherited it.
+    _OPENROUTER_TEMPERATURE_MIGRATION: ClassVar[str] = (
+        "openrouter_temperature_default_v1"
+    )
 
     # One-shot id: backfills context_window for models with a repo-known window
     # on configs written before windows were persisted.

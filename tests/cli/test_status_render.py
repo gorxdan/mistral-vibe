@@ -157,6 +157,10 @@ def test_unpriced_usage_shows_em_dash_not_zero():
     assert _cost_or_unknown(0.0, has_usage=False) == "$0.0000"
     # Priced usage → real cost.
     assert _cost_or_unknown(2.50, has_usage=True) == "$2.50"
+    # Fallback-priced usage remains visibly estimated.
+    assert _cost_or_unknown(2.50, has_usage=True, estimated=True) == "~$2.50"
+    # Explicit free/subscription pricing is a known exact zero.
+    assert _cost_or_unknown(0.0, has_usage=True, known=True) == "$0.0000"
 
 
 def test_render_hides_cost_for_unpriced_model():

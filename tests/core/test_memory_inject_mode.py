@@ -4,6 +4,8 @@ import json
 import os
 from typing import Literal
 
+import pytest
+
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.compaction import render_compaction_context
@@ -50,12 +52,13 @@ def test_late_mode_keeps_system_stable_and_injects_ephemerally():
     # ... block absent from persisted history (self.messages) ...
     assert not any("RECALL-BODY" in (m.content or "") for m in loop.messages)
 
-    # ... but present in what the backend receives, at the absolute tail.
+    # Backend-only memory stays after request context and before continuations.
     sent = _sent(loop)
     assert len(sent) == len(loop.messages) + 1
     assert "RECALL-BODY" in (sent[-1].content or "")
     assert sent[-1].role == Role.USER
     assert sent[-2].content == "latest question"
+    assert "If work is in progress, continue it." not in (sent[-1].content or "")
 
 
 def test_late_mode_empty_section_injects_nothing():
@@ -64,24 +67,104 @@ def test_late_mode_empty_section_injects_nothing():
     assert len(_sent(loop)) == len(loop.messages)
 
 
-def test_tail_anchor_keeps_history_prefix_across_turns():
+def test_late_memory_keeps_completed_history_prefix_across_selection_changes():
     loop = _loop("late")
     loop._set_memory_section("SELECTION-V1")
-    turn_n = _sent(loop)
-    assert turn_n[-1].injected_kind == InjectedMessageKind.MEMORY
-
-    loop.messages.append(LLMMessage(role=Role.ASSISTANT, content="answer N"))
-    loop.messages.append(LLMMessage(role=Role.USER, content="question N+1"))
+    first = _sent(loop)
     loop._set_memory_section("SELECTION-V2")
-    turn_n1 = _sent(loop)
+    second = _sent(loop)
 
-    # Turn N's request minus its final mem message is a verbatim prefix of
-    # turn N+1's request: no persisted message ever changes absolute position.
-    persisted = [(m.role, m.content) for m in turn_n[:-1]]
-    assert [(m.role, m.content) for m in turn_n1[: len(persisted)]] == persisted
+    memory_idx = next(
+        i
+        for i, message in enumerate(first)
+        if message.injected_kind == InjectedMessageKind.MEMORY
+    )
+    assert memory_idx == len(loop.messages)
+    assert first[:memory_idx] == second[:memory_idx]
+    assert first[-2].content == second[-2].content == "latest question"
 
 
-def test_tail_anchor_rides_after_tool_results_intra_turn():
+def test_tail_memory_keeps_first_request_as_continuation_prefix():
+    loop = _loop("late")
+    loop._set_memory_section("RECALL-BODY")
+    loop.messages.append(
+        LLMMessage(
+            role=Role.USER,
+            content="hook context",
+            injected=True,
+            injected_kind=InjectedMessageKind.USER_PROMPT_HOOK,
+        )
+    )
+    first_request = _sent(loop)
+    loop.messages.append(
+        LLMMessage(
+            role=Role.ASSISTANT,
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id="tc1",
+                    index=0,
+                    function=FunctionCall(name="grep", arguments="{}"),
+                )
+            ],
+        )
+    )
+    loop.messages.append(LLMMessage(role=Role.TOOL, content="out", tool_call_id="tc1"))
+
+    continuation = _sent(loop)
+    first_wire = [
+        (message.role, message.content, message.injected_kind)
+        for message in first_request
+    ]
+    continuation_prefix = [
+        (message.role, message.content, message.injected_kind)
+        for message in continuation[: len(first_request)]
+    ]
+    assert continuation_prefix == first_wire
+
+
+@pytest.mark.parametrize(
+    "tool_output",
+    [
+        pytest.param("out", id="result"),
+        pytest.param("ToolError: read failed", id="error"),
+    ],
+)
+def test_late_memory_keeps_tool_result_after_request_context(tool_output: str):
+    loop = _loop("late")
+    loop._set_memory_section("RECALL-BODY")
+    loop.messages.append(
+        LLMMessage(
+            role=Role.ASSISTANT,
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id="tc1",
+                    index=0,
+                    function=FunctionCall(name="grep", arguments="{}"),
+                )
+            ],
+        )
+    )
+    loop.messages.append(
+        LLMMessage(role=Role.TOOL, content=tool_output, tool_call_id="tc1")
+    )
+
+    sent = _sent(loop)
+    memory_idx = next(
+        i
+        for i, message in enumerate(sent)
+        if message.injected_kind == InjectedMessageKind.MEMORY
+    )
+    assistant_idx = next(i for i, message in enumerate(sent) if message.tool_calls)
+    assert sent[memory_idx - 1].content == "latest question"
+    assert assistant_idx == memory_idx + 1
+    assert sent[assistant_idx + 1].role == Role.TOOL
+    assert sent[-1].role == Role.TOOL
+    assert sent[-1].content == tool_output
+
+
+def test_late_memory_precedes_injected_middleware_warning():
     loop = _loop("late")
     loop._set_memory_section("RECALL-BODY")
     loop.messages.append(
@@ -98,11 +181,26 @@ def test_tail_anchor_rides_after_tool_results_intra_turn():
         )
     )
     loop.messages.append(LLMMessage(role=Role.TOOL, content="out", tool_call_id="tc1"))
+    loop.messages.append(
+        LLMMessage(
+            role=Role.USER,
+            content="Loop warning: answer from existing evidence.",
+            injected=True,
+            injected_kind=InjectedMessageKind.MIDDLEWARE,
+        )
+    )
 
     sent = _sent(loop)
-    assert "RECALL-BODY" in (sent[-1].content or "")
-    assert sent[-1].role == Role.USER
-    assert sent[-2].role == Role.TOOL
+    memory_idx = next(
+        i
+        for i, message in enumerate(sent)
+        if message.injected_kind == InjectedMessageKind.MEMORY
+    )
+    assistant_idx = next(i for i, message in enumerate(sent) if message.tool_calls)
+    assert memory_idx < assistant_idx
+    assert sent[assistant_idx + 1].role == Role.TOOL
+    assert sent[-1].injected_kind == InjectedMessageKind.MIDDLEWARE
+    assert sent[-1].content == "Loop warning: answer from existing evidence."
 
 
 def test_before_user_anchor_restores_legacy_placement():

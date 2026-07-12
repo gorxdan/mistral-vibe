@@ -27,7 +27,7 @@ from tests.backend.data.openai_responses import (
     TOOL_CONVERSATION_PARAMS,
 )
 from tests.constants import OPENAI_BASE_URL, OPENAI_RESPONSES_PATH
-from vibe.core.config import ModelConfig, ProviderConfig
+from vibe.core.config import ModelConfig, ProviderCacheConfig, ProviderConfig
 from vibe.core.llm.backend.adapter_port import RequestParams
 from vibe.core.llm.backend.generic import GenericBackend
 from vibe.core.llm.backend.openai_responses import (
@@ -166,6 +166,93 @@ class TestPrepareRequest:
         # Same opening, different session id => a distinct partition pin.
         other = _prepare(adapter, provider, msgs, cache_session_id="sess-aaa-000")
         assert other["prompt_cache_key"] == "sess-aaa-000"
+
+    def test_third_party_responses_provider_does_not_get_a_key_by_default(
+        self, adapter
+    ):
+        provider = ProviderConfig(
+            name="minimax",
+            api_base="https://api.minimax.io/v1",
+            api_style="openai-responses",
+        )
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.USER, content="Hello")],
+            cache_session_id="session-123",
+        )
+        assert "prompt_cache_key" not in payload
+
+    def test_configured_responses_provider_gets_a_session_key(self, adapter):
+        provider = ProviderConfig(
+            name="third-party",
+            api_base="https://example.test/v1",
+            api_style="openai-responses",
+            cache=ProviderCacheConfig(session_keyed=True),
+        )
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.USER, content="Hello")],
+            cache_session_id="session-123",
+        )
+        assert payload["prompt_cache_key"] == "session-123"
+
+    def test_cache_mode_off_suppresses_the_openai_default_key(self, adapter):
+        provider = _make_provider()
+        provider.cache.mode = "off"
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.USER, content="Hello")],
+            cache_session_id="session-123",
+        )
+        assert "prompt_cache_key" not in payload
+
+    def test_provider_cache_controls_precede_explicit_request_extra_body(self, adapter):
+        provider = ProviderConfig(
+            name="third-party",
+            api_base="https://example.test/v1",
+            api_style="openai-responses",
+            cache=ProviderCacheConfig(
+                session_keyed=True,
+                extra_body={
+                    "cache_control": {"ttl": "1h"},
+                    "provider_cache_option": True,
+                },
+            ),
+        )
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.USER, content="Hello")],
+            cache_session_id="session-123",
+            extra_body={"cache_control": {"ttl": "5m"}, "request_cache_option": True},
+        )
+        assert payload["prompt_cache_key"] == "session-123"
+        assert payload["provider_cache_option"] is True
+        assert payload["cache_control"] == {"ttl": "5m"}
+        assert payload["request_cache_option"] is True
+
+    def test_cache_off_suppresses_provider_cache_controls_not_request_extra_body(
+        self, adapter
+    ):
+        provider = ProviderConfig(
+            name="third-party",
+            api_base="https://example.test/v1",
+            api_style="openai-responses",
+            cache=ProviderCacheConfig(
+                mode="off", extra_body={"cache_control": {"ttl": "1h"}}
+            ),
+        )
+        payload = _prepare(
+            adapter,
+            provider,
+            [LLMMessage(role=Role.USER, content="Hello")],
+            extra_body={"request_option": True},
+        )
+        assert "cache_control" not in payload
+        assert payload["request_option"] is True
 
     def test_encrypted_reasoning_requested_only_when_reasoning_on(
         self, adapter, provider
@@ -1667,3 +1754,11 @@ def test_responses_cached_tokens_from_input_tokens_details() -> None:
 def test_responses_cached_tokens_absent_defaults_zero() -> None:
     assert _cached({"input_tokens": 100, "output_tokens": 5}) == 0
     assert _cached(None) == 0
+
+
+def test_responses_cache_write_tokens_from_input_tokens_details() -> None:
+    usage = _OpenAIResponsesStreamParser._usage_from_response({
+        "input_tokens": 100,
+        "input_tokens_details": {"cache_write_tokens": 20},
+    })
+    assert usage.cache_write_tokens == 20

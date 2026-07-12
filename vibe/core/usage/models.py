@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from vibe.core.config.models import PricingMode
 from vibe.core.types import LLMUsage
 
 
@@ -16,11 +17,14 @@ class UsageRecord(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    cache_write_tokens: int = 0
     # Reasoning/thinking tokens (subset of completion_tokens for o-series /
     # GLM / Kimi). Captured so totals match the API's actual billed usage.
     reasoning_tokens: int = 0
-    # Worst-case cost in USD (no caching discount applied); matches AgentStats.session_cost.
     cost_usd: float = 0.0
+    # Legacy records have no pricing provenance, so retain a conservative state.
+    cost_estimated: bool = True
+    pricing_mode: PricingMode = "unknown"
     duration_s: float = 0.0
     session_id: str = ""
     # True for harness-internal calls (compaction summary, telemetry) so /status
@@ -39,7 +43,7 @@ class UsageRecord(BaseModel):
 
     @property
     def non_cached_input(self) -> int:
-        return max(self.prompt_tokens - self.cached_tokens, 0)
+        return max(self.prompt_tokens - self.cached_tokens - self.cache_write_tokens, 0)
 
     @classmethod
     def from_usage(
@@ -52,6 +56,8 @@ class UsageRecord(BaseModel):
         cost_usd: float,
         duration_s: float,
         session_id: str,
+        cost_estimated: bool = True,
+        pricing_mode: PricingMode = "unknown",
         harness: bool = False,
         call_kind: str = "main",
         result_used: bool | None = None,
@@ -63,8 +69,11 @@ class UsageRecord(BaseModel):
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
             cached_tokens=usage.cached_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens,
             cost_usd=cost_usd,
+            cost_estimated=cost_estimated,
+            pricing_mode=pricing_mode,
             duration_s=duration_s,
             session_id=session_id,
             harness=harness,

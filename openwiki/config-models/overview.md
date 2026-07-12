@@ -157,18 +157,47 @@ api_key_env_var = "KIMI_API_KEY"
 backend = "generic"
 api_style = "openai"
 
+[providers.cache]
+session_keyed = true
+session_key_field = "prompt_cache_key"
+
 [[models]]
-name = "kimi-k2.7-code"
+name = "kimi-for-coding"
 provider = "kimi"
 alias = "kimi"
 thinking = "high"
+pricing_mode = "subscription"
 auto_compact_threshold = 200000
 ```
 
 Key notes:
 - `api_base` includes the version segment but NOT `/chat/completions` — Vibe appends that automatically
-- Kimi requires `extra_headers = { User-Agent = "KimiCLI/1.47.0" }`
+- Kimi Code uses the real client identity and `prompt_cache_key`; do not spoof another client's User-Agent
+- ZAI Coding Plan caching is automatic and gets no undocumented cache key
 - A wrong endpoint (e.g., coding plan key sent to pay-as-you-go) returns HTTP 429 that looks like a rate limit
+
+## Prompt cache and pricing contracts
+
+`ProviderCacheConfig` controls wire behavior: `mode`, `style`, `extra_body`,
+`cache_key`, `session_keyed`, `session_key_field`, and Anthropic's optional
+`ttl` (`5m` or `1h`). Canonical OpenAI and
+ChatGPT requests use `prompt_cache_key`; Mistral and Kimi presets explicitly opt
+in to that field; OpenRouter uses `session_id`; Anthropic-compatible providers
+can use message `cache_control` breakpoints. Other compatible endpoints remain
+keyless unless configured, because unknown top-level fields can be rejected.
+
+`ModelConfig` separately controls billing with `pricing_mode` (`auto`, `api`,
+`subscription`, `free`, or `unknown`), `input_price`, `cached_input_price`,
+`cache_write_input_price`, and `output_price`. Cache reads and writes are
+preserved in provider telemetry, the spend ledger, workflow child costs, usage
+history, tracing, ACP, and the status card. Estimated fallback costs are marked
+with `~`; explicit subscription/free usage is an exact incremental `$0.0000`.
+When OpenRouter supplies its authoritative `usage.cost`, that charged amount
+takes precedence over model-table estimates.
+
+There is no speculative session-start model call. It would consume money or
+plan quota and only moves first-turn work earlier; the first real request warms
+the cache for subsequent turns.
 
 ## Skills System
 

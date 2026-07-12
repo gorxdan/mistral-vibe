@@ -188,7 +188,12 @@ async def test_fetch_models_extracts_openrouter_metadata() -> None:
                     _openrouter_item(
                         id="tencent/hy3",
                         name="Tencent: Hy3",
-                        pricing={"prompt": "0.00000014", "completion": "0.00000058"},
+                        pricing={
+                            "prompt": "0.00000014",
+                            "completion": "0.00000058",
+                            "input_cache_read": "0.000000014",
+                            "input_cache_write": "0.000000175",
+                        },
                         reasoning={
                             "mandatory": False,
                             "default_effort": "high",
@@ -237,6 +242,8 @@ async def test_fetch_models_extracts_openrouter_metadata() -> None:
     assert hy3.display_name == "Tencent: Hy3"
     assert hy3.input_price == pytest.approx(0.14)
     assert hy3.output_price == pytest.approx(0.58)
+    assert hy3.cached_input_price == pytest.approx(0.014)
+    assert hy3.cache_write_input_price == pytest.approx(0.175)
     assert hy3.reasoning_effort == "high"
     assert hy3.supports_images is False
     assert hy3.context_length == 262144
@@ -402,6 +409,57 @@ def test_synth_model_missing_price_falls_back_to_template() -> None:
     bare = _synth_model("openrouter", "z", "z", source=no_price)
     assert bare.input_price == 0.0
     assert bare.output_price == 0.0
+
+
+def test_synth_model_preserves_or_resolves_billing_policy() -> None:
+    subscription = ModelConfig(
+        name="template/model",
+        provider="plan",
+        alias="template",
+        pricing_mode="subscription",
+    )
+
+    inherited = _synth_model(
+        "plan",
+        "server/no-meta",
+        "server/no-meta",
+        template=subscription,
+        source=RawModel(id="server/no-meta"),
+    )
+    paid = _synth_model(
+        "openrouter",
+        "server/paid",
+        "server/paid",
+        template=subscription,
+        source=RawModel(id="server/paid", input_price=0.25, output_price=0.75),
+    )
+    free = _synth_model(
+        "openrouter",
+        "server/free",
+        "server/free",
+        template=subscription,
+        source=RawModel(id="server/free", input_price=0.0, output_price=0.0),
+    )
+
+    assert inherited.pricing_mode == "subscription"
+    assert paid.pricing_mode == "api"
+    assert free.pricing_mode == "free"
+
+
+def test_synth_model_keeps_discovered_local_siblings_free() -> None:
+    template = ModelConfig(
+        name="devstral", provider="llamacpp", alias="local", pricing_mode="free"
+    )
+
+    discovered = _synth_model(
+        "llamacpp",
+        "other-local",
+        "other-local",
+        template=template,
+        source=RawModel(id="other-local"),
+    )
+
+    assert discovered.pricing_mode == "free"
 
 
 @pytest.mark.asyncio
@@ -613,6 +671,7 @@ async def test_discover_window_capped_by_default_num_ctx(
 
     # ollama serves 4096 tokens by default regardless of the trained 131072.
     assert out[0].model.context_window == 4096
+    assert out[0].model.pricing_mode == "free"
     assert "auto_compact_threshold" not in out[0].model.model_fields_set
 
 

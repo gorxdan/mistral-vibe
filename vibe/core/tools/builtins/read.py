@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, final
 
 from humanize import naturalsize
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.config.harness_files import get_harness_files_manager
@@ -53,7 +53,8 @@ class ReadArgs(BaseModel):
         description=(
             "Path to the file to read. May be relative to the working directory "
             "(preferred — shorter and less error-prone) or absolute."
-        )
+        ),
+        validation_alias=AliasChoices("file_path", "path"),
     )
     offset: int | None = Field(
         default=None,

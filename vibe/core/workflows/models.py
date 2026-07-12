@@ -41,6 +41,7 @@ class AgentResult(BaseModel):
     tokens_in: int = 0
     tokens_out: int = 0
     cost: float = 0.0
+    cost_estimated: bool = False
     completed: bool = True
     error: str | None = None
     # Field-level detail for schema-validation failures (e.g.
@@ -107,6 +108,10 @@ class PhaseReport(BaseModel):
     def cost_total(self) -> float:
         return sum(r.cost for r in self.agent_results)
 
+    @property
+    def cost_estimated(self) -> bool:
+        return any(r.cost_estimated for r in self.agent_results)
+
 
 class WorkflowRun(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -128,6 +133,10 @@ class WorkflowRun(BaseModel):
     @property
     def cost_total(self) -> float:
         return sum(p.cost_total for p in self.phases)
+
+    @property
+    def cost_estimated(self) -> bool:
+        return any(p.cost_estimated for p in self.phases)
 
     @property
     def agent_count(self) -> int:

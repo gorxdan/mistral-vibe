@@ -31,6 +31,37 @@ def _make_read() -> Read:
     return Read(config_getter=lambda: ReadConfig(), state=ReadState())
 
 
+def test_read_args_accepts_file_path_and_path() -> None:
+    canonical = ReadArgs.model_validate({"file_path": "canonical.txt"})
+    compatible = ReadArgs.model_validate({"path": "compatible.txt"})
+
+    assert canonical.file_path == "canonical.txt"
+    assert compatible.file_path == "compatible.txt"
+
+
+def test_read_args_dump_and_schema_use_file_path() -> None:
+    args = ReadArgs.model_validate({"path": "compatible.txt"})
+
+    assert args.model_dump() == {
+        "file_path": "compatible.txt",
+        "offset": None,
+        "limit": DEFAULT_LINE_LIMIT,
+    }
+    schema = ReadArgs.model_json_schema()
+    assert "file_path" in schema["properties"]
+    assert "path" not in schema["properties"]
+    assert schema["required"] == ["file_path"]
+
+
+def test_path_alias_preserves_permission_resolution() -> None:
+    tool = _make_read()
+    canonical = tool.resolve_permission(ReadArgs(file_path=".env"))
+    compatible = tool.resolve_permission(ReadArgs.model_validate({"path": ".env"}))
+
+    assert canonical is not None
+    assert compatible == canonical
+
+
 @pytest.mark.asyncio
 async def test_reads_entire_small_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

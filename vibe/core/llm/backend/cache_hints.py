@@ -1,13 +1,10 @@
 """Prompt-cache hints for the generic / OpenAI-compatible path.
 
-Generic providers get no hint by default — ``build_cache_hint`` returns an inert
-empty fragment unless a provider sets an explicit ``provider.cache`` knob. The
-exception is prefix caches that load-balance across machines and miss without a
-``prompt_cache_key`` to pin a conversation to one partition. OpenAI/sakana
-auto-get a stable per-conversation key by endpoint; any other OpenAI-compatible
-provider opts in with ``provider.cache.session_keyed`` (e.g. zai/GLM, whose cache
-scatters under concurrency). See ``_auto_cache_key`` / ``prefix_cache_key``; the
-Responses backend uses the same derivation.
+Generic providers get no routing key by default. Providers opt in with
+``provider.cache.session_keyed`` and choose the documented request field; the
+canonical OpenAI and ChatGPT endpoints retain their established default routing.
+``build_cache_routing_hint`` is shared by chat completions, Responses, and the
+native Mistral backend.
 """
 
 from __future__ import annotations
@@ -33,10 +30,10 @@ def build_cache_hint(
     """Return a request-body fragment to merge, or None for no hint.
 
     For ``anthropic-compat`` the messages are tagged in place (the caller
-    serializes this exact list) and an empty fragment is returned.
+    serializes this exact list) and any routing fragment is returned.
 
     ``session_id`` is the stable per-conversation routing pin; when given it is
-    preferred over the content-hash fallback for OpenAI providers.
+    preferred over the content-hash fallback for cache-routed providers.
 
     ``skip_trailing`` excludes that many trailing messages (the ephemeral
     late-memory tail) from ``anthropic-compat`` breakpoint placement, so cache
@@ -46,47 +43,57 @@ def build_cache_hint(
     if cache is None or cache.mode != "explicit" or cache.style == "off":
         return None
 
+    routing = build_cache_routing_hint(provider, converted_messages, session_id)
+
     if cache.style == "passthrough":
         fragment = copy.deepcopy(cache.extra_body)
-        key = cache.cache_key or _auto_cache_key(
-            provider, converted_messages, session_id, session_keyed=cache.session_keyed
-        )
-        if key:
-            fragment.setdefault("prompt_cache_key", key)
+        for key, value in routing.items():
+            fragment.setdefault(key, value)
         return fragment
 
     if cache.style == "anthropic-compat":
         _tag_anthropic_compat(converted_messages, skip_trailing)
-        return {}
+        return routing
 
     return None
 
 
-def _is_openai_provider(provider: ProviderConfig) -> bool:
+def build_cache_routing_hint(
+    provider: ProviderConfig,
+    converted_messages: list[dict[str, Any]],
+    session_id: str | None = None,
+) -> dict[str, str]:
+    """Build the provider-documented session-routing body fragment."""
+    cache = getattr(provider, "cache", None)
+    if cache is None or cache.mode != "explicit" or cache.style == "off":
+        return {}
+    key = cache.cache_key or _auto_cache_key(
+        converted_messages,
+        session_id,
+        session_keyed=cache.session_keyed or _is_canonical_openai_provider(provider),
+    )
+    return {cache.session_key_field: key} if key else {}
+
+
+def _is_canonical_openai_provider(provider: ProviderConfig) -> bool:
     base = (getattr(provider, "api_base", "") or "").lower()
     return (
-        getattr(provider, "name", "") == "openai"
-        or "api.openai.com" in base
-        or "api.sakana.ai" in base
-    )
+        getattr(provider, "name", "") == "openai" and "api.openai.com" in base
+    ) or getattr(provider, "api_style", "") == "openai-chatgpt"
 
 
 def _auto_cache_key(
-    provider: ProviderConfig,
     converted_messages: list[dict[str, Any]],
     session_id: str | None = None,
     *,
     session_keyed: bool = False,
 ) -> str | None:
-    """Stable per-conversation ``prompt_cache_key`` for a load-balanced prefix cache.
+    """Stable per-conversation cache key for a load-balanced prefix cache.
 
-    Such a cache load-balances requests across machines and misses unless
-    ``prompt_cache_key`` pins a conversation to one partition — the codex
-    reference client sends one (its thread id) for exactly this reason. Enabled
-    for OpenAI/sakana by endpoint, and for any other OpenAI-compatible provider
-    that opts in via ``provider.cache.session_keyed``; off by default so a
-    provider whose cache already works (or rejects unknown body fields) is left
-    untouched.
+    Such a cache load-balances requests across machines and misses unless the
+    provider-specific field carrying this key pins a conversation to one
+    partition. It is enabled for canonical OpenAI/ChatGPT compatibility and for
+    providers that explicitly opt in through ``provider.cache.session_keyed``.
 
     Prefer the conversation's ``session_id`` (codex keys on its thread_id, a
     per-session UUID): unique per conversation so concurrent sessions spread
@@ -95,7 +102,7 @@ def _auto_cache_key(
     fall back to a content hash of the stable prefix (system + first user turn),
     which is identical across a conversation's turns and distinct across openings.
     """
-    if not (session_keyed or _is_openai_provider(provider)):
+    if not session_keyed:
         return None
     return session_id or prefix_cache_key(converted_messages)
 

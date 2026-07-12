@@ -851,6 +851,217 @@ class TestMigrateKimiGlmPreservedThinking:
         assert glm["temperature"] == 0.2  # marker present -> no rerun/clobber
 
 
+class TestMigrateOpenRouterTemperature:
+    def test_lifts_legacy_discovered_openrouter_models(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "models": [
+                {
+                    "name": "openrouter/owl-alpha",
+                    "provider": "openrouter",
+                    "alias": "openrouter",
+                    "temperature": 0.2,
+                },
+                {
+                    "name": "cohere/north-mini-code:free",
+                    "provider": "openrouter",
+                    "alias": "cohere/north-mini-code:free",
+                    "temperature": 0.2,
+                },
+                {
+                    "name": "custom-openrouter-model",
+                    "provider": "openrouter",
+                    "alias": "custom-openrouter-model",
+                    "temperature": 0.6,
+                },
+                {
+                    "name": "custom-model",
+                    "provider": "custom",
+                    "alias": "custom",
+                    "temperature": 0.2,
+                },
+            ]
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        by_alias = {model["alias"]: model for model in result["models"]}
+        assert by_alias["openrouter"]["temperature"] == 1.0
+        assert by_alias["cohere/north-mini-code:free"]["temperature"] == 1.0
+        assert by_alias["custom-openrouter-model"]["temperature"] == 0.6
+        assert by_alias["custom"]["temperature"] == 0.2
+        assert (
+            VibeConfig._OPENROUTER_TEMPERATURE_MIGRATION in result["applied_migrations"]
+        )
+
+    def test_preserves_later_openrouter_temperature_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "applied_migrations": [VibeConfig._OPENROUTER_TEMPERATURE_MIGRATION],
+            "models": [
+                {
+                    "name": "openrouter/owl-alpha",
+                    "provider": "openrouter",
+                    "alias": "openrouter",
+                    "temperature": 0.2,
+                }
+            ],
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        assert result["models"][0]["temperature"] == 0.2
+
+    def test_lifts_previous_openrouter_template(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "models": [
+                {
+                    "name": "anthropic/claude-sonnet-4.5",
+                    "provider": "openrouter",
+                    "alias": "openrouter",
+                    "temperature": 0.2,
+                },
+                {
+                    "name": "cohere/north-mini-code:free",
+                    "provider": "openrouter",
+                    "alias": "cohere/north-mini-code:free",
+                    "temperature": 0.2,
+                },
+            ]
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        assert [model["temperature"] for model in result["models"]] == [1.0, 1.0]
+
+    def test_leaves_custom_openrouter_temperature_unmarked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "models": [
+                {
+                    "name": "custom-model",
+                    "provider": "openrouter",
+                    "alias": "custom",
+                    "temperature": 0.2,
+                }
+            ]
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        assert result["models"] == data["models"]
+        assert VibeConfig._OPENROUTER_TEMPERATURE_MIGRATION not in result.get(
+            "applied_migrations", []
+        )
+
+    def test_leaves_explicit_sibling_temperature_after_current_template(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "models": [
+                {
+                    "name": "openrouter/owl-alpha",
+                    "provider": "openrouter",
+                    "alias": "openrouter",
+                    "temperature": 1.0,
+                },
+                {
+                    "name": "cohere/north-mini-code:free",
+                    "provider": "openrouter",
+                    "alias": "cohere/north-mini-code:free",
+                    "temperature": 0.2,
+                },
+            ]
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        by_alias = {model["alias"]: model for model in result["models"]}
+        assert by_alias["cohere/north-mini-code:free"]["temperature"] == 0.2
+        assert (
+            VibeConfig._OPENROUTER_TEMPERATURE_MIGRATION in result["applied_migrations"]
+        )
+
+    def test_preserves_custom_sibling_during_legacy_migration(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        config_file = tmp_path / "config.toml"
+        data = {
+            "models": [
+                {
+                    "name": "openrouter/owl-alpha",
+                    "provider": "openrouter",
+                    "alias": "openrouter",
+                    "temperature": 0.2,
+                },
+                {
+                    "name": "custom-model",
+                    "provider": "openrouter",
+                    "alias": "my-openrouter-model",
+                    "temperature": 0.2,
+                },
+            ]
+        }
+        with config_file.open("wb") as f:
+            tomli_w.dump(data, f)
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user")
+        VibeConfig._migrate()
+
+        with config_file.open("rb") as f:
+            result = tomllib.load(f)
+        assert result["models"][0]["temperature"] == 1.0
+        assert result["models"][1]["temperature"] == 0.2
+
+
 class TestMigrateSpendDynamicTokenDefaults:
     def test_migrates_released_128_call_generated_defaults(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

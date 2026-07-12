@@ -3,9 +3,10 @@ from __future__ import annotations
 import pytest
 
 from tests.mock.utils import collect_result
-from vibe.core.tools.base import BaseToolState, ToolError, ToolPermission
+from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError, ToolPermission
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
 from vibe.core.tools.permissions import PermissionContext
+from vibe.core.utils.io import read_safe
 
 
 @pytest.fixture
@@ -63,9 +64,131 @@ async def test_truncates_output_to_max_bytes(bash):
         bash_tool.run(BashArgs(command="printf 'abcdefghij'"))
     )
 
-    assert result.stdout == "abcde"
+    assert result.stdout == "abc…j"
+    assert len(result.stdout) <= config.max_output_bytes
+    assert result.full_output_path is None
     assert result.stderr == ""
     assert result.returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_truncation_metadata_stays_within_normal_output_budget():
+    config = BashToolConfig(max_output_bytes=256)
+    bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
+
+    result = await collect_result(bash_tool.run(BashArgs(command="printf '%01000d' 0")))
+
+    assert len(result.stdout) <= config.max_output_bytes
+    assert "1,000 characters / 1,000 bytes total" in result.stdout
+    assert result.stdout.startswith("0")
+    assert result.stdout.endswith("0")
+    assert result.full_output_path is None
+
+
+@pytest.mark.asyncio
+async def test_truncated_output_is_recoverable_from_scratchpad(tmp_path):
+    config = BashToolConfig(max_output_bytes=5)
+    bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
+    scratchpad = tmp_path / "scratchpad"
+    ctx = InvokeContext(tool_call_id="call/bash:1", scratchpad_dir=scratchpad)
+
+    result = await collect_result(
+        bash_tool.run(
+            BashArgs(command="printf 'abcdefghij'; printf 'klmnopqrst' >&2"), ctx=ctx
+        )
+    )
+
+    artifact = scratchpad / "tool_results" / "call_bash_1-bash-full.txt"
+    assert result.full_output_path == str(artifact)
+    assert len(result.stdout) <= config.max_output_bytes
+    assert len(result.stderr) <= config.max_output_bytes
+    persisted = read_safe(artifact).text
+    assert "format: decoded text (newline-normalized; not byte-exact)" in persisted
+    assert "stdout_bytes: 10\nstdout_chars: 10" in persisted
+    assert "stderr_bytes: 10\nstderr_chars: 10" in persisted
+    assert "--- stdout ---\nabcdefghij" in persisted
+    assert "--- stderr ---\nklmnopqrst" in persisted
+
+
+@pytest.mark.asyncio
+async def test_truncation_reports_distinct_byte_and_character_totals():
+    config = BashToolConfig(max_output_bytes=256)
+    bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
+    output = "é" * 300
+
+    result = await collect_result(bash_tool.run(BashArgs(command=f"printf '{output}'")))
+
+    assert "300 characters / 600 bytes total" in result.stdout
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_output_bytes", [128, 256])
+async def test_long_artifact_path_does_not_exceed_output_budget(
+    tmp_path, max_output_bytes
+):
+    config = BashToolConfig(max_output_bytes=max_output_bytes)
+    bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
+    session_dir = tmp_path / ("long-session-directory-" + "x" * 120)
+    ctx = InvokeContext(tool_call_id="long-path", session_dir=session_dir)
+
+    result = await collect_result(
+        bash_tool.run(
+            BashArgs(command="printf '%01000d' 0; printf '%01000d' 1 >&2"), ctx=ctx
+        )
+    )
+
+    assert len(result.stdout) <= max_output_bytes
+    assert len(result.stderr) <= max_output_bytes
+    assert result.full_output_path is not None
+    assert result.full_output_path.startswith(str(session_dir))
+
+
+@pytest.mark.asyncio
+async def test_truncated_output_prefers_durable_session_directory(tmp_path):
+    config = BashToolConfig(max_output_bytes=5)
+    bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
+    session_dir = tmp_path / "session"
+    scratchpad_dir = tmp_path / "scratchpad"
+    ctx = InvokeContext(
+        tool_call_id="durable", session_dir=session_dir, scratchpad_dir=scratchpad_dir
+    )
+
+    result = await collect_result(
+        bash_tool.run(BashArgs(command="printf 'abcdefghij'"), ctx=ctx)
+    )
+
+    artifact = session_dir / "tool_results" / "durable-bash-full.txt"
+    assert result.full_output_path == str(artifact)
+    assert artifact.is_file()
+    assert not (scratchpad_dir / "tool_results").exists()
+
+
+@pytest.mark.asyncio
+async def test_truncated_output_uses_readable_scratchpad_when_isolated(
+    tmp_path, monkeypatch
+):
+    config = BashToolConfig(max_output_bytes=5)
+    bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    scratchpad_dir = tmp_path / "scratchpad"
+    scratchpad_dir.mkdir()
+    session_dir = tmp_path / "outside-session"
+    monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(worktree))
+    monkeypatch.setenv("VIBE_ISOLATED_SCRATCHPAD_DIR", str(scratchpad_dir))
+    monkeypatch.chdir(worktree)
+    ctx = InvokeContext(
+        tool_call_id="isolated", session_dir=session_dir, scratchpad_dir=scratchpad_dir
+    )
+
+    result = await collect_result(
+        bash_tool.run(BashArgs(command="printf 'abcdefghij'"), ctx=ctx)
+    )
+
+    artifact = scratchpad_dir / "tool_results" / "isolated-bash-full.txt"
+    assert result.full_output_path == str(artifact)
+    assert artifact.is_file()
+    assert not (session_dir / "tool_results").exists()
 
 
 @pytest.mark.asyncio

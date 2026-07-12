@@ -639,12 +639,17 @@ async def test_dispatched_error_or_missing_usage_reconciles_estimate_once(
         result=result, error=None if missing_usage else RuntimeError("provider failed")
     )
     adapter = _adapter(tmp_path, default_max_output_tokens=50)
+    missing_settlements = []
 
     if missing_usage:
-        await adapter.complete(backend, _request())
+        await adapter.complete(
+            backend, _request(), missing_usage_sink=missing_settlements.append
+        )
     else:
         with pytest.raises(RuntimeError, match="provider failed"):
-            await adapter.complete(backend, _request())
+            await adapter.complete(
+                backend, _request(), missing_usage_sink=missing_settlements.append
+            )
 
     snapshot = adapter.snapshot()
     events = adapter.events()
@@ -658,6 +663,10 @@ async def test_dispatched_error_or_missing_usage_reconciles_estimate_once(
     assert snapshot.spent == reservation.estimate
     assert len(reconciled) == 1
     assert reconciled[0].estimated is True
+    assert len(missing_settlements) == 1
+    assert missing_settlements[0].reservation_id == reconciled[0].reservation_id
+    assert missing_settlements[0].amount == reconciled[0].amount
+    assert missing_settlements[0].usage_reported is False
 
 
 @pytest.mark.asyncio

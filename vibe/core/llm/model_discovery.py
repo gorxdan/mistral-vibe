@@ -115,6 +115,8 @@ class RawModel:
     # Per-million-token USD pricing, matching ModelConfig.input_price/output_price.
     input_price: float | None = None
     output_price: float | None = None
+    cached_input_price: float | None = None
+    cache_write_input_price: float | None = None
     supports_images: bool | None = None
     reasoning_effort: ThinkingLevel | None = None
 
@@ -222,6 +224,12 @@ def _meta_from_models_item(item: dict[str, Any]) -> dict[str, Any]:
         "display_name": name if isinstance(name, str) and name else None,
         "input_price": _per_million_price(item.get("pricing"), "prompt"),
         "output_price": _per_million_price(item.get("pricing"), "completion"),
+        "cached_input_price": _per_million_price(
+            item.get("pricing"), "input_cache_read"
+        ),
+        "cache_write_input_price": _per_million_price(
+            item.get("pricing"), "input_cache_write"
+        ),
         "supports_images": _supports_images(item),
         "reasoning_effort": _reasoning_effort(item.get("reasoning")),
     }
@@ -238,6 +246,8 @@ def _with_context(model: RawModel, context_length: int | None) -> RawModel:
         display_name=model.display_name,
         input_price=model.input_price,
         output_price=model.output_price,
+        cached_input_price=model.cached_input_price,
+        cache_write_input_price=model.cache_write_input_price,
         supports_images=model.supports_images,
         reasoning_effort=model.reasoning_effort,
     )
@@ -359,6 +369,8 @@ async def _fetch_v1_models(
                 display_name=meta["display_name"],
                 input_price=meta["input_price"],
                 output_price=meta["output_price"],
+                cached_input_price=meta["cached_input_price"],
+                cache_write_input_price=meta["cache_write_input_price"],
                 supports_images=meta["supports_images"],
                 reasoning_effort=meta["reasoning_effort"],
             )
@@ -567,6 +579,30 @@ def _synth_model(
 ) -> ModelConfig:
     # Metadata (source) overrides the template; auto_compact_threshold stays unset.
     src = source
+    source_has_pricing = bool(
+        src
+        and any(
+            price is not None
+            for price in (
+                src.input_price,
+                src.output_price,
+                src.cached_input_price,
+                src.cache_write_input_price,
+            )
+        )
+    )
+    if src and src.input_price == 0.0 and src.output_price == 0.0:
+        pricing_mode = "free"
+    elif source_has_pricing:
+        pricing_mode = "api"
+    elif provider_name in {"llamacpp", "ollama"}:
+        pricing_mode = "free"
+    elif template and template.pricing_mode == "free" and template.name != model_id:
+        pricing_mode = "unknown"
+    elif template:
+        pricing_mode = template.pricing_mode
+    else:
+        pricing_mode = "auto"
     kwargs: dict[str, Any] = dict(
         name=model_id,
         provider=provider_name,
@@ -581,6 +617,17 @@ def _synth_model(
             if src and src.output_price is not None
             else (template.output_price if template else 0.0)
         ),
+        cached_input_price=(
+            src.cached_input_price
+            if source_has_pricing and src
+            else (template.cached_input_price if template else None)
+        ),
+        cache_write_input_price=(
+            src.cache_write_input_price
+            if source_has_pricing and src
+            else (template.cache_write_input_price if template else None)
+        ),
+        pricing_mode=pricing_mode,
         thinking=(
             src.reasoning_effort
             if src and src.reasoning_effort is not None

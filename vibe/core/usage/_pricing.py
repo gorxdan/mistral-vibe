@@ -9,10 +9,11 @@ class ModelPricing:
 
     input_price: float
     output_price: float
-    # Cached input is typically discounted (OpenAI: 50% off, Anthropic: 90% off).
+    # Cached input is typically discounted (OpenAI and Anthropic commonly 90%).
     # None → assume full input price for cached tokens (worst-case, matches the
     # existing AgentStats.session_cost convention).
     cached_input_price: float | None = None
+    cache_write_input_price: float | None = None
 
 
 # Verified per-million-token USD prices (2026), sourced from each provider's
@@ -40,13 +41,22 @@ _PRICING: dict[str, ModelPricing] = {
     # GPT-5.6 ships three durable capability tiers (Sol/Terra/Luna) under one
     # generation; cache reads get the standard 90% input discount (openai.com).
     "gpt-5.6-sol": ModelPricing(
-        input_price=5.0, output_price=30.0, cached_input_price=0.5
+        input_price=5.0,
+        output_price=30.0,
+        cached_input_price=0.5,
+        cache_write_input_price=6.25,
     ),
     "gpt-5.6-terra": ModelPricing(
-        input_price=2.5, output_price=15.0, cached_input_price=0.25
+        input_price=2.5,
+        output_price=15.0,
+        cached_input_price=0.25,
+        cache_write_input_price=3.125,
     ),
     "gpt-5.6-luna": ModelPricing(
-        input_price=1.0, output_price=6.0, cached_input_price=0.1
+        input_price=1.0,
+        output_price=6.0,
+        cached_input_price=0.1,
+        cache_write_input_price=1.25,
     ),
     "gpt-5.5": ModelPricing(input_price=5.0, output_price=30.0, cached_input_price=0.5),
     "gpt-5.4": ModelPricing(
@@ -62,15 +72,29 @@ _PRICING: dict[str, ModelPricing] = {
         input_price=5.0, output_price=30.0, cached_input_price=0.5
     ),
     # ── Mistral (mistral.ai/pricing) ──
-    "mistral-large": ModelPricing(input_price=0.5, output_price=1.5),
-    "mistral-medium": ModelPricing(input_price=1.5, output_price=7.5),
-    "mistral-small": ModelPricing(input_price=0.15, output_price=0.6),
-    "devstral-medium": ModelPricing(input_price=0.4, output_price=2.0),
-    "devstral-small": ModelPricing(input_price=0.1, output_price=0.3),
-    "codestral": ModelPricing(input_price=0.3, output_price=0.9),
+    "mistral-large": ModelPricing(
+        input_price=0.5, output_price=1.5, cached_input_price=0.05
+    ),
+    "mistral-medium": ModelPricing(
+        input_price=1.5, output_price=7.5, cached_input_price=0.15
+    ),
+    "mistral-small": ModelPricing(
+        input_price=0.15, output_price=0.6, cached_input_price=0.015
+    ),
+    "devstral-medium": ModelPricing(
+        input_price=0.4, output_price=2.0, cached_input_price=0.04
+    ),
+    "devstral-small": ModelPricing(
+        input_price=0.1, output_price=0.3, cached_input_price=0.01
+    ),
+    "codestral": ModelPricing(
+        input_price=0.3, output_price=0.9, cached_input_price=0.03
+    ),
     # ── Kimi / Moonshot (platform.moonshot.ai/docs/pricing/chat) ──
     # K2 series coding models. Verified against Kimi's published rates.
-    "kimi-k2.7": ModelPricing(input_price=0.6, output_price=2.5),
+    "kimi-k2.7": ModelPricing(
+        input_price=0.95, output_price=4.0, cached_input_price=0.19
+    ),
     "kimi-k2.6": ModelPricing(input_price=0.6, output_price=2.5),
     "kimi-k2.5": ModelPricing(input_price=0.6, output_price=2.5),
     "moonshot-v1-128k": ModelPricing(input_price=2.5, output_price=10.0),
@@ -117,17 +141,27 @@ def compute_cost(
     completion_tokens: int,
     cached_tokens: int,
     pricing: ModelPricing,
+    cache_write_tokens: int = 0,
 ) -> float:
     """Cost in USD for a call, applying the cached-input discount when known.
 
     Cached tokens are clamped to the prompt total — a buggy/overflow upstream
     must never bill cached-rate tokens that weren't actually in the prompt.
     """
-    safe_cached = max(0, min(cached_tokens, prompt_tokens))
-    non_cached_input = prompt_tokens - safe_cached
+    safe_prompt = max(prompt_tokens, 0)
+    safe_cached = max(0, min(cached_tokens, safe_prompt))
+    safe_cache_write = max(0, min(cache_write_tokens, safe_prompt - safe_cached))
+    non_cached_input = safe_prompt - safe_cached - safe_cache_write
     cached_price = pricing.cached_input_price
     if cached_price is None:
         cached_price = pricing.input_price
-    input_cost = non_cached_input * pricing.input_price + safe_cached * cached_price
-    output_cost = completion_tokens * pricing.output_price
+    cache_write_price = pricing.cache_write_input_price
+    if cache_write_price is None:
+        cache_write_price = pricing.input_price
+    input_cost = (
+        non_cached_input * pricing.input_price
+        + safe_cached * cached_price
+        + safe_cache_write * cache_write_price
+    )
+    output_cost = max(completion_tokens, 0) * pricing.output_price
     return (input_cost + output_cost) / 1_000_000

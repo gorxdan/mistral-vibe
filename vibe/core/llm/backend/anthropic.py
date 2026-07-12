@@ -195,6 +195,7 @@ class AnthropicMapper:
             prompt_tokens=total_input_tokens,
             completion_tokens=usage_data.get("output_tokens", 0),
             cached_tokens=usage_data.get("cache_read_input_tokens", 0),
+            cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0),
         )
 
         return LLMChunk(
@@ -331,6 +332,7 @@ class AnthropicMapper:
                 prompt_tokens=total_input_tokens,
                 completion_tokens=0,
                 cached_tokens=usage_data.get("cache_read_input_tokens", 0),
+                cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0),
             ),
         )
         return chunk, current_index
@@ -378,19 +380,32 @@ class AnthropicAdapter(APIAdapter):
         return False
 
     @staticmethod
-    def _build_system_blocks(system_prompt: str | None) -> list[dict[str, Any]]:
+    def _build_system_blocks(
+        system_prompt: str | None,
+        *,
+        cache_enabled: bool = True,
+        cache_ttl: str | None = None,
+    ) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = []
         if system_prompt:
-            blocks.append({
-                "type": "text",
-                "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
-            })
+            block: dict[str, Any] = {"type": "text", "text": system_prompt}
+            if cache_enabled:
+                block["cache_control"] = AnthropicAdapter._cache_control(cache_ttl)
+            blocks.append(block)
         return blocks
 
     @staticmethod
+    def _cache_control(cache_ttl: str | None = None) -> dict[str, str]:
+        control = {"type": "ephemeral"}
+        if cache_ttl is not None:
+            control["ttl"] = cache_ttl
+        return control
+
+    @staticmethod
     def _add_cache_control_to_last_user_message(
-        messages: list[dict[str, Any]], skip_trailing: int = 0
+        messages: list[dict[str, Any]],
+        skip_trailing: int = 0,
+        cache_ttl: str | None = None,
     ) -> None:
         idx = len(messages) - 1 - skip_trailing
         if idx < 0:
@@ -403,7 +418,7 @@ class AnthropicAdapter(APIAdapter):
             return
         last_block = content[-1]
         if last_block.get("type") in {"text", "image", "tool_result"}:
-            last_block["cache_control"] = {"type": "ephemeral"}
+            last_block["cache_control"] = AnthropicAdapter._cache_control(cache_ttl)
 
     def _apply_thinking_config(
         self,
@@ -444,6 +459,8 @@ class AnthropicAdapter(APIAdapter):
         stream: bool,
         thinking: str,
         cache_skip_trailing: int = 0,
+        cache_enabled: bool = True,
+        cache_ttl: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"model": model_name, "messages": messages}
 
@@ -451,7 +468,9 @@ class AnthropicAdapter(APIAdapter):
             payload, messages=messages, max_tokens=max_tokens, thinking=thinking
         )
 
-        if system_blocks := self._build_system_blocks(system_prompt):
+        if system_blocks := self._build_system_blocks(
+            system_prompt, cache_enabled=cache_enabled, cache_ttl=cache_ttl
+        ):
             payload["system"] = system_blocks
 
         if tools:
@@ -463,35 +482,41 @@ class AnthropicAdapter(APIAdapter):
         if stream:
             payload["stream"] = True
 
-        self._add_cache_control_to_last_user_message(messages, cache_skip_trailing)
+        if cache_enabled:
+            self._add_cache_control_to_last_user_message(
+                messages, cache_skip_trailing, cache_ttl
+            )
 
         return payload
 
     def prepare_request(self, params: RequestParams) -> PreparedRequest:
-        model_name = params.model_name
         messages = params.messages
-        tools = params.tools
-        max_tokens = params.max_tokens
-        tool_choice = params.tool_choice
-        enable_streaming = params.enable_streaming
-        api_key = params.api_key
         _ = params.response_format  # interface parity; Anthropic has no such field
-        _ = params.extra_body  # generic-backend feature; not used by the Anthropic path
         system_prompt, converted_messages = self._mapper.prepare_messages(messages)
-        converted_tools = self._mapper.prepare_tools(tools)
-        converted_tool_choice = self._mapper.prepare_tool_choice(tool_choice)
+        converted_tools = self._mapper.prepare_tools(params.tools)
+        converted_tool_choice = self._mapper.prepare_tool_choice(params.tool_choice)
 
+        cache = getattr(params.provider, "cache", None)
+        cache_enabled = cache is None or (
+            cache.mode == "explicit" and cache.style != "off"
+        )
         payload = self._build_payload(
-            model_name=model_name,
+            model_name=params.model_name,
             system_prompt=system_prompt,
             messages=converted_messages,
             tools=converted_tools,
-            max_tokens=max_tokens,
+            max_tokens=params.max_tokens,
             tool_choice=converted_tool_choice,
-            stream=enable_streaming,
+            stream=params.enable_streaming,
             thinking=params.thinking,
             cache_skip_trailing=trailing_ephemeral_count(params.messages),
+            cache_enabled=cache_enabled,
+            cache_ttl=getattr(cache, "ttl", None),
         )
+        if cache_enabled and cache is not None and cache.extra_body:
+            payload.update(cache.extra_body)
+        if params.extra_body:
+            payload.update(params.extra_body)
 
         headers = {
             "Content-Type": "application/json",
@@ -499,11 +524,10 @@ class AnthropicAdapter(APIAdapter):
             "anthropic-beta": self.BETA_FEATURES,
         }
 
-        if api_key:
-            headers["x-api-key"] = api_key
+        if params.api_key:
+            headers["x-api-key"] = params.api_key
 
-        body = orjson.dumps(payload)
-        return PreparedRequest(self.endpoint, headers, body)
+        return PreparedRequest(self.endpoint, headers, orjson.dumps(payload))
 
     def parse_response(
         self, data: dict[str, Any], provider: ProviderConfig | None = None
@@ -553,6 +577,7 @@ class AnthropicAdapter(APIAdapter):
                 prompt_tokens=total_input_tokens,
                 completion_tokens=0,
                 cached_tokens=usage_data.get("cache_read_input_tokens", 0),
+                cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0),
             ),
         )
 

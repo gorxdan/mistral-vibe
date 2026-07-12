@@ -343,6 +343,12 @@ async def _run_session(
             stats_line = _STATS_SENTINEL + orjson.dumps({
                 "prompt_tokens": agent_loop.stats.session_prompt_tokens,
                 "completion_tokens": agent_loop.stats.session_completion_tokens,
+                "cached_tokens": agent_loop.stats.session_cached_tokens,
+                "cache_write_tokens": agent_loop.stats.session_cache_write_tokens,
+                "reasoning_tokens": agent_loop.stats.session_reasoning_tokens,
+                "cost_usd": agent_loop.stats.session_cost,
+                "cost_initialized": agent_loop.stats.accumulated_cost_initialized,
+                "cost_estimated": agent_loop.stats.cost_is_estimated,
             }).decode("utf-8")
             sys.stderr.write("\n" + stats_line + "\n")
             sys.stderr.flush()

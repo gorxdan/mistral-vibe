@@ -6,7 +6,7 @@ from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.llm.types import BackendLike, CompletionRequest
 from vibe.core.types import LLMChunk, LLMUsage
 from vibe.core.usage._context import SpendPurpose
-from vibe.core.usage._meter import CallKind, UsageMeter, UsageReservation, usage_cost
+from vibe.core.usage._meter import CallKind, UsageMeter, UsageReservation
 from vibe.core.usage._session import SessionSpendAdapter, SpendBudgetExceededError
 from vibe.core.utils.tokens import approx_token_count
 
@@ -78,7 +78,7 @@ def _reserve_local(
     )
     return usage_meter.try_reserve(
         usage.prompt_tokens + usage.completion_tokens,
-        estimated_cost_usd=usage_cost(model, usage),
+        estimated_cost_usd=usage_meter.quote_reservation(model, usage).cost_usd,
     )
 
 

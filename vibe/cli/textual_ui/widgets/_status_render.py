@@ -118,15 +118,17 @@ def format_cost(value: float) -> str:
     return f"${value:.2f}"
 
 
-def _cost_or_unknown(cost: float, has_usage: bool) -> str:
-    """Formatted cost, or '—' when pricing is unset.
+def _cost_or_unknown(
+    cost: float, has_usage: bool, *, estimated: bool = False, known: bool = False
+) -> str:
+    """Formatted exact/estimated cost, or '—' when pricing is unset.
 
-    A zero cost with real usage means the model's ``input_price``/``output_price``
-    weren't configured (or it's a flat-rate subscription like the ChatGPT plan),
-    not that the usage was free. Showing '—' keeps the card honest instead of
-    displaying a misleading ``$0.0000``.
+    Explicit free/subscription pricing is an exact zero. Legacy usage without
+    pricing provenance remains unknown instead of claiming it was free.
     """
-    if cost <= 0.0 and has_usage:
+    if estimated:
+        return f"~{format_cost(cost)}" if cost > 0.0 else "—"
+    if cost <= 0.0 and has_usage and not known:
         return "—"
     return format_cost(cost)
 
@@ -256,7 +258,17 @@ def _session_section(stats: AgentStats, context_window: int | None) -> list[Text
         _label_line(
             "Cost",
             Text(
-                _cost_or_unknown(stats.session_cost, stats.session_total_llm_tokens > 0)
+                _cost_or_unknown(
+                    stats.session_cost,
+                    stats.session_total_llm_tokens > 0,
+                    estimated=stats.cost_is_estimated,
+                    known=(
+                        stats.accumulated_cost_initialized
+                        or stats.accumulated_cost_usd > 0.0
+                        or stats.input_price_per_million > 0.0
+                        or stats.output_price_per_million > 0.0
+                    ),
+                )
             ),
         )
     )
@@ -287,7 +299,12 @@ def _provider_section(providers: list[ProviderBreakdown], model_col: int) -> lis
             row.append(" ")
             row.append(f"{share:.0%}".rjust(_PCT_COL) + " ", style="dim")
             row.append(
-                _cost_or_unknown(mb.cost_usd, mb.total_tokens > 0).rjust(_TOKENS_COL)
+                _cost_or_unknown(
+                    mb.cost_usd,
+                    mb.total_tokens > 0,
+                    estimated=mb.cost_estimated,
+                    known=bool(mb.pricing_modes),
+                ).rjust(_TOKENS_COL)
             )
             lines.append(row)
         prov_row = Text()
@@ -309,7 +326,10 @@ def _windows_section(windows: list[WindowRollup]) -> list[Text]:
             continue
         val = Text()
         val.append(f"{format_tokens_compact(win.total_tokens)} tokens")
-        val.append(f" · {_cost_or_unknown(win.cost_usd, win.calls > 0)}", style="dim")
+        val.append(
+            f" · {_cost_or_unknown(win.cost_usd, win.calls > 0, estimated=win.cost_estimated, known=bool(win.pricing_modes))}",
+            style="dim",
+        )
         calls_word = "call" if win.calls == 1 else "calls"
         val.append(f" · {win.calls} {calls_word}", style="dim")
         if win.sessions > 1:
@@ -325,12 +345,18 @@ def _harness_section(split: HarnessSplit) -> list[Text]:
     if split.user_tokens > 0:
         val = Text()
         val.append(f"{format_tokens_compact(split.user_tokens)} tokens")
-        val.append(f" · {_cost_or_unknown(split.user_cost, True)}", style="dim")
+        val.append(
+            f" · {_cost_or_unknown(split.user_cost, True, estimated=split.user_cost_estimated, known=True)}",
+            style="dim",
+        )
         lines.append(_label_line("You", val))
     if split.harness_tokens > 0:
         val = Text()
         val.append(f"{format_tokens_compact(split.harness_tokens)} tokens")
-        val.append(f" · {_cost_or_unknown(split.harness_cost, True)}", style="dim")
+        val.append(
+            f" · {_cost_or_unknown(split.harness_cost, True, estimated=split.harness_cost_estimated, known=True)}",
+            style="dim",
+        )
         lines.append(_label_line("Harness", val))
     return lines
 

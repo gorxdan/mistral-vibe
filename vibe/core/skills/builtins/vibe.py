@@ -215,8 +215,9 @@ fixed or become earlier. `/spend` shows the current envelope; `/spend reset`
 durably starts a fresh ledger without clearing conversation history and rebinds
 later teammate launches.
 Missing usage is charged at the reservation estimate. The fallback rates cover
-models without configured or built-in pricing; set both to `0` for local or
-subscription models that should not consume the USD cap. Routed requests without
+models without configured or built-in pricing and remain visibly estimated. Set
+`pricing_mode = "free"` for local models or `pricing_mode = "subscription"` for
+flat-rate plans that should not consume the USD cap. Routed requests without
 `max_tokens` receive the affordable output bound, reduced atomically across the
 scope hierarchy when needed. Calls are rejected rather than reduced below
 `minimum_admitted_output_tokens`; explicit `max_tokens` values remain hard and
@@ -251,7 +252,8 @@ extra_headers = { "X-Custom-Header" = "value" }  # optional per-provider HTTP he
 ```
 
 `[[providers]]` also accepts `api_style`, `reasoning_field_name`,
-`discover_models`, `project_id`, `region`, `cache` (sub-table: mode/style/extra_body),
+`discover_models`, `project_id`, `region`, `cache` (sub-table:
+mode/style/extra_body/cache_key/session_keyed/session_key_field/ttl),
 `max_concurrent_requests`, and `requests_per_minute` (rate limiting). See
 `vibe/core/config/_settings.py` (ProviderConfig, ProviderCacheConfig).
 
@@ -264,7 +266,9 @@ provider = "mistral"
 alias = "mistral-medium-3.5"
 temperature = 1.0                 # or "omit": never send it (for providers that reject it)
 input_price = 1.5
+cached_input_price = 0.15
 output_price = 7.5
+pricing_mode = "api"               # auto | api | subscription | free | unknown
 thinking = "high"                 # "off", "low", "medium", "high", "max"
 auto_compact_threshold = 200000
 # context_window = 262144         # optional: model's real window; derives (85%) or clamps (95%) auto_compact_threshold
@@ -281,10 +285,15 @@ output_price = 0.3
 name = "devstral"
 provider = "llamacpp"
 alias = "local"
+pricing_mode = "free"
 ```
 
 `[[models]]` also accepts `max_output_tokens` (int, default unset — seeds/caps
-max-output escalation). See `vibe/core/config/_settings.py` (ModelConfig).
+max-output escalation), `cached_input_price`, `cache_write_input_price`, and
+`pricing_mode`. Stable provider cache routing is independent of billing. Vibe
+does not issue a speculative session-start model call; the first real request
+warms the cache for later turns. See `vibe/core/config/_settings.py`
+(ModelConfig).
 
 ### Tool Configuration
 
@@ -845,8 +854,8 @@ index_max_chars = 4000           # Hard cap on always-injected index total (0 = 
 index_pin_types = ["user", "feedback"]  # Prefer these types in the injected index
 timeout = 20.0                   # Ambiguous-hybrid / LLM-only timeout
 prefetch = true                  # Race only an LLM fallback before it is needed
-inject_mode = "late"             # "late" (ephemeral tail message) | "system"
-late_anchor = "tail"             # "tail" (request tail; cache-stable) | "before-user" (legacy)
+inject_mode = "late"             # "late" (ephemeral request-context message) | "system"
+late_anchor = "tail"             # "tail" (before continuations; cache-stable) | "before-user" (legacy)
 # Maintenance flags are explicit; see MemoryConfig for models, timing, and limits.
 # Index injection is compact; recall scoring still uses unclipped descriptions.
 ```

@@ -35,6 +35,20 @@ def test_phase_report_aggregates() -> None:
     phase = PhaseReport(name="Find", agent_results=results, elapsed_s=5.0)
     assert phase.tokens_total == 450
     assert phase.cost_total == 0.03
+    assert phase.cost_estimated is False
+
+
+def test_workflow_cost_estimate_provenance_aggregates() -> None:
+    phase = PhaseReport(
+        name="Find",
+        agent_results=[
+            AgentResult(prompt="a", response="a", cost=0.01, cost_estimated=True)
+        ],
+    )
+    run = WorkflowRun(phases=[phase])
+
+    assert phase.cost_estimated is True
+    assert run.cost_estimated is True
 
 
 def test_workflow_run_aggregates() -> None:

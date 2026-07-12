@@ -66,6 +66,12 @@ class AgentStats(BaseModel):
     # Prompt tokens served from the provider's cache (subset of prompt tokens).
     session_cached_tokens: int = 0
     last_turn_cached_tokens: int = 0
+    # Prompt tokens written to a provider cache (also a subset of prompt tokens).
+    session_cache_write_tokens: int = 0
+    last_turn_cache_write_tokens: int = 0
+    # Reasoning tokens are a subset of completion tokens when reported.
+    session_reasoning_tokens: int = 0
+    last_turn_reasoning_tokens: int = 0
 
     last_turn_prompt_tokens: int = 0
     last_turn_completion_tokens: int = 0
@@ -77,6 +83,11 @@ class AgentStats(BaseModel):
 
     # Exact per-call cost; session_cost returns this so a model switch can't reprice the session.
     accumulated_cost_usd: float = 0.0
+    # Distinguishes an exact $0 session from one that has not yet recorded a quote.
+    accumulated_cost_initialized: bool = False
+    # A fallback quote is safe for local budget enforcement but must not be sent
+    # as an exact ACP cost.
+    cost_is_estimated: bool = False
 
     _listeners: dict[str, Callable[[AgentStats], None]] = PrivateAttr(
         default_factory=dict
@@ -131,7 +142,7 @@ class AgentStats(BaseModel):
         recompute for stats constructed without going through `_update_stats`
         (tests, manual construction) so the field stays meaningful there too.
         """
-        if self.accumulated_cost_usd > 0.0:
+        if self.accumulated_cost_initialized or self.accumulated_cost_usd > 0.0:
             return self.accumulated_cost_usd
         input_cost = (
             self.session_prompt_tokens / 1_000_000
@@ -195,6 +206,8 @@ class AgentStats(BaseModel):
         self.last_turn_prompt_tokens = 0
         self.last_turn_completion_tokens = 0
         self.last_turn_cached_tokens = 0
+        self.last_turn_cache_write_tokens = 0
+        self.last_turn_reasoning_tokens = 0
         self.last_turn_duration = 0.0
         self.tokens_per_second = 0.0
 
@@ -583,24 +596,36 @@ class LLMMessageAccumulator:
 
 
 class LLMUsage(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="ignore")
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
+    model_config = ConfigDict(frozen=True, extra="ignore", allow_inf_nan=False)
+    prompt_tokens: int = Field(default=0, ge=0)
+    completion_tokens: int = Field(default=0, ge=0)
     # Prompt tokens served from the provider's cache (subset of prompt_tokens).
     # Lets cache effectiveness be measured for OpenAI-compatible providers that
     # auto-cache (e.g. Kimi, GLM) without Vibe managing cache breakpoints.
-    cached_tokens: int = 0
+    cached_tokens: int = Field(default=0, ge=0)
+    # Prompt tokens written to a provider cache. They are distinct from cache
+    # reads because providers can bill writes at a different rate.
+    cache_write_tokens: int = Field(default=0, ge=0)
     # Reasoning tokens (subset of completion_tokens for o-series / GLM / Kimi
     # thinking models). Surfaced from completion_tokens_details.reasoning_tokens
     # (OpenAI shape) so totals reflect the API's actual billed usage.
-    reasoning_tokens: int = 0
+    reasoning_tokens: int = Field(default=0, ge=0)
+    # Authoritative provider-reported charge for the call (for example,
+    # OpenRouter's usage.cost). None means Vibe must quote from token rates.
+    reported_cost_usd: float | None = Field(default=None, ge=0.0)
 
     def __add__(self, other: LLMUsage) -> LLMUsage:
         return LLMUsage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
             cached_tokens=self.cached_tokens + other.cached_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+            reported_cost_usd=(
+                None
+                if self.reported_cost_usd is None and other.reported_cost_usd is None
+                else (self.reported_cost_usd or 0.0) + (other.reported_cost_usd or 0.0)
+            ),
         )
 
 

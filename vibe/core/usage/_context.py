@@ -92,13 +92,14 @@ class PromptTokenEstimate(_FrozenModel):
 class SpendAmount(_FrozenModel):
     prompt_tokens: int = Field(default=0, ge=0)
     cached_tokens: int = Field(default=0, ge=0)
+    cache_write_tokens: int = Field(default=0, ge=0)
     completion_tokens: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0.0)
 
     @model_validator(mode="after")
     def _validate_cached_tokens(self) -> Self:
-        if self.cached_tokens > self.prompt_tokens:
-            raise ValueError("cached_tokens cannot exceed prompt_tokens")
+        if self.cached_tokens + self.cache_write_tokens > self.prompt_tokens:
+            raise ValueError("cache token classes cannot exceed prompt_tokens")
         return self
 
     @property
@@ -219,6 +220,7 @@ class SpendSettlement(_FrozenModel):
     amount: SpendAmount
     estimated: bool
     applied: bool
+    usage_reported: bool = False
     timestamp: float = Field(ge=0.0)
     reason: str | None = Field(default=None, max_length=512)
 
