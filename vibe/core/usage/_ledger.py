@@ -228,6 +228,7 @@ class _ProjectionDetail:
     limit_cost_usd: float | None = None
     projected_calls: int | None = None
     limit_calls: int | None = None
+    limit_concurrent_calls: int | None = None
 
 
 @dataclass(slots=True)
@@ -946,7 +947,12 @@ class SpendLedger:
             return self._try_reserve_loaded(state, context, estimate, lease_s=lease_s)
 
     def try_reserve_prompt(
-        self, context: SpendContext, plan: PromptReservationPlan, *, lease_s: float
+        self,
+        context: SpendContext,
+        plan: PromptReservationPlan,
+        *,
+        lease_s: float,
+        record_concurrency_rejection: bool = True,
     ) -> SpendReservation | SpendRejection:
         if lease_s <= 0 or lease_s > MAX_RESERVATION_LEASE_S:
             raise ValueError(f"lease_s must be in (0, {MAX_RESERVATION_LEASE_S:g}]")
@@ -992,6 +998,7 @@ class SpendLedger:
                 estimate,
                 lease_s=lease_s,
                 prompt_estimate=prompt_estimate,
+                record_concurrency_rejection=record_concurrency_rejection,
             )
 
     def _affordable_completion_tokens(
@@ -1044,6 +1051,7 @@ class SpendLedger:
         *,
         lease_s: float,
         prompt_estimate: PromptTokenEstimate | None = None,
+        record_concurrency_rejection: bool = True,
     ) -> SpendReservation | SpendRejection:
         now = self._clock()
         self._expire_stale(state, now)
@@ -1059,7 +1067,11 @@ class SpendLedger:
             prompt_estimate=prompt_estimate,
         )
         if rejection is not None:
-            self._record_rejection(state, rejection, now)
+            if (
+                record_concurrency_rejection
+                or rejection.reason is not SpendRejectionReason.CONCURRENT_CALLS
+            ):
+                self._record_rejection(state, rejection, now)
             return rejection
         deadline = self._earliest_deadline(state, chain)
         lease_expires_at = now + lease_s
@@ -1256,6 +1268,7 @@ class SpendLedger:
             limit_cost_usd=detail.limit_cost_usd if detail else None,
             projected_calls=detail.projected_calls if detail else None,
             limit_calls=detail.limit_calls if detail else None,
+            limit_concurrent_calls=(detail.limit_concurrent_calls if detail else None),
         )
 
     def _first_exceeded_limit(
@@ -1282,6 +1295,7 @@ class SpendLedger:
                     limit_cost_usd=limits.max_cost_usd,
                     projected_calls=projected_calls,
                     limit_calls=limits.max_calls,
+                    limit_concurrent_calls=limits.max_concurrent_calls,
                 )
                 return reason, scope_id, detail
         return None
@@ -1329,14 +1343,14 @@ class SpendLedger:
                 SpendRejectionReason.CALLS,
             ),
             (
-                limits.max_concurrent_calls is not None
-                and totals.reserved_calls + 1 > limits.max_concurrent_calls,
-                SpendRejectionReason.CONCURRENT_CALLS,
-            ),
-            (
                 limits.max_retries is not None
                 and projected_retries > limits.max_retries,
                 SpendRejectionReason.RETRIES,
+            ),
+            (
+                limits.max_concurrent_calls is not None
+                and totals.reserved_calls + 1 > limits.max_concurrent_calls,
+                SpendRejectionReason.CONCURRENT_CALLS,
             ),
         )
         return next((reason for exceeded, reason in checks if exceeded), None)

@@ -7,4 +7,4 @@ Recursively search file contents by regex (ripgrep-backed).
 - Content mode: add surrounding lines with `context` / `context_before` / `context_after`.
 - `multiline` spans lines across newlines; `head_limit` caps output.
 - `type` and `multiline` require ripgrep — they error on the GNU grep fallback; prefer `glob` for portability.
-- Routing: filenames -> `glob`; symbols (definitions, references, types) -> `lsp`.
+- Routing: filenames -> `glob`; symbols (definitions, references, types) -> `lsp` when available, otherwise narrow `grep` by file/type.

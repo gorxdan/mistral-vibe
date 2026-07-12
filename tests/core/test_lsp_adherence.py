@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any, cast
+
 import pytest
 
 from tests.mock.utils import collect_result
 from vibe.core.lsp import _adherence as adherence
-from vibe.core.tools.base import BaseToolState
+from vibe.core.lsp._server import ServerConfig
+from vibe.core.tools.base import BaseToolState, InvokeContext
 from vibe.core.tools.builtins.grep import Grep, GrepArgs, GrepToolConfig
+from vibe.core.tools.builtins.lsp import (
+    Lsp,
+    LspArgs,
+    LspConfig,
+    LspOperation,
+    LspResult,
+    LspState,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -13,6 +25,24 @@ def _reset_adherence():
     adherence.reset_for_test()
     yield
     adherence.reset_for_test()
+
+
+def _invoke_context(
+    session_id: str,
+    *,
+    tools: tuple[str, ...] = ("lsp",),
+    task_contract: object | None = None,
+) -> InvokeContext:
+    return InvokeContext(
+        tool_call_id=f"call-{session_id}",
+        session_id=session_id,
+        agent_manager=cast(
+            Any, SimpleNamespace(active_profile=SimpleNamespace(name="explore"))
+        ),
+        launch_context=cast(Any, SimpleNamespace(agent_entrypoint="acp")),
+        tool_manager=SimpleNamespace(manifest_tools={name: object() for name in tools}),
+        task_contract=cast(Any, task_contract),
+    )
 
 
 def test_record_symbol_grep_miss_increments_counter():
@@ -34,6 +64,40 @@ def test_record_lsp_call_increments_counter_and_resets_consecutive():
     assert snap["lsp_call"] == 2
     assert snap["symbol_grep_miss"] == 2
     assert snap["consecutive_symbol_grep_miss"] == 0
+
+
+def test_adherence_counters_and_streaks_are_scoped_by_session():
+    first = _invoke_context("session-first")
+    second = _invoke_context("session-second")
+
+    assert adherence.record_symbol_grep_miss(ctx=first) == 1
+    assert adherence.record_symbol_grep_miss(ctx=first) == 2
+    assert adherence.record_symbol_grep_miss(ctx=second) == 1
+
+    adherence.record_lsp_call("hover", ctx=first)
+
+    assert adherence.snapshot(ctx=first) == {
+        "symbol_grep_miss": 2,
+        "lsp_call": 1,
+        "consecutive_symbol_grep_miss": 0,
+    }
+    assert adherence.snapshot(ctx=second) == {
+        "symbol_grep_miss": 1,
+        "lsp_call": 0,
+        "consecutive_symbol_grep_miss": 1,
+    }
+
+
+def test_adherence_log_carries_session_profile_and_entrypoint(monkeypatch):
+    emitted: list[str] = []
+    monkeypatch.setattr(adherence, "_emit", emitted.append)
+
+    adherence.record_symbol_grep_miss(ctx=_invoke_context("session-metadata"))
+
+    assert len(emitted) == 1
+    assert "session=session-metadata" in emitted[0]
+    assert "profile=explore" in emitted[0]
+    assert "entrypoint=acp" in emitted[0]
 
 
 def test_snapshot_returns_copy():
@@ -116,7 +180,9 @@ def test_should_escalate_tracks_consecutive_misses():
 async def test_symbol_grep_while_lsp_available_records_miss(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
-    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: True
+    )
     grep = Grep(config_getter=lambda: GrepToolConfig(), state=BaseToolState())
 
     await collect_result(grep.run(GrepArgs(pattern="FooBar")))
@@ -130,7 +196,9 @@ async def test_pipe_joined_symbol_grep_records_miss(tmp_path, monkeypatch):
     # bare-identifier detection.
     monkeypatch.chdir(tmp_path)
     (tmp_path / "test.py").write_text("def validate():\n    pass\n")
-    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: True
+    )
     grep = Grep(config_getter=lambda: GrepToolConfig(), state=BaseToolState())
 
     await collect_result(
@@ -145,7 +213,9 @@ async def test_symbol_grep_hint_is_directive_note(tmp_path, monkeypatch):
     # Hint must be directive "NOTE:", not soft "looks like".
     monkeypatch.chdir(tmp_path)
     (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
-    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: True
+    )
     grep = Grep(config_getter=lambda: GrepToolConfig(), state=BaseToolState())
 
     result = await collect_result(grep.run(GrepArgs(pattern="FooBar")))
@@ -160,7 +230,9 @@ async def test_symbol_grep_hint_is_directive_note(tmp_path, monkeypatch):
 async def test_non_symbol_grep_does_not_record_miss(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "test.py").write_text("error: boom\n")
-    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: True)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: True
+    )
     grep = Grep(config_getter=lambda: GrepToolConfig(), state=BaseToolState())
 
     await collect_result(grep.run(GrepArgs(pattern="error: boom")))
@@ -172,9 +244,76 @@ async def test_non_symbol_grep_does_not_record_miss(tmp_path, monkeypatch):
 async def test_symbol_grep_when_lsp_unavailable_does_not_record(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "test.py").write_text("def FooBar():\n    pass\n")
-    monkeypatch.setattr("vibe.core.tools.builtins.grep._lsp_available", lambda: False)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.grep._lsp_available", lambda *_args, **_kwargs: False
+    )
     grep = Grep(config_getter=lambda: GrepToolConfig(), state=BaseToolState())
 
     await collect_result(grep.run(GrepArgs(pattern="FooBar")))
 
     assert adherence.snapshot()["symbol_grep_miss"] == 0
+
+
+@pytest.mark.asyncio
+async def test_workspace_symbol_success_records_scoped_lsp_call(monkeypatch):
+    class WorkspaceServer:
+        async def send_request(self, method, params):
+            assert method == "workspace/symbol"
+            return [{"name": "Foo", "location": {"uri": "file:///tmp/foo.py"}}]
+
+    manager = SimpleNamespace(servers={"python": WorkspaceServer()})
+    monkeypatch.setattr(Lsp, "_ensure_manager", lambda self: manager)
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+    ctx = _invoke_context("session-workspace-symbol")
+
+    await collect_result(
+        tool.run(LspArgs(operation=LspOperation.WORKSPACE_SYMBOL, query="Foo"), ctx)
+    )
+
+    assert adherence.snapshot(ctx=ctx)["lsp_call"] == 1
+
+
+@pytest.mark.asyncio
+async def test_lsp_cache_hit_records_scoped_lsp_call(tmp_path, monkeypatch):
+    source = tmp_path / "cached.py"
+    source.write_text("def Foo():\n    pass\n")
+    server = SimpleNamespace(
+        config=ServerConfig(
+            name="python", command=["python-lsp"], languages={".py": "python"}
+        )
+    )
+
+    class Manager:
+        def get_server_for_file(self, path):
+            return server
+
+        async def open_document(self, path, text, language_id):
+            return None
+
+    manager = Manager()
+    monkeypatch.setattr(Lsp, "_ensure_manager", lambda self: manager)
+    tool = Lsp(config_getter=lambda: LspConfig(), state=LspState())
+    args = LspArgs(
+        operation=LspOperation.HOVER, file_path=str(source), line=1, character=5
+    )
+    ctx = _invoke_context("session-cache-hit")
+    binding = tool._query_binding(manager, args, str(source.resolve()), ctx)
+    cache_key = (
+        str(source.resolve()),
+        source.stat().st_mtime_ns,
+        str(args.operation),
+        args.line,
+        args.character,
+        args.query,
+        args.continuation_token,
+        ctx.session_id,
+        None,
+        binding.lsp_generation,
+        binding.workspace_root,
+    )
+    tool._result_cache_put(
+        cache_key, LspResult(operation="hover", summary="cached hover")
+    )
+    await collect_result(tool.run(args, ctx))
+
+    assert adherence.snapshot(ctx=ctx)["lsp_call"] == 1

@@ -6,7 +6,7 @@ Context offload | specialized profile match | parallel independent questions | n
 ## Rules
 - **Brief must be self-contained** — subagents cannot ask the user; include file:line refs and the exact question.
 - **Right profile** — see Available Subagents. For file-mutating `editor`/`grunt`/`worker` patterns, load the `agent-delegation` skill.
-- **Local tools first** — known file/symbol/flow → `read`/`lsp`/`grep` yourself; file count alone is not a reason to delegate.
+- **Local tools first** — known file/symbol/flow → `read`/`grep`/`glob` yourself, plus `lsp` when available; file count alone is not a reason to delegate.
 - **Don't micromanage** the subagent's approach.
 
 ## Capabilities

@@ -3227,7 +3227,7 @@ class VibeApp(App):
             lines.append("")
             lines.append("Installed but not working (probe failed):")
             for probe in broken:
-                detail = probe.stderr or f"exit {probe.returncode}"
+                detail = self._lsp_probe_failure_detail(probe.returncode)
                 lines.append(
                     f"  - {probe.preset.display_name}: reinstall "
                     f"({probe.preset.install_hint}) — {detail}"
@@ -3236,6 +3236,12 @@ class VibeApp(App):
             lines.append("")
             lines.append(footer)
         return lines
+
+    @staticmethod
+    def _lsp_probe_failure_detail(returncode: int | None) -> str:
+        if returncode is None:
+            return "probe failed before the process exited"
+        return f"probe exited with status {returncode}"
 
     async def _uninstall_lsp(self, **kwargs: Any) -> None:
         current = list(self.agent_loop.base_config.installed_components)
@@ -3269,13 +3275,16 @@ class VibeApp(App):
                 )
             )
             return
-        lines = ["## LSP servers", ""]
-        for name, server in manager.servers.items():
-            state = server.state.value
-            exts = ", ".join(sorted(server.config.languages.keys()))
-            line = f"- **{name}** ({state}) — {exts}"
-            if server.last_error:
-                line += f"\n  error: {server.last_error}"
+        snapshot = manager.readiness()
+        lines = ["## LSP readiness", "", snapshot.reason, ""]
+        for server in snapshot.servers:
+            exts = ", ".join(server.extensions) or "no extensions"
+            line = f"- **{server.name}** ({server.state.value}) — {exts}"
+            if server.operations is not None:
+                operations = ", ".join(server.operations) or "no providers advertised"
+                line += f"\n  operations: {operations}"
+            if server.error:
+                line += f"\n  error: {server.error}"
             lines.append(line)
         await self._mount_and_scroll(UserCommandMessage("\n".join(lines)))
 

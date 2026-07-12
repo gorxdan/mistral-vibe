@@ -124,8 +124,14 @@ Model Context Protocol servers extend Vibe's capabilities with external tools. K
 Language Server Protocol support provides semantic code intelligence:
 - `go_to_definition`, `find_references`, `hover`, `incoming_calls`, `outgoing_calls`, `document_symbol`
 - Diagnostics (errors, warnings) automatically surfaced to the model after `edit`/`write_file` calls
+- Live `status` snapshots distinguish an enabled tool from a running server and route readiness by file extension
+- Reference, symbol, and call-hierarchy collections use short-lived, session/task/workspace-bound opaque continuation tokens instead of discarding capped tails
+- Human columns are Unicode code points converted to/from LSP UTF-16 positions; document-symbol trees retain child hierarchy
+- Workspace roots are selected from the nearest bounded manifest marker, with separate server instances for monorepo roots
 - **Opt-in**: install with `/lspstall`, remove with `/unlspstall`
-- One `[[lsp_servers]]` config entry per language
+- Builtin servers auto-discovered from project manifests; `[[lsp_servers]]` adds custom definitions
+- Restricted child environment; additional server variables must be explicit in `env`
+- Disabled in parent-spawned isolated-worktree subagents/workflows until language servers run inside the OS process sandbox (ordinary top-level programmatic worktrees are unaffected)
 - The preferred tool for symbol questions — resolves imports, re-exports, and overloads that grep misses
 
 ## Bash Sandboxing

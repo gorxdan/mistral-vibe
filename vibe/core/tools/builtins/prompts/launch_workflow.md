@@ -3,8 +3,8 @@ Use `launch_workflow` to run a workflow script that orchestrates parallel agents
 ## Local discovery comes first
 
 Don't launch a workflow as the first step for an unfamiliar repo. First `glob` to
-map packages, entry points, and tests; `lsp` to resolve central symbols,
-references, and call paths; then read enough code to define independent
+map packages, entry points, and tests; use `lsp` when available (otherwise
+`grep`) to locate central symbols, references, and call paths; then read enough code to define independent
 questions. Launch only if that reconnaissance shows real parallel work. A broad
 request ("analyze this repo") or a high file count is not sufficient by itself.
 
@@ -27,7 +27,7 @@ agents.
 
 ## When NOT to Use
 
-- Initial repo discovery or one coherent architecture trace — use `glob`, `lsp`, targeted `read`
+- Initial repo discovery or one coherent architecture trace — use `glob`, targeted `read`, and `lsp` when available (otherwise `grep`)
 - Single-file edits or quick questions — work normally
 - Sequential, dependent steps — use subagents instead
 - Tasks requiring user interaction — workflow agents cannot ask questions

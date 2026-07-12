@@ -67,6 +67,8 @@ UNROUTED_PAID_CALL_BOUNDARIES = frozenset({
 SPEND_SESSION_ID_METADATA_KEY = "spend_session_id"
 _RESERVATION_LEASE_S = DEFAULT_RESERVATION_LEASE_S
 _RESERVATION_RENEW_INTERVAL_S = DEFAULT_RESERVATION_LEASE_S / 3
+_CONCURRENCY_WAIT_INITIAL_S = 0.05
+_CONCURRENCY_WAIT_MAX_S = 0.5
 _LEGACY_DEFAULT_PROMPT_TOKENS = 400_000
 _LEGACY_DEFAULT_COMPLETION_TOKENS = 100_000
 _LEGACY_DEFAULT_TOTAL_TOKENS = 500_000
@@ -689,11 +691,10 @@ class SessionSpendAdapter:
             else self._config.default_max_output_tokens
         )
 
-    def _reserve(
+    async def _reserve(
         self, request: CompletionRequest, *, purpose: SpendPurpose, is_retry: bool
     ) -> _SessionSpendCall:
-        if self._admission_state.error is not None:
-            raise self._admission_state.error
+        config = self._config
         footprint = request_prompt_footprint(request)
         completion_tokens = self._completion_token_estimate(request)
         plan = PromptReservationPlan(
@@ -703,31 +704,50 @@ class SessionSpendAdapter:
                 request.model,
                 prompt_tokens=1,
                 completion_tokens=0,
-                unpriced_input_price=self._config.unpriced_input_usd_per_million,
-                unpriced_output_price=self._config.unpriced_output_usd_per_million,
+                unpriced_input_price=config.unpriced_input_usd_per_million,
+                unpriced_output_price=config.unpriced_output_usd_per_million,
             ).cost_usd,
             completion_cost_usd=quote_cold_reservation(
                 request.model,
                 prompt_tokens=0,
                 completion_tokens=completion_tokens,
-                unpriced_input_price=self._config.unpriced_input_usd_per_million,
-                unpriced_output_price=self._config.unpriced_output_usd_per_million,
+                unpriced_input_price=config.unpriced_input_usd_per_million,
+                unpriced_output_price=config.unpriced_output_usd_per_million,
             ).cost_usd,
-            adaptive=(
-                self._config.prompt_estimator_mode is PromptEstimatorMode.ADAPTIVE
-            ),
+            adaptive=(config.prompt_estimator_mode is PromptEstimatorMode.ADAPTIVE),
             allow_completion_reduction=request.max_tokens is None,
-            minimum_completion_tokens=self._config.minimum_admitted_output_tokens,
+            minimum_completion_tokens=config.minimum_admitted_output_tokens,
         )
-        decision = self._broker.try_reserve_prompt(
-            SpendContext(
-                scope_id=self.agent_scope_id, purpose=purpose, is_retry=is_retry
-            ),
-            plan,
-            lease_s=_RESERVATION_LEASE_S,
+        context = SpendContext(
+            scope_id=self.agent_scope_id,
+            purpose=purpose,
+            call_id=uuid4().hex,
+            is_retry=is_retry,
         )
-        if isinstance(decision, SpendRejection):
-            raise SpendBudgetExceededError(decision)
+        delay = _CONCURRENCY_WAIT_INITIAL_S
+        record_concurrency_rejection = False
+        while True:
+            if self._admission_state.error is not None:
+                raise self._admission_state.error
+            recording = record_concurrency_rejection
+            record_concurrency_rejection = False
+            decision = self._broker.try_reserve_prompt(
+                context,
+                plan,
+                lease_s=_RESERVATION_LEASE_S,
+                record_concurrency_rejection=recording,
+            )
+            if not isinstance(decision, SpendRejection):
+                break
+            if decision.reason is not SpendRejectionReason.CONCURRENT_CALLS:
+                raise SpendBudgetExceededError(decision)
+            if decision.limit_concurrent_calls in {None, 0}:
+                if recording:
+                    raise SpendBudgetExceededError(decision)
+                record_concurrency_rejection = True
+                continue
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, _CONCURRENCY_WAIT_MAX_S)
         admitted_completion_tokens = decision.estimate.completion_tokens
         self.last_admitted_completion_tokens = admitted_completion_tokens
         admitted_request = (
@@ -736,10 +756,7 @@ class SessionSpendAdapter:
             else replace(request, max_tokens=admitted_completion_tokens)
         )
         return _SessionSpendCall(
-            adapter=self,
-            request=admitted_request,
-            reservation=decision,
-            config=self._config,
+            adapter=self, request=admitted_request, reservation=decision, config=config
         )
 
     @staticmethod
@@ -760,7 +777,7 @@ class SessionSpendAdapter:
         missing_usage_sink: Callable[[SpendSettlement], None] | None = None,
     ) -> LLMChunk:
         resolved_purpose = purpose or self.default_purpose
-        call = self._reserve(request, purpose=resolved_purpose, is_retry=is_retry)
+        call = await self._reserve(request, purpose=resolved_purpose, is_retry=is_retry)
         try:
             call.mark_dispatched()
         except BaseException:
@@ -795,7 +812,7 @@ class SessionSpendAdapter:
         missing_usage_sink: Callable[[SpendSettlement], None] | None = None,
     ) -> AsyncGenerator[LLMChunk, None]:
         resolved_purpose = purpose or self.default_purpose
-        call = self._reserve(request, purpose=resolved_purpose, is_retry=is_retry)
+        call = await self._reserve(request, purpose=resolved_purpose, is_retry=is_retry)
         final_usage: LLMUsage | None = None
         try:
             call.mark_dispatched()

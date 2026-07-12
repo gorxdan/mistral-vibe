@@ -6,14 +6,18 @@ Tool Selection
 
 Pick the tool that matches the question. The wrong choice wastes turns and misses results.
 
-- **`lsp`** for symbol-level questions: where a function/class/variable is defined (`go_to_definition`), who calls it (`find_references`), its type/signature (`hover`), project-wide lookup (`workspace_symbol`), or call graph (`incoming_calls`/`outgoing_calls`). LSP resolves imports, re-exports, aliases, and overloads that textual search gets wrong. Default to this whenever you are reasoning about a *symbol*.
+- **`lsp` when available** for symbol-level questions: where a function/class/variable is defined (`go_to_definition`), who calls it (`find_references`), its type/signature (`hover`), project-wide lookup (`workspace_symbol`), or call graph (`incoming_calls`/`outgoing_calls`). LSP resolves imports, re-exports, aliases, and overloads that textual search gets wrong. Default to this whenever you are reasoning about a *symbol* and the tool is present.
 - **`grep`** for literal text: error messages, log lines, string literals, config values, regex patterns.
 - **`read`** to inspect file contents.
 - **`glob`** to find files by name or path pattern.
 
-If `lsp` reports no server for an extension (language not configured), fall back to `grep`.
+If `lsp` is absent or reports no server for an extension, fall back to narrow `grep` + `read`.
+Under a path-scoped TaskBrief, `workspace_symbol` is unavailable; begin with an
+in-scope file and use `document_symbol` or a position-based operation.
+If an LSP result has a `continuation_token`, repeat the exact query with that token
+until no token remains before treating the symbol/reference map as complete.
 
-Reviewing a diff: for each changed symbol, trace its callers with `lsp` `find_references`/`incoming_calls` before judging — a text diff shows what changed, not who else it breaks.
+Reviewing a diff: for each changed symbol, trace its callers with `lsp` `find_references`/`incoming_calls` when available, otherwise narrow `grep` + `read`, before judging — a text diff shows what changed, not who else it breaks.
 
 Response Format
 

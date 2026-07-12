@@ -83,7 +83,7 @@ from vibe.core.llm.format import APIToolFormatHandler
 from vibe.core.llm.models import FailedToolCall, ResolvedMessage, ResolvedToolCall
 from vibe.core.llm.types import BackendLike, CompletionRequest
 from vibe.core.logger import logger
-from vibe.core.lsp._integration import drain_diagnostics_into
+from vibe.core.lsp._integration import drain_diagnostics_into, readiness_fingerprint
 from vibe.core.middleware import (
     CHAT_AGENT_EXIT,
     CHAT_AGENT_REMINDER,
@@ -557,6 +557,7 @@ class AgentLoop(
             self._ensure_remote_registries()
             self.tool_manager.integrate_all(raise_on_mcp_failure=True)
             self._system_prompt_tier = self._current_baseline_tier()
+            self._lsp_readiness_fingerprint = readiness_fingerprint()
             system_prompt = get_universal_system_prompt(
                 self.tool_manager,
                 self.config,
@@ -822,6 +823,7 @@ class AgentLoop(
 
     async def refresh_system_prompt(self) -> None:
         self._system_prompt_tier = self._current_baseline_tier()
+        self._lsp_readiness_fingerprint = readiness_fingerprint()
         system_prompt = get_universal_system_prompt(
             self.tool_manager,
             self.config,
@@ -3064,6 +3066,7 @@ class AgentLoop(
         self.skill_manager = SkillManager(lambda: self.config)
 
         self._system_prompt_tier = self._current_baseline_tier()
+        self._lsp_readiness_fingerprint = readiness_fingerprint()
         new_system_prompt = get_universal_system_prompt(
             self.tool_manager,
             self.config,
@@ -3204,6 +3207,7 @@ class AgentLoop(
         )
 
         self._system_prompt_tier = self._current_baseline_tier()
+        self._lsp_readiness_fingerprint = readiness_fingerprint()
 
     def _init_messages(
         self,
@@ -3429,9 +3433,13 @@ class AgentLoop(
         # (e.g. a failover from a small-window to a large-window model), so the
         # system prompt, tool schemas, and tier all describe the same model.
         tier = self._current_baseline_tier()
-        if tier == self._system_prompt_tier:
+        lsp_fingerprint = readiness_fingerprint()
+        if tier == self._system_prompt_tier and lsp_fingerprint == getattr(
+            self, "_lsp_readiness_fingerprint", None
+        ):
             return
         self._system_prompt_tier = tier
+        self._lsp_readiness_fingerprint = lsp_fingerprint
         system_prompt = get_universal_system_prompt(
             self.tool_manager,
             self.config,

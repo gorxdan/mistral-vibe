@@ -214,6 +214,9 @@ or lower configured ceilings, but the original absolute deadline can only stay
 fixed or become earlier. `/spend` shows the current envelope; `/spend reset`
 durably starts a fresh ledger without clearing conversation history and rebinds
 later teammate launches.
+Positive `max_concurrent_calls` values queue agents, workflow/task subagents, and
+attached team processes until an active paid call settles; transient saturation
+is not budget exhaustion. Set the limit to `0` only to deny paid-call admission.
 Missing usage is charged at the reservation estimate. The fallback rates cover
 models without configured or built-in pricing and remain visibly estimated. Set
 `pricing_mode = "free"` for local models or `pricing_mode = "subscription"` for
@@ -509,9 +512,10 @@ with an explicit `auth` block is an error.
 
 Opt-in code intelligence. Install with `/lspstall` (remove with `/unlspstall`);
 configured servers warm up in the background when a CLI session starts in its
-working directory. Declare one `[[lsp_servers]]` entry per language; the binary
-must be on `PATH`. Surfaces
-the `lsp` tool (definitions, references, hover, symbols, call hierarchy) and
+working directory. Builtin servers are auto-discovered from project manifests;
+use `[[lsp_servers]]` for custom definitions. The binary must be on `PATH`. Surfaces
+the `lsp` tool (live readiness, definitions, references, hover, hierarchical
+symbols, paged call hierarchy) and
 auto-injects server diagnostics into the next turn after `edit`/`write_file`.
 
 ```toml
@@ -539,18 +543,39 @@ languages = { ".rs" = "rust" }
 `root_uri`, `manifest_markers` (list), `startup_timeout_sec` (default 20.0), and
 `request_timeout_sec` (default 10.0). See `vibe/core/config/_settings.py` (LSPServer).
 
+Server probes and subprocesses inherit a restricted execution/toolchain
+environment, not the full host environment; put any additional required
+variables in the server's `env` map. Language servers do not yet run inside the
+OS process sandbox, so `lsp` is unavailable in parent-spawned isolated-worktree
+subagents and workflows (ordinary top-level programmatic worktrees are
+unaffected); use `read`, `grep`, and `glob` there.
+
 Auto-discovery (default `lsp_auto_discover = true`): when LSP is installed,
-Mistral Vibe probes the builtin preset list (pyright, typescript-language-server,
-rust-analyzer, gopls, clangd), keeps those whose binary is on `PATH`, and
-filters them by project manifest markers — so a Python-only repo spawns only
+Mistral Vibe probes the builtin preset list (pyright,
+typescript-language-server, rust-analyzer, gopls, clangd, jdtls, OmniSharp,
+intelephense, ruby-lsp, sourcekit-lsp), keeps those whose binary is on `PATH`,
+and filters them by project manifest markers — so a Python-only repo spawns only
 pyright, a Rust workspace spawns only rust-analyzer, etc. Each preset's
 `manifest_markers` (e.g. `Cargo.toml`, `go.mod`, `pyproject.toml`,
-`package.json`) gate inclusion; a marker present at the session root opts the
-preset in. Set `lsp_auto_discover = false` to disable preset discovery entirely
+`package.json`) gates inclusion; a marker present at the session root opts the
+preset in. When no preset marker matches, discovery falls back to all installed
+presets. Set `lsp_auto_discover = false` to disable preset discovery entirely
 and use only explicitly-declared `[[lsp_servers]]` entries (MCP-style explicit
 config).
 
-`/lsp` shows configured-server status (state + extensions + last error).
+Nearest manifest roots are resolved before server startup, including glob markers
+such as `*.csproj`. Monorepos get distinct server instances per resolved root;
+explicit `root_uri` always wins. Human-facing columns use Unicode code points and
+are converted to/from the protocol's negotiated UTF-16 representation.
+
+`lsp status` accepts an optional file and reports whether its exact routed server
+is running plus the operations advertised during initialization. Location,
+symbol, and call-hierarchy results return an opaque `continuation_token` when
+another page exists; repeat the exact query in the same session with that token
+until `has_more=false` and it is absent. Tokens expire after two minutes and are
+bound to the session, task scope, workspace, and LSP manager generation; rerun
+the original query after an invalid or expired token.
+`/lsp` renders the same live readiness state (extensions, operations, and error).
 
 ### Connectors
 
@@ -979,15 +1004,18 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
 
 ### Subagents
 
-- **explore**: Read-only codebase exploration subagent (grep + read + lsp only).
+- **explore**: Read-only codebase exploration subagent (glob + grep + read, plus
+  lsp when enabled).
   Spawned by the model, not selectable by the user.
 - **research**: read-only web research (adds web search/fetch).
-- **planner**: read-only (grep/read); returns a phased, code-grounded plan.
+- **planner**: read-only (glob/grep/read, plus lsp when enabled); returns a phased,
+  code-grounded plan.
 - **reviewer**, **debugger**, **security**: investigation/audit subagents that add a
   **jailed read-only bash** (allowlist auto-runs tests/lint/git-inspection; denies
   mutations, network, and package installs) — their key differentiator from explore/planner.
-- **editor**: workflow-only subagent for surgical file edits (read/grep/lsp + write/edit,
-  no bash/MCP). Requires `isolation="worktree"`.
+- **editor**: workflow-only subagent for surgical file edits (glob/read/grep +
+  write/edit, no bash/MCP). Requires `isolation="worktree"`, where lsp is disabled
+  until language servers run inside the OS process sandbox.
 - **worker**: full-capability workflow subagent (all builtin tools + MCP, no allowlist).
   Requires `isolation="worktree"`; bash is auto-confined to the worktree by the OS
   sandbox (bwrap) when one is available.
