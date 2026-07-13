@@ -73,6 +73,26 @@ async def main():
     assert entry.status == WorkflowStatus.COMPLETED
 
 
+async def test_terminal_callback_carries_exact_run_id_and_status_once() -> None:
+    terminal: list[tuple[str, WorkflowStatus]] = []
+
+    async def mount(w: Any) -> None:
+        pass
+
+    async def on_terminal(run_id: str, status: WorkflowStatus) -> None:
+        terminal.append((run_id, status))
+
+    runner = WorkflowRunner(mount=mount, on_terminal=on_terminal)
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_concurrent=1)
+    run_id = runner.launch("async def main():\n    return {'done': True}\n", runtime=rt)
+    entry = runner.runs[0]
+    assert entry.task is not None
+    await entry.task
+
+    assert terminal == [(run_id, WorkflowStatus.COMPLETED)]
+    assert entry.terminal_delivered is True
+
+
 async def test_launch_records_args_for_snapshot() -> None:
     """WF-RESUME-01: launch args must be recorded on the entry so snapshots (and
     therefore resume) carry them — otherwise resume re-runs with args=None.
@@ -261,7 +281,7 @@ def _result(
     )
 
 
-def test_format_workflow_delivery_includes_return_value() -> None:
+async def test_format_workflow_delivery_includes_return_value() -> None:
     # The host agent must receive the actual return_value, not just the summary.
     # Previously _on_workflow_complete discarded return_value entirely.
     result = _result(
@@ -276,7 +296,7 @@ def test_format_workflow_delivery_includes_return_value() -> None:
     assert "sound" in payload
 
 
-def test_format_workflow_delivery_omits_absent_return_value() -> None:
+async def test_format_workflow_delivery_omits_absent_return_value() -> None:
     result = _result(
         summary="Workflow failed: 0 tokens",
         return_value=None,
@@ -287,7 +307,7 @@ def test_format_workflow_delivery_omits_absent_return_value() -> None:
     assert "Result:" not in payload
 
 
-def test_format_workflow_delivery_truncates_large_result() -> None:
+async def test_format_workflow_delivery_truncates_large_result() -> None:
     big = "x" * (VibeApp._WORKFLOW_DELIVERY_CHAR_CAP + 5000)
     result = _result(summary="ok", return_value=big, status=WorkflowStatus.COMPLETED)
     payload = VibeApp._format_workflow_delivery(result)
@@ -328,8 +348,8 @@ async def test_on_workflow_complete_folds_into_running_turn() -> None:
 
 async def test_on_workflow_complete_resumes_idle_agent() -> None:
     # When the agent is idle (the launching turn already ended), a completed run
-    # auto-resumes the agent: a continuation turn is driven with the delivery as
-    # its prompt so the agent acts on the outcome instead of stalling.
+    # auto-resumes it with a fixed continuation prompt while staging the result
+    # as injected context, so result prose is never treated as user intent.
     from tests.conftest import build_test_vibe_app
 
     app = build_test_vibe_app()
@@ -339,12 +359,15 @@ async def test_on_workflow_complete_resumes_idle_agent() -> None:
 
     app._mount_and_scroll = _noop_mount  # type: ignore[method-assign]
 
-    started: list[str] = []
+    started: list[tuple[str, dict[str, Any]]] = []
 
-    async def _fake_turn(prompt: str, **_kw: Any) -> None:
-        started.append(prompt)
+    async def _fake_turn(prompt: str, **kwargs: Any) -> None:
+        started.append((prompt, kwargs))
 
     app._handle_agent_loop_turn = _fake_turn  # type: ignore[method-assign]
+    app.agent_loop.issue_orchestration_continuation = (  # type: ignore[method-assign]
+        lambda **_kwargs: "continuation-1"
+    )
     assert app._agent_running is False
 
     result = _result(
@@ -361,8 +384,42 @@ async def test_on_workflow_complete_resumes_idle_agent() -> None:
     await app._agent_task
 
     assert len(started) == 1, "an idle agent must be resumed to act on the result"
-    assert "all good" in started[0]
-    assert "Workflow completed" in started[0]
+    assert started[0][0] == _WORKFLOW_CONTINUE_PROMPT
+    assert started[0][1]["orchestration_continuation_id"] == "continuation-1"
+    staged = app.agent_loop._pending_injected_messages
+    assert len(staged) == 1
+    assert "all good" in str(staged[0].content)
+    assert "Workflow completed" in str(staged[0].content)
+
+
+async def test_idle_workflow_delivery_respects_paused_queue() -> None:
+    from tests.conftest import build_test_vibe_app
+
+    app = build_test_vibe_app()
+
+    async def _noop_mount(_w: Any) -> None:
+        return None
+
+    app._mount_and_scroll = _noop_mount  # type: ignore[method-assign]
+    started: list[str] = []
+
+    async def _fake_turn(prompt: str, **_kwargs: Any) -> None:
+        started.append(prompt)
+
+    app._handle_agent_loop_turn = _fake_turn  # type: ignore[method-assign]
+    app._input_queue.pause()
+
+    result = _result(
+        summary="Workflow completed: 1 agents, 10 tokens, $0.0001",
+        return_value={"findings": ["all good"]},
+        status=WorkflowStatus.COMPLETED,
+    )
+    await app._on_workflow_complete(result)
+
+    assert started == []
+    assert app._agent_task is None
+    assert app._completion_wake_pending is True
+    assert len(app.agent_loop._pending_injected_messages) == 1
 
 
 async def test_on_workflow_complete_flushes_stranded_delivery() -> None:

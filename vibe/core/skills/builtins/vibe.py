@@ -158,8 +158,8 @@ active_transcribe_model = "voxtral-realtime"
 active_tts_model = "voxtral-tts"
 
 # Workflows and effort
-effort_mode = "normal"            # "normal" or "le-chaton" (max thinking + auto-workflow)
-disable_workflows = false         # Disable all workflow features
+effort_mode = "normal"            # "normal" or "le-chaton" (max thinking + adaptive orchestration)
+disable_workflows = false         # Hide raw workflow launch; Le Chaton can use task/direct
 verification_subsystem = true     # Host verification layer (todo nudge + contract section → verifier subagent)
 # trusted_verification_recipe is omitted by default; configure its table before session startup when durable receipts are required
 investigation_subsystem = true    # Host investigation layer (contract section: reproduce-before-fix guidance)
@@ -1151,7 +1151,7 @@ transcripts.
 - `/lsp` - Show LSP feature and configured-server status
 - `/data-retention` - Show data retention information
 - `/teleport` - Teleport session to Vibe Code Web (only available when Vibe Code is enabled)
-- `/effort` - Select effort mode: `normal` (turn-by-turn) or `le-chaton` (max thinking + auto-workflow planning)
+- `/effort` - Select effort mode: `normal` (turn-by-turn) or `le-chaton` (max thinking + adaptive orchestration)
 - `/tasks` (or `/workflows`, `Ctrl+W`) - Unified background-task manager (processes,
   workflows, teams, loops). Stays usable while the agent is busy or the queue is
   paused — that is when you need to watch or stop a background run.
@@ -1396,12 +1396,14 @@ workflows override bundled ones on name collision.
 
 ### Launching Workflows
 
-Three ways to launch:
+Two explicit ways to launch:
 1. `/<workflow-name> [args]` — run a discovered workflow script
 2. `launch_workflow` tool — the model writes a script inline and launches it
    (gated by ToolPermission.ASK, so the user approves)
-3. Le chaton effort mode — the model is instructed to write and launch workflows
-   for substantive tasks
+
+Le Chaton may select a workflow route when the observed topology warrants staged
+or adversarial fan-out, but it does not make raw scripting the default. Workflow
+authoring is an advanced escape hatch; load the `workflow-authoring` skill first.
 
 A launch returns only `{run_id, launched, delivery}` — the run is background.
 The script's `return_value` and per-agent outputs are auto-delivered as a
@@ -1500,27 +1502,50 @@ waves.
 
 ## Effort Modes
 
-Effort mode controls how the agent approaches substantive tasks.
+Effort mode controls request-level thinking and orchestration.
 
 - **normal** (default): work turn-by-turn as usual.
-- **le-chaton**: max thinking + automatic workflow planning. The system prompt
-  gains a section instructing the model to write workflow scripts for substantive
-  tasks (audits, migrations, multi-file refactors) instead of working
-  turn-by-turn.
+- **le-chaton**: max thinking + adaptive orchestration. Every primary host model
+  request uses an effective `thinking = "max"`, including after model switches
+  or failover. Subagent and harness requests keep their own model settings.
 
 Select via `/effort` command or set `effort_mode = "le-chaton"` in config.toml.
-Typing "le chaton" or "lechaton" in a prompt triggers le chaton mode for that
-turn (keyword is stripped from the prompt text).
+Typing "le chaton" or "lechaton" in a prompt acquires a non-persistent Le Chaton
+lease (the keyword is stripped from the prompt text). The lease survives matching
+asynchronous task, workflow, or team result delivery and restores the saved mode
+only after the host has acted on that result.
 
-The `launch_workflow` tool is available whenever workflows are not disabled
-(it is not gated on le chaton). Le chaton mode additionally injects the
-workflow API documentation into the system prompt and raises the active
-model's thinking to max, so the model is more likely to discover and use
-the tool.
+The host remains hands-on with its normal read, edit, shell, and integration
+tools. After observing scope, it records a `work_strategy` route:
 
-`disable_workflows = true` disables all workflow features: `/workflows` is
-unavailable, workflow commands are not registered, le chaton mode cannot be
-activated, and the `launch_workflow` tool is hidden.
+- `direct` for localized or sequentially coupled work
+- `task` for one or more productive independent lanes
+- `workflow` for staged fan-out or adversarial review
+- `team` for long-running coordination
+
+Follow the receipt's lane bindings: `task`/`team` prompts include exactly one
+`[lane:<id>]` marker, while workflow `agent()` calls use literal `label='<id>'`
+values. Distinct bound lanes, not raw launch count, satisfy delegation debt.
+
+The runtime blocks substantive mutation until the route is valid and any
+required productive delegation has launched, then checks the same debt before
+finalization. In-flight debt survives continuation turns and is correlated by
+immutable task, workflow, or team launch ID; a superseded launch cannot settle
+or poison its replacement. Preflight lane reservations prevent duplicate
+parallel launches, explicit async-task stops are terminal failures, and
+interactive teammate output is bounded and staged back into the host for
+synthesis. An edit or write can infer direct only for one path explicitly named
+by the user after at most two reconnaissance calls; the implicit route is
+bounded to a small path and mutation envelope. Leaving declared paths,
+expanding that envelope, or a failed delegation requires a new scope
+assessment. A `verifier` call is a completion gate, not productive work, and
+cannot satisfy delegation debt.
+
+`disable_workflows = true` hides raw `launch_workflow`, but it does not disable
+Le Chaton. A selected workflow route falls back to `task` when task delegation is
+available; otherwise the host must reassess to an honest capability-constrained
+direct route when appropriate. Raw workflow scripts remain an advanced escape
+hatch: load the `workflow-authoring` skill before writing one.
 
 ## Agent Teams
 

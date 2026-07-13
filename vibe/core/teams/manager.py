@@ -48,6 +48,7 @@ class TeamManager:
         hooks_manager: HooksManager | None = None,
         hook_context: Callable[[], HookSessionContext | None] | None = None,
         spend_adapter: SessionSpendAdapter | None = None,
+        terminal_callback: Callable[[str, bool, str], None] | None = None,
     ) -> None:
         self._team_name = team_name or f"team-{secrets.token_hex(4)}"
         self._team_dir = _team_dir_for(self._team_name)
@@ -59,9 +60,12 @@ class TeamManager:
         self._mailbox: Mailbox | None = None
         self._teammate_tasks: dict[str, asyncio.Task[None]] = {}
         self._teammate_procs: dict[str, asyncio.subprocess.Process] = {}
+        self._teammate_launch_ids: dict[str, str] = {}
+        self._terminal_delivered: set[str] = set()
         self._hooks_manager = hooks_manager
         self._hook_context = hook_context
         self._spend_adapter = spend_adapter
+        self._terminal_callback = terminal_callback
         self._spend_group_id = f"team:{self._team_name}"
         self._init_config()
 
@@ -138,6 +142,8 @@ class TeamManager:
 
     def add_member(self, member: TeamMember) -> None:
         with self._mutate_config() as config:
+            if any(existing.name == member.name for existing in config.members):
+                raise ValueError(f"team member '{member.name}' already exists")
             config.members.append(member)
 
     def remove_member(self, name: str) -> None:
@@ -247,8 +253,10 @@ class TeamManager:
         )
         await asyncio.to_thread(self.add_member, member)
 
+        launch_id = f"teamrun-{secrets.token_hex(8)}"
         task = asyncio.create_task(
             self._run_teammate(
+                launch_id,
                 name,
                 spawn_prompt,
                 agent,
@@ -259,10 +267,15 @@ class TeamManager:
             )
         )
         self._teammate_tasks[name] = task
+        self._teammate_launch_ids[name] = launch_id
         return name
+
+    def launch_id_for(self, name: str) -> str | None:
+        return self._teammate_launch_ids.get(name)
 
     async def _run_teammate(
         self,
+        launch_id: str,
         name: str,
         prompt: str,
         agent: str,
@@ -273,6 +286,8 @@ class TeamManager:
         safety_mode: TeamSafetyMode = TeamSafetyMode.SHARED,
     ) -> None:
         proc: asyncio.subprocess.Process | None = None
+        succeeded = False
+        terminal_output = ""
         try:
             cmd = [
                 sys.executable,
@@ -336,21 +351,12 @@ class TeamManager:
             await asyncio.to_thread(_stamp_pid)
 
             stdout, stderr = await proc.communicate()
-
-            if proc.returncode == 0:
-                result = stdout.decode() if stdout else ""
-                await asyncio.to_thread(self.update_member_status, name, "completed")
-                logger.info("Teammate %s completed: %s chars output", name, len(result))
-            else:
-                err = stderr.decode() if stderr else "unknown error"
-                await asyncio.to_thread(
-                    self.update_member_status, name, f"failed:{err[:200]}"
-                )
-                logger.error(
-                    "Teammate %s failed (rc=%s): %s", name, proc.returncode, err
-                )
+            succeeded, terminal_output = await self._record_teammate_exit(
+                name, proc.returncode, worker=worker, stdout=stdout, stderr=stderr
+            )
 
         except Exception as e:
+            terminal_output = str(e) or e.__class__.__name__
             await asyncio.to_thread(self.update_member_status, name, f"error:{e}")
             logger.error("Teammate %s error", name, exc_info=e)
         finally:
@@ -364,6 +370,50 @@ class TeamManager:
             # the TEAMMATE_IDLE lifecycle hook so observers can react.
             await self._dispatch_hook(
                 "teammate_idle", teammate_name=name, teammate_session_id=None
+            )
+            self._deliver_terminal(
+                launch_id, name, succeeded=succeeded, output=terminal_output
+            )
+
+    async def _record_teammate_exit(
+        self,
+        name: str,
+        returncode: int | None,
+        *,
+        worker: bool,
+        stdout: bytes,
+        stderr: bytes,
+    ) -> tuple[bool, str]:
+        if returncode == 0 and worker:
+            output = stdout.decode() if stdout else ""
+            await asyncio.to_thread(self.update_member_status, name, "stopped")
+            logger.info("Team worker %s stopped", name)
+            return False, output
+        if returncode == 0:
+            output = stdout.decode() if stdout else ""
+            await asyncio.to_thread(self.update_member_status, name, "completed")
+            logger.info("Teammate %s completed: %s chars output", name, len(output))
+            return True, output
+        error = stderr.decode() if stderr else "unknown error"
+        await asyncio.to_thread(
+            self.update_member_status, name, f"failed:{error[:200]}"
+        )
+        logger.error("Teammate %s failed (rc=%s): %s", name, returncode, error)
+        return False, error
+
+    def _deliver_terminal(
+        self, launch_id: str, name: str, *, succeeded: bool, output: str
+    ) -> None:
+        if launch_id in self._terminal_delivered:
+            return
+        self._terminal_delivered.add(launch_id)
+        if self._terminal_callback is None:
+            return
+        try:
+            self._terminal_callback(launch_id, succeeded, output)
+        except Exception:
+            logger.warning(
+                "Teammate terminal callback failed for %s", name, exc_info=True
             )
 
     @staticmethod
@@ -429,6 +479,9 @@ class TeamManager:
             await task
         except (asyncio.CancelledError, Exception):
             pass
+        launch_id = self._teammate_launch_ids.get(name)
+        if launch_id is not None:
+            self._deliver_terminal(launch_id, name, succeeded=False, output="stopped")
         await asyncio.to_thread(self.update_member_status, name, "stopped")
         return True
 

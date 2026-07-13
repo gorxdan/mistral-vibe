@@ -20,6 +20,13 @@ def test_append_prompt_increases_length() -> None:
     assert queue.items[0].content == "hello"
 
 
+def test_append_prompt_preserves_le_chaton_marker() -> None:
+    queue = MessageQueue()
+    queue.append_prompt("inspect the harness", le_chaton=True)
+
+    assert queue.items[0].le_chaton is True
+
+
 def test_append_bash_marks_kind() -> None:
     queue = MessageQueue()
     queue.append_bash("ls")

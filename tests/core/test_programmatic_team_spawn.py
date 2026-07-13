@@ -30,6 +30,7 @@ def test_programmatic_team_spawn_tool_creates_active_team(
         safety_mode: TeamSafetyMode = TeamSafetyMode.SHARED,
     ):
         spawned.append((name, prompt, agent, max_turns, worker, safety_mode))
+        self._teammate_launch_ids[name] = "teamrun-test"
         return name
 
     monkeypatch.setattr(

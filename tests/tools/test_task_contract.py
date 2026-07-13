@@ -35,6 +35,12 @@ from vibe.core.types import (
     ToolCallEvent,
     ToolResultEvent,
 )
+
+
+async def _noop_completion_wake() -> None:
+    pass
+
+
 from vibe.core.verification_state import VerificationState
 
 
@@ -368,6 +374,7 @@ async def test_async_isolated_task_preserves_structured_outcome() -> None:
     from vibe.core.workflows.runtime import IsolatedResult
 
     registry = BackgroundRegistry()
+    registry.attach_completion_callback(_noop_completion_wake)
     ctx = _ctx()
     ctx.background_registry = registry
     tool = Task(

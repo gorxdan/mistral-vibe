@@ -804,6 +804,7 @@ class VibeAcpAgentLoop(AcpAgent):
                     hooks_manager=session.agent_loop.hooks_manager,
                     hook_context=hook_context,
                     spend_adapter=session.agent_loop.spend_adapter,
+                    terminal_callback=session.agent_loop.observe_team_completion,
                 )
                 registry = session.agent_loop.background_registry
                 if registry is not None:
@@ -816,8 +817,12 @@ class VibeAcpAgentLoop(AcpAgent):
                 worker=worker,
                 safety_mode=safety_mode,
             )
+            launch_id = session.team_manager.launch_id_for(name)
+            if launch_id is None:
+                raise RuntimeError(f"Missing launch id for teammate '{name}'")
             kind = "worker" if worker else "teammate"
             return {
+                "launch_id": launch_id,
                 "name": name,
                 "team_dir": str(session.team_manager.team_dir),
                 "message": f"Spawned {kind} `{name}`.",

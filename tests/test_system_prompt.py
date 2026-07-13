@@ -6,6 +6,8 @@ import pytest
 
 from tests.conftest import build_test_vibe_config
 from vibe.core.agents import AgentManager
+from vibe.core.baseline_scaling import BaselineTier
+from vibe.core.config import ModelConfig
 from vibe.core.scratchpad import init_scratchpad
 from vibe.core.skills.manager import SkillManager
 from vibe.core.system_prompt import get_universal_system_prompt
@@ -218,7 +220,115 @@ def test_le_chaton_reconnaissance_uses_grep_without_lsp() -> None:
     )
 
     assert "First use local `glob` and `grep`" in prompt
+
+
+@pytest.mark.parametrize(
+    "tier", [BaselineTier.SMALL, BaselineTier.MEDIUM, BaselineTier.LARGE]
+)
+def test_subagent_prompt_omits_host_only_orchestration_sections(
+    tier: BaselineTier,
+) -> None:
+    config = build_test_vibe_config(
+        effort_mode="le-chaton",
+        include_model_info=True,
+        models=[
+            ModelConfig(name="one", alias="one", provider="mistral"),
+            ModelConfig(name="two", alias="two", provider="mistral"),
+        ],
+    )
+    prompt = get_universal_system_prompt(
+        ToolManager(lambda: config, host=False),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+        host_orchestration=False,
+        tier=tier,
+    )
+
+    for marker in (
+        "# Available Subagents",
+        "## Orchestrating Subagents",
+        "## Verification contract",
+        "## Verification invariant",
+        "## Investigation contract",
+        "## Investigation invariant",
+        "## Le Chaton Mode",
+        "## Le Chaton orchestration invariant",
+        "Models available for subagents",
+    ):
+        assert marker not in prompt
     assert "First use local `glob` and `lsp`" not in prompt
+
+
+@pytest.mark.parametrize("tier_name", ["small", "medium"])
+def test_le_chaton_orchestration_invariant_survives_compact_tiers(
+    tier_name: str,
+) -> None:
+    from vibe.core.baseline_scaling import BaselineTier
+
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+        effort_mode="le-chaton",
+    )
+    tool_manager = ToolManager(lambda: config)
+    prompt = get_universal_system_prompt(
+        tool_manager,
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+        tier=BaselineTier(tier_name),
+    )
+
+    assert "## Le Chaton orchestration invariant" in prompt
+    assert "`work_strategy`" in prompt
+    assert "before the first mutating tool" in prompt
+    assert "reassess" in prompt.lower()
+    assert "work_strategy" in tool_manager.available_tools
+
+
+def test_large_le_chaton_prompt_has_adaptive_work_strategy_guidance() -> None:
+    from vibe.core.baseline_scaling import BaselineTier
+
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+        effort_mode="le-chaton",
+    )
+    tool_manager = ToolManager(lambda: config)
+    prompt = get_universal_system_prompt(
+        tool_manager,
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+        tier=BaselineTier.LARGE,
+    )
+
+    assert "## Le Chaton Mode" in prompt
+    assert "`work_strategy`" in prompt
+    assert "before the first mutating tool" in prompt
+    assert "adaptive" in prompt.lower()
+    assert "host remains hands-on" in prompt.lower()
+    for route in ("`direct`", "`task`", "`workflow`", "`team`"):
+        assert route in prompt
+    for signal in (
+        "localized",
+        "sequentially coupled",
+        "independent lanes",
+        "adversarial review",
+        "long-running",
+        "capability unavailable",
+    ):
+        assert signal in prompt.lower()
+    assert "work_strategy" in tool_manager.available_tools
 
 
 def test_le_chaton_recovery_and_monitor_prose_moved_to_workflow_skill() -> None:
@@ -837,7 +947,7 @@ def test_investigation_contract_section_absent_when_subsystem_disabled() -> None
     assert "## Investigation contract" not in prompt_off
 
 
-def test_workflow_authoring_guide_is_lazy_not_always_on() -> None:
+def test_raw_workflow_authoring_guide_remains_lazy() -> None:
     # The ~3.2k launch_workflow authoring guide must NOT be injected into every
     # system prompt; it loads on demand via the `workflow-authoring` skill. The
     # tool stays discoverable (concise stub + schema) and the full guide lives
@@ -864,10 +974,9 @@ def test_workflow_authoring_guide_is_lazy_not_always_on() -> None:
     # The bulky authoring prose is gone from the always-on prompt...
     assert "## Local discovery comes first" not in prompt
     assert "dedup_by" not in prompt
-    # ...replaced by a concise pointer to the on-demand skill.
-    assert "workflow-authoring" in prompt
-    assert "Pass the script SOURCE inline" in prompt  # the concise tool stub
-    # The tool schema is still sent to the API, so it stays callable.
+    # Raw script authoring remains available as an advanced escape hatch, while
+    # the common Le Chaton path is the adaptive strategy contract.
+    assert "`work_strategy`" in prompt
     assert "launch_workflow" in tool_manager.available_tools
 
     # The full guide is preserved in the skill body.

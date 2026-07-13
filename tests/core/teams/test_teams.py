@@ -318,6 +318,136 @@ class _FakeProc:
         return (b"", b"")
 
 
+@pytest.mark.parametrize(
+    ("returncode", "worker", "succeeded"),
+    [(0, False, True), (2, False, False), (0, True, False)],
+)
+@pytest.mark.asyncio
+async def test_teammate_terminal_callback_reports_process_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    worker: bool,
+    succeeded: bool,
+) -> None:
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    proc = _FakeProc()
+    proc._set_rc(returncode)
+    outcomes: list[tuple[str, bool]] = []
+
+    def terminal_callback(launch_id: str, ok: bool, output: str) -> None:
+        del output
+        outcomes.append((launch_id, ok))
+
+    async def fake_exec(*args: object, **kwargs: object) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    manager = TeamManager(
+        "lead-session",
+        team_name=f"test-terminal-{returncode}-{worker}",
+        terminal_callback=terminal_callback,
+    )
+    try:
+        await manager.spawn_teammate(
+            "reviewer",
+            "Inspect the change",
+            agent="explore",
+            max_turns=1,
+            worker=worker,
+        )
+        launch_id = manager.launch_id_for("reviewer")
+        assert launch_id is not None
+        await manager.wait_for_teammate("reviewer")
+
+        assert outcomes == [(launch_id, succeeded)]
+    finally:
+        manager.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_spawn_teammate_rejects_duplicate_member_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    manager = TeamManager("lead-session", team_name="test-duplicate-member")
+    manager.add_member(TeamMember(name="reviewer"))
+    try:
+        with pytest.raises(ValueError, match="already exists"):
+            await manager.spawn_teammate(
+                "reviewer", "Inspect the change", agent="explore", max_turns=1
+            )
+
+        assert manager._teammate_tasks == {}
+    finally:
+        manager.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_immediate_stop_still_reports_terminal_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    outcomes: list[tuple[str, bool]] = []
+
+    def terminal_callback(launch_id: str, succeeded: bool, output: str) -> None:
+        del output
+        outcomes.append((launch_id, succeeded))
+
+    manager = TeamManager(
+        "lead-session",
+        team_name="test-immediate-stop",
+        terminal_callback=terminal_callback,
+    )
+    try:
+        await manager.spawn_teammate(
+            "reviewer", "Inspect the change", agent="explore", max_turns=1
+        )
+        launch_id = manager.launch_id_for("reviewer")
+        assert launch_id is not None
+
+        assert await manager.stop_teammate("reviewer") is True
+        assert outcomes == [(launch_id, False)]
+    finally:
+        manager.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_teammate_terminal_callback_receives_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+    proc = _FakeProc()
+    proc._set_rc(0)
+    outputs: list[str] = []
+
+    async def communicate() -> tuple[bytes, bytes]:
+        return b"review finding", b""
+
+    def terminal_callback(_launch_id: str, _succeeded: bool, output: str) -> None:
+        outputs.append(output)
+
+    async def fake_exec(*args: object, **kwargs: object) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(proc, "communicate", communicate)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    manager = TeamManager(
+        "lead-session",
+        team_name="test-terminal-output",
+        terminal_callback=terminal_callback,
+    )
+    try:
+        await manager.spawn_teammate(
+            "reviewer", "Inspect the change", agent="explore", max_turns=1
+        )
+        await manager.wait_for_teammate("reviewer")
+
+        assert outputs == ["review finding"]
+    finally:
+        manager.cleanup()
+
+
 @pytest.mark.asyncio
 async def test_spawn_teammate_rejects_path_looking_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

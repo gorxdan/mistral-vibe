@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import signal
 import time
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from uuid import uuid4
 from weakref import WeakKeyDictionary
 
@@ -264,6 +264,7 @@ if TYPE_CHECKING:
     from vibe.cli.textual_ui.widgets.mcp_app import MCPApp
     from vibe.cli.voice_manager import VoiceManager
     from vibe.core.agent_loop import AgentLoop
+    from vibe.core.workflows.models import WorkflowStatus
 
 _VSCODE_FAMILY_TERMINALS = {Terminal.VSCODE, Terminal.VSCODE_INSIDERS, Terminal.CURSOR}
 
@@ -394,6 +395,11 @@ class StartupOptions:
     is_resuming_session: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _KeywordLeChatonLease:
+    origin_session_id: str
+
+
 _REJECT_HINT_BUSY = "wait for the current job to finish."
 _REJECT_HINT_PAUSED = "clear the queue first or remove this input."
 _SUBAGENT_MODEL_HINT = (
@@ -490,6 +496,10 @@ class VibeApp(App):
         self._workflow_flush_tasks: set[asyncio.Task] = set()
         self._auto_continue_active = False
         self._consecutive_auto_continues = 0
+        self._completion_wake_pending = False
+        self._completion_wake_lock = asyncio.Lock()
+        self._keyword_le_chaton_lease: _KeywordLeChatonLease | None = None
+        self._workflow_delivery_active = 0
         self._bash_task: asyncio.Task | None = None
         self._update_notifier = update_notifier
         self._update_cache_repository = update_cache_repository
@@ -573,6 +583,7 @@ class VibeApp(App):
         self._workflow_runner = WorkflowRunner(
             mount=self._mount_and_scroll,
             on_complete=self._on_workflow_complete,
+            on_terminal=self._on_workflow_terminal,
             persist_callback=self._persist_workflow_snapshots,
             snapshot_loader=self._load_workflow_snapshots,
             resume_runtime_factory=self._build_resume_runtime,
@@ -633,6 +644,7 @@ class VibeApp(App):
             render_payload=lambda payload: render_path_prompt_from_payload(
                 payload, skip_images=True
             ),
+            acquire_le_chaton=self._acquire_keyword_le_chaton_lease,
         )
 
     def _active_model_or_none(self) -> ModelConfig | None:
@@ -656,12 +668,18 @@ class VibeApp(App):
         *,
         prebuilt_images: list[ImageAttachment] | None = None,
         prebuilt_payload: PathPromptPayload | None = None,
+        auto_continue: bool = False,
+        orchestration_continuation_id: str | None = None,
     ) -> asyncio.Task:
+        if not auto_continue:
+            self._completion_wake_pending = False
+            self._consecutive_auto_continues = 0
         self._agent_task = asyncio.create_task(
             self._handle_agent_loop_turn(
                 content,
                 prebuilt_images=prebuilt_images,
                 prebuilt_payload=prebuilt_payload,
+                orchestration_continuation_id=orchestration_continuation_id,
             )
         )
         return self._agent_task
@@ -673,17 +691,93 @@ class VibeApp(App):
         await agent_task
 
     async def _on_async_completion_wake(self) -> None:
-        # A background subagent finished: if idle (and the user isn't driving),
-        # auto-continue one turn to drain it. Capped to avoid an unattended loop.
+        self._completion_wake_pending = True
+        async with self._completion_wake_lock:
+            await self._flush_pending_completion_wake()
+
+    async def _flush_pending_completion_wake(self) -> None:
+        while self._completion_wake_pending:
+            if self._input_queue.paused:
+                return
+
+            active_task = self._agent_task
+            if active_task is not None and not active_task.done():
+                await self._wait_for_completion_wake_blocker(active_task)
+                continue
+
+            bash_task = self._bash_task
+            if bash_task is not None and not bash_task.done():
+                await self._wait_for_completion_wake_blocker(bash_task)
+                continue
+
+            if self._input_queue:
+                self._queue.start_drain_if_needed()
+                if not self._queue.draining:
+                    return
+
+            if self._queue.draining:
+                await asyncio.sleep(0)
+                continue
+
+            if not self._completion_delivery_is_pending():
+                self._completion_wake_pending = False
+                return
+
+            if self._consecutive_auto_continues >= _MAX_AUTO_CONTINUES:
+                self._completion_wake_pending = False
+                return
+
+            if self._try_start_auto_continue(_AUTO_CONTINUE_PROMPT):
+                self._completion_wake_pending = False
+                return
+
+            await asyncio.sleep(0)
+
+    def _completion_delivery_is_pending(self) -> bool:
+        if self._background_registry.has_pending_async_agent_completions:
+            return True
+        if self.agent_loop.has_pending_injected_messages:
+            return True
+        messages = self.agent_loop.messages
+        return bool(
+            messages and messages[-1].role is Role.USER and messages[-1].injected
+        )
+
+    @staticmethod
+    async def _wait_for_completion_wake_blocker(task: asyncio.Task) -> None:
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+        except Exception:
+            pass
+
+    def _try_start_auto_continue(
+        self,
+        prompt: str,
+        *,
+        route: Literal["task", "workflow", "team"] | None = None,
+        launch_id: str | None = None,
+    ) -> bool:
         if self._is_busy() or self._auto_continue_active:
-            return
+            return False
         if self._input_queue.paused or bool(self._input_queue):
-            return
+            return False
         if self._consecutive_auto_continues >= _MAX_AUTO_CONTINUES:
-            return
+            return False
+        continuation_id = self.agent_loop.issue_orchestration_continuation(
+            route=route, launch_id=launch_id
+        )
         self._auto_continue_active = True
         self._consecutive_auto_continues += 1
-        self._start_queued_agent_turn(_AUTO_CONTINUE_PROMPT)
+        self._agent_running = True
+        self._start_queued_agent_turn(
+            prompt, auto_continue=True, orchestration_continuation_id=continuation_id
+        )
+        self._queue.notify_busy_changed()
+        return True
 
     def _start_queued_bash(
         self, command: str, *, existing_widget: BashOutputMessage | None = None
@@ -1066,6 +1160,11 @@ class VibeApp(App):
             return False
         self._queue.set_paused(False)
         self._queue.start_drain_if_needed()
+        if self._completion_wake_pending:
+            asyncio.create_task(
+                self._on_async_completion_wake(),
+                name="completion-wake-after-queue-resume",
+            )
         return True
 
     async def _handle_queue_submit(self, value: str, *, reject_hint: str) -> bool:
@@ -1089,18 +1188,22 @@ class VibeApp(App):
             case Prompt(text=text):
                 return await self._enqueue_prompt_with_resources(text)
             case LeChatonPrompt(text=text):
-                return await self._enqueue_prompt_with_resources(text)
+                return await self._enqueue_prompt_with_resources(text, le_chaton=True)
         return True
 
     async def _enqueue_prompt_with_resources(
-        self, content: str, *, skill_name: str | None = None
+        self, content: str, *, skill_name: str | None = None, le_chaton: bool = False
     ) -> bool:
         payload = build_path_prompt_payload(content, base_dir=safe_cwd())
         images = await self._prepare_images_or_abort(payload)
         if images is None:
             return False
         await self._queue.enqueue_prompt(
-            content, skill_name=skill_name, images=images, payload=payload
+            content,
+            skill_name=skill_name,
+            images=images,
+            payload=payload,
+            le_chaton=le_chaton,
         )
         return True
 
@@ -1486,6 +1589,7 @@ class VibeApp(App):
     async def on_effort_picker_app_effort_selected(
         self, message: EffortPickerApp.EffortSelected
     ) -> None:
+        self._discard_keyword_le_chaton_lease()
         self.config.set_effort_mode(message.level)
         await self._reload_config()
         await self._switch_to_input_app()
@@ -1933,6 +2037,7 @@ class VibeApp(App):
             if not input_widget.value:
                 input_widget.value = message
             return
+        self._completion_wake_pending = False
 
         # message_index is where the user message will land in agent_loop.messages
         # (checkpoint is created in agent_loop.act())
@@ -2188,6 +2293,7 @@ class VibeApp(App):
         title_source: str | None = None,
         prebuilt_images: list[ImageAttachment] | None = None,
         prebuilt_payload: PathPromptPayload | None = None,
+        orchestration_continuation_id: str | None = None,
     ) -> None:
         self._agent_running = True
 
@@ -2225,6 +2331,7 @@ class VibeApp(App):
                     client_message_id=message_id,
                     auto_title=auto_title,
                     images=images or None,
+                    orchestration_continuation_id=orchestration_continuation_id,
                 )
             ) as events:
                 await self._handle_agent_loop_events(events)
@@ -2260,6 +2367,7 @@ class VibeApp(App):
                 self.event_handler.escalate_unresolved_errors()
             self._queue.notify_busy_changed()
             self._queue.start_drain_if_needed()
+            await self._maybe_release_keyword_le_chaton_lease()
             await self._refresh_windowing_from_history()
             self._terminal_notifier.notify(NotificationContext.COMPLETE)
 
@@ -3004,6 +3112,7 @@ class VibeApp(App):
         await self._mount_and_scroll(UserCommandMessage("Resume cancelled."))
 
     async def _resume_local_session(self, session: ResumeSessionInfo) -> None:
+        await self._maybe_release_keyword_le_chaton_lease(force=True)
         session_config = self.config.session_logging
         session_path = SessionLoader.find_session_by_id(
             session.session_id, session_config
@@ -3065,6 +3174,8 @@ class VibeApp(App):
             self._reset_ui_state()
             await self._load_more.hide()
             base_config = VibeConfig.load()
+            if self._keyword_le_chaton_lease is not None:
+                base_config = self._with_keyword_le_chaton_override(base_config)
 
             await self.agent_loop.reload_with_initial_messages(base_config=base_config)
             await self._resolve_plan()
@@ -3120,6 +3231,13 @@ class VibeApp(App):
                     f"Failed to reload config: {e}", collapsed=self._tools_collapsed
                 )
             )
+
+    @staticmethod
+    def _with_keyword_le_chaton_override(base_config: VibeConfig) -> VibeConfig:
+        runtime_config = base_config.model_copy(deep=True)
+        runtime_config.effort_mode = "le-chaton"
+        runtime_config.get_active_model().thinking = "max"
+        return runtime_config
 
     async def _install_lean(self, **kwargs: Any) -> None:
         current = list(self.agent_loop.base_config.installed_agents)
@@ -3383,6 +3501,7 @@ class VibeApp(App):
         self._lsp_nudge_shown_this_session = True
 
     async def _clear_history(self, **kwargs: Any) -> None:
+        await self._maybe_release_keyword_le_chaton_lease(force=True)
         try:
             self._reset_ui_state()
             if self._chat_input_container:
@@ -3513,6 +3632,7 @@ class VibeApp(App):
             hooks_manager=loop.hooks_manager,
             hook_context=hook_context,
             spend_adapter=loop.spend_adapter,
+            terminal_callback=loop.observe_team_completion,
         )
 
     def _render_team_list_rows(self, members: list[Any]) -> list[str]:
@@ -4002,8 +4122,12 @@ class VibeApp(App):
             worker=worker,
             safety_mode=safety_mode,
         )
+        launch_id = self._team_manager.launch_id_for(name)
+        if launch_id is None:
+            raise RuntimeError(f"Missing launch id for teammate '{name}'")
         kind = "worker" if worker else "teammate"
         return {
+            "launch_id": launch_id,
             "name": name,
             "team_dir": str(self._team_manager.team_dir),
             "message": f"Spawned {kind} `{name}`.",
@@ -4053,6 +4177,14 @@ class VibeApp(App):
         )
 
     async def _on_workflow_complete(self, result: Any) -> None:
+        self._workflow_delivery_active += 1
+        try:
+            await self._deliver_workflow_complete(result)
+        finally:
+            self._workflow_delivery_active -= 1
+            await self._maybe_release_keyword_le_chaton_lease()
+
+    async def _deliver_workflow_complete(self, result: Any) -> None:
         from vibe.cli.textual_ui.widgets.messages import SubagentResponseMessage
         from vibe.core.workflows.models import WorkflowStatus
 
@@ -4060,7 +4192,10 @@ class VibeApp(App):
         # Failed and budget-blocked runs are not successful completions. A STOPPED
         # run (cancelled by the user) is neither success nor error.
         status = getattr(result.run, "status", None)
-        run_id = getattr(result.run, "run_id", "workflow")
+        entry = next(
+            (item for item in self._workflow_runner.runs if item.result is result), None
+        )
+        run_id = entry.run_id if entry is not None else "workflow"
         if isinstance(status, WorkflowStatus) and status in {
             WorkflowStatus.FAILED,
             WorkflowStatus.BLOCKED,
@@ -4100,32 +4235,39 @@ class VibeApp(App):
                     launching = self._agent_task
                     if launching is not None:
                         flush = asyncio.create_task(
-                            self._flush_stranded_workflow_delivery(launching)
+                            self._flush_stranded_workflow_delivery(launching, run_id)
                         )
                         self._workflow_flush_tasks.add(flush)
                         flush.add_done_callback(self._workflow_flush_tasks.discard)
                 else:
-                    # Idle: the launching turn already ended, so there is no live
-                    # loop to fold into. Auto-resume — drive a continuation turn
-                    # with the delivery as its prompt so the agent acts on the
-                    # outcome instead of stalling until the next human message.
-                    # The event consumer ignores UserMessageEvent, so this adds
-                    # no redundant user bubble on top of the summary shown above.
-                    # Set _agent_running synchronously (before the task is
-                    # scheduled) so a user submit racing on the same loop tick
-                    # cannot also start a turn and clobber _agent_task.
-                    self._agent_running = True
-                    self._agent_task = asyncio.create_task(
-                        self._handle_agent_loop_turn(payload)
-                    )
-                    self._queue.notify_busy_changed()
+                    # Idle workflow results re-enter through normal queue arbitration.
+                    self.agent_loop.stage_injected_message(payload)
+                    if not self._try_start_auto_continue(
+                        _WORKFLOW_CONTINUE_PROMPT, route="workflow", launch_id=run_id
+                    ):
+                        await self._on_async_completion_wake()
             except Exception:
                 logger.warning(
                     "Failed to deliver workflow result to agent loop", exc_info=True
                 )
 
+    async def _on_workflow_terminal(self, run_id: str, status: WorkflowStatus) -> None:
+        from vibe.core.workflows.models import WorkflowStatus
+
+        self.agent_loop.observe_workflow_completion(
+            run_id, succeeded=status is WorkflowStatus.COMPLETED
+        )
+
     async def _flush_stranded_workflow_delivery(
-        self, launching_task: asyncio.Task
+        self, launching_task: asyncio.Task, run_id: str
+    ) -> None:
+        try:
+            await self._flush_stranded_workflow_delivery_body(launching_task, run_id)
+        finally:
+            await self._maybe_release_keyword_le_chaton_lease()
+
+    async def _flush_stranded_workflow_delivery_body(
+        self, launching_task: asyncio.Task, run_id: str
     ) -> None:
         # Safety net for the busy-branch teardown race in _on_workflow_complete.
         # Once the launching turn settles, drive one continuation turn iff the
@@ -4138,20 +4280,12 @@ class VibeApp(App):
             await launching_task
         except Exception:
             return
-        if self._is_busy() or self._auto_continue_active:
-            return
-        if self._input_queue.paused or bool(self._input_queue):
-            return
         msgs = self.agent_loop.messages
         if not msgs or msgs[-1].role != Role.USER or not msgs[-1].injected:
             return
-        if self._consecutive_auto_continues >= _MAX_AUTO_CONTINUES:
-            return
-        self._auto_continue_active = True
-        self._consecutive_auto_continues += 1
-        self._agent_running = True
-        self._start_queued_agent_turn(_WORKFLOW_CONTINUE_PROMPT)
-        self._queue.notify_busy_changed()
+        self._try_start_auto_continue(
+            _WORKFLOW_CONTINUE_PROMPT, route="workflow", launch_id=run_id
+        )
 
     _WORKFLOW_DELIVERY_CHAR_CAP = 16_000
 
@@ -4270,37 +4404,55 @@ class VibeApp(App):
             workflow_source_resolver=self._resolve_workflow_source,
         )
 
-    async def _handle_le_chaton_prompt(self, text: str) -> None:
-        if self.config.disable_workflows:
-            await self._handle_user_message(text)
+    async def _acquire_keyword_le_chaton_lease(self) -> None:
+        if self._keyword_le_chaton_lease is not None or self.config.is_le_chaton():
             return
-        previous_mode = self.config.effort_mode
-        # set_effort_mode("le-chaton") bumps the active model's thinking to
-        # "max"; capture the prior level so the turn-scoped switch is fully
-        # reversible. Docs say the keyword triggers le chaton "for that turn"
-        # -- without restoration it persisted permanently across sessions.
-        previous_thinking = self.config.get_active_model().thinking
-        if previous_mode != "le-chaton":
-            self.config.set_effort_mode("le-chaton")
-            await self._reload_config()
+        self._keyword_le_chaton_lease = _KeywordLeChatonLease(
+            origin_session_id=self.agent_loop.session_id
+        )
+        await self._reload_config()
+
+    async def _maybe_release_keyword_le_chaton_lease(
+        self, *, force: bool = False
+    ) -> None:
+        lease = self._keyword_le_chaton_lease
+        if lease is None:
+            return
+        if not force:
+            current_task = asyncio.current_task()
+            workflow_flush_pending = any(
+                task is not current_task and not task.done()
+                for task in self._workflow_flush_tasks
+            )
+            turn_active = self._agent_running or self._auto_continue_active
+            delivery_pending = any((
+                self._completion_wake_pending,
+                bool(self._workflow_delivery_active),
+                workflow_flush_pending,
+                self._completion_delivery_is_pending(),
+            ))
+            if (
+                lease.origin_session_id != self.agent_loop.session_id
+                or self.agent_loop.orchestration_requires_le_chaton
+                or turn_active
+                or delivery_pending
+            ):
+                return
+        self._keyword_le_chaton_lease = None
+        await self._reload_config()
+
+    def _discard_keyword_le_chaton_lease(self) -> None:
+        self._keyword_le_chaton_lease = None
+
+    async def _handle_le_chaton_prompt(self, text: str) -> None:
+        await self._acquire_keyword_le_chaton_lease()
         try:
             await self._handle_user_message(text)
-            # _handle_user_message spawns the turn as a background task and
-            # returns immediately; the turn reads the thinking level live when it
-            # builds the LLM request. Wait for that turn to finish before
-            # restoring, otherwise the boost is reverted before it is ever used
-            # (the le-chaton turn would run at the prior level). asyncio.wait
-            # does not propagate the turn's own exception/cancellation, but still
-            # surfaces cancellation of this coroutine.
             task = self._agent_task
             if task is not None and not task.done():
                 await asyncio.wait({task})
         finally:
-            if previous_mode != "le-chaton":
-                self.config.set_effort_mode(previous_mode)
-                if self.config.get_active_model().thinking != previous_thinking:
-                    self.config.set_thinking(previous_thinking)
-                await self._reload_config()
+            await self._maybe_release_keyword_le_chaton_lease()
 
     async def _compact_history(self, cmd_args: str = "", **kwargs: Any) -> None:
         if self._agent_running:
@@ -4450,6 +4602,7 @@ class VibeApp(App):
                 self._team_manager = None
 
     async def _exit_app(self, **kwargs: Any) -> None:
+        self._discard_keyword_le_chaton_lease()
         self._emit_session_closed_for_active_session()
         await self._loop_runner.stop()
         await self._workflow_runner.stop_all()
@@ -5367,6 +5520,7 @@ class VibeApp(App):
         self._force_quit_task = asyncio.create_task(self._force_quit_async())
 
     async def _force_quit_async(self) -> None:
+        self._discard_keyword_le_chaton_lease()
         self._emit_session_closed_for_active_session()
         if self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()

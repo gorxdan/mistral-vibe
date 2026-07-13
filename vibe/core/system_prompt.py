@@ -612,6 +612,8 @@ def _build_prompt_detail_sections(
     scratchpad_dir: Path | None,
     config: VibeConfig,
     tier: BaselineTier = BaselineTier.LARGE,
+    *,
+    host_orchestration: bool = True,
 ) -> list[str]:
     sections = [_get_os_system_prompt()]
     if lsp_section := _get_lsp_priority_section(tool_manager):
@@ -627,7 +629,8 @@ def _build_prompt_detail_sections(
     # The routing list rides the task tool's prose block — its only consumer —
     # so task-less profiles never pay for it.
     if (
-        "task" in tool_manager.manifest_tools
+        host_orchestration
+        and "task" in tool_manager.manifest_tools
         and section_enabled(tier, "model_routing_list")
         and (note := _get_model_routing_note(config))
     ):
@@ -645,7 +648,9 @@ def _build_prompt_detail_sections(
         if skills_section:
             sections.append(skills_section)
 
-    subagents_section = _get_available_subagents_section(agent_manager)
+    subagents_section = (
+        _get_available_subagents_section(agent_manager) if host_orchestration else ""
+    )
     if subagents_section:
         sections.append(subagents_section)
         if section_enabled(tier, "orchestration_prose"):
@@ -737,6 +742,7 @@ def get_universal_system_prompt(
     headless: bool = False,
     experiment_manager: ExperimentManager | None = None,
     tier: BaselineTier = BaselineTier.LARGE,
+    host_orchestration: bool = True,
 ) -> str:
     sections = [_interpolate_prompt(_resolve_system_prompt(config, experiment_manager))]
 
@@ -761,11 +767,19 @@ def get_universal_system_prompt(
     if config.include_prompt_detail:
         sections.extend(
             _build_prompt_detail_sections(
-                tool_manager, skill_manager, agent_manager, scratchpad_dir, config, tier
+                tool_manager,
+                skill_manager,
+                agent_manager,
+                scratchpad_dir,
+                config,
+                tier,
+                host_orchestration=host_orchestration,
             )
         )
-    elif section_enabled(tier, "model_routing_list") and (
-        note := _get_model_routing_note(config)
+    elif (
+        host_orchestration
+        and section_enabled(tier, "model_routing_list")
+        and (note := _get_model_routing_note(config))
     ):
         # Legacy home of the routing note (pre task-prose relocation), kept so
         # include_model_info keeps working with prompt detail off.
@@ -777,11 +791,15 @@ def get_universal_system_prompt(
         )
 
     if (
-        getattr(config, "effort_mode", "normal") == "le-chaton"
-        and not getattr(config, "disable_workflows", False)
-        and section_enabled(tier, "le_chaton_long")
+        host_orchestration
+        and getattr(config, "effort_mode", "normal") == "le-chaton"
+        and "work_strategy" in tool_manager.available_tools
     ):
-        sections.append(_get_le_chaton_section(tool_manager))
+        sections.append(
+            _get_le_chaton_section(tool_manager)
+            if section_enabled(tier, "le_chaton_long")
+            else _get_le_chaton_compact_section()
+        )
 
     from vibe.core.tools.utils import isolated_worktree_root
     from vibe.core.worktree.manager import worktree_manager
@@ -852,31 +870,49 @@ def _get_le_chaton_section(tool_manager: ToolManager) -> str:
     )
     return (
         "## Le Chaton Mode\n\n"
-        "Max thinking + workflow orchestration. For substantive tasks "
-        "(codebase audits, large migrations, cross-checked research, "
-        "multi-file refactors), write a workflow script that orchestrates "
-        "parallel agents instead of working turn-by-turn. Do not launch a "
-        "workflow as the first repository-discovery step. First use local "
+        "Max thinking + adaptive orchestration. The host remains hands-on: it "
+        "keeps its normal read, edit, shell, and integration tools while the "
+        "harness makes delegation debt explicit; before the first mutating tool "
+        "after reconnaissance, call `work_strategy` with an observed-scope route: "
+        "`direct` for localized or sequentially coupled work; `task` for one or "
+        "more independent lanes; `workflow` for staged fan-out or adversarial "
+        "review; `team` for long-running coordination. If a capability is "
+        "unavailable, record capability unavailable and use the viable fallback. "
+        "Reassess whenever the touched scope leaves the declared paths or a "
+        "delegation fails. The harness may infer `direct` without a declaration "
+        "only for one path explicitly named by the user after at most two "
+        "reconnaissance calls.\n\n"
+        "Do not launch a workflow as the first repository-discovery step. First use local "
         f"{discovery_tools} to map the repository, identify central symbols and "
         "callers, and read entry points. A broad label such as 'analyze this "
         "repo' does not by itself justify a workflow. File count alone is not "
-        "a reason to delegate; prefer a workflow after reconnaissance when 3+ "
-        "independent agents, adversarial verification, or separable "
-        "concurrent work applies — simple tasks → work normally.\n\n"
-        "When you do write a script, give each agent one question and fan out "
+        "a reason to delegate; topology and risk are. A broad task that collapses "
+        "to one locus can stay direct, while independent lanes, adversarial review, "
+        "or separable concurrent work should delegate.\n\n"
+        "When delegating, give each agent one question and fan out "
         "for breadth — a fat brief (several areas in one prompt) gives shallow "
         "coverage where a narrow brief gives depth; breadth comes from more "
         "agents, not bigger prompts.\n\n"
-        "**Canonical reference:** load the `workflow-authoring` skill before "
-        "writing a script — the single source of truth for the script API, "
-        "sandbox rules, launch semantics, result retrieval, concurrency/rate "
-        "limits, and `Retries exhausted` recovery. Do not restate it from "
-        "memory.\n\n"
         "**Deferral (pick by intent):** run later / on a timer → `schedule`; "
         "delegate one subagent and keep working → `task(async_run=true)`; "
         "orchestrated fan-out (N agents, phases, budget, schema) → "
         "`launch_workflow`.\n\n"
         "**Don't poll.** Completion is auto-delivered to your context — "
         "launch, report the `run_id`, end your turn. `workflow_status` is a "
-        "one-shot diagnostic, not a progress ticker."
+        "one-shot diagnostic, not a progress ticker. Raw workflow scripts are "
+        "an advanced escape hatch: load `workflow-authoring` before authoring one."
+    )
+
+
+def _get_le_chaton_compact_section() -> str:
+    return (
+        "## Le Chaton orchestration invariant\n\n"
+        "Use max thinking and keep the host hands-on. After bounded read-only "
+        "reconnaissance, call `work_strategy` before the first mutating tool: "
+        "`direct` for localized/sequential work, `task` for independent lanes, "
+        "`workflow` for staged or adversarial fan-out, and `team` for long-running "
+        "coordination. The harness validates available capabilities and delegation "
+        "debt. One explicitly named path may infer bounded `direct` after at most "
+        "two reconnaissance calls. Reassess when scope drifts or a launch fails; "
+        "verifier-only work does not satisfy productive delegation."
     )

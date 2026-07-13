@@ -20,8 +20,20 @@ from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core import tracing
 from vibe.core.config import OtelSpanExporterConfig
+from vibe.core.orchestration import (
+    OrchestrationCapabilities,
+    OrchestrationRoute,
+    OrchestrationState,
+    OrchestrationTurnSummary,
+    StrategyReason,
+)
 from vibe.core.tools.base import BaseToolConfig, ToolPermission
-from vibe.core.tracing import agent_span, setup_tracing, tool_span
+from vibe.core.tracing import (
+    agent_span,
+    set_orchestration_summary,
+    setup_tracing,
+    tool_span,
+)
 from vibe.core.types import BaseEvent, FunctionCall, ToolCall
 
 
@@ -280,6 +292,73 @@ class TestAgentSpan:
         assert attrs["gen_ai.usage.output_tokens"] == 56
         assert attrs["gen_ai.usage.cached_input_tokens"] == 1000
 
+    @pytest.mark.asyncio
+    async def test_records_orchestration_summary(
+        self, _otel_provider: _CollectingExporter
+    ) -> None:
+        summary = OrchestrationTurnSummary(
+            state=OrchestrationState.DISTRIBUTED,
+            route=OrchestrationRoute.WORKFLOW,
+            reason=StrategyReason.INDEPENDENT_LANES,
+            capabilities=OrchestrationCapabilities(
+                task=True, workflow=True, team=False, background_delivery=True
+            ),
+            reconnaissance_calls=4,
+            direct_mutations=2,
+            unique_paths=2,
+            productive_delegations=3,
+            completed_delegations=2,
+            pending_delegations=1,
+            verifier_delegations=1,
+            required_delegations=3,
+            failed_delegations=1,
+            scope_drift=True,
+            policy_nudges=2,
+            user_allows_agents=False,
+            user_allows_workflow=False,
+            user_allows_team=True,
+        )
+
+        async with agent_span() as span:
+            set_orchestration_summary(span, summary)
+
+        attrs = {
+            key: value
+            for key, value in dict(_otel_provider.spans[0].attributes).items()
+            if key.startswith("vibe.orchestration.")
+        }
+        assert attrs == {
+            "vibe.orchestration.state": "distributed",
+            "vibe.orchestration.route": "workflow",
+            "vibe.orchestration.reason": "independent_lanes",
+            "vibe.orchestration.task_available": True,
+            "vibe.orchestration.workflow_available": True,
+            "vibe.orchestration.team_available": False,
+            "vibe.orchestration.background_delivery": True,
+            "vibe.orchestration.reconnaissance_calls": 4,
+            "vibe.orchestration.direct_mutations": 2,
+            "vibe.orchestration.unique_paths": 2,
+            "vibe.orchestration.productive_delegations": 3,
+            "vibe.orchestration.completed_delegations": 2,
+            "vibe.orchestration.pending_delegations": 1,
+            "vibe.orchestration.verifier_delegations": 1,
+            "vibe.orchestration.required_delegations": 3,
+            "vibe.orchestration.failed_delegations": 1,
+            "vibe.orchestration.scope_drift": True,
+            "vibe.orchestration.policy_nudges": 2,
+            "vibe.orchestration.user_allows_agents": False,
+            "vibe.orchestration.user_allows_workflow": False,
+            "vibe.orchestration.user_allows_team": True,
+        }
+
+    def test_orchestration_summary_is_safe_for_invalid_span(self) -> None:
+        summary = OrchestrationTurnSummary(
+            state=OrchestrationState.PROVISIONAL_LOCAL,
+            capabilities=OrchestrationCapabilities(),
+        )
+
+        set_orchestration_summary(trace.INVALID_SPAN, summary)
+
 
 class TestToolSpan:
     @pytest.mark.asyncio
@@ -485,6 +564,7 @@ class TestIntegration:
         assert agent_attrs["gen_ai.agent.name"] == "mistral-vibe"
         assert agent_attrs["gen_ai.request.model"] == "mistral-vibe-cli-latest"
         assert agent_attrs["gen_ai.conversation.id"] == agent_loop.session_id
+        assert agent_attrs["vibe.orchestration.state"] == "off"
 
         # -- Tool span: name, status, and every attribute set by tool_span() + set_tool_result() --
         assert tool.name == "execute_tool todo"

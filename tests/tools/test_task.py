@@ -22,6 +22,10 @@ from vibe.core.tools.safety_judge import JudgeVerdict
 from vibe.core.types import AssistantEvent, LLMMessage, Role, ToolResultEvent
 
 
+async def _noop_completion_wake() -> None:
+    pass
+
+
 @pytest.fixture
 def task_tool() -> Task:
     return Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
@@ -409,6 +413,7 @@ class TestIsolatedScratchpadThreading:
         from vibe.core.tools.background import BackgroundRegistry
 
         registry = BackgroundRegistry()
+        registry.attach_completion_callback(_noop_completion_wake)
         ctx_with_registry = replace(ctx, background_registry=registry)
 
         async def fake_run(*a, **kw):
@@ -723,6 +728,7 @@ class TestAsyncRun:
         from vibe.core.tools.builtins.task import _InProcessResult
 
         registry = BackgroundRegistry()
+        registry.attach_completion_callback(_noop_completion_wake)
         ctx_with_registry = replace(ctx, background_registry=registry)
 
         async def fake_collect(_self, _args, _ctx, _holder=None):
@@ -746,6 +752,7 @@ class TestAsyncRun:
         from vibe.core.tools.background import BackgroundRegistry
 
         registry = BackgroundRegistry()
+        registry.attach_completion_callback(_noop_completion_wake)
         ctx_with_registry = replace(ctx, background_registry=registry)
 
         async def fake_run():
@@ -802,6 +809,40 @@ class TestAsyncRun:
 
         assert isinstance(result, TaskResult)
         # Blocking path returned the isolated result, not a task_id.
+        assert result.task_id is None
+        assert "isolated result" in result.response
+
+    @pytest.mark.asyncio
+    async def test_async_run_without_wake_delivery_falls_back_to_blocking(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        from vibe.core.tools.background import BackgroundRegistry
+
+        registry = BackgroundRegistry()
+        ctx_with_registry = replace(ctx, background_registry=registry)
+        args = TaskArgs(task="do work", agent="worker", async_run=True)
+
+        class _FakeIsolatedResult:
+            output = "isolated result"
+            returncode = 0
+            worktree_path = None
+            branch = None
+
+        async def fake_run(*a, **kw):
+            return _FakeIsolatedResult()
+
+        with (
+            patch(
+                "vibe.core.tools.builtins.task.profile_requires_isolation",
+                return_value=True,
+            ),
+            patch(
+                "vibe.core.tools.builtins.task.run_isolated_agent", side_effect=fake_run
+            ),
+        ):
+            result = await collect_result(task_tool.run(args, ctx_with_registry))
+
+        assert isinstance(result, TaskResult)
         assert result.task_id is None
         assert "isolated result" in result.response
 

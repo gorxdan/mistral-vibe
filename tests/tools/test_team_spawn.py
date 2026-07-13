@@ -45,6 +45,7 @@ async def test_spawn_uses_context_callback_and_returns_team_dir(tmp_path: Path) 
     ) -> dict[str, str | bool]:
         calls.append((name, prompt, agent, max_turns, worker, safety_mode))
         return {
+            "launch_id": "teamrun-1",
             "name": name,
             "team_dir": str(tmp_path),
             "message": f"Spawned teammate `{name}`.",
@@ -76,6 +77,7 @@ async def test_spawn_uses_context_callback_and_returns_team_dir(tmp_path: Path) 
         )
     ]
     assert result.name == "reviewer"
+    assert result.launch_id == "teamrun-1"
     assert result.team_dir == str(tmp_path)
     assert "Spawned teammate" in result.message
     assert result.worker is False
@@ -96,6 +98,7 @@ async def test_spawn_worker_flag_passed_to_callback(tmp_path: Path) -> None:
         del prompt, agent, max_turns, safety_mode
         calls.append(worker)
         return {
+            "launch_id": "teamrun-2",
             "name": name,
             "team_dir": str(tmp_path),
             "message": f"Spawned worker `{name}`.",
@@ -125,6 +128,7 @@ async def test_spawn_passes_safety_mode_to_callback(tmp_path: Path) -> None:
         del prompt, agent, max_turns, worker
         calls.append(safety_mode)
         return {
+            "launch_id": "teamrun-3",
             "name": name,
             "team_dir": str(tmp_path),
             "message": f"Spawned teammate `{name}`.",

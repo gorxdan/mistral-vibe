@@ -112,10 +112,16 @@ failure.
 ### Effort Modes
 
 - **normal** (default): work turn-by-turn
-- **le-chaton**: max thinking + automatic workflow planning. The system prompt instructs the model to write workflow scripts for substantive tasks.
+- **le-chaton**: max thinking + adaptive orchestration. Every primary host model request uses effective max thinking, including after a model switch or failover. The hands-on host keeps its normal tools and records an observed-scope `work_strategy` route:
+  - `direct` for localized or sequentially coupled work
+  - `task` for productive independent lanes
+  - `workflow` for staged fan-out or adversarial review
+  - `team` for long-running coordination
 - Select via `/effort` or set `effort_mode = "le-chaton"` in config.toml
-- Disable all workflow features with `disable_workflows = true`
-- `launch_workflow` hidden when `disable_workflows = true` (`is_available(config)`)
+- A prompt containing `le chaton` or `lechaton` acquires a non-persistent Le Chaton lease. The lease survives matching asynchronous task, workflow, or team result delivery and restores the saved mode only after the host has acted on that result.
+- The runtime gates substantive mutation and finalization until strategy and productive-delegation debt are satisfied. Debt survives continuation turns and is correlated to immutable task, workflow, or team launch IDs until the matching terminal result arrives; superseded launches cannot satisfy or poison their replacement. Preflight reservations prevent concurrent tool calls from launching the same declared lane twice, and explicit task stops produce terminal failure receipts. A narrowly localized first edit/write may infer a bounded direct route; path or mutation expansion and delegation failure force scope reassessment. Verifier calls are completion checks, not productive delegation. Interactive teammate output is bounded, persisted when large, staged into the host context, and wakes an idle host.
+- `disable_workflows = true` hides raw `launch_workflow` without disabling Le Chaton. Workflow routing falls back to `task` when available, or to an honest capability-constrained direct route when appropriate.
+- Raw workflow scripts remain an advanced escape hatch; load the `workflow-authoring` skill before authoring one.
 
 ## Teams
 

@@ -165,6 +165,7 @@ class ProgrammaticOptions:
     headless: bool = False
     hook_config_result: HookConfigResult | None = None
     allow_subagent: bool = False
+    is_subagent: bool = False
     keep_alive_seconds: int | None = None
     no_worktree: bool = False
 
@@ -189,7 +190,12 @@ def _new_programmatic_loop(
             max_session_tokens=opts.max_session_tokens,
             enable_streaming=False,
             headless=opts.headless,
-            is_subagent=opts.allow_subagent,
+            is_subagent=(
+                opts.is_subagent
+                or os.environ.get("VIBE_ISOLATED_AUTO_APPROVE") == "1"
+                or bool(os.environ.get("VIBE_TEAMMATE_NAME"))
+            ),
+            allow_subagent_profile=opts.allow_subagent,
             launch_context=build_launch_context(
                 agent_entrypoint="programmatic",
                 agent_version=__version__,
@@ -502,7 +508,8 @@ def run_programmatic(
     # headless. Without this, ctx.background_registry is None and the bash
     # tool refuses to spawn (ToolError). Owns processes outright; aggregated
     # categories (workflows/teams/loops) stay empty — no Tasks pane here, but
-    # the `background` tool and async subagent completions still work.
+    # the `background` tool still works. Async subagent requests fall back to
+    # blocking because this surface has no completion wake callback.
     background_registry = BackgroundRegistry()
     agent_loop.background_registry = background_registry
     team_manager: TeamManager | None = None
@@ -526,6 +533,7 @@ def run_programmatic(
                 hooks_manager=agent_loop.hooks_manager,
                 hook_context=hook_context,
                 spend_adapter=agent_loop.spend_adapter,
+                terminal_callback=agent_loop.observe_team_completion,
             )
             background_registry.attach_team_manager(lambda: team_manager)
         return team_manager
@@ -547,8 +555,12 @@ def run_programmatic(
             worker=worker,
             safety_mode=safety_mode,
         )
+        launch_id = manager.launch_id_for(name)
+        if launch_id is None:
+            raise RuntimeError(f"Missing launch id for teammate '{name}'")
         kind = "worker" if worker else "teammate"
         return {
+            "launch_id": launch_id,
             "name": name,
             "team_dir": str(manager.team_dir),
             "message": f"Spawned {kind} `{name}`.",

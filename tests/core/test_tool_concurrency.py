@@ -10,6 +10,7 @@ from tests.conftest import build_test_agent_loop
 from vibe.core.llm.models import ResolvedToolCall
 from vibe.core.tools.builtins.grep import Grep
 from vibe.core.tools.builtins.read import Read
+from vibe.core.tools.builtins.work_strategy import WorkStrategy
 from vibe.core.tools.builtins.write_file import WriteFile
 from vibe.core.types import ToolResultEvent
 
@@ -62,3 +63,33 @@ async def test_writers_run_sequentially_readers_run_parallel() -> None:
     first_writer_end = events.index("end:write1")
     assert events.index("start:read1") < first_writer_end
     assert events.index("start:read2") < first_writer_end
+
+
+@pytest.mark.asyncio
+async def test_work_strategy_is_a_batch_barrier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = build_test_agent_loop()
+    events: list[str] = []
+
+    async def fake_process(tc: ResolvedToolCall) -> AsyncGenerator[ToolResultEvent]:
+        events.append(f"start:{tc.tool_name}")
+        await asyncio.sleep(0.01)
+        events.append(f"end:{tc.tool_name}")
+        yield ToolResultEvent(
+            tool_name=tc.tool_name, tool_class=tc.tool_class, tool_call_id=tc.call_id
+        )
+
+    monkeypatch.setattr(loop, "_process_one_tool_call", fake_process)
+    calls = [
+        _call("read1", Read),
+        _call("work_strategy", WorkStrategy),
+        _call("read2", Grep),
+    ]
+
+    collected = [event async for event in loop._run_tools_concurrently(calls)]
+
+    assert len(collected) == 3
+    strategy_end = events.index("end:work_strategy")
+    assert strategy_end < events.index("start:read1")
+    assert strategy_end < events.index("start:read2")

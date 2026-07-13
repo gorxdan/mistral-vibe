@@ -92,6 +92,7 @@ class _AsyncAgentRec:
     artifact_path: str | None = None
     artifact_sha256: str | None = None
     artifact_size_bytes: int = 0
+    terminal_queued: bool = False
 
 
 def _signal_proc_group(proc: asyncio.subprocess.Process, sig: int) -> None:
@@ -185,6 +186,14 @@ class BackgroundRegistry:
         self._completion_generation = 0
         self._completion_notify_task: asyncio.Task[None] | None = None
 
+    @property
+    def supports_async_agent_delivery(self) -> bool:
+        return self._completion_callback is not None
+
+    @property
+    def has_pending_async_agent_completions(self) -> bool:
+        return bool(self._async_completions)
+
     def attach_workflow_runner(self, ref: Callable[[], WorkflowRunner | None]) -> None:
         self._workflow_runner_ref = ref
 
@@ -210,6 +219,9 @@ class BackgroundRegistry:
         self._completion_callback = callback
         if callback is not None and self._async_completions:
             self._notify_completion()
+
+    def notify_external_completion(self) -> None:
+        self._notify_completion()
 
     def _notify_completion(self) -> None:
         if self._completion_callback is None:
@@ -391,8 +403,7 @@ class BackgroundRegistry:
             rec.artifact_path = artifact.path
             rec.artifact_sha256 = artifact.sha256
             rec.artifact_size_bytes = artifact.size_bytes
-            self._async_completions.append(rec)
-            self._notify_completion()
+            self._queue_async_completion(rec)
             return
         response = str(getattr(result, "output", result) or "")
         rec.response, artifact = prepare_background_completion(response, rec.log_path)
@@ -407,6 +418,12 @@ class BackgroundRegistry:
             rec.status = "completed"
         else:
             rec.status = "failed"
+        self._queue_async_completion(rec)
+
+    def _queue_async_completion(self, rec: _AsyncAgentRec) -> None:
+        if rec.terminal_queued:
+            return
+        rec.terminal_queued = True
         self._async_completions.append(rec)
         self._notify_completion()
 
@@ -766,7 +783,8 @@ class BackgroundRegistry:
         except (asyncio.CancelledError, Exception):
             pass
         rec.status = "stopped"
-        # Explicit stop does not queue a completion — parent asked for it, no surprise event.
+        rec.completed = False
+        self._queue_async_completion(rec)
         return True
 
     async def _stop_workflow(self, run_id: str) -> bool:

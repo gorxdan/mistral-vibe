@@ -38,6 +38,7 @@ class QueuedItem:
     skill_name: str | None = None
     images: list[ImageAttachment] | None = None
     payload: PathPromptPayload | None = None
+    le_chaton: bool = False
 
 
 @dataclass(slots=True)
@@ -66,6 +67,7 @@ class MessageQueue:
         skill_name: str | None = None,
         images: list[ImageAttachment] | None = None,
         payload: PathPromptPayload | None = None,
+        le_chaton: bool = False,
     ) -> None:
         self._items.append(
             QueuedItem(
@@ -74,6 +76,7 @@ class MessageQueue:
                 skill_name,
                 images=images,
                 payload=payload,
+                le_chaton=le_chaton,
             )
         )
 
@@ -135,6 +138,7 @@ class QueuePorts:
     send_skill_telemetry: Callable[[str | None], None]
     send_at_mention_telemetry: Callable[[PathPromptPayload, str], None]
     render_payload: Callable[[PathPromptPayload], str]
+    acquire_le_chaton: Callable[[], Awaitable[None]] | None = None
 
 
 @dataclass(slots=True)
@@ -206,9 +210,14 @@ class QueueController:
         skill_name: str | None = None,
         images: list[ImageAttachment] | None = None,
         payload: PathPromptPayload | None = None,
+        le_chaton: bool = False,
     ) -> None:
         self._queue.append_prompt(
-            content, skill_name=skill_name, images=images, payload=payload
+            content,
+            skill_name=skill_name,
+            images=images,
+            payload=payload,
+            le_chaton=le_chaton,
         )
         await self._ensure_header()
         widget = UserMessage(content, pending=True, images=images or None)
@@ -334,6 +343,7 @@ class QueueController:
     async def _run_pending_as_llm_turn(self, pending: list[_Pending]) -> None:
         if not await self._gate_queued_images_for_vision(pending):
             return
+        await self._acquire_le_chaton_for(pending)
         head, tail = pending[:-1], pending[-1]
         for p in head:
             await self._inject_head_item(p.item, p.widget)
@@ -354,10 +364,17 @@ class QueueController:
     async def _flush_pending_prompts(self, pending: list[_Pending]) -> None:
         if not await self._gate_queued_images_for_vision(pending):
             return
+        await self._acquire_le_chaton_for(pending)
         for p in pending:
             await self._inject_head_item(p.item, p.widget)
             await p.widget.set_pending(False)
         self._link_consecutive_user_messages([p.widget for p in pending])
+
+    async def _acquire_le_chaton_for(self, pending: list[_Pending]) -> None:
+        if not any(item.item.le_chaton for item in pending):
+            return
+        if self._ports.acquire_le_chaton is not None:
+            await self._ports.acquire_le_chaton()
 
     async def _gate_queued_images_for_vision(self, pending: list[_Pending]) -> bool:
         if not any(p.item.images for p in pending):
@@ -448,6 +465,11 @@ class QueueController:
             widget = self._widgets.pop(0) if self._widgets else None
             if item.kind == QueuedItemKind.BASH:
                 # Bash can't be folded into an LLM turn; put it back and stop.
+                self._queue.prepend_prompts([item])
+                if widget is not None:
+                    self._widgets.insert(0, widget)
+                break
+            if item.le_chaton:
                 self._queue.prepend_prompts([item])
                 if widget is not None:
                     self._widgets.insert(0, widget)

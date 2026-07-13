@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan
 
     from vibe.core.config import VibeConfig
+    from vibe.core.orchestration import OrchestrationTurnSummary
     from vibe.core.types import LLMUsage
 
 from vibe.core.logger import logger
@@ -519,6 +520,43 @@ def set_agent_usage(
         cache_write_tokens=cache_write_tokens,
         reasoning_tokens=reasoning_tokens,
     )
+
+
+def set_orchestration_summary(
+    span: trace.Span, summary: OrchestrationTurnSummary
+) -> None:
+    attributes: dict[str, str | int | bool] = {
+        "vibe.orchestration.state": summary.state.value,
+        "vibe.orchestration.task_available": summary.capabilities.task,
+        "vibe.orchestration.workflow_available": summary.capabilities.workflow,
+        "vibe.orchestration.team_available": summary.capabilities.team,
+        "vibe.orchestration.background_delivery": (
+            summary.capabilities.background_delivery
+        ),
+        "vibe.orchestration.reconnaissance_calls": summary.reconnaissance_calls,
+        "vibe.orchestration.direct_mutations": summary.direct_mutations,
+        "vibe.orchestration.unique_paths": summary.unique_paths,
+        "vibe.orchestration.productive_delegations": summary.productive_delegations,
+        "vibe.orchestration.completed_delegations": summary.completed_delegations,
+        "vibe.orchestration.pending_delegations": summary.pending_delegations,
+        "vibe.orchestration.verifier_delegations": summary.verifier_delegations,
+        "vibe.orchestration.required_delegations": summary.required_delegations,
+        "vibe.orchestration.failed_delegations": summary.failed_delegations,
+        "vibe.orchestration.scope_drift": summary.scope_drift,
+        "vibe.orchestration.policy_nudges": summary.policy_nudges,
+        "vibe.orchestration.user_allows_agents": summary.user_allows_agents,
+        "vibe.orchestration.user_allows_workflow": summary.user_allows_workflow,
+        "vibe.orchestration.user_allows_team": summary.user_allows_team,
+    }
+    if summary.route is not None:
+        attributes["vibe.orchestration.route"] = summary.route.value
+    if summary.reason is not None:
+        attributes["vibe.orchestration.reason"] = summary.reason.value
+    try:
+        for key, value in attributes.items():
+            span.set_attribute(key, value)
+    except Exception:
+        pass
 
 
 @asynccontextmanager

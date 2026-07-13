@@ -118,7 +118,7 @@ pip install mistral-vibe
 - **Subagent Isolation**: Write-capable `task` subagents (`worker`/`auto-approve`/`editor`) run in their own git worktree by default, so destructive commands and edits are scoped to a throwaway branch that's merged back only on success. Read-only subagents stay in-process. An optional safety judge pre-flights the delegation prompt before the subprocess spawns. Configure with `task.isolation` (`off`/`auto`/`always`).
 - **Multiple Built-in Agents**: Choose from different agent profiles tailored for specific workflows.
 - **Workflow Orchestration**: Write Python scripts that orchestrate parallel agents for codebase audits, migrations, and cross-checked research. Run bundled workflows like `/deep-research` or create your own.
-- **Effort Modes**: Switch between `normal` (turn-by-turn) and `le chaton` (max thinking + automatic workflow planning) via `/effort`.
+- **Effort Modes**: Switch between `normal` (turn-by-turn) and `le chaton` (max thinking + adaptive orchestration) via `/effort`.
 - **Session Spend Controls**: Primary, compaction, and in-process child calls reserve from one durable envelope using adaptive prompt estimates, finite USD/call/concurrency safeguards, and optional hard token caps.
 - **Trusted Verification Receipts**: Harness-run checks produce durable receipts bound to the task contract and exact repository state; model-authored PASS prose cannot authorize isolated-worktree delivery.
 - **Cross-Session Memory**: Durable notes stored as plain `*.md` files under `~/.vibe/memory/`. Local lexical retrieval handles confident matches; an LLM selector is used only for ambiguous cutoffs by default. Memories are global by default; use `scope = "project"` to namespace them per trusted project (stored under `~/.vibe`, never committed).
@@ -1387,12 +1387,31 @@ given the same trusted dependency fingerprint or it misses safely.
 ### Effort Modes
 
 - **normal** (default): work turn-by-turn.
-- **le-chaton**: max thinking + automatic workflow planning. The system prompt
-  instructs the model to write workflow scripts for substantive tasks.
+- **le-chaton**: max thinking + adaptive orchestration. Every primary host model
+  request uses max thinking, including after a model switch or failover. The host
+  keeps its normal tools and records an observed-scope `work_strategy`: `direct`
+  for localized or sequential work, `task` for independent lanes, `workflow` for
+  staged or adversarial fan-out, and `team` for long-running coordination.
+
+The runtime gates substantive mutation and finalization until the selected
+strategy and any productive delegation are satisfied. In-flight debt survives
+continuation turns and is correlated to immutable task, workflow, or team
+launch IDs; superseded launches cannot settle or poison their replacement. A
+narrowly localized first edit can infer a bounded direct route; path or mutation
+expansion and current-lane failure require scope reassessment. Lane reservations
+prevent concurrent calls from launching the same declared work twice, and an
+explicitly stopped async task is a terminal failure rather than permanent
+pending debt. Verifier calls prove completed work but do not count as productive
+delegation. Interactive team results are bounded, persisted when large, staged
+back into the host context, and wake an idle host for synthesis.
 
 Select via `/effort` or set `effort_mode = "le-chaton"` in config.toml. Typing
-"le chaton" in a prompt triggers it for that turn. Disable all workflow features
-with `disable_workflows = true`.
+"le chaton" in a prompt activates a non-persistent lease for that work: it stays
+active through matching asynchronous task, workflow, or team result delivery,
+then restores the saved mode. `disable_workflows = true` hides raw workflow
+launch while Le Chaton remains available: a workflow route falls back to `task`
+when possible, or to an honestly constrained direct route. Raw workflow
+authoring remains an advanced escape hatch.
 
 ## Agent Teams
 

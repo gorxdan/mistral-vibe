@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -365,6 +368,67 @@ async def test_double_enter_injects_queued_prompt_into_running_turn(
         assert len(staged) == 1
         assert "check this" in (staged[0].content or "")
         assert staged[0].injected
+
+
+@pytest.mark.asyncio
+async def test_queued_le_chaton_prompt_waits_then_acquires_lease_before_turn(
+    vibe_app: VibeApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with vibe_app.run_test() as pilot:
+        reload_config = AsyncMock()
+        monkeypatch.setattr(vibe_app, "_reload_config", reload_config)
+        vibe_app._agent_running = True
+        chat_input = vibe_app.query_one(ChatInputContainer)
+
+        chat_input.value = "le chaton inspect the harness"
+        await pilot.press("enter")
+
+        assert len(vibe_app._input_queue) == 1
+        assert vibe_app._input_queue.items[0].le_chaton is True
+
+        chat_input.value = ""
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+
+        assert len(vibe_app._input_queue) == 1
+        assert vibe_app.agent_loop._pending_injected_messages == []
+        assert vibe_app._keyword_le_chaton_lease is None
+
+        turns: list[str] = []
+        turn_task: asyncio.Task[None] | None = None
+
+        def start_turn(content: str, **_kwargs: object) -> asyncio.Task[None]:
+            nonlocal turn_task
+            assert vibe_app._keyword_le_chaton_lease is not None
+            turns.append(content)
+            turn_task = asyncio.create_task(asyncio.sleep(0))
+            return turn_task
+
+        async def await_turn() -> None:
+            if turn_task is not None:
+                await turn_task
+
+        vibe_app._queue._ports = replace(
+            vibe_app._queue._ports,
+            start_agent_turn=start_turn,
+            await_agent_turn=await_turn,
+        )
+        vibe_app._agent_running = False
+        vibe_app._queue.start_drain_if_needed()
+        assert await _wait_until(
+            pilot,
+            lambda: not vibe_app._input_queue and not vibe_app._queue.draining,
+            timeout=2.0,
+        )
+
+        assert turns == ["inspect the harness"]
+        assert vibe_app._keyword_le_chaton_lease is not None
+        reload_config.assert_awaited_once()
+
+        await vibe_app._maybe_release_keyword_le_chaton_lease()
+
+        assert vibe_app._keyword_le_chaton_lease is None
+        assert reload_config.await_count == 2
 
 
 @pytest.mark.asyncio

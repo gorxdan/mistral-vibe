@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
     from vibe.core.hooks.models import HookConfigResult
     from vibe.core.loop import Scheduler
+    from vibe.core.orchestration import OrchestrationDecision, StrategyReceipt
     from vibe.core.skills.manager import SkillManager
     from vibe.core.tasking._policy import BoundTaskContract
     from vibe.core.teams.models import TeamSafetyMode
@@ -131,6 +132,9 @@ class InvokeContext:
     # team, narration, verification, and observable provider-retry calls.
     spend_adapter: SessionSpendAdapter | None = field(default=None)
     task_contract: BoundTaskContract | None = field(default=None)
+    work_strategy_callback: (
+        Callable[[OrchestrationDecision], StrategyReceipt] | None
+    ) = field(default=None)
 
 
 class ToolError(Exception):
@@ -240,6 +244,14 @@ class BaseTool[
     # Host-scoped tools are registered for trusted runtime manifests but never
     # enter an ordinary agent's catalog, even through config allowlists.
     runtime_scoped: ClassVar[bool] = False
+
+    # Host-only control tools never enter subagent catalogs, resolvers, search,
+    # or persisted schemas. This is distinct from runtime-scoped task contracts.
+    host_only: ClassVar[bool] = False
+
+    # Safe internal policy controls remain available to their host mode even
+    # when a profile uses an explicit capability allowlist.
+    host_policy_control: ClassVar[bool] = False
 
     @classmethod
     def call_is_read_only(cls, args: BaseModel, *, agent_manager: Any = None) -> bool:

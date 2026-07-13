@@ -16,7 +16,7 @@ from vibe.core.config import EffortLevel
 
 _EFFORT_DESCRIPTIONS: dict[str, str] = {
     "normal": "Work turn-by-turn",
-    "le-chaton": "Max thinking + auto-workflow planning",
+    "le-chaton": "Max thinking + adaptive orchestration",
 }
 
 

@@ -46,6 +46,7 @@ class WorkflowRunEntry:
     # future fire sites, or external re-invocation — the host agent's context
     # must never receive the same run's payload twice.
     delivered: bool = False
+    terminal_delivered: bool = False
 
     @property
     def status(self) -> WorkflowStatus:
@@ -143,12 +144,14 @@ class WorkflowRunner:
         *,
         mount: Callable[[Widget], Awaitable[None]],
         on_complete: Callable[[WorkflowResult], Awaitable[None]] | None = None,
+        on_terminal: Callable[[str, WorkflowStatus], Awaitable[None]] | None = None,
         persist_callback: Callable[[], Awaitable[None]] | None = None,
         snapshot_loader: Callable[[], list[dict[str, Any]]] | None = None,
         resume_runtime_factory: Callable[[], WorkflowRuntime | None] | None = None,
     ) -> None:
         self._mount = mount
         self._on_complete = on_complete
+        self._on_terminal = on_terminal
         self._persist_callback = persist_callback
         self._snapshot_loader = snapshot_loader
         self._resume_runtime_factory = resume_runtime_factory or (lambda: None)
@@ -218,6 +221,7 @@ class WorkflowRunner:
         try:
             result = await entry.runtime.run(entry.script_source, args=args)
             entry.result = result
+            await self._deliver_terminal(entry, result.run.status)
             if self._on_complete and not entry.delivered:
                 entry.delivered = True
                 await self._on_complete(result)
@@ -229,6 +233,7 @@ class WorkflowRunner:
             entry.error = "Cancelled"
             if entry.result is None:
                 entry.result = self._build_stopped_result(entry)
+                await self._deliver_terminal(entry, WorkflowStatus.STOPPED)
                 if self._on_complete and not entry.delivered:
                     entry.delivered = True
                     try:
@@ -240,6 +245,7 @@ class WorkflowRunner:
             raise
         except Exception as e:
             entry.error = str(e)
+            await self._deliver_terminal(entry, WorkflowStatus.FAILED)
             logger.error("Workflow run failed", exc_info=e)
             await self._mount(ErrorMessage(f"Workflow `{entry.run_id}` failed: {e}"))
             raise
@@ -252,6 +258,17 @@ class WorkflowRunner:
                     await self._persist_callback()
                 except Exception:
                     logger.warning("Failed to persist workflow snapshot", exc_info=True)
+
+    async def _deliver_terminal(
+        self, entry: WorkflowRunEntry, status: WorkflowStatus
+    ) -> None:
+        if self._on_terminal is None or entry.terminal_delivered:
+            return
+        entry.terminal_delivered = True
+        try:
+            await self._on_terminal(entry.run_id, status)
+        except Exception:
+            logger.warning("workflow terminal hook failed", exc_info=True)
 
     def get_snapshot(self, run_id: str) -> WorkflowRunSnapshot | None:
         entry = self.find_run(run_id)

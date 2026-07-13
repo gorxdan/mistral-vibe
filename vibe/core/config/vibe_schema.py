@@ -312,8 +312,8 @@ class VibeConfigSchema(ConfigSchema):
         default=False,
         description=(
             "Disable workflow features entirely. When true, /workflows is "
-            "unavailable, workflow commands are not registered, and le chaton "
-            "effort mode cannot be activated."
+            "unavailable and workflow commands are not registered. Le Chaton "
+            "remains available through direct, task, and team routes."
         ),
     )
     effort_mode: Annotated[str, WithReplaceMerge()] = Field(
@@ -321,8 +321,8 @@ class VibeConfigSchema(ConfigSchema):
         description=(
             "Effort mode controls how the agent approaches substantive tasks. "
             "'normal' (default) works turn-by-turn. 'le-chaton' combines max "
-            "thinking with automatic workflow planning — the agent writes and "
-            "runs workflow scripts to orchestrate parallel agents."
+            "thinking with adaptive hands-on orchestration across direct, task, "
+            "workflow, and team routes."
         ),
     )
     verification_subsystem: Annotated[bool, WithReplaceMerge()] = Field(

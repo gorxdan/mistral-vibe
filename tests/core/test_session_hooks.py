@@ -11,6 +11,14 @@ from vibe.core.hooks.models import (
     SessionStartInvocation,
     build_invocation,
 )
+from vibe.core.orchestration import (
+    OrchestrationCapabilities,
+    OrchestrationDecision,
+    OrchestrationRoute,
+    OrchestrationState,
+    StrategyReason,
+    WorkRisk,
+)
 
 
 def test_registered_and_built() -> None:
@@ -79,6 +87,32 @@ async def test_reset_session_clear_fires_lifecycle_compact_does_not() -> None:
     await loop._reset_session()
     assert fired == ["clear"]  # unchanged
     assert loop._session_started is True
+
+
+@pytest.mark.asyncio
+async def test_clear_resets_orchestration_but_compaction_preserves_it() -> None:
+    loop = build_test_agent_loop()
+
+    def start_direct_strategy() -> None:
+        loop._orchestration.begin_turn(
+            enabled=True,
+            user_prompt="Inspect one local file.",
+            capabilities=OrchestrationCapabilities(),
+        )
+        loop._orchestration.declare(
+            OrchestrationDecision(
+                route=OrchestrationRoute.DIRECT,
+                risk=WorkRisk.LOW,
+                reason=StrategyReason.LOCALIZED,
+            )
+        )
+
+    start_direct_strategy()
+    await loop._reset_session()
+    assert loop.orchestration_summary.state is OrchestrationState.DIRECT
+
+    await loop._reset_session(keep_parent=False, lifecycle_reason="clear")
+    assert loop.orchestration_summary.state is OrchestrationState.OFF
 
 
 # --------------------------------------------------------------------------- #

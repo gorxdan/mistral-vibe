@@ -762,7 +762,7 @@ class Task(
         verification_attempt: _VerificationAttempt | None = None,
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
         registry = ctx.background_registry
-        if registry is None:
+        if registry is None or not registry.supports_async_agent_delivery:
             # No registry wired (e.g. tests, programmatic runner without TUI).
             # Fall back to the blocking isolated path rather than failing hard.
             async for result in self._run_isolated(
@@ -1361,7 +1361,7 @@ class Task(
         verification_attempt: _VerificationAttempt | None = None,
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
         registry = ctx.background_registry
-        if registry is None:
+        if registry is None or not registry.supports_async_agent_delivery:
             async for result in self._run_in_process(
                 args, ctx, verification_attempt=verification_attempt
             ):

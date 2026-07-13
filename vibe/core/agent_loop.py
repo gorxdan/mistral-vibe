@@ -49,6 +49,7 @@ from vibe.core.agent_loop_memory import (
     late_memory_tail_insert_index,
 )
 from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
+from vibe.core.agent_loop_orchestration import AgentLoopOrchestrationMixin
 from vibe.core.agent_loop_safety_judge import AgentLoopSafetyJudgeMixin
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
@@ -163,6 +164,7 @@ from vibe.core.tracing import (
     set_agent_usage,
     set_context_shaping_result,
     set_finish_reason,
+    set_orchestration_summary,
     set_tool_error,
     set_tool_exec_duration,
     set_tool_result,
@@ -474,6 +476,7 @@ class AgentLoopParams:
     launch_context: LaunchContext | None = None
     terminal_emulator: TerminalEmulator | None = None
     is_subagent: bool = False
+    allow_subagent_profile: bool = False
     defer_heavy_init: bool = False
     headless: bool = False
     hook_config_result: HookConfigResult | None = None
@@ -486,6 +489,7 @@ class AgentLoopParams:
 
 class AgentLoop(
     AgentLoopMemoryMixin,
+    AgentLoopOrchestrationMixin,
     AgentLoopFailoverMixin,
     AgentLoopSafetyJudgeMixin,
     AgentLoopHooksMixin,
@@ -498,6 +502,7 @@ class AgentLoop(
         params: AgentLoopParams | None = None,
     ) -> None:
         p = params or AgentLoopParams()
+        self._is_subagent = p.is_subagent
         self._task_contract = p.task_contract
         self._init_base_state(config, p.cache_store, p.headless, p.defer_heavy_init)
         self._init_registries(
@@ -505,6 +510,7 @@ class AgentLoop(
             p.mcp_registry,
             p.agent_name,
             p.is_subagent,
+            p.allow_subagent_profile,
             p.defer_heavy_init,
             p.message_observer,
             p.max_turns,
@@ -517,6 +523,7 @@ class AgentLoop(
         self._init_session_state(
             p.is_subagent, p.launch_context, p.terminal_emulator, config
         )
+        self._init_orchestration()
         self._init_telemetry(
             config, p.is_subagent, p.spend_adapter, p.max_price, p.max_session_tokens
         )
@@ -567,6 +574,7 @@ class AgentLoop(
                 headless=self._headless,
                 experiment_manager=self.experiment_manager,
                 tier=self._system_prompt_tier,
+                host_orchestration=not self._is_subagent,
             )
             self.messages.update_system_prompt(system_prompt)
         except Exception as exc:
@@ -833,6 +841,7 @@ class AgentLoop(
             headless=self._headless,
             experiment_manager=self.experiment_manager,
             tier=self._system_prompt_tier,
+            host_orchestration=not self._is_subagent,
         )
         self.messages.update_system_prompt(system_prompt)
 
@@ -893,6 +902,7 @@ class AgentLoop(
         auto_title: str | None = None,
         images: list[ImageAttachment] | None = None,
         response_format: dict[str, Any] | None = None,
+        orchestration_continuation_id: str | None = None,
     ) -> AsyncGenerator[BaseEvent, None]:
         self._response_format = response_format
         self.resource_monitor.start()
@@ -970,6 +980,9 @@ class AgentLoop(
                             client_message_id=client_message_id,
                             auto_title=auto_title,
                             images=images,
+                            orchestration_continuation_id=(
+                                orchestration_continuation_id
+                            ),
                         ):
                             yield event
                 finally:
@@ -983,6 +996,9 @@ class AgentLoop(
                         - cache_write0,
                         reasoning_tokens=self.stats.session_reasoning_tokens
                         - reasoning0,
+                    )
+                    set_orchestration_summary(
+                        agent_turn_span, self.orchestration_summary
                     )
         finally:
             self._response_format = None
@@ -1207,11 +1223,15 @@ class AgentLoop(
         *,
         auto_title: str | None = None,
         images: list[ImageAttachment] | None = None,
+        orchestration_continuation_id: str | None = None,
     ) -> AsyncGenerator[BaseEvent]:
         self._spend_retry_purposes.clear()
         if not self._files_read_reconstructed:
             self._reconstruct_files_read()
         await self._check_agents_md_changed()
+
+        if orchestration_continuation_id is not None:
+            self._drain_pending_injections()
 
         user_message = LLMMessage(
             role=Role.USER,
@@ -1269,6 +1289,10 @@ class AgentLoop(
                     injected_kind=InjectedMessageKind.USER_PROMPT_HOOK,
                 )
             )
+
+        self._begin_orchestration_turn(
+            user_msg, continuation_id=orchestration_continuation_id
+        )
 
         if self.config.memory.prefetch:
             self._kick_memory_prefetch(user_msg)
@@ -1455,6 +1479,26 @@ class AgentLoop(
 
                 if user_cancelled:
                     return
+
+                if should_break_loop:
+                    if nudge := self._orchestration_completion_nudge():
+                        self.messages.append(
+                            LLMMessage(
+                                role=Role.USER,
+                                content=nudge,
+                                injected=True,
+                                injected_kind=InjectedMessageKind.MIDDLEWARE,
+                            )
+                        )
+                        should_break_loop = False
+                    elif blocker := self._orchestration_completion_blocker():
+                        blocked_message = LLMMessage(
+                            role=Role.ASSISTANT, content=blocker
+                        )
+                        self.messages.append(blocked_message)
+                        yield AssistantEvent(
+                            content=blocker, message_id=blocked_message.message_id
+                        )
 
                 if should_break_loop:
                     retry_msg, hook_events = await self._dispatch_post_turn_hooks()
@@ -1692,6 +1736,15 @@ class AgentLoop(
     async def _run_tools_concurrently(
         self, tool_calls: list[ResolvedToolCall]
     ) -> AsyncGenerator[ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent]:
+        strategy_calls = [tc for tc in tool_calls if tc.tool_name == "work_strategy"]
+        for strategy_call in strategy_calls:
+            async for event in self._process_one_tool_call(strategy_call):
+                yield event
+        if strategy_calls:
+            tool_calls = [tc for tc in tool_calls if tc.tool_name != "work_strategy"]
+        if not tool_calls:
+            return
+
         queue: asyncio.Queue[
             ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent | None
         ] = asyncio.Queue()
@@ -1801,7 +1854,9 @@ class AgentLoop(
                 error=error_msg,
                 tool_call_id=tool_call.call_id,
             )
-            self._handle_tool_response(tool_call, error_msg, "failure", span=span)
+            self._handle_tool_response(
+                tool_call, error_msg, "failure", span=span, observe_orchestration=False
+            )
             return
 
         events, resolution = await self._run_before_tool_pipeline(
@@ -1815,6 +1870,20 @@ class AgentLoop(
         tool_call = resolution.tool_call
         tool_input = resolution.tool_input
 
+        if policy_denial := self._orchestration_before_tool(tool_call):
+            self.stats.tool_calls_rejected += 1
+            error_msg = f"<{TOOL_ERROR_TAG}>{policy_denial}</{TOOL_ERROR_TAG}>"
+            yield ToolResultEvent(
+                tool_name=tool_call.tool_name,
+                tool_class=tool_call.tool_class,
+                error=error_msg,
+                tool_call_id=tool_call.call_id,
+            )
+            self._handle_tool_response(
+                tool_call, error_msg, "failure", span=span, observe_orchestration=False
+            )
+            return
+
         decision: ToolDecision | None = None
         tool_started = False
         try:
@@ -1827,6 +1896,28 @@ class AgentLoop(
             tool_call, tool_input, decision = self._resolve_modification(
                 tool_call, tool_input, decision
             )
+
+            if (
+                decision.modified_args is not None
+                and decision.verdict is not ToolExecutionResponse.SKIP
+                and (policy_denial := self._orchestration_before_tool(tool_call))
+            ):
+                self.stats.tool_calls_rejected += 1
+                error_msg = f"<{TOOL_ERROR_TAG}>{policy_denial}</{TOOL_ERROR_TAG}>"
+                yield ToolResultEvent(
+                    tool_name=tool_call.tool_name,
+                    tool_class=tool_call.tool_class,
+                    error=error_msg,
+                    tool_call_id=tool_call.call_id,
+                )
+                self._handle_tool_response(
+                    tool_call,
+                    error_msg,
+                    "failure",
+                    span=span,
+                    observe_orchestration=False,
+                )
+                return
 
             if self._task_contract is not None:
                 try:
@@ -1978,6 +2069,7 @@ class AgentLoop(
                     tool_manager=self.tool_manager,
                     spend_adapter=self._spend_adapter,
                     task_contract=self._task_contract,
+                    work_strategy_callback=self._declare_orchestration_strategy,
                 ),
                 **tool_call.args_dict,
             ):
@@ -2137,7 +2229,10 @@ class AgentLoop(
         decision: ToolDecision | None = None,
         result: dict[str, Any] | None = None,
         span: trace.Span | None = None,
+        observe_orchestration: bool = True,
     ) -> None:
+        if observe_orchestration:
+            self._record_orchestration_tool_result(tool_call, status, result)
         text = self._apply_tool_result_budget(tool_call, text)
         self.messages.append(
             LLMMessage.model_validate(
@@ -2208,6 +2303,7 @@ class AgentLoop(
         if max_tokens is None and model_override is None:
             max_tokens = self._max_output_override
         active_model, provider = self._resolve_active_model(model_override)
+        active_model = self._effective_request_model(active_model, harness=harness)
         # self.backend always serves effective_model()'s provider (init, failover,
         # and reload keep them in lockstep). A model_override (e.g. compaction)
         # may target a different provider than the current failover backend —
@@ -2341,6 +2437,7 @@ class AgentLoop(
         if max_tokens is None:
             max_tokens = self._max_output_override
         active_model, provider = self._resolve_active_model()
+        active_model = self._effective_request_model(active_model)
         backend_metadata = self._build_backend_metadata()
         spend_purpose = self._spend_adapter.default_purpose
         initial_spend_retry = spend_purpose in self._spend_retry_purposes
@@ -2689,6 +2786,8 @@ class AgentLoop(
         old_session_id = self.session_id
         self._verification_state.clear()
         self.emit_session_closed_telemetry()
+        if lifecycle_reason is not None:
+            self._init_orchestration()
         suffix = extract_suffix(self.session_id)
         self.session_id = generate_session_id(suffix=suffix)
         self._usage_meter.rebind_session(self.session_id)
@@ -2748,6 +2847,8 @@ class AgentLoop(
                 enable_streaming=self.enable_streaming,
                 launch_context=self.launch_context,
                 terminal_emulator=self.terminal_emulator,
+                is_subagent=self._is_subagent,
+                allow_subagent_profile=True,
                 defer_heavy_init=True,
                 hook_config_result=self._hook_config_result,
                 spend_adapter=self._spend_adapter.child_agent(),
@@ -3062,6 +3163,7 @@ class AgentLoop(
             runtime_allowlist=(
                 self._task_contract.allowed_tools if self._task_contract else None
             ),
+            host=not self._is_subagent,
         )
         self.skill_manager = SkillManager(lambda: self.config)
 
@@ -3076,6 +3178,7 @@ class AgentLoop(
             headless=self._headless,
             experiment_manager=self.experiment_manager,
             tier=self._system_prompt_tier,
+            host_orchestration=not self._is_subagent,
         )
 
         self.messages.update_system_prompt(new_system_prompt)
@@ -3123,6 +3226,7 @@ class AgentLoop(
         mcp_registry: MCPRegistry | None,
         agent_name: str,
         is_subagent: bool,
+        allow_subagent_profile: bool,
         defer_heavy_init: bool,
         message_observer: Callable[[LLMMessage], None] | None,
         max_turns: int | None,
@@ -3145,7 +3249,7 @@ class AgentLoop(
         self.agent_manager = AgentManager(
             lambda: self._base_config,
             initial_agent=agent_name,
-            allow_subagent=is_subagent,
+            allow_subagent=is_subagent or allow_subagent_profile,
         )
         self.tool_manager = ToolManager(
             lambda: self.config,
@@ -3156,6 +3260,7 @@ class AgentLoop(
             runtime_allowlist=(
                 self._task_contract.allowed_tools if self._task_contract else None
             ),
+            host=not is_subagent,
         )
         self.skill_manager = SkillManager(lambda: self.config)
         self.message_observer = message_observer
@@ -3223,6 +3328,7 @@ class AgentLoop(
             scratchpad_dir=self.scratchpad_dir,
             headless=self._headless,
             tier=self._system_prompt_tier,
+            host_orchestration=not self._is_subagent,
         )
         system_message = LLMMessage(role=Role.SYSTEM, content=system_prompt)
         self.messages = MessageList(initial=[system_message], observer=message_observer)
@@ -3449,6 +3555,7 @@ class AgentLoop(
             headless=self._headless,
             experiment_manager=self.experiment_manager,
             tier=tier,
+            host_orchestration=not self._is_subagent,
         )
         self.messages.update_system_prompt(system_prompt)
 
@@ -3675,6 +3782,13 @@ class AgentLoop(
             return
         sections: list[str] = []
         for rec in completions:
+            self._observe_task_completion(
+                rec.task_id,
+                succeeded=(
+                    rec.status == "completed"
+                    and (rec.outcome is None or rec.outcome.succeeded)
+                ),
+            )
             summary = (
                 rec.response if rec.response else f"[{rec.agent} produced no output]"
             )

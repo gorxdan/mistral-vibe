@@ -1007,15 +1007,15 @@ class VibeConfig(BaseSettings):
         default=False,
         description=(
             "Disable workflow features entirely. When true, /workflows is "
-            "unavailable, workflow commands are not registered, and le chaton "
-            "effort mode cannot be activated."
+            "unavailable and workflow commands are not registered. Le Chaton "
+            "remains available through direct, task, and team routes."
         ),
     )
     effort_mode: str = Field(
         default="normal",
         description=(
             "Effort mode: 'normal' (default) or 'le-chaton' (max thinking + "
-            "automatic workflow planning)."
+            "adaptive hands-on orchestration)."
         ),
     )
     verification_subsystem: bool = Field(

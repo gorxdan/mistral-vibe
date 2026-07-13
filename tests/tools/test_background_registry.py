@@ -33,6 +33,19 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+def test_async_delivery_requires_a_wake_callback() -> None:
+    registry = BackgroundRegistry()
+
+    assert registry.supports_async_agent_delivery is False
+
+    async def wake() -> None:
+        pass
+
+    registry.attach_completion_callback(wake)
+
+    assert registry.supports_async_agent_delivery is True
+
+
 @dataclass
 class _FakeLiveAgent:
     agent_id: str
@@ -766,6 +779,7 @@ async def test_async_agent_completion_queued_and_drained():
     entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
     assert entries[0].status == "completed"
     assert entries[0].detail["completed"] is True
+    assert reg.has_pending_async_agent_completions is True
 
     drained = reg.pop_async_completions()
     assert len(drained) == 1
@@ -775,6 +789,7 @@ async def test_async_agent_completion_queued_and_drained():
     assert drained[0].artifact_size_bytes == len("result text")
     # Second drain is empty — pop clears the queue.
     assert reg.pop_async_completions() == []
+    assert reg.has_pending_async_agent_completions is False
 
 
 @pytest.mark.asyncio
@@ -1123,7 +1138,7 @@ async def test_large_async_agent_error_is_persisted_and_compacted(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_stop_async_agent_marks_stopped_and_skips_completion_queue():
+async def test_stop_async_agent_marks_stopped_and_queues_terminal_result():
     reg = BackgroundRegistry()
 
     async def long_running() -> _FakeIsolatedResult:
@@ -1137,8 +1152,10 @@ async def test_stop_async_agent_marks_stopped_and_skips_completion_queue():
     assert stopped is True
     entries = reg.list_tasks(category=TaskCategory.ASYNC_AGENT)
     assert entries[0].status == "stopped"
-    # Explicit stop does NOT queue a completion — the parent asked for it.
-    assert reg.pop_async_completions() == []
+    completions = reg.pop_async_completions()
+    assert len(completions) == 1
+    assert completions[0].task_id == task_id
+    assert completions[0].status == "stopped"
 
 
 @pytest.mark.asyncio

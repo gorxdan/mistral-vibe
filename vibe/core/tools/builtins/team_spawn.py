@@ -54,6 +54,7 @@ class TeamSpawnArgs(BaseModel):
 class TeamSpawnResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    launch_id: str
     name: str
     team_dir: str
     message: str
@@ -118,6 +119,7 @@ class TeamSpawn(
             args.safety_mode,
         )
         yield TeamSpawnResult(
+            launch_id=str(result["launch_id"]),
             name=str(result["name"]),
             team_dir=str(result["team_dir"]),
             message=str(result["message"]),
