@@ -309,12 +309,14 @@ class SpendLedger:
         *,
         lock_timeout_s: float = 5.0,
         clock: Callable[[], float] = time.time,
+        enforce_limits: bool = True,
     ) -> None:
         self.path = path
         self._events_dir = path / "events"
         self._lock_path = path / "ledger.lock"
         self._lock_timeout_s = lock_timeout_s
         self._clock = clock
+        self._enforce_limits = enforce_limits
 
     @contextmanager
     def _locked(self) -> Iterator[None]:
@@ -510,6 +512,8 @@ class SpendLedger:
     def _retry_budget_denial(
         self, state: _State, reservation: SpendReservation, now: float
     ) -> SpendRejection | None:
+        if not self._enforce_limits:
+            return None
         reason: SpendRejectionReason | None = None
         limited_scope_id: str | None = None
         for scope_id in reservation.scope_chain[:-1]:
@@ -1011,6 +1015,8 @@ class SpendLedger:
         completion_cost_usd_per_token: float,
         desired: int,
     ) -> int:
+        if not self._enforce_limits:
+            return desired
         affordable = desired
         prompt_cost = prompt_tokens * input_cost_usd_per_token
         for scope_id in chain:
@@ -1279,6 +1285,8 @@ class SpendLedger:
         context: SpendContext,
         now: float,
     ) -> tuple[SpendRejectionReason, str, _ProjectionDetail] | None:
+        if not self._enforce_limits:
+            return None
         for scope_id in chain:
             limits = state.scopes[scope_id].limits
             totals = self._totals(state, scope_id)

@@ -27,6 +27,7 @@ from vibe.core.config import (
     DEFAULT_MODELS,
     ModelConfig,
     SessionLoggingConfig,
+    SpendConfig,
     VibeConfig,
 )
 from vibe.core.config.harness_files import (
@@ -377,6 +378,9 @@ def build_test_vibe_config(**kwargs) -> VibeConfig:
     # detail unless a test opts in.
     kwargs.setdefault("include_project_context", False)
     kwargs.setdefault("include_prompt_detail", False)
+    # Preserve the historical enforcing default: existing tests rely on spend
+    # limits blocking calls. Real sessions default to advisory-only tracking.
+    kwargs.setdefault("spend", SpendConfig(enforce_limits=True))
     return VibeConfig(
         session_logging=resolved_session_logging,
         enable_update_checks=resolved_enable_update_checks,

@@ -45,7 +45,9 @@ async def test_team_processes_share_one_group_with_distinct_agent_scopes(
         "vibe.core.teams.manager._team_dir_for", lambda name: tmp_path / name
     )
     root = SessionSpendAdapter.create(
-        SpendConfig(max_calls=2), "team-root", ledger_path=tmp_path / "ledger"
+        SpendConfig(max_calls=2, enforce_limits=True),
+        "team-root",
+        ledger_path=tmp_path / "ledger",
     )
     manager = TeamManager("lead", team_name="shared-spend", spend_adapter=root)
 
@@ -96,7 +98,9 @@ async def test_team_spawn_removes_stale_inherited_spend_context(
 @pytest.mark.asyncio
 async def test_team_task_retry_reuses_one_cumulative_scope(tmp_path: Path) -> None:
     root = SessionSpendAdapter.create(
-        SpendConfig(max_calls=10), "team-retry", ledger_path=tmp_path / "ledger"
+        SpendConfig(max_calls=10, enforce_limits=True),
+        "team-retry",
+        ledger_path=tmp_path / "ledger",
     )
     first_worker = root.child_agent(
         group_kind=SpendScopeKind.TEAM,
