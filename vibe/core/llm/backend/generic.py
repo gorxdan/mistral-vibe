@@ -195,9 +195,18 @@ class OpenAIAdapter(APIAdapter):
             extra_body,
         )
 
+        from vibe.core.llm.backend._provider_compat import apply_openai_chat_thinking
+
+        provider_handles_thinking = apply_openai_chat_thinking(
+            payload, provider_name=provider.name, level=params.thinking
+        )
         # Verbatim: xhigh/max are real API tiers. 400-rejection self-heals.
         # Skip when the caller set it via extra_body (caller owns the format).
-        if params.thinking != "off" and "reasoning_effort" not in payload:
+        if (
+            not provider_handles_thinking
+            and params.thinking != "off"
+            and "reasoning_effort" not in payload
+        ):
             payload["reasoning_effort"] = params.thinking
 
         if enable_streaming:
