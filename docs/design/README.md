@@ -19,6 +19,8 @@ control, `cached_tokens` visibility).
 - [Fork maintenance and quality roadmap](fork-maintenance-roadmap.md) - staged
   cleanup plan with preservation gates for behavior, performance, and upstream
   mergeability.
+- [Fork maintenance execution packets](fork-maintenance/README.md) - authority,
+  campaign state, packet schema, and bounded Iteration 0 assignments.
 
 ## The six specs
 

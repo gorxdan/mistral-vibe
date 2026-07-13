@@ -1,0 +1,212 @@
+schema_version: 1
+
+campaign:
+  id: fork-maintenance
+  title: Fork Maintenance and Quality Campaign
+  state: planning
+  iteration: 0
+  roadmap: ../fork-maintenance-roadmap.md
+  execution_guide: README.md
+  authority_matrix: authority-matrix.md
+  packet_template: task-packet-template.md
+  status_owner: campaign-lead
+  last_updated: 2026-07-12
+
+planning_snapshot:
+  head_sha: 2a1f4e1ab37bd9b6ba45a0b074501104014b44b6
+  upstream_sha: ac8f1a09fdfbadb6d4508a555ba6607fd05eb0dc
+  note: >-
+    These SHAs identify the repository inspected while authoring the execution
+    layer. They do not authorize an implementation baseline.
+
+control_plane:
+  branch: maintenance/fork-maintenance-control
+  worktree: null
+  commit_identity_source: >-
+    CONTROL_SHA is supplied by the lead outside this file and verified with
+    git rev-parse in the clean control worktree.
+  candidate_policy: Candidate branches never modify or merge control commits.
+
+campaign_identity:
+  campaign_baseline_sha: null
+  upstream_sha: null
+  final_evidence_workspace: null
+  final_run_id: null
+  final_runner_id: null
+  final_manifest_sha256: null
+  retention_policy: >-
+    Preserve the authoritative external run read-only through campaign close and
+    the next upstream-sync rehearsal; moving it requires a control-plane update
+    with old/new paths and matching digest.
+  evidence_root_template: >-
+    $VIBE_EVIDENCE_WORKSPACE/.ai/runs/$KILROY_RUN_ID/test-evidence/latest
+  note: >-
+    Final campaign identity is frozen only after Iteration 0 consolidation.
+    Each packet records a separate baseline, candidate, and unique evidence run.
+
+readiness:
+  state: blocked
+  blockers:
+    - id: execution-layer-not-frozen
+      resolution: Review and commit the execution-layer documentation.
+    - id: control-worktree-not-assigned
+      resolution: Create and record the clean dedicated control worktree/branch.
+    - id: first-packet-identity-not-assigned
+      resolution: >-
+        Fill I00-P01 baseline/upstream SHA, external workspace, unique run ID,
+        stable runner ID, worktree, and branch in both packet and status.
+    - id: first-packet-roles-not-assigned
+      resolution: Assign the I00-P01 worker, reviewer, verifier, evidence operator, and execution profile.
+
+state_definitions:
+  draft: Incomplete or unauthorized; implementation must not begin.
+  ready: Lead-frozen and assigned; worker may begin after successful preflight.
+  active: Assigned worker passed preflight and is operating within packet scope.
+  verification: >-
+    Candidate/repository access is read-only; the assigned evidence operator
+    may run the frozen scenario and write only assigned external artifacts.
+  complete: Lead accepted required evidence and a current verifier PASS.
+  blocked: Work stopped pending an explicit lead decision or external prerequisite.
+
+transition_authority:
+  draft_to_ready: campaign-lead
+  ready_to_blocked: campaign-lead-records-worker-preflight-report
+  ready_to_active: campaign-lead-records-worker-request
+  active_to_verification: campaign-lead-records-worker-request
+  active_or_verification_to_blocked: campaign-lead-records-report
+  blocked_to_ready_or_active: campaign-lead
+  verification_to_complete: campaign-lead-after-verifier-pass
+
+packets:
+  - id: I00-P01
+    title: External evidence runner and contract
+    path: packets/I00-P01-evidence-runner.md
+    state: draft
+    change_class: tooling
+    risk: medium
+    depends_on: []
+    owner: null
+    reviewer: null
+    verifier: null
+    evidence_operator: null
+    baseline_sha: null
+    candidate_sha: null
+    upstream_sha: null
+    worktree: null
+    branch: null
+    execution_profile: null
+    evidence:
+      workspace: null
+      run_id: null
+      runner_id: null
+    required_scenarios:
+      - IT-13
+    readiness_blockers:
+      - packet execution identity is incomplete
+      - roles and isolated worktree are unassigned
+
+  - id: I00-P02
+    title: Baseline identity and fork inventory
+    path: packets/I00-P02-baseline-inventory.md
+    state: draft
+    change_class: tooling
+    risk: medium
+    depends_on:
+      - I00-P01
+    owner: null
+    reviewer: null
+    verifier: null
+    evidence_operator: null
+    baseline_sha: null
+    candidate_sha: null
+    upstream_sha: null
+    worktree: null
+    branch: null
+    execution_profile: null
+    evidence:
+      workspace: null
+      run_id: null
+      runner_id: null
+    required_scenarios:
+      - IT-12
+    readiness_blockers:
+      - I00-P01 is not complete
+      - packet execution identity is incomplete
+      - roles and isolated worktree are unassigned
+
+  - id: I00-P03
+    title: Programmatic CLI subprocess characterization
+    path: packets/I00-P03-programmatic-cli-characterization.md
+    state: draft
+    change_class: characterization
+    risk: medium
+    depends_on:
+      - I00-P01
+      - I00-P04
+    owner: null
+    reviewer: null
+    verifier: null
+    evidence_operator: null
+    baseline_sha: null
+    candidate_sha: null
+    upstream_sha: null
+    worktree: null
+    branch: null
+    execution_profile: null
+    evidence:
+      workspace: null
+      run_id: null
+      runner_id: null
+    required_scenarios:
+      - IT-01
+    readiness_blockers:
+      - I00-P01 is not complete
+      - I00-P04 is not authored or complete
+      - packet execution identity is incomplete
+      - roles and isolated worktree are unassigned
+
+required_future_packets:
+  - id: I00-P04
+    title: Bound programmatic backend errors at the real CLI entry point
+    state: not_authored
+    must_precede:
+      - I00-P03
+    required_outcomes:
+      - catch the typed backend error at the narrow programmatic CLI boundary
+      - emit the exact MSG-01 backend-auth error with exit 1 and no traceback
+      - add focused production/unit/subprocess regression evidence
+      - preserve interactive, failover, provider, request, and retry behavior
+      - limit the upstream-owned edit to one localized exception-boundary hunk with no reordering
+  - id: I00-P99
+    title: Iteration 0 consolidation and authoritative baseline freeze
+    state: not_authored
+    must_precede:
+      - I01-P01
+    required_outcomes:
+      - consolidate every accepted Iteration 0 candidate on one clean commit
+      - run the complete Iteration 0 scenario and gap crosscheck
+      - produce snapshot-success.json on a clean pass and retain snapshot-report.html only on failure
+      - rerun fork inventory against the consolidated commit
+      - capture a new final manifest with baseline_sha equal to candidate_sha
+      - bind and retain the final verifier report and manifest digest
+      - promote campaign_baseline_sha in the control status
+
+iteration_0_order:
+  - Complete I00-P01 first.
+  - Freeze each packet's clean starting SHA and packet-unique evidence identity.
+  - Run I00-P02 and author/complete I00-P04 in nonoverlapping rollback boundaries.
+  - Run I00-P03 only after I00-P04 is complete and included in its baseline.
+  - Consolidate all Iteration 0 changes and run the complete Iteration 0 gates.
+  - Freeze campaign_baseline_sha at the clean consolidated commit.
+  - Assign a new final_run_id and rerun baseline inventory/capture with manifest baseline_sha equal to candidate_sha.
+  - Serialize manifest updates and status changes through the campaign lead.
+
+global_prohibitions:
+  - No packet implementation while its state is draft.
+  - No shared-worktree concurrent writers.
+  - No evidence inside the repository or a linked worktree.
+  - No paid model or external-network execution for the first three packets; deterministic loopback fixtures are allowed where a packet names them.
+  - No upstream-owned deletion, rename, split, relocation, or broad reformat.
+  - No snapshot, message baseline, performance threshold, or accepted-divergence update by a worker.
+  - No candidate mutation after verification starts.
+  - No worker, reviewer, or verifier may mark a packet complete or authorize landing.

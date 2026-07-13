@@ -178,6 +178,7 @@ movement, compatibility changes, or optimization.
 |---|---|---|
 | Execution roadmap | `docs/design/fork-maintenance-roadmap.md` | This scope, sequence, DoD, evidence contract, and test matrix. |
 | Design index entry | `docs/design/README.md` | Discoverable link to this roadmap. |
+| Execution control layer | `docs/design/fork-maintenance/` | Authority matrix, machine-readable campaign status, packet template, and frozen iteration packets suitable for bounded agent execution. |
 | Baseline manifest | `$VIBE_EVIDENCE_WORKSPACE/.ai/runs/$KILROY_RUN_ID/test-evidence/latest/manifest.json` | Commit, environment, commands, scenarios, results, and artifact paths outside the candidate worktree. |
 | Fork ownership report | Iteration evidence under `IT-12/` | Upstream/fork path ownership, changed paths, per-hotspot hunks, and absent paths. |
 | Message baseline | Iteration evidence under `IT-01/`, `IT-02/`, `IT-03/`, and `IT-04/` | CLI/TUI/ACP/model-visible output fixtures with normalized volatile values. |
@@ -193,6 +194,8 @@ movement, compatibility changes, or optimization.
 | Performance evidence helper | Fork-added helper under `tests/perf/` | Common structured sample and environment output for current performance harnesses. |
 | Performance comparison runner | `scripts/compare_performance.py` | Clean-ref worktree orchestration, calibration, randomized paired sampling, bootstrap non-inferiority report, and profile collection. |
 | Evidence runner | `scripts/run_maintenance_evidence.py` | External-workspace scenario orchestration, normalization, artifact hashing, and manifest emission. |
+| Fork baseline reporter | `scripts/report_fork_baseline.py` | Exact-path ownership, changed-path, lock identity, and hotspot-hunk reports against frozen refs. |
+| Fork baseline reporter tests | `tests/maintenance/test_fork_baseline_report.py` | Temporary-repository exact-path, diff, hotspot, guard-characterization, and deterministic-output contracts. |
 | Evidence contract tests | `tests/maintenance/test_evidence_contract.py` | Reproducibility, dirty-baseline rejection, controlled failure, best-effort artifacts, and manifest validation. |
 | Characterization contracts | Existing mirrored test locations | Golden behavior for runtime, AgentLoop, VibeApp, config, spend, and orchestration seams. |
 | Iteration verification report | Per-iteration evidence manifest | Applicable AC/IT status, exact commands, profiles, snapshots, and verifier verdict. |
@@ -230,6 +233,14 @@ movement, compatibility changes, or optimization.
 ### Iteration 0: Freeze evidence, not code
 
 Purpose: establish reliable preservation contracts before moving implementation.
+
+Execution uses the packet controls under `docs/design/fork-maintenance/`.
+Early Iteration 0 packet baselines identify their individual rollback boundaries;
+they are not the final preservation baseline. After all Iteration 0 tooling and
+characterization changes are consolidated and green, freeze that clean commit as
+the campaign baseline, rerun baseline inventory, and capture it with manifest
+`baseline_sha == candidate_sha`. Do not begin Iteration 1 before this bootstrap
+is complete.
 
 #### Entry conditions
 
@@ -828,12 +839,13 @@ notes; the manifest does not invent a third `blocked` status.
       "id": "IT-01",
       "surface": "non_ui",
       "status": "pass",
-      "command": "uv run pytest -n0 ...",
+      "command": ["uv", "run", "pytest", "-n0", "..."],
+      "recorded_environment": {},
       "exit_code": 0,
       "artifacts": [
         {
           "type": "log",
-          "path": "$EVIDENCE/IT-01/command.log",
+          "path": "IT-01/command.log",
           "sha256": "<64-hex digest>"
         }
       ],
@@ -843,6 +855,13 @@ notes; the manifest does not invent a third `blocked` status.
   ]
 }
 ```
+
+Manifest values use portable machine contracts: `command` is the exact argv
+array executed without a shell, and artifact paths are POSIX strings relative
+to the manifest directory. `$EVIDENCE/...` notation elsewhere in this document
+describes filesystem locations for humans and is not stored literally.
+`recorded_environment` is scenario-local and not part of immutable run identity;
+top-level environment identity remains Python, platform, lock digest, and runner.
 
 Each scenario is automatable, bounded, independent, proportional to the risk it
 covers, and responsible for setting up its own deterministic starting state.
@@ -1322,19 +1341,35 @@ uv run pre-commit run --all-files
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
-uv run pytest --ignore tests/snapshots --cov --cov-report=term-missing --cov-report=xml
-uv run pytest -n0 tests/snapshots
+COVERAGE_FILE="$EVIDENCE/IT-13/.coverage" \
+uv run pytest --ignore tests/snapshots \
+  --cov \
+  --cov-report=term-missing \
+  --cov-report="xml:$EVIDENCE/IT-13/coverage.xml" \
+  --junitxml="$EVIDENCE/IT-13/junit.xml"
+uv run pytest -n0 tests/snapshots \
+  --snapshot-report="$EVIDENCE/IT-13/snapshot-report.html"
 uv run scripts/check_upstream_divergence.py
 uv run pytest -n0 tests/test_iron_laws.py tests/test_upstream_divergence.py
 uv run pytest -n0 tests/maintenance/test_evidence_contract.py
 ```
 
 - Evidence: `$EVIDENCE/IT-13/command.log`, `$EVIDENCE/IT-13/junit.xml`,
-  `$EVIDENCE/IT-13/coverage.xml`, `$EVIDENCE/IT-13/snapshot-report.html`,
+  `$EVIDENCE/IT-13/coverage.xml`, `$EVIDENCE/IT-13/snapshot-success.json`,
+  failure-only `$EVIDENCE/IT-13/snapshot-report.html`,
   `$EVIDENCE/IT-13/warnings.json`, `$EVIDENCE/IT-13/ratchets.json`,
   `$EVIDENCE/IT-13/reproducibility.json`,
   `$EVIDENCE/IT-13/failure-evidence.json`, and
   `$EVIDENCE/IT-13/verifier-report.txt`.
+- Artifact ownership: the evidence runner owns command/result/reproducibility and
+  controlled-failure artifacts; coverage owns its XML; pytest-textual-snapshot
+  owns `snapshot-report.html` only when differences exist. On success, the
+  I00-P99 snapshot adapter writes `snapshot-success.json` with command, exit,
+  snapshot count, and absence of diffs. The maintenance ratchet collector owns
+  `warnings.json` and `ratchets.json`; the lead stores the host verifier report
+  after binding it to the frozen candidate. I00-P99 must name the snapshot
+  adapter, ratchet collector command, and verifier handoff before it may become
+  `ready`.
 - Covers: AC-1.1 through AC-1.4, AC-2.4 through AC-2.6, AC-3.5, AC-3.6,
   AC-5.5, AC-7.1 through AC-7.4, AC-7.6.
 
