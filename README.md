@@ -1152,6 +1152,15 @@ Key fields:
 - `root_uri`: Workspace root URI (defaults to the current project directory).
 - `startup_timeout_sec` (default 20), `request_timeout_sec` (default 10).
 
+`lsp_max_workspace_roots = 8` bounds dynamically discovered monorepo roots.
+The session root and explicit `root_uri` entries do not consume this budget.
+When the budget is full, the least-recently-used idle root is retired as one
+bucket across all of its language servers. Active operations stay leased until
+they finish, and a replacement waits for clean server shutdown before use.
+When previously discovered roots exceed the resident limit, `workspace_symbol`
+reports explicit partial coverage with resident/known root counts; use a
+file-scoped query or raise the limit when full-workspace coverage is required.
+
 Server probes and subprocesses inherit a restricted execution/toolchain environment instead of the full host environment. Put any additional variables a server needs in its `env` map. Because language servers do not yet run inside the OS process sandbox, `lsp` is unavailable in parent-spawned isolated-worktree subagents and workflows (ordinary top-level programmatic worktrees are unaffected); those agents use `read`, `grep`, and `glob`.
 
 Once configured, the `lsp` tool becomes available to the model. `lsp status`

@@ -13,6 +13,7 @@ from vibe.core.lsp._manager import (
     get_lsp_manager,
     init_lsp_manager,
 )
+from vibe.core.lsp._route_pool import DEFAULT_MAX_WORKSPACE_ROOTS
 from vibe.core.tools.utils import isolated_worktree_root
 
 if TYPE_CHECKING:
@@ -70,7 +71,12 @@ def setup_lsp_for_config(
             current_lsp_generation(),
         )
         return get_lsp_manager()
-    manager = LSPManager(source=ConfigServerSource(config_getter, root_path=root_path))
+    manager = LSPManager(
+        source=ConfigServerSource(config_getter, root_path=root_path),
+        max_workspace_roots=getattr(
+            config, "lsp_max_workspace_roots", DEFAULT_MAX_WORKSPACE_ROOTS
+        ),
+    )
     manager.set_root(root_path)
     manager.initialize()
     init_lsp_manager(manager)

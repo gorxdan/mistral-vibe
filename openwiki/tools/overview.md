@@ -128,6 +128,8 @@ Language Server Protocol support provides semantic code intelligence:
 - Reference, symbol, and call-hierarchy collections use short-lived, session/task/workspace-bound opaque continuation tokens instead of discarding capped tails
 - Human columns are Unicode code points converted to/from LSP UTF-16 positions; document-symbol trees retain child hierarchy
 - Workspace roots are selected from the nearest bounded manifest marker, with separate server instances for monorepo roots
+- Dynamically discovered roots use a configurable root-bucket LRU (`lsp_max_workspace_roots`, default 8); active operations, the session root, and explicit roots are protected while idle roots retire cleanly
+- `workspace_symbol` reports resident/known root coverage and marks results partial when known roots have been retired
 - **Opt-in**: install with `/lspstall`, remove with `/unlspstall`
 - Builtin servers auto-discovered from project manifests; `[[lsp_servers]]` adds custom definitions
 - Restricted child environment; additional server variables must be explicit in `env`

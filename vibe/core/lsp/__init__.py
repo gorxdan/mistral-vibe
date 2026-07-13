@@ -11,6 +11,7 @@ from vibe.core.lsp._manager import (
 from vibe.core.lsp._readiness import (
     LSPReadinessSnapshot,
     LSPReadinessState,
+    LSPRoutePoolReadiness,
     LSPServerReadiness,
     build_lsp_readiness,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "LSPProtocolError",
     "LSPReadinessSnapshot",
     "LSPReadinessState",
+    "LSPRoutePoolReadiness",
     "LSPServerCrashedError",
     "LSPServerReadiness",
     "LSPServerSource",

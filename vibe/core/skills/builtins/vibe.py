@@ -567,6 +567,13 @@ Nearest manifest roots are resolved before server startup, including glob marker
 such as `*.csproj`. Monorepos get distinct server instances per resolved root;
 explicit `root_uri` always wins. Human-facing columns use Unicode code points and
 are converted to/from the protocol's negotiated UTF-16 representation.
+`lsp_max_workspace_roots = 8` bounds dynamically discovered roots. The session
+root and explicit roots are protected; the least-recently-used idle root retires
+as one bucket across its language servers, while active operations remain leased
+until completion.
+If known roots exceed the resident limit, `workspace_symbol` reports partial
+coverage with resident/known counts; use a file-scoped query or raise the limit
+when full-workspace coverage is required.
 
 `lsp status` accepts an optional file and reports whether its exact routed server
 is running plus the operations advertised during initialization. Location,

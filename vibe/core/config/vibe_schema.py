@@ -194,6 +194,15 @@ class VibeConfigSchema(ConfigSchema):
             "False, only explicitly-declared [[lsp_servers]] entries are used."
         ),
     )
+    lsp_max_workspace_roots: Annotated[int, WithReplaceMerge()] = Field(
+        default=8,
+        ge=1,
+        le=128,
+        description=(
+            "Maximum dynamically discovered LSP workspace roots kept resident. "
+            "Session and explicit roots are protected; idle roots retire by LRU."
+        ),
+    )
 
     # Agents
     agent_paths: Annotated[list[Path], WithConcatMerge()] = Field(

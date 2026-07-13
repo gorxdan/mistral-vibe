@@ -38,6 +38,19 @@ class LSPServerReadiness(BaseModel):
     error: str | None
 
 
+class LSPRoutePoolReadiness(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    resident_dynamic_roots: int
+    max_dynamic_roots: int
+    leased_dynamic_roots: int
+    resident_roots: int
+    known_roots: int
+    workspace_symbol_partial: bool
+    retiring_servers: int
+    revision: int
+
+
 class LSPReadinessSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -53,6 +66,8 @@ class LSPReadinessSnapshot(BaseModel):
     can_attempt: bool
     servers: tuple[LSPServerReadiness, ...]
     reason: str
+    selected_workspace_root: str | None = None
+    route_pool: LSPRoutePoolReadiness | None = None
 
 
 _OPERATION_PROVIDERS = (
@@ -349,6 +364,7 @@ def build_lsp_readiness(
 __all__ = [
     "LSPReadinessSnapshot",
     "LSPReadinessState",
+    "LSPRoutePoolReadiness",
     "LSPServerReadiness",
     "build_lsp_readiness",
 ]

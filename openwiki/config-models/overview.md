@@ -57,7 +57,9 @@ From `vibe/core/config/__init__.py`:
 - `SandboxConfig` — bash sandbox settings
 - `WorktreeConfig` — subagent isolation settings
 - `EffortLevel` — normal / le-chaton
-- `LSPServer` — LSP server configuration
+- `LSPServer` — LSP server configuration; `lsp_max_workspace_roots` (default 8)
+  bounds dynamically discovered monorepo roots without counting session or
+  explicit roots
 - `ToolManifestConfig` — tool manifest pins
 - `PurposeModelRoutingConfig` — explicit aliases for formatting, retrieval
   ambiguity, mechanical work, and semantic escalation

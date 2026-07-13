@@ -3277,6 +3277,16 @@ class VibeApp(App):
             return
         snapshot = manager.readiness()
         lines = ["## LSP readiness", "", snapshot.reason, ""]
+        if snapshot.route_pool is not None:
+            pool = snapshot.route_pool
+            lines.extend([
+                f"Dynamic workspace roots: {pool.resident_dynamic_roots}/"
+                f"{pool.max_dynamic_roots}; retiring servers: "
+                f"{pool.retiring_servers}",
+                f"Workspace-symbol coverage: {pool.resident_roots}/"
+                f"{pool.known_roots} known roots resident",
+                "",
+            ])
         for server in snapshot.servers:
             exts = ", ".join(server.extensions) or "no extensions"
             line = f"- **{server.name}** ({server.state.value}) — {exts}"

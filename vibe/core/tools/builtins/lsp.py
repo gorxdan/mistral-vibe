@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import replace
 from enum import StrEnum, auto
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -94,6 +95,17 @@ _PAGEABLE_OPS = frozenset({
 })
 
 
+@asynccontextmanager
+async def _lease_server(manager: Any, file_path: str) -> AsyncIterator[Any]:
+    lease = getattr(manager, "lease_server_for_file", None)
+    if callable(lease):
+        lease_server = cast(Callable[[str], AbstractAsyncContextManager[Any]], lease)
+        async with lease_server(file_path) as server:
+            yield server
+        return
+    yield manager.get_server_for_file(file_path)
+
+
 class LspOperation(StrEnum):
     STATUS = auto()
     GO_TO_DEFINITION = auto()
@@ -170,6 +182,8 @@ class LspResult(BaseModel):
     page_offset: int = 0
     continuation_token: str | None = None
     readiness: dict[str, Any] | None = None
+    workspace_coverage: dict[str, int | bool] | None = None
+    partial_coverage: bool = False
 
 
 class LspConfig(BaseToolConfig):
@@ -308,14 +322,6 @@ class Lsp(
                 record_lsp_call(args.operation.value, ctx=ctx, cache_hit=True)
                 yield resumed
                 return
-        server = manager.get_server_for_file(file_path)
-        if server is None:
-            raise ToolError(
-                f"No LSP server configured for {Path(file_path).suffix or 'extensionless'} files. "
-                "Run /lspstall to re-detect installed servers, or add a "
-                "[[lsp_servers]] entry with a matching language."
-            )
-
         position_required = args.operation in {
             LspOperation.GO_TO_DEFINITION,
             LspOperation.FIND_REFERENCES,
@@ -331,10 +337,18 @@ class Lsp(
             )
         if args.operation is LspOperation.WORKSPACE_SYMBOL and not args.query:
             raise ToolError("workspace_symbol requires a non-empty query.")
-        async for event in self._execute(
-            manager, args, file_path, position_required, server, ctx, binding
-        ):
-            yield event
+        async with _lease_server(manager, file_path) as server:
+            if server is None:
+                raise ToolError(
+                    f"No LSP server configured for "
+                    f"{Path(file_path).suffix or 'extensionless'} files. Run "
+                    "/lspstall to re-detect installed servers, or add a "
+                    "[[lsp_servers]] entry with a matching language."
+                )
+            async for event in self._execute(
+                manager, args, file_path, position_required, server, ctx, binding
+            ):
+                yield event
 
     async def _execute(
         self,
@@ -592,6 +606,19 @@ class Lsp(
     @staticmethod
     def _format_readiness(snapshot: Any) -> LspResult:
         lines = [f"LSP readiness: {snapshot.state.value} — {snapshot.reason}"]
+        if snapshot.route_pool is not None:
+            pool = snapshot.route_pool
+            lines.append(
+                "  workspace roots: "
+                f"{pool.resident_dynamic_roots}/{pool.max_dynamic_roots} dynamic; "
+                f"{pool.retiring_servers} server(s) retiring"
+            )
+            lines.append(
+                "  workspace_symbol coverage: "
+                f"{pool.resident_roots}/{pool.known_roots} known roots resident"
+            )
+        if snapshot.selected_workspace_root is not None:
+            lines.append(f"  selected root: {snapshot.selected_workspace_root}")
         for server in snapshot.servers:
             extensions = ", ".join(server.extensions) or "no extensions"
             operations = (
@@ -651,6 +678,7 @@ class Lsp(
         continuation_token: str | None,
     ) -> LspResult:
         label = f"Workspace symbols matching '{query}'"
+        coverage = self._workspace_coverage(manager)
         if continuation_token is not None:
             try:
                 page = self._continuation_store().get_page(continuation_token, binding)
@@ -659,7 +687,10 @@ class Lsp(
             except LspContinuationError as exc:
                 raise ToolError(str(exc)) from exc
             else:
-                return self._format_symbol_dicts(label, list(page.items), page=page)
+                return self._apply_workspace_coverage(
+                    self._format_symbol_dicts(label, list(page.items), page=page),
+                    coverage,
+                )
         servers = manager.servers
         if not servers:
             raise ToolError(
@@ -673,32 +704,93 @@ class Lsp(
         # from all languages surface. A per-server failure (server down, or
         # workspace/symbol unsupported) degrades gracefully: that server
         # contributes nothing rather than failing the whole query.
-        batches = await asyncio.gather(
-            *(
-                s.send_request("workspace/symbol", {"query": query})
-                for s in servers.values()
-            ),
-            return_exceptions=True,
-        )
+        request_all = getattr(manager, "send_request_all", None)
+        if callable(request_all):
+            broadcast = cast(
+                Callable[[str, dict[str, Any]], Awaitable[list[Any]]], request_all
+            )
+            batches = await broadcast("workspace/symbol", {"query": query})
+        else:
+            batches = await asyncio.gather(
+                *(
+                    server.send_request("workspace/symbol", {"query": query})
+                    for server in servers.values()
+                ),
+                return_exceptions=True,
+            )
+        coverage = self._workspace_coverage(manager)
         merged, supported = self._merge_symbol_batches(batches)
         if not merged and continuation_token is None:
             if not supported:
+                if coverage is not None and coverage.get("partial") is True:
+                    raise ToolError(
+                        "No resident server supports workspace_symbol, and the "
+                        "query covered only resident roots because known roots "
+                        "were retired. Use file-scoped document_symbol or raise "
+                        "lsp_max_workspace_roots before concluding no symbols exist."
+                    )
                 raise ToolError(
                     "No configured server supports workspace_symbol. "
                     "Pass file_path to target a server, or use document_symbol "
                     "on a specific file."
                 )
-            return LspResult(
-                operation="symbols",
-                summary=f"Workspace symbols matching '{query}': none found.",
+            return self._apply_workspace_coverage(
+                LspResult(
+                    operation="symbols",
+                    summary=f"Workspace symbols matching '{query}': none found.",
+                ),
+                coverage,
             )
         symbols = await self._normalize_symbols(merged, "")
-        return self._page_symbol_records(
-            label,
-            symbols,
-            binding=binding,
-            continuation_token=continuation_token,
-            query=query,
+        return self._apply_workspace_coverage(
+            self._page_symbol_records(
+                label,
+                symbols,
+                binding=binding,
+                continuation_token=continuation_token,
+                query=query,
+            ),
+            coverage,
+        )
+
+    @staticmethod
+    def _workspace_coverage(manager: Any) -> dict[str, int | bool] | None:
+        get_readiness = getattr(manager, "readiness", None)
+        if not callable(get_readiness):
+            return None
+        snapshot = cast(Callable[[], Any], get_readiness)()
+        pool = getattr(snapshot, "route_pool", None)
+        if pool is None:
+            return None
+        return {
+            "resident_roots": pool.resident_roots,
+            "known_roots": pool.known_roots,
+            "partial": pool.workspace_symbol_partial,
+        }
+
+    @staticmethod
+    def _apply_workspace_coverage(
+        result: LspResult, coverage: dict[str, int | bool] | None
+    ) -> LspResult:
+        if coverage is None:
+            return result
+        partial = coverage.get("partial") is True
+        summary = result.summary
+        if partial:
+            summary += (
+                "\nCoverage warning: workspace_symbol queried only "
+                f"{coverage.get('resident_roots', 0)} of "
+                f"{coverage.get('known_roots', 0)} known workspace roots because "
+                "the others were retired by the LSP root limit. Results are "
+                "partial; use file-scoped document_symbol or raise "
+                "lsp_max_workspace_roots for full coverage."
+            )
+        return result.model_copy(
+            update={
+                "summary": summary,
+                "workspace_coverage": coverage,
+                "partial_coverage": partial,
+            }
         )
 
     @staticmethod

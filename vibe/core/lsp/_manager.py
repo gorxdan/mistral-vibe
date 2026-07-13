@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 import logging
 from pathlib import Path
@@ -8,7 +10,11 @@ import time
 from typing import Any, Protocol
 
 from vibe.core.logger import logger
-from vibe.core.lsp._readiness import LSPReadinessSnapshot, build_lsp_readiness
+from vibe.core.lsp._readiness import (
+    LSPReadinessSnapshot,
+    LSPRoutePoolReadiness,
+    build_lsp_readiness,
+)
 from vibe.core.lsp._registry import DiagnosticRegistry, format_diagnostics_for_model
 from vibe.core.lsp._roots import (
     ResolvedWorkspaceRoot,
@@ -16,6 +22,7 @@ from vibe.core.lsp._roots import (
     nearest_manifest_root,
     resolve_workspace_root,
 )
+from vibe.core.lsp._route_pool import DEFAULT_MAX_WORKSPACE_ROOTS, WorkspaceRoutePool
 from vibe.core.lsp._server import LanguageServer, ServerConfig
 from vibe.core.lsp._types import (
     LSPError,
@@ -35,10 +42,21 @@ class LSPManager:
     diagnostic registry that feeds passive next-turn context.
     """
 
-    def __init__(self, source: LSPServerSource | None = None) -> None:
+    def __init__(
+        self,
+        source: LSPServerSource | None = None,
+        *,
+        max_workspace_roots: int = DEFAULT_MAX_WORKSPACE_ROOTS,
+    ) -> None:
         self._source = source
         self._servers: dict[str, LanguageServer] = {}
         self._servers_by_route: dict[tuple[str, str], LanguageServer] = {}
+        self._route_pool = WorkspaceRoutePool(max_workspace_roots)
+        self._retirement_tasks: set[asyncio.Task[None]] = set()
+        self._retirement_tasks_by_root: dict[str, set[asyncio.Task[None]]] = {}
+        self._retiring_servers: set[LanguageServer] = set()
+        self._deferred_retirements_by_root: dict[str, set[LanguageServer]] = {}
+        self._route_drain_events: dict[str, asyncio.Event] = {}
         self._configs: list[ServerConfig] = []
         self._diagnostics = DiagnosticRegistry()
         self._initialized = False
@@ -96,9 +114,30 @@ class LSPManager:
         except Exception:
             logger.exception("lsp config load failed; servers unavailable")
             configs = []
+        prior = tuple(self._servers_by_route.items())
+        idle = tuple(
+            (route, server)
+            for route, server in prior
+            if not self._route_pool.is_leased(route[1])
+        )
+        active = tuple(
+            (route, server)
+            for route, server in prior
+            if self._route_pool.is_leased(route[1])
+        )
+        if idle:
+            self._schedule_retirements(
+                tuple(server for _route, server in idle),
+                tuple(route for route, _server in idle),
+            )
+        if active:
+            for route, _server in active:
+                self._route_drain_events.setdefault(route[1], asyncio.Event())
+            self._defer_retirements(active)
         self._configs = configs
         self._servers.clear()
         self._servers_by_route.clear()
+        self._route_pool.reset(preserve_leases=True)
         for config in configs:
             self._server_for_config(config, self._default_route_probe())
         if configs:
@@ -114,8 +153,17 @@ class LSPManager:
 
     def _server_for_config(
         self, config: ServerConfig, file_path: str | Path
-    ) -> LanguageServer:
+    ) -> LanguageServer | None:
         root = self._resolved_root(config, file_path)
+        if not self._route_pool.touch_or_admit(
+            root.uri, protected=self._root_is_protected(root)
+        ):
+            return None
+        return self._server_for_root(config, root)
+
+    def _server_for_root(
+        self, config: ServerConfig, root: ResolvedWorkspaceRoot
+    ) -> LanguageServer:
         route = (config.name, root.uri)
         existing = self._servers_by_route.get(route)
         if existing is not None:
@@ -130,11 +178,145 @@ class LSPManager:
                 index += 1
             key = f"{config.name}@{index}"
         self._servers[key] = server
-        server.on_notification(
-            "textDocument/publishDiagnostics",
-            lambda params, _n=config.name: self._on_publish(params, _n),
-        )
+
+        async def publish_diagnostics(params: dict[str, Any]) -> None:
+            if self._servers_by_route.get(route) is not server:
+                return
+            await self._on_publish(params, config.name)
+
+        server.on_notification("textDocument/publishDiagnostics", publish_diagnostics)
         return server
+
+    def _root_is_protected(self, root: ResolvedWorkspaceRoot) -> bool:
+        return root.explicit or root.uri == self._root_uri
+
+    def _detach_roots(
+        self, root_uris: tuple[str, ...]
+    ) -> tuple[tuple[tuple[str, str], ...], tuple[LanguageServer, ...]]:
+        if not root_uris:
+            return (), ()
+        roots = set(root_uris)
+        routes = tuple(route for route in self._servers_by_route if route[1] in roots)
+        servers = tuple(self._servers_by_route.pop(route) for route in routes)
+        detached = set(servers)
+        for name, server in tuple(self._servers.items()):
+            if server in detached:
+                del self._servers[name]
+        return routes, servers
+
+    def _defer_retirements(
+        self,
+        routes_and_servers: tuple[tuple[tuple[str, str], LanguageServer], ...],
+        *,
+        barrier_roots: tuple[str, ...] = (),
+    ) -> None:
+        for route, server in routes_and_servers:
+            roots = {route[1], *barrier_roots}
+            for root_uri in roots:
+                self._deferred_retirements_by_root.setdefault(root_uri, set()).add(
+                    server
+                )
+
+    def _activate_deferred_retirements(self, root_uri: str) -> None:
+        if self._route_pool.is_leased(root_uri):
+            return
+        servers = self._deferred_retirements_by_root.pop(root_uri, set())
+        if not servers:
+            return
+        for candidate, pending in tuple(self._deferred_retirements_by_root.items()):
+            pending.difference_update(servers)
+            if not pending:
+                del self._deferred_retirements_by_root[candidate]
+        routes = tuple((server.config.name, root_uri) for server in servers)
+        self._schedule_retirements(tuple(servers), routes, barrier_roots=(root_uri,))
+
+    async def _await_root_drain(self, root_uri: str) -> None:
+        event = self._route_drain_events.get(root_uri)
+        if event is not None:
+            await event.wait()
+
+    def _finish_root_drain_if_ready(self, root_uri: str) -> None:
+        event = self._route_drain_events.get(root_uri)
+        if event is None:
+            return
+        if (
+            self._route_pool.is_leased(root_uri)
+            or self._deferred_retirements_by_root.get(root_uri)
+            or self._retirement_tasks_by_root.get(root_uri)
+        ):
+            return
+        del self._route_drain_events[root_uri]
+        event.set()
+
+    def _schedule_retirements(
+        self,
+        servers: tuple[LanguageServer, ...],
+        routes: tuple[tuple[str, str], ...],
+        *,
+        barrier_roots: tuple[str, ...] = (),
+    ) -> asyncio.Task[None] | None:
+        retiring = tuple(
+            dict.fromkeys(
+                server for server in servers if server not in self._retiring_servers
+            )
+        )
+        if not retiring:
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._defer_retirements(
+                tuple(zip(routes, servers, strict=True)), barrier_roots=barrier_roots
+            )
+            return None
+        self._retiring_servers.update(retiring)
+        task = loop.create_task(
+            self._stop_servers(retiring), name="lsp-route-retirement"
+        )
+        self._retirement_tasks.add(task)
+        associated_roots = {*(route[1] for route in routes), *barrier_roots}
+        for root_uri in associated_roots:
+            self._retirement_tasks_by_root.setdefault(root_uri, set()).add(task)
+
+        def retirement_finished(done: asyncio.Task[None]) -> None:
+            self._retirement_tasks.discard(done)
+            for root_uri in associated_roots:
+                tasks = self._retirement_tasks_by_root.get(root_uri)
+                if tasks is None:
+                    continue
+                tasks.discard(done)
+                if not tasks:
+                    del self._retirement_tasks_by_root[root_uri]
+                self._finish_root_drain_if_ready(root_uri)
+
+        task.add_done_callback(retirement_finished)
+        return task
+
+    async def _stop_servers(self, servers: tuple[LanguageServer, ...]) -> None:
+        try:
+            await asyncio.gather(
+                *(server.stop() for server in servers), return_exceptions=True
+            )
+        finally:
+            self._retiring_servers.difference_update(servers)
+
+    async def _await_route_retirements(self, root_uri: str) -> None:
+        tasks = tuple(self._retirement_tasks_by_root.get(root_uri, ()))
+        for task in tasks:
+            await asyncio.shield(task)
+
+    def _retire_evicted_roots(
+        self, root_uris: tuple[str, ...], *, replacement_root: str
+    ) -> None:
+        routes, servers = self._detach_roots(root_uris)
+        if not servers:
+            return
+        logger.info(
+            "lsp workspace route pool evicted %d root(s), retiring %d server(s)",
+            len(root_uris),
+            len(servers),
+        )
+        self._schedule_retirements(servers, routes, barrier_roots=(replacement_root,))
 
     def _resolved_root(
         self, config: ServerConfig, file_path: str | Path
@@ -185,7 +367,83 @@ class LSPManager:
         config = self._matching_config(path)
         if config is None:
             return None
-        return self._server_for_config(config, path)
+        root = self._resolved_root(config, path)
+        if root.uri in self._route_drain_events:
+            return None
+        if not self._route_pool.touch_or_admit(
+            root.uri, protected=self._root_is_protected(root)
+        ):
+            return None
+        server = self._server_for_root(config, root)
+        if server is not None and server.config.root_uri is not None:
+            self._activate_deferred_retirements(server.config.root_uri)
+        if (
+            server is not None
+            and server.config.root_uri in self._retirement_tasks_by_root
+        ):
+            return None
+        return server
+
+    @asynccontextmanager
+    async def lease_server_for_file(
+        self, path: str | Path
+    ) -> AsyncIterator[LanguageServer | None]:
+        while True:
+            config = self._matching_config(path)
+            if config is None:
+                yield None
+                return
+            generation = self._routing_generation
+            root = self._resolved_root(config, path)
+            await self._await_root_drain(root.uri)
+            if generation != self._routing_generation:
+                continue
+            self._activate_deferred_retirements(root.uri)
+            admission = await self._route_pool.acquire(
+                root.uri, protected=self._root_is_protected(root)
+            )
+            if generation == self._routing_generation:
+                break
+            await self._route_pool.release(root.uri)
+        try:
+            self._retire_evicted_roots(
+                admission.evicted_roots, replacement_root=root.uri
+            )
+            server = self._server_for_root(config, root)
+            await self._await_route_retirements(root.uri)
+            yield server
+        finally:
+            await self._route_pool.release(root.uri)
+            self._activate_deferred_retirements(root.uri)
+            self._finish_root_drain_if_ready(root.uri)
+
+    @asynccontextmanager
+    async def _lease_existing_server(
+        self, route: tuple[str, str], server: LanguageServer
+    ) -> AsyncIterator[bool]:
+        generation = self._routing_generation
+        await self._await_root_drain(route[1])
+        if (
+            generation != self._routing_generation
+            or self._servers_by_route.get(route) is not server
+        ):
+            yield False
+            return
+        pinned = await self._route_pool.pin_resident((route[1],))
+        if not pinned or self._servers_by_route.get(route) is not server:
+            if pinned:
+                await self._route_pool.release_many(pinned)
+                for root_uri in pinned:
+                    self._activate_deferred_retirements(root_uri)
+            yield False
+            return
+        try:
+            await self._await_route_retirements(route[1])
+            yield True
+        finally:
+            await self._route_pool.release_many(pinned)
+            for root_uri in pinned:
+                self._activate_deferred_retirements(root_uri)
 
     def status(self) -> dict[str, Any]:
         return self.readiness().model_dump(mode="json")
@@ -193,23 +451,47 @@ class LSPManager:
     def readiness(self, file_path: str | Path | None = None) -> LSPReadinessSnapshot:
         servers = self._servers
         selected: LanguageServer | None = None
+        selected_root: ResolvedWorkspaceRoot | None = None
         if file_path is not None and (config := self._matching_config(file_path)):
-            root = self._resolved_root(config, file_path)
-            selected = self._servers_by_route.get((config.name, root.uri))
+            selected_root = self._resolved_root(config, file_path)
+            selected = self._servers_by_route.get((config.name, selected_root.uri))
             if selected is None:
-                selected = LanguageServer(self._routed_config(config, root))
+                selected = LanguageServer(self._routed_config(config, selected_root))
             servers = {
                 name: server
                 for name, server in self._servers.items()
                 if server.config.name != config.name
             }
             servers[config.name] = selected
-        return build_lsp_readiness(
+        snapshot = build_lsp_readiness(
             servers,
             enabled=True,
             generation=self.generation,
             file_path=file_path,
             selected_server=selected,
+        )
+        pool = self._route_pool.snapshot()
+        deferred_servers = {
+            server
+            for servers in self._deferred_retirements_by_root.values()
+            for server in servers
+        }
+        return snapshot.model_copy(
+            update={
+                "selected_workspace_root": (
+                    selected_root.uri if selected_root is not None else None
+                ),
+                "route_pool": LSPRoutePoolReadiness(
+                    resident_dynamic_roots=pool.resident_dynamic_roots,
+                    max_dynamic_roots=pool.max_dynamic_roots,
+                    leased_dynamic_roots=pool.leased_dynamic_roots,
+                    resident_roots=pool.resident_roots,
+                    known_roots=pool.known_roots,
+                    workspace_symbol_partial=pool.workspace_symbol_partial,
+                    retiring_servers=len(self._retiring_servers | deferred_servers),
+                    revision=pool.revision,
+                ),
+            }
         )
 
     def readiness_fingerprint(self) -> tuple[Any, ...]:
@@ -217,6 +499,7 @@ class LSPManager:
         return (
             snapshot.generation,
             snapshot.state,
+            snapshot.route_pool,
             tuple(
                 (
                     server.name,
@@ -290,18 +573,29 @@ class LSPManager:
         self._warmup_task = asyncio.create_task(self._warmup(), name="lsp-warmup")
 
     async def _warmup(self) -> None:
-        async def start_server(name: str, server: LanguageServer) -> None:
+        async def start_server(
+            name: str, route: tuple[str, str] | None, server: LanguageServer
+        ) -> None:
             try:
-                await server.ensure_started()
+                if route is None:
+                    await server.ensure_started()
+                    return
+                async with self._lease_existing_server(route, server) as leased:
+                    if leased:
+                        await server.ensure_started()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.debug("lsp warmup failed for %s", name, exc_info=True)
 
+        routes_by_server = {
+            server: route for route, server in self._servers_by_route.items()
+        }
+
         await asyncio.gather(
             *(
-                start_server(name, server)
-                for name, server in self._servers.items()
+                start_server(name, routes_by_server.get(server), server)
+                for name, server in tuple(self._servers.items())
                 if self._should_warm(server)
             )
         )
@@ -327,45 +621,82 @@ class LSPManager:
     async def send_request(
         self, path: str | Path, method: str, params: dict[str, Any] | None = None
     ) -> tuple[Any, LanguageServer]:
-        server = self.get_server_for_file(path)
-        if server is None:
-            raise LSPNotConnectedError(
-                f"no LSP server registered for {Path(path).suffix or 'unknown'}"
-            )
-        total_start = time.perf_counter()
+        async with self.lease_server_for_file(path) as server:
+            if server is None:
+                raise LSPNotConnectedError(
+                    f"no LSP server registered for {Path(path).suffix or 'unknown'}"
+                )
+            total_start = time.perf_counter()
+            try:
+                result = await server.send_request(method, params)
+            finally:
+                if logger.isEnabledFor(logging.DEBUG):
+                    total_ms = (time.perf_counter() - total_start) * 1000.0
+                    logger.debug("lsp request %s total=%.1fms", method, total_ms)
+            return result, server
+
+    async def send_request_all(
+        self, method: str, params: dict[str, Any] | None = None
+    ) -> list[Any]:
+        while True:
+            generation = self._routing_generation
+            routes = tuple(self._servers_by_route.items())
+            roots = tuple(dict.fromkeys(route[1] for route, _server in routes))
+            for root_uri in roots:
+                await self._await_root_drain(root_uri)
+            if generation != self._routing_generation:
+                continue
+            pinned = await self._route_pool.pin_resident(roots)
+            if generation == self._routing_generation:
+                break
+            await self._route_pool.release_many(pinned)
+            for root_uri in pinned:
+                self._activate_deferred_retirements(root_uri)
+        pinned_set = set(pinned)
+        leased = tuple(
+            (route, server)
+            for route, server in routes
+            if route[1] in pinned_set and self._servers_by_route.get(route) is server
+        )
         try:
-            result = await server.send_request(method, params)
+            for root_uri in pinned:
+                await self._await_route_retirements(root_uri)
+            return list(
+                await asyncio.gather(
+                    *(server.send_request(method, params) for _route, server in leased),
+                    return_exceptions=True,
+                )
+            )
         finally:
-            if logger.isEnabledFor(logging.DEBUG):
-                total_ms = (time.perf_counter() - total_start) * 1000.0
-                logger.debug("lsp request %s total=%.1fms", method, total_ms)
-        return result, server
+            await self._route_pool.release_many(pinned)
+            for root_uri in pinned:
+                self._activate_deferred_retirements(root_uri)
 
     async def open_document(
         self, path: str | Path, text: str, language_id: str
     ) -> LanguageServer | None:
-        server = self.get_server_for_file(path)
-        if server is None:
-            return None
-        await server.ensure_started()
-        if not server.is_open(str(path)):
-            await server.did_open(str(path), text, language_id)
-        else:
-            await server.sync_if_changed(str(path), text)
-        return server
+        async with self.lease_server_for_file(path) as server:
+            if server is None:
+                return None
+            await server.ensure_started()
+            if not server.is_open(str(path)):
+                await server.did_open(str(path), text, language_id)
+            else:
+                await server.sync_if_changed(str(path), text)
+            return server
 
     async def notify_change(self, path: str | Path, text: str) -> None:
-        server = self.get_server_for_file(path)
-        if server is None or not server.is_open(str(path)):
-            return
-        await server.did_change(str(path), text)
-        self._diagnostics.clear_for_path(str(path))
+        async with self.lease_server_for_file(path) as server:
+            if server is None or not server.is_open(str(path)):
+                return
+            await server.did_change(str(path), text)
+            self._diagnostics.clear_for_path(str(path))
 
     async def notify_save(self, path: str | Path, text: str) -> None:
-        server = self.get_server_for_file(path)
-        if server is None or not server.is_open(str(path)):
-            return
-        await server.did_save(str(path), text)
+        async with self.lease_server_for_file(path) as server:
+            if server is None or not server.is_open(str(path)):
+                return
+            await server.did_save(str(path), text)
 
     async def reinitialize(self) -> None:
         await self.shutdown()
@@ -378,11 +709,29 @@ class LSPManager:
         if warmup_task is not None and not warmup_task.done():
             warmup_task.cancel()
             await asyncio.gather(warmup_task, return_exceptions=True)
-        stops = [server.stop() for server in self._servers.values()]
+        deferred_servers = {
+            server
+            for servers in self._deferred_retirements_by_root.values()
+            for server in servers
+        }
+        stops = [
+            server.stop() for server in {*self._servers.values(), *deferred_servers}
+        ]
         if stops:
             await asyncio.gather(*stops, return_exceptions=True)
+        retirement_tasks = tuple(self._retirement_tasks)
+        if retirement_tasks:
+            await asyncio.gather(*retirement_tasks, return_exceptions=True)
         self._servers.clear()
         self._servers_by_route.clear()
+        self._route_pool.reset()
+        self._retirement_tasks.clear()
+        self._retirement_tasks_by_root.clear()
+        self._retiring_servers.clear()
+        self._deferred_retirements_by_root.clear()
+        for event in self._route_drain_events.values():
+            event.set()
+        self._route_drain_events.clear()
         self._configs.clear()
         self._initialized = False
 

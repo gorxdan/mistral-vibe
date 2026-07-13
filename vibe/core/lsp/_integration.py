@@ -1,14 +1,29 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
+from typing import Any, cast
 
 from vibe.core.logger import logger
 from vibe.core.lsp._manager import get_lsp_manager
 
 _MAX_NOTIFY_BYTES = 10 * 1024 * 1024
 _MAX_UTF8_BYTES_PER_CODEPOINT = 4
+
+
+@asynccontextmanager
+async def _lease_server(manager: Any, path: str | Path) -> AsyncIterator[Any]:
+    lease = getattr(manager, "lease_server_for_file", None)
+    if callable(lease):
+        lease_server = cast(
+            Callable[[str | Path], AbstractAsyncContextManager[Any]], lease
+        )
+        async with lease_server(path) as server:
+            yield server
+        return
+    yield manager.get_server_for_file(path)
 
 
 def readiness_fingerprint() -> tuple[object, ...]:
@@ -45,16 +60,16 @@ async def notify_file_changed(path: str | Path, text: str) -> None:
             and len(text.encode("utf-8")) > _MAX_NOTIFY_BYTES
         ):
             return
-        server = manager.get_server_for_file(path)
-        if server is None:
-            return
-        await server.ensure_started()
-        if not server.is_open(p):
-            language_id = server.config.language_id_for(Path(path).suffix)
-            await server.did_open(p, text, language_id)
-        else:
-            await server.did_change(p, text)
-        await server.did_save(p, text)
+        async with _lease_server(manager, path) as server:
+            if server is None:
+                return
+            await server.ensure_started()
+            if not server.is_open(p):
+                language_id = server.config.language_id_for(Path(path).suffix)
+                await server.did_open(p, text, language_id)
+            else:
+                await server.did_change(p, text)
+            await server.did_save(p, text)
     except Exception:
         logger.debug("lsp notify_file_changed failed for %s", path, exc_info=True)
 

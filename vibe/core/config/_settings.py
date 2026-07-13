@@ -870,6 +870,15 @@ class VibeConfig(BaseSettings):
             "declared lsp_servers entries are used."
         ),
     )
+    lsp_max_workspace_roots: int = Field(
+        default=8,
+        ge=1,
+        le=128,
+        description=(
+            "Maximum dynamically discovered LSP workspace roots kept resident. "
+            "Session and explicit roots are protected; idle roots retire by LRU."
+        ),
+    )
     enable_connectors: bool = Field(
         default=True,
         description=(
