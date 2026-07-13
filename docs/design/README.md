@@ -16,6 +16,9 @@ control, `cached_tokens` visibility).
 
 - [Cost and reliability roadmap](cost-reliability-roadmap.md) - phased TODO for
   making weaker agents dependable while reducing paid harness calls and context.
+- [Fork maintenance and quality roadmap](fork-maintenance-roadmap.md) - staged
+  cleanup plan with preservation gates for behavior, performance, and upstream
+  mergeability.
 
 ## The six specs
 
