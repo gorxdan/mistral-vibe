@@ -386,7 +386,7 @@ class SessionSpendAdapter:
         runtime_max_total_tokens: int | None = None,
     ) -> SessionSpendAdapter:
         path = ledger_path or VIBE_HOME.path / "spend" / session_id
-        broker = SpendBroker(path, clock=clock)
+        broker = SpendBroker(path, clock=clock, enforce_limits=config.enforce_limits)
         session_scope_id = f"session:{session_id}"
         session_envelope = SpendEnvelope(
             scope_id=session_scope_id,
@@ -486,7 +486,9 @@ class SessionSpendAdapter:
             raise SpendAdmissionBlockedError(
                 f"spend process context references missing ledger {ledger_path}"
             )
-        broker = SpendBroker(ledger_path, clock=clock)
+        broker = SpendBroker(
+            ledger_path, clock=clock, enforce_limits=config.enforce_limits
+        )
         session = broker.get_envelope(context.session_scope_id)
         if session is None or session.kind is not SpendScopeKind.SESSION:
             raise SpendAdmissionBlockedError(

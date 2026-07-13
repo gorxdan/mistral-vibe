@@ -79,7 +79,9 @@ def _spend_adapter(
     path: Path, *, max_retries: int, session_id: str
 ) -> SessionSpendAdapter:
     return SessionSpendAdapter.create(
-        SpendConfig(max_retries=max_retries), session_id, ledger_path=path
+        SpendConfig(max_retries=max_retries, enforce_limits=True),
+        session_id,
+        ledger_path=path,
     )
 
 
@@ -120,7 +122,9 @@ async def test_retry_token_exposure_is_admitted_at_every_scope(
 ) -> None:
     monkeypatch.setattr("vibe.core.utils.retry._retry_delay", lambda *args: 0.0)
     config = SpendConfig(
-        max_completion_tokens=10 if cap_scope == "session" else None, max_retries=1
+        max_completion_tokens=10 if cap_scope == "session" else None,
+        max_retries=1,
+        enforce_limits=True,
     )
     adapter = SessionSpendAdapter.create(
         config, f"token-{cap_scope}", ledger_path=tmp_path / cap_scope
@@ -149,7 +153,9 @@ async def test_retry_usd_exposure_is_admitted_before_redispatch(
     request = _request(input_price=1_000_000, output_price=1_000_000)
     first_attempt_cost = float(estimate_request_tokens(request) + 10)
     adapter = SessionSpendAdapter.create(
-        SpendConfig(max_cost_usd=first_attempt_cost, max_retries=1),
+        SpendConfig(
+            max_cost_usd=first_attempt_cost, max_retries=1, enforce_limits=True
+        ),
         "retry-usd",
         ledger_path=tmp_path / "usd",
     )

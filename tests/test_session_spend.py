@@ -152,7 +152,7 @@ def _request(
 
 
 def _adapter(tmp_path: Path, **overrides) -> SessionSpendAdapter:
-    config = SpendConfig(**overrides)
+    config = SpendConfig(**overrides, enforce_limits=True)
     return SessionSpendAdapter.create(
         config, "test-session", ledger_path=tmp_path / "ledger"
     )
@@ -160,7 +160,7 @@ def _adapter(tmp_path: Path, **overrides) -> SessionSpendAdapter:
 
 def _attached_call_worker(encoded: str, start, results) -> None:
     adapter = SessionSpendAdapter.attach(
-        SpendConfig(), decode_spend_process_context(encoded)
+        SpendConfig(enforce_limits=True), decode_spend_process_context(encoded)
     )
     backend = _CountingBackend(
         result=LLMChunk(
@@ -178,7 +178,7 @@ def _attached_call_worker(encoded: str, start, results) -> None:
 
 
 def test_spend_config_defaults_use_dynamic_token_admission() -> None:
-    config = SpendConfig()
+    config = SpendConfig(enforce_limits=True)
 
     assert config.max_prompt_tokens is None
     assert config.max_completion_tokens is None
@@ -190,7 +190,7 @@ def test_spend_config_defaults_use_dynamic_token_admission() -> None:
     assert config.deadline_seconds is None
 
     with pytest.raises(ValidationError, match="max_prompt_tokens"):
-        SpendConfig(max_prompt_tokens=11, max_total_tokens=10)
+        SpendConfig(max_prompt_tokens=11, max_total_tokens=10, enforce_limits=True)
 
     for field in (
         "max_cost_usd",
@@ -247,7 +247,9 @@ def test_attached_adapter_validates_existing_scope_kind_and_ancestry(tmp_path) -
     context = child.export_process_context()
     before = len(parent.events())
 
-    attached = SessionSpendAdapter.attach(SpendConfig(max_calls=999), context)
+    attached = SessionSpendAdapter.attach(
+        SpendConfig(max_calls=999, enforce_limits=True), context
+    )
 
     assert attached.ledger_path == parent.ledger_path
     assert attached.session_scope_id == parent.session_scope_id
@@ -257,7 +259,7 @@ def test_attached_adapter_validates_existing_scope_kind_and_ancestry(tmp_path) -
 
     wrong_kind = context.model_copy(update={"agent_scope_id": parent.session_scope_id})
     with pytest.raises(SpendAdmissionBlockedError, match="invalid agent"):
-        SessionSpendAdapter.attach(SpendConfig(), wrong_kind)
+        SessionSpendAdapter.attach(SpendConfig(enforce_limits=True), wrong_kind)
 
     broker = SpendBroker(parent.ledger_path)
     broker.define_envelope(
@@ -272,7 +274,7 @@ def test_attached_adapter_validates_existing_scope_kind_and_ancestry(tmp_path) -
     )
     foreign = context.model_copy(update={"agent_scope_id": "agent:foreign"})
     with pytest.raises(SpendAdmissionBlockedError, match="outside"):
-        SessionSpendAdapter.attach(SpendConfig(), foreign)
+        SessionSpendAdapter.attach(SpendConfig(enforce_limits=True), foreign)
 
 
 def test_attach_rejects_missing_ledger_without_creating_it(tmp_path) -> None:
@@ -285,7 +287,7 @@ def test_attach_rejects_missing_ledger_without_creating_it(tmp_path) -> None:
     )
 
     with pytest.raises(SpendAdmissionBlockedError, match="missing ledger"):
-        SessionSpendAdapter.attach(SpendConfig(), context)
+        SessionSpendAdapter.attach(SpendConfig(enforce_limits=True), context)
 
     assert not missing.exists()
 
@@ -302,7 +304,7 @@ def test_attach_rejects_task_hash_rebound_in_process_context(tmp_path) -> None:
 
     assert context.task_brief_hash == original_hash
     attached = SessionSpendAdapter.attach(
-        SpendConfig(),
+        SpendConfig(enforce_limits=True),
         context,
         required_task_brief_hash=original_hash,
         required_limits=limits,
@@ -312,7 +314,7 @@ def test_attach_rejects_task_hash_rebound_in_process_context(tmp_path) -> None:
     tampered = context.model_copy(update={"task_brief_hash": tampered_hash})
     with pytest.raises(SpendAdmissionBlockedError, match="agent task brief"):
         SessionSpendAdapter.attach(
-            SpendConfig(),
+            SpendConfig(enforce_limits=True),
             tampered,
             required_task_brief_hash=tampered_hash,
             required_limits=limits,
@@ -486,6 +488,7 @@ async def test_adaptive_estimator_admits_long_cached_session_under_explicit_cap(
         max_total_tokens=500_000,
         max_cost_usd=1_000.0,
         max_calls=20,
+        enforce_limits=True,
     )
     usage = LLMUsage(prompt_tokens=45_000, cached_tokens=40_000, completion_tokens=1)
     result = LLMChunk(message=LLMMessage(role=Role.ASSISTANT), usage=usage)
@@ -531,7 +534,7 @@ async def test_adaptive_estimator_admits_long_cached_session_under_explicit_cap(
 
 @pytest.mark.asyncio
 async def test_prompt_calibration_replays_and_isolates_models(tmp_path) -> None:
-    config = SpendConfig(max_cost_usd=1_000.0, max_calls=10)
+    config = SpendConfig(max_cost_usd=1_000.0, max_calls=10, enforce_limits=True)
     result = LLMChunk(
         message=LLMMessage(role=Role.ASSISTANT),
         usage=LLMUsage(prompt_tokens=25_000, completion_tokens=1),
@@ -856,10 +859,10 @@ async def test_attached_adapters_queue_on_shared_concurrency_limit(
         purpose=SpendPurpose.TEAM,
     )
     first = SessionSpendAdapter.attach(
-        SpendConfig(), first_child.export_process_context()
+        SpendConfig(enforce_limits=True), first_child.export_process_context()
     )
     second = SessionSpendAdapter.attach(
-        SpendConfig(), second_child.export_process_context()
+        SpendConfig(enforce_limits=True), second_child.export_process_context()
     )
     gate = asyncio.Event()
     first_backend = _CountingBackend(gate=gate)
@@ -1011,7 +1014,7 @@ async def test_compaction_rotation_resume_reuses_root_spend_ledger(tmp_path) -> 
         session_logging=SessionLoggingConfig(
             enabled=True, save_dir=str(tmp_path / "sessions")
         ),
-        spend=SpendConfig(max_calls=1),
+        spend=SpendConfig(max_calls=1, enforce_limits=True),
     )
     root_adapter = SessionSpendAdapter.create(config.spend, "root-spend-session")
     await root_adapter.complete(_CountingBackend(), _request(max_tokens=1))
@@ -1054,7 +1057,7 @@ async def test_reopening_session_tightens_caps_and_preserves_deadline(tmp_path) 
     def clock() -> float:
         return now
 
-    config = SpendConfig(deadline_seconds=10.0)
+    config = SpendConfig(deadline_seconds=10.0, enforce_limits=True)
     ledger_path = tmp_path / "deadline-ledger"
     first = SessionSpendAdapter.create(
         config, "deadline-session", ledger_path=ledger_path, clock=clock
@@ -1103,7 +1106,7 @@ def test_reopening_legacy_session_migrates_omitted_default_token_caps(tmp_path) 
     )
 
     resumed = SessionSpendAdapter.create(
-        SpendConfig(), "legacy-session", ledger_path=ledger_path
+        SpendConfig(enforce_limits=True), "legacy-session", ledger_path=ledger_path
     )
 
     envelope = resumed.snapshot().envelope
@@ -1148,6 +1151,7 @@ def test_reopening_legacy_session_preserves_explicit_default_token_caps(
             max_prompt_tokens=400_000,
             max_completion_tokens=100_000,
             max_total_tokens=500_000,
+            enforce_limits=True,
         ),
         "explicit-legacy-session",
         ledger_path=ledger_path,
@@ -1163,13 +1167,17 @@ def test_reopening_legacy_session_preserves_explicit_default_token_caps(
 
 @pytest.mark.asyncio
 async def test_live_config_reload_sets_current_spend_adapter(tmp_path) -> None:
-    initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
+    initial = build_test_vibe_config(
+        spend=SpendConfig(max_calls=2, enforce_limits=True)
+    )
     adapter = SessionSpendAdapter.create(
         initial.spend, "reload-session", ledger_path=tmp_path / "reload-ledger"
     )
     agent = build_test_agent_loop(config=initial, spend_adapter=adapter)
     await adapter.complete(_CountingBackend(), _request(max_tokens=1))
-    tightened = initial.model_copy(update={"spend": SpendConfig(max_calls=1)})
+    tightened = initial.model_copy(
+        update={"spend": SpendConfig(max_calls=1, enforce_limits=True)}
+    )
 
     await agent.reload_with_initial_messages(base_config=tightened)
 
@@ -1195,7 +1203,9 @@ async def test_live_config_reload_preserves_or_tightens_absolute_deadline(
     def clock() -> float:
         return now
 
-    initial = build_test_vibe_config(spend=SpendConfig(deadline_seconds=10.0))
+    initial = build_test_vibe_config(
+        spend=SpendConfig(deadline_seconds=10.0, enforce_limits=True)
+    )
     adapter = SessionSpendAdapter.create(
         initial.spend,
         "reload-deadline",
@@ -1209,24 +1219,32 @@ async def test_live_config_reload_preserves_or_tightens_absolute_deadline(
     await agent.reload_with_initial_messages(base_config=initial)
     assert adapter.snapshot().deadline_at == 110.0
 
-    tightened = initial.model_copy(update={"spend": SpendConfig(deadline_seconds=2.0)})
+    tightened = initial.model_copy(
+        update={"spend": SpendConfig(deadline_seconds=2.0, enforce_limits=True)}
+    )
     await agent.reload_with_initial_messages(base_config=tightened)
     assert adapter.snapshot().deadline_at == 107.0
 
-    without_deadline = initial.model_copy(update={"spend": SpendConfig()})
+    without_deadline = initial.model_copy(
+        update={"spend": SpendConfig(enforce_limits=True)}
+    )
     await agent.reload_with_initial_messages(base_config=without_deadline)
     assert adapter.snapshot().deadline_at == 107.0
 
 
 @pytest.mark.asyncio
 async def test_sync_config_refresh_sets_current_spend_adapter(tmp_path) -> None:
-    initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
+    initial = build_test_vibe_config(
+        spend=SpendConfig(max_calls=2, enforce_limits=True)
+    )
     adapter = SessionSpendAdapter.create(
         initial.spend, "refresh-session", ledger_path=tmp_path / "refresh-ledger"
     )
     agent = build_test_agent_loop(config=initial, spend_adapter=adapter)
     await adapter.complete(_CountingBackend(), _request(max_tokens=1))
-    tightened = initial.model_copy(update={"spend": SpendConfig(max_calls=1)})
+    tightened = initial.model_copy(
+        update={"spend": SpendConfig(max_calls=1, enforce_limits=True)}
+    )
 
     with patch("vibe.core.agent_loop.VibeConfig.load", return_value=tightened):
         agent.refresh_config()
@@ -1241,13 +1259,17 @@ async def test_sync_config_refresh_sets_current_spend_adapter(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_failed_live_spend_set_blocks_later_dispatches(tmp_path) -> None:
-    initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
+    initial = build_test_vibe_config(
+        spend=SpendConfig(max_calls=2, enforce_limits=True)
+    )
     adapter = SessionSpendAdapter.create(
         initial.spend, "failed-reload", ledger_path=tmp_path / "failed-ledger"
     )
     child = adapter.child_agent()
     agent = build_test_agent_loop(config=initial, spend_adapter=adapter)
-    tightened = initial.model_copy(update={"spend": SpendConfig(max_calls=1)})
+    tightened = initial.model_copy(
+        update={"spend": SpendConfig(max_calls=1, enforce_limits=True)}
+    )
 
     with (
         patch.object(
@@ -1272,7 +1294,9 @@ async def test_failed_live_spend_set_blocks_later_dispatches(tmp_path) -> None:
 async def test_reset_spend_starts_fresh_ledger_without_clearing_history(
     tmp_path,
 ) -> None:
-    initial = build_test_vibe_config(spend=SpendConfig(max_calls=2))
+    initial = build_test_vibe_config(
+        spend=SpendConfig(max_calls=2, enforce_limits=True)
+    )
     adapter = SessionSpendAdapter.create(
         initial.spend, "reset-session", ledger_path=tmp_path / "reset-ledger"
     )
@@ -1560,10 +1584,10 @@ async def test_attached_team_task_children_preserve_group_and_shared_cap(
         purpose=SpendPurpose.TEAM,
     )
     attached_a = SessionSpendAdapter.attach(
-        SpendConfig(), teammate_a.export_process_context()
+        SpendConfig(enforce_limits=True), teammate_a.export_process_context()
     )
     attached_b = SessionSpendAdapter.attach(
-        SpendConfig(), teammate_b.export_process_context()
+        SpendConfig(enforce_limits=True), teammate_b.export_process_context()
     )
     task_a = attached_a.child_agent(agent_id="agent:task-a")
     task_b = attached_b.child_agent(agent_id="agent:task-b")

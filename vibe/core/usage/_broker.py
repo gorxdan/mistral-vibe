@@ -33,9 +33,13 @@ class SpendBroker:
         *,
         lock_timeout_s: float = 5.0,
         clock: Callable[[], float] = time.time,
+        enforce_limits: bool = True,
     ) -> None:
         self._ledger = SpendLedger(
-            ledger_path, lock_timeout_s=lock_timeout_s, clock=clock
+            ledger_path,
+            lock_timeout_s=lock_timeout_s,
+            clock=clock,
+            enforce_limits=enforce_limits,
         )
 
     @property

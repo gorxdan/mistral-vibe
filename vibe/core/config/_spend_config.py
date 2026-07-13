@@ -16,6 +16,14 @@ class PromptEstimatorMode(StrEnum):
 class SpendConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", allow_inf_nan=False)
 
+    enforce_limits: bool = Field(
+        default=False,
+        description=(
+            "Enforce spend limits (cost/calls/tokens/concurrency/deadline/retries) "
+            "by blocking calls before dispatch. When False (default), spend is "
+            "tracked for /spend display but limits are advisory only."
+        ),
+    )
     max_prompt_tokens: int | None = Field(default=None, ge=0)
     max_completion_tokens: int | None = Field(default=None, ge=0)
     max_total_tokens: int | None = Field(default=None, ge=0)

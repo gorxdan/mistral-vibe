@@ -88,7 +88,9 @@ def _adapter(
     tmp_path: Path, *, max_calls: int = 128, session_id: str = "aux-session"
 ) -> SessionSpendAdapter:
     return SessionSpendAdapter.create(
-        SpendConfig(max_calls=max_calls), session_id, ledger_path=tmp_path / "ledger"
+        SpendConfig(max_calls=max_calls, enforce_limits=True),
+        session_id,
+        ledger_path=tmp_path / "ledger",
     )
 
 

@@ -103,9 +103,10 @@ async def test_omitted_max_tokens_shrinks_to_affordable_scope_bound(
     request = _request()
     prompt_tokens = estimate_request_tokens(request)
     limit = _limit(kind, prompt_tokens=prompt_tokens, output_tokens=200)
-    config_values: dict[str, int | float] = {
+    config_values: dict[str, int | float | bool] = {
         "default_max_output_tokens": 1_000,
         "minimum_admitted_output_tokens": 10,
+        "enforce_limits": True,
     }
     if scope == "session":
         config_values.update(limit.model_dump(exclude_none=True))
@@ -130,7 +131,7 @@ async def test_omitted_max_tokens_shrinks_to_affordable_scope_bound(
 @pytest.mark.asyncio
 async def test_explicit_max_tokens_remains_a_strict_bound(tmp_path: Path) -> None:
     adapter = SessionSpendAdapter.create(
-        SpendConfig(max_completion_tokens=200),
+        SpendConfig(max_completion_tokens=200, enforce_limits=True),
         "explicit-bound",
         ledger_path=tmp_path / "explicit",
     )
@@ -153,6 +154,7 @@ async def test_minimum_unaffordable_output_is_rejected(tmp_path: Path) -> None:
             max_cost_usd=(prompt_tokens + 99 * 2) / 1_000_000,
             default_max_output_tokens=1_000,
             minimum_admitted_output_tokens=100,
+            enforce_limits=True,
         ),
         "minimum-rejection",
         ledger_path=tmp_path / "minimum",
@@ -174,11 +176,12 @@ async def test_concurrent_reservations_share_the_atomic_affordable_remainder(
 ) -> None:
     request = _request()
     prompt_tokens = estimate_request_tokens(request)
-    config_values: dict[str, int | float] = {
+    config_values: dict[str, int | float | bool] = {
         "default_max_output_tokens": 250,
         "minimum_admitted_output_tokens": 50,
         "max_calls": 2,
         "max_concurrent_calls": 2,
+        "enforce_limits": True,
     }
     if kind == "completion":
         config_values["max_completion_tokens"] = 300
