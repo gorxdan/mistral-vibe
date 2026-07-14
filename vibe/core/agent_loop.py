@@ -51,6 +51,7 @@ from vibe.core.agent_loop_memory import (
 from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
 from vibe.core.agent_loop_orchestration import AgentLoopOrchestrationMixin
 from vibe.core.agent_loop_safety_judge import AgentLoopSafetyJudgeMixin
+from vibe.core.agent_loop_tool_scheduler import EventSink, stream_tool_call_waves
 from vibe.core.agent_loop_verification import AgentLoopVerificationMixin
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
@@ -1846,103 +1847,185 @@ class AgentLoop(
     async def _run_tools_concurrently(
         self, tool_calls: list[ResolvedToolCall]
     ) -> AsyncGenerator[ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent]:
-        strategy_calls = [tc for tc in tool_calls if tc.tool_name == "work_strategy"]
-        for strategy_call in strategy_calls:
-            async for event in self._process_one_tool_call(strategy_call):
-                yield event
-        if strategy_calls:
-            tool_calls = [tc for tc in tool_calls if tc.tool_name != "work_strategy"]
-        if not tool_calls:
-            return
+        all_tool_calls = tuple(tool_calls)
+        terminal_calls: set[int] = set()
 
-        queue: asyncio.Queue[
-            ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent | None
-        ] = asyncio.Queue()
-
-        def _concurrent_safe(tc: ResolvedToolCall) -> bool:
-            # Per-call, not just the static read_only flag: a `task` spawning a
-            # read-only in-process subagent is safe to fan out, while one
-            # spawning a write-capable subagent must serialize.
-            return tc.tool_class.call_is_read_only(
-                tc.validated_args, agent_manager=self.agent_manager
-            )
-
-        readers = [tc for tc in tool_calls if _concurrent_safe(tc)]
-        writers = [tc for tc in tool_calls if not _concurrent_safe(tc)]
-
-        async def _run_writers_sequentially() -> None:
-            for tc in writers:
-                await self._execute_tool_to_queue(tc, queue)
-
-        tasks = [
-            asyncio.create_task(self._execute_tool_to_queue(tc, queue))
-            for tc in readers
-        ]
-        if writers:
-            tasks.append(asyncio.create_task(_run_writers_sequentially()))
-
-        async def _signal_when_all_done() -> None:
-            try:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            finally:
-                await queue.put(None)
-
-        monitor = asyncio.create_task(_signal_when_all_done())
+        def record_terminal(
+            tool_call: ResolvedToolCall,
+            event: ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent,
+        ) -> None:
+            if isinstance(event, ToolResultEvent):
+                terminal_calls.add(id(tool_call))
 
         try:
-            while True:
-                event = await queue.get()
-                if event is None:
-                    break
-                yield event
-        except GeneratorExit:
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            raise
+            strategy_calls = [
+                tc for tc in tool_calls if tc.tool_name == "work_strategy"
+            ]
+            for strategy_call in strategy_calls:
+                scheduled_read_only = strategy_call.tool_class.call_is_read_only(
+                    strategy_call.validated_args, agent_manager=self.agent_manager
+                )
+                stream = self._process_tool_call_with_failure_boundary(
+                    strategy_call, scheduled_read_only
+                )
+                try:
+                    async for event in stream:
+                        record_terminal(strategy_call, event)
+                        yield event
+                finally:
+                    await stream.aclose()
+            if strategy_calls:
+                tool_calls = [
+                    tc for tc in tool_calls if tc.tool_name != "work_strategy"
+                ]
+            if not tool_calls:
+                return
+
+            def _concurrent_safe(tc: ResolvedToolCall) -> bool:
+                # Dynamic tools such as `task` classify each invocation independently.
+                return tc.tool_class.call_is_read_only(
+                    tc.validated_args, agent_manager=self.agent_manager
+                )
+
+            async def _execute(
+                tc: ResolvedToolCall,
+                scheduled_read_only: bool,
+                queue: EventSink[
+                    ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent
+                ],
+            ) -> None:
+                await self._execute_tool_to_queue(
+                    tc, scheduled_read_only, queue, terminal_calls
+                )
+
+            stream = stream_tool_call_waves(
+                tool_calls, concurrent_safe=_concurrent_safe, execute=_execute
+            )
+            try:
+                async for event in stream:
+                    yield event
+            finally:
+                await stream.aclose()
         except asyncio.CancelledError:
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
             raise
-        finally:
-            if not monitor.done():
-                monitor.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await monitor
+        except Exception as exc:
+            for pending_call in all_tool_calls:
+                if id(pending_call) in terminal_calls:
+                    continue
+                self.stats.tool_calls_failed += 1
+                error_msg = (
+                    f"<{TOOL_ERROR_TAG}>{pending_call.tool_name} did not complete "
+                    "because the tool batch failed unexpectedly: "
+                    f"{exc}</{TOOL_ERROR_TAG}>"
+                )
+                yield self._tool_failure_event(pending_call, error_msg)
+            raise
 
     async def _execute_tool_to_queue(
         self,
         tc: ResolvedToolCall,
-        queue: asyncio.Queue[
-            ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent | None
-        ],
+        scheduled_read_only: bool,
+        queue: EventSink[ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent],
+        terminal_calls: set[int],
     ) -> None:
+        async def emit_events() -> None:
+            stream = self._process_tool_call_with_failure_boundary(
+                tc, scheduled_read_only
+            )
+            try:
+                async for event in stream:
+                    if isinstance(event, ToolResultEvent):
+                        terminal_calls.add(id(tc))
+                    await queue.put(event)
+            finally:
+                await stream.aclose()
+
         # Cap concurrent subagent fan-out so a batch of independent task calls
         # doesn't overwhelm the backend; other tools run uncapped.
         if tc.tool_class.is_subagent_spawner:
             async with self._subagent_semaphore:
-                async for event in self._process_one_tool_call(tc):
-                    await queue.put(event)
+                await emit_events()
         else:
-            async for event in self._process_one_tool_call(tc):
-                await queue.put(event)
+            await emit_events()
+
+    async def _process_tool_call_with_failure_boundary(
+        self, tool_call: ResolvedToolCall, scheduled_read_only: bool
+    ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent | HookEvent]:
+        terminal_emitted = False
+        stream = self._process_one_tool_call(tool_call, scheduled_read_only)
+        try:
+            try:
+                async for event in stream:
+                    if isinstance(event, ToolResultEvent):
+                        terminal_emitted = True
+                    yield event
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not terminal_emitted:
+                    self.stats.tool_calls_failed += 1
+                    error_msg = (
+                        f"<{TOOL_ERROR_TAG}>{tool_call.tool_name} executor failed "
+                        f"unexpectedly: {exc}</{TOOL_ERROR_TAG}>"
+                    )
+                    yield self._tool_failure_event(tool_call, error_msg)
+                raise
+        finally:
+            await stream.aclose()
 
     async def _process_one_tool_call(
-        self, tool_call: ResolvedToolCall
+        self, tool_call: ResolvedToolCall, scheduled_read_only: bool
     ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent | HookEvent]:
         async with tool_span(
             tool_name=tool_call.tool_name,
             call_id=tool_call.call_id,
             arguments=tool_call.validated_args.model_dump_json(),
         ) as span:
-            async for event in self._execute_tool_call(span, tool_call):
-                yield event
+            stream = self._execute_tool_call(
+                span, tool_call, scheduled_read_only=scheduled_read_only
+            )
+            try:
+                async for event in stream:
+                    yield event
+            finally:
+                await stream.aclose()
 
     async def _execute_tool_call(
-        self, span: trace.Span, tool_call: ResolvedToolCall
+        self,
+        span: trace.Span,
+        tool_call: ResolvedToolCall,
+        *,
+        scheduled_read_only: bool | None = None,
     ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent | HookEvent]:
+        if scheduled_read_only is None:
+            scheduled_read_only = tool_call.tool_class.call_is_read_only(
+                tool_call.validated_args, agent_manager=self.agent_manager
+            )
+        scheduled_args = tool_call.validated_args
+
+        def reject_mutating_rewrite(
+            candidate: ResolvedToolCall,
+        ) -> ToolResultEvent | None:
+            if not scheduled_read_only or candidate.tool_class.call_is_read_only(
+                candidate.validated_args, agent_manager=self.agent_manager
+            ):
+                return None
+            self.stats.tool_calls_rejected += 1
+            error_msg = (
+                f"<{TOOL_ERROR_TAG}>Arguments for '{candidate.tool_name}' changed "
+                "from read-only to mutating after scheduling. Retry the mutation "
+                f"as a separate tool call.</{TOOL_ERROR_TAG}>"
+            )
+            self._handle_tool_response(
+                candidate, error_msg, "failure", span=span, observe_orchestration=False
+            )
+            return ToolResultEvent(
+                tool_name=candidate.tool_name,
+                tool_class=candidate.tool_class,
+                error=error_msg,
+                tool_call_id=candidate.call_id,
+            )
+
         try:
             tool_instance = self.tool_manager.get(tool_call.tool_name)
         except Exception as exc:
@@ -1980,10 +2063,17 @@ class AgentLoop(
         tool_call = resolution.tool_call
         tool_input = resolution.tool_input
 
-        if policy_denial := self._orchestration_before_tool(tool_call):
+        denial_event = (
+            reject_mutating_rewrite(tool_call)
+            if tool_call.validated_args != scheduled_args
+            else None
+        )
+        if denial_event is None and (
+            policy_denial := self._orchestration_before_tool(tool_call)
+        ):
             self.stats.tool_calls_rejected += 1
             error_msg = f"<{TOOL_ERROR_TAG}>{policy_denial}</{TOOL_ERROR_TAG}>"
-            yield ToolResultEvent(
+            denial_event = ToolResultEvent(
                 tool_name=tool_call.tool_name,
                 tool_class=tool_call.tool_class,
                 error=error_msg,
@@ -1992,6 +2082,8 @@ class AgentLoop(
             self._handle_tool_response(
                 tool_call, error_msg, "failure", span=span, observe_orchestration=False
             )
+        if denial_event is not None:
+            yield denial_event
             return
 
         decision: ToolDecision | None = None
@@ -2003,18 +2095,25 @@ class AgentLoop(
 
             # Apply a user MODIFY (re-validate edited args); a validation
             # failure comes back as a feedback SKIP decision handled below.
+            pre_modification_args = tool_call.validated_args
             tool_call, tool_input, decision = self._resolve_modification(
                 tool_call, tool_input, decision
             )
 
+            denial_event = (
+                reject_mutating_rewrite(tool_call)
+                if tool_call.validated_args != pre_modification_args
+                else None
+            )
             if (
-                decision.modified_args is not None
+                denial_event is None
+                and decision.modified_args is not None
                 and decision.verdict is not ToolExecutionResponse.SKIP
                 and (policy_denial := self._orchestration_before_tool(tool_call))
             ):
                 self.stats.tool_calls_rejected += 1
                 error_msg = f"<{TOOL_ERROR_TAG}>{policy_denial}</{TOOL_ERROR_TAG}>"
-                yield ToolResultEvent(
+                denial_event = ToolResultEvent(
                     tool_name=tool_call.tool_name,
                     tool_class=tool_call.tool_class,
                     error=error_msg,
@@ -2027,6 +2126,8 @@ class AgentLoop(
                     span=span,
                     observe_orchestration=False,
                 )
+            if denial_event is not None:
+                yield denial_event
                 return
 
             if self._task_contract is not None:
@@ -2128,9 +2229,6 @@ class AgentLoop(
             )
         )
 
-        # Snapshot read (rewind/undo) does blocking file I/O; run it off the
-        # event loop so a write tool on a large file doesn't stall concurrent
-        # readers in the same turn.
         snapshot = await asyncio.to_thread(
             tool_instance.get_file_snapshot, tool_call.validated_args
         )
@@ -2304,8 +2402,8 @@ class AgentLoop(
                 )
 
         # Lock released: the safety-judge LLM call and human approval are slow;
-        # holding the permission lock across them would serialize every parallel
-        # ASK-gated tool. The rule-store reads above happened under the lock.
+        # holding the permission lock across them would serialize every concurrent
+        # read-wave ASK-gated tool. The rule-store reads above happened under the lock.
         judged, judge_deferral = await self._judge_tool_safety(
             tool_name, args, uncovered
         )

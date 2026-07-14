@@ -150,15 +150,13 @@ class _ToolCallFakeBackend(_InfiniteFakeBackend):
 class _FanOutFakeBackend(_InfiniteFakeBackend):
     """N tool calls in ONE assistant message per turn, then a final reply.
 
-    Models the parallel tool fan-out the agent loop dispatches via
+    Models the ordered tool waves the agent loop dispatches via
     ``_run_tools_concurrently``: each turn emits ``n`` tool calls in a single
     assistant message, and once the tool results come back returns the final
-    text reply. The batch mixes read-only and writer tools so BOTH code paths
-    in ``_run_tools_concurrently`` are exercised: ``bash`` has no ``read_only``
-    override (base default ``False``) so each bash echo is a *writer* run in the
-    sequential writer chain, while ``grep`` is ``read_only`` so it runs in the
-    concurrent reader pool. The first call of every batch is a ``grep`` to
-    guarantee at least one reader; the rest are bash echoes.
+    text reply. When fanout permits, the batch starts with two ``grep`` calls in
+    one concurrent read wave. The remaining ``bash`` calls use the conservative
+    non-read-only default and therefore run as singleton mutation barriers. This
+    exercises both scheduling paths without overlapping readers and mutations.
 
     Requires bypass_tool_permissions so execution does not block on approval.
     """
@@ -169,9 +167,8 @@ class _FanOutFakeBackend(_InfiniteFakeBackend):
         self._fan_out = max(1, fan_out)
 
     def _one_call(self, idx: int) -> ToolCall:
-        # idx 0 -> read-only grep (concurrent reader pool); rest -> bash echo
-        # writers (sequential writer chain). Unique id per call in the batch.
-        if idx == 0:
+        reader_count = 2 if self._fan_out >= 3 else 1
+        if idx < reader_count:
             return ToolCall(
                 id=f"tc-{idx}",
                 function=FunctionCall(

@@ -603,7 +603,8 @@ callers or tests rely on the original name.
   failover, and resume remain equivalent.
 - Spend reservations and reconciliations remain exact.
 - No blocking I/O moves onto the event-loop thread.
-- Large response and reader/writer fanout remain within the performance envelope.
+- Large response and ordered read-wave/mutation-barrier fanout remain within the
+  performance envelope.
 
 #### Exit criteria per seam
 
@@ -1095,7 +1096,8 @@ uv run pytest -n0 \
 - Actions:
   1. Approve and deny tool calls.
   2. Run failed, timed-out, and successful commands.
-  3. Execute parallel read-only tools and serialized writes.
+  3. Execute adjacent read-only calls concurrently, with serialized mutation
+     barriers preserving dependency order between read waves.
   4. Trigger result capping and compaction.
   5. Resume the complete history.
 - Expected outcomes:
@@ -1775,7 +1777,8 @@ Wall time alone is insufficient. Preserve structural performance indicators:
 - Refreshes per chunk/frame.
 - Writes and durable syncs per session round.
 - Canonicalization/scanning calls per configured trailing window.
-- Concurrent readers and serialized writers.
+- Concurrent execution within adjacent read-only waves, serialized singleton
+  mutations, and no read/write overlap across a mutation barrier.
 - Imported module sets.
 - Event-loop blocker count and total blocked time.
 

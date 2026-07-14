@@ -225,11 +225,8 @@ class BaseTool[
 
     prompt_path: ClassVar[Path] | None = None
 
-    # Whether the tool only reads state (no side effects on the filesystem,
-    # processes, or external systems). Read-only tools run concurrently within a
-    # turn; non-read-only tools run sequentially to avoid races (e.g. two edits
-    # to the same file). Default False (conservative) so unknown/third-party
-    # tools serialize.
+    # Read-only calls may share an ordered concurrent wave. False creates a
+    # conservative mutation barrier for unknown and third-party tools.
     read_only: ClassVar[bool] = False
 
     # Whether this tool spawns subagents (the task tool). Used to cap how many

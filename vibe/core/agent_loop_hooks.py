@@ -405,9 +405,9 @@ class AgentLoopHooksMixin:
     ) -> tuple[ResolvedToolCall, dict[str, Any]] | HookToolDenial:
         """Re-validate a rewrite against the tool's args model.
 
-        Rebuilds ``ResolvedToolCall``, patches the assistant message so the
-        LLM sees the rewritten args next turn.  Returns a synthesized
-        denial on validation failure.
+        Rebuilds ``ResolvedToolCall`` and patches the assistant message so the
+        LLM sees the validated rewrite next turn. Returns a synthesized denial
+        on validation failure.
         """
         tool_class = tool_call.tool_class
         args_model, _ = tool_class._get_tool_args_results()
@@ -438,7 +438,7 @@ class AgentLoopHooksMixin:
         self, call_id: str, new_args: dict[str, Any]
     ) -> None:
         """Mutate the assistant message's tool_calls so the transcript reflects
-        what the tool actually ran with (not the model's original args).
+        the validated rewrite evaluated by the host, not the original args.
         """
         if not call_id:
             return

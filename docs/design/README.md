@@ -8,9 +8,9 @@ pass over the real codebase and then adversarially verified against it
 *Adversarial verification* section.
 
 These are the gaps **not** already closed in the resilience/safety work landed
-this cycle (read-parallel/write-serial tools, tool-result budget, context-overflow
-recovery, model failover, Retry-After, the LLM safety judge, `extra_body` thinking
-control, `cached_tokens` visibility).
+this cycle (ordered concurrent read waves with serialized mutation barriers,
+tool-result budget, context-overflow recovery, model failover, Retry-After, the
+LLM safety judge, `extra_body` thinking control, `cached_tokens` visibility).
 
 ## Program roadmap
 

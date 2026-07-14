@@ -835,13 +835,16 @@ non-conforming stdout) emits a UI warning and lets the gated action proceed
 
 - Hooks of the same type fire sequentially in load order (project file first,
   then user file; declaration order within each file).
-- Tool calls within a single LLM turn run **concurrently**; each call's hook
-  chain runs serially but the chains run in parallel across calls. Hooks
-  that touch shared state (filesystem, env) must coordinate themselves.
-- `before_tool` rewrites take effect everywhere downstream: the user
-  permission prompt sees the rewritten arguments, the tool runs with them,
-  and the assistant message is patched so subsequent LLM turns reflect what
-  actually ran.
+- Tool calls within a single LLM turn run in ordered waves. Consecutive
+  read-only calls run concurrently. Each non-read-only call is a singleton
+  barrier: prior reads finish before it starts, and later calls wait for it to
+  finish. A call's hook chain remains serial; hook chains overlap only within a
+  read-only wave. Hooks that touch shared state must coordinate themselves.
+- A hook or approval edit that changes a scheduled read-only call into a
+  mutation is rejected; issue that mutation as a separate tool call.
+- Classification-preserving `before_tool` rewrites take effect everywhere
+  downstream: the permission prompt sees the rewritten arguments, the tool
+  runs with them, and the assistant message records the accepted rewrite.
 
 ### Auxiliary model budget
 

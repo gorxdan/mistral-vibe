@@ -12,6 +12,13 @@ The tool system is how the agent interacts with the world — reading files, run
 - Declares a `ToolPermission` (`ALWAYS` / `ASK` / `NEVER`)
 - Raises `ToolError` for failures, `ToolPermissionError` for authz failures
 
+`read_only` supplies the default scheduling classification, while
+`call_is_read_only(args)` may refine it per invocation. Maximal adjacent
+read-only sequences run concurrently. A false classification, including the
+conservative default for unknown tools, creates an ordered singleton barrier.
+If a hook or approval edit changes a scheduled read-only call into a mutation,
+the call is rejected and must be retried as a separate mutation.
+
 ### InvokeContext
 
 `InvokeContext` (dataclass, line 49) is the rich context passed to every tool invocation:

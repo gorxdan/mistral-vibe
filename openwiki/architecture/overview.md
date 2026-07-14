@@ -108,6 +108,20 @@ Pure constants (no class coupling):
 - `tool_result_hard_cap(threshold_tokens)` — scales cap to model's context budget
 - `MAX_CONCURRENT_SUBAGENTS = 2`
 
+## Tool Call Scheduling
+
+**Source**: `vibe/core/agent_loop_tool_scheduler.py`
+
+After the host-only `work_strategy` pre-batch barrier, tool calls are partitioned
+in model-emitted order. Consecutive read-only calls form a concurrent wave. Each
+non-read-only call is a singleton mutation barrier: prior reads finish before it
+starts, and later calls wait for it to finish. Unknown and third-party tools use
+the conservative non-read-only default. All call events are announced before
+execution. Events and results inside a read wave are then forwarded as produced;
+the next wave waits until every invocation in the current wave fully finalizes.
+An unexpected executor failure drains that wave, emits terminal failures for
+unstarted announced calls, and aborts the remaining batch.
+
 ## Data Flow: A Single Turn
 
 ```
@@ -128,6 +142,7 @@ AgentLoop (agent_loop.py)
     ├── Tool Execution Flow:
     │   ├── Canonical managed catalog / normal discovery → ToolManager
     │   ├── Parse LLM response → ParsedToolCall → ResolvedToolCall
+    │   ├── Ordered scheduler → concurrent read waves + mutation barriers
     │   ├── Safety Judge — pre-screen ASK-gated tools
     │   ├── Hooks — before_tool / after_tool lifecycle
     │   ├── Permission Store — approval gate

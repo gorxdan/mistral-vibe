@@ -33,10 +33,6 @@ def task_tool() -> Task:
 
 
 class TestTaskConcurrencyGating:
-    """call_is_read_only decides whether a task call fans out concurrently
-    (read-only in-process subagent) or serializes with the writers.
-    """
-
     @pytest.fixture
     def manager(self) -> AgentManager:
         config = build_test_vibe_config(

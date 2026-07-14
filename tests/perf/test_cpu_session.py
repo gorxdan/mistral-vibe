@@ -23,9 +23,10 @@ Knobs (env vars):
     VIBE_CPU_WARMUP      warmup turns before profiling (default 3)
     VIBE_CPU_REPLY_CHARS assistant reply size in chars (default 800)
     VIBE_CPU_TOOL_CALLS  if set, drive one bash-echo tool round-trip per turn
-    VIBE_CPU_FANOUT      int (default 0=off); if >0, drive N parallel tool calls
-                         per turn (one grep reader + N-1 bash-echo writers) to
-                         profile the agent-loop fan-out dispatch path
+    VIBE_CPU_FANOUT      int (default 0=off); if >0, drive N batched tool calls
+                         per turn. N>=3 starts with a two-grep read wave followed
+                         by bash mutation barriers; smaller batches use one grep,
+                         with N=2 adding one bash barrier
                          (_run_tools_concurrently). Takes precedence over
                          VIBE_CPU_TOOL_CALLS.
     VIBE_CPU_TOOL        "pyinstrument" (default) or "cprofile"
