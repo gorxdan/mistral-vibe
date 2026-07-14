@@ -9,6 +9,8 @@ from vibe.core.verification_contract import (
     is_trivial_verification_note,
     is_verification_todo,
     parse_verification_report,
+    report_evidence_was_observed,
+    verification_observation_hashes,
 )
 
 
@@ -39,6 +41,140 @@ def test_parse_pass_report_with_command_evidence() -> None:
     assert report.evidence[0].check == "focused tests"
     assert report.evidence[0].command.startswith("uv run pytest")
     assert report.evidence[0].output == "5 passed in 0.12s"
+
+
+def test_report_evidence_requires_host_observed_output() -> None:
+    report = parse_verification_report(_report(output="5 passed in 0.12s"))
+    observed = verification_observation_hashes(
+        "uv run pytest tests/tools/test_todo.py", "5 passed in 0.12s\n", ""
+    )
+
+    assert report_evidence_was_observed(report, observed)
+    assert not report_evidence_was_observed(
+        parse_verification_report(_report(output="151 passed in 0.12s")), observed
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "uv run pytest -q && echo passed",
+        "uv run pytest -q | tail -1",
+        "uv run pytest -q > result.txt",
+        "uv run pytest -q\necho passed",
+    ],
+)
+def test_compound_shell_commands_are_not_verification_evidence(command: str) -> None:
+    assert not verification_observation_hashes(command, "5 passed\n", "")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo '5 passed'",
+        "printf '5 passed\\n'",
+        "uv run python -c 'print(\"5 passed\")'",
+        "sh ./candidate_owned_reporter.sh",
+    ],
+)
+def test_arbitrary_output_producers_are_not_verification_evidence(command: str) -> None:
+    assert not verification_observation_hashes(command, "5 passed\n", "")
+
+
+def test_dotnet_test_requires_a_nonzero_observed_test_count() -> None:
+    command = "dotnet test src/Fcc.Core/Fcc.Core.csproj"
+
+    assert not verification_observation_hashes(
+        command, "Build succeeded.\n    0 Warning(s)\n    0 Error(s)\n", ""
+    )
+    assert not verification_observation_hashes(
+        command, "Passed! - Failed: 0, Passed: 0, Skipped: 0, Total: 0\n", ""
+    )
+    assert verification_observation_hashes(
+        command, "Passed! - Failed: 0, Passed: 151, Skipped: 0, Total: 151\n", ""
+    )
+    assert not verification_observation_hashes(
+        command,
+        (
+            "candidate says Total: 151\n"
+            "Passed! - Failed: 0, Passed: 0, Skipped: 0, Total: 0\n"
+        ),
+        "",
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest --version",
+        "uv run --help pytest",
+        "uv run pytest --collect-only",
+        "python -m pytest --fixtures",
+        "python3 -m unittest --help",
+        "dotnet test --list-tests",
+        "go test -list TestFeature ./...",
+        "go test -run '^$' ./...",
+        "cargo test --no-run",
+        "cargo test -- --list",
+        "npm run test -- --help",
+        "tox --showconfig",
+        "nox --list",
+        "ruff check --exit-zero .",
+        "make test -n",
+        "npm --help test",
+    ],
+)
+def test_nonexecuting_verification_modes_are_not_evidence(command: str) -> None:
+    assert not verification_observation_hashes(command, "command succeeded\n", "")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "dotnet build src/Fcc.Core/Fcc.Core.csproj",
+        "dotnet restore src/Fcc.Core/Fcc.Core.csproj",
+        "pnpm run lint",
+        "yarn run typecheck",
+        "cargo build",
+        "cargo check",
+        "go build ./...",
+        "python3.12 -m pyright",
+        "python3.12 -m ruff check .",
+    ],
+)
+def test_direct_build_and_check_commands_are_eligible(command: str) -> None:
+    assert verification_observation_hashes(command, "command succeeded\n", "")
+
+
+@pytest.mark.parametrize(
+    ("command", "output"),
+    [
+        ("pytest", "no tests ran in 0.01s"),
+        ("python -m unittest", "Ran 0 tests in 0.000s\n\nOK"),
+        ("cargo test", "test result: ok. 0 passed; 0 failed; 0 ignored"),
+        ("go test ./...", "ok  example.test/pkg  0.002s"),
+        ("npm test", "checks passed"),
+        ("make test", "nothing to do"),
+        ("tox", "congratulations :)"),
+    ],
+)
+def test_test_runners_require_positive_execution_evidence(
+    command: str, output: str
+) -> None:
+    assert not verification_observation_hashes(command, output, "")
+
+
+@pytest.mark.parametrize(
+    ("command", "output"),
+    [
+        ("pytest", "5 passed in 0.12s"),
+        ("python -m unittest", "Ran 3 tests in 0.002s\n\nOK"),
+        ("cargo test", "test result: ok. 2 passed; 0 failed; 0 ignored"),
+        ("go test -v ./...", "--- PASS: TestFeature (0.00s)\nPASS"),
+    ],
+)
+def test_test_runners_accept_positive_builtin_counts(command: str, output: str) -> None:
+    assert verification_observation_hashes(command, output, "")
 
 
 def test_parse_accepts_fenced_multiline_command() -> None:

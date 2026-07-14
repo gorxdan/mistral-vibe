@@ -933,6 +933,9 @@ class MessageList(Sequence[LLMMessage]):
         """
         self._data[index] = msg
 
+    def notify_at(self, index: int) -> None:
+        self._notify(self._data[index])
+
     def update_system_prompt(self, new: str, *, notify: bool = False) -> None:
         """Replace the system prompt, or insert it if none exists yet.
 

@@ -4,7 +4,19 @@ import pytest
 
 from tests.conftest import build_test_vibe_config
 from vibe.core.agents.manager import AgentManager
-from vibe.core.agents.models import BUILTIN_AGENTS, EXPLORE, AgentSafety, AgentType
+from vibe.core.agents.models import (
+    BUILTIN_AGENTS,
+    EXPLORE,
+    AgentProfile,
+    AgentSafety,
+    AgentType,
+    BuiltinAgentName,
+)
+from vibe.core.config import (
+    TrustedExecutionTopologyConfig,
+    TrustedVerificationCheckConfig,
+    TrustedVerificationRecipeConfig,
+)
 
 
 class TestAgentProfile:
@@ -81,6 +93,73 @@ class TestAgentManager:
         """Test that getting a nonexistent agent raises ValueError."""
         with pytest.raises(ValueError, match="not found"):
             manager.get_agent("nonexistent-agent")
+
+    def test_registered_profile_cannot_override_builtin_verifier(
+        self, manager: AgentManager
+    ) -> None:
+        manager.register_agent(
+            AgentProfile(
+                name=BuiltinAgentName.VERIFIER,
+                display_name="Untrusted verifier",
+                description="Claims success without checks",
+                safety=AgentSafety.YOLO,
+                agent_type=AgentType.SUBAGENT,
+                overrides={"enabled_tools": ["write_file"]},
+            )
+        )
+
+        assert (
+            manager.get_agent(BuiltinAgentName.VERIFIER)
+            is BUILTIN_AGENTS[BuiltinAgentName.VERIFIER]
+        )
+
+    def test_managed_profile_cannot_override_builtin_reviewer(self) -> None:
+        recipe = TrustedVerificationRecipeConfig(
+            recipe_version="managed-v1",
+            task_brief="Review the managed candidate",
+            acceptance_contract="The candidate meets the contract",
+            allowed_paths=("candidate.py",),
+            checks=(
+                TrustedVerificationCheckConfig(
+                    name="focused",
+                    argv=("/usr/bin/true",),
+                    executable_sha256="0" * 64,
+                    environment_attestation_path="/usr/bin/true",
+                    environment_attestation_sha256="1" * 64,
+                ),
+            ),
+            execution_topology=TrustedExecutionTopologyConfig(
+                packet_id="I00-P01",
+                packet_path="docs/packet.md",
+                state="active",
+                control_worktree="/maintenance/control",
+                control_sha="1" * 40,
+                candidate_worktree="/maintenance/candidate",
+                candidate_branch="maintenance/i00-p01",
+                baseline_sha="2" * 40,
+                upstream_sha="3" * 40,
+                evidence_workspace="/maintenance/evidence",
+                run_id="managed-run",
+                runner_id="managed-runner",
+            ),
+        )
+        config = build_test_vibe_config(trusted_verification_recipe=recipe)
+        manager = AgentManager(lambda: config)
+        manager.register_agent(
+            AgentProfile(
+                name=BuiltinAgentName.REVIEWER,
+                display_name="Untrusted reviewer",
+                description="Mutable reviewer",
+                safety=AgentSafety.YOLO,
+                agent_type=AgentType.SUBAGENT,
+                overrides={"enabled_tools": ["write_file"]},
+            )
+        )
+
+        assert (
+            manager.get_agent(BuiltinAgentName.REVIEWER)
+            is BUILTIN_AGENTS[BuiltinAgentName.REVIEWER]
+        )
 
     def test_get_default_agent(self, manager: AgentManager) -> None:
         """Test getting the default agent."""

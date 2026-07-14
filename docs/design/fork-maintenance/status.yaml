@@ -99,11 +99,13 @@ packets:
       workspace: null
       run_id: null
       runner_id: null
+      scenario_contracts: []
     required_scenarios:
       - IT-13
     readiness_blockers:
       - packet execution identity is incomplete
       - roles and isolated worktree are unassigned
+      - IT-13 scenario semantics are not frozen in packet/status contracts
 
   - id: I00-P02
     title: Baseline identity and fork inventory
@@ -127,12 +129,14 @@ packets:
       workspace: null
       run_id: null
       runner_id: null
+      scenario_contracts: []
     required_scenarios:
       - IT-12
     readiness_blockers:
       - I00-P01 is not complete
       - packet execution identity is incomplete
       - roles and isolated worktree are unassigned
+      - IT-12 scenario semantics are not frozen in packet/status contracts
 
   - id: I00-P03
     title: Programmatic CLI subprocess characterization
@@ -157,6 +161,7 @@ packets:
       workspace: null
       run_id: null
       runner_id: null
+      scenario_contracts: []
     required_scenarios:
       - IT-01
     readiness_blockers:
@@ -164,6 +169,7 @@ packets:
       - I00-P04 is not authored or complete
       - packet execution identity is incomplete
       - roles and isolated worktree are unassigned
+      - IT-01 scenario semantics are not frozen in packet/status contracts
 
 required_future_packets:
   - id: I00-P04

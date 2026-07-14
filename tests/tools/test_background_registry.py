@@ -16,6 +16,7 @@ from vibe.core.tools._background_delivery import (
     BACKGROUND_BATCH_PREVIEW_CHARS,
     compact_background_batch,
     escape_background_body,
+    format_task_outcome_record,
 )
 from vibe.core.tools.background import BackgroundRegistry, TaskCategory, _team_status
 from vibe.core.types import InjectedMessageKind
@@ -44,6 +45,30 @@ def test_async_delivery_requires_a_wake_callback() -> None:
     registry.attach_completion_callback(wake)
 
     assert registry.supports_async_agent_delivery is True
+
+
+def test_task_outcome_record_preserves_candidate_delivery_authority() -> None:
+    record = format_task_outcome_record(
+        "asub-4",
+        {
+            "status": "retryable",
+            "summary": "Candidate requires integration",
+            "candidate_delivery": {
+                "status": "preserved",
+                "base_sha": "a" * 40,
+                "candidate_sha": "b" * 40,
+                "parent_sha_before": "c" * 40,
+                "parent_sha_after": "c" * 40,
+                "branch": "vibe/iso/editor-4",
+                "worktree_path": "/tmp/reclaimed-editor-4",
+            },
+        },
+    )
+
+    payload = orjson.loads(record.split(":", 1)[1])
+    assert payload["candidate_delivery"]["status"] == "preserved"
+    assert payload["candidate_delivery"]["candidate_sha"] == "b" * 40
+    assert payload["candidate_delivery"]["branch"] == "vibe/iso/editor-4"
 
 
 @dataclass
@@ -449,6 +474,24 @@ def _no_real_signals(monkeypatch):
     return calls
 
 
+def test_signal_proc_group_falls_back_when_group_is_not_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import signal
+
+    from vibe.core.tools.background import _signal_proc_group
+
+    proc = _FakeProc(pid=12345)
+    monkeypatch.setattr(
+        "vibe.core.tools.background.signal_owned_process_group",
+        lambda _pid, _sig: False,
+    )
+
+    _signal_proc_group(cast("asyncio.subprocess.Process", proc), signal.SIGTERM)
+
+    assert proc.returncode == -signal.SIGTERM
+
+
 @pytest.mark.asyncio
 async def test_register_process_returns_proc_id_and_lists_running():
     reg = BackgroundRegistry()
@@ -509,6 +552,7 @@ async def test_stop_process_terminates_and_marks_stopped(_no_real_signals):
     assert entry.status == "stopped"
     # SIGTERM sent to the process group (signal 15).
     assert (42, 15) in _no_real_signals
+    assert (42, 9) in _no_real_signals
 
 
 @pytest.mark.asyncio

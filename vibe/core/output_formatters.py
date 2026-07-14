@@ -13,7 +13,7 @@ from vibe.core.teleport.types import (
     TeleportPushRequiredEvent,
     TeleportStartingWorkflowEvent,
 )
-from vibe.core.types import AssistantEvent, BaseEvent, LLMMessage, OutputFormat
+from vibe.core.types import AssistantEvent, BaseEvent, LLMMessage, OutputFormat, Role
 
 __all__ = ["OutputFormatter", "create_formatter"]
 
@@ -49,7 +49,14 @@ class JsonOutputFormatter(OutputFormatter):
         self._messages.append(message)
 
     def on_event(self, event: BaseEvent) -> None:
-        pass
+        if isinstance(event, AssistantEvent) and event.stopped_by_middleware:
+            self.on_message_added(
+                LLMMessage(
+                    role=Role.ASSISTANT,
+                    content=event.content,
+                    message_id=event.message_id,
+                )
+            )
 
     def finalize(self) -> str | None:
         messages_data = [msg.model_dump(mode="json") for msg in self._messages]
@@ -68,7 +75,14 @@ class StreamingJsonOutputFormatter(OutputFormatter):
         self.stream.flush()
 
     def on_event(self, event: BaseEvent) -> None:
-        pass
+        if isinstance(event, AssistantEvent) and event.stopped_by_middleware:
+            self.on_message_added(
+                LLMMessage(
+                    role=Role.ASSISTANT,
+                    content=event.content,
+                    message_id=event.message_id,
+                )
+            )
 
     def finalize(self) -> str | None:
         return None

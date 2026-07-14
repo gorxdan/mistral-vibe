@@ -7,8 +7,8 @@ Before claiming non-trivial work complete, freeze all intended edits and commits
 the `verifier` subagent without mutating the candidate while it runs. Only an
 evidence-backed `VERDICT: PASS` is success; fix `FAIL`, and report `PARTIAL` or a
 missing verdict as incomplete. With no trusted recipe configured, `land_work`
-accepts the current recorded verifier PASS or an explicit
-`trivial: <reason>` documentation-only waiver, never pasted report prose."""
+accepts only an explicit `trivial: <reason>` documentation-only waiver. A
+recorded verifier PASS and pasted report prose are not landing authority."""
 
 COMPACT_VERIFICATION_RECIPE_INVARIANT = """\
 ## Verification invariant

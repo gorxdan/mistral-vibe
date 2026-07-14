@@ -177,9 +177,11 @@ design must address each:
 4. Build the `vibe -p` cmd (shape of `runtime.py:1408-1419`) **with `--agent
    args.agent`** (not the auto-approve hardcode), `cwd=wt.path`, `env` with
    `VIBE_WORKFLOW_EMIT_STATS=1`.
-5. `await proc.communicate()`. On `CancelledError`, kill the process group and
-   wait before the `finally` removes the worktree (copy `runtime.py:1438-1451` —
-   this ordering is load-bearing against the EBUSY race).
+5. `await proc.communicate()`. On `CancelledError`, signal the process group
+   only after verifying the child PID is both its session and group leader;
+   otherwise signal the direct child. Wait before the `finally` removes the
+   worktree (copy the guarded runtime path; this ordering is load-bearing
+   against the EBUSY race).
 6. Parse stdout → `TaskResult.response`; parse stderr stats (logged only —
    `task()` has no budget to charge).
 7. `deliver = task.isolation != "off"` (default True for `task()`). On success +

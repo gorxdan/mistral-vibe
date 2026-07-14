@@ -147,6 +147,15 @@ The `bash` tool runs shell commands in a sandboxed environment:
 - Background process support via `BackgroundRegistry` (`vibe/core/tools/background.py`)
 - Stateful terminal — maintains working directory and environment across calls
 
+Background cleanup signals a process group only when the child PID is still
+verified as both the process-group leader and session leader; otherwise it
+signals the direct child. Default and xdist tests mock signal calls. Real
+process-tree teardown probes are manual checks for disposable isolated hosts,
+never graphical login sessions. Any live process, workflow, agent, team, or
+scheduled loop invalidates verifier authorization until it reaches a terminal
+state. The real probes are marked `process_e2e`, skipped by default, and require
+`VIBE_PROCESS_E2E_DISPOSABLE=1 uv run pytest -n0 --run-process-e2e ...`.
+
 ## Result Size Limits
 
 **Source**: `vibe/core/agent_loop_limits.py`

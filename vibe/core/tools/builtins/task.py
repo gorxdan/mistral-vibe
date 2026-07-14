@@ -8,21 +8,24 @@ from datetime import UTC, datetime
 import fnmatch
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.agent_loop import AgentLoop, AgentLoopParams
 from vibe.core.agents.models import (
+    BUILTIN_AGENTS,
     AgentProfile,
     AgentType,
     BuiltinAgentName,
     profile_requires_isolation,
 )
+from vibe.core.candidate_delivery import CandidateDelivery, CandidateDeliveryStatus
 from vibe.core.config import ModelPurpose, SessionLoggingConfig, VibeConfig
 from vibe.core.logger import logger
 from vibe.core.tasking import (
     TaskBrief,
+    TaskManifestIdentity,
     TaskOutcome,
     TaskOutcomeStatus,
     compile_task_brief,
@@ -66,15 +69,51 @@ from vibe.core.types import (
 from vibe.core.usage import SpendProcessContext, SpendPurpose
 from vibe.core.usage._session import SpendBudgetExceededError
 from vibe.core.verification_contract import (
+    VerificationReport,
     VerificationReportError,
     VerificationVerdict,
     parse_verification_report,
+    report_evidence_was_observed,
 )
+from vibe.core.verification_state import VerifierAttemptDisposition
 from vibe.core.workflows._limits import DEFAULT_ISOLATED_MAX_TURNS
 from vibe.core.workflows.runtime import IsolatedResult, run_isolated_agent
 
 if TYPE_CHECKING:
     from vibe.core.verification_state import VerificationState
+
+
+_MANAGED_TASK_AGENTS = frozenset({BuiltinAgentName.REVIEWER, BuiltinAgentName.VERIFIER})
+
+
+def _is_managed_session(ctx: InvokeContext) -> bool:
+    state = ctx.verification_state
+    recipe = state.trusted_recipe if state is not None else None
+    return bool(recipe is not None and recipe.config.execution_topology is not None)
+
+
+def _validate_managed_task_agent(
+    ctx: InvokeContext, *, agent_name: str, agent_profile: AgentProfile
+) -> bool:
+    if not _is_managed_session(ctx):
+        return False
+    if agent_name not in _MANAGED_TASK_AGENTS:
+        allowed = ", ".join(sorted(_MANAGED_TASK_AGENTS))
+        raise ToolError(
+            "Managed execution topology restricts task delegation to "
+            f"read-only review agents: {allowed}"
+        )
+    if agent_profile is not BUILTIN_AGENTS[agent_name]:
+        raise ToolError(
+            "Managed execution topology requires the host-owned builtin "
+            f"agent profile '{agent_name}'"
+        )
+    if profile_requires_isolation(agent_profile):
+        raise ToolError(
+            "Managed execution topology rejected write-capable or unjailed "
+            f"agent profile '{agent_name}'"
+        )
+    return True
 
 
 def workspace_fingerprint() -> str | None:
@@ -87,6 +126,14 @@ def landing_base_sha() -> str | None:
     from vibe.core.verification_state import landing_base_sha as calculate
 
     return calculate()
+
+
+def _verification_base_sha(state: VerificationState | None) -> str | None:
+    if state is not None and state.trusted_recipe is not None:
+        topology = state.trusted_recipe.config.execution_topology
+        if topology is not None:
+            return topology.baseline_sha
+    return landing_base_sha()
 
 
 def _configured_subagent_model(ctx: InvokeContext) -> str | None:
@@ -134,26 +181,18 @@ def _subagent_error_outcome(error: Exception) -> tuple[TaskOutcomeStatus, str]:
     return TaskOutcomeStatus.RETRYABLE, str(error)
 
 
-def _maybe_record_verifier_pass(
-    agent: str,
+def _verifier_report_preflight(
     response: str,
-    ctx: InvokeContext,
+    state: VerificationState,
     *,
-    completed: bool = True,
-    authorized: bool = True,
-    attempt: _VerificationAttempt | None = None,
-) -> str | None:
-    # Only the verifier subagent may set the verifier flag.
-    if agent != BuiltinAgentName.VERIFIER:
-        return None
-    # Execution completion and host authorization are independent: a strict PASS
-    # still cannot land when a bound trusted check or candidate gate failed.
+    completed: bool,
+    authorized: bool,
+    attempt: _VerificationAttempt | None,
+    evidence_hashes: tuple[str, ...],
+) -> tuple[VerificationReport | None, str | None]:
     if not response or not completed:
         reason = "response was empty" if not response else "task did not complete"
-        return f"Verifier result was not recorded: {reason}"
-    state = ctx.verification_state
-    if state is None:
-        return "Verifier result was not recorded: session verification state is unavailable"
+        return None, f"Verifier result was not recorded: {reason}"
     if attempt is not None:
         changed: str | None = None
         if attempt.generation is not None and not state.is_current_verifier_attempt(
@@ -165,32 +204,95 @@ def _maybe_record_verifier_pass(
             or workspace_fingerprint() != attempt.workspace_fingerprint
         ):
             changed = "workspace changed during verification"
-        elif landing_base_sha() != attempt.base_sha:
+        elif _verification_base_sha(state) != attempt.base_sha:
             changed = "landing base changed during verification"
         if changed is not None:
-            return f"Verifier result was not recorded: {changed}"
+            return None, f"Verifier result was not recorded: {changed}"
     try:
         report = parse_verification_report(response)
     except VerificationReportError as exc:
-        return f"Verifier result was not recorded: {exc}"
-    if report.passed and authorized:
+        return None, f"Verifier result was not recorded: {exc}"
+    if report.passed and not authorized:
+        return (
+            None,
+            "Verifier PASS was not recorded: trusted task outcome did not succeed",
+        )
+    if report.passed and not report_evidence_was_observed(report, evidence_hashes):
+        return (
+            None,
+            "Verifier result was not recorded: PASS evidence did not match output "
+            "from eligible host-observed verification commands",
+        )
+    return report, None
+
+
+def _maybe_record_verifier_pass(
+    agent: str,
+    response: str,
+    ctx: InvokeContext,
+    *,
+    completed: bool = True,
+    authorized: bool = True,
+    attempt: _VerificationAttempt | None = None,
+    evidence_hashes: tuple[str, ...] = (),
+) -> str | None:
+    # Only the verifier subagent may set the verifier flag.
+    if agent != BuiltinAgentName.VERIFIER:
+        return None
+    state = ctx.verification_state
+    if state is None:
+        return "Verifier result was not recorded: session verification state is unavailable"
+    generation = attempt.generation if attempt is not None else None
+
+    def reject(diagnostic: str) -> str:
+        state.record_verifier_result(
+            generation, VerifierAttemptDisposition.INVALID, diagnostic
+        )
+        return diagnostic
+
+    report, preflight_diagnostic = _verifier_report_preflight(
+        response,
+        state,
+        completed=completed,
+        authorized=authorized,
+        attempt=attempt,
+        evidence_hashes=evidence_hashes,
+    )
+    if preflight_diagnostic is not None:
+        return reject(preflight_diagnostic)
+    assert report is not None
+    if report.passed:
+        if not state.record_verifier_result(
+            generation,
+            VerifierAttemptDisposition.PASS,
+            "Verifier PASS was recorded for the current candidate.",
+        ):
+            return (
+                "Verifier result was not recorded: verifier attempt already reached "
+                "a terminal disposition"
+            )
         state.record_verifier_pass(
             report,
+            verifier_attempt_generation=(
+                state.verifier_attempt_generation if generation is None else generation
+            ),
             verified_workspace_fingerprint=(
                 attempt.workspace_fingerprint if attempt is not None else None
             ),
             verified_base_sha=attempt.base_sha if attempt is not None else None,
         )
         recording_diagnostic = None
-    elif report.passed:
-        recording_diagnostic = (
-            "Verifier PASS was not recorded: trusted task outcome did not succeed"
-        )
     else:
         recording_diagnostic = (
             "Verifier did not authorize landing: "
             f"VERDICT: {report.verdict.value.upper()}"
         )
+        disposition = (
+            VerifierAttemptDisposition.FAIL
+            if report.verdict is VerificationVerdict.FAIL
+            else VerifierAttemptDisposition.PARTIAL
+        )
+        state.record_verifier_result(generation, disposition, recording_diagnostic)
     return recording_diagnostic
 
 
@@ -236,7 +338,30 @@ def _start_verification_attempt(
     if agent != BuiltinAgentName.VERIFIER:
         return None
     generation = state.begin_verifier_attempt() if state is not None else None
-    return _VerificationAttempt(workspace_fingerprint(), landing_base_sha(), generation)
+    base_sha = _verification_base_sha(state)
+    return _VerificationAttempt(workspace_fingerprint(), base_sha, generation)
+
+
+def _ensure_verifier_attempt_terminal(
+    agent: str,
+    state: VerificationState | None,
+    attempt: _VerificationAttempt | None,
+    diagnostic: str,
+) -> None:
+    if (
+        agent != BuiltinAgentName.VERIFIER
+        or state is None
+        or attempt is None
+        or attempt.generation is None
+        or not state.is_current_verifier_attempt(attempt.generation)
+    ):
+        return
+    latest = state.latest_verifier_attempt
+    if latest is None or latest.disposition is not VerifierAttemptDisposition.PENDING:
+        return
+    state.record_verifier_result(
+        attempt.generation, VerifierAttemptDisposition.INVALID, diagnostic
+    )
 
 
 @dataclass
@@ -247,7 +372,106 @@ class _InProcessResult:
     returncode: int
     worktree_path: str | None = None
     branch: str | None = None
+    candidate_delivery: CandidateDelivery | None = None
     outcome: TaskOutcome | None = None
+
+
+async def _validated_structured_candidate_outcome(
+    contract: BoundTaskContract, wt: Any, manifest: TaskManifestIdentity | None
+) -> tuple[TaskOutcome, CandidateDelivery | None, bool]:
+    from vibe.core.workflows._verified_delivery import (
+        VerifiedCandidateError,
+        prepare_verified_candidate,
+    )
+    from vibe.core.worktree.ephemeral import deliver_verified_ephemeral_worktree_result
+
+    try:
+        candidate = await asyncio.to_thread(prepare_verified_candidate, wt)
+    except VerifiedCandidateError as exc:
+        return (
+            TaskOutcome(
+                status=TaskOutcomeStatus.RETRYABLE,
+                summary="Structured candidate could not be frozen for validation",
+                diagnostics=[str(exc)],
+                manifest=manifest,
+            ),
+            None,
+            False,
+        )
+
+    validation = await asyncio.to_thread(
+        validate_task_candidate, contract, wt.path, wt.base_sha
+    )
+    evidence = [
+        f"{check.name}: exit {check.exit_code} ({check.duration_ms} ms)"
+        for check in validation.checks
+    ]
+    if not validation.passed:
+        return (
+            TaskOutcome(
+                status=(
+                    TaskOutcomeStatus.RETRYABLE
+                    if validation.scope_passed
+                    else TaskOutcomeStatus.BLOCKED
+                ),
+                summary=(
+                    "Trusted acceptance checks failed"
+                    if validation.scope_passed
+                    else "Candidate violated the bound path scope"
+                ),
+                evidence=evidence,
+                diagnostics=list(validation.diagnostics),
+                changed_paths=list(validation.changed_paths),
+                manifest=manifest,
+            ),
+            None,
+            False,
+        )
+
+    delivery = await asyncio.to_thread(
+        deliver_verified_ephemeral_worktree_result,
+        wt,
+        expected_parent_sha=candidate.parent_head,
+        expected_parent_fingerprint=candidate.parent_workspace_fingerprint,
+        expected_candidate_sha=candidate.candidate_head,
+        expected_candidate_fingerprint=candidate.candidate_workspace_fingerprint,
+    )
+    delivered = delivery.accepted
+    return (
+        TaskOutcome(
+            status=(
+                TaskOutcomeStatus.SUCCEEDED
+                if delivered
+                else TaskOutcomeStatus.RETRYABLE
+            ),
+            summary=(
+                "Structured task and trusted checks succeeded"
+                if delivered
+                else "Validated candidate could not be delivered"
+            ),
+            evidence=evidence,
+            diagnostics=(
+                []
+                if delivered
+                else [
+                    delivery.diagnostic or "parent repository refused exact integration"
+                ]
+            ),
+            changed_paths=list(validation.changed_paths),
+            manifest=manifest,
+            candidate_delivery=delivery,
+        ),
+        delivery,
+        delivered,
+    )
+
+
+def _isolated_verification_evidence_hashes(result: IsolatedResult) -> tuple[str, ...]:
+    stats = getattr(result, "stats", None)
+    value = stats.get("verification_evidence_hashes") if stats is not None else None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return ()
+    return tuple(value)
 
 
 def _resolve_initial_task_outcome(
@@ -302,20 +526,40 @@ def _resolve_initial_task_outcome(
 
 
 def _with_scratchpad_context(
-    agent: str, task_text: str, scratchpad_dir: Path | None
+    agent: str,
+    task_text: str,
+    scratchpad_dir: Path | None,
+    verification_state: VerificationState | None = None,
 ) -> str:
-    if scratchpad_dir is None:
-        return task_text
-    guidance = (
-        "It is cleaned automatically. Do not create, copy, move, link, or remove "
-        "files there; leave any permitted-tool artifacts in place."
-        if agent == BuiltinAgentName.VERIFIER
-        else (
-            "Tools permitted for your profile may use it without additional path "
-            "permission prompts; do not assume unavailable write tools."
+    context: list[str] = []
+    if agent == BuiltinAgentName.VERIFIER and verification_state is not None:
+        recipe = verification_state.trusted_recipe
+        topology = recipe.config.execution_topology if recipe is not None else None
+        if topology is not None:
+            context.append(
+                "Host-provisioned evidence workspace (read-only to model tools): "
+                f"{topology.evidence_workspace}\n"
+                f"Assigned run ID: {topology.run_id}; runner ID: {topology.runner_id}. "
+                "This path, not the scratchpad or parent prose, is the evidence "
+                "authority. If required evidence is absent or inaccessible, report "
+                "VERDICT: PARTIAL."
+            )
+    if scratchpad_dir is not None:
+        guidance = (
+            "It is cleaned automatically. Do not create, copy, move, link, or remove "
+            "files there; leave any permitted-tool artifacts in place. It is not "
+            "durable verification evidence and may not share the parent's mount "
+            "namespace. If a required artifact is inaccessible, report PARTIAL."
+            if agent == BuiltinAgentName.VERIFIER
+            else (
+                "Tools permitted for your profile may use it without additional path "
+                "permission prompts; do not assume unavailable write tools."
+            )
         )
-    )
-    return f"Scratchpad directory: {scratchpad_dir}\n{guidance}\n\n{task_text}"
+        context.append(f"Scratchpad directory: {scratchpad_dir}\n{guidance}")
+    if not context:
+        return task_text
+    return f"{'\n\n'.join(context)}\n\n{task_text}"
 
 
 class TaskArgs(BaseModel):
@@ -379,14 +623,6 @@ class TaskArgs(BaseModel):
 
 class TaskResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    response: str = Field(description="The accumulated response from the subagent")
-    turns_used: int | None = Field(
-        default=None,
-        description=(
-            "Number of turns the subagent used. None when unknown (isolated "
-            "subagents run in a subprocess that does not report turn count)."
-        ),
-    )
     completed: bool = Field(
         description="Whether the agent execution completed normally"
     )
@@ -397,22 +633,43 @@ class TaskResult(BaseModel):
             "a legacy caller-created result."
         ),
     )
+    response: str = Field(
+        description=(
+            "Untrusted accumulated prose from the subagent. Authoritative "
+            "completed and outcome fields take precedence."
+        )
+    )
+    turns_used: int | None = Field(
+        default=None,
+        description=(
+            "Number of turns the subagent used. None when unknown (isolated "
+            "subagents run in a subprocess that does not report turn count)."
+        ),
+    )
     isolated: bool = Field(
         default=False, description="Whether the subagent ran in an isolated worktree."
     )
     worktree_path: str | None = Field(
         default=None,
         description=(
-            "Path to a kept isolated worktree (only set when the subagent ran "
-            "isolated and its work could not be delivered). Use `git -C "
-            "<worktree_path> ...` or merge its branch to recover the work."
+            "Original isolated worktree path when candidate work could not be "
+            "delivered. The directory may already be reclaimed; the branch and "
+            "candidate SHA in candidate_delivery remain the recovery authority."
         ),
     )
     branch: str | None = Field(
         default=None,
         description=(
-            "Branch of a kept isolated worktree (only set alongside "
-            "worktree_path). Recover with `git merge <branch>`."
+            "Preserved isolated candidate branch. It is not part of the parent "
+            "workspace until integrated."
+        ),
+    )
+    candidate_delivery: CandidateDelivery | None = Field(
+        default=None,
+        description=(
+            "Host-observed candidate integration state, including the base, "
+            "candidate and parent SHAs. A preserved candidate is not part of "
+            "the parent workspace even when worker execution completed."
         ),
     )
     task_id: str | None = Field(
@@ -577,9 +834,23 @@ class Task(
                 contract=contract,
                 verification_attempt=verification_attempt,
             )
+        except asyncio.CancelledError:
+            _ensure_verifier_attempt_terminal(
+                args.agent,
+                ctx.verification_state,
+                verification_attempt,
+                "Verifier result was not recorded: background task was cancelled",
+            )
+            raise
         except Exception as e:
             response = f"[Isolated subagent error: {e}]"
             forced_status, diagnostic = _subagent_error_outcome(e)
+            _ensure_verifier_attempt_terminal(
+                args.agent,
+                ctx.verification_state,
+                verification_attempt,
+                f"Verifier result was not recorded: isolated task failed: {diagnostic}",
+            )
         return _InProcessResult(
             output=response,
             returncode=1,
@@ -624,6 +895,44 @@ class Task(
         completed = result.returncode == 0
         preliminary = _resolve_initial_task_outcome(args, response, completed=completed)
         if contract is None:
+            candidate_delivery = getattr(result, "candidate_delivery", None)
+            if (
+                candidate_delivery is None
+                and not getattr(result, "delivered", False)
+                and result.branch is not None
+            ):
+                candidate_delivery = CandidateDelivery(
+                    status=CandidateDeliveryStatus.PRESERVED,
+                    branch=result.branch,
+                    worktree_path=result.worktree_path,
+                    diagnostic="candidate was not integrated into the parent workspace",
+                )
+            if candidate_delivery is not None:
+                preliminary = preliminary.model_copy(
+                    update={"candidate_delivery": candidate_delivery}
+                )
+            if (
+                preliminary.succeeded
+                and candidate_delivery is not None
+                and candidate_delivery.preserved
+            ):
+                remaining_work = list(preliminary.remaining_work)
+                if candidate_delivery.branch is not None:
+                    remaining_work.append(
+                        f"Integrate candidate branch {candidate_delivery.branch}"
+                    )
+                preliminary = preliminary.model_copy(
+                    update={
+                        "status": TaskOutcomeStatus.RETRYABLE,
+                        "summary": "Worker completed but candidate requires integration",
+                        "diagnostics": [
+                            *preliminary.diagnostics,
+                            candidate_delivery.diagnostic
+                            or "candidate was preserved outside the parent workspace",
+                        ],
+                        "remaining_work": remaining_work,
+                    }
+                )
             preliminary = _with_verification_result(
                 preliminary,
                 args.agent,
@@ -634,6 +943,7 @@ class Task(
                     completed=completed,
                     authorized=preliminary.succeeded,
                     attempt=verification_attempt,
+                    evidence_hashes=_isolated_verification_evidence_hashes(result),
                 ),
             )
             return _InProcessResult(
@@ -641,6 +951,7 @@ class Task(
                 returncode=result.returncode,
                 worktree_path=result.worktree_path,
                 branch=result.branch,
+                candidate_delivery=candidate_delivery,
                 outcome=preliminary,
             )
 
@@ -664,6 +975,7 @@ class Task(
                     completed=completed,
                     authorized=outcome.succeeded,
                     attempt=verification_attempt,
+                    evidence_hashes=_isolated_verification_evidence_hashes(result),
                 ),
             )
             return _InProcessResult(
@@ -673,67 +985,52 @@ class Task(
             )
 
         from vibe.core.worktree.ephemeral import (
-            deliver_ephemeral_worktree,
+            describe_ephemeral_worktree,
             remove_ephemeral_worktree,
         )
 
         delivered = False
         branch: str | None = None
+        candidate_delivery: CandidateDelivery | None = None
         outcome = preliminary
         try:
             if preliminary.succeeded:
-                validation = await asyncio.to_thread(
-                    validate_task_candidate, contract, wt.path, wt.base_sha
+                (
+                    outcome,
+                    candidate_delivery,
+                    delivered,
+                ) = await _validated_structured_candidate_outcome(
+                    contract, wt, args.brief.manifest if args.brief else None
                 )
-                evidence = [
-                    f"{check.name}: exit {check.exit_code} ({check.duration_ms} ms)"
-                    for check in validation.checks
-                ]
-                if not validation.passed:
-                    outcome = TaskOutcome(
-                        status=(
-                            TaskOutcomeStatus.RETRYABLE
-                            if validation.scope_passed
-                            else TaskOutcomeStatus.BLOCKED
-                        ),
-                        summary=(
-                            "Trusted acceptance checks failed"
-                            if validation.scope_passed
-                            else "Candidate violated the bound path scope"
-                        ),
-                        evidence=evidence,
-                        diagnostics=list(validation.diagnostics),
-                        changed_paths=list(validation.changed_paths),
-                        manifest=args.brief.manifest if args.brief else None,
-                    )
-                else:
-                    delivered = await asyncio.to_thread(deliver_ephemeral_worktree, wt)
-                    outcome = TaskOutcome(
-                        status=(
-                            TaskOutcomeStatus.SUCCEEDED
-                            if delivered
-                            else TaskOutcomeStatus.RETRYABLE
-                        ),
-                        summary=(
-                            "Structured task and trusted checks succeeded"
-                            if delivered
-                            else "Validated candidate could not be delivered"
-                        ),
-                        evidence=evidence,
-                        diagnostics=(
-                            []
-                            if delivered
-                            else ["parent repository moved or refused the fast-forward"]
-                        ),
-                        changed_paths=list(validation.changed_paths),
-                        manifest=args.brief.manifest if args.brief else None,
-                    )
         finally:
+            if candidate_delivery is None:
+                candidate_delivery = describe_ephemeral_worktree(
+                    wt,
+                    status=CandidateDeliveryStatus.PRESERVED,
+                    diagnostic="candidate was not eligible for automatic integration",
+                )
+            if outcome.candidate_delivery is None:
+                outcome = outcome.model_copy(
+                    update={"candidate_delivery": candidate_delivery}
+                )
             removed = await asyncio.to_thread(
                 remove_ephemeral_worktree, wt, keep_if_changed=not delivered
             )
             if not removed:
-                branch = wt.branch
+                branch = candidate_delivery.branch or wt.branch
+                if not delivered and candidate_delivery.branch == wt.branch:
+                    candidate_delivery = describe_ephemeral_worktree(
+                        wt,
+                        status=CandidateDeliveryStatus.PRESERVED,
+                        parent_sha_before=candidate_delivery.parent_sha_before,
+                        diagnostic=(
+                            candidate_delivery.diagnostic
+                            or "candidate remains available for integration"
+                        ),
+                    )
+                    outcome = outcome.model_copy(
+                        update={"candidate_delivery": candidate_delivery}
+                    )
 
         outcome = _with_verification_result(
             outcome,
@@ -745,12 +1042,15 @@ class Task(
                 completed=completed,
                 authorized=outcome.succeeded,
                 attempt=verification_attempt,
+                evidence_hashes=_isolated_verification_evidence_hashes(result),
             ),
         )
         return _InProcessResult(
             output=response,
             returncode=0 if outcome.succeeded else 1,
+            worktree_path=candidate_delivery.worktree_path,
             branch=branch,
+            candidate_delivery=candidate_delivery,
             outcome=outcome,
         )
 
@@ -772,7 +1072,7 @@ class Task(
             return
 
         task_text = _with_scratchpad_context(
-            args.agent, args.prompt, ctx.scratchpad_dir
+            args.agent, args.prompt, ctx.scratchpad_dir, ctx.verification_state
         )
 
         denied = await self._judge_isolated_spawn(task_text, args.agent, ctx)
@@ -852,7 +1152,7 @@ class Task(
         verification_attempt: _VerificationAttempt | None = None,
     ) -> AsyncGenerator[ToolStreamEvent | TaskResult, None]:
         task_text = _with_scratchpad_context(
-            args.agent, args.prompt, ctx.scratchpad_dir
+            args.agent, args.prompt, ctx.scratchpad_dir, ctx.verification_state
         )
         yield ToolStreamEvent(
             tool_name=self.get_name(),
@@ -863,6 +1163,7 @@ class Task(
         response_text = ""
         worktree_path: str | None = None
         branch: str | None = None
+        candidate_delivery: CandidateDelivery | None = None
         outcome: TaskOutcome | None = None
         forced_status: TaskOutcomeStatus | None = None
         diagnostic: str | None = None
@@ -906,6 +1207,7 @@ class Task(
                 completed = finalized.returncode == 0
                 worktree_path = finalized.worktree_path
                 branch = finalized.branch
+                candidate_delivery = finalized.candidate_delivery
                 outcome = finalized.outcome
         except Exception as e:
             completed = False
@@ -920,6 +1222,7 @@ class Task(
             isolated=True,
             worktree_path=worktree_path,
             branch=branch,
+            candidate_delivery=candidate_delivery,
             outcome=(
                 outcome
                 if outcome is not None
@@ -939,17 +1242,24 @@ class Task(
         factory = getattr(ctx, "safety_judge_factory", None)
         if factory is None:
             return None
+        autoapprove = bool(
+            ctx.agent_manager and ctx.agent_manager.config.bypass_tool_permissions
+        )
+        unavailable_reason = "configured safety judge is unavailable"
         try:
             judge = factory()
-        except Exception:
-            return None
+        except Exception as exc:
+            judge = None
+            unavailable_reason = f"{unavailable_reason}: {exc}"
         if judge is None:
-            return None
+            return unavailable_reason if autoapprove else None
         verdict = await judge.judge(
             "task", prompt, [f"isolated '{agent}' subagent spawn"]
         )
         if verdict.safe:
             return None
+        if autoapprove:
+            return verdict.reason
         # Deferred to the user. Surface via the host approval callback if one is
         # wired; otherwise fail closed (deny the spawn).
         approval_callback = getattr(ctx, "approval_callback", None)
@@ -1008,6 +1318,9 @@ class Task(
                 f"Only subagents can be used with the task tool. "
                 f"This is a security constraint to prevent recursive spawning."
             )
+        managed_session = _validate_managed_task_agent(
+            ctx, agent_name=args.agent, agent_profile=agent_profile
+        )
 
         if args.brief is not None:
             contract = self._bind_contract(args.brief, ctx)
@@ -1024,34 +1337,46 @@ class Task(
                 )
 
         isolation_mode = self.config.isolation
-        should_isolate = isolation_mode == "always" or (
-            isolation_mode == "auto" and profile_requires_isolation(agent_profile)
+        should_isolate = not managed_session and (
+            isolation_mode == "always"
+            or (isolation_mode == "auto" and profile_requires_isolation(agent_profile))
         )
         verification_attempt = _start_verification_attempt(
             args.agent, ctx.verification_state
         )
-        if args.async_run:
-            if should_isolate:
-                async for result in self._run_async_isolated(
+        background_handoff = False
+        try:
+            if args.async_run:
+                dispatch = (
+                    self._run_async_isolated(
+                        args, ctx, verification_attempt=verification_attempt
+                    )
+                    if should_isolate
+                    else self._run_in_process_async(
+                        args, ctx, verification_attempt=verification_attempt
+                    )
+                )
+            elif should_isolate:
+                dispatch = self._run_isolated(
                     args, ctx, verification_attempt=verification_attempt
-                ):
-                    yield result
+                )
             else:
-                async for result in self._run_in_process_async(
+                dispatch = self._run_in_process(
                     args, ctx, verification_attempt=verification_attempt
-                ):
-                    yield result
-            return
-        if should_isolate:
-            async for result in self._run_isolated(
-                args, ctx, verification_attempt=verification_attempt
-            ):
+                )
+            async for result in dispatch:
+                if isinstance(result, TaskResult) and result.task_id is not None:
+                    background_handoff = True
                 yield result
-            return
-        async for result in self._run_in_process(
-            args, ctx, verification_attempt=verification_attempt
-        ):
-            yield result
+        finally:
+            if not background_handoff:
+                _ensure_verifier_attempt_terminal(
+                    args.agent,
+                    ctx.verification_state,
+                    verification_attempt,
+                    "Verifier result was not recorded: execution ended without a "
+                    "terminal verifier disposition",
+                )
 
     @staticmethod
     def _subagent_label(args: TaskArgs) -> str:
@@ -1097,9 +1422,13 @@ class Task(
         # A fresh VibeConfig.load() falls back to the hardcoded default (mistral),
         # which fails when the parent runs on another provider; inherit instead.
         inherited_model = _effective_subagent_model(args, ctx)
-        load_overrides: dict[str, str] = {}
+        load_overrides: dict[str, Any] = {}
         if inherited_model:
             load_overrides["active_model"] = inherited_model
+        state = ctx.verification_state
+        recipe = state.trusted_recipe if state is not None else None
+        if recipe is not None:
+            load_overrides["trusted_verification_recipe"] = recipe.config
         base_config = VibeConfig.load(session_logging=session_logging, **load_overrides)
         try:
             resolved_provider = base_config.get_active_provider().name
@@ -1158,7 +1487,7 @@ class Task(
         if ctx.approval_callback:
             subagent_loop.set_approval_callback(ctx.approval_callback)
         task_text = _with_scratchpad_context(
-            args.agent, args.prompt, ctx.scratchpad_dir
+            args.agent, args.prompt, ctx.scratchpad_dir, ctx.verification_state
         )
         return subagent_loop, task_text
 
@@ -1172,6 +1501,7 @@ class Task(
         subagent_loop, task_text = self._build_subagent_loop(args, ctx)
         accumulated_response: list[str] = []
         completed = True
+        verifier_tools_valid = True
         forced_status: TaskOutcomeStatus | None = None
         diagnostic: str | None = None
         try:
@@ -1184,6 +1514,10 @@ class Task(
                     elif isinstance(event, ToolResultEvent):
                         if event.skipped:
                             completed = False
+                        if args.agent == BuiltinAgentName.VERIFIER and (
+                            event.skipped or event.error or event.cancelled
+                        ):
+                            verifier_tools_valid = False
                         elif event.result and event.tool_class:
                             adapter = ToolUIDataAdapter(event.tool_class)
                             display = adapter.get_result_display(event)
@@ -1226,8 +1560,11 @@ class Task(
                 response,
                 ctx,
                 completed=completed,
-                authorized=outcome.succeeded,
+                authorized=outcome.succeeded and verifier_tools_valid,
                 attempt=verification_attempt,
+                evidence_hashes=getattr(
+                    subagent_loop, "successful_verification_evidence_hashes", ()
+                ),
             ),
         )
         yield TaskResult(
@@ -1297,13 +1634,15 @@ class Task(
     ) -> _InProcessResult:
         registry = ctx.background_registry
         current_task = asyncio.current_task()
-        subagent_loop, task_text = self._build_subagent_loop(args, ctx)
+        subagent_loop: AgentLoop | None = None
         accumulated_response: list[str] = []
         completed = True
+        verifier_tools_valid = True
         turns = 0
         forced_status: TaskOutcomeStatus | None = None
         diagnostic: str | None = None
         try:
+            subagent_loop, task_text = self._build_subagent_loop(args, ctx)
             async with aclosing(subagent_loop.act(task_text)) as events:
                 async for event in events:
                     if isinstance(event, AssistantEvent) and event.content:
@@ -1317,15 +1656,29 @@ class Task(
                                 response_so_far="".join(accumulated_response),
                                 turns_used=turns,
                             )
-                    elif isinstance(event, ToolResultEvent) and event.skipped:
-                        completed = False
+                    elif isinstance(event, ToolResultEvent):
+                        if event.skipped:
+                            completed = False
+                        if args.agent == BuiltinAgentName.VERIFIER and (
+                            event.skipped or event.error or event.cancelled
+                        ):
+                            verifier_tools_valid = False
+        except asyncio.CancelledError:
+            _ensure_verifier_attempt_terminal(
+                args.agent,
+                ctx.verification_state,
+                verification_attempt,
+                "Verifier result was not recorded: background task was cancelled",
+            )
+            raise
         except Exception as e:
             completed = False
             accumulated_response.append(f"\n[Subagent error: {e}]")
             forced_status, diagnostic = _subagent_error_outcome(e)
         finally:
-            with suppress(Exception):
-                await subagent_loop.aclose()
+            if subagent_loop is not None:
+                with suppress(Exception):
+                    await subagent_loop.aclose()
         response = "".join(accumulated_response)
         outcome = await self._finalize_in_process_outcome(
             args,
@@ -1343,8 +1696,11 @@ class Task(
                 response,
                 ctx,
                 completed=completed,
-                authorized=outcome.succeeded,
+                authorized=outcome.succeeded and verifier_tools_valid,
                 attempt=verification_attempt,
+                evidence_hashes=getattr(
+                    subagent_loop, "successful_verification_evidence_hashes", ()
+                ),
             ),
         )
         return _InProcessResult(

@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-import sys
 from unittest.mock import AsyncMock
 
 import orjson
 import pytest
 
+from tests.trusted_verification import (
+    HOST_ENVIRONMENT as _HOST_ENVIRONMENT,
+    HOST_ENVIRONMENT_SHA256 as _HOST_ENVIRONMENT_SHA256,
+    HOST_PYTHON as _HOST_PYTHON,
+    HOST_PYTHON_SHA256 as _HOST_PYTHON_SHA256,
+)
 from vibe.core.config import (
     TrustedVerificationCheckConfig,
     TrustedVerificationRecipeConfig,
@@ -72,10 +77,13 @@ def _contract(
             TrustedVerificationCheckConfig(
                 name="focused",
                 argv=(
-                    sys.executable,
+                    str(_HOST_PYTHON),
                     "-c",
                     f"import sys; print('focused'); sys.exit({check_exit})",
                 ),
+                executable_sha256=_HOST_PYTHON_SHA256,
+                environment_attestation_path=str(_HOST_ENVIRONMENT),
+                environment_attestation_sha256=_HOST_ENVIRONMENT_SHA256,
             ),
             *extra_checks,
         ),
@@ -561,10 +569,13 @@ async def test_worker_runs_only_selected_trusted_checks(
         unselected = TrustedVerificationCheckConfig(
             name="unselected",
             argv=(
-                sys.executable,
+                str(_HOST_PYTHON),
                 "-c",
                 f"from pathlib import Path; Path({str(marker)!r}).touch()",
             ),
+            executable_sha256=_HOST_PYTHON_SHA256,
+            environment_attestation_path=str(_HOST_ENVIRONMENT),
+            environment_attestation_sha256=_HOST_ENVIRONMENT_SHA256,
         )
         return WorkerTaskAttempt(
             "Implemented\nTASK_OUTCOME: SUCCEEDED",

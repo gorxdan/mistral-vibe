@@ -9,6 +9,12 @@ import pytest
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
+from tests.trusted_verification import (
+    HOST_ENVIRONMENT as _HOST_ENVIRONMENT,
+    HOST_ENVIRONMENT_SHA256 as _HOST_ENVIRONMENT_SHA256,
+    HOST_PYTHON as _HOST_PYTHON,
+    HOST_PYTHON_SHA256 as _HOST_PYTHON_SHA256,
+)
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import (
     TrustedVerificationCheckConfig,
@@ -29,7 +35,11 @@ def _contract(workspace_root: Path) -> BoundTaskContract:
         allowed_paths=("**",),
         checks=(
             TrustedVerificationCheckConfig(
-                name="focused", argv=("uv", "run", "pytest", "tests/focused.py")
+                name="focused",
+                argv=(str(_HOST_PYTHON), "-c", "raise SystemExit(0)"),
+                executable_sha256=_HOST_PYTHON_SHA256,
+                environment_attestation_path=str(_HOST_ENVIRONMENT),
+                environment_attestation_sha256=_HOST_ENVIRONMENT_SHA256,
             ),
         ),
     )

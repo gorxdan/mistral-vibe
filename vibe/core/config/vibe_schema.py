@@ -342,7 +342,8 @@ class VibeConfigSchema(ConfigSchema):
         default=None,
         description=(
             "Optional host-authored verification plan frozen into each AgentLoop "
-            "session and executed only by verify_work."
+            "session and executed only by verify_work. Optional execution topology "
+            "binds managed worktrees, lifecycle state, and durable evidence."
         ),
     )
     investigation_subsystem: Annotated[bool, WithReplaceMerge()] = Field(

@@ -16,7 +16,7 @@ from vibe.core.config import (
     SafetyJudgeConfig,
     SpendConfig,
 )
-from vibe.core.tools.base import BaseToolState
+from vibe.core.tools.base import BaseToolState, ToolPermission
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
 from vibe.core.tools.safety_judge import (
     _SYSTEM_PROMPT,
@@ -160,6 +160,81 @@ async def test_judge_rejects_falls_through_to_prompt() -> None:
     assert decision.verdict == ToolExecutionResponse.SKIP
     assert fake.calls
     assert approval.called is True, "judge rejection must defer to the user"
+
+
+@pytest.mark.asyncio
+async def test_autoapprove_cannot_override_safety_judge_deferral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(bypass_tool_permissions=True)
+    )
+    fake = _FakeJudge(safe=False, reason="shared host state is at risk")
+    monkeypatch.setattr(loop, "_resolve_safety_judge", lambda: fake)
+    approval = _RecordingApproval(ApprovalResponse.YES)
+    loop.approval_callback = approval
+
+    decision = await loop._should_execute_tool(
+        _bash(), BashArgs(command="touch /outside/control"), "managed-1"
+    )
+
+    assert decision.verdict == ToolExecutionResponse.SKIP
+    assert decision.approval_type == ToolPermission.NEVER
+    assert decision.feedback and "cannot override" in decision.feedback
+    assert fake.calls
+    assert approval.called is False
+
+
+@pytest.mark.asyncio
+async def test_autoapprove_still_executes_when_configured_judge_approves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(bypass_tool_permissions=True)
+    )
+    fake = _FakeJudge(safe=True, reason="bounded candidate write")
+    monkeypatch.setattr(loop, "_resolve_safety_judge", lambda: fake)
+
+    decision = await loop._should_execute_tool(
+        _bash(), BashArgs(command="touch candidate.txt"), "managed-2"
+    )
+
+    assert decision.verdict == ToolExecutionResponse.EXECUTE
+    assert decision.judge_approved is True
+    assert fake.calls
+
+
+@pytest.mark.asyncio
+async def test_autoapprove_without_configured_judge_preserves_profile_behavior() -> (
+    None
+):
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(bypass_tool_permissions=True)
+    )
+
+    decision = await loop._should_execute_tool(
+        _bash(), BashArgs(command="touch candidate.txt"), "managed-3"
+    )
+
+    assert decision.verdict == ToolExecutionResponse.EXECUTE
+    assert decision.approval_type == ToolPermission.ALWAYS
+
+
+@pytest.mark.asyncio
+async def test_autoapprove_fails_closed_when_configured_judge_is_unavailable() -> None:
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(
+            bypass_tool_permissions=True,
+            safety_judge=SafetyJudgeConfig(enabled=True, model="missing-model"),
+        )
+    )
+
+    decision = await loop._should_execute_tool(
+        _bash(), BashArgs(command="touch candidate.txt"), "managed-4"
+    )
+
+    assert decision.verdict == ToolExecutionResponse.SKIP
+    assert decision.feedback and "configured safety judge" in decision.feedback
 
 
 class _NoteCapturingApproval:

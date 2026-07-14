@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from functools import partial
 from pathlib import Path
 from typing import ClassVar, final
 
+from anyio.to_thread import run_sync as run_sync_in_thread
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.lsp._integration import notify_file_changed
 from vibe.core.rewind.manager import FileSnapshot
 from vibe.core.scratchpad import is_scratchpad_path
+from vibe.core.tools._managed_write import ManagedWriteError, ManagedWriteTarget
+from vibe.core.tools._model_write_policy import (
+    protected_model_write_reason,
+    verification_protected_roots,
+)
 from vibe.core.tools._team_safety import enforce_shared_ask
 from vibe.core.tools.base import (
     BaseTool,
@@ -142,74 +149,96 @@ class Edit(
     ) -> None:
         await atomic_replace(file_path, content, encoding=encoding, newline=newline)
 
+    async def _perform_edit(
+        self, args: EditArgs, file_path: Path, managed_target: ManagedWriteTarget | None
+    ) -> tuple[list[tuple[int, str, str]], str | None]:
+        async with file_write_lock(file_path):
+            if managed_target is None:
+                read_result = await self._read_file(file_path)
+            else:
+                read_result = await run_sync_in_thread(managed_target.read_safe)
+            original = read_result.text
+
+            spans = locate_edit_matches(
+                original, args.old_string, replace_all=args.replace_all
+            )
+            if not spans:
+                raise ToolError(
+                    f"String to replace not found in file.\nString: {args.old_string}"
+                )
+            if len(spans) > 1 and not args.replace_all:
+                raise ToolError(
+                    f"Found {len(spans)} matches of the string to replace, "
+                    f"but replace_all is false. To replace all occurrences, "
+                    f"set replace_all to true. To replace only one occurrence, "
+                    f"please provide more context to uniquely identify the "
+                    f"instance.\nString: {args.old_string}"
+                )
+
+            contexts = line_contexts(original, args.old_string)
+            modified = self._apply_spans(original, spans, args.new_string)
+            if modified == original:
+                published_fingerprint = (
+                    managed_target.initial_fingerprint
+                    if managed_target is not None
+                    else None
+                )
+            elif managed_target is None:
+                await self._write_file(
+                    file_path, modified, read_result.encoding, read_result.newline
+                )
+                published_fingerprint = None
+            else:
+                await run_sync_in_thread(
+                    partial(
+                        managed_target.replace_text,
+                        modified,
+                        encoding=read_result.encoding,
+                        newline=read_result.newline,
+                    )
+                )
+                published_fingerprint = managed_target.published_fingerprint
+            if modified != original:
+                await notify_file_changed(file_path, modified)
+            return contexts, published_fingerprint
+
     @final
     async def run(
         self, args: EditArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | EditResult, None]:
         file_path = self._validate_args(args)
-
-        if ctx and ctx.files_read is not None:
-            key = str(file_path)
-            if key not in ctx.files_read:
-                raise ToolError(
-                    f"This file has not been read in this session: {file_path}\n"
-                    f"Read it first with the read tool, then retry the edit."
-                )
-            try:
-                current_fp = file_fingerprint(file_path)
-            except OSError:
-                current_fp = ""
-            if ctx.files_read[key] != current_fp:
-                raise ToolError(
-                    f"This file has changed since it was last read: {file_path}\n"
-                    f"Re-read it before editing to get the current content."
-                )
-
-        permission = self.resolve_permission(args)
-        await enforce_shared_ask(
-            self.get_name(), str(file_path), permission, self.config.permission
-        )
-
+        if protected := protected_model_write_reason(
+            file_path,
+            extra_roots=verification_protected_roots(
+                ctx.verification_state if ctx is not None else None
+            ),
+        ):
+            raise ToolError(protected)
+        managed_target = self._capture_managed_target(file_path, ctx)
         try:
-            async with file_write_lock(file_path):
-                result = await self._read_file(file_path)
-                original = result.text
-
-                spans = locate_edit_matches(
-                    original, args.old_string, replace_all=args.replace_all
+            self._enforce_read_fingerprint(file_path, ctx, managed_target)
+            permission = self.resolve_permission(args)
+            await enforce_shared_ask(
+                self.get_name(), str(file_path), permission, self.config.permission
+            )
+            try:
+                contexts, published_fingerprint = await self._perform_edit(
+                    args, file_path, managed_target
                 )
-                if not spans:
-                    raise ToolError(
-                        f"String to replace not found in file.\n"
-                        f"String: {args.old_string}"
-                    )
-                if len(spans) > 1 and not args.replace_all:
-                    raise ToolError(
-                        f"Found {len(spans)} matches of the string to replace, "
-                        f"but replace_all is false. To replace all occurrences, "
-                        f"set replace_all to true. To replace only one occurrence, "
-                        f"please provide more context to uniquely identify the "
-                        f"instance.\nString: {args.old_string}"
-                    )
-
-                contexts = line_contexts(original, args.old_string)
-
-                modified = self._apply_spans(original, spans, args.new_string)
-
-                if modified != original:
-                    await self._write_file(
-                        file_path, modified, result.encoding, result.newline
-                    )
-                    await notify_file_changed(file_path, modified)
-        except UnicodeDecodeError as e:
-            raise ToolError(
-                f"Cannot edit {file_path}: file is not valid text "
-                f"({e.encoding}, byte {e.start})"
-            ) from e
-        except PermissionError as e:
-            raise ToolError(f"Permission denied accessing file: {file_path}") from e
-        except OSError as e:
-            raise ToolError(f"OS error accessing {file_path}: {e}") from e
+            except UnicodeDecodeError as e:
+                raise ToolError(
+                    f"Cannot edit {file_path}: file is not valid text "
+                    f"({e.encoding}, byte {e.start})"
+                ) from e
+            except ManagedWriteError as e:
+                raise ToolError(str(e)) from e
+            except PermissionError as e:
+                raise ToolError(f"Permission denied accessing file: {file_path}") from e
+            except OSError as e:
+                raise ToolError(f"OS error accessing {file_path}: {e}") from e
+        finally:
+            if managed_target is not None:
+                managed_target.close()
 
         if args.replace_all:
             message = (
@@ -234,12 +263,58 @@ class Edit(
         ]
 
         if ctx and ctx.files_read is not None:
-            try:
-                ctx.files_read[str(file_path)] = file_fingerprint(file_path)
-            except OSError:
-                pass
+            if published_fingerprint:
+                ctx.files_read[str(file_path)] = published_fingerprint
+            else:
+                try:
+                    ctx.files_read[str(file_path)] = file_fingerprint(file_path)
+                except OSError:
+                    pass
 
         yield result
+
+    @staticmethod
+    def _enforce_read_fingerprint(
+        file_path: Path,
+        ctx: InvokeContext | None,
+        managed_target: ManagedWriteTarget | None = None,
+    ) -> None:
+        if ctx is None or ctx.files_read is None:
+            return
+        key = str(file_path)
+        if key not in ctx.files_read:
+            raise ToolError(
+                f"This file has not been read in this session: {file_path}\n"
+                "Read it first with the read tool, then retry the edit."
+            )
+        if managed_target is not None:
+            current_fp = managed_target.initial_fingerprint
+        else:
+            try:
+                current_fp = file_fingerprint(file_path)
+            except OSError:
+                current_fp = ""
+        if ctx.files_read[key] != current_fp:
+            raise ToolError(
+                f"This file has changed since it was last read: {file_path}\n"
+                "Re-read it before editing to get the current content."
+            )
+
+    @staticmethod
+    def _capture_managed_target(
+        file_path: Path, ctx: InvokeContext | None
+    ) -> ManagedWriteTarget | None:
+        try:
+            return ManagedWriteTarget.capture(
+                file_path,
+                ctx.verification_state if ctx is not None else None,
+                scratchpad_dir=ctx.scratchpad_dir if ctx is not None else None,
+                require_existing=True,
+            )
+        except ManagedWriteError as e:
+            raise ToolError(str(e)) from e
+        except OSError as e:
+            raise ToolError(f"Error authorizing managed edit {file_path}: {e}") from e
 
     @final
     def _validate_args(self, args: EditArgs) -> Path:

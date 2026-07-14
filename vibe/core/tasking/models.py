@@ -6,6 +6,8 @@ from pathlib import PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from vibe.core.candidate_delivery import CandidateDelivery
+
 
 def _nonempty(value: str, field: str) -> str:
     cleaned = value.strip()
@@ -136,6 +138,7 @@ class TaskOutcome(BaseModel):
     receipt_id: str | None = None
     remaining_work: list[str] = Field(default_factory=list)
     manifest: TaskManifestIdentity | None = None
+    candidate_delivery: CandidateDelivery | None = None
 
     @field_validator("summary")
     @classmethod

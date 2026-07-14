@@ -33,7 +33,14 @@ The repository has a single shared runtime core (`vibe/core/`) surfaced through 
 `AgentLoop` (line 457) is the heart of the engine. It uses **multiple inheritance with mixin composition** to separate concerns:
 
 ```python
-AgentLoop(AgentLoopMemoryMixin, AgentLoopFailoverMixin, AgentLoopSafetyJudgeMixin, AgentLoopHooksMixin)
+AgentLoop(
+    AgentLoopMemoryMixin,
+    AgentLoopOrchestrationMixin,
+    AgentLoopVerificationMixin,
+    AgentLoopFailoverMixin,
+    AgentLoopSafetyJudgeMixin,
+    AgentLoopHooksMixin,
+)
 ```
 
 **`AgentLoopParams`** (line 439) is a dataclass holding loop-level configuration: `max_turns`, `max_price`, `max_session_tokens`, `enable_streaming`, `is_subagent`, `headless`, `permission_store`, `mcp_registry`, `cache_store`, etc.
@@ -77,6 +84,19 @@ Fork-only LLM safety judge that pre-screens ASK-gated tool calls. Uses a verdict
 
 Durable memory subsystem: recall (selection + prefetch), extraction, consolidation, verification. Uses async background tasks. Collaborates with `MemoryStore`, `MemorySelector`, `MemoryExtractor`, `MemoryConsolidator`, `MemoryVerifier` (in `vibe/core/memory/`).
 
+### AgentLoopOrchestrationMixin
+**Source**: `vibe/core/agent_loop_orchestration.py`
+
+Owns root orchestration state, structured task context, and the host-side
+coordination helpers used by Task and workflow execution.
+
+### AgentLoopVerificationMixin
+**Source**: `vibe/core/agent_loop_verification.py`
+
+Installs the managed runtime capability ceiling, validates an optional frozen
+execution topology before the first root turn, checks receipt freshness, and
+replaces unsupported completion claims with host verification status.
+
 ## AgentLoopLimits
 
 **Source**: `vibe/core/agent_loop_limits.py`
@@ -106,7 +126,8 @@ AgentLoop (agent_loop.py)
     │   └── Spend reservation → CompletionRequest → LLMChunk → reconciliation
     │
     ├── Tool Execution Flow:
-    │   ├── Parse LLM response → ParsedToolCall → ResolvedToolCall (via ToolManager)
+    │   ├── Canonical managed catalog / normal discovery → ToolManager
+    │   ├── Parse LLM response → ParsedToolCall → ResolvedToolCall
     │   ├── Safety Judge — pre-screen ASK-gated tools
     │   ├── Hooks — before_tool / after_tool lifecycle
     │   ├── Permission Store — approval gate
@@ -131,6 +152,7 @@ The middleware pipeline applies transformations to the conversation state before
 - **Compaction** — auto-compact when token count exceeds `auto_compact_threshold` (see `vibe/core/compaction.py`)
 - **Token/price limits** — enforce session-level budgets
 - **Loop detection** — detect and break repetitive agent loops
+- **Harness capability breaker** — stop after three consecutive failures in one protected capability class
 
 The design doc `docs/design/compaction.md` describes the multi-stage shaper pipeline (snip + microcompact) in detail.
 
@@ -166,9 +188,9 @@ Mistral's model-backed web search remains an explicit unrouted paid boundary.
 
 A structured `TaskBrief` is frozen, then the host binds it to the session's
 immutable trusted recipe. Acceptance values are check IDs, never commands; the
-host resolves them to prebound argv checks. Canonical manifests expose 6-8 tools
-and task-bound `ToolManager` instances import canonical builtins only before
-applying the allowlist to lookup, search, and pinning. Edit/write paths are
+host resolves them to prebound argv checks. Task-bound `ToolManager` instances
+import canonical builtins only before applying the allowlist to lookup, search,
+and pinning. Edit/write paths are
 checked after hook and user modification. Harness control-plane paths
 (`.vibe/**`, `.agents/**`, `.git/**`, and every `AGENTS.md`) remain host-owned.
 Callers pass the brief as an object. Serialized JSON strings remain legacy
@@ -176,6 +198,16 @@ free-form tasks and receive no structured contract authority. Structured
 verifier work is pinned to `verify@1`, uses the strict terminal `VERDICT`
 protocol, and cannot be paired with a write-capable manifest; other read-only
 profiles likewise reject edit/write manifests.
+
+An execution topology adds a stronger outer ceiling. Active roots have at most
+`bash`, `edit`, `glob`, `grep`, `read`, `skill`, `task`, `todo`, and
+`write_file`; verification roots have at most `glob`, `grep`, `read`,
+`skill`, `task`, and `verify_work`. Project and plugin tools, MCP/connectors,
+workflows, teams, web tools, `tool_search`, and `land_work` are outside this
+catalog. Managed Task accepts only effective read-only built-in reviewer or
+verifier profiles. They inherit the frozen recipe and receive at most `bash`,
+`glob`, `grep`, `read`, and `skill`, intersected with a structured
+manifest when present.
 
 Write-capable isolated tasks return an undelivered worktree. The host inspects
 committed, staged, working, deleted, renamed, and untracked paths, runs only the
@@ -191,12 +223,36 @@ or a wider manifest.
 
 Trusted local checks create immutable receipts bound to the task brief,
 acceptance contract, repository identity and state, configuration, check set,
-and full-output artifact hashes. A configured `trusted_verification_recipe` is
-frozen into `VerificationState` when `AgentLoop` starts. After a current verifier
-PASS, no-argument `verify_work` executes only that prebound plan against the
-active candidate and current main HEAD. `land_work` revalidates its receipt,
-merges, and reports the merge commit SHA; it does not persist a separate landing
-record.
+and full-output artifact hashes. A configured `trusted_verification_recipe` may
+come from host-controlled user, `VIBE_` environment, or programmatic config;
+project TOML entries are removed case-insensitively. The recipe forces the
+verification subsystem on and is frozen into `VerificationState` when
+`AgentLoop` starts. Managed reviewer and verifier children inherit the frozen
+value. After a current verifier PASS, no-argument `verify_work` executes only
+that prebound plan against the active candidate and current main HEAD.
+`land_work` revalidates its receipt, merges, and reports the merge commit SHA; it
+does not persist a separate landing record.
+
+Topology-bound verification is also a receipt-only path: `verify_work` may run
+against its frozen baseline/candidate without an active worktree-manager handle,
+while `land_work` remains limited to the normal host-managed landing session.
+
+Trusted checks run direct argument arrays with `shell=False`; a shell or `env`
+cannot be the executable, and either is rejected behind `uv run`. They use an
+independent fail-closed Bubblewrap/Seatbelt sandbox with network disabled,
+scrubbed host credentials and config, disposable home/temp/caches, candidate and
+Git metadata read-only, and only a per-check run directory writable. The runner
+compares repository state before and after all checks.
+
+A recipe may also carry a frozen execution topology. In that mode the host
+validates physical control and candidate worktrees, exact lifecycle metadata and
+SHAs, completed dependencies, and a durable external evidence directory before
+the first model turn. Packet/status metadata must be regular tracked blobs at
+the exact control commit, and Git probes discard ambient `GIT_*` variables and
+user/system configuration. Evidence must be outside the system temporary tree
+and may neither contain nor be contained by any worktree or Git common
+directory. Control, evidence, Git administration, host logs, and receipts remain
+read-only to model tools; sandbox startup fails closed for managed sessions.
 
 The host finishes all intended candidate edits and any commit required by the
 current workflow before verifier dispatch, then does not mutate it while
@@ -215,6 +271,13 @@ authorization only when the delivered workspace exactly matches that candidate.
 Pasted verification prose never authorizes a merge. The
 documentation-only `trivial: <reason>` waiver is available only in this
 unconfigured mode.
+
+Verifier attempts retain a typed disposition independently of raw output. An
+incomplete task, denied/skipped action, stale candidate, failed trusted check,
+or missing receipt cannot be overwritten by a textual `VERDICT: PASS`; the host
+replaces contradictory parent completion prose before it is streamed. Repeated
+same-class filesystem, policy, or sandbox capability failures stop the turn
+after three attempts.
 
 ## System Prompt Assembly
 
@@ -265,7 +328,7 @@ The ACP server is an alternative frontend driven by external ACP clients (editor
 
 ## Key Architectural Patterns
 
-1. **Mixin composition** — `AgentLoop` is assembled from 4 focused mixins, each with a documented implicit contract
+1. **Mixin composition** — `AgentLoop` is assembled from 6 focused mixins, each with a documented implicit contract
 2. **Protocol-based backend** — `BackendLike` protocol enables dependency injection and test mocking
 3. **Lazy initialization** — MCP SDK import, connector setup, and system prompt assembly are deferred to background threads
 4. **Layered config** — TOML + env + harness files, with trust resolution and patch system

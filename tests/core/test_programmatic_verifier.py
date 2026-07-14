@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from io import StringIO
 from typing import Any, cast
 
+import orjson
 from pydantic import BaseModel, ConfigDict
 import pytest
 
@@ -10,7 +12,11 @@ from tests.stubs.fake_backend import FakeBackend
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.agents.models import BUILTIN_AGENTS, BuiltinAgentName
 from vibe.core.loop import LoopManager
-from vibe.core.output_formatters import TextOutputFormatter
+from vibe.core.output_formatters import (
+    JsonOutputFormatter,
+    StreamingJsonOutputFormatter,
+    TextOutputFormatter,
+)
 from vibe.core.programmatic import (
     ProgrammaticOptions,
     _drive_programmatic_turn,
@@ -18,6 +24,7 @@ from vibe.core.programmatic import (
     _wire_isolated_approval,
 )
 from vibe.core.types import ApprovalResponse, AssistantEvent, ToolResultEvent
+from vibe.core.utils import ConversationLimitException
 
 
 class _NoScheduledLoops:
@@ -52,6 +59,17 @@ class _SkippedThenPassLoop:
         )
         self.pass_emitted = True
         yield AssistantEvent(content="VERDICT: PASS")
+
+
+class _CapabilityStoppedLoop:
+    async def act(self, prompt: str):
+        yield AssistantEvent(
+            content=(
+                "<vibe_stop>HOST CAPABILITY STATUS: BLOCKED\n"
+                "Three consecutive filesystem failures.</vibe_stop>"
+            ),
+            stopped_by_middleware=True,
+        )
 
 
 def test_programmatic_host_profile_permission_does_not_mark_loop_as_subagent(
@@ -124,6 +142,42 @@ async def test_programmatic_nonverifier_keeps_existing_skipped_tool_behavior() -
 
     assert loop.pass_emitted
     assert formatter.finalize() == "VERDICT: PASS"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "formatter_type", [JsonOutputFormatter, StreamingJsonOutputFormatter]
+)
+async def test_programmatic_json_surfaces_capability_stop(
+    formatter_type: type[JsonOutputFormatter] | type[StreamingJsonOutputFormatter],
+) -> None:
+    stream = StringIO()
+    formatter = formatter_type(stream)
+
+    with pytest.raises(ConversationLimitException):
+        await _drive_programmatic_turn(
+            cast(AgentLoop, _CapabilityStoppedLoop()),
+            formatter,
+            ProgrammaticOptions(agent_name=BuiltinAgentName.REVIEWER),
+            "review",
+            cast(LoopManager, _NoScheduledLoops()),
+        )
+
+    raw = stream.getvalue()
+    records = (
+        orjson.loads(raw)
+        if formatter_type is JsonOutputFormatter
+        else [orjson.loads(line) for line in raw.splitlines()]
+    )
+    assert len(records) == 1
+    [record] = records
+    assert record["role"] == "assistant"
+    assert record["content"] == (
+        "<vibe_stop>HOST CAPABILITY STATUS: BLOCKED\n"
+        "Three consecutive filesystem failures.</vibe_stop>"
+    )
+    assert record["reasoning_content"] is None
+    assert record["tool_calls"] is None
 
 
 @pytest.mark.asyncio

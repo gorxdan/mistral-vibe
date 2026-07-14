@@ -103,11 +103,13 @@ class ToolManager:
         defer_mcp: bool = False,
         permission_getter: Callable[[str], ToolPermission | None] | None = None,
         runtime_allowlist: frozenset[str] | None = None,
+        authoritative_runtime_allowlist: bool = False,
         host: bool = True,
     ) -> None:
         self._config_getter = config_getter
         self._permission_getter = permission_getter
         self._runtime_allowlist = runtime_allowlist
+        self._authoritative_runtime_allowlist = authoritative_runtime_allowlist
         self._host = host
         # None until MCP is actually needed: constructing MCPRegistry imports
         # the mcp SDK (~100ms), which must stay off the interactive cold start.
@@ -322,7 +324,7 @@ class ToolManager:
                     for name, cls in result.items()
                     if not name_matches(name, self._config.disabled_tools)
                 }
-        elif self._config.disabled_tools:
+        elif self._config.disabled_tools and not self._authoritative_runtime_allowlist:
             result = {
                 name: cls
                 for name, cls in result.items()

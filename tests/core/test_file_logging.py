@@ -284,6 +284,21 @@ class TestApplyLoggingConfig:
         assert isinstance(handler, RotatingFileHandler)
         assert handler.maxBytes == 5242880
 
+    def test_unwritable_log_directory_falls_back_without_crashing(self) -> None:
+        mock_dir = MagicMock()
+        mock_dir.path.mkdir.side_effect = PermissionError("read-only")
+        mock_file = MagicMock()
+        test_logger = logging.getLogger("test_readonly_log_dir")
+
+        with (
+            patch("vibe.core.logger.LOG_DIR", mock_dir),
+            patch("vibe.core.logger.LOG_FILE", mock_file),
+        ):
+            apply_logging_config(test_logger)
+
+        assert isinstance(test_logger.handlers[-1], logging.StreamHandler)
+        assert isinstance(test_logger.handlers[-1].formatter, StructuredLogFormatter)
+
 
 class TestProdFileLogIsolation:
     def test_vibe_logger_has_no_file_handler_under_tests(self) -> None:

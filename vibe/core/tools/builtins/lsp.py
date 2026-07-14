@@ -36,6 +36,12 @@ from vibe.core.lsp._types import (
     path_from_uri,
     uri_from_path,
 )
+from vibe.core.tools._model_read_policy import (
+    ManagedReadPolicyError,
+    managed_read_policy_active,
+    managed_read_scope,
+    resolve_managed_read_path,
+)
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -218,6 +224,9 @@ class Lsp(
             return False
         if config is None:
             return True
+        recipe = getattr(config, "trusted_verification_recipe", None)
+        if recipe is not None and recipe.execution_topology is not None:
+            return False
         return "lsp" in getattr(config, "installed_components", [])
 
     def resolve_permission(self, args: LspArgs) -> PermissionContext | None:
@@ -254,6 +263,22 @@ class Lsp(
         config = VibeConfig.load()
         return setup_lsp_for_config(config, lambda: config, Path.cwd())
 
+    @staticmethod
+    def _managed_file_path(args: LspArgs, ctx: InvokeContext | None) -> str | None:
+        if not managed_read_policy_active(ctx):
+            return None
+        if args.file_path is None:
+            if args.operation in {LspOperation.STATUS, LspOperation.WORKSPACE_SYMBOL}:
+                raise ToolError(
+                    f"managed {args.operation.value} requires an allowed file_path"
+                )
+            return None
+        try:
+            resolved = resolve_managed_read_path(args.file_path, ctx)
+        except ManagedReadPolicyError as exc:
+            raise ToolError(str(exc)) from exc
+        return None if resolved is None else str(resolved)
+
     async def run(
         self, args: LspArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | LspResult, None]:
@@ -270,6 +295,7 @@ class Lsp(
             raise ToolError(
                 "workspace_symbol is unavailable under a path-scoped task contract"
             )
+        managed_file_path = self._managed_file_path(args, ctx)
         manager = self._ensure_manager()
         if manager is None:
             if isolated_worktree_root() is not None:
@@ -288,14 +314,14 @@ class Lsp(
             raise ToolError("LSP is not enabled. Run /lspstall to enable it.")
         if args.operation is LspOperation.STATUS:
             file_path = (
-                self._resolve_readiness_path(args.file_path)
+                self._resolve_readiness_path(managed_file_path or args.file_path, ctx)
                 if args.file_path is not None
                 else None
             )
             snapshot = manager.readiness(file_path)
             yield self._format_readiness(snapshot)
             return
-        raw_path = args.file_path
+        raw_path = managed_file_path or args.file_path
         if raw_path is None:
             if args.operation is LspOperation.WORKSPACE_SYMBOL:
                 if not args.query:
@@ -314,7 +340,7 @@ class Lsp(
                 f"{args.operation.value} requires file_path. Only "
                 "workspace_symbol and status may omit it."
             )
-        file_path = self._resolve_path(raw_path)
+        file_path = self._resolve_path(raw_path, ctx)
         binding = self._query_binding(manager, args, file_path, ctx)
         if args.continuation_token is not None:
             resumed = self._resume_page(args, binding)
@@ -460,19 +486,11 @@ class Lsp(
         yield self._scope_result(result, ctx)
 
     def _scope_result(self, result: LspResult, ctx: InvokeContext | None) -> LspResult:
-        if ctx is None or ctx.task_contract is None or not result.locations:
+        if not result.locations:
             return result
-        locations = [
-            location
-            for location in result.locations
-            if ctx.task_contract.allows_search_result(
-                path_from_uri(
-                    location.get("uri", "")
-                    or (location.get("data") or {}).get("uri", "")
-                )
-            )
-        ]
-        if len(locations) == len(result.locations):
+        locations = self._filter_managed_locations(result.locations, ctx)
+        locations = self._filter_task_locations(locations, ctx)
+        if locations == result.locations:
             return result
         first_line = result.summary.splitlines()[0]
         label = first_line.split(" (", 1)[0].removesuffix(":")
@@ -509,6 +527,36 @@ class Lsp(
             )
         ]
 
+    @staticmethod
+    def _filter_managed_locations(
+        locations: list[dict[str, Any]], ctx: InvokeContext | None
+    ) -> list[dict[str, Any]]:
+        scope = managed_read_scope(ctx)
+        if scope is None:
+            return locations
+        kept: list[dict[str, Any]] = []
+        for location in locations:
+            data = location.get("data")
+            nested_uri = data.get("uri", "") if isinstance(data, dict) else ""
+            uri = str(location.get("uri", "") or nested_uri)
+            if not uri.startswith("file:"):
+                continue
+            try:
+                resolved = scope.resolve(path_from_uri(uri))
+            except ManagedReadPolicyError:
+                continue
+            canonical_uri = uri_from_path(resolved)
+            canonical = dict(location)
+            if location.get("uri"):
+                canonical["uri"] = canonical_uri
+            else:
+                data = location.get("data")
+                if not isinstance(data, dict):
+                    continue
+                canonical["data"] = {**data, "uri": canonical_uri}
+            kept.append(canonical)
+        return kept
+
     async def _dispatch(
         self,
         manager: Any,
@@ -531,9 +579,12 @@ class Lsp(
                 params = {**text_doc, **(extra or {})}
                 raw, _ = await manager.send_request(file_path, method, params)
             if formatter == self._format_locations:
-                filtered = await self._filter_gitignored(self._as_location_list(raw))
+                filtered = self._filter_managed_locations(
+                    self._as_location_list(raw), ctx
+                )
+                filtered = await self._filter_gitignored(filtered)
                 filtered = self._filter_task_locations(filtered, ctx)
-                normalized = await self._normalize_location_positions(filtered)
+                normalized = await self._normalize_location_positions(filtered, ctx)
                 page = self._page_items(
                     normalized,
                     binding=binding
@@ -543,7 +594,7 @@ class Lsp(
                 )
                 return formatter(label, list(page.items), page=page)
             if formatter == self._format_symbols:
-                symbols = await self._normalize_symbols(raw, uri)
+                symbols = await self._normalize_symbols(raw, uri, ctx)
                 return self._page_symbol_records(
                     label,
                     symbols,
@@ -562,7 +613,7 @@ class Lsp(
             raw, _ = await manager.send_request(
                 file_path, "workspace/symbol", {"query": query}
             )
-            symbols = await self._normalize_symbols(raw, "")
+            symbols = await self._normalize_symbols(raw, "", ctx)
             return self._page_symbol_records(
                 f"Workspace symbols matching '{query}'",
                 symbols,
@@ -898,9 +949,10 @@ class Lsp(
                     manager, file_path, text_doc, resolved
                 )
 
+        items = self._filter_managed_locations(items, ctx)
         if args.operation is LspOperation.PREPARE_CALL_HIERARCHY:
             items = self._filter_task_locations(items, ctx)
-            items = await self._normalize_location_positions(items)
+            items = await self._normalize_location_positions(items, ctx)
             page = self._page_items(
                 items,
                 binding=binding,
@@ -965,9 +1017,10 @@ class Lsp(
             if attempt < max_attempts - 1:
                 retries_used += 1
                 await asyncio.sleep(_CALL_HIERARCHY_BACKOFF[attempt])
+        out = self._filter_managed_locations(out, ctx)
         out = await self._filter_gitignored(out)
         out = self._filter_task_locations(out, ctx)
-        out = await self._normalize_location_positions(out)
+        out = await self._normalize_location_positions(out, ctx)
         page = self._page_items(
             out,
             binding=binding,
@@ -1277,9 +1330,20 @@ class Lsp(
         }
 
     async def _normalize_symbols(
-        self, raw: Any, document_uri: str
+        self, raw: Any, document_uri: str, ctx: InvokeContext | None = None
     ) -> list[NormalizedSymbol]:
         symbols = normalize_document_symbols(raw, document_uri)
+        if scope := managed_read_scope(ctx):
+            scoped: list[NormalizedSymbol] = []
+            for symbol in symbols:
+                if not symbol.uri.startswith("file:"):
+                    continue
+                try:
+                    resolved = scope.resolve(path_from_uri(symbol.uri))
+                except ManagedReadPolicyError:
+                    continue
+                scoped.append(replace(symbol, uri=uri_from_path(resolved)))
+            symbols = scoped
         texts: dict[str, str | None] = {}
         normalized: list[NormalizedSymbol] = []
         for symbol in symbols:
@@ -1406,8 +1470,9 @@ class Lsp(
         return out
 
     async def _normalize_location_positions(
-        self, locations: list[dict[str, Any]]
+        self, locations: list[dict[str, Any]], ctx: InvokeContext | None = None
     ) -> list[dict[str, Any]]:
+        locations = self._filter_managed_locations(locations, ctx)
         texts: dict[str, str | None] = {}
         normalized: list[dict[str, Any]] = []
         for location in locations:
@@ -1671,8 +1736,8 @@ class Lsp(
             return "\n".join(p.strip() for p in parts if p.strip())
         return str(contents).strip()
 
-    def _resolve_path(self, raw_path: str) -> str:
-        path = Path(self._resolve_readiness_path(raw_path))
+    def _resolve_path(self, raw_path: str, ctx: InvokeContext | None = None) -> str:
+        path = Path(self._resolve_readiness_path(raw_path, ctx))
         if not path.exists():
             raise ToolError(f"File not found at: {path}")
         if path.is_dir():
@@ -1686,13 +1751,20 @@ class Lsp(
         return str(path)
 
     @staticmethod
-    def _resolve_readiness_path(raw_path: str) -> str:
+    def _resolve_readiness_path(raw_path: str, ctx: InvokeContext | None = None) -> str:
         if not raw_path.strip():
             raise ToolError("file_path cannot be empty")
-        path = Path(raw_path).expanduser()
-        if not path.is_absolute():
-            path = Path.cwd() / path
-        path = path.resolve()
+        try:
+            managed_path = resolve_managed_read_path(raw_path, ctx)
+        except ManagedReadPolicyError as exc:
+            raise ToolError(str(exc)) from exc
+        if managed_path is None:
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            path = path.resolve()
+        else:
+            path = managed_path
         enforce_team_metadata_confine(path)
         enforce_isolated_confine(path)
         return str(path)

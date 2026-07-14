@@ -79,6 +79,11 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
         self.pending_judge_deferral = None
         judge = self._resolve_safety_judge()
         if judge is None:
+            judge_config = self.config.safety_judge
+            if judge_config.enabled and judge_config.model:
+                self.pending_judge_deferral = (
+                    f"configured safety judge {judge_config.model!r} is unavailable"
+                )
             return None, self.pending_judge_deferral
         # Drop cached verdicts when the judge model changes: a verdict produced
         # under one model must not be reused after swapping to another.

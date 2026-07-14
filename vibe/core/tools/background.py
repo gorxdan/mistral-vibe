@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
-import os
 from pathlib import Path
 import signal
 import time
@@ -15,6 +14,7 @@ import orjson
 from vibe.core.logger import logger
 from vibe.core.tasking import TaskOutcome
 from vibe.core.tools._background_delivery import prepare_background_completion
+from vibe.core.utils._process_groups import signal_owned_process_group
 
 if TYPE_CHECKING:
     import asyncio.subprocess
@@ -96,11 +96,8 @@ class _AsyncAgentRec:
 
 
 def _signal_proc_group(proc: asyncio.subprocess.Process, sig: int) -> None:
-    try:
-        os.killpg(os.getpgid(proc.pid), sig)
+    if signal_owned_process_group(proc.pid, sig):
         return
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
     try:
         if sig == signal.SIGKILL:
             proc.kill()

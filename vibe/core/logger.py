@@ -8,8 +8,6 @@ import re
 
 from vibe.core.paths import LOG_DIR, LOG_FILE
 
-LOG_DIR.path.mkdir(parents=True, exist_ok=True)
-
 logger = logging.getLogger("vibe")
 
 
@@ -41,8 +39,6 @@ def decode_log_message(encoded: str) -> str:
 
 
 def apply_logging_config(target_logger: logging.Logger) -> None:
-    LOG_DIR.path.mkdir(parents=True, exist_ok=True)
-
     max_bytes = int(os.environ.get("LOG_MAX_BYTES", 10 * 1024 * 1024))
 
     # DEBUG_MODE is the debugpy switch (see vibe/acp/entrypoint.py);
@@ -57,9 +53,21 @@ def apply_logging_config(target_logger: logging.Logger) -> None:
 
     # backupCount must be > 0: with 0, RotatingFileHandler never truncates on
     # rollover (rename-to-same-path is a no-op), so the file grows unbounded.
-    handler = RotatingFileHandler(
-        LOG_FILE.path, maxBytes=max_bytes, backupCount=3, encoding="utf-8"
-    )
+    try:
+        LOG_DIR.path.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            LOG_FILE.path, maxBytes=max_bytes, backupCount=3, encoding="utf-8"
+        )
+    except OSError as exc:
+        handler = logging.StreamHandler()
+        handler.setFormatter(StructuredLogFormatter())
+        handler.setLevel(logging.WARNING)
+        target_logger.setLevel(logging.DEBUG)
+        target_logger.addHandler(handler)
+        target_logger.warning(
+            "File logging is unavailable at %s; using stderr: %s", LOG_FILE.path, exc
+        )
+        return
     handler.setFormatter(StructuredLogFormatter())
     log_level = getattr(logging, log_level_str, logging.WARNING)
     handler.setLevel(log_level)

@@ -89,7 +89,7 @@ Initial release gates, to be tightened after the baseline is recorded:
 | Capability scaling | `baseline_tier_for` still uses only context-window size at `vibe/core/baseline_scaling.py:46-58`, which is not a proxy for tool-use reliability. SMALL drops long orchestration prose but retains compact investigation and verification invariants from `vibe/core/_prompt_invariants.py`. |
 | Task contracts | `TaskBrief` is frozen and bound out-of-band to up to eight trusted check IDs, recipe path scope, per-task spend limits, deadline, and canonical manifest digest. Tool calls and isolated candidate diffs are host-enforced; selected trusted checks run with argv and `shell=False`. Harness control-plane paths remain hard-denied. Task and team entry points retain legacy-string compatibility. |
 | Task outcomes | `TaskOutcome` has explicit succeeded/failed/blocked/retryable states and evidence fields. Team tasks persist outcomes, atomically requeue retryable work, and unlock dependencies only on success. The task tool preserves structured outcomes through asynchronous delivery; workflows preserve spend exhaustion as `BLOCKED`. |
-| Verification | An optional immutable `trusted_verification_recipe` is prebound at AgentLoop creation. After a current verifier PASS, no-argument `verify_work` executes only its exact checks and creates a durable receipt bound to task/contract/config, repository state, check definitions, and full-output hashes. Configured sessions require that receipt; unconfigured sessions require a current recorded verifier PASS. Model-authored workflow contracts gate delivery but never authorize landing. `land_work` revalidates the candidate and reports the merge commit SHA without persisting a separate landing record. |
+| Verification | An optional immutable `trusted_verification_recipe` is prebound at AgentLoop creation. After a current verifier PASS, no-argument `verify_work` executes only its exact checks and creates a durable receipt bound to task/contract/config, repository state, check definitions, and full-output hashes. Non-trivial landing requires that receipt. Without a recipe, only a locally validated documentation-only `trivial: <reason>` waiver may land; a recorded verifier PASS remains diagnostic evidence, not landing authority. Model-authored workflow contracts gate delivery but never authorize landing. `land_work` revalidates the candidate and reports the merge commit SHA without persisting a separate landing record. |
 | Tool repair | Tool argument parsing preserves bounded raw text and an exact structured diagnostic, then tries conservative fence/object/trailing-comma repair without inventing values. Schema strictness and formatter-call integration remain open. |
 | Result repair | Workflow schema repair reuses one `AgentLoop` conversation, applies deterministic JSON repair first, sends exact bounded diagnostics, stops on semantic repetition, and optionally routes one formatting or semantic escalation call by explicit purpose alias. |
 | Loop detection | `LoopDetectionMiddleware` still detects identical trailing calls. Workflow result repair now uses canonical semantic progress snapshots, per-failure retry budgets, no-progress/oscillation detection, escalation decisions, and episode metrics. Tool, acceptance-check, and provider retry paths retain their own bounded controllers; a single controller for every retry path remains open. |
@@ -402,10 +402,10 @@ being delivered.
 - [x] Parse verifier output into structured verdict plus nonempty command/output
   evidence, require one final verdict, reject contradictory PASS/FAIL evidence,
   and record only a complete successful verifier run.
-- [x] Reject model-authored `land_work` attestations and pasted reports. In
-  unconfigured sessions, accept only a current workspace-bound recorded pass or
-  a locally validated documentation-only `trivial: <reason>` waiver; configured
-  sessions require their trusted receipt.
+- [x] Reject model-authored `land_work` attestations and pasted reports.
+  Configured sessions require their trusted receipt. Without a recipe, accept
+  only a locally validated documentation-only `trivial: <reason>` waiver; a
+  workspace-bound verifier PASS remains diagnostic evidence.
 - [x] Bind the current in-memory pass to HEAD, index, working-tree diff, and
   untracked content. Invalidate it on workspace changes, mutating tools, session
   reset, or failed isolated-worktree delivery.

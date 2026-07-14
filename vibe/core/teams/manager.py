@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Iterator
 import contextlib
-import os
 from pathlib import Path
 import secrets
 import signal
@@ -26,6 +25,7 @@ from vibe.core.teams.models import (
     TeamSafetyMode,
 )
 from vibe.core.teams.task_store import TaskStore
+from vibe.core.utils._process_groups import signal_owned_process_group
 from vibe.core.utils.io import read_safe, write_safe
 
 if TYPE_CHECKING:
@@ -423,11 +423,8 @@ class TeamManager:
         grandchildren. Falls back to signaling just the direct child if the
         group lookup fails (e.g. the process already exited).
         """
-        try:
-            os.killpg(os.getpgid(proc.pid), sig)
+        if signal_owned_process_group(proc.pid, sig):
             return
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
         try:
             if sig == signal.SIGKILL:
                 proc.kill()

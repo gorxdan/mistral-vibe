@@ -62,9 +62,16 @@ class AgentManager:
 
     @property
     def available_agents(self) -> dict[str, AgentProfile]:
+        profiles = dict(self._discovered)
+        protected = {BuiltinAgentName.VERIFIER}
+        recipe = self._config.trusted_verification_recipe
+        if recipe is not None and recipe.execution_topology is not None:
+            protected.add(BuiltinAgentName.REVIEWER)
+        for name in protected:
+            profiles[name] = BUILTIN_AGENTS[name]
         return {
             name: profile
-            for name, profile in self._discovered.items()
+            for name, profile in profiles.items()
             if self._is_agent_available(name, profile)
         }
 
@@ -111,6 +118,13 @@ class AgentManager:
                 if not agent_file.is_file():
                     continue
                 if (agent := self._try_load_agent(agent_file)) is not None:
+                    if agent.name == BuiltinAgentName.VERIFIER:
+                        logger.warning(
+                            "Ignoring custom verifier agent at %s; verifier is a "
+                            "host-owned authority profile",
+                            agent_file,
+                        )
+                        continue
                     if agent.name in BUILTIN_AGENTS:
                         logger.info(
                             "Custom agent '%s' overrides builtin agent", agent.name

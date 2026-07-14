@@ -17,6 +17,7 @@ from uuid import uuid4
 import orjson
 from pydantic import BaseModel, ConfigDict
 
+from vibe.core.candidate_delivery import CandidateDelivery, CandidateDeliveryStatus
 from vibe.core.config import ModelPurpose
 from vibe.core.failure_diagnostic import FailureCategory
 from vibe.core.llm.exceptions import BackendError
@@ -26,12 +27,19 @@ from vibe.core.types import AssistantEvent, LLMUsage
 from vibe.core.usage import CostQuote, quote_usage
 from vibe.core.usage._context import SpendPurpose, SpendScopeKind
 from vibe.core.usage._session import SpendBudgetExceededError
+from vibe.core.utils._process_groups import signal_owned_process_group
 from vibe.core.verification_contract import (
     VerificationReport,
     VerificationReportError,
+    VerificationVerdict,
     parse_verification_report,
+    report_evidence_was_observed,
 )
-from vibe.core.verification_state import landing_base_sha
+from vibe.core.verification_state import (
+    VerificationState,
+    VerifierAttemptDisposition,
+    landing_base_sha,
+)
 from vibe.core.workflows._cache_identity import workflow_cache_identity
 from vibe.core.workflows._limits import (
     DEFAULT_BUDGET_TOTAL,
@@ -288,7 +296,7 @@ def _loop_log_path(loop: Any) -> Path | None:
 
 # A custom executor owns the whole spawn contract incl. the scratchpad grant
 # (VIBE_ISOLATED_SCRATCHPAD_DIR); without it children are worktree-confined only.
-type IsolatedStats = dict[str, int | float | bool]
+type IsolatedStats = dict[str, int | float | bool | list[str]]
 IsolatedExecutor = Callable[
     [str, str, str | None, int], Awaitable["str | tuple[str, IsolatedStats | None]"]
 ]
@@ -424,10 +432,17 @@ def _record_verifier_pass(
     if ctx is None or ctx.verification_state is None or result.report is None:
         return None
     state = ctx.verification_state
-    if result.candidate is None:
+    if result.candidate is None or result.generation is None:
         return "verified candidate binding was unavailable"
+    if not state.record_verifier_result(
+        result.generation,
+        VerifierAttemptDisposition.PASS,
+        "Workflow verifier PASS was recorded for the delivered candidate.",
+    ):
+        return "verifier attempt already reached a terminal disposition"
     state.record_verifier_pass(
         result.report,
+        verifier_attempt_generation=result.generation,
         verified_workspace_fingerprint=(
             result.candidate.candidate_workspace_fingerprint
         ),
@@ -436,9 +451,70 @@ def _record_verifier_pass(
     return None
 
 
-def _synth_delivered(delivered: Any) -> ContractReport:
-    report = ContractReport(passed=True, delivered=bool(delivered))
+def _ensure_workflow_verifier_terminal(
+    runtime: WorkflowRuntime,
+    result: _VerifierResult | None,
+    contract_report: ContractReport | None,
+) -> None:
+    ctx = runtime.parent_context
+    state = ctx.verification_state if ctx is not None else None
+    if state is None or result is None or result.generation is None:
+        return
+    latest = state.latest_verifier_attempt
+    if (
+        latest is None
+        or latest.generation != result.generation
+        or latest.disposition is not VerifierAttemptDisposition.PENDING
+    ):
+        return
+    delivered = bool(contract_report is not None and contract_report.delivered)
+    diagnostic = result.error or _verifier_recording_diagnostic(
+        runtime, result, delivered=delivered
+    )
+    if result.report is None:
+        disposition = VerifierAttemptDisposition.INVALID
+    elif result.report.verdict is VerificationVerdict.FAIL:
+        disposition = VerifierAttemptDisposition.FAIL
+    elif result.report.verdict is VerificationVerdict.PARTIAL:
+        disposition = VerifierAttemptDisposition.PARTIAL
+    elif delivered and diagnostic is None:
+        disposition = VerifierAttemptDisposition.PASS
+    else:
+        disposition = VerifierAttemptDisposition.INVALID
+    state.record_verifier_result(
+        result.generation,
+        disposition,
+        diagnostic
+        or "Workflow verifier PASS was recorded for the delivered candidate.",
+    )
+
+
+def _synth_delivered(delivery: CandidateDelivery | bool) -> ContractReport:
+    accepted = (
+        delivery.accepted if isinstance(delivery, CandidateDelivery) else delivery
+    )
+    report = ContractReport(
+        passed=True,
+        delivered=bool(accepted),
+        candidate_delivery=(
+            delivery if isinstance(delivery, CandidateDelivery) else None
+        ),
+    )
     return report
+
+
+async def _await_candidate_delivery(
+    operation: Awaitable[CandidateDelivery],
+) -> tuple[CandidateDelivery, asyncio.CancelledError | None]:
+    task = asyncio.ensure_future(operation)
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            return await asyncio.shield(task), cancellation
+        except asyncio.CancelledError as exc:
+            if task.done():
+                return task.result(), cancellation or exc
+            cancellation = cancellation or exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,7 +527,7 @@ class _VerifierResult:
 
     @property
     def passed(self) -> bool:
-        return self.report is not None and self.report.passed
+        return self.error is None and self.report is not None and self.report.passed
 
 
 async def _run_verifier_in_worktree(
@@ -488,6 +564,14 @@ async def _run_verifier_in_worktree(
             model=model,
             spend_context=spend_context,
         )
+    except asyncio.CancelledError:
+        if state is not None:
+            state.record_verifier_result(
+                generation,
+                VerifierAttemptDisposition.INVALID,
+                "Workflow verifier was cancelled before producing a terminal result.",
+            )
+        raise
     except Exception as exc:
         logger.warning("then='verifier' spawn failed: %s", exc)
         return _VerifierResult(
@@ -503,6 +587,19 @@ async def _run_verifier_in_worktree(
         logger.info("then='verifier' report rejected: %s", exc)
         return _VerifierResult(
             error=f"verifier report rejected: {exc}",
+            base_sha=base_sha,
+            generation=generation,
+            candidate=candidate,
+        )
+    if report.passed and not report_evidence_was_observed(
+        report, _verification_evidence_hashes(v_result.stats)
+    ):
+        return _VerifierResult(
+            report=report,
+            error=(
+                "verifier PASS evidence did not match output from eligible "
+                "host-observed verification commands"
+            ),
             base_sha=base_sha,
             generation=generation,
             candidate=candidate,
@@ -581,10 +678,24 @@ def _parse_stats(stderr_text: str) -> IsolatedStats | None:
                 for key in ("cost_initialized", "cost_estimated"):
                     if isinstance(data.get(key), bool):
                         stats[key] = data[key]
+                evidence_hashes = data.get("verification_evidence_hashes")
+                if isinstance(evidence_hashes, list) and all(
+                    isinstance(item, str) for item in evidence_hashes
+                ):
+                    stats["verification_evidence_hashes"] = evidence_hashes
                 return stats
             except (orjson.JSONDecodeError, ValueError, TypeError, AttributeError):
                 return None
     return None
+
+
+def _verification_evidence_hashes(stats: IsolatedStats | None) -> tuple[str, ...]:
+    if stats is None:
+        return ()
+    value = stats.get("verification_evidence_hashes")
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return ()
+    return tuple(value)
 
 
 @dataclass
@@ -595,6 +706,7 @@ class IsolatedResult:
     delivered: bool = False
     worktree_path: str | None = None
     branch: str | None = None
+    candidate_delivery: CandidateDelivery | None = None
     wt: Any = None
 
 
@@ -698,7 +810,7 @@ async def _spawn_isolated(
     import signal
     import sys
 
-    from vibe.core.worktree.ephemeral import deliver_ephemeral_worktree
+    from vibe.core.worktree.ephemeral import deliver_ephemeral_worktree_result
 
     base = os.environ.get("VIBE_ISOLATED_EXECUTOR_CMD")
     prefix = (
@@ -757,11 +869,13 @@ async def _spawn_isolated(
             # worktree — otherwise `git worktree remove` races a process that
             # still owns it.
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                if not signal_owned_process_group(proc.pid, signal.SIGTERM):
+                    proc.terminate()
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=3.0)
                 except TimeoutError:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    if not signal_owned_process_group(proc.pid, signal.SIGKILL):
+                        proc.kill()
                     await proc.wait()
             except (ProcessLookupError, PermissionError):
                 pass
@@ -785,9 +899,18 @@ async def _spawn_isolated(
             output = (stdout_pipe or b"").decode("utf-8", "replace")
     else:
         output = (stdout_pipe or b"").decode("utf-8", "replace")
-    delivered = deliver and await asyncio.to_thread(deliver_ephemeral_worktree, wt)
+    candidate_delivery = (
+        await asyncio.to_thread(deliver_ephemeral_worktree_result, wt)
+        if deliver
+        else None
+    )
+    delivered = bool(candidate_delivery is not None and candidate_delivery.accepted)
     return IsolatedResult(
-        output=output, stats=_parse_stats(stderr_text), delivered=delivered, wt=stamp_wt
+        output=output,
+        stats=_parse_stats(stderr_text),
+        delivered=delivered,
+        candidate_delivery=candidate_delivery,
+        wt=stamp_wt,
     )
 
 
@@ -805,14 +928,42 @@ def _open_isolated_log(log_path: Path | None) -> tuple[Any, Any]:
 def _maybe_reap_isolated_worktree(
     wt: Any, delivered: bool, result: IsolatedResult
 ) -> None:
-    from vibe.core.worktree.ephemeral import remove_ephemeral_worktree
+    from vibe.core.worktree.ephemeral import (
+        describe_ephemeral_worktree,
+        remove_ephemeral_worktree,
+    )
 
     if delivered:
         remove_ephemeral_worktree(wt, keep_if_changed=False)
         return
+    if result.candidate_delivery is None:
+        result.candidate_delivery = describe_ephemeral_worktree(
+            wt,
+            status=CandidateDeliveryStatus.PRESERVED,
+            diagnostic="candidate was not delivered and remains available for integration",
+        )
     removed = remove_ephemeral_worktree(wt, keep_if_changed=True)
     if not removed:
-        result.branch = wt.branch
+        if (
+            result.candidate_delivery is None
+            or result.candidate_delivery.branch == wt.branch
+        ):
+            result.candidate_delivery = describe_ephemeral_worktree(
+                wt,
+                status=CandidateDeliveryStatus.PRESERVED,
+                parent_sha_before=(
+                    result.candidate_delivery.parent_sha_before
+                    if result.candidate_delivery is not None
+                    else None
+                ),
+                diagnostic=(
+                    result.candidate_delivery.diagnostic
+                    if result.candidate_delivery is not None
+                    else "candidate remains available for integration"
+                ),
+            )
+        result.branch = result.candidate_delivery.branch or wt.branch
+        result.worktree_path = str(wt.path)
 
 
 @dataclass(frozen=True)
@@ -2266,7 +2417,16 @@ class WorkflowRuntime:
                 model=model,
                 then=then,
             )
-            return output, stats, contract_report, True, None
+            if contract_report is None:
+                return output, stats, None, True, None
+            delivered = contract_report.passed and contract_report.delivered
+            return (
+                output,
+                stats,
+                contract_report,
+                delivered,
+                None if delivered else contract_report.summary(),
+            )
         except (AgentCapExceeded, BudgetExhausted, SpendBudgetExceededError):
             raise
         except asyncio.CancelledError:
@@ -2307,9 +2467,13 @@ class WorkflowRuntime:
         agent: str,
     ) -> tuple[int, int]:
         if stats is not None:
-            return int(stats.get("prompt_tokens", 0)), int(
-                stats.get("completion_tokens", 0)
-            )
+            prompt_tokens = stats.get("prompt_tokens", 0)
+            completion_tokens = stats.get("completion_tokens", 0)
+            if isinstance(prompt_tokens, list):
+                prompt_tokens = 0
+            if isinstance(completion_tokens, list):
+                completion_tokens = 0
+            return int(prompt_tokens), int(completion_tokens)
         # Fall back to the reserved estimate so the budget cap stays enforced
         # (charging 0 would let isolated agents spend nothing against the cap).
         if completed:
@@ -2342,7 +2506,9 @@ class WorkflowRuntime:
         error_msg: str | None,
         output: str,
     ) -> SchemaValidationFailure | ContractFailure | None:
-        if contract_report is not None and not contract_report.passed:
+        if contract_report is not None and (
+            not contract_report.passed or not contract_report.delivered
+        ):
             return ContractFailure(
                 report=contract_report, error=error_msg or "contract failed"
             )
@@ -2377,7 +2543,9 @@ class WorkflowRuntime:
         then: str | None = None,
     ) -> tuple[str, IsolatedStats | None, ContractReport | None]:
         from vibe.core.worktree.ephemeral import (
-            deliver_ephemeral_worktree,
+            deliver_ephemeral_worktree_result,
+            deliver_verified_ephemeral_worktree_result,
+            describe_ephemeral_worktree,
             remove_ephemeral_worktree,
         )
 
@@ -2398,23 +2566,44 @@ class WorkflowRuntime:
         contract_report: ContractReport | None = None
         contract_base_sha: str | None = None
         verifier_result: _VerifierResult | None = None
+        validated_contract_candidate: VerifiedCandidate | None = None
         should_deliver = False
+        candidate_delivery: CandidateDelivery | None = None
         try:
             if contract is not None and wt is not None:
+                from vibe.core.workflows._verified_delivery import (
+                    VerifiedCandidateError,
+                    prepare_verified_candidate,
+                )
+
                 contract_base_sha = landing_base_sha()
-                contract_report = verify_contract(wt.path, contract)
-                should_deliver = contract_report.passed
-                if should_deliver and landing_base_sha() != contract_base_sha:
-                    should_deliver = False
+                try:
+                    validated_contract_candidate = await asyncio.to_thread(
+                        prepare_verified_candidate, wt
+                    )
+                except VerifiedCandidateError as exc:
                     contract_report = ContractReport(
                         passed=False,
                         violations=[
-                            ContractViolation(
-                                category="contract",
-                                message="landing base changed during contract validation",
-                            )
+                            ContractViolation(category="contract", message=str(exc))
                         ],
                     )
+                else:
+                    contract_report = verify_contract(wt.path, contract)
+                    should_deliver = contract_report.passed
+                    if should_deliver and landing_base_sha() != contract_base_sha:
+                        should_deliver = False
+                        contract_report = ContractReport(
+                            passed=False,
+                            violations=[
+                                ContractViolation(
+                                    category="contract",
+                                    message=(
+                                        "landing base changed during contract validation"
+                                    ),
+                                )
+                            ],
+                        )
             if (
                 then == "verifier"
                 and wt is not None
@@ -2425,11 +2614,15 @@ class WorkflowRuntime:
                     prepare_verified_candidate,
                 )
 
-                try:
-                    candidate = await asyncio.to_thread(prepare_verified_candidate, wt)
-                except VerifiedCandidateError as exc:
-                    verifier_result = _VerifierResult(error=str(exc))
-                else:
+                candidate = validated_contract_candidate
+                if candidate is None:
+                    try:
+                        candidate = await asyncio.to_thread(
+                            prepare_verified_candidate, wt
+                        )
+                    except VerifiedCandidateError as exc:
+                        verifier_result = _VerifierResult(error=str(exc))
+                if candidate is not None:
                     verifier_result = await _run_verifier_in_worktree(
                         self,
                         wt,
@@ -2437,6 +2630,10 @@ class WorkflowRuntime:
                         model,
                         self._new_process_spend_context(SpendPurpose.VERIFICATION),
                         candidate,
+                    )
+                if verifier_result is None:
+                    verifier_result = _VerifierResult(
+                        error="verifier candidate preparation did not produce a result"
                     )
                 should_deliver = verifier_result.passed
                 recording_diagnostic = _verifier_recording_diagnostic(
@@ -2464,34 +2661,171 @@ class WorkflowRuntime:
                             )
                         ],
                     )
-            if should_deliver and wt is not None:
-                delivered = await asyncio.to_thread(deliver_ephemeral_worktree, wt)
-                if contract_report is not None:
-                    contract_report.delivered = delivered
-                elif then == "verifier":
-                    contract_report = _synth_delivered(delivered)
-                if (
-                    delivered
-                    and verifier_result is not None
-                    and verifier_result.report is not None
-                ):
-                    recording_diagnostic = _record_verifier_pass(self, verifier_result)
-                    if recording_diagnostic is not None:
+            delivery_reservation: tuple[VerificationState, int] | None = None
+            if (
+                should_deliver
+                and verifier_result is not None
+                and verifier_result.generation is not None
+                and self.parent_context is not None
+                and self.parent_context.verification_state is not None
+            ):
+                state = self.parent_context.verification_state
+                if state.reserve_verifier_delivery(verifier_result.generation):
+                    delivery_reservation = (state, verifier_result.generation)
+                else:
+                    should_deliver = False
+                    contract_report = ContractReport(
+                        passed=False,
+                        violations=[
+                            ContractViolation(
+                                category="verifier",
+                                message=(
+                                    "verifier attempt was superseded before "
+                                    "candidate delivery"
+                                ),
+                            )
+                        ],
+                    )
+            try:
+                if should_deliver and wt is not None:
+                    delivery_cancellation: asyncio.CancelledError | None = None
+                    verified = (
+                        verifier_result.candidate
+                        if verifier_result is not None
+                        else validated_contract_candidate
+                    )
+                    if verified is not None:
+                        (
+                            candidate_delivery,
+                            delivery_cancellation,
+                        ) = await _await_candidate_delivery(
+                            asyncio.to_thread(
+                                deliver_verified_ephemeral_worktree_result,
+                                wt,
+                                expected_parent_sha=verified.parent_head,
+                                expected_parent_fingerprint=(
+                                    verified.parent_workspace_fingerprint
+                                ),
+                                expected_candidate_sha=verified.candidate_head,
+                                expected_candidate_fingerprint=(
+                                    verified.candidate_workspace_fingerprint
+                                ),
+                            )
+                        )
+                    else:
+                        (
+                            candidate_delivery,
+                            delivery_cancellation,
+                        ) = await _await_candidate_delivery(
+                            asyncio.to_thread(deliver_ephemeral_worktree_result, wt)
+                        )
+                    delivered = candidate_delivery.accepted
+                    if contract_report is not None:
+                        contract_report.delivered = delivered
+                        contract_report.candidate_delivery = candidate_delivery
+                    elif then == "verifier":
+                        contract_report = _synth_delivered(candidate_delivery)
+                    if (
+                        delivered
+                        and delivery_cancellation is None
+                        and verifier_result is not None
+                        and verifier_result.report is not None
+                    ):
+                        recording_diagnostic = _record_verifier_pass(
+                            self, verifier_result
+                        )
+                        if recording_diagnostic is not None:
+                            contract_report = ContractReport(
+                                passed=False,
+                                delivered=True,
+                                candidate_delivery=candidate_delivery,
+                                violations=[
+                                    ContractViolation(
+                                        category="verifier",
+                                        message=recording_diagnostic,
+                                    )
+                                ],
+                            )
+                    if delivery_cancellation is not None:
+                        if (
+                            verifier_result is not None
+                            and verifier_result.generation is not None
+                            and self.parent_context is not None
+                            and self.parent_context.verification_state is not None
+                        ):
+                            self.parent_context.verification_state.record_verifier_result(
+                                verifier_result.generation,
+                                VerifierAttemptDisposition.INVALID,
+                                "Workflow cancellation was deferred until candidate "
+                                "delivery finished.",
+                            )
+                        raise delivery_cancellation
+            finally:
+                if delivery_reservation is not None:
+                    state, generation = delivery_reservation
+                    if not state.release_authorization(generation):
                         contract_report = ContractReport(
                             passed=False,
-                            delivered=True,
+                            delivered=bool(
+                                candidate_delivery is not None
+                                and candidate_delivery.accepted
+                            ),
+                            candidate_delivery=candidate_delivery,
                             violations=[
                                 ContractViolation(
-                                    category="verifier", message=recording_diagnostic
+                                    category="verifier",
+                                    message=(
+                                        "verification authorization changed at "
+                                        "the candidate delivery boundary"
+                                    ),
                                 )
                             ],
                         )
         finally:
-            if wt is not None:
-                await asyncio.to_thread(
-                    remove_ephemeral_worktree,
-                    wt,
-                    keep_if_changed=not (contract_report and contract_report.delivered),
+            try:
+                if wt is not None:
+                    if candidate_delivery is None and contract_report is not None:
+                        candidate_delivery = describe_ephemeral_worktree(
+                            wt,
+                            status=CandidateDeliveryStatus.PRESERVED,
+                            diagnostic=(
+                                "candidate was not eligible for automatic integration"
+                            ),
+                        )
+                        contract_report.candidate_delivery = candidate_delivery
+                    removed = await asyncio.to_thread(
+                        remove_ephemeral_worktree,
+                        wt,
+                        keep_if_changed=not (
+                            contract_report and contract_report.delivered
+                        ),
+                    )
+                    if (
+                        not removed
+                        and contract_report is not None
+                        and not contract_report.delivered
+                    ):
+                        if (
+                            candidate_delivery is None
+                            or candidate_delivery.branch == getattr(wt, "branch", None)
+                        ):
+                            contract_report.candidate_delivery = describe_ephemeral_worktree(
+                                wt,
+                                status=CandidateDeliveryStatus.PRESERVED,
+                                parent_sha_before=(
+                                    candidate_delivery.parent_sha_before
+                                    if candidate_delivery is not None
+                                    else None
+                                ),
+                                diagnostic=(
+                                    candidate_delivery.diagnostic
+                                    if candidate_delivery is not None
+                                    else "candidate remains available for integration"
+                                ),
+                            )
+            finally:
+                _ensure_workflow_verifier_terminal(
+                    self, verifier_result, contract_report
                 )
         return result.output, result.stats, contract_report
 

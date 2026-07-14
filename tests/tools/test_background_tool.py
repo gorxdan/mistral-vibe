@@ -21,6 +21,8 @@ from vibe.core.tools.builtins.background import (
 )
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
 
+pytestmark = pytest.mark.process_e2e
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

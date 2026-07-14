@@ -161,7 +161,7 @@ No new required config. One optional field for tunability:
 - `stop` on an already-finalized task — return False, pane shows "already finished" (mirrors `on_workflows_app_agent_cancel_requested` at `app.py:3005-3010`).
 - Workflow live-agent `task_id` collision: an agent id could in principle contain `/`; agent ids are token-hex so they won't, but assert the split yields exactly two parts and fall back to "not found" otherwise.
 - `disable_workflows` config (`app.py:2800`): the Tasks pane stays available (processes/teams/loops are not workflows); only the Workflows category is hidden/empty.
-- App exit / ctrl+c with background processes running — `BackgroundRegistry.shutdown()` in the app's exit path terminates all owned processes (reuse `_terminate_proc` logic). Without this, backgrounded servers orphan to init. Mirror `TeamManager`'s `_signal_proc_group` (`manager.py:262-280`) for process-group reaping.
+- App exit / ctrl+c with background processes running — `BackgroundRegistry.shutdown()` in the app's exit path terminates all owned processes (reuse `_terminate_proc` logic). Group signaling is allowed only when the child PID is still both its session and process-group leader; otherwise signal the direct child. Without this, backgrounded servers may orphan to init.
 - TUI `!cmd` integration: optional v2 — surface `self._bash_task` as a `process`-category entry via the `attach_tui_bash` adapter. v1 can skip this since `!cmd` is foreground-blocking anyway.
 - Standalone `task`-tool subagents (not in a workflow) are currently untracked everywhere. **Open question Q3** — instrument the `task` tool to register them, or defer to v2.
 - Log file growth: a chatty server can write GBs. Cap log writes via a rotating handler or a size ceiling (`tools.bash.background_max_log_bytes`, default 16 MiB) — truncate-from-front when exceeded.
@@ -172,20 +172,21 @@ No new required config. One optional field for tunability:
 - Unit: id routing table — `proc-1`→terminate, `wf-2`→`WorkflowRunner.stop`, `wf-2/live-a7`→`cancel_agent("wf-2","a7")`, `team:bob`→`stop_teammate("bob")`, `loop-l9k2`→loop cancel, unknown→False.
 - Unit (`bash.py`): `background=True` with a registry spawns and returns immediately with `background_task_id`/`pid` set, does NOT call `communicate()`, does NOT kill the proc in finally. `background=True` without registry raises `ToolError`. `background=False` is byte-identical to today (regression: assert `communicate` IS awaited).
 - Unit (`background` tool): `list` returns the registry's entries; `stop` returns True/False from the registry; permission resolves to `ALWAYS`.
-- Integration: launch a backgrounded `sleep 30`, confirm it appears in the registry as running, `stop` it, confirm status flips and the proc is reaped.
-- Integration: backgrounded server (`python -m http.server`) — confirm the port is live after the tool returns, the pane tails the log, and `stop` frees the port.
+- Default suite: mock `getpgid`, `getsid`, `killpg`, and direct-child signals while proving the ownership guard and fallback.
+- Manual `process_e2e`: on a disposable non-graphical host with `-n0`, launch a backgrounded `sleep 30`, confirm it appears in the registry as running, stop it, and confirm the process is reaped.
+- Manual `process_e2e`: under the same isolation, launch `python -m http.server`, confirm the port is live after the tool returns, tail the log, and prove stop frees the port.
 - TUI snapshot test (if the repo has them): `TasksApp` renders the category filter, lists entries from a fake registry, `x` emits `TaskStopRequested` with the right id, drill-down tails a fake log.
 - Regression: `ctrl+w` still opens the pane; `/workflows` still works as an alias; `_BUSY_ALLOWED_COMMANDS` admits `/tasks` while the agent is busy.
 - Exit hygiene: app shutdown terminates all owned background processes (no orphans).
 
 ## Risks
 
-- **Orphaned processes** — the highest-stakes risk. A backgrounded server whose parent vibe exits must be reaped; otherwise the feature leaks processes every session. Mitigation: `start_new_session=True` + `BackgroundRegistry.shutdown()` in the app exit path using process-group signaling; also consider `PR_SET_PDEATHSIG` (Linux) so the child dies if vibe dies. Must be tested.
+- **Orphaned processes** — the highest-stakes risk. A backgrounded server whose parent vibe exits should be reaped; otherwise the feature leaks processes every session. Mitigation: `start_new_session=True` + `BackgroundRegistry.shutdown()` with a signal-time ownership check and direct-child fallback; also consider `PR_SET_PDEATHSIG` (Linux). Default tests mock signals; real probes are opt-in and isolated.
 - **Refactor blast radius** — replacing `WorkflowsApp` touches the enum, keybindings, command registry, and ~6 message handlers. Keeping `/workflows` + `ctrl+w` as aliases and keeping `WorkflowSaveApp` separate contains it, but it's the riskiest part of the change.
 - **Log file resource use** — unbounded logs from chatty servers. Mitigation: size cap with front-truncation; document.
 - **Two ways to cancel** — the `background` tool and the Tasks pane both call `registry.stop`; they must stay consistent. Mitigation: single code path, both are thin callers.
 - **`disable_workflows` interaction** — the pane must not break when workflows are disabled. Mitigation: only the Workflows category hides.
-- **Process-group reach** — a backgrounded `npm run dev` spawns children; terminating only the shell PID orphans the children. Mitigation: reuse `TeamManager._signal_proc_group` (start_new_session + `os.killpg(os.getpgid(pid))`).
+- **Process-group reach** — a backgrounded `npm run dev` spawns children; terminating only the shell PID can orphan them. Mitigation: create a new session, then call `killpg` only if signal-time `getpgid(pid) == pid` and `getsid(pid) == pid`; otherwise signal only the direct child.
 - **Scope creep** — standalone `task`-subagent tracking and TUI `!cmd` integration are tempting to fold in; both should be v2 to keep this shippable.
 
 ## Open questions (need your call before implementation)

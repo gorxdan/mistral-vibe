@@ -1043,11 +1043,31 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
   appends a nudge when a 3+ item list closes without a verify step. With a
   `trusted_verification_recipe`, the no-argument `verify_work`
   tool runs its session-prebound checks after the verifier PASS and records the
-  durable receipt required by `land_work`. Without a recipe, the current recorded
-  verifier PASS can authorize landing. Model-authored workflow contracts gate delivery
-  but cannot authorize landing. Pasted report prose is rejected
-  in either mode. `land_work` reports the merge commit SHA; it does not persist a
-  separate landing record.
+  durable receipt required by non-trivial `land_work`. Without a recipe, only a
+  locally validated documentation-only trivial waiver may land; a legacy
+  verifier PASS is diagnostic only. Model-authored workflow contracts gate delivery
+  but cannot authorize landing. The result's `completed`, `outcome`, and receipt
+  state outrank raw subagent prose; contradictory success prose is replaced with
+  a host BLOCKED/PARTIAL status before emission. Pasted report prose is rejected
+  in either mode. Trusted checks are argv-only and reject shell executables, so
+  pipelines cannot mask exit status. Non-executing, failure-masking, and empty
+  selector modes are rejected. dotnet test, pytest, unittest, and cargo test
+  must report positive executed-test counts. go test must emit at least one
+  verbose `--- PASS:` record unless an explicit count contract is supplied;
+  npm/pnpm/yarn/bun test, make test, tox, nox, Jest, and Vitest always require
+  that contract. A custom count regex contains a named integer `count` group;
+  all observed counts agree and meet a minimum of at least one. Unknown runners
+  additionally require `custom_runner = true` and required output. Every check
+  pins the host executable digest and a separate host-owned
+  environment-attestation file and digest. Trusted checks are Linux
+  Bubblewrap-only (not Seatbelt), run offline against an exact-HEAD Git-exported
+  snapshot with no Git metadata, use a pre-provisioned absolute or
+  sanitized-`PATH` executable, never bootstrap through `uv` or pre-commit, use
+  disposable state, and cap combined output at 1 MiB.
+  `land_work` reports the merge commit SHA; it does not persist a separate
+  landing record. Verified delivery and landing authorize an exact object ID
+  and update the destination ref with compare-and-swap, so a moved ref fails
+  instead of substituting its new target.
 
 Custom agents are TOML files in `~/.vibe/agents/NAME.toml`.
 
@@ -1063,10 +1083,46 @@ allowed_paths = ["vibe/**", "tests/**"]
 
 [[trusted_verification_recipe.checks]]
 name = "focused-tests"
-argv = ["uv", "run", "pytest", "-q", "tests/tools"]
+argv = ["/opt/vibe-checks/bin/python3.12", "-m", "pytest", "-n0", "-q", "tests/tools"]
 cwd = "."
 timeout_seconds = 600
+executable_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+environment_attestation_path = "/opt/vibe-checks/environment.json"
+environment_attestation_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ```
+
+Every trusted-recipe check must name a pre-provisioned direct executable, pin
+its full lowercase `executable_sha256`, and pair an absolute
+`environment_attestation_path` with its full lowercase
+`environment_attestation_sha256`. The executable must be native rather than a
+shebang wrapper; invoke a pinned interpreter and pass `-m <module>` or a script
+path as arguments. The runner executes a private read-only copy of the verified
+executable. The attestation is a host assertion, not a transitive hash of every
+runtime dependency. A custom runner also sets
+`custom_runner = true`, supplies required output, and binds
+`test_count_pattern` with a named `count` group to
+`minimum_test_count >= 1`.
+
+For a managed campaign, add
+`[trusted_verification_recipe.execution_topology]` with `packet_id`,
+repository-relative `packet_path`, `state` (`active` or `verification`), absolute
+control/candidate/evidence paths, full control/baseline/upstream SHAs, candidate
+branch, run/runner IDs, `max_turns`, and `max_session_tokens`. Verification also
+requires `candidate_sha` and `evidence_manifest_sha256`; active state forbids
+both. AgentLoop fails before model work unless both physical worktrees, clean
+SHAs, packet/status metadata, dependencies, exact sorted scenario IDs, durable
+non-temporary evidence, and the canonical manifest digest agree. Manifest
+validation holds its lock, requires empty reservations, strict canonical JSON,
+exact inventories and artifact hashes, and the committed candidate `uv.lock`
+digest. The host commits candidate/scenario verification state first, finalizes
+evidence, then records its digest in a second final control commit; only then
+does it start the fresh verification AgentLoop. Topology turn/token values cap
+runtime. Model reads are confined to candidate/control/evidence roots,
+scratchpad, host skills, and active prompt files; host logs, receipts, runtime
+state, and unrelated paths remain denied. The host owns transitions, commits,
+checks, and receipts. The verification candidate is model-read-only and
+`verify_work` uses the bound baseline/candidate without requiring an active
+worktree-manager handle.
 
 `task.task` accepts a frozen structured `TaskBrief` object with an objective, named
 inputs, allowed and denied change paths, trusted acceptance-check IDs, optional
@@ -1077,7 +1133,8 @@ manifest, and read-only profiles reject write-capable manifests. A worker cannot
 discover tools outside the bound 6-8 tool manifest. Task-bound discovery imports
 canonical builtins only, and harness control-plane paths remain host-owned.
 Write-capable candidates are
-inspected and checked in their isolated worktree before fast-forward delivery;
+inspected and checked in their isolated worktree before exact-object,
+compare-and-swap delivery;
 only selected prebound argv checks execute, with `shell=False`. The result
 includes a `TaskOutcome` status (`succeeded`, `failed`, `blocked`, or `retryable`)
 plus evidence, diagnostics, changed paths, receipt ID, and remaining work. Legacy
@@ -1446,15 +1503,24 @@ process), `wf-N` (workflow run), `wf-N/live-AGENT` (in-flight agent),
 
 ### Backgrounding processes
 
-The bash tool takes `background: bool`. When true, it spawns the command,
+In ordinary non-topology sessions the bash tool takes `background: bool`. When
+true, it spawns the command,
 registers it in the background registry, redirects stdout/stderr to a log under
 the scratchpad, and returns immediately with a `background_task_id` (e.g.
 `proc-3`) and the OS pid — the agent turn does NOT block on the command. Use
 this for dev servers, watchers, and any long-lived process. Tail the output via
 the `background` tool (`action='list', tail=50`) or the Tasks pane, and stop it
 via `background action='stop', task_id='proc-3'` or the pane's `x` key.
-Backgrounded processes are reaped on app exit so a forgotten server doesn't
-orphan.
+Backgrounded processes are reaped on app exit on a best-effort basis. Cleanup
+signals a process group only while the child PID is verified as both its group
+and session leader; otherwise it signals the direct child. Default and xdist
+tests mock signal calls, while real teardown probes belong only on disposable
+isolated hosts outside graphical login sessions. Those `process_e2e` tests are
+skipped by default and require
+`VIBE_PROCESS_E2E_DISPOSABLE=1 uv run pytest -n0 --run-process-e2e ...`.
+Strict topology-bound model Bash rejects `background=true`. Any live process,
+workflow, agent, team, or scheduled loop invalidates verifier authorization
+until it terminates.
 
 ### Live status from a model turn
 

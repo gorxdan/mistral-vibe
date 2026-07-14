@@ -54,3 +54,17 @@ def test_update_system_prompt_notifies_only_when_requested() -> None:
     messages.update_system_prompt("loud", notify=True)
     assert len(observed) == 1
     assert observed[0].content == "loud"
+
+
+def test_silent_replacement_can_publish_only_the_authoritative_message() -> None:
+    observed: list[LLMMessage] = []
+    messages = MessageList(observer=observed.append)
+
+    with messages.silent():
+        messages.append(LLMMessage(role=Role.ASSISTANT, content="raw claim"))
+    messages.replace_at(
+        0, LLMMessage(role=Role.ASSISTANT, content="host-authoritative status")
+    )
+    messages.notify_at(0)
+
+    assert [message.content for message in observed] == ["host-authoritative status"]

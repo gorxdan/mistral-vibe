@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 import json
-import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -11,7 +10,18 @@ import pytest
 
 from tests.conftest import build_test_vibe_config
 from tests.mock.utils import collect_result
+from tests.trusted_verification import (
+    HOST_ENVIRONMENT as _HOST_ENVIRONMENT,
+    HOST_ENVIRONMENT_SHA256 as _HOST_ENVIRONMENT_SHA256,
+    HOST_PYTHON as _HOST_PYTHON,
+    HOST_PYTHON_SHA256 as _HOST_PYTHON_SHA256,
+)
 from vibe.core.agents.manager import AgentManager
+from vibe.core.candidate_delivery import (
+    CandidateDelivery,
+    CandidateDeliveryStatus,
+    CandidateIntegrationMethod,
+)
 from vibe.core.config import (
     TrustedVerificationCheckConfig,
     TrustedVerificationRecipeConfig,
@@ -35,13 +45,15 @@ from vibe.core.types import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from vibe.core.verification_contract import verification_observation_hashes
+from vibe.core.verification_state import VerificationState
+from vibe.core.workflows._verified_delivery import VerifiedCandidate
+
+_VERIFICATION_COMMAND = "uv run pytest tests/tools/test_task_contract.py"
 
 
 async def _noop_completion_wake() -> None:
     pass
-
-
-from vibe.core.verification_state import VerificationState
 
 
 def _recipe() -> TrustedVerificationRecipeConfig:
@@ -52,7 +64,11 @@ def _recipe() -> TrustedVerificationRecipeConfig:
         allowed_paths=("vibe/core/parser.py", "tests/core/test_parser.py"),
         checks=(
             TrustedVerificationCheckConfig(
-                name="focused", argv=(sys.executable, "-c", "raise SystemExit(0)")
+                name="focused",
+                argv=(str(_HOST_PYTHON), "-c", "raise SystemExit(0)"),
+                executable_sha256=_HOST_PYTHON_SHA256,
+                environment_attestation_path=str(_HOST_ENVIRONMENT),
+                environment_attestation_sha256=_HOST_ENVIRONMENT_SHA256,
             ),
         ),
     )
@@ -76,10 +92,21 @@ def _verify_brief() -> TaskBrief:
     )
 
 
+def _validated_candidate(path) -> VerifiedCandidate:
+    return VerifiedCandidate(
+        parent_path=path,
+        parent_head="a" * 40,
+        parent_workspace_fingerprint="parent-fingerprint",
+        candidate_path=path,
+        candidate_head="b" * 40,
+        candidate_workspace_fingerprint="candidate-fingerprint",
+    )
+
+
 def _verification_report(verdict: str = "PASS", result: str = "PASS") -> str:
     return (
         "### Check: focused\n"
-        "**Command run:** focused\n"
+        f"**Command run:** {_VERIFICATION_COMMAND}\n"
         "**Output observed:** passed\n"
         f"**Result: {result}**\n"
         f"VERDICT: {verdict}"
@@ -293,6 +320,9 @@ async def test_verifier_accepts_verify_manifest_and_terminal_verdict(
     mock_loop = MagicMock()
     mock_loop.act = mock_act
     mock_loop.messages = [LLMMessage(role=Role.ASSISTANT, content="done")]
+    mock_loop.successful_verification_evidence_hashes = verification_observation_hashes(
+        _VERIFICATION_COMMAND, "passed\n", ""
+    )
     ctx = _ctx()
     ctx.scratchpad_dir = tmp_path
     tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
@@ -323,10 +353,13 @@ async def test_in_process_success_requires_trusted_check_evidence() -> None:
                 TrustedVerificationCheckConfig(
                     name="focused",
                     argv=(
-                        sys.executable,
+                        str(_HOST_PYTHON),
                         "-c",
                         "import sys; print('exact check failure'); sys.exit(9)",
                     ),
+                    executable_sha256=_HOST_PYTHON_SHA256,
+                    environment_attestation_path=str(_HOST_ENVIRONMENT),
+                    environment_attestation_sha256=_HOST_ENVIRONMENT_SHA256,
                 ),
             )
         }
@@ -404,6 +437,41 @@ async def test_async_isolated_task_preserves_structured_outcome() -> None:
 
 
 @pytest.mark.asyncio
+async def test_legacy_isolated_undelivered_candidate_is_retryable() -> None:
+    from vibe.core.workflows.runtime import IsolatedResult
+
+    tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+    result = await tool._finalize_isolated_result(
+        TaskArgs(task="Implement the parser fix", agent="worker"),
+        _ctx(),
+        IsolatedResult(
+            output="Implemented the parser fix",
+            returncode=0,
+            delivered=False,
+            branch="vibe/iso/candidate",
+            worktree_path="/tmp/reclaimed-candidate",
+            candidate_delivery=CandidateDelivery(
+                status=CandidateDeliveryStatus.PRESERVED,
+                base_sha="a" * 40,
+                candidate_sha="b" * 40,
+                parent_sha_before="c" * 40,
+                parent_sha_after="c" * 40,
+                branch="vibe/iso/candidate",
+                worktree_path="/tmp/reclaimed-candidate",
+            ),
+        ),
+        contract=None,
+        verification_attempt=None,
+    )
+
+    assert result.outcome is not None
+    assert result.outcome.status is TaskOutcomeStatus.RETRYABLE
+    assert result.outcome.candidate_delivery is not None
+    assert result.outcome.candidate_delivery.candidate_sha == "b" * 40
+    assert result.branch == "vibe/iso/candidate"
+
+
+@pytest.mark.asyncio
 async def test_structured_isolated_scope_failure_never_delivers(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -423,7 +491,13 @@ async def test_structured_isolated_scope_failure_never_delivers(
         "vibe.core.tools.builtins.task.validate_task_candidate", lambda *args: candidate
     )
     monkeypatch.setattr(
-        ephemeral, "deliver_ephemeral_worktree", lambda wt: delivered.append(wt) or True
+        "vibe.core.workflows._verified_delivery.prepare_verified_candidate",
+        lambda wt: _validated_candidate(tmp_path),
+    )
+    monkeypatch.setattr(
+        ephemeral,
+        "deliver_verified_ephemeral_worktree_result",
+        lambda wt, **kwargs: delivered.append((wt, kwargs)),
     )
     monkeypatch.setattr(ephemeral, "remove_ephemeral_worktree", lambda *a, **k: False)
     wt = SimpleNamespace(path=tmp_path, base_sha="base", branch="candidate")
@@ -474,7 +548,13 @@ async def test_structured_isolated_failed_check_never_delivers(
         "vibe.core.tools.builtins.task.validate_task_candidate", lambda *args: candidate
     )
     monkeypatch.setattr(
-        ephemeral, "deliver_ephemeral_worktree", lambda wt: delivered.append(wt) or True
+        "vibe.core.workflows._verified_delivery.prepare_verified_candidate",
+        lambda wt: _validated_candidate(tmp_path),
+    )
+    monkeypatch.setattr(
+        ephemeral,
+        "deliver_verified_ephemeral_worktree_result",
+        lambda wt, **kwargs: delivered.append((wt, kwargs)),
     )
     monkeypatch.setattr(ephemeral, "remove_ephemeral_worktree", lambda *a, **k: False)
     wt = SimpleNamespace(path=tmp_path, base_sha="base", branch="candidate")
@@ -522,20 +602,63 @@ async def test_structured_isolated_verifier_pass_records_only_after_validation(
     monkeypatch.setattr(
         "vibe.core.tools.builtins.task.validate_task_candidate", lambda *args: candidate
     )
-    monkeypatch.setattr(ephemeral, "deliver_ephemeral_worktree", lambda wt: True)
-    monkeypatch.setattr(ephemeral, "remove_ephemeral_worktree", lambda *a, **k: True)
+    binding = _validated_candidate(tmp_path)
+    delivered: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "vibe.core.workflows._verified_delivery.prepare_verified_candidate",
+        lambda wt: binding,
+    )
+
+    def deliver_verified(wt, **kwargs):
+        delivered.append(kwargs)
+        return CandidateDelivery(
+            status=CandidateDeliveryStatus.LANDED,
+            base_sha=kwargs["expected_parent_sha"],
+            candidate_sha=kwargs["expected_candidate_sha"],
+            parent_sha_before=kwargs["expected_parent_sha"],
+            parent_sha_after=kwargs["expected_candidate_sha"],
+            branch=wt.branch,
+            worktree_path=str(wt.path),
+            integration_method=CandidateIntegrationMethod.FAST_FORWARD,
+        )
+
+    monkeypatch.setattr(
+        ephemeral, "deliver_verified_ephemeral_worktree_result", deliver_verified
+    )
+    monkeypatch.setattr(ephemeral, "remove_ephemeral_worktree", lambda *a, **k: False)
     wt = SimpleNamespace(path=tmp_path, base_sha="base", branch="candidate")
 
     result = await tool._finalize_isolated_result(
         TaskArgs(task=_verify_brief(), agent="verifier"),
         ctx,
-        IsolatedResult(output=_verification_report(), returncode=0, wt=wt),
+        IsolatedResult(
+            output=_verification_report(),
+            returncode=0,
+            stats={
+                "verification_evidence_hashes": list(
+                    verification_observation_hashes(
+                        _VERIFICATION_COMMAND, "passed\n", ""
+                    )
+                )
+            },
+            wt=wt,
+        ),
         contract=contract,
         verification_attempt=None,
     )
 
     assert result.outcome is not None
     assert result.outcome.succeeded
+    assert result.outcome.candidate_delivery is not None
+    assert result.outcome.candidate_delivery.status is CandidateDeliveryStatus.LANDED
+    assert delivered == [
+        {
+            "expected_parent_sha": binding.parent_head,
+            "expected_parent_fingerprint": binding.parent_workspace_fingerprint,
+            "expected_candidate_sha": binding.candidate_head,
+            "expected_candidate_fingerprint": binding.candidate_workspace_fingerprint,
+        }
+    ]
     assert ctx.verification_state is not None
     assert ctx.verification_state.has_pass()
 

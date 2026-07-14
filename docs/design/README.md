@@ -21,21 +21,26 @@ control, `cached_tokens` visibility).
   mergeability.
 - [Fork maintenance execution packets](fork-maintenance/README.md) - authority,
   campaign state, packet schema, and bounded Iteration 0 assignments.
+- [Harness integrity contract](harness-integrity.md) - host-provisioned execution
+  topology, protected control state, trusted checks, and completion authority for
+  managed agent work.
+- [Shell sandbox](sandbox.md) - current Bash and trusted-check confinement modes,
+  backend requirements, strict overrides, and fallback limits.
 
-## The six specs
+## Specs and runtime contracts
 
 | # | Spec | Closes (vs Claude Code) | Effort | Verdict |
 |---|------|--------------------------|--------|---------|
 | 1 | [output-escalation](output-escalation.md) | Max-output-token escalation (3× retry on response-too-long) | **M** | sound_with_fixes |
 | 2 | [compaction](compaction.md) | Multi-stage shaper pipeline (snip + microcompact) — the #1 gap | **L** | sound_with_fixes |
-| 3 | [sandbox](sandbox.md) | Shell sandboxing (safety layer 5) — the #1 security gap | **L** | sound_with_fixes |
+| 3 | [sandbox](sandbox.md) | Current shell and trusted-check sandbox contract | implemented | current |
 | 4 | [prompt-caching](prompt-caching.md) | Managed prompt caching + cache telemetry | **M** | sound_with_fixes |
 | 5 | [memory](memory.md) | File-based auto-memory (LLM-selected, no embeddings) | **L** | sound_with_fixes |
 | 6 | [hooks](hooks.md) | Hook breadth (6 new events) + plugin/bundle model | **XL** | sound_with_fixes |
 | 7 | [subagent-isolation](subagent-isolation.md) | Default worktree isolation for write-capable agents (`task()` + workflow) | **M** | sound_with_fixes |
 
-All six are **independent** (no cross-spec dependencies) — they can be built in
-any order or in parallel.
+The historical design specs are independent. The sandbox entry now documents
+the implemented runtime and is not pending design work.
 
 ## Recommended build order (value × effort × risk)
 
@@ -45,9 +50,10 @@ any order or in parallel.
 2. **compaction-pipeline (L).** The single biggest architectural distance — vibe
    has 1 shaper (full LLM summary) vs Claude's 5. Pure-local (no LLM), runs in the
    existing `MiddlewarePipeline` before AutoCompact. Highest architectural payoff.
-3. **shell-sandbox (L).** The biggest *security* gap. Opt-in, default-off →
-   byte-for-byte current behavior until enabled, so low blast radius. Wraps the
-   bash subprocess as a layer after the permission gate + judge.
+3. **shell-sandbox (implemented).** The sandbox defaults on. Auto-approve,
+   isolated/task-contracted work, managed topology, and trusted checks require
+   Bubblewrap or Seatbelt and fail closed. Ordinary sessions retain documented
+   compatibility fallbacks.
 4. **prompt-caching (M).** Mostly telemetry + a thin opt-in escape hatch; the spec
    is honest that generic-path auto-caching already works — value is *protecting*
    the cacheable prefix + measuring hit rate. Good once the shaper pipeline (2)
@@ -63,10 +69,9 @@ any order or in parallel.
 
 These recurred across specs and should be treated as house rules:
 
-- **Config sub-models** must extend `BaseSettings` and mirror existing nested
-  blocks (`SafetyJudgeConfig`/`WorktreeConfig` at `_settings.py:211/241`), with
-  per-leaf merge annotations in `vibe_schema.py` (`WithReplaceMerge()` like the
-  siblings) — do **not** slap one `WithShallowMerge` on a nested model.
+- **Config sub-models** use `BaseModel` unless they intentionally read their own
+  environment namespace. Mirror the merge behavior in `vibe_schema.py`; do not
+  assume a nested TOML block deep-merges across layers.
 - **Feature backends** (memory selector, judge) build a **standalone** backend
   (`backend_cls(provider=..., timeout=...)`), never `self.backend`, so their
   failures can't trigger `_switch_to_fallback_model` or emergency compaction.

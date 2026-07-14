@@ -20,6 +20,7 @@ from vibe.core.tools.builtins.task import Task, TaskArgs, TaskResult, TaskToolCo
 from vibe.core.tools.permissions import PermissionContext
 from vibe.core.tools.safety_judge import JudgeVerdict
 from vibe.core.types import AssistantEvent, LLMMessage, Role, ToolResultEvent
+from vibe.core.verification_state import VerificationState, VerifierAttemptDisposition
 
 
 async def _noop_completion_wake() -> None:
@@ -666,6 +667,61 @@ class TestIsolatedSpawnJudgeGate:
         assert await task_tool._judge_isolated_spawn("prompt", "worker", cctx) is None
 
     @pytest.mark.asyncio
+    async def test_autoapprove_cannot_override_isolated_judge_denial(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        from vibe.core.tools.safety_judge import JudgeVerdict
+        from vibe.core.types import ApprovalResponse
+
+        class _DenyJudge:
+            async def judge(self, kind, prompt, context):
+                return JudgeVerdict(safe=False, reason="shared Git mutation")
+
+        callback_called = False
+
+        async def approve(*args, **kwargs):
+            nonlocal callback_called
+            callback_called = True
+            return ApprovalResponse.YES, None, None
+
+        config = build_test_vibe_config(
+            include_project_context=False,
+            include_prompt_detail=False,
+            bypass_tool_permissions=True,
+        )
+        auto_ctx = replace(
+            ctx,
+            agent_manager=AgentManager(lambda: config),
+            safety_judge_factory=lambda: _DenyJudge(),
+            approval_callback=approve,
+        )
+
+        reason = await task_tool._judge_isolated_spawn("prompt", "worker", auto_ctx)
+
+        assert reason == "shared Git mutation"
+        assert callback_called is False
+
+    @pytest.mark.asyncio
+    async def test_autoapprove_fails_closed_when_isolated_judge_unavailable(
+        self, task_tool: Task, ctx: InvokeContext
+    ) -> None:
+        def boom():
+            raise RuntimeError("judge down")
+
+        config = build_test_vibe_config(
+            include_project_context=False,
+            include_prompt_detail=False,
+            bypass_tool_permissions=True,
+        )
+        auto_ctx = replace(
+            ctx, agent_manager=AgentManager(lambda: config), safety_judge_factory=boom
+        )
+
+        reason = await task_tool._judge_isolated_spawn("prompt", "worker", auto_ctx)
+
+        assert reason == "configured safety judge is unavailable: judge down"
+
+    @pytest.mark.asyncio
     async def test_factory_raising_fails_open(
         self, task_tool: Task, ctx: InvokeContext
     ) -> None:
@@ -703,6 +759,44 @@ class TestIsolatedSpawnJudgeGate:
             assert isinstance(result, TaskResult)
             assert result.completed is False
             assert "destructive task" in result.response
+
+    @pytest.mark.asyncio
+    async def test_denied_isolated_verifier_records_terminal_invalid(
+        self, ctx: InvokeContext
+    ) -> None:
+        from vibe.core.tools.safety_judge import JudgeVerdict
+
+        class _DenyJudge:
+            async def judge(self, kind, prompt, context):
+                return JudgeVerdict(safe=False, reason="verifier spawn denied")
+
+        state = VerificationState()
+        verifier_tool = Task(
+            config_getter=lambda: TaskToolConfig(isolation="always"),
+            state=BaseToolState(),
+        )
+        verifier_ctx = replace(
+            ctx, verification_state=state, safety_judge_factory=lambda: _DenyJudge()
+        )
+
+        with patch("vibe.core.tools.builtins.task.run_isolated_agent") as mock_run:
+            result = await collect_result(
+                verifier_tool.run(
+                    TaskArgs(
+                        task="independently verify", agent="verifier", async_run=False
+                    ),
+                    verifier_ctx,
+                )
+            )
+
+        assert mock_run.call_count == 0
+        assert isinstance(result, TaskResult)
+        assert result.completed is False
+        assert state.latest_verifier_attempt is not None
+        assert (
+            state.latest_verifier_attempt.disposition
+            is VerifierAttemptDisposition.INVALID
+        )
 
 
 class TestAsyncRun:

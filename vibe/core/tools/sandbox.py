@@ -67,6 +67,9 @@ HOST_GIT_ENV_PASSTHROUGH = frozenset({
 class SandboxSpec:
     write_roots: list[Path]
     read_roots: list[Path] = field(default_factory=list)
+    hidden_roots: list[Path] = field(default_factory=list)
+    protected_roots: list[Path] = field(default_factory=list)
+    protect_git_metadata: bool = False
     allow_network: bool = True
     env: dict[str, str] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
@@ -236,6 +239,75 @@ def _canonical_roots(roots: list[Path]) -> list[str]:
 # keeps the repo's git metadata writable but re-protects `hooks/`).
 _PROTECTED_SUBPATHS = (".vibe", ".env")
 
+# extra_args may add runtime flags, never mounts or command boundaries.
+_UNSAFE_BWRAP_EXTRA_ARGS = frozenset({
+    "--args",
+    "--bind",
+    "--bind-data",
+    "--bind-fd",
+    "--bind-try",
+    "--chdir",
+    "--dev",
+    "--dev-bind",
+    "--dev-bind-try",
+    "--dir",
+    "--file",
+    "--file-label",
+    "--mqueue",
+    "--overlay",
+    "--overlay-src",
+    "--proc",
+    "--remount-ro",
+    "--ro-bind",
+    "--ro-bind-data",
+    "--ro-bind-fd",
+    "--ro-bind-try",
+    "--symlink",
+    "--tmp-overlay",
+    "--tmpfs",
+    "--tmpfs-overlay",
+    "--",
+})
+
+_STRICT_RUNTIME_ROOT_NAMES = frozenset({
+    "bin",
+    "dev",
+    "etc",
+    "lib",
+    "lib32",
+    "lib64",
+    "proc",
+    "sbin",
+    "tmp",
+    "usr",
+})
+
+
+def strict_read_hidden_roots(root: Path = Path("/")) -> list[Path]:
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return []
+    hidden: list[Path] = []
+    for entry in entries:
+        if entry.name in _STRICT_RUNTIME_ROOT_NAMES or entry.is_symlink():
+            continue
+        try:
+            if entry.is_dir():
+                hidden.append(entry.resolve())
+        except OSError:
+            continue
+    return sorted(set(hidden))
+
+
+def _validate_bwrap_extra_args(extra_args: list[str]) -> None:
+    for argument in extra_args:
+        option = argument.split("=", 1)[0]
+        if option in _UNSAFE_BWRAP_EXTRA_ARGS:
+            raise ValueError(
+                f"unsafe bubblewrap extra argument is not allowed: {argument!r}"
+            )
+
 
 def _worktree_gitdir(root: Path) -> Path | None:
     """The external gitdir a linked-worktree ``.git`` file points to, else None.
@@ -277,7 +349,9 @@ def _readonly_git_targets(base: Path) -> list[str]:
     return found
 
 
-def _git_bind_dirs(root: Path) -> tuple[list[str], list[str]]:
+def _git_bind_dirs(
+    root: Path, *, protect_git_metadata: bool = False
+) -> tuple[list[str], list[str]]:
     """(writable_git_dirs, readonly_git_metadata) for one write root.
 
     A sandboxed command must be able to commit (write index/refs/objects/logs),
@@ -290,6 +364,15 @@ def _git_bind_dirs(root: Path) -> tuple[list[str], list[str]]:
     writable: list[str] = []
     readonly: list[str] = []
     gitdir = _worktree_gitdir(root)
+    dotgit = root / ".git"
+    if protect_git_metadata:
+        if dotgit.exists() and not dotgit.is_symlink():
+            readonly.append(str(dotgit))
+        if gitdir is not None:
+            common = gitdir.parent.parent
+            if common.is_dir():
+                readonly.append(str(common))
+        return writable, readonly
     if gitdir is not None:
         # gitdir == <common>/worktrees/<name>; <common> holds objects + refs and
         # contains the gitdir, so binding it writable covers the whole commit.
@@ -384,6 +467,7 @@ def _protected_subpaths_for(root: str) -> list[str]:
 
 
 def _bwrap_argv(spec: SandboxSpec) -> list[str]:
+    _validate_bwrap_extra_args(spec.extra_args)
     # bwrap applies operations left to right inside the new namespace, so the
     # read-only root bind MUST precede the pseudo-filesystem overlays. Placing
     # --ro-bind / / after --dev/--proc/--tmpfs layers the read-only root over
@@ -395,6 +479,8 @@ def _bwrap_argv(spec: SandboxSpec) -> list[str]:
         "--unshare-pid",
         "--unshare-uts",
         "--unshare-ipc",
+        # Extras precede immutable harness mounts and cannot reopen paths.
+        *spec.extra_args,
         "--ro-bind",
         "/",
         "/",
@@ -407,24 +493,63 @@ def _bwrap_argv(spec: SandboxSpec) -> list[str]:
     ]
     if not spec.allow_network:
         argv.append("--unshare-net")
-    for root in _canonical_roots(spec.read_roots):
+    hidden = set(_canonical_roots(spec.hidden_roots))
+    read = set(_canonical_roots(spec.read_roots))
+    writes = set(_canonical_roots(spec.write_roots))
+    protected = set(_canonical_roots(spec.protected_roots))
+    for root in sorted(hidden):
+        argv += ["--tmpfs", root]
+    for target in _masked_mount_targets(read | writes, hidden):
+        argv += ["--dir", target]
+    for root in sorted(read):
         argv += ["--ro-bind", root, root]
-    for root in _canonical_roots(spec.write_roots):
+    for root in sorted(writes):
         # Writable bind first, then the (possibly external) git metadata writable,
         # then layer read-only over sensitive metadata + git hooks last (bwrap is
         # left-to-right, so the later --ro-bind wins for that subpath).
         argv += ["--bind", root, root]
-        writable_git, readonly_git = _git_bind_dirs(Path(root))
+        writable_git, readonly_git = _git_bind_dirs(
+            Path(root), protect_git_metadata=spec.protect_git_metadata
+        )
         for gitdir in writable_git:
             argv += ["--bind", gitdir, gitdir]
         for sub in _protected_subpaths_for(root):
-            argv += ["--ro-bind", sub, sub]
-        for meta in readonly_git:
-            argv += ["--ro-bind", meta, meta]
+            protected.add(sub)
+        protected.update(readonly_git)
+    # Apply every protection after every writable bind. A later, broader write
+    # root must never reopen host state that an earlier root protected.
+    visible_protected = {
+        target
+        for target in protected
+        if not any(Path(target).is_relative_to(Path(root)) for root in hidden)
+        or any(Path(target).is_relative_to(Path(root)) for root in read)
+    }
+    for target in sorted(visible_protected):
+        argv += ["--ro-bind", target, target]
     argv += ["--chdir", str((spec.cwd or Path.cwd()).resolve())]
-    argv += spec.extra_args
     argv.append("--")
     return argv
+
+
+def _masked_mount_targets(roots: set[str], hidden: set[str]) -> list[str]:
+    targets: set[str] = set()
+    for value in roots:
+        root = Path(value)
+        masking_root = next(
+            (
+                Path(masked)
+                for masked in hidden
+                if root != Path(masked) and root.is_relative_to(Path(masked))
+            ),
+            None,
+        )
+        if masking_root is None:
+            continue
+        current = masking_root
+        for part in root.relative_to(masking_root).parts:
+            current /= part
+            targets.add(str(current))
+    return sorted(targets, key=lambda value: (len(Path(value).parts), value))
 
 
 def _unshare_argv(spec: SandboxSpec) -> list[str]:
@@ -446,20 +571,31 @@ def build_seatbelt_profile(spec: SandboxSpec) -> str:
         "(allow sysctl-read)",
         "(allow file-read*)",
     ]
+    for root in _canonical_roots(spec.hidden_roots):
+        if '"' not in root and "\n" not in root:
+            lines.append(f'(deny file-read* (subpath "{root}"))')
+    for root in _canonical_roots(spec.read_roots):
+        if '"' not in root and "\n" not in root:
+            lines.append(f'(allow file-read* (subpath "{root}"))')
+    protected = set(_canonical_roots(spec.protected_roots))
     for root in _canonical_roots(spec.write_roots):
         if '"' in root or "\n" in root:
             continue  # never inject into the profile string
         lines.append(f'(allow file-write* (subpath "{root}"))')
-        writable_git, readonly_git = _git_bind_dirs(Path(root))
+        writable_git, readonly_git = _git_bind_dirs(
+            Path(root), protect_git_metadata=spec.protect_git_metadata
+        )
         for gitdir in writable_git:
             if '"' not in gitdir and "\n" not in gitdir:
                 lines.append(f'(allow file-write* (subpath "{gitdir}"))')
         # Re-deny secrets + git hooks/config (last match wins): a command can
         # commit but not plant a hook or repoint core.hooksPath outside.
-        for sub in [*_protected_subpaths_for(root), *readonly_git]:
-            if '"' in sub or "\n" in sub:
-                continue
-            lines.append(f'(deny file-write* (subpath "{sub}"))')
+        protected.update(_protected_subpaths_for(root))
+        protected.update(readonly_git)
+    for sub in sorted(protected):
+        if '"' in sub or "\n" in sub:
+            continue
+        lines.append(f'(deny file-write* (subpath "{sub}"))')
     lines.append("(allow network*)" if spec.allow_network else "(deny network*)")
     return "\n".join(lines) + "\n"
 

@@ -16,6 +16,7 @@ BACKGROUND_BATCH_PREVIEW_CHARS = 12_000
 BACKGROUND_ARTIFACT_RECORD_CHARS = 384
 BACKGROUND_OUTCOME_RECORD_CHARS = 1_500
 _BACKGROUND_PATH_CHARS = 128
+_BACKGROUND_BRANCH_CHARS = 256
 _ARTIFACT_PREFIX = "BACKGROUND_ARTIFACT_JSON:"
 _OUTCOME_PREFIX = "TASK_OUTCOME_JSON:"
 _RESERVED_BACKGROUND_PREFIXES = ("BACKGROUND_ARTIFACT_JSON:", "TASK_OUTCOME_JSON:")
@@ -80,6 +81,9 @@ def escape_background_body(response: str) -> str:
 def format_task_outcome_record(task_id: str, outcome: dict[str, Any]) -> str:
     raw = orjson.dumps(outcome, option=orjson.OPT_SORT_KEYS)
     payload = {
+        "candidate_delivery": _bounded_candidate_delivery(
+            outcome.get("candidate_delivery")
+        ),
         "diagnostics": _bounded_items(outcome.get("diagnostics")),
         "digest": hashlib.sha256(raw).hexdigest(),
         "evidence": _bounded_items(outcome.get("evidence")),
@@ -258,6 +262,9 @@ def _fit_artifact_record(payload: dict[str, Any], limit: int) -> str:
 
 def _fit_outcome_record(payload: dict[str, Any], limit: int) -> str:
     value: dict[str, Any] = {
+        "candidate_delivery": _bounded_candidate_delivery(
+            payload.get("candidate_delivery")
+        ),
         "diagnostics": _bounded_items(payload.get("diagnostics")),
         "digest": str(payload.get("digest", ""))[:64],
         "evidence": _bounded_items(payload.get("evidence")),
@@ -266,6 +273,8 @@ def _fit_outcome_record(payload: dict[str, Any], limit: int) -> str:
         "task_id": str(payload.get("task_id", ""))[:128],
         "truncated": bool(payload.get("truncated", True)),
     }
+    if value["candidate_delivery"] is None:
+        value.pop("candidate_delivery")
 
     def render() -> str:
         return _OUTCOME_PREFIX + orjson.dumps(value).decode()
@@ -287,13 +296,56 @@ def _fit_outcome_record(payload: dict[str, Any], limit: int) -> str:
 def _minimal_outcome_record(
     payload: dict[str, Any], *, limit: int | None = None
 ) -> str:
+    delivery = _bounded_candidate_delivery(payload.get("candidate_delivery"))
+    if delivery is not None:
+        delivery = {
+            key: delivery[key]
+            for key in ("status", "candidate_sha", "branch")
+            if delivery.get(key) is not None
+        }
     value = {
+        "candidate_delivery": delivery,
         "digest": str(payload.get("digest", ""))[:64],
         "status": str(payload.get("status", "unknown"))[:24],
         "task_id": str(payload.get("task_id", ""))[:48],
     }
+    if delivery is None:
+        value.pop("candidate_delivery")
     record = _OUTCOME_PREFIX + orjson.dumps(value).decode()
     return record if limit is None or len(record) <= limit else ""
+
+
+def _bounded_candidate_delivery(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    delivery: dict[str, Any] = {"status": str(value.get("status", "unknown"))[:24]}
+    for key in ("base_sha", "candidate_sha", "parent_sha_before", "parent_sha_after"):
+        raw = value.get(key)
+        if raw is not None:
+            delivery[key] = str(raw)[:64]
+    method = value.get("integration_method")
+    if method is not None:
+        delivery["integration_method"] = str(method)[:24]
+    branch = value.get("branch")
+    if branch is not None:
+        branch_text = str(branch)
+        if len(branch_text) <= _BACKGROUND_BRANCH_CHARS:
+            delivery["branch"] = branch_text
+        else:
+            delivery["branch_sha256"] = hashlib.sha256(branch_text.encode()).hexdigest()
+    path = value.get("worktree_path")
+    if path is not None:
+        path_text = str(path)
+        if len(path_text) <= _BACKGROUND_PATH_CHARS:
+            delivery["worktree_path"] = path_text
+        else:
+            delivery["worktree_path_sha256"] = hashlib.sha256(
+                path_text.encode()
+            ).hexdigest()
+    diagnostic = value.get("diagnostic")
+    if diagnostic is not None:
+        delivery["diagnostic"] = str(diagnostic)[:256]
+    return delivery
 
 
 def _bounded_items(value: Any) -> list[str]:

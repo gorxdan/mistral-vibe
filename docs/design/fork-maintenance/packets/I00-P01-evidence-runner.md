@@ -23,6 +23,7 @@ evidence:
   runner_id: null
   scenarios:
     - IT-13
+  scenario_contracts: []
 packet_acceptance_criteria:
   - I00-P01-AC01
   - I00-P01-AC02
@@ -152,8 +153,10 @@ The campaign lead checks every item before setting `ready`:
   the exact transformations below; semantic text is frozen.
 - Network/spend: no live network, provider credential, or paid model.
 - Platform: runner schema v1 is Linux/POSIX-only. Preflight rejects other
-  platforms with exit 2. Timeout cleanup uses `start_new_session=True`, SIGTERM,
-  a fixed five-second grace period, then SIGKILL on the process group.
+  platforms with exit 2. Timeout cleanup uses `start_new_session=True`; it sends
+  SIGTERM and, after a fixed five-second grace period, SIGKILL to the group only
+  while the child PID remains both its session and process-group leader.
+  Otherwise it signals only the direct child.
 - Child environment: copy the parent environment, remove names containing the
   secret terms case-insensitively, remove proxy variables, and set
   `UV_OFFLINE=1` and `PIP_NO_INDEX=1`. Preflight rejects when any credential-like
@@ -328,8 +331,9 @@ Required arguments and validation:
 - `--runner-id`: required nonempty label; it must not contain a path separator
   or newline.
 - `--timeout-seconds`: required integer from 1 through 86400. On timeout,
-  terminate then kill the child process group within a bounded cleanup window,
-  retain outputs, record a failed scenario, and return 1.
+  terminate then kill the child process group within a bounded cleanup window
+  only while signal-time ownership checks still pass; otherwise signal the
+  direct child. Retain outputs, record a failed scenario, and return 1.
 - `--lock-timeout-seconds`: required integer from 1 through 60. Every
   `.manifest.lock` acquisition uses this bound. Timeout returns 2 in category
   `collision` before dispatch, or 3 with emergency evidence after dispatch;
@@ -522,10 +526,11 @@ comparison projection, not in stored raw command data.
    sanitized child environment, captured text stdout/stderr, an isolated process
    group/session, the required timeout, and no retry. Timeout or signal
    termination is a scenario `fail` with best-effort artifacts.
-7. After every direct-child exit, probe the Linux process group for surviving
-   descendants. If any remain, SIGTERM, wait five seconds, SIGKILL, reap, force
-   scenario `fail`, and record descendant cleanup; do this even when the direct
-   child exited 0 and closed stdio.
+7. After every direct-child exit, probe the verified-owned Linux process group
+   for surviving descendants. If any remain and the child PID still identifies
+   both the session and group, SIGTERM, wait five seconds, SIGKILL, reap, force
+   scenario `fail`, and record descendant cleanup. Otherwise signal only the
+   direct child and record that group ownership could not be established.
 8. Persist security-screened command/output/result artifacts with project
    safe/durable I/O. Because credential-bearing parent environments and argv are
    rejected pre-dispatch, stored stdout/stderr retain child text without
@@ -557,9 +562,10 @@ At minimum, individual tests prove:
    manifest notes while retaining other evidence.
 4. One or more explicit gap notes return 1, write deterministic `gap.json`, and
    cannot turn a child failure into a pass.
-5. Timeout terminates the entire child process group, returns 1, and records the
-   timeout plus best-effort stdout/stderr; signal termination is also a failed
-   scenario rather than a traceback or infrastructure pass.
+5. Default tests mock every OS signal while proving the ownership guard. The
+   opt-in `process_e2e` timeout probe runs only with `-n0` on a disposable
+   non-graphical host, terminates the verified-owned group, returns 1, and
+   records the timeout plus best-effort stdout/stderr.
 6. A dirty candidate returns 2 before a sentinel child command can run.
 7. A candidate ref different from `HEAD` returns 2 before child execution.
 8. Evidence roots that are relative, inside the repository, inside its Git

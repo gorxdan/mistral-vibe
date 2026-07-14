@@ -51,6 +51,7 @@ from vibe.core.agent_loop_memory import (
 from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
 from vibe.core.agent_loop_orchestration import AgentLoopOrchestrationMixin
 from vibe.core.agent_loop_safety_judge import AgentLoopSafetyJudgeMixin
+from vibe.core.agent_loop_verification import AgentLoopVerificationMixin
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
 from vibe.core.baseline_scaling import (
@@ -76,6 +77,7 @@ from vibe.core.experiments.session import (
     hydrate_experiments_from_session as session_hydrate_experiments_from_session,
     initialize_experiments as session_initialize_experiments,
 )
+from vibe.core.harness_middleware import CapabilityFailureCircuitBreaker
 from vibe.core.hooks.manager import HooksManager
 from vibe.core.hooks.models import HookConfigResult, HookEvent
 from vibe.core.llm.backend.factory import create_backend
@@ -487,9 +489,28 @@ class AgentLoopParams:
     task_contract: BoundTaskContract | None = None
 
 
+def _managed_runtime_limits(
+    config: VibeConfig, max_turns: int | None, max_session_tokens: int | None
+) -> tuple[int | None, int | None]:
+    recipe = config.trusted_verification_recipe
+    topology = recipe.execution_topology if recipe is not None else None
+    if topology is None:
+        return max_turns, max_session_tokens
+    bounded_turns = (
+        topology.max_turns if max_turns is None else min(max_turns, topology.max_turns)
+    )
+    bounded_tokens = (
+        topology.max_session_tokens
+        if max_session_tokens is None
+        else min(max_session_tokens, topology.max_session_tokens)
+    )
+    return bounded_turns, bounded_tokens
+
+
 class AgentLoop(
     AgentLoopMemoryMixin,
     AgentLoopOrchestrationMixin,
+    AgentLoopVerificationMixin,
     AgentLoopFailoverMixin,
     AgentLoopSafetyJudgeMixin,
     AgentLoopHooksMixin,
@@ -502,6 +523,9 @@ class AgentLoop(
         params: AgentLoopParams | None = None,
     ) -> None:
         p = params or AgentLoopParams()
+        effective_max_turns, effective_max_session_tokens = _managed_runtime_limits(
+            config, p.max_turns, p.max_session_tokens
+        )
         self._is_subagent = p.is_subagent
         self._task_contract = p.task_contract
         self._init_base_state(config, p.cache_store, p.headless, p.defer_heavy_init)
@@ -513,9 +537,9 @@ class AgentLoop(
             p.allow_subagent_profile,
             p.defer_heavy_init,
             p.message_observer,
-            p.max_turns,
+            effective_max_turns,
             p.max_price,
-            p.max_session_tokens,
+            effective_max_session_tokens,
         )
         self._init_backend(backend, p.enable_streaming)
         self._init_session_identity(p.is_subagent)
@@ -525,7 +549,11 @@ class AgentLoop(
         )
         self._init_orchestration()
         self._init_telemetry(
-            config, p.is_subagent, p.spend_adapter, p.max_price, p.max_session_tokens
+            config,
+            p.is_subagent,
+            p.spend_adapter,
+            p.max_price,
+            effective_max_session_tokens,
         )
         self._init_hooks(p.hook_config_result)
         self._init_rewind()
@@ -1079,7 +1107,11 @@ class AgentLoop(
         )
 
     def set_max_turns(self, max_turns: int) -> None:
-        self._max_turns = max_turns
+        recipe = self._base_config.trusted_verification_recipe
+        topology = recipe.execution_topology if recipe is not None else None
+        self._max_turns = (
+            min(max_turns, topology.max_turns) if topology is not None else max_turns
+        )
         self._setup_middleware()
 
     def set_max_tokens(self, max_tokens: int) -> None:
@@ -1100,6 +1132,7 @@ class AgentLoop(
         # Heuristic: detect an agent stuck repeating the same tool call, beyond
         # the hard turn cap. Cheap (history-only), no extra model calls.
         self.middleware_pipeline.add(LoopDetectionMiddleware())
+        self.middleware_pipeline.add(CapabilityFailureCircuitBreaker())
 
         # Cheap, local context shapers run before the LLM-summary fallback.
         # Both no-op when disabled (read their config live), so registration is
@@ -1589,15 +1622,92 @@ class AgentLoop(
                 self._force_toolless_response = False
 
     async def _perform_llm_turn(self) -> AsyncGenerator[BaseEvent, None]:
-        if self.enable_streaming:
-            async for event in self._stream_assistant_events():
-                yield event
-        else:
-            assistant_event = await self._get_assistant_event()
-            if assistant_event.content:
-                yield assistant_event
+        receipt_valid = self._current_trusted_receipt_is_valid()
+        verification_constraint = self._verification_completion_constraint(
+            receipt_valid=receipt_valid
+        )
+        guard_managed_claims = self._guard_managed_completion_claims(
+            receipt_valid=receipt_valid
+        )
+        managed_root = self._is_topology_managed_root()
+        buffer_for_verification = (
+            not self._is_subagent and self._base_config.verification_subsystem
+        )
+        buffer_assistant = (
+            buffer_for_verification
+            or verification_constraint is not None
+            or guard_managed_claims
+            or managed_root
+        )
+        publish_buffered_assistant = (
+            buffer_for_verification
+            and verification_constraint is None
+            and not guard_managed_claims
+            and not managed_root
+        )
+        buffered_turn_events: list[AssistantEvent | ReasoningEvent | ToolCallEvent] = []
+        observer_context = (
+            self.messages.silent() if buffer_assistant else contextlib.nullcontext()
+        )
+        with observer_context:
+            if self.enable_streaming:
+                async for event in self._stream_assistant_events():
+                    if buffer_assistant:
+                        buffered_turn_events.append(event)
+                    else:
+                        yield event
+            else:
+                assistant_event = await self._get_assistant_event()
+                if assistant_event.content:
+                    if buffer_assistant:
+                        buffered_turn_events.append(assistant_event)
+                    else:
+                        yield assistant_event
 
         last_message = self.messages[-1]
+        receipt_valid = self._current_trusted_receipt_is_valid()
+        verification_constraint = self._verification_completion_constraint(
+            receipt_valid=receipt_valid
+        )
+        guard_managed_claims = self._guard_managed_completion_claims(
+            receipt_valid=receipt_valid
+        )
+        completion_replaced = False
+        if verification_constraint is not None:
+            event = self._replace_with_verification_constraint(
+                last_message,
+                verification_constraint,
+                preserve_tool_calls=bool(last_message.tool_calls),
+            )
+            if buffer_assistant:
+                self.messages.notify_at(len(self.messages) - 1)
+            if not last_message.tool_calls:
+                yield event
+                return
+            completion_replaced = True
+        elif guard_managed_claims:
+            event = self._replace_unverified_managed_completion(
+                last_message, preserve_tool_calls=bool(last_message.tool_calls)
+            )
+            if buffer_assistant:
+                self.messages.notify_at(len(self.messages) - 1)
+            if not last_message.tool_calls:
+                yield event
+                return
+            completion_replaced = True
+        if buffer_assistant and not completion_replaced:
+            self.messages.notify_at(len(self.messages) - 1)
+        if publish_buffered_assistant and not completion_replaced:
+            for buffered_event in buffered_turn_events:
+                yield buffered_event
+        else:
+            for buffered_event in buffered_turn_events:
+                if isinstance(buffered_event, ToolCallEvent):
+                    yield buffered_event
+        if managed_root and not last_message.tool_calls and last_message.content:
+            yield AssistantEvent(
+                content=last_message.content, message_id=last_message.message_id
+            )
         visible_content = (last_message.content or "").strip()
         if self._force_toolless_response and (
             last_message.tool_calls or not visible_content
@@ -2004,6 +2114,19 @@ class AgentLoop(
         span: trace.Span,
     ) -> AsyncGenerator[ToolResultEvent | ToolStreamEvent | HookEvent]:
         self.stats.tool_calls_agreed += 1
+        verification_tool_tracked = self._verification_tool_may_mutate_candidate(
+            tool_call
+        )
+        verification_fingerprint_before = (
+            self._verification_workspace_fingerprint()
+            if verification_tool_tracked
+            else None
+        )
+        verification_authorization_preinvalidated = (
+            self._preinvalidate_async_candidate_tool(
+                tool_call, tracked=verification_tool_tracked
+            )
+        )
 
         # Snapshot read (rewind/undo) does blocking file I/O; run it off the
         # event loop so a write tool on a large file doesn't stall concurrent
@@ -2037,91 +2160,111 @@ class AgentLoop(
         start_time = time.perf_counter()
         result_model = None
         duration = 0.0
-        try:
-            async for item in tool_instance.invoke(
-                ctx=InvokeContext(
-                    tool_call_id=tool_call.call_id,
-                    scheduler=self.scheduler,
-                    agent_manager=self.agent_manager,
-                    active_model=self.effective_model().alias,
-                    session_dir=self.session_logger.session_dir,
-                    launch_context=self.launch_context,
-                    approval_callback=_timed(self.approval_callback),
-                    user_input_callback=_timed(self.user_input_callback),
-                    sampling_callback=self._sampling_handler,
-                    plan_file_path=self._plan_session.plan_file_path,
-                    switch_agent_callback=self.switch_agent,
-                    skill_manager=self.skill_manager,
-                    scratchpad_dir=self.scratchpad_dir,
-                    permission_store=self._permission_store,
-                    hook_config_result=self._hook_config_result,
-                    session_id=self.session_id,
-                    terminal_emulator=self.terminal_emulator,
-                    launch_workflow_callback=self.launch_workflow_callback,
-                    workflow_status_callback=self.workflow_status_callback,
-                    workflow_results_callback=self.workflow_results_callback,
-                    workflow_stop_callback=self.workflow_stop_callback,
-                    team_dir_callback=self.team_dir_callback,
-                    team_spawn_callback=self.team_spawn_callback,
-                    background_registry=self.background_registry,
-                    files_read=self._files_read,
-                    verification_state=self._verification_state,
-                    tool_manager=self.tool_manager,
-                    spend_adapter=self._spend_adapter,
-                    task_contract=self._task_contract,
-                    work_strategy_callback=self._declare_orchestration_strategy,
+
+        candidate_tool_observed = False
+
+        def _observe_candidate_tool() -> None:
+            nonlocal candidate_tool_observed
+            if candidate_tool_observed:
+                return
+            candidate_tool_observed = True
+            self._observe_candidate_tool(
+                tool_call,
+                tracked=verification_tool_tracked,
+                fingerprint_before=verification_fingerprint_before,
+                authorization_preinvalidated=(
+                    verification_authorization_preinvalidated
                 ),
-                **tool_call.args_dict,
+            )
+
+        try:
+            try:
+                async for item in tool_instance.invoke(
+                    ctx=InvokeContext(
+                        tool_call_id=tool_call.call_id,
+                        scheduler=self.scheduler,
+                        agent_manager=self.agent_manager,
+                        active_model=self.effective_model().alias,
+                        session_dir=self.session_logger.session_dir,
+                        launch_context=self.launch_context,
+                        approval_callback=_timed(self.approval_callback),
+                        user_input_callback=_timed(self.user_input_callback),
+                        sampling_callback=self._sampling_handler,
+                        plan_file_path=self._plan_session.plan_file_path,
+                        switch_agent_callback=self.switch_agent,
+                        skill_manager=self.skill_manager,
+                        scratchpad_dir=self.scratchpad_dir,
+                        permission_store=self._permission_store,
+                        hook_config_result=self._hook_config_result,
+                        session_id=self.session_id,
+                        terminal_emulator=self.terminal_emulator,
+                        launch_workflow_callback=self.launch_workflow_callback,
+                        workflow_status_callback=self.workflow_status_callback,
+                        workflow_results_callback=self.workflow_results_callback,
+                        workflow_stop_callback=self.workflow_stop_callback,
+                        team_dir_callback=self.team_dir_callback,
+                        team_spawn_callback=self.team_spawn_callback,
+                        background_registry=self.background_registry,
+                        files_read=self._files_read,
+                        verification_state=self._verification_state,
+                        tool_manager=self.tool_manager,
+                        spend_adapter=self._spend_adapter,
+                        task_contract=self._task_contract,
+                        work_strategy_callback=self._declare_orchestration_strategy,
+                    ),
+                    **tool_call.args_dict,
+                ):
+                    if isinstance(item, ToolStreamEvent):
+                        yield item
+                    else:
+                        result_model = item
+            finally:
+                # Record execution-only latency on every exit; human wait stays separate.
+                duration = max(0.0, time.perf_counter() - start_time - human_wait_s)
+                set_tool_exec_duration(span, duration)
+                if human_wait_s > 0:
+                    set_tool_user_wait(span, human_wait_s)
+            if result_model is None:
+                raise ToolError("Tool did not yield a result")
+
+            result_dict = result_model.model_dump()
+            text = "\n".join(f"{k}: {v}" for k, v in result_dict.items())
+            extra = tool_instance.get_result_extra(result_model)
+            if extra:
+                text += "\n\n" + extra
+
+            result_cancelled = (
+                isinstance(result_model, CancellableToolResult)
+                and result_model.cancelled
+            )
+            _observe_candidate_tool()
+            yield ToolResultEvent(
+                tool_name=tool_call.tool_name,
+                tool_class=tool_call.tool_class,
+                result=result_model,
+                cancelled=result_cancelled,
+                duration=duration,
+                tool_call_id=tool_call.call_id,
+                approval_note=decision.feedback if decision.judge_approved else None,
+            )
+            async for ev in self._run_after_tool_and_finalize(
+                tool_call,
+                tool_input=tool_input,
+                tool_status="cancelled" if result_cancelled else "success",
+                response_status="success",
+                decision=decision,
+                span=span,
+                tool_output=result_dict,
+                duration_ms=duration * 1000.0,
+                initial_text=text,
             ):
-                if isinstance(item, ToolStreamEvent):
-                    yield item
-                else:
-                    result_model = item
+                yield ev
+            self.stats.tool_calls_succeeded += 1
+            self._record_successful_verification_observation(
+                tool_call.tool_name, tool_call.validated_args, result_dict
+            )
         finally:
-            # Stamp exec duration on EVERY exit — success, ToolError (nonzero
-            # exit / size cap / not-found), and cancellation. invoke() raises
-            # past this point on failure, which previously skipped the success-
-            # only call below and left failure/timeout latency uninstrumented.
-            # Subtract human-wait so exec_duration stays exec-only (recorded
-            # separately as user_wait_s); duration flows to ToolResultEvent too.
-            duration = max(0.0, time.perf_counter() - start_time - human_wait_s)
-            set_tool_exec_duration(span, duration)
-            if human_wait_s > 0:
-                set_tool_user_wait(span, human_wait_s)
-        if result_model is None:
-            raise ToolError("Tool did not yield a result")
-
-        result_dict = result_model.model_dump()
-        text = "\n".join(f"{k}: {v}" for k, v in result_dict.items())
-        extra = tool_instance.get_result_extra(result_model)
-        if extra:
-            text += "\n\n" + extra
-
-        result_cancelled = (
-            isinstance(result_model, CancellableToolResult) and result_model.cancelled
-        )
-        yield ToolResultEvent(
-            tool_name=tool_call.tool_name,
-            tool_class=tool_call.tool_class,
-            result=result_model,
-            cancelled=result_cancelled,
-            duration=duration,
-            tool_call_id=tool_call.call_id,
-            approval_note=decision.feedback if decision.judge_approved else None,
-        )
-        async for ev in self._run_after_tool_and_finalize(
-            tool_call,
-            tool_input=tool_input,
-            tool_status="cancelled" if result_cancelled else "success",
-            response_status="success",
-            decision=decision,
-            span=span,
-            tool_output=result_dict,
-            duration_ms=duration * 1000.0,
-            initial_text=text,
-        ):
-            yield ev
-        self.stats.tool_calls_succeeded += 1
+            _observe_candidate_tool()
 
     async def _should_execute_tool(
         self, tool: BaseTool, args: BaseModel, tool_call_id: str
@@ -2134,22 +2277,20 @@ class AgentLoop(
                 config_perm = self.tool_manager.get_tool_config(tool_name).permission
                 ctx = PermissionContext(permission=config_perm)
 
-            if ctx.permission == ToolPermission.ALWAYS:
+            if ctx.permission != ToolPermission.ASK:
+                allowed = ctx.permission == ToolPermission.ALWAYS
                 return ToolDecision(
-                    verdict=ToolExecutionResponse.EXECUTE,
-                    approval_type=ToolPermission.ALWAYS,
-                )
-            if ctx.permission == ToolPermission.NEVER:
-                return ToolDecision(
-                    verdict=ToolExecutionResponse.SKIP,
-                    approval_type=ToolPermission.NEVER,
-                    feedback=ctx.reason
-                    or f"Tool '{tool_name}' is permanently disabled",
-                )
-            if self.bypass_tool_permissions:
-                return ToolDecision(
-                    verdict=ToolExecutionResponse.EXECUTE,
-                    approval_type=ToolPermission.ALWAYS,
+                    verdict=(
+                        ToolExecutionResponse.EXECUTE
+                        if allowed
+                        else ToolExecutionResponse.SKIP
+                    ),
+                    approval_type=ctx.permission,
+                    feedback=(
+                        None
+                        if allowed
+                        else ctx.reason or f"Tool '{tool_name}' is permanently disabled"
+                    ),
                 )
             uncovered = [
                 rp
@@ -2170,6 +2311,20 @@ class AgentLoop(
         )
         if judged is not None:
             return judged
+        if self.bypass_tool_permissions:
+            if judge_deferral is not None:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.SKIP,
+                    approval_type=ToolPermission.NEVER,
+                    feedback=(
+                        "Auto-approve cannot override a safety-judge deferral: "
+                        f"{judge_deferral}"
+                    ),
+                )
+            return ToolDecision(
+                verdict=ToolExecutionResponse.EXECUTE,
+                approval_type=ToolPermission.ALWAYS,
+            )
         return await self._ask_approval(
             tool_name, args, tool_call_id, uncovered, judge_deferral=judge_deferral
         )
@@ -2233,6 +2388,7 @@ class AgentLoop(
     ) -> None:
         if observe_orchestration:
             self._record_orchestration_tool_result(tool_call, status, result)
+        self._observe_verification_tool_result(tool_call, status, result)
         text = self._apply_tool_result_budget(tool_call, text)
         self.messages.append(
             LLMMessage.model_validate(
@@ -2784,7 +2940,7 @@ class AgentLoop(
             await self._fire_session_end_hooks(lifecycle_reason)
             self._session_started = False  # next act() re-fires SessionStart
         old_session_id = self.session_id
-        self._verification_state.clear()
+        self._verification_state.clear(preserve_requirement=lifecycle_reason is None)
         self.emit_session_closed_telemetry()
         if lifecycle_reason is not None:
             self._init_orchestration()
@@ -3150,19 +3306,22 @@ class AgentLoop(
             self.backend = self.backend_factory()
 
         if max_turns is not None:
-            self._max_turns = max_turns
+            bounded_turns, _ = _managed_runtime_limits(
+                self._base_config, max_turns, self._max_session_tokens
+            )
+            self._max_turns = bounded_turns
         if max_price is not None:
             self._max_price = max_price
 
         self._ensure_remote_registries()
+        runtime_allowlist, authoritative_runtime_allowlist = self._runtime_tool_policy()
         self.tool_manager = ToolManager(
             lambda: self.config,
             mcp_registry=self.mcp_registry,
             connector_registry=self.connector_registry,
             permission_getter=self._permission_store.get_tool_permission,
-            runtime_allowlist=(
-                self._task_contract.allowed_tools if self._task_contract else None
-            ),
+            runtime_allowlist=runtime_allowlist,
+            authoritative_runtime_allowlist=authoritative_runtime_allowlist,
             host=not self._is_subagent,
         )
         self.skill_manager = SkillManager(lambda: self.config)
@@ -3251,15 +3410,15 @@ class AgentLoop(
             initial_agent=agent_name,
             allow_subagent=is_subagent or allow_subagent_profile,
         )
+        runtime_allowlist, authoritative_runtime_allowlist = self._runtime_tool_policy()
         self.tool_manager = ToolManager(
             lambda: self.config,
             mcp_registry=self.mcp_registry,
             connector_registry=self.connector_registry,
             defer_mcp=defer_heavy_init,
             permission_getter=self._permission_store.get_tool_permission,
-            runtime_allowlist=(
-                self._task_contract.allowed_tools if self._task_contract else None
-            ),
+            runtime_allowlist=runtime_allowlist,
+            authoritative_runtime_allowlist=authoritative_runtime_allowlist,
             host=not is_subagent,
         )
         self.skill_manager = SkillManager(lambda: self.config)
@@ -3309,6 +3468,9 @@ class AgentLoop(
         self._agents_md_fingerprint: str | None = None
         self._verification_state = VerificationState.from_recipe(
             self._base_config.trusted_verification_recipe
+        )
+        self._execution_topology_snapshot = self._validate_trusted_execution_topology(
+            is_subagent=is_subagent
         )
 
         self._system_prompt_tier = self._current_baseline_tier()
@@ -3493,6 +3655,9 @@ class AgentLoop(
         )
 
     def _init_hooks(self, hook_config_result: HookConfigResult | None) -> None:
+        recipe = self._base_config.trusted_verification_recipe
+        if recipe is not None and recipe.execution_topology is not None:
+            hook_config_result = None
         self._hook_config_result = hook_config_result
         self._hooks_manager = (
             HooksManager(hook_config_result.hooks) if hook_config_result else None
@@ -3908,6 +4073,9 @@ class AgentLoop(
         restating/contradicting itself) becomes visible in a trace, since spans
         otherwise carry token counts but no message text.
         """
+        recipe = self._base_config.trusted_verification_recipe
+        if recipe is not None and recipe.execution_topology is not None:
+            return
         if not self.config.otel_capture_content:
             return
         add_message_content_events(

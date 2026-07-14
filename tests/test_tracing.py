@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from opentelemetry import trace
@@ -19,7 +21,8 @@ from tests.conftest import build_test_agent_loop, build_test_vibe_config
 from tests.mock.utils import mock_llm_chunk
 from tests.stubs.fake_backend import FakeBackend
 from vibe.core import tracing
-from vibe.core.config import OtelSpanExporterConfig
+from vibe.core.agent_loop import AgentLoop
+from vibe.core.config import OtelSpanExporterConfig, VibeConfig
 from vibe.core.orchestration import (
     OrchestrationCapabilities,
     OrchestrationRoute,
@@ -34,7 +37,7 @@ from vibe.core.tracing import (
     setup_tracing,
     tool_span,
 )
-from vibe.core.types import BaseEvent, FunctionCall, ToolCall
+from vibe.core.types import BaseEvent, FunctionCall, LLMMessage, Role, ToolCall
 
 
 class _CollectingExporter(SpanExporter):
@@ -392,6 +395,19 @@ class TestToolSpan:
         exc_events = [e for e in span.events if e.name == "exception"]
         assert len(exc_events) == 1
 
+    @pytest.mark.asyncio
+    async def test_caught_tool_error_status_is_not_overwritten(
+        self, _otel_provider: _CollectingExporter
+    ) -> None:
+        async with tool_span(tool_name="edit", call_id="c1", arguments="{}") as span:
+            tracing.set_tool_error(span, "orchestration policy denied the edit")
+
+        exported = _otel_provider.spans[0]
+        assert exported.status.status_code == StatusCode.ERROR
+        attributes = dict(exported.attributes)
+        assert attributes["gen_ai.tool.is_error"] is True
+        assert "vibe.cancelled" not in attributes
+
 
 class TestSpanHierarchy:
     @pytest.mark.asyncio
@@ -519,6 +535,29 @@ class TestIntegration:
     @staticmethod
     async def _collect_events(agent_loop, prompt: str) -> list[BaseEvent]:
         return [ev async for ev in agent_loop.act(prompt)]
+
+    def test_managed_topology_never_exports_raw_model_content(self) -> None:
+        loop = object.__new__(AgentLoop)
+        loop._base_config = cast(
+            VibeConfig,
+            SimpleNamespace(
+                trusted_verification_recipe=SimpleNamespace(execution_topology=object())
+            ),
+        )
+        span = MagicMock()
+
+        with patch("vibe.core.agent_loop.add_message_content_events") as capture:
+            loop._capture_chat_content(
+                span,
+                LLMMessage(
+                    role=Role.ASSISTANT,
+                    content="untrusted completion",
+                    reasoning_content="private reasoning",
+                ),
+                LLMMessage(role=Role.USER, content="campaign prompt"),
+            )
+
+        capture.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_agent_turn_with_tool_call_produces_spans(

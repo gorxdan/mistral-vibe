@@ -5,13 +5,22 @@ from pathlib import Path
 from typing import Any
 
 from git import Repo
+import orjson
 import pytest
 
 from vibe.core._workspace_verification import workspace_fingerprint
+from vibe.core.candidate_delivery import (
+    CandidateDelivery,
+    CandidateDeliveryStatus,
+    CandidateIntegrationMethod,
+)
 from vibe.core.tools.base import InvokeContext
 from vibe.core.utils.io import write_safe
-from vibe.core.verification_contract import parse_verification_report
-from vibe.core.verification_state import VerificationState
+from vibe.core.verification_contract import (
+    parse_verification_report,
+    verification_observation_hashes,
+)
+from vibe.core.verification_state import VerificationState, VerifierAttemptDisposition
 from vibe.core.workflows._verified_delivery import VerifiedCandidate
 from vibe.core.workflows.runtime import (
     IsolatedResult,
@@ -19,6 +28,7 @@ from vibe.core.workflows.runtime import (
     WorkflowRuntime,
     _record_verifier_pass,
     _run_verifier_in_worktree,
+    _VerifierResult,
 )
 from vibe.core.worktree.ephemeral import create_ephemeral_worktree
 
@@ -57,6 +67,10 @@ _PARTIAL_RESPONSE = (
     "VERDICT: PARTIAL"
 )
 
+_PASS_EVIDENCE_HASHES = verification_observation_hashes(
+    "uv run pytest -q", "3 passed\n", ""
+)
+
 
 def _make_runtime(state: VerificationState | None = None) -> WorkflowRuntime:
     from tests.core.workflows.test_runtime import make_factory
@@ -69,7 +83,11 @@ def _make_runtime(state: VerificationState | None = None) -> WorkflowRuntime:
 class _FakeResult:
     def __init__(self, output: str = "worker output") -> None:
         self.output = output
-        self.stats: dict[str, int] | None = None
+        self.stats: dict[str, int | list[str]] | None = (
+            {"verification_evidence_hashes": list(_PASS_EVIDENCE_HASHES)}
+            if output == _PASS_RESPONSE
+            else None
+        )
         self.worktree_path: str | None = None
         self.branch: str | None = None
         self.wt: Any = None
@@ -96,16 +114,43 @@ def _real_candidate(tmp_path: Path) -> tuple[Path, Repo, Any]:
     return repo_root, repo, wt
 
 
+def _fake_candidate_delivery(
+    wt: Any,
+    kwargs: dict[str, Any],
+    *,
+    status: CandidateDeliveryStatus = CandidateDeliveryStatus.LANDED,
+) -> CandidateDelivery:
+    return CandidateDelivery(
+        status=status,
+        base_sha=kwargs["expected_parent_sha"],
+        candidate_sha=kwargs["expected_candidate_sha"],
+        parent_sha_before=kwargs["expected_parent_sha"],
+        parent_sha_after=(
+            kwargs["expected_candidate_sha"]
+            if status is CandidateDeliveryStatus.LANDED
+            else kwargs["expected_parent_sha"]
+        ),
+        branch=getattr(wt, "branch", None),
+        worktree_path=str(wt.path),
+        integration_method=(
+            CandidateIntegrationMethod.FAST_FORWARD
+            if status is CandidateDeliveryStatus.LANDED
+            else None
+        ),
+    )
+
+
 @pytest.fixture
 def fake_candidate_binding(monkeypatch: pytest.MonkeyPatch) -> VerifiedCandidate:
     import vibe.core.workflows._verified_delivery as delivery
+    import vibe.core.worktree.ephemeral as ephemeral
 
     candidate = VerifiedCandidate(
         parent_path=Path("/tmp/parent"),
-        parent_head="parent-head",
+        parent_head="a" * 40,
         parent_workspace_fingerprint="parent-fingerprint",
         candidate_path=Path("/tmp/iso-wt"),
-        candidate_head="candidate-head",
+        candidate_head="b" * 40,
         candidate_workspace_fingerprint="candidate-fingerprint",
     )
     monkeypatch.setattr(delivery, "prepare_verified_candidate", lambda wt: candidate)
@@ -113,6 +158,11 @@ def fake_candidate_binding(monkeypatch: pytest.MonkeyPatch) -> VerifiedCandidate
         delivery,
         "verified_candidate_diagnostic",
         lambda candidate, *, delivered=False: None,
+    )
+    monkeypatch.setattr(
+        ephemeral,
+        "deliver_verified_ephemeral_worktree_result",
+        lambda wt, **kwargs: _fake_candidate_delivery(wt, kwargs),
     )
     return candidate
 
@@ -150,6 +200,29 @@ async def test_run_verifier_pass_returns_without_recording_parent_state(
 
     assert verifier_result.passed is True
     assert state.last_verifier_pass is None
+
+
+async def test_delivered_verifier_pass_binds_terminal_generation(
+    monkeypatch: pytest.MonkeyPatch, fake_candidate_binding: VerifiedCandidate
+) -> None:
+    state = VerificationState()
+    runtime = _make_runtime(state)
+    generation = state.begin_verifier_attempt()
+    monkeypatch.setattr(
+        "vibe.core.workflows.runtime.landing_base_sha", lambda: "base-sha"
+    )
+    result = _VerifierResult(
+        report=parse_verification_report(_PASS_RESPONSE),
+        base_sha="base-sha",
+        generation=generation,
+        candidate=fake_candidate_binding,
+    )
+
+    assert _record_verifier_pass(runtime, result) is None
+    assert state.latest_verifier_attempt is not None
+    assert state.latest_verifier_attempt.disposition is VerifierAttemptDisposition.PASS
+    assert state.last_verifier_pass is not None
+    assert state.last_verifier_pass.verifier_attempt_generation == generation
 
 
 async def test_run_verifier_fail_blocks_and_returns_false(
@@ -271,7 +344,12 @@ class _VerdictProc:
         self._out = out
 
     async def communicate(self) -> tuple[bytes, bytes]:
-        return (self._out, b"")
+        evidence = orjson.dumps({
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "verification_evidence_hashes": list(_PASS_EVIDENCE_HASHES),
+        })
+        return (self._out, b"__VIBE_WORKFLOW_STATS__" + evidence + b"\n")
 
 
 class _FakeProc:
@@ -294,8 +372,13 @@ async def test_default_isolated_executor_standalone_then_verifier_pass_delivers_
     monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
     monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
     delivered: list[Any] = []
+
+    def deliver_verified(wt: Any, **kwargs: Any) -> CandidateDelivery:
+        delivered.append(wt)
+        return _fake_candidate_delivery(wt, kwargs)
+
     monkeypatch.setattr(
-        eph, "deliver_ephemeral_worktree", lambda wt: delivered.append(wt) or True
+        eph, "deliver_verified_ephemeral_worktree_result", deliver_verified
     )
     original_record = state.record_verifier_pass
 
@@ -332,6 +415,8 @@ async def test_default_isolated_executor_standalone_then_verifier_pass_delivers_
         state.last_verifier_pass.workspace_fingerprint
         == fake_candidate_binding.candidate_workspace_fingerprint
     )
+    assert state.latest_verifier_attempt is not None
+    assert state.latest_verifier_attempt.disposition is VerifierAttemptDisposition.PASS
 
 
 async def test_default_isolated_executor_rejects_pass_when_landing_base_moves(
@@ -377,9 +462,13 @@ async def test_default_isolated_executor_rejects_pass_when_landing_base_moves(
         "landing base changed before verifier authorization was recorded"
     )
     assert state.last_verifier_pass is None
+    assert state.latest_verifier_attempt is not None
+    assert (
+        state.latest_verifier_attempt.disposition is VerifierAttemptDisposition.INVALID
+    )
 
 
-async def test_then_verifier_superseded_during_delivery_reports_no_authorization(
+async def test_then_verifier_rejects_new_attempt_during_delivery(
     monkeypatch: pytest.MonkeyPatch, fake_candidate_binding: VerifiedCandidate
 ) -> None:
     import vibe.core.worktree.ephemeral as eph
@@ -390,11 +479,17 @@ async def test_then_verifier_superseded_during_delivery_reports_no_authorization
     monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
     monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
 
-    def deliver_and_supersede(wt: Any) -> bool:
-        state.begin_verifier_attempt()
-        return True
+    rejected: list[str] = []
 
-    monkeypatch.setattr(eph, "deliver_ephemeral_worktree", deliver_and_supersede)
+    def deliver_and_try_to_supersede(wt: Any, **kwargs: Any) -> CandidateDelivery:
+        with pytest.raises(RuntimeError) as exc_info:
+            state.begin_verifier_attempt()
+        rejected.append(str(exc_info.value))
+        return _fake_candidate_delivery(wt, kwargs)
+
+    monkeypatch.setattr(
+        eph, "deliver_verified_ephemeral_worktree_result", deliver_and_try_to_supersede
+    )
     spawn_count = 0
 
     async def fake_exec(*args: Any, **kwargs: Any) -> Any:
@@ -411,12 +506,75 @@ async def test_then_verifier_superseded_during_delivery_reports_no_authorization
     )
 
     assert report is not None
-    assert not report.passed
+    assert report.passed
     assert report.delivered
-    assert report.violations[0].message == (
-        "verifier attempt was superseded before landing authorization"
+    assert rejected == [
+        "cannot start a verifier while a verification authorization transaction "
+        "is in progress"
+    ]
+    assert state.last_verifier_pass is not None
+
+
+async def test_then_verifier_finishes_delivery_before_propagating_cancellation(
+    monkeypatch: pytest.MonkeyPatch, fake_candidate_binding: VerifiedCandidate
+) -> None:
+    import vibe.core.worktree.ephemeral as eph
+
+    state = VerificationState()
+    rt = _make_runtime(state)
+    fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt")})()
+    monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
+    monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
+    delivery_started = asyncio.Event()
+    release_delivery = asyncio.Event()
+    delivered: list[CandidateDelivery] = []
+
+    def controlled_delivery(wt: Any, **kwargs: Any) -> CandidateDelivery:
+        result = _fake_candidate_delivery(wt, kwargs)
+        delivered.append(result)
+        return result
+
+    monkeypatch.setattr(
+        eph, "deliver_verified_ephemeral_worktree_result", controlled_delivery
     )
+
+    async def controlled_to_thread(function: Any, *args: Any, **kwargs: Any) -> Any:
+        if function is controlled_delivery:
+            delivery_started.set()
+            await release_delivery.wait()
+            return function(*args, **kwargs)
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", controlled_to_thread)
+    spawn_count = 0
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> Any:
+        nonlocal spawn_count
+        spawn_count += 1
+        if spawn_count == 2:
+            return _VerdictProc(_PASS_RESPONSE.encode())
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    execution = asyncio.create_task(
+        rt._default_isolated_executor("do it", "worker", "lbl", 40, then="verifier")
+    )
+    await delivery_started.wait()
+    execution.cancel()
+    await asyncio.sleep(0)
+    assert not execution.done()
+    release_delivery.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    assert len(delivered) == 1
     assert state.last_verifier_pass is None
+    assert state.latest_verifier_attempt is not None
+    assert (
+        state.latest_verifier_attempt.disposition is VerifierAttemptDisposition.INVALID
+    )
 
 
 async def test_default_isolated_executor_standalone_then_verifier_fail_blocks(
@@ -460,6 +618,8 @@ async def test_default_isolated_executor_standalone_then_verifier_fail_blocks(
     assert delivered == []
     assert report is None or not report.passed
     assert state.last_verifier_pass is None
+    assert state.latest_verifier_attempt is not None
+    assert state.latest_verifier_attempt.disposition is VerifierAttemptDisposition.FAIL
     assert removed and removed[0] is True
 
 
@@ -468,7 +628,8 @@ async def test_then_verifier_surfaces_report_parse_error(
 ) -> None:
     import vibe.core.worktree.ephemeral as eph
 
-    rt = _make_runtime(VerificationState())
+    state = VerificationState()
+    rt = _make_runtime(state)
     fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt")})()
     monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
     monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
@@ -492,6 +653,10 @@ async def test_then_verifier_surfaces_report_parse_error(
     assert report.violations[0].message == (
         "verifier report rejected: verification report has no command evidence"
     )
+    assert state.latest_verifier_attempt is not None
+    assert (
+        state.latest_verifier_attempt.disposition is VerifierAttemptDisposition.INVALID
+    )
 
 
 async def test_then_verifier_delivery_failure_does_not_record_pass(
@@ -504,7 +669,13 @@ async def test_then_verifier_delivery_failure_does_not_record_pass(
     fake_wt = type("WT", (), {"path": Path("/tmp/iso-wt")})()
     monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
     monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
-    monkeypatch.setattr(eph, "deliver_ephemeral_worktree", lambda wt: False)
+    monkeypatch.setattr(
+        eph,
+        "deliver_verified_ephemeral_worktree_result",
+        lambda wt, **kwargs: _fake_candidate_delivery(
+            wt, kwargs, status=CandidateDeliveryStatus.PRESERVED
+        ),
+    )
     spawn_count = 0
 
     async def fake_exec(*args: Any, **kwargs: Any) -> Any:
@@ -524,6 +695,10 @@ async def test_then_verifier_delivery_failure_does_not_record_pass(
     assert report.passed
     assert not report.delivered
     assert state.last_verifier_pass is None
+    assert state.latest_verifier_attempt is not None
+    assert (
+        state.latest_verifier_attempt.disposition is VerifierAttemptDisposition.INVALID
+    )
 
 
 async def test_then_verifier_rejects_unrelated_parent_mutation_during_verifier(
@@ -677,7 +852,7 @@ async def test_then_verifier_rejects_post_delivery_workspace_mismatch(
     import vibe.core.worktree.ephemeral as eph
 
     repo_root, _, wt = _real_candidate(tmp_path)
-    deliver = eph.deliver_ephemeral_worktree
+    deliver = eph.deliver_verified_ephemeral_worktree_result
 
     async def fake_worker(*args: Any, **kwargs: Any) -> IsolatedResult:
         return IsolatedResult(output="worker output", wt=wt)
@@ -687,15 +862,17 @@ async def test_then_verifier_rejects_post_delivery_workspace_mismatch(
     ) -> _FakeResult:
         return _FakeResult(output=_PASS_RESPONSE)
 
-    def deliver_then_contaminate(wt: Any) -> bool:
-        delivered = deliver(wt)
-        if delivered:
+    def deliver_then_contaminate(wt: Any, **kwargs: Any) -> CandidateDelivery:
+        delivered = deliver(wt, **kwargs)
+        if delivered.accepted:
             write_safe(repo_root / "post-delivery.txt", "contamination\n")
         return delivered
 
     monkeypatch.setattr("vibe.core.workflows.runtime.run_isolated_agent", fake_worker)
     monkeypatch.setattr("vibe.core.workflows.runtime._spawn_isolated", verifier_passes)
-    monkeypatch.setattr(eph, "deliver_ephemeral_worktree", deliver_then_contaminate)
+    monkeypatch.setattr(
+        eph, "deliver_verified_ephemeral_worktree_result", deliver_then_contaminate
+    )
     monkeypatch.setattr(
         "vibe.core.workflows.runtime.landing_base_sha", lambda: "outer-base"
     )

@@ -56,6 +56,21 @@ async def test_handles_timeout(bash):
 
 
 @pytest.mark.asyncio
+async def test_terminates_command_when_combined_capture_limit_is_exceeded() -> None:
+    config = BashToolConfig(max_capture_bytes=1_024)
+    bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
+
+    with pytest.raises(ToolError, match="capture limit of 1,024 bytes"):
+        await collect_result(
+            bash_tool.run(
+                BashArgs(
+                    command=("printf '%02048d' 0; printf '%02048d' 1 >&2; sleep 10")
+                )
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_truncates_output_to_max_bytes(bash):
     config = BashToolConfig(max_output_bytes=5)
     bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
@@ -268,6 +283,38 @@ def test_resolve_permission():
     assert mixed.permission is ToolPermission.ASK
     assert any(rp.label == "whoami *" for rp in mixed.required_permissions)
     assert empty is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git update-ref -d refs/heads/control",
+        "git worktree remove /tmp/control",
+        "git reset --hard HEAD~1",
+        "git clean -fd",
+        "uv run git update-ref -d refs/heads/control",
+        "rm -rf ~/.vibe/logs",
+        "find ~/.vibe/verification -delete",
+        "rm -rf .git/worktrees/control",
+    ],
+)
+def test_host_control_plane_mutations_are_hard_denied(command: str) -> None:
+    config = BashToolConfig(permission=ToolPermission.ALWAYS)
+    bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
+
+    permission = bash_tool.resolve_permission(BashArgs(command=command))
+
+    assert isinstance(permission, PermissionContext)
+    assert permission.permission is ToolPermission.NEVER
+
+
+def test_observational_worktree_list_is_not_hard_denied() -> None:
+    config = BashToolConfig(permission=ToolPermission.ALWAYS)
+    bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())
+
+    permission = bash_tool.resolve_permission(BashArgs(command="git worktree list"))
+
+    assert permission is None or permission.permission is not ToolPermission.NEVER
 
 
 class TestDestructiveAndArgumentSafety:

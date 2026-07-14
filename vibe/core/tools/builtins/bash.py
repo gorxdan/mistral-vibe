@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import time
 from typing import ClassVar, Literal, NamedTuple, final
 
@@ -18,6 +19,11 @@ from vibe.core.config import SandboxConfig
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
 from vibe.core.scratchpad import is_scratchpad_path
+from vibe.core.tools._model_write_policy import (
+    hard_control_plane_command_reason,
+    model_protected_roots,
+    verification_protected_roots,
+)
 from vibe.core.tools._team_safety import enforce_shared_ask
 from vibe.core.tools.arity import build_session_pattern
 from vibe.core.tools.base import (
@@ -44,6 +50,7 @@ from vibe.core.tools.sandbox import (
     build_sandbox_command,
     detect_backend,
     scrub_env,
+    strict_read_hidden_roots,
 )
 from vibe.core.tools.sandbox_seccomp import build_seccomp_bpf, open_seccomp_fd
 from vibe.core.tools.tool_result_store import ToolResultStore
@@ -55,7 +62,7 @@ from vibe.core.tools.utils import (
 )
 from vibe.core.types import ToolResultEvent, ToolStreamEvent
 from vibe.core.utils import is_windows, kill_async_subprocess
-from vibe.core.utils.io import decode_safe
+from vibe.core.utils.io import decode_safe, read_safe
 
 
 @lru_cache(maxsize=1)
@@ -71,6 +78,15 @@ def _close_fd_quietly(fd: int | None) -> None:
         return
     try:
         os.close(fd)
+    except OSError:
+        pass
+
+
+def _unlink_quietly(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink()
     except OSError:
         pass
 
@@ -94,6 +110,228 @@ def _build_sandbox_env(config: SandboxConfig, *, host_session: bool) -> dict[str
         # worker (isolated) branch passes host_session=False to stay strict.
         passthrough += sorted(HOST_GIT_ENV_PASSTHROUGH)
     return scrub_env(base, passthrough)
+
+
+class _ModelSandboxControl(NamedTuple):
+    protected_roots: tuple[Path, ...]
+    topology_state: str | None
+    strict: bool
+    protect_git_metadata: bool
+    candidate_readonly: bool
+
+
+def _model_sandbox_control(
+    ctx: InvokeContext | None, iso_root: Path | None
+) -> _ModelSandboxControl:
+    verification_state = ctx.verification_state if ctx is not None else None
+    protected_roots = verification_protected_roots(verification_state)
+    recipe = (
+        verification_state.trusted_recipe if verification_state is not None else None
+    )
+    topology = recipe.config.execution_topology if recipe is not None else None
+    task_contract = ctx.task_contract if ctx is not None else None
+    autoapprove = bool(
+        ctx is not None
+        and ctx.agent_manager is not None
+        and ctx.agent_manager.config.bypass_tool_permissions
+    )
+    verifier = bool(
+        ctx is not None
+        and ctx.agent_manager is not None
+        and getattr(ctx.agent_manager.config, "system_prompt_id", None) == "verifier"
+    )
+    return _ModelSandboxControl(
+        protected_roots=protected_roots,
+        topology_state=topology.state if topology is not None else None,
+        strict=bool(
+            iso_root is not None
+            or task_contract
+            or protected_roots
+            or autoapprove
+            or verifier
+        ),
+        protect_git_metadata=bool(
+            iso_root is not None or task_contract or protected_roots or verifier
+        ),
+        candidate_readonly=verifier,
+    )
+
+
+def _strict_model_env(
+    ctx: InvokeContext | None, *, restrict_home_tools: bool
+) -> dict[str, str]:
+    env = scrub_env(_get_base_env(), [])
+    path_value = env.get("PATH", "")
+    resolved_path = (
+        _managed_path_entries(path_value)
+        if restrict_home_tools
+        else _resolved_path_entries(path_value)
+    )
+    env.update({
+        "VIBE_STRICT_MODEL_CONTROL": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "UV_CACHE_DIR": "/tmp/vibe-toolchain-cache/uv",
+        "PRE_COMMIT_HOME": "/tmp/vibe-toolchain-cache/pre-commit",
+        "XDG_CACHE_HOME": "/tmp/vibe-toolchain-cache/xdg",
+        "HOME": (
+            str(ctx.scratchpad_dir)
+            if ctx is not None and ctx.scratchpad_dir is not None
+            else "/tmp/vibe-model-home"
+        ),
+    })
+    env["PATH"] = os.pathsep.join(resolved_path)
+    return env
+
+
+def _resolved_path_entries(value: str) -> list[str]:
+    entries: list[str] = []
+    for entry in value.split(os.pathsep):
+        if not entry:
+            continue
+        try:
+            resolved = Path(entry).expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        if resolved.is_dir():
+            entries.append(str(resolved))
+    return entries
+
+
+def _managed_path_entries(value: str) -> list[str]:
+    home = Path.home().resolve()
+    repository_bin = _repository_root(Path.cwd()) / ".venv" / "bin"
+    uv = shutil.which("uv", path=value)
+    allowed_home_directories = {repository_bin.resolve()}
+    if uv is not None:
+        allowed_home_directories.add(Path(uv).resolve().parent)
+    return [
+        entry
+        for entry in _resolved_path_entries(value)
+        if not Path(entry).is_relative_to(home)
+        or Path(entry) in allowed_home_directories
+    ]
+
+
+def _strict_read_roots(
+    write_roots: list[Path],
+    control: _ModelSandboxControl,
+    env: dict[str, str],
+    iso_root: Path | None,
+) -> list[Path]:
+    home = Path.home().resolve()
+    repository = (iso_root or _repository_root(Path.cwd())).resolve()
+    roots = {repository, *write_roots, *control.protected_roots}
+    if git_common := _linked_git_common(repository):
+        roots.add(git_common)
+    for entry in env.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        directory = Path(entry).resolve()
+        if directory != home:
+            roots.add(directory)
+    python_runtime = _candidate_python_runtime(repository, home)
+    if python_runtime is not None:
+        roots.add(python_runtime)
+    unsafe = next(
+        (
+            root
+            for root in roots
+            if home == root.resolve() or home.is_relative_to(root.resolve())
+        ),
+        None,
+    )
+    if unsafe is not None:
+        raise ToolError(
+            "Strict model control cannot expose a filesystem root that contains "
+            f"the host home: {unsafe}"
+        )
+    return sorted(roots)
+
+
+def _candidate_python_runtime(repository: Path, home: Path) -> Path | None:
+    python = repository / ".venv" / "bin" / "python"
+    try:
+        resolved = python.resolve(strict=True)
+        uv_python_root = (home / ".local" / "share" / "uv" / "python").resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not resolved.is_relative_to(uv_python_root):
+        return None
+    return resolved.parent.parent
+
+
+def _repository_root(directory: Path) -> Path:
+    resolved = directory.resolve()
+    return next(
+        (
+            parent
+            for parent in (resolved, *resolved.parents)
+            if (parent / ".git").exists()
+        ),
+        resolved,
+    )
+
+
+def _linked_git_common(repository: Path) -> Path | None:
+    dotgit = repository / ".git"
+    if not dotgit.is_file() or dotgit.is_symlink():
+        return None
+    try:
+        line = next(
+            item
+            for item in read_safe(dotgit).text.splitlines()
+            if item.startswith("gitdir:")
+        )
+    except (OSError, StopIteration):
+        return None
+    gitdir = Path(line.partition(":")[2].strip())
+    if not gitdir.is_absolute():
+        gitdir = repository / gitdir
+    resolved = gitdir.resolve()
+    return resolved.parent.parent if resolved.parent.name == "worktrees" else resolved
+
+
+def _sandbox_write_scope(
+    config: SandboxConfig,
+    ctx: InvokeContext | None,
+    command: str,
+    iso_root: Path | None,
+    control: _ModelSandboxControl,
+) -> tuple[list[Path], dict[str, str]]:
+    if iso_root is not None:
+        write_roots = [iso_root]
+        if (iso_scratch := isolated_scratchpad_root()) is not None:
+            write_roots.append(iso_scratch)
+        env = _build_sandbox_env(config, host_session=False)
+    else:
+        # A topology-bound shell is read-only against the candidate.  File
+        # mutations use Edit/Write so allowed-path checks remain structural.
+        readonly_candidate = (
+            control.topology_state is not None or control.candidate_readonly
+        )
+        write_roots = [] if readonly_candidate else [Path.cwd()]
+        if not readonly_candidate:
+            write_roots += [Path(directory) for directory in config.write_dirs]
+        if not control.strict:
+            write_roots += [
+                Path(directory)
+                for directory in _collect_outside_dirs(_extract_commands(command))
+            ]
+        env = _build_sandbox_env(config, host_session=True)
+        if not control.strict:
+            cache_root = _sandbox_toolchain_cache_root()
+            write_roots.append(cache_root)
+            env["UV_CACHE_DIR"] = str(cache_root / "uv")
+            env["PRE_COMMIT_HOME"] = str(cache_root / "pre-commit")
+
+    if control.strict:
+        env = _strict_model_env(ctx, restrict_home_tools=True)
+    if ctx is not None and ctx.scratchpad_dir is not None:
+        write_roots.append(Path(ctx.scratchpad_dir))
+    return write_roots, env
 
 
 @lru_cache(maxsize=64)
@@ -497,6 +735,43 @@ class _ShapedOutput(NamedTuple):
     full_output_path: Path | None
 
 
+class _OutputCaptureLimitExceeded(RuntimeError):
+    pass
+
+
+async def _communicate_limited(
+    proc: asyncio.subprocess.Process, *, max_capture_bytes: int
+) -> tuple[bytes, bytes]:
+    stdout = bytearray()
+    stderr = bytearray()
+    captured = 0
+
+    async def drain(
+        stream: asyncio.StreamReader | None, destination: bytearray
+    ) -> None:
+        nonlocal captured
+        if stream is None:
+            return
+        while chunk := await stream.read(64 * 1024):
+            if captured + len(chunk) > max_capture_bytes:
+                raise _OutputCaptureLimitExceeded
+            captured += len(chunk)
+            destination.extend(chunk)
+
+    tasks = [
+        asyncio.create_task(drain(proc.stdout, stdout)),
+        asyncio.create_task(drain(proc.stderr, stderr)),
+    ]
+    try:
+        await asyncio.gather(*tasks)
+        await proc.wait()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return bytes(stdout), bytes(stderr)
+
+
 def _shape_output(
     ctx: InvokeContext | None,
     *,
@@ -567,6 +842,16 @@ class BashToolConfig(BaseToolConfig):
             "Maximum decoded-text characters from each stream to show inline. "
             "This is a character cap retained under its legacy config key, not a "
             "raw-byte capture limit."
+        ),
+    )
+    max_capture_bytes: int = Field(
+        default=16_000_000,
+        ge=1_024,
+        le=256_000_000,
+        description=(
+            "Maximum combined raw stdout/stderr bytes retained for a foreground "
+            "command. The process tree is terminated when this hard bound is "
+            "exceeded."
         ),
     )
     default_timeout: int = Field(
@@ -728,8 +1013,14 @@ class Bash(
         return tokens[0] in self.config.sensitive_patterns
 
     def _resolve_guardrail_permission(
-        self, command_parts: list[str]
+        self, command_parts: list[str], raw_command: str
     ) -> PermissionContext | None:
+        if control_plane := hard_control_plane_command_reason(
+            command_parts, raw_command
+        ):
+            return PermissionContext(
+                permission=ToolPermission.NEVER, reason=control_plane
+            )
         find_execution_required: list[RequiredPermission] = []
         seen_find_execution: set[str] = set()
 
@@ -834,7 +1125,9 @@ class Bash(
         if not command_parts:
             return None
 
-        guardrail_permission = self._resolve_guardrail_permission(command_parts)
+        guardrail_permission = self._resolve_guardrail_permission(
+            command_parts, args.command
+        )
         if (
             guardrail_permission
             and guardrail_permission.permission == ToolPermission.NEVER
@@ -922,44 +1215,17 @@ class Bash(
     ) -> tuple[list[str] | None, Path | None, dict[str, str], int | None]:
         sb = self.config.sandbox
         iso_root = isolated_worktree_root()
-        if not sb.enabled and iso_root is None:
+        control = _model_sandbox_control(ctx, iso_root)
+        if not sb.enabled and iso_root is None and not control.strict:
             return None, None, _get_base_env(), None
-
-        if iso_root is not None:
-            # An isolated subagent must OS-confine bash to its worktree — the same
-            # boundary the file tools enforce via enforce_isolated_confine — even
-            # when the user never enabled the global sandbox. Scope writes to the
-            # worktree only (no _collect_outside_dirs widening: confinement is the
-            # point). Scrub the env only when the user actually opted into the
-            # sandbox; a bare isolation confine adds FS bounds without touching
-            # command env (git/gh creds keep working).
-            write_roots: list[Path] = [iso_root]
-            if (iso_scratch := isolated_scratchpad_root()) is not None:
-                write_roots.append(iso_scratch)
-            env = (
-                _build_sandbox_env(sb, host_session=False)
-                if sb.enabled
-                else _get_base_env()
-            )
-        else:
-            write_roots = [Path.cwd()]
-            write_roots += [Path(d) for d in sb.write_dirs]
-            # Widen writes to any out-of-tree dir the command references — those
-            # were already surfaced to (and approved by) the permission gate.
-            for d in _collect_outside_dirs(_extract_commands(command)):
-                write_roots.append(Path(d))
-            env = _build_sandbox_env(sb, host_session=True)
-            # Host session only (isolated subagents stay worktree-strict): let
-            # `git commit`'s pre-commit/uv gates write their cache.
-            cache_root = _sandbox_toolchain_cache_root()
-            write_roots.append(cache_root)
-            env["UV_CACHE_DIR"] = str(cache_root / "uv")
-            env["PRE_COMMIT_HOME"] = str(cache_root / "pre-commit")
-
-        if ctx is not None and ctx.scratchpad_dir is not None:
-            write_roots.append(Path(ctx.scratchpad_dir))
+        write_roots, env = _sandbox_write_scope(sb, ctx, command, iso_root, control)
 
         backend = detect_backend(sb.backend)
+        if control.strict and backend not in {"bwrap", "sandbox-exec"}:
+            raise ToolError(
+                "Strict model control requires a filesystem-confining sandbox "
+                "backend (bubblewrap or sandbox-exec); refusing unconfined bash"
+            )
         if backend == "none":
             if sb.require_backend:
                 raise ToolError(
@@ -976,7 +1242,19 @@ class Bash(
 
         spec = SandboxSpec(
             write_roots=write_roots,
-            allow_network=sb.allow_network,
+            read_roots=(
+                _strict_read_roots(write_roots, control, env, iso_root)
+                if control.strict
+                else []
+            ),
+            hidden_roots=(strict_read_hidden_roots() if control.strict else []),
+            protected_roots=(
+                list(model_protected_roots(control.protected_roots))
+                if control.strict
+                else []
+            ),
+            protect_git_metadata=control.protect_git_metadata,
+            allow_network=False if control.strict else sb.allow_network,
             env=env,
             extra_args=sb.extra_args,
         )
@@ -1117,11 +1395,114 @@ class Bash(
             pid=proc.pid,
         )
 
+    async def _start_foreground(
+        self, command: str, ctx: InvokeContext | None
+    ) -> tuple[asyncio.subprocess.Process, Path | None, int | None, bool]:
+        kwargs: dict[Literal["start_new_session"], bool] = (
+            {} if is_windows() else {"start_new_session": True}
+        )
+        sandbox_argv, profile_path, run_env, seccomp_fd = self._resolve_sandbox(
+            ctx, command
+        )
+        if sandbox_argv is None:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=run_env,
+                executable=_get_shell_executable(),
+                **kwargs,
+            )
+            return proc, profile_path, seccomp_fd, False
+
+        argv = [*sandbox_argv, _get_shell_executable() or "/bin/sh", "-c", command]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                env=run_env,
+                pass_fds=(seccomp_fd,) if seccomp_fd is not None else (),
+                **kwargs,
+            )
+        except (FileNotFoundError, OSError) as exc:
+            if self.config.sandbox.require_backend or (
+                run_env.get("VIBE_STRICT_MODEL_CONTROL") == "1"
+            ):
+                _unlink_quietly(profile_path)
+                _close_fd_quietly(seccomp_fd)
+                raise ToolError(f"Sandbox wrapper failed to start: {exc}") from exc
+            logger.warning(
+                "sandbox wrapper failed to start (%s); falling back unsandboxed. "
+                "Filesystem containment is lost but the scrubbed environment is "
+                "preserved (no secrets re-injected).",
+                exc,
+            )
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    env=run_env,
+                    executable=_get_shell_executable(),
+                    **kwargs,
+                )
+            except BaseException:
+                _unlink_quietly(profile_path)
+                _close_fd_quietly(seccomp_fd)
+                raise
+            return proc, profile_path, seccomp_fd, False
+        except BaseException:
+            _unlink_quietly(profile_path)
+            _close_fd_quietly(seccomp_fd)
+            raise
+        return proc, profile_path, seccomp_fd, True
+
+    async def _collect_foreground(
+        self, proc: asyncio.subprocess.Process, command: str, timeout: int
+    ) -> tuple[bytes, bytes]:
+        try:
+            return await asyncio.wait_for(
+                _communicate_limited(
+                    proc, max_capture_bytes=self.config.max_capture_bytes
+                ),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            await kill_async_subprocess(proc)
+            raise self._build_timeout_error(command, timeout) from None
+        except _OutputCaptureLimitExceeded:
+            await kill_async_subprocess(proc)
+            raise ToolError(
+                "Command output exceeded the configured combined capture "
+                f"limit of {self.config.max_capture_bytes:,} bytes; the "
+                "process tree was terminated"
+            ) from None
+
     async def run(
         self, args: BashArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | BashResult, None]:
         timeout = args.timeout or self.config.default_timeout
         max_bytes = self.config.max_output_bytes
+        verification_roots = verification_protected_roots(
+            ctx.verification_state if ctx is not None else None
+        )
+        if control_plane := hard_control_plane_command_reason(
+            _extract_commands(args.command),
+            args.command,
+            extra_roots=verification_roots,
+        ):
+            raise ToolError(control_plane)
+        if (
+            args.background
+            and _model_sandbox_control(ctx, isolated_worktree_root()).strict
+        ):
+            raise ToolError(
+                "Strict model control does not permit background Bash commands"
+            )
         await enforce_shared_ask(
             self.get_name(),
             args.command,
@@ -1140,68 +1521,15 @@ class Bash(
         seccomp_fd: int | None = None
         ran_sandboxed = False
         try:
-            kwargs: dict[Literal["start_new_session"], bool] = (
-                {} if is_windows() else {"start_new_session": True}
+            (
+                proc,
+                profile_path,
+                seccomp_fd,
+                ran_sandboxed,
+            ) = await self._start_foreground(args.command, ctx)
+            stdout_bytes, stderr_bytes = await self._collect_foreground(
+                proc, args.command, timeout
             )
-
-            sandbox_argv, profile_path, run_env, seccomp_fd = self._resolve_sandbox(
-                ctx, args.command
-            )
-            if sandbox_argv is not None:
-                shell_exe = _get_shell_executable() or "/bin/sh"
-                argv = [*sandbox_argv, shell_exe, "-c", args.command]
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *argv,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        stdin=asyncio.subprocess.DEVNULL,
-                        env=run_env,
-                        pass_fds=(seccomp_fd,) if seccomp_fd is not None else (),
-                        **kwargs,
-                    )
-                    ran_sandboxed = True
-                except (FileNotFoundError, OSError) as exc:
-                    if self.config.sandbox.require_backend:
-                        raise ToolError(
-                            f"Sandbox wrapper failed to start: {exc}"
-                        ) from exc
-                    logger.warning(
-                        "sandbox wrapper failed to start (%s); falling back "
-                        "unsandboxed. Filesystem containment is lost but the "
-                        "scrubbed environment is preserved (no secrets re-injected).",
-                        exc,
-                    )
-                    # Keep the already-scrubbed run_env: a user who enabled the
-                    # sandbox/scrub_env to drop secrets must not lose that
-                    # protection just because the containment backend failed.
-                    proc = await asyncio.create_subprocess_shell(
-                        args.command,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        stdin=asyncio.subprocess.DEVNULL,
-                        env=run_env,
-                        executable=_get_shell_executable(),
-                        **kwargs,
-                    )
-            else:
-                proc = await asyncio.create_subprocess_shell(
-                    args.command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    stdin=asyncio.subprocess.DEVNULL,
-                    env=run_env,
-                    executable=_get_shell_executable(),
-                    **kwargs,
-                )
-
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except TimeoutError:
-                await kill_async_subprocess(proc)
-                raise self._build_timeout_error(args.command, timeout) from None
 
             shaped_output = _shape_output(
                 ctx,
@@ -1228,9 +1556,5 @@ class Bash(
         finally:
             if proc is not None:
                 await kill_async_subprocess(proc)
-            if profile_path is not None:
-                try:
-                    profile_path.unlink()
-                except OSError:
-                    pass
+            _unlink_quietly(profile_path)
             _close_fd_quietly(seccomp_fd)

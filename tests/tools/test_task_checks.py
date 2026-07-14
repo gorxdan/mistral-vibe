@@ -7,6 +7,12 @@ from pydantic import ValidationError
 import pytest
 
 from tests.mock.utils import collect_result
+from tests.trusted_verification import (
+    HOST_ENVIRONMENT as _HOST_ENVIRONMENT,
+    HOST_ENVIRONMENT_SHA256 as _HOST_ENVIRONMENT_SHA256,
+    HOST_PYTHON as _HOST_PYTHON,
+    HOST_PYTHON_SHA256 as _HOST_PYTHON_SHA256,
+)
 from vibe.core.config import (
     TrustedVerificationCheckConfig,
     TrustedVerificationRecipeConfig,
@@ -22,6 +28,8 @@ from vibe.core.tools.builtins.task_checks import (
 )
 from vibe.core.verification_state import VerificationState
 
+_FOCUSED_ARGV = (str(_HOST_PYTHON), "-c", "raise SystemExit(0)")
+
 
 def _contract(root: Path) -> BoundTaskContract:
     recipe = TrustedVerificationRecipeConfig(
@@ -31,7 +39,11 @@ def _contract(root: Path) -> BoundTaskContract:
         allowed_paths=("src/**",),
         checks=(
             TrustedVerificationCheckConfig(
-                name="focused", argv=("uv", "run", "pytest", "tests/focused.py")
+                name="focused",
+                argv=_FOCUSED_ARGV,
+                executable_sha256=_HOST_PYTHON_SHA256,
+                environment_attestation_path=str(_HOST_ENVIRONMENT),
+                environment_attestation_sha256=_HOST_ENVIRONMENT_SHA256,
             ),
         ),
     )
@@ -53,7 +65,7 @@ def _contract(root: Path) -> BoundTaskContract:
 async def test_task_checks_runs_only_the_bound_checks(tmp_path: Path) -> None:
     evidence = TaskCheckEvidence(
         name="focused",
-        argv=("uv", "run", "pytest", "tests/focused.py"),
+        argv=_FOCUSED_ARGV,
         cwd=str(tmp_path),
         exit_code=0,
         timed_out=False,

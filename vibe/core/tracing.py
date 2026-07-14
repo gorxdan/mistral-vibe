@@ -327,7 +327,13 @@ async def _safe_span(
                 span.set_status(StatusCode.ERROR, str(exc_info))
                 span.record_exception(exc_info)
             elif exc_info is None:
-                span.set_status(StatusCode.OK)
+                if (
+                    getattr(
+                        getattr(span, "status", None), "status_code", StatusCode.UNSET
+                    )
+                    is StatusCode.UNSET
+                ):
+                    span.set_status(StatusCode.OK)
             else:
                 # BaseException-but-not-Exception: CancelledError / GeneratorExit
                 # / KeyboardInterrupt. Not a failure, so leave status non-ERROR

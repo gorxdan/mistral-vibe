@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -53,9 +54,36 @@ def pytest_configure(config: pytest.Config) -> None:
         "sandbox_e2e: needs a usable OS sandbox backend; skipped when user "
         "namespaces are unavailable",
     )
+    config.addinivalue_line(
+        "markers",
+        "process_e2e: launches or signals real process trees; opt-in only on a "
+        "disposable non-graphical host with xdist disabled",
+    )
+    if not config.getoption("--run-process-e2e"):
+        return
+    if os.environ.get("VIBE_PROCESS_E2E_DISPOSABLE") != "1":
+        raise pytest.UsageError(
+            "--run-process-e2e requires VIBE_PROCESS_E2E_DISPOSABLE=1 on a "
+            "disposable non-graphical host"
+        )
+    if config.getoption("numprocesses") not in {None, 0, "0"}:
+        raise pytest.UsageError("--run-process-e2e requires -n0")
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.getgroup("vibe safety").addoption(
+        "--run-process-e2e",
+        action="store_true",
+        default=False,
+        help="run real process-tree lifecycle probes (requires -n0 and a disposable host)",
+    )
 
 
 def pytest_runtest_setup(item: pytest.Item) -> None:
+    if item.get_closest_marker("process_e2e") and not item.config.getoption(
+        "--run-process-e2e"
+    ):
+        pytest.skip("real process-tree probes require --run-process-e2e")
     if item.get_closest_marker("sandbox_e2e") and not sandbox_e2e_available():
         pytest.skip("no usable OS sandbox backend (user namespaces unavailable)")
 

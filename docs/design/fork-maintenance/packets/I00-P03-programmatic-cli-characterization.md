@@ -25,6 +25,7 @@ evidence:
   runner_id: null
   scenarios:
     - IT-01
+  scenario_contracts: []
 packet_acceptance_criteria:
   - I00-P03-AC01
   - I00-P03-AC02
@@ -163,8 +164,10 @@ allowed path are not discretionary.
   HTTP 401 response for the backend-auth case.
 - Capture exact stdout, stderr, return code, backend request count/payload, trust
   persistence, and absence of traceback/onboarding/splash/ANSI leakage.
-- Isolate each test-local CLI child in a Linux process group and prove bounded
-  SIGTERM/SIGKILL cleanup for timeout and leaked-descendant fixtures.
+- Isolate each test-local CLI child in a Linux process group. Default tests mock
+  signal calls; the bounded SIGTERM/SIGKILL timeout and leaked-descendant probes
+  are marked `process_e2e` and run only with `-n0` on a disposable non-graphical
+  host.
 - When `VIBE_MAINTENANCE_TEST_EVIDENCE` is set to the assigned IT-01 directory,
   write the four structured per-case artifacts defined below with project safe
   I/O. This test-only hook is the frozen artifact producer for this packet.
@@ -402,28 +405,30 @@ new session makes the child PID the process-group ID, isolating `uv`, `vibe`,
 and any descendant from pytest and the outer evidence runner.
 
 Call `communicate(timeout=...)`. Expected cases must not time out. On
-`subprocess.TimeoutExpired`, send SIGTERM to the whole group, wait at most five
-seconds, send SIGKILL if any group member remains, reap the direct child, assert
-that the group no longer exists, and raise
+`subprocess.TimeoutExpired`, verify `getpgid(pid) == pid` and `getsid(pid) == pid`
+before signaling the group; otherwise signal only the direct child. For a
+verified-owned group, send SIGTERM, wait at most five seconds, send SIGKILL if
+any member remains, reap the direct child, assert that the group no longer
+exists, and raise
 `AssertionError("CLI subprocess timed out after <SECONDS> seconds; process group terminated.")`
 from the timeout. Substitute the timeout using compact decimal formatting, so
 the production value is `30` and the test value is `0.1`. Do not retry.
 
 After every normal `communicate` return, probe the group before returning the
-captured result. If a descendant remains after the direct child exits, apply
-the same bounded SIGTERM/SIGKILL cleanup, assert the group is gone, and raise
-`AssertionError("CLI subprocess left descendants after exit; process group terminated.")`.
-This normal-exit probe is required because the new nested session is outside
-I00-P01's outer pytest process group.
+captured result. If a descendant remains after the direct child exits, record
+and raise `AssertionError("CLI subprocess left descendants after exit; safe
+post-exit group cleanup is unavailable.")`. Do not signal the former group by
+PID after its leader exits: PID reuse makes ownership ambiguous. A future
+cgroup, subreaper, or pidfd-backed containment layer must own that cleanup.
 
-Add one hermetic parametrized cleanup test. Launch a synthetic
+Add one hermetic parametrized cleanup test marked `process_e2e` and skipped by
+default. Run it only with `-n0` on a disposable non-graphical host. Launch a synthetic
 `uv run --no-sync python -c <script>` through the same helper. In one parameter,
 the direct child and descendant outlive a 0.1-second injected timeout. In the
-other, the direct child spawns a long-lived descendant that closes inherited
-stdio and then exits 0. Record the descendant PID in a temporary file with
-`write_safe`, read it with `read_safe`, and require the matching exact assertion,
-no live process group, and no live descendant after the five-second grace. The
-test must never signal pytest's process group.
+other, use mocked OS probes to characterize a direct child that exits while a
+descendant remains. Require the matching exact assertion and prove the helper
+does not signal the former group. The real timeout case requires no live owned
+process group after the five-second grace and must never signal pytest's group.
 
 ### Loopback servers
 
@@ -610,7 +615,7 @@ isolated Vibe home contains no persisted trusted-folder entry for the workdir.
 | MSG-01 | `--help`, `--version`, programmatic success, backend failure | Exact streams and exit codes stated in cases 1, 2, and 4 | None | `$EVIDENCE/IT-01/{stdout.json,stderr.json,exit-codes.json}` |
 | MSG-02 | Missing key, invalid config, untrusted project config | Exact streams and exit codes stated in cases 3, 5, and 6 | Workdir/path separator only for trust warning | Same plus command log/JUnit |
 | MSG-03 | Test-local evidence lock cannot be acquired within 10 seconds | `Timed out after 10 seconds acquiring the programmatic evidence lock.` | None | JUnit and outer runner result/missing-artifact evidence |
-| MSG-04 | Test-local CLI child times out or leaves a descendant | `CLI subprocess timed out after <SECONDS> seconds; process group terminated.` or `CLI subprocess left descendants after exit; process group terminated.` according to the trigger | Numeric timeout substitution only | Cleanup-test JUnit and outer runner result |
+| MSG-04 | Test-local CLI child times out or leaves a descendant | `CLI subprocess timed out after <SECONDS> seconds; process group terminated.` or `CLI subprocess left descendants after exit; safe post-exit group cleanup is unavailable.` according to the trigger | Numeric timeout substitution only | Cleanup-test JUnit and outer runner result |
 
 MSG-03 and MSG-04 are packet-local test-harness diagnostics, not product-facing
 or model-visible messages. No model-visible tool result changes. The success

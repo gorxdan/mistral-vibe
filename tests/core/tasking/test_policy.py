@@ -8,6 +8,12 @@ from types import SimpleNamespace
 from pydantic import ValidationError
 import pytest
 
+from tests.trusted_verification import (
+    HOST_ENVIRONMENT as _HOST_ENVIRONMENT,
+    HOST_ENVIRONMENT_SHA256 as _HOST_ENVIRONMENT_SHA256,
+    HOST_PYTHON as _HOST_PYTHON,
+    HOST_PYTHON_SHA256 as _HOST_PYTHON_SHA256,
+)
 from vibe.core.config import (
     TrustedVerificationCheckConfig,
     TrustedVerificationRecipeConfig,
@@ -21,6 +27,9 @@ from vibe.core.tasking._policy import (
 )
 from vibe.core.tools._task_manifest import TaskManifestError, resolve_task_manifest
 from vibe.core.verification_state import VerificationState
+
+_FOCUSED_ARGV = (str(_HOST_PYTHON), "-m", "pytest", "tests/test_focused.py")
+_TYPES_ARGV = (str(_HOST_PYTHON), "-c", "raise SystemExit(0)")
 
 
 def _set_attribute(instance: object, name: str, value: object) -> None:
@@ -37,9 +46,19 @@ def _recipe(
         allowed_paths=allowed_paths,
         checks=(
             TrustedVerificationCheckConfig(
-                name="focused", argv=("uv", "run", "pytest", "tests/test_focused.py")
+                name="focused",
+                argv=_FOCUSED_ARGV,
+                executable_sha256=_HOST_PYTHON_SHA256,
+                environment_attestation_path=str(_HOST_ENVIRONMENT),
+                environment_attestation_sha256=_HOST_ENVIRONMENT_SHA256,
             ),
-            TrustedVerificationCheckConfig(name="types", argv=("uv", "run", "pyright")),
+            TrustedVerificationCheckConfig(
+                name="types",
+                argv=_TYPES_ARGV,
+                executable_sha256=_HOST_PYTHON_SHA256,
+                environment_attestation_path=str(_HOST_ENVIRONMENT),
+                environment_attestation_sha256=_HOST_ENVIRONMENT_SHA256,
+            ),
         ),
     )
 
@@ -90,12 +109,7 @@ def test_contract_binds_only_recipe_owned_check_ids(tmp_path: Path) -> None:
     contract = _bind(_brief(), tmp_path)
 
     assert contract.acceptance_check_ids == ("focused",)
-    assert contract.trusted_checks[0].argv == (
-        "uv",
-        "run",
-        "pytest",
-        "tests/test_focused.py",
-    )
+    assert contract.trusted_checks[0].argv == _FOCUSED_ARGV
 
     with pytest.raises(TaskContractError, match="untrusted acceptance check IDs"):
         _bind(

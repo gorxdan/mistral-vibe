@@ -10,7 +10,7 @@ from tests.conftest import build_test_vibe_config
 from vibe.core.config import ModelConfig, ProviderConfig
 from vibe.core.tools.base import InvokeContext
 from vibe.core.types import AgentStats, AssistantEvent
-from vibe.core.workflows.runtime import WorkflowRuntime, _parse_stats
+from vibe.core.workflows.runtime import IsolatedStats, WorkflowRuntime, _parse_stats
 
 
 class _CostedLoop:
@@ -81,7 +81,7 @@ def test_workflow_fallback_quote_uses_builtin_api_pricing() -> None:
 async def test_isolated_workflow_uses_child_reported_cost() -> None:
     async def isolated(
         prompt: str, agent: str, label: str | None, max_turns: int
-    ) -> tuple[str, dict[str, int | float | bool]]:
+    ) -> tuple[str, IsolatedStats]:
         return (
             "done",
             {

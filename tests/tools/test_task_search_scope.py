@@ -6,6 +6,12 @@ import shutil
 import pytest
 
 from tests.mock.utils import collect_result
+from tests.trusted_verification import (
+    HOST_ENVIRONMENT as _HOST_ENVIRONMENT,
+    HOST_ENVIRONMENT_SHA256 as _HOST_ENVIRONMENT_SHA256,
+    HOST_PYTHON as _HOST_PYTHON,
+    HOST_PYTHON_SHA256 as _HOST_PYTHON_SHA256,
+)
 from vibe.core.config import (
     TrustedVerificationCheckConfig,
     TrustedVerificationRecipeConfig,
@@ -30,7 +36,11 @@ def _contract(
         allowed_paths=("**",),
         checks=(
             TrustedVerificationCheckConfig(
-                name="focused", argv=("uv", "run", "pytest", "tests/focused.py")
+                name="focused",
+                argv=(str(_HOST_PYTHON), "-c", "raise SystemExit(0)"),
+                executable_sha256=_HOST_PYTHON_SHA256,
+                environment_attestation_path=str(_HOST_ENVIRONMENT),
+                environment_attestation_sha256=_HOST_ENVIRONMENT_SHA256,
             ),
         ),
     )

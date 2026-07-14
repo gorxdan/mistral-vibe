@@ -24,6 +24,7 @@ evidence:
   runner_id: null
   scenarios:
     - IT-12
+  scenario_contracts: []
 packet_acceptance_criteria:
   - I00-P02-AC01
   - I00-P02-AC02

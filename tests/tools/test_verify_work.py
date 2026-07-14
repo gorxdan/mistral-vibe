@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-import sys
+from types import SimpleNamespace
 from typing import cast
 
 from git import Repo
@@ -10,7 +10,16 @@ from pydantic import ValidationError
 import pytest
 
 from tests.conftest import build_test_agent_loop, build_test_vibe_config
-from vibe.core._verification_receipt import VerificationReceiptStore
+from tests.trusted_verification import (
+    HOST_ENVIRONMENT as _HOST_ENVIRONMENT,
+    HOST_ENVIRONMENT_SHA256 as _HOST_ENVIRONMENT_SHA256,
+    HOST_PYTHON as _HOST_PYTHON,
+    HOST_PYTHON_SHA256 as _HOST_PYTHON_SHA256,
+)
+from vibe.core._verification_receipt import (
+    VerificationReceipt,
+    VerificationReceiptStore,
+)
 from vibe.core.agents.manager import AgentManager
 from vibe.core.config import (
     TrustedVerificationCheckConfig,
@@ -27,10 +36,11 @@ from vibe.core.tools.builtins.verify_work import (
     VerifyWork,
     VerifyWorkArgs,
     VerifyWorkConfig,
+    _await_trusted_recipe_completion,
 )
 from vibe.core.utils.io import write_safe
 from vibe.core.verification_contract import parse_verification_report
-from vibe.core.verification_state import VerificationState
+from vibe.core.verification_state import VerificationState, VerifierAttemptDisposition
 from vibe.core.worktree.manager import WorktreeHandle, worktree_manager
 
 
@@ -43,9 +53,16 @@ def _recipe(marker: str = "safe") -> TrustedVerificationRecipeConfig:
         checks=(
             TrustedVerificationCheckConfig(
                 name=f"{marker}-check",
-                argv=(sys.executable, "-c", f"print('{marker}')"),
+                argv=(str(_HOST_PYTHON), "-c", f"print('{marker} Total: 1')"),
                 cwd=".",
                 timeout_seconds=10,
+                executable_sha256=_HOST_PYTHON_SHA256,
+                environment_attestation_path=str(_HOST_ENVIRONMENT),
+                environment_attestation_sha256=_HOST_ENVIRONMENT_SHA256,
+                required_output_patterns=(marker,),
+                test_count_pattern=r"Total:\s*(?P<count>\d+)",
+                minimum_test_count=1,
+                custom_runner=True,
             ),
         ),
     )
@@ -61,6 +78,19 @@ def _report() -> str:
         "**Result: PASS**\n\n"
         "VERDICT: PASS"
     )
+
+
+def _record_current_verifier_pass(state: VerificationState) -> int:
+    generation = state.begin_verifier_attempt()
+    assert state.record_verifier_result(
+        generation,
+        VerifierAttemptDisposition.PASS,
+        "Verifier PASS was recorded for the current candidate.",
+    )
+    state.record_verifier_pass(
+        parse_verification_report(_report()), verifier_attempt_generation=generation
+    )
+    return generation
 
 
 class _FakeConfig:
@@ -113,6 +143,30 @@ async def _collect(tool, args, ctx):
     return [result async for result in tool.run(args, ctx)]
 
 
+@pytest.mark.asyncio
+async def test_trusted_recipe_finishes_before_cancellation_propagates() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def operation():
+        started.set()
+        await release.wait()
+        finished.set()
+        return cast(VerificationReceipt, SimpleNamespace())
+
+    task = asyncio.create_task(_await_trusted_recipe_completion(operation()))
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished.is_set()
+
+
 def test_verify_work_schema_rejects_model_commands_and_paths() -> None:
     assert VerifyWork.get_parameters()["properties"] == {}
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
@@ -132,15 +186,19 @@ def test_recipe_is_immutable_and_prebound_across_config_reload() -> None:
         safe_recipe.task_brief = "replace the task"
 
     reloaded = config.model_copy(
-        update={"trusted_verification_recipe": _recipe("evil")}
+        update={
+            "trusted_verification_recipe": _recipe("evil"),
+            "verification_subsystem": False,
+        }
     )
     asyncio.run(loop.reload_with_initial_messages(base_config=reloaded))
 
     bound = loop._verification_state.trusted_recipe
     assert bound is not None
     assert bound.recipe_version == "safe-v1"
-    assert bound.checks[0].argv[-1] == "print('safe')"
+    assert bound.checks[0].argv[-1] == "print('safe Total: 1')"
     assert loop.base_config.trusted_verification_recipe == safe_recipe
+    assert loop.base_config.verification_subsystem is True
 
 
 def test_verify_work_uses_prebound_plan_and_receipt_reaches_land_work(
@@ -152,7 +210,7 @@ def test_verify_work_uses_prebound_plan_and_receipt_reaches_land_work(
     monkeypatch.setattr(
         "vibe.core.verification_state.workspace_fingerprint", lambda: "candidate"
     )
-    state.record_verifier_pass(parse_verification_report(_report()))
+    _record_current_verifier_pass(state)
     ctx = InvokeContext(
         tool_call_id="verify",
         agent_manager=cast(AgentManager, _FakeAgentManager(_recipe("evil"))),
@@ -168,7 +226,7 @@ def test_verify_work_uses_prebound_plan_and_receipt_reaches_land_work(
     assert verified[0].passed
     assert state.receipt_reference is not None
     receipt = state.receipt_store.load_any(verified[0].receipt_id)
-    assert receipt.evidence[0].argv[-1] == "print('safe')"
+    assert receipt.evidence[0].argv[-1] == "print('safe Total: 1')"
     assert receipt.recipe_version == "safe-v1"
 
     land_tool = LandWork(config_getter=lambda: LandWorkConfig(), state=BaseToolState())
@@ -199,6 +257,41 @@ def test_verify_work_requires_verifier_pass(
 
     with pytest.raises(ToolError, match="verifier PASS"):
         asyncio.run(_collect(tool, VerifyWorkArgs(), ctx))
+
+
+@pytest.mark.parametrize("mutation", ["head", "branch"])
+def test_verify_work_race_publishes_no_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    _, candidate_repo, _ = _linked_candidate(tmp_path)
+    state = VerificationState.from_recipe(_recipe())
+    state.receipt_store = VerificationReceiptStore(tmp_path / "receipts")
+    monkeypatch.setattr(
+        "vibe.core.verification_state.workspace_fingerprint", lambda: "candidate"
+    )
+    _record_current_verifier_pass(state)
+    original_run = state.run_bound_recipe
+
+    def run_then_mutate(**kwargs):
+        receipt = original_run(**kwargs)
+        if mutation == "head":
+            candidate_repo.git.commit("--allow-empty", "-m", "concurrent change")
+        else:
+            candidate_repo.git.checkout("-b", "same-head-concurrent-branch")
+        return receipt
+
+    monkeypatch.setattr(state, "run_bound_recipe", run_then_mutate)
+    ctx = InvokeContext(
+        tool_call_id="verify",
+        agent_manager=cast(AgentManager, _FakeAgentManager(_recipe())),
+        verification_state=state,
+    )
+    tool = VerifyWork(config_getter=lambda: VerifyWorkConfig(), state=BaseToolState())
+
+    with pytest.raises(ToolError, match="topology changed"):
+        asyncio.run(_collect(tool, VerifyWorkArgs(), ctx))
+
+    assert state.receipt_reference is None
 
 
 def test_configured_recipe_rejects_legacy_pass_and_trivial_waiver(

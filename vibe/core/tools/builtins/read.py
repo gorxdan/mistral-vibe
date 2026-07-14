@@ -10,6 +10,10 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from vibe.core.config.fingerprint import file_fingerprint
 from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.scratchpad import is_scratchpad_path
+from vibe.core.tools._model_read_policy import (
+    ManagedReadPolicyError,
+    resolve_managed_read_path,
+)
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -163,7 +167,7 @@ class Read(
     async def run(
         self, args: ReadArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | ReadResult, None]:
-        file_path = self._resolve_path(args.file_path)
+        file_path = self._resolve_path(args.file_path, ctx)
 
         start_line = args.offset or 1
 
@@ -206,14 +210,21 @@ class Read(
             was_truncated=was_truncated,
         )
 
-    def _resolve_path(self, raw_path: str) -> Path:
+    def _resolve_path(self, raw_path: str, ctx: InvokeContext | None = None) -> Path:
         if not raw_path.strip():
             raise ToolError("file_path cannot be empty")
 
-        path = Path(raw_path).expanduser()
-        if not path.is_absolute():
-            path = Path.cwd() / path
-        path = path.resolve()
+        try:
+            managed_path = resolve_managed_read_path(raw_path, ctx)
+        except ManagedReadPolicyError as exc:
+            raise ToolError(str(exc)) from exc
+        if managed_path is None:
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            path = path.resolve()
+        else:
+            path = managed_path
         enforce_team_metadata_confine(path)
         enforce_isolated_confine(path)
 

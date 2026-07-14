@@ -59,10 +59,10 @@ If an iteration cannot prove its preservation contract, it does not land.
   baseline.
 - Baselines are identified by commit SHA and artifact digest. They are not Git
   tags because this repository treats version tags as releases.
-- Evidence is written to a dedicated workspace outside every Git candidate
-  worktree. The evidence runner sets `VIBE_EVIDENCE_WORKSPACE` and
-  `KILROY_RUN_ID`; the latter is an evidence-run identifier, not product
-  configuration.
+- Evidence is written by the trusted host runner to a durable workspace outside
+  `/tmp`, `/run`, `/dev/shm`, `tmpfs`/`ramfs`, every linked Git worktree, and the Git common directory. The host
+  runner sets `VIBE_EVIDENCE_WORKSPACE` and `KILROY_RUN_ID`; the latter is an
+  evidence-run identifier, not product configuration.
 - Upstream syncs occur only between iterations. The pinned merge base and
   affected evidence are refreshed in a dedicated sync change.
 
@@ -158,7 +158,11 @@ movement, compatibility changes, or optimization.
 
 ## Delivery and rollback policy
 
-- Start from a clean worktree and record the exact candidate SHA.
+- Start only after the host validates the configured physical control and
+  candidate worktrees, their clean identities, and the active packet metadata.
+- The model does not commit, write lifecycle state, or provision control or
+  evidence storage. The lead authorizes those actions and the trusted host
+  performs them.
 - Keep unrelated work, including active LSP work, outside the iteration.
 - Use one PR or one normally revertible commit series per rollback boundary.
 - Do not amend, force-push, or rewrite already-pushed history.
@@ -172,12 +176,93 @@ movement, compatibility changes, or optimization.
 - A failed gate causes the iteration to stop. Revert or correct the iteration;
   do not widen a threshold without a separate review of measurement quality.
 
+## Managed harness integrity
+
+The [harness integrity contract](harness-integrity.md) governs every managed
+campaign session. Its requirements are part of the roadmap's Definition of
+Done, not packet suggestions.
+
+- The trusted recipe comes only from host-controlled user, `VIBE_` environment,
+  or programmatic configuration. Project TOML recipe entries are removed, a
+  bound recipe forces verification on, and managed reviewer/verifier children
+  inherit the frozen value.
+- `trusted_verification_recipe.execution_topology` is the sole execution
+  authority. Model-run preflights, copied commands, campaign shell variables,
+  and report prose cannot replace it.
+- Before the first model turn, AgentLoop requires distinct existing physical
+  registered control and candidate worktrees; exact clean SHAs and branch;
+  matching packet/status state, metadata, roles, dependencies, exact sorted
+  scenario IDs, and evidence-manifest digest when verification begins; and a
+  durable evidence workspace that passes a write, fsync, read-back, and removal
+  probe outside volatile/temporary mounts without overlapping any worktree or the Git common
+  directory in either direction. Packet/status data are regular tracked blobs
+  from the exact control commit. Git probes discard ambient `GIT_*` variables
+  and user/system configuration.
+- Active topology has `state = "active"`, no `candidate_sha`, and no
+  `evidence_manifest_sha256`.
+  Verification topology belongs to a fresh session, has
+  `state = "verification"`, and names the frozen full candidate SHA and the
+  64-character `evidence_manifest_sha256`. Both states configure packet/status
+  paths, control/candidate worktrees, control,
+  baseline, and upstream SHAs, candidate branch, evidence workspace, run ID,
+  and runner ID. Startup separately requires matching nonempty roles and
+  execution profile plus complete dependencies in the packet and status file.
+  Topology `max_turns` and `max_session_tokens` are hard upper bounds on the
+  managed root session, not advisory packet budgets.
+  These are the only executable managed states. Active write access remains
+  limited to allowed candidate paths and does not authorize unreceipted
+  completion. Verification is read-only and no-argument `verify_work` uses the
+  frozen topology without requiring a legacy `worktree_manager.active` record.
+- After candidate freeze, the host first commits verification state, candidate
+  identity, and the exact sorted scenario list to control. The host runner then
+  finalizes evidence, computes the canonical manifest SHA-256, and the host
+  records that digest in both packet and status in a second, final verification
+  control commit. Only that final commit may start the verification AgentLoop.
+- Model tools cannot mutate the control worktree, evidence workspace, Git
+  administration, host logs, or verification receipts. The lead decides and
+  the host performs commits, state transitions, trusted checks, receipt writes,
+  and landing.
+- Managed ToolManager construction uses an authoritative canonical catalog.
+  Active roots have at most `bash`, `edit`, `glob`, `grep`, `read`,
+  `skill`, `task`, `todo`, and `write_file`; verification roots have at most
+  `glob`, `grep`, `read`, `skill`, `task`, and `verify_work`. Managed
+  Task accepts only effective read-only built-in reviewer/verifier profiles,
+  whose ceiling is `bash`, `glob`, `grep`, `read`, and `skill`,
+  intersected with any structured manifest. Project/plugin tools,
+  MCP/connectors, workflows, teams, web tools, `tool_search`, and `land_work`
+  cannot enter the managed catalog.
+- Managed reads are confined to the candidate, control tree, evidence root,
+  session scratchpad, host skill roots, and active prompt files. Host logs,
+  receipts, runtime state, and unrelated host paths remain invisible. Strict
+  managed Bash rejects `background=true`.
+- Trusted checks are frozen direct `argv` arrays. A shell or `env` executable,
+  including either behind `uv run`, is rejected. They run only on Linux under
+  Bubblewrap; Seatbelt is not a trusted-check backend. Each check executes
+  offline in a disposable environment against an exact-HEAD Git-exported
+  snapshot with no Git metadata, through a private copy of a pre-provisioned
+  native executable whose SHA-256 matches the recipe. Shebang wrappers are
+  rejected. Every check also pins a host-owned environment attestation, which
+  is not a transitive dependency hash. Trusted recipes reject `uv` and
+  pre-commit entrypoints. The host pre-provisions dependencies and must not
+  substitute another package-manager installation command; the runtime does not
+  classify every package-manager CLI.
+  Combined stdout and stderr are capped at 1 MiB.
+- Structured `completed`, `outcome`, and receipt state outrank raw subagent
+  prose. The host replaces a contradictory completion claim before it reaches
+  the user.
+- Three consecutive filesystem-confinement, policy-denial, or sandbox-startup
+  failures in one class end the turn as `BLOCKED`.
+- Auto-approve cannot override hard policy, a `NEVER` permission, or configured
+  safety-judge deferral. It also requires Bubblewrap or Seatbelt, disables
+  network, scrubs the model environment, and cannot widen the managed catalog.
+
 ## Deliverables
 
 | Artifact | Location | Description |
 |---|---|---|
 | Execution roadmap | `docs/design/fork-maintenance-roadmap.md` | This scope, sequence, DoD, evidence contract, and test matrix. |
 | Design index entry | `docs/design/README.md` | Discoverable link to this roadmap. |
+| Harness integrity contract | `docs/design/harness-integrity.md` | Host/model authority, topology startup gate, protected state, trusted checks, completion authority, circuit breaker, and auto-approve limits. |
 | Execution control layer | `docs/design/fork-maintenance/` | Authority matrix, machine-readable campaign status, packet template, and frozen iteration packets suitable for bounded agent execution. |
 | Baseline manifest | `$VIBE_EVIDENCE_WORKSPACE/.ai/runs/$KILROY_RUN_ID/test-evidence/latest/manifest.json` | Commit, environment, commands, scenarios, results, and artifact paths outside the candidate worktree. |
 | Fork ownership report | Iteration evidence under `IT-12/` | Upstream/fork path ownership, changed paths, per-hotspot hunks, and absent paths. |
@@ -204,6 +289,8 @@ movement, compatibility changes, or optimization.
 
 ### Tier A: every PR
 
+- Successful startup under the frozen active topology and no protected-state
+  mutation by model tools.
 - Targeted tests for the touched subsystem.
 - Ruff check and formatting.
 - Pyright.
@@ -213,6 +300,7 @@ movement, compatibility changes, or optimization.
 
 ### Tier B: iteration exit
 
+- Fresh verification topology bound to the frozen candidate and control commit.
 - Full non-snapshot suite with coverage.
 - Snapshot suite when any CLI/TUI/rendering path is reachable from the change.
 - Integration scenarios mapped to the iteration.
@@ -576,6 +664,9 @@ subsystem at a time.
 #### 7B: Task, workflow, team, and background lifecycle
 
 - Inventory overlapping lifecycle states and cancellation/delivery behavior.
+- Keep real process-tree probes out of the default and xdist suites. Mock signal
+  calls by default; run `process_e2e` only with `-n0` on disposable non-graphical
+  hosts.
 - Consolidate internal machinery only behind current model-facing tool contracts.
 - Do not hide or rename tools without usage evidence and a separate product
   decision.
@@ -697,11 +788,21 @@ Purpose: close the campaign without hiding remaining debt.
 | AC-4.1 | Workflow `parallel()` and `pipeline()` preserve result ordering, bounded concurrency, and no-barrier pipeline behavior. | IT-05 |
 | AC-4.2 | Workflow isolation, resume, cache identity, repair, cancellation, spend blocking, result delivery, and worktree cleanup remain equivalent. | IT-05 |
 | AC-4.3 | Team claims, mailbox state, retry, dependency unlocking, per-task loop creation, and shared spend scopes remain correct across processes. | IT-06 |
-| AC-4.4 | Background processes can launch, stream/tail, stop, and reap without blocking the foreground or leaking children. | IT-06 |
+| AC-4.4 | Background processes can launch, stream/tail, and stop without blocking the foreground; cleanup signals only a verified-owned process group and otherwise falls back to the direct child. | IT-06 |
 | AC-4.5 | Only a current verifier PASS plus a valid state-bound receipt can authorize `land_work`. | IT-07 |
 | AC-4.6 | FAIL/PARTIAL, denied/skipped tools, dirty state, moved base, changed candidate, stale receipt, or pasted prose cannot authorize landing. | IT-07 |
 | AC-4.7 | Spend reservations reconcile exactly across retries, missing usage, errors, children, reload, reset, and resume. | IT-10 |
 | AC-4.8 | Rejected spend causes zero backend dispatches, and every paid production call is brokered or explicitly documented. | IT-10 |
+| AC-4.9 | AgentLoop refuses startup unless the configured active or verification topology names distinct physical registered worktrees, exact clean identities, matching packet/status metadata, dependencies, and exact sorted scenarios, and durable non-temporary evidence; verification additionally requires the exact canonical evidence-manifest SHA-256. | IT-07 |
+| AC-4.10 | Model tools cannot mutate the control worktree, evidence workspace, Git administration, host logs, or verification receipts; only the trusted host performs authorized commits and lifecycle transitions. | IT-07 |
+| AC-4.11 | Every trusted check is a frozen direct `argv` array; shells, shell wrappers, and status-masking pipelines are rejected at configuration time. | IT-07 |
+| AC-4.12 | Structured completion, outcome, and receipt fields outrank raw subagent prose, and the host replaces a contradictory completion claim before emission. | IT-07 |
+| AC-4.13 | Three consecutive capability failures in the same supported class end the turn with a structured `BLOCKED` result. | IT-07 |
+| AC-4.14 | Auto-approve cannot override hard policy, a `NEVER` permission, or configured safety-judge deferral. | IT-07 |
+| AC-4.15 | Project TOML cannot supply or replace a trusted recipe; a host-bound recipe forces verification on and is inherited unchanged by managed reviewer/verifier children. | IT-07 |
+| AC-4.16 | Managed active, verification, and child agents cannot discover or invoke capabilities outside their canonical runtime ceilings, regardless of project/plugin/MCP/profile/global-tool configuration. | IT-07 |
+| AC-4.17 | Strict managed model Bash requires Bubblewrap or Seatbelt and rejects background execution; trusted checks require Linux Bubblewrap, an exact-HEAD Git-exported snapshot without Git metadata, a private copy of a digest-pinned native executable and host environment attestation, offline disposable state, and a 1 MiB combined-output ceiling. Shebang wrappers fail closed. Both modes scrub credentials/config and expose only their mode-specific roots. | IT-07 |
+| AC-4.18 | Trusted-check cleanup never signals an unowned process group and leaves no live member of the verified-owned group; deliberately late-detached descendants remain explicit hardening debt. | IT-07 |
 
 ### Memory, LSP, and configuration
 
@@ -791,7 +892,7 @@ evidence as one of:
 
 ## Test evidence contract
 
-The evidence runner sets:
+The trusted host runner sets:
 
 ```bash
 VIBE_EVIDENCE_WORKSPACE=/absolute/path/outside/all/git/worktrees
@@ -800,9 +901,28 @@ EVIDENCE="$VIBE_EVIDENCE_WORKSPACE/.ai/runs/$KILROY_RUN_ID/test-evidence/latest"
 ```
 
 `KILROY_RUN_ID` names the evidence run only. The evidence workspace is not the
-candidate repository, is not nested inside any linked worktree, and is never
-added to the candidate diff. This keeps evidence writes from changing the
-workspace fingerprint or invalidating verification and landing authority.
+candidate repository, is not under `/tmp`, is not nested inside any linked
+worktree or the Git common directory, does not contain any of those roots, and
+is never added to the candidate diff.
+Before AgentLoop startup, the host proves it can create, fsync, read back, and
+remove a file there. Model tools have read-only access to this workspace. These
+rules keep evidence writes from changing the workspace fingerprint or
+invalidating verification and landing authority.
+
+The environment variables locate a run; they are not execution authority. The
+configured `trusted_verification_recipe.execution_topology` binds the exact
+evidence workspace, run ID, runner ID, control state, candidate identity, and,
+for verification, canonical `evidence_manifest_sha256`.
+
+The evidence runner acquires the manifest lock, requires an empty
+`.reservations` directory, and writes strict canonical JSON. Before a
+verification AgentLoop starts, the host revalidates the manifest under that
+lock: packet and status must contain the same manifest digest and exact sorted
+scenario list; root and tree inventories must be exact; every artifact digest
+must match; identities must match topology; and the lock digest must describe
+the committed candidate `uv.lock`. Symlinks, hardlinks, duplicate JSON keys,
+non-finite numbers, extra fields, extra tree entries, and missing artifacts are
+rejected.
 
 Scenario status remains strictly `pass` or `fail`. A planned capability that is
 not implemented is recorded as `fail` with a readable gap artifact and explicit
@@ -856,10 +976,13 @@ notes; the manifest does not invent a third `blocked` status.
 }
 ```
 
-Manifest values use portable machine contracts: `command` is the exact argv
-array executed without a shell, and artifact paths are POSIX strings relative
-to the manifest directory. `$EVIDENCE/...` notation elsewhere in this document
-describes filesystem locations for humans and is not stored literally.
+Manifest values use portable machine contracts: `command` is the exact direct
+`argv` array executed by the host without a shell, and artifact paths are POSIX
+strings relative to the manifest directory. A receipt-authorizing command must
+also exactly match its frozen trusted-recipe entry. Shells, shell wrappers, and
+status-masking pipelines are invalid trusted checks. `$EVIDENCE/...` notation
+elsewhere in this document describes filesystem locations for humans and is not
+stored literally.
 `recorded_environment` is scenario-local and not part of immutable run identity;
 top-level environment identity remains Python, platform, lock digest, and runner.
 
@@ -1090,22 +1213,88 @@ uv run pytest -n0 \
 ### IT-07: Verification receipt and landing authority
 
 - Surface: `non_ui`
-- Starting state: disposable Git repository, fixed task brief and trusted recipe,
-  deterministic verifier outputs.
+- Starting state: disposable Git repository with distinct physical registered
+  control and candidate worktrees, committed packet/status state, a durable
+  non-temporary evidence root, fixed trusted recipe, and deterministic verifier
+  outputs.
 - Actions:
-  1. Produce a verifier PASS, run trusted checks, create a receipt, and land.
-  2. Exercise FAIL, PARTIAL, denied/skipped tools, dirty candidate, moved base,
-     changed artifact, superseded generation, and pasted prose.
-  3. Invoke `verify_work` and `land_work` through their delivered tool surfaces
-     and compare every model-facing authorization/recovery payload.
+  1. Start one active session without candidate or manifest SHA, freeze the
+     implementation through the trusted host, commit an initial verification
+     control state with the exact candidate and sorted scenarios, finalize host
+     evidence, commit its canonical digest in a second verification control
+     commit, then start a fresh verification session from only that final SHA.
+  2. Reject nonexistent, nonphysical, unregistered, overlapping, dirty, moved,
+     wrong-branch, wrong-state, metadata-mismatched, dependency-incomplete, and
+     `/tmp` or unwritable evidence topologies before the model turn. Reject a
+     missing/mismatched manifest digest, unsorted or mismatched scenarios,
+     noncanonical manifest, nonempty reservations, wrong tree inventory,
+     wrong artifact hash, or uncommitted/wrong `uv.lock`. Attempt working-tree
+     packet/status substitution and ambient Git-environment redirection.
+  3. Attempt model writes to the control worktree, evidence workspace, Git
+     administration, host logs, and receipt storage.
+  4. Reject trusted-check configuration that invokes a shell directly or behind
+     `env` or `uv run`, uses an unpinned or missing executable or environment
+     attestation, bootstraps through `uv`/pre-commit, or requests Seatbelt. Run
+     accepted direct `argv` checks on Linux Bubblewrap against an exact-HEAD
+     Git-exported snapshot with network off, disposable state, and the 1 MiB
+     combined-output limit.
+  5. Produce verifier PASS, run trusted checks, create a receipt, confirm
+     `land_work` is absent from the managed catalog, and hand the receipt to the
+     host-controlled landing path.
+  6. Exercise FAIL, PARTIAL, denied/skipped tools, dirty candidate, moved base,
+     changed artifact, superseded generation, and pasted PASS prose.
+  7. Return raw completion prose that contradicts structured `completed`,
+     `outcome`, or receipt state and observe the emitted host replacement.
+  8. Trigger three consecutive failures in each capability-failure class and
+     exercise auto-approve against hard denial, `NEVER`, and configured judge
+     deferral.
+  9. Put recipes in user, environment, programmatic, mixed-case project, and
+     project-disable configurations. Assert only host sources bind, verification
+     remains enabled, reload cannot replace the recipe, and managed children
+     inherit it.
+  10. Attempt to add project/plugin tools, MCP/connectors, workflow/team/web
+      launchers, `tool_search`, `land_work`, and write-capable custom profiles to
+      each managed role. Compare the delivered catalog with the canonical
+      active/verification/child ceiling and structured-manifest intersection.
+  11. Exercise missing/weak sandbox backends, managed-read escapes, strict
+      model-Bash background requests, network and credential probes,
+      candidate/control/evidence writes, cache/home/temp writes, ordinary
+      auto-approve Git compatibility, and trusted-check candidate mutation.
+  12. In the default suite, mock signal calls and prove the ownership guard plus
+      direct-child fallback. Separately run opt-in `process_e2e` normal-exit and
+      timeout probes with `-n0` on a disposable non-graphical host; verify the
+      owned group is reaped and record late-detached limitations.
+  13. Invoke `verify_work` through the managed surface. In a separate standard
+      active-worktree fixture, invoke `land_work`; attempt moved-ref races and
+      prove delivery and landing use the exact authorized object ID with
+      compare-and-swap updates. Compare every model-facing authorization and
+      recovery payload.
 - Expected outcomes:
-  - Only the exact current PASS/receipt candidate lands.
+  - No model turn begins under an invalid execution topology.
+  - Protected control and evidence state is unchanged by model tools.
+  - Only the exact current PASS/receipt candidate lands or is delivered, and a
+    moved reference fails its compare-and-swap instead of substituting a new
+    commit.
   - Every invalidation path blocks landing with accurate output.
+  - Structured state controls completion, repeated capability failures terminate
+    as `BLOCKED`, and auto-approve never weakens hard policy or judge deferral.
+  - Project config cannot become recipe authority, and managed capability sets
+    equal their canonical ceilings after every config/profile/plugin attempt.
+  - Strict sandbox modes fail closed, trusted checks cannot change the candidate,
+    and cleanup never targets an unowned group or leaves an owned group member.
   - Model-facing verification and landing results match the message contract.
 - Verification:
 
 ```bash
 uv run pytest -n0 \
+  tests/core/test_execution_topology.py \
+  tests/core/test_config_toml_merge.py \
+  tests/tools/test_model_write_policy.py \
+  tests/tools/test_managed_runtime_policy.py \
+  tests/tools/test_sandbox.py \
+  tests/agent_loop/test_agent_verification_completion.py \
+  tests/core/test_harness_middleware.py \
+  tests/tools/test_safety_judge.py \
   tests/tools/test_verify_work.py \
   tests/tools/test_land_work.py \
   tests/core/test_verification_contract.py \
@@ -1116,11 +1305,20 @@ uv run pytest -n0 \
 ```
 
 - Evidence: `$EVIDENCE/IT-07/command.log`,
+  `$EVIDENCE/IT-07/topology.json`,
+  `$EVIDENCE/IT-07/protected-state.json`,
+  `$EVIDENCE/IT-07/completion-outcome.json`,
+  `$EVIDENCE/IT-07/capability-failures.json`,
+  `$EVIDENCE/IT-07/approval-policy.json`,
+  `$EVIDENCE/IT-07/recipe-provenance.json`,
+  `$EVIDENCE/IT-07/tool-catalogs.json`,
+  `$EVIDENCE/IT-07/sandbox-probes.json`,
+  `$EVIDENCE/IT-07/process-cleanup.json`,
   `$EVIDENCE/IT-07/receipt.json`, `$EVIDENCE/IT-07/check-output.log`,
   `$EVIDENCE/IT-07/verifier-report.txt`, `$EVIDENCE/IT-07/git-state.json`,
   `$EVIDENCE/IT-07/landing.json`, `$EVIDENCE/IT-07/model-results.json`, and
   `$EVIDENCE/IT-07/junit.xml`.
-- Covers: AC-1.2, AC-4.5, AC-4.6; MSG-08, MSG-14.
+- Covers: AC-1.2, AC-4.5, AC-4.6, AC-4.9 through AC-4.18; MSG-08, MSG-14.
 
 ### IT-08: Memory lifecycle and cache stability
 
@@ -1316,9 +1514,10 @@ uv run pytest -n0 tests/test_upstream_divergence.py tests/test_iron_laws.py
 - Surface: `non_ui`
 - Starting state: clean candidate with all iteration edits complete.
 - Actions:
-  1. Before freezing, run the repository's fixing/formatting and pre-commit
-     commands. Review and retain any resulting edits, then repeat until they are
-     a no-op.
+  1. Before freezing, the trusted host runs the repository's
+     fixing/formatting and pre-commit commands outside the read-only managed
+     model Bash mount. Review and retain any resulting edits, then repeat until
+     they are a no-op. A worker uses only check modes and bounded file tools.
   2. Freeze the clean candidate.
   3. Run check-only lint/format, type, coverage, snapshots, iron laws, and
      divergence checks. A check that changes the frozen candidate invalidates
@@ -1333,6 +1532,7 @@ uv run pytest -n0 tests/test_upstream_divergence.py tests/test_iron_laws.py
 - Verification:
 
 ```bash
+# Trusted host development pass; never run this through topology-bound model Bash.
 uv run ruff check --fix .
 uv run ruff format .
 uv run pre-commit run --all-files
@@ -1684,10 +1884,32 @@ Before an iteration is declared complete:
    overlap.
 10. The candidate is frozen before verifier execution and remains unchanged
     until the verdict is recorded.
-11. The evidence manifest contains every required scenario ID, status, command,
-    artifacts, and explicit missing-artifact notes.
+11. The evidence manifest contains the exact sorted packet/status scenario IDs,
+    status, command, artifacts, and explicit missing-artifact notes; its strict
+    canonical bytes hash to the packet/status/topology
+    `evidence_manifest_sha256`, with empty reservations, exact inventories,
+    valid artifact hashes, and the committed candidate `uv.lock` digest.
 12. Any remaining debt or blocked scenario appears in the final report; it is not
     hidden by updating a threshold or snapshot.
+13. The active and verification sessions each started under their exact frozen
+    topology. Between them, the host recorded the candidate and scenarios in an
+    initial verification control commit, finalized evidence, then recorded the
+    manifest digest in a second final verification control commit, without a
+    model-side commit or lifecycle write.
+14. The final completion claim agrees with structured `completed`, `outcome`,
+    and receipt state; raw subagent prose is not counted as proof.
+15. Every trusted check recorded in evidence matches a configured direct `argv`
+    entry and no check used a shell or status-masking wrapper.
+16. Recipe provenance and managed tool-catalog evidence show that project,
+    plugin, MCP, profile, and global tool settings could not widen host authority.
+17. Strict sandbox evidence distinguishes model Bash from trusted checks:
+    managed background is rejected; trusted checks use Linux Bubblewrap only,
+    a private copy of a pinned native executable and environment attestation,
+    an exact-HEAD Git-exported snapshot without Git metadata, offline disposable
+    state, a 1 MiB output cap, and no surviving descendant. The environment
+    attestation is not treated as a transitive dependency hash.
+18. Delivery and landing evidence proves exact-object authorization and
+    compare-and-swap ref updates under a moved-ref race.
 
 ## Prohibited sequencing
 
@@ -1701,6 +1923,10 @@ Before an iteration is declared complete:
 - Tool-surface consolidation without usage evidence and model-visible evaluation.
 - Paid trials without a hard broker cap.
 - Final verification while the candidate is still changing.
+- Model-side commits, control-state transitions, evidence writes, receipt writes,
+  or landing actions.
+- Replacing host topology validation with packet prose, campaign shell
+  variables, or a copied preflight command.
 
 ## Completion report
 
@@ -1714,4 +1940,5 @@ The final campaign report must state:
 - Compatibility changes and their migration/rollback status.
 - Documentation/schema/registry synchronization status.
 - Remaining accepted debt and the reason it was not addressed.
-- Final verifier verdict and exact evidence manifest path.
+- Final structured verifier outcome, receipt identity, exact evidence manifest
+  path, and any host replacement of contradictory completion prose.

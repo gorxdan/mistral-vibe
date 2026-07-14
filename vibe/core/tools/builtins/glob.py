@@ -13,6 +13,11 @@ from typing import TYPE_CHECKING, ClassVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from vibe.core.autocompletion.file_indexer.ignore_rules import IgnoreRules
+from vibe.core.tools._model_read_policy import (
+    ManagedReadPolicyError,
+    managed_read_scope,
+    resolve_managed_read_path,
+)
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -207,8 +212,14 @@ class Glob(
         self, args: GlobArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | GlobResult, None]:
         self._validate_args(args)
-        root = self._resolve_root(args.path)
+        root = self._resolve_root(args.path, ctx)
         search_root, relative_pattern = _split_pattern(args.pattern, root)
+        try:
+            managed_search_root = resolve_managed_read_path(search_root, ctx)
+        except ManagedReadPolicyError as exc:
+            raise ToolError(str(exc)) from exc
+        if managed_search_root is not None:
+            search_root = managed_search_root
         if search_root != root:
             if not search_root.exists():
                 raise ToolError(f"Path does not exist: {search_root}")
@@ -227,6 +238,7 @@ class Glob(
             paths = await asyncio.to_thread(
                 self._walk_files, search_root, relative_pattern, args, exclude
             )
+        paths = self._filter_managed_paths(paths, ctx)
         if ctx is not None and ctx.task_contract is not None:
             paths = [
                 path for path in paths if ctx.task_contract.allows_search_result(path)
@@ -243,18 +255,41 @@ class Glob(
         if not args.pattern.strip():
             raise ToolError("Empty glob pattern provided.")
 
-    def _resolve_root(self, raw_path: str) -> Path:
+    def _resolve_root(self, raw_path: str, ctx: InvokeContext | None = None) -> Path:
         if raw_path.startswith("\\\\") or raw_path.startswith("//"):
             raise ToolError(f"UNC paths are not supported: {raw_path}")
-        path = Path(raw_path).expanduser()
-        if not path.is_absolute():
-            path = Path.cwd() / path
-        path = path.resolve()
+        try:
+            managed_path = resolve_managed_read_path(raw_path, ctx)
+        except ManagedReadPolicyError as exc:
+            raise ToolError(str(exc)) from exc
+        if managed_path is None:
+            path = Path(raw_path).expanduser()
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            path = path.resolve()
+        else:
+            path = managed_path
         if not path.exists():
             raise ToolError(f"Path does not exist: {raw_path}")
         if not path.is_dir():
             raise ToolError(f"Path is not a directory: {raw_path}")
         return path
+
+    @staticmethod
+    def _filter_managed_paths(
+        paths: list[Path], ctx: InvokeContext | None
+    ) -> list[Path]:
+        scope = managed_read_scope(ctx)
+        if scope is None:
+            return paths
+        kept: list[Path] = []
+        for path in paths:
+            try:
+                resolved = scope.resolve(path)
+            except ManagedReadPolicyError:
+                continue
+            kept.append(resolved)
+        return kept
 
     def _collect_exclude_patterns(self) -> list[str]:
         patterns = list(self.config.exclude_patterns)

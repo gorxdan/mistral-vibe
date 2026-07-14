@@ -680,18 +680,59 @@ timeout = 15.0             # seconds; on timeout the judge fails closed (you are
 How it fits the existing controls:
 
 - It only fills the **approval prompt** gap. Calls your denylist/guardrails mark as denied (`NEVER`) are still hard-blocked — the judge never sees them.
-- `--auto-approve` bypasses user consent and the judge for permitted calls; immutable `NEVER` policy remains blocked.
-- It **fails closed**. No usable judge model, an API error, a timeout, a refusal, or an unparsable answer all fall back to the normal human prompt.
+- `--auto-approve` never bypasses immutable `NEVER` policy. When a judge is configured, ASK calls still pass through it: an approval executes and a deferral is skipped without a user prompt. With no configured judge, auto-approve retains its normal permitted-call behavior.
+- It **fails closed when configured**. An API error, timeout, refusal, spend denial, or unparsable answer becomes a deferral; interactive sessions ask the user and auto-approved sessions skip the call.
 - Every judge auto-approval is logged.
 
 > **Security note.** An LLM judge is a probabilistic gate, not a guarantee. The tool call it evaluates is authored by the (untrusted) main model, so a compromised or jailbroken main model could in principle craft a call designed to fool the judge. Keep your denylist authoritative, prefer a judge model from a different provider than your active model, and treat this as convenience, not a sandbox.
+
+### Shell Sandbox
+
+The Bash sandbox defaults on. In an ordinary session, Bubblewrap on Linux or
+Seatbelt on macOS makes the host filesystem read-only except for the workspace,
+scratchpad, configured `write_dirs`, approved outside directories, and Vibe's
+private tool cache. Network is controlled by `allow_network`, and the process
+environment is scrubbed by default. If no capable backend exists, an ordinary
+session may fall back unless `require_backend = true`; Linux `unshare` is a
+warning-only namespace fallback and does not enforce filesystem or network
+policy.
+
+Auto-approve, isolated/task-contracted work, and managed model Bash always
+require Bubblewrap or Seatbelt, disable network, use a strict scrubbed
+environment, and fail closed when confinement cannot start. Ordinary
+auto-approve still permits writes to its workspace and normal Git commits.
+Topology-bound Bash is narrower: only its scratchpad is writable, background
+execution is rejected, and candidate changes must use the path-checked file
+tools. Receipt-authorizing trusted checks are a separate Linux-Bubblewrap-only
+path. They run direct argv against an exact-HEAD Git-exported snapshot with no
+Git metadata, a private copy of a digest-pinned native executable, a pinned host
+environment attestation, offline disposable home/temp/caches, and a 1 MiB
+combined-output cap. Shebang wrappers are rejected. Seatbelt cannot authorize a
+trusted-check receipt.
+
+Process cleanup may signal a process group only after confirming at signal time
+that the child PID is both its process-group leader and session leader. If
+either ownership check fails, Vibe signals only the direct child. Default and
+xdist tests mock these OS signal calls; real process-tree teardown probes belong
+only on disposable isolated hosts, never inside a graphical login session.
+They are marked `process_e2e`, skipped by default, and require the explicit
+`VIBE_PROCESS_E2E_DISPOSABLE=1 uv run pytest -n0 --run-process-e2e ...`
+opt-in.
+
+See [Shell sandbox](docs/design/sandbox.md) for the mode table, configuration,
+backend limits, and protected paths. `extra_args` is not a filesystem escape
+hatch; Bubblewrap mount and command-graph flags are rejected.
 
 ### Trusted Verification Recipe
 
 For worktree sessions, a host can define the exact local checks that may create
 a durable verification receipt. The recipe is frozen when `AgentLoop` starts;
-editing or reloading project configuration cannot change that session's task,
-contract, commands, working directories, timeouts, or path scope.
+editing or reloading configuration cannot change that session's task, contract,
+commands, working directories, timeouts, or path scope. Supply the recipe from
+host-controlled user configuration, `VIBE_` environment configuration, or
+programmatic initialization. Project `.vibe/config.toml` recipe entries are
+discarded case-insensitively, and any bound recipe forces the verification
+subsystem on.
 
 ```toml
 [trusted_verification_recipe]
@@ -702,34 +743,166 @@ allowed_paths = ["vibe/**", "tests/**", "docs/**", "openwiki/**"]
 
 [[trusted_verification_recipe.checks]]
 name = "focused-tests"
-argv = ["uv", "run", "pytest", "-q", "tests/tools"]
+argv = ["/opt/vibe-checks/bin/python3.12", "-m", "pytest", "-n0", "-q", "tests/tools"]
 cwd = "."
 timeout_seconds = 600
+executable_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+environment_attestation_path = "/opt/vibe-checks/environment.json"
+environment_attestation_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+required_output_patterns = ["passed"]
+forbidden_output_patterns = ["FAILED"]
 
 [[trusted_verification_recipe.checks]]
 name = "lint"
-argv = ["uv", "run", "ruff", "check", "."]
+argv = ["/opt/vibe-checks/bin/python3.12", "-m", "ruff", "check", "."]
 cwd = "."
 timeout_seconds = 300
+executable_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+environment_attestation_path = "/opt/vibe-checks/environment.json"
+environment_attestation_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ```
+
+Checks are direct argument arrays. A shell or `env` cannot be the executable,
+and shells or `env` selected behind `uv run` are rejected. This prevents
+pipelines, `set +e`, and trailing successful commands from masking a failed
+gate. Help/version, collection-only, list, dry-run, no-run, failure-masking,
+and structurally empty-selection modes are not evidence. `dotnet test`, pytest,
+unittest, and `cargo test` must report positive executed-test counts. `go test`
+must emit at least one verbose `--- PASS:` record unless an explicit count
+contract is supplied. npm/pnpm/yarn/bun test, `make test`, tox, nox, Jest, and
+Vitest always require an explicit positive count contract.
+
+Every check requires a full lowercase 64-character `executable_sha256` and an
+absolute host-owned `environment_attestation_path` paired with its full
+lowercase `environment_attestation_sha256`. The runner descriptor-validates the
+executable, copies its verified bytes to a private read-only path, and executes
+only that copy. Shebang wrappers are rejected; configure a pinned native
+interpreter and pass `-m <module>` or a script path as arguments. The original
+executable, private copy, and attestation are checked before and after execution.
+An environment attestation is a host assertion, not a transitive digest or
+snapshot of every loaded library and package. A `test_count_pattern` must
+contain a named integer `(?P<count>...)` group and be paired with
+`minimum_test_count >= 1`. All
+observed counts must agree and meet the minimum. Unknown runners additionally
+require `custom_runner = true` and at least one
+`required_output_patterns` entry:
+
+```toml
+[[trusted_verification_recipe.checks]]
+name = "custom-tests"
+argv = ["/opt/vibe-checks/bin/acme-test", "--ci"]
+cwd = "."
+timeout_seconds = 600
+custom_runner = true
+executable_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+environment_attestation_path = "/opt/vibe-checks/environment.json"
+environment_attestation_sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+required_output_patterns = ["ACME RESULT: PASS"]
+test_count_pattern = "ACME tests: (?P<count>[0-9]+)"
+minimum_test_count = 1
+```
+
+Output regexes run in a killably bounded worker, and trusted output is capped at
+1 MiB combined stdout/stderr. Trusted recipes reject `uv` and `pre-commit`
+entrypoints. The host must pre-provision dependencies, each pinned executable,
+and the attestation; the runtime does not classify every package-manager CLI.
+Runtime and dependency roots remain
+host-owned read-only inputs during a check; the attestation must identify their
+provisioned state, and the host must prevent concurrent mutation when that state
+matters to receipt authority.
+
+High-integrity campaigns may additionally bind the recipe to a host-provisioned
+execution topology:
+
+```toml
+[trusted_verification_recipe.execution_topology]
+packet_id = "I00-P01"
+packet_path = "docs/design/fork-maintenance/packets/I00-P01-evidence-runner.md"
+state = "active"
+control_worktree = "/home/user/worktrees/fork-maintenance-control"
+control_sha = "1111111111111111111111111111111111111111"
+candidate_worktree = "/home/user/worktrees/i00-p01-candidate"
+candidate_branch = "maintenance/i00-p01"
+baseline_sha = "2222222222222222222222222222222222222222"
+upstream_sha = "3333333333333333333333333333333333333333"
+evidence_workspace = "/home/user/maintenance-evidence"
+run_id = "i00-p01.20260713.1"
+runner_id = "linux-x86_64-python3.12"
+max_turns = 80
+max_session_tokens = 2000000
+```
+
+At startup the host verifies the exact control commit, physical registered
+control and candidate worktrees, clean assigned candidate SHA and branch,
+completed dependencies, and a durable evidence workspace that neither contains
+nor is contained by any worktree or Git metadata. Packet and status metadata
+must be regular tracked blobs at that exact control commit; working-tree files
+cannot substitute. Git probes ignore ambient `GIT_*` variables and user/system
+Git configuration. A mismatch aborts session construction before the model can
+edit. After candidate freeze, the host creates an initial verification control
+commit with the exact candidate and sorted scenario assignment, finalizes the
+host evidence run, and hashes its canonical manifest. Packet and status then
+record the digest as `evidence.manifest_sha256` in a second, final verification
+control commit. Only after that commit may the host start a new session with
+`state = "verification"`, the full `candidate_sha`, and the same full lowercase
+`evidence_manifest_sha256`. Validation takes the manifest lock, requires no
+reservations, checks strict canonical schema and exact root/scenario inventory,
+streams every declared artifact digest, and compares the manifest's identities
+and `uv_lock_sha256` with the committed candidate. The topology turn and token
+limits are hard ceilings; callers may only tighten them.
+
+In topology-bound sessions, model tools cannot mutate the control worktree,
+evidence workspace, shared Git metadata, host logs, or verification receipts.
+The host owns lifecycle transitions, candidate commits, trusted check execution,
+and receipt persistence. Managed read tools are confined to assigned
+candidate/control/evidence/scratchpad and active host-resource roots; logs,
+receipts, and runtime state remain denied.
+
+Managed sessions use an authoritative canonical capability ceiling. The active
+root can receive only `bash`, `edit`, `glob`, `grep`, `read`, `skill`,
+`task`, `todo`, and `write_file`; the verification root can receive only
+`glob`, `grep`, `read`, `skill`, `task`, and `verify_work`. Availability
+and permissions may narrow those sets. Project/plugin tools, MCP/connectors,
+workflows, teams, web tools, `tool_search`, and `land_work` cannot enter the
+managed catalog. Managed `task` delegates only to effective read-only built-in
+`reviewer` or `verifier` profiles. They inherit the frozen recipe and receive at
+most `bash`, `glob`, `grep`, `read`, and `skill`; structured manifests
+intersect this ceiling and use `task_checks` only for host-bound checks.
 
 Complete every intended candidate edit and any commit required by the current
 workflow before spawning the verifier, and do not mutate the candidate while it
 runs. Verifier scratch artifacts are removed by the host; the verifier leaves
 them in place instead of issuing cleanup commands. After a current verifier
 `PASS`, the no-argument `verify_work` tool executes the prebound recipe against
-the active candidate and current main `HEAD`. It accepts no model-selected
-commands or paths. `land_work` then requires the current receipt, revalidates
-it, performs the merge, and reports the merge commit SHA; there is no separate
-durable landing record.
+the active worktree candidate and current main `HEAD`; a topology-bound
+verification session instead uses its exact candidate and baseline SHAs without
+requiring a `worktree_manager` session. It accepts no model-selected commands or
+paths. The topology, including its evidence-manifest digest, is bound through
+the recipe configuration hash in the receipt. `land_work` remains the standard
+active-worktree landing path: it requires the current receipt, freezes exact
+base/candidate SHAs, revalidates clean state, creates the exact merge, and
+compare-and-swaps the checked-out target ref. Verified workflow delivery uses
+the same exact-SHA/CAS rule rather than merging a mutable branch. The tool
+reports the merge commit SHA; there is no separate durable landing record.
+The ref update is exact, but materializing a checked-out tree is a cooperative
+multi-file operation: keep external editors and Git processes idle during the
+approved landing window. Vibe's merge lock serializes only Vibe landings.
 
-Without a configured recipe, the compatibility gate accepts a current
-session-recorded verifier PASS. Model-authored workflow contracts can gate
-worktree delivery but cannot authorize landing. Pasted `verification_note`
-prose is rejected in both modes; a `trivial: <reason>` waiver is available only
-in the unconfigured mode and only for a locally validated documentation-only
-diff. Treat the recipe source as host-controlled and restart Vibe after an
+Non-trivial landing always requires a current receipt from a configured trusted
+recipe. A legacy session-recorded verifier PASS and model-authored workflow
+contracts may inform or gate worktree delivery, but cannot authorize landing.
+Pasted `verification_note` prose is rejected; without a recipe, only a
+`trivial: <reason>` waiver for a locally validated documentation-only diff is
+accepted. Treat the recipe source as host-controlled and restart Vibe after an
 intentional recipe change.
+
+Verifier task results are treated structurally: `completed`, terminal `outcome`,
+and current receipt/authorization state outrank the subagent's raw response. If
+a failed, partial, incomplete, or stale verifier response contains
+`VERDICT: PASS` or claims completion, the host replaces the parent model's next
+tool-free completion with an authoritative BLOCKED or PARTIAL status before it
+is emitted. Three consecutive failures of the same filesystem, policy, or
+sandbox capability stop the turn with a host-authored BLOCKED status.
 
 ### Structured Task Contracts
 
@@ -737,7 +910,8 @@ intentional recipe change.
 allowed and denied change paths, trusted acceptance-check IDs, optional
 token/USD/call budget and deadline, plus a canonical manifest identity. The
 host binds the brief to the session's trusted recipe. Workers cannot add checks,
-widen paths or budget, or reveal tools outside the bound 6-8 tool manifest.
+widen paths or budget, or reveal tools outside the bound manifest and any
+managed runtime ceiling.
 Task-bound tool discovery loads canonical builtins only; `.vibe/**`,
 `.agents/**`, `.git/**`, and every `AGENTS.md` are host-owned control-plane paths
 even under a broad recipe. Pass the brief as an object, not JSON-encoded task

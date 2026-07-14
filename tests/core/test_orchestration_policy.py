@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import ValidationError
 import pytest
 
@@ -1368,6 +1370,164 @@ def test_direct_scope_drift_requires_a_new_route() -> None:
     assert controller.summary.scope_drift is True
 
 
+def test_direct_reassessment_starts_a_fresh_mutation_envelope() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Make a localized correction in vibe/core/logger.py.",
+        capabilities=_capabilities(),
+    )
+    decision = _decision(
+        OrchestrationRoute.DIRECT,
+        reason=StrategyReason.LOCALIZED,
+        risk=WorkRisk.LOW,
+        expected_paths=["vibe/core/logger.py"],
+    )
+    assert controller.declare(decision).accepted is True
+
+    for _ in range(8):
+        args = {"path": "vibe/core/logger.py"}
+        assert controller.before_tool("edit", args, read_only=False) is None
+        controller.record_tool_result("edit", args, "success")
+
+    assert controller.state is OrchestrationState.ROUTE_REQUIRED
+    assert controller.declare(decision).accepted is True
+    assert (
+        controller.before_tool("edit", {"path": "vibe/core/logger.py"}, read_only=False)
+        is None
+    )
+    assert controller.summary.direct_mutations == 8
+
+
+def test_direct_reassessment_clears_inferred_path_scope() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True, user_prompt="Fix first.py.", capabilities=_capabilities()
+    )
+    assert controller.before_tool("edit", {"path": "first.py"}, read_only=False) is None
+    controller.record_tool_result("edit", {"path": "first.py"}, "success")
+    assert (
+        controller.before_tool("edit", {"path": "second.py"}, read_only=False)
+        is not None
+    )
+
+    receipt = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.LOCALIZED,
+            risk=WorkRisk.LOW,
+            expected_paths=["second.py"],
+        )
+    )
+
+    assert receipt.accepted is True
+    assert (
+        controller.before_tool("edit", {"path": "second.py"}, read_only=False) is None
+    )
+
+
+def test_direct_scope_canonicalizes_absolute_and_relative_paths(tmp_path: Path) -> None:
+    target = tmp_path / "vibe" / "core" / "logger.py"
+    controller = OrchestrationController(workspace_root=tmp_path)
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Make a localized correction in vibe/core/logger.py.",
+        capabilities=_capabilities(),
+    )
+    receipt = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.LOCALIZED,
+            risk=WorkRisk.LOW,
+            expected_paths=["vibe/core/logger.py"],
+        )
+    )
+    assert receipt.accepted is True
+
+    absolute_args = {"path": str(target)}
+    assert controller.before_tool("edit", absolute_args, read_only=False) is None
+    controller.record_tool_result("edit", absolute_args, "success")
+    relative_args = {"path": "vibe/core/logger.py"}
+    assert controller.before_tool("edit", relative_args, read_only=False) is None
+    controller.record_tool_result("edit", relative_args, "success")
+
+    assert controller.summary.unique_paths == 1
+
+
+def test_direct_scope_canonicalizes_expected_absolute_path(tmp_path: Path) -> None:
+    target = tmp_path / "target.py"
+    controller = OrchestrationController(workspace_root=tmp_path)
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Make a localized correction in target.py.",
+        capabilities=_capabilities(),
+    )
+
+    receipt = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.LOCALIZED,
+            risk=WorkRisk.LOW,
+            expected_paths=[str(target)],
+        )
+    )
+
+    assert receipt.accepted is True
+    assert controller.decision is not None
+    assert controller.decision.expected_paths == ["target.py"]
+    assert (
+        controller.before_tool("edit", {"path": "target.py"}, read_only=False) is None
+    )
+
+
+def test_direct_scope_rejects_paths_outside_workspace(tmp_path: Path) -> None:
+    controller = OrchestrationController(workspace_root=tmp_path)
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Make a localized correction in target.py.",
+        capabilities=_capabilities(),
+    )
+    assert controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.LOCALIZED,
+            risk=WorkRisk.LOW,
+            expected_paths=["target.py"],
+        )
+    ).accepted
+
+    denial = controller.before_tool(
+        "edit", {"path": str(tmp_path.parent / "outside.py")}, read_only=False
+    )
+
+    assert denial is not None
+    assert "escapes the workspace" in denial
+    assert controller.state is OrchestrationState.ROUTE_REQUIRED
+
+
+def test_direct_strategy_rejects_expected_path_outside_workspace(
+    tmp_path: Path,
+) -> None:
+    controller = OrchestrationController(workspace_root=tmp_path)
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Make a localized correction.",
+        capabilities=_capabilities(),
+    )
+
+    receipt = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.LOCALIZED,
+            risk=WorkRisk.LOW,
+            expected_paths=["../outside.py"],
+        )
+    )
+
+    assert receipt.accepted is False
+    assert "escapes the workspace" in receipt.message
+
+
 def test_completion_nudge_is_emitted_only_once() -> None:
     controller = OrchestrationController()
     controller.begin_turn(
@@ -1426,11 +1586,42 @@ def test_failed_delegation_enters_recovery() -> None:
         "uv run pytest -q tests/core/test_orchestration_policy.py",
         "UV_CACHE_DIR=/tmp/uv-cache uv run pytest -q tests/core/test_orchestration_policy.py",
         "env PYRIGHT_PYTHON_FORCE_VERSION=latest pyright vibe/core",
+        "dotnet build src/Fcc.Core/Fcc.Core.csproj",
+        "dotnet test tests/Fcc.Core.Tests/Fcc.Core.Tests.csproj",
+        "uv run dotnet test tests/Fcc.Core.Tests/Fcc.Core.Tests.csproj",
         "git status --short && rg -n workflow vibe/core",
     ],
 )
 def test_observational_shell_commands_do_not_create_mutation_debt(command: str) -> None:
     assert is_observational_shell_command(command) is True
+
+
+def test_dotnet_validation_does_not_consume_direct_mutation_envelope() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Make a localized correction in target.py.",
+        capabilities=_capabilities(),
+    )
+    assert controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.LOCALIZED,
+            risk=WorkRisk.LOW,
+            expected_paths=["target.py"],
+        )
+    ).accepted
+    args = {"command": "dotnet test tests/Fcc.Core.Tests/Fcc.Core.Tests.csproj"}
+
+    for _ in range(8):
+        read_only = is_observational_shell_command(args["command"])
+        assert controller.before_tool("bash", args, read_only=read_only) is None
+        controller.record_tool_result("bash", args, "success", read_only=read_only)
+
+    assert controller.summary.direct_mutations == 0
+    assert (
+        controller.before_tool("edit", {"path": "target.py"}, read_only=False) is None
+    )
 
 
 @pytest.mark.parametrize(

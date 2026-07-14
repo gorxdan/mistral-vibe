@@ -13,6 +13,7 @@ from vibe.core.orchestration import (
     OrchestrationTurnSummary,
     StrategyReceipt,
 )
+from vibe.core.paths import safe_cwd
 from vibe.core.tools._background_delivery import (
     compact_background_completion,
     escape_background_body,
@@ -87,6 +88,7 @@ _GIT_OBSERVATIONAL_SUBCOMMANDS = frozenset({
     "status",
 })
 _CHECK_COMMANDS = frozenset({"mypy", "pyright", "pytest"})
+_DOTNET_OBSERVATIONAL_COMMANDS = frozenset({"build", "test"})
 _MUTATING_FIND_FLAGS = frozenset({
     "-delete",
     "-exec",
@@ -173,6 +175,8 @@ def _shell_segment_is_observational(tokens: list[str]) -> bool:
     args = tokens[1:]
     if command in _CHECK_COMMANDS:
         observational = True
+    elif command == "dotnet":
+        observational = bool(args) and args[0] in _DOTNET_OBSERVATIONAL_COMMANDS
     elif command == "ruff":
         observational = _ruff_is_observational(args)
     elif command == "git":
@@ -301,7 +305,7 @@ class AgentLoopOrchestrationMixin:
     def config(self) -> VibeConfig: ...
 
     def _init_orchestration(self) -> None:
-        self._orchestration = OrchestrationController()
+        self._orchestration = OrchestrationController(workspace_root=safe_cwd())
 
     def _begin_orchestration_turn(
         self, user_prompt: str, *, continuation_id: str | None = None

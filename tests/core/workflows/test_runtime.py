@@ -9,6 +9,11 @@ from pydantic import ValidationError
 import pytest
 
 from vibe.core.agents.manager import AgentManager
+from vibe.core.candidate_delivery import (
+    CandidateDelivery,
+    CandidateDeliveryStatus,
+    CandidateIntegrationMethod,
+)
 from vibe.core.llm.exceptions import BackendError, PayloadSummary
 from vibe.core.types import (
     ApprovalResponse,
@@ -20,6 +25,7 @@ from vibe.core.workflows.contract import ContractFailure
 from vibe.core.workflows.models import SchemaValidationFailure
 from vibe.core.workflows.runtime import (
     AgentCapExceeded,
+    IsolatedStats,
     WorkflowError,
     WorkflowRuntime,
     _WorkerSpawnArgs,
@@ -27,6 +33,19 @@ from vibe.core.workflows.runtime import (
 from vibe.core.workflows.schema import SchemaValidationError
 
 pytestmark = pytest.mark.asyncio
+
+
+def _fake_landed_delivery(path) -> CandidateDelivery:
+    return CandidateDelivery(
+        status=CandidateDeliveryStatus.LANDED,
+        base_sha="a" * 40,
+        candidate_sha="b" * 40,
+        parent_sha_before="a" * 40,
+        parent_sha_after="b" * 40,
+        branch="vibe/iso/fake",
+        worktree_path=str(path),
+        integration_method=CandidateIntegrationMethod.FAST_FORWARD,
+    )
 
 
 @dataclass
@@ -1997,7 +2016,11 @@ async def test_run_isolated_agent_redirects_stdout_to_log_file_when_set(
     fake_wt = type("WT", (), {"path": Path("/tmp/iso-log-wt")})()
     monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
     monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
-    monkeypatch.setattr(eph, "deliver_ephemeral_worktree", lambda wt: True)
+    monkeypatch.setattr(
+        eph,
+        "deliver_ephemeral_worktree_result",
+        lambda wt: _fake_landed_delivery(wt.path),
+    )
 
     captured: dict[str, Any] = {}
 
@@ -2046,7 +2069,11 @@ async def test_run_isolated_agent_uses_pipe_when_log_path_unset(
     fake_wt = type("WT", (), {"path": Path("/tmp/iso-pipe-wt")})()
     monkeypatch.setattr(eph, "create_ephemeral_worktree", lambda *a, **k: fake_wt)
     monkeypatch.setattr(eph, "remove_ephemeral_worktree", lambda wt, **k: None)
-    monkeypatch.setattr(eph, "deliver_ephemeral_worktree", lambda wt: True)
+    monkeypatch.setattr(
+        eph,
+        "deliver_ephemeral_worktree_result",
+        lambda wt: _fake_landed_delivery(wt.path),
+    )
 
     captured: dict[str, Any] = {}
 
@@ -2075,7 +2102,7 @@ async def test_run_isolated_agent_uses_pipe_when_log_path_unset(
 async def test_isolated_agent_charges_real_tokens_when_stats_present() -> None:
     async def stub(
         prompt: str, agent: str, label: str | None, max_turns: int
-    ) -> tuple[str, dict[str, int | float | bool]]:
+    ) -> tuple[str, IsolatedStats]:
         return ("done", {"prompt_tokens": 100, "completion_tokens": 50})
 
     rt = WorkflowRuntime(

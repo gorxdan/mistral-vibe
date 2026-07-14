@@ -173,6 +173,12 @@ class ManageMemory(
     def is_available(cls, config: VibeConfig | None = None) -> bool:
         return config is not None and config.memory.enabled
 
+    @classmethod
+    def call_is_read_only(
+        cls, args: BaseModel, *, agent_manager: object = None
+    ) -> bool:
+        return isinstance(args, ManageMemoryArgs) and args.action == "list"
+
     async def run(
         self, args: ManageMemoryArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | ManageMemoryResult, None]:

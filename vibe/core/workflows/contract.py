@@ -9,6 +9,7 @@ from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from vibe.core.candidate_delivery import CandidateDelivery
 from vibe.core.utils.io import read_safe
 
 _MAX_GREP_FILE_BYTES = 1_000_000
@@ -73,6 +74,7 @@ class ContractReport(BaseModel):
 
     passed: bool
     delivered: bool = False
+    candidate_delivery: CandidateDelivery | None = None
     violations: list[ContractViolation] = Field(default_factory=list)
 
     def summary(self) -> str:

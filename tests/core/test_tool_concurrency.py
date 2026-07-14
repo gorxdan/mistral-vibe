@@ -9,6 +9,7 @@ import pytest
 from tests.conftest import build_test_agent_loop
 from vibe.core.llm.models import ResolvedToolCall
 from vibe.core.tools.builtins.grep import Grep
+from vibe.core.tools.builtins.manage_memory import ManageMemory, ManageMemoryArgs
 from vibe.core.tools.builtins.read import Read
 from vibe.core.tools.builtins.work_strategy import WorkStrategy
 from vibe.core.tools.builtins.write_file import WriteFile
@@ -29,6 +30,13 @@ def test_read_tools_are_read_only_writers_are_not() -> None:
     assert Read.read_only is True
     assert Grep.read_only is True
     assert WriteFile.read_only is False
+
+
+def test_manage_memory_list_is_observational_but_mutations_are_not() -> None:
+    assert ManageMemory.read_only is False
+    assert ManageMemory.call_is_read_only(ManageMemoryArgs(action="list")) is True
+    for action in ("add", "update", "delete"):
+        assert ManageMemory.call_is_read_only(ManageMemoryArgs(action=action)) is False
 
 
 @pytest.mark.asyncio

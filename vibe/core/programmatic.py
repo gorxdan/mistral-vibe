@@ -274,11 +274,7 @@ async def _run_team_worker_session(
                         enabled=task_loop.agent_profile.name
                         == BuiltinAgentName.VERIFIER,
                     )
-                    if (
-                        isinstance(event, AssistantEvent)
-                        and event.stopped_by_middleware
-                    ):
-                        raise ConversationLimitException(event.content)
+                    _raise_for_middleware_stop(event, task_formatter)
             summary = task_formatter.finalize()
             outcome = None
             if contract is not None and task.brief is not None:
@@ -355,6 +351,9 @@ async def _run_session(
                 "cost_usd": agent_loop.stats.session_cost,
                 "cost_initialized": agent_loop.stats.accumulated_cost_initialized,
                 "cost_estimated": agent_loop.stats.cost_is_estimated,
+                "verification_evidence_hashes": (
+                    agent_loop.successful_verification_evidence_hashes
+                ),
             }).decode("utf-8")
             sys.stderr.write("\n" + stats_line + "\n")
             sys.stderr.flush()
@@ -415,6 +414,13 @@ def _raise_for_skipped_verifier_tool(event: object, *, enabled: bool) -> None:
     raise RuntimeError(f"Verifier tool call {event.tool_name!r} did not run: {reason}")
 
 
+def _raise_for_middleware_stop(event: object, formatter: OutputFormatter) -> None:
+    if not isinstance(event, AssistantEvent) or not event.stopped_by_middleware:
+        return
+    formatter.finalize()
+    raise ConversationLimitException(event.content)
+
+
 async def _act_once(
     agent_loop: AgentLoop,
     formatter: OutputFormatter,
@@ -426,8 +432,7 @@ async def _act_once(
         async for event in events:
             formatter.on_event(event)
             _raise_for_skipped_verifier_tool(event, enabled=fail_on_skipped_tool)
-            if isinstance(event, AssistantEvent) and event.stopped_by_middleware:
-                raise ConversationLimitException(event.content)
+            _raise_for_middleware_stop(event, formatter)
 
 
 def _emit_headless_sandbox_nudge(sandbox: SandboxConfig | None) -> None:

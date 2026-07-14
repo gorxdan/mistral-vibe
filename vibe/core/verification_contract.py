@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum, auto
+import hashlib
 from pathlib import PurePosixPath
 import re
+import shlex
 import unicodedata
 
 
@@ -37,6 +40,403 @@ class VerificationReport:
 
 class VerificationReportError(ValueError):
     pass
+
+
+def verification_command_hash(command: str) -> str:
+    normalized = "\n".join(line.strip() for line in command.strip().splitlines())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+_SHELL_CONTROL_TOKENS = frozenset({
+    "&",
+    "&&",
+    "(",
+    ")",
+    ";",
+    "<",
+    "<<",
+    ">",
+    ">>",
+    "|",
+    "|&",
+    "||",
+    "`",
+})
+_DOTNET_TEST_COUNTS = (
+    re.compile(r"\bTotal tests:\s*(?P<count>\d+)\b", re.IGNORECASE),
+    re.compile(r"\bTotal:\s*(?P<count>\d+)\b", re.IGNORECASE),
+)
+_PYTEST_PASSED_COUNTS = re.compile(
+    r"(?<![\w.])(?P<count>\d+)\s+passed\b", re.IGNORECASE
+)
+_UNITTEST_RUN_COUNTS = re.compile(
+    r"^\s*Ran\s+(?P<count>\d+)\s+tests?\b", re.IGNORECASE | re.MULTILINE
+)
+_CARGO_PASSED_COUNTS = re.compile(
+    r"^\s*test result:\s+ok\.\s+(?P<count>\d+)\s+passed;", re.IGNORECASE | re.MULTILINE
+)
+_GO_PASSED_TEST = re.compile(r"^\s*--- PASS:", re.MULTILINE)
+_NONEXECUTING_FLAGS = frozenset({
+    "--collect-only",
+    "--co",
+    "--dry-run",
+    "--fixtures",
+    "--fixtures-per-test",
+    "--help",
+    "--list",
+    "--list-sessions",
+    "--list-tests",
+    "--listenvs",
+    "--listenvs-all",
+    "--markers",
+    "--no-run",
+    "--setup-plan",
+    "--showconfig",
+    "--showconfig-json",
+    "--trace-config",
+    "--version",
+})
+_SHORT_NONEXECUTING_FLAGS = frozenset({"-?", "-h", "-V", "/?"})
+_FAILURE_MASKING_FLAGS = frozenset({
+    "--exit-zero",
+    "--no-test",
+    "--notest",
+    "--pass-with-no-tests",
+    "--passwithnotests",
+    "--suppress-no-test-exit-code",
+})
+_MAKE_NONEXECUTING_FLAGS = frozenset({
+    "--dry-run",
+    "--just-print",
+    "--question",
+    "--recon",
+    "-n",
+    "-q",
+})
+_PYTHON_MODULE_PREFIX_LENGTH = 3
+_PYTHON_MODULE_RUNNERS = {
+    "mypy": "mypy",
+    "pyright": "pyright",
+    "pytest": "pytest",
+    "ruff": "ruff",
+    "unittest": "unittest",
+}
+_DIRECT_RUNNERS = frozenset({
+    "bandit",
+    "eslint",
+    "flake8",
+    "jest",
+    "mypy",
+    "nox",
+    "py.test",
+    "pyright",
+    "pytest",
+    "tox",
+    "tsc",
+    "vitest",
+})
+_RUNNER_SUBCOMMANDS = {
+    "cargo": frozenset({"build", "check", "clippy", "test"}),
+    "dotnet": frozenset({"build", "restore", "test"}),
+    "go": frozenset({"build", "test", "vet"}),
+    "make": frozenset({"check", "lint", "test", "typecheck"}),
+    "pre-commit": frozenset({"run"}),
+    "ruff": frozenset({"check", "format"}),
+}
+_SCRIPT_RUNNERS = frozenset({"bun", "npm", "pnpm", "yarn"})
+_VERIFICATION_SCRIPTS = frozenset({"lint", "test", "typecheck"})
+
+
+def verification_observation_hashes(
+    command: str, stdout: str, stderr: str
+) -> tuple[str, ...]:
+    tokens = _direct_command_tokens(command)
+    output = "\n".join(part for part in (stdout, stderr) if part)
+    if tokens is None or not _command_output_is_eligible(tokens, output):
+        return ()
+    command_hash = verification_command_hash(command)
+    return tuple(
+        hashlib.sha256(f"{command_hash}\0{line}".encode()).hexdigest()
+        for line in dict.fromkeys(_normalized_output_lines(output))
+    )
+
+
+def verification_command_output_diagnostics(
+    argv: Sequence[str],
+    output: str,
+    *,
+    custom_runner: bool = False,
+    has_test_count_contract: bool = False,
+) -> tuple[str, ...]:
+    raw_command = list(argv)
+    command = _verification_runner_tokens(raw_command)
+    if _command_is_nonexecuting(raw_command) or (
+        command is not None and _command_is_nonexecuting(command)
+    ):
+        return (
+            f"verification command does not execute checks: {shlex.join(raw_command)}",
+        )
+    if command is None:
+        if custom_runner:
+            return ()
+        return (
+            f"verification command is not a recognized check runner: "
+            f"{shlex.join(raw_command)}",
+        )
+    return _positive_execution_diagnostics(
+        command, output, has_test_count_contract=has_test_count_contract
+    )
+
+
+def _positive_execution_diagnostics(
+    command: list[str], output: str, *, has_test_count_contract: bool
+) -> tuple[str, ...]:
+    if command[:2] == ["dotnet", "test"]:
+        return _dotnet_test_output_diagnostics(output)
+    if has_test_count_contract:
+        return ()
+    executable = command[0]
+    runner_counts: tuple[str, tuple[int, ...]] | None = None
+    if executable in {"py.test", "pytest"}:
+        runner_counts = (
+            "pytest",
+            tuple(_pattern_counts(_PYTEST_PASSED_COUNTS, output)),
+        )
+    elif executable == "unittest":
+        runner_counts = (
+            "unittest",
+            tuple(_pattern_counts(_UNITTEST_RUN_COUNTS, output)),
+        )
+    elif command[:2] == ["cargo", "test"]:
+        runner_counts = (
+            "cargo test",
+            tuple(_pattern_counts(_CARGO_PASSED_COUNTS, output)),
+        )
+    elif command[:2] == ["go", "test"]:
+        runner_counts = ("go test", (len(_GO_PASSED_TEST.findall(output)),))
+    if runner_counts is not None:
+        return _positive_count_diagnostics(*runner_counts)
+    if _requires_explicit_test_count_contract(command):
+        return (
+            "verification command requires an explicit positive test-count "
+            f"contract: {shlex.join(command)}",
+        )
+    return ()
+
+
+def _positive_count_diagnostics(
+    runner: str, counts: tuple[int, ...]
+) -> tuple[str, ...]:
+    if not counts:
+        return (f"{runner} output did not report an executed test count",)
+    if sum(counts) < 1:
+        return (f"{runner} reported zero executed tests",)
+    return ()
+
+
+def _pattern_counts(pattern: re.Pattern[str], output: str) -> list[int]:
+    return [int(match.group("count")) for match in pattern.finditer(output)]
+
+
+def _requires_explicit_test_count_contract(command: list[str]) -> bool:
+    if command[0] in {"jest", "nox", "tox", "vitest"}:
+        return True
+    if command[:2] == ["make", "test"]:
+        return True
+    if command[0] not in _SCRIPT_RUNNERS:
+        return False
+    script = command[2] if command[1:2] == ["run"] else command[1]
+    return script == "test"
+
+
+def _dotnet_test_output_diagnostics(output: str) -> tuple[str, ...]:
+    counts = _dotnet_test_counts(output)
+    if not counts:
+        return ("dotnet test output did not report an executed test count",)
+    if len(set(counts)) > 1:
+        rendered = ", ".join(str(count) for count in sorted(set(counts)))
+        return (f"dotnet test output reported conflicting test counts: {rendered}",)
+    if any(count == 0 for count in counts):
+        return ("dotnet test reported zero executed tests",)
+    return ()
+
+
+def report_evidence_was_observed(
+    report: VerificationReport, observation_hashes: tuple[str, ...]
+) -> bool:
+    remaining = list(observation_hashes)
+    for evidence in report.evidence:
+        command_hash = verification_command_hash(evidence.command)
+        lines = _normalized_output_lines(evidence.output)
+        if not lines:
+            return False
+        for line in lines:
+            digest = hashlib.sha256(f"{command_hash}\0{line}".encode()).hexdigest()
+            if digest not in remaining:
+                return False
+            remaining.remove(digest)
+    return bool(report.evidence)
+
+
+def _direct_command_tokens(command: str) -> list[str] | None:
+    if not command.strip() or "\n" in command or "\r" in command:
+        return None
+    if "$(" in command or "${" in command:
+        return None
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>()`")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    if not tokens or any(
+        token in _SHELL_CONTROL_TOKENS or token.startswith((">", "<"))
+        for token in tokens
+    ):
+        return None
+    return tokens
+
+
+def _command_output_is_eligible(tokens: list[str], output: str) -> bool:
+    command = _verification_runner_tokens(tokens)
+    if command is None or not _normalized_output_lines(output):
+        return False
+    return not verification_command_output_diagnostics(tokens, output)
+
+
+def _dotnet_test_counts(output: str) -> tuple[int, ...]:
+    return tuple(
+        int(match.group("count"))
+        for pattern in _DOTNET_TEST_COUNTS
+        for match in pattern.finditer(output)
+    )
+
+
+def _command_is_nonexecuting(command: list[str]) -> bool:
+    arguments = command[1:]
+    if any(_is_nonexecuting_flag(argument) for argument in arguments) or any(
+        argument.casefold() in _FAILURE_MASKING_FLAGS for argument in arguments
+    ):
+        return True
+    return _runner_specific_nonexecuting(command)
+
+
+def _runner_specific_nonexecuting(command: list[str]) -> bool:
+    executable = command[0]
+    match executable:
+        case "make":
+            return any(argument in _MAKE_NONEXECUTING_FLAGS for argument in command[1:])
+        case "go" if command[1:2] == ["test"]:
+            return _go_test_is_nonexecuting(command[2:])
+        case "nox" | "tox":
+            return command[1:2] in (["l"], ["list"])
+        case "ruff" if command[1:2] == ["check"]:
+            return any(
+                argument in {"--show-files", "--show-settings"}
+                for argument in command[2:]
+            )
+        case "ruff" if command[1:2] == ["format"]:
+            return "--diff" in command[2:] and "--check" not in command[2:]
+        case _:
+            return False
+
+
+def _go_test_is_nonexecuting(arguments: list[str]) -> bool:
+    if any(
+        argument in {"-c", "-list"} or argument.startswith("-list=")
+        for argument in arguments
+    ):
+        return True
+    return _go_test_selects_no_checks(arguments)
+
+
+def _is_nonexecuting_flag(argument: str) -> bool:
+    if argument in _SHORT_NONEXECUTING_FLAGS:
+        return True
+    return any(
+        argument == flag or argument.startswith(f"{flag}=")
+        for flag in _NONEXECUTING_FLAGS
+    )
+
+
+def _go_test_selects_no_checks(arguments: list[str]) -> bool:
+    run_values = _option_values(arguments, "-run")
+    if "^$" not in run_values:
+        return False
+    return not _option_values(arguments, "-bench") and not _option_values(
+        arguments, "-fuzz"
+    )
+
+
+def _option_values(arguments: list[str], option: str) -> tuple[str, ...]:
+    values: list[str] = []
+    for index, argument in enumerate(arguments):
+        if argument.startswith(f"{option}="):
+            values.append(argument.partition("=")[2])
+        elif argument == option and index + 1 < len(arguments):
+            values.append(arguments[index + 1])
+    return tuple(values)
+
+
+def _verification_runner_tokens(tokens: list[str]) -> list[str] | None:
+    normalized = list(tokens)
+    normalized[0] = re.split(r"[/\\]", normalized[0])[-1].removesuffix(".exe")
+    if normalized[:2] == ["uv", "run"]:
+        normalized = normalized[2:]
+        if normalized and normalized[0].startswith("-"):
+            return None
+    if not normalized:
+        return None
+    normalized[0] = re.split(r"[/\\]", normalized[0])[-1].removesuffix(".exe")
+    if len(normalized) >= _PYTHON_MODULE_PREFIX_LENGTH and re.fullmatch(
+        r"python(?:3(?:\.\d+)*)?", normalized[0]
+    ):
+        return _python_module_runner_tokens(normalized)
+    return _native_runner_tokens(normalized)
+
+
+def _python_module_runner_tokens(tokens: list[str]) -> list[str] | None:
+    if tokens[1] != "-m":
+        return None
+    runner = _PYTHON_MODULE_RUNNERS.get(tokens[2])
+    if runner is None:
+        return None
+    return [runner, *tokens[3:]]
+
+
+def _native_runner_tokens(normalized: list[str]) -> list[str] | None:
+    executable = normalized[0]
+    if executable in _DIRECT_RUNNERS:
+        return normalized
+    allowed_subcommands = _RUNNER_SUBCOMMANDS.get(executable, frozenset())
+    if normalized[1:2] and normalized[1] in allowed_subcommands:
+        return normalized
+    if executable in _SCRIPT_RUNNERS and _script_runner_is_supported(normalized):
+        return normalized
+    return None
+
+
+def _script_runner_is_supported(tokens: list[str]) -> bool:
+    if tokens[1:2] and tokens[1] in _VERIFICATION_SCRIPTS:
+        return True
+    return (
+        tokens[1:2] == ["run"]
+        and bool(tokens[2:3])
+        and tokens[2] in _VERIFICATION_SCRIPTS
+    )
+
+
+def _normalized_output_lines(output: str) -> tuple[str, ...]:
+    return tuple(
+        normalized
+        for line in output.splitlines()
+        if (
+            normalized := " ".join(
+                unicodedata.normalize("NFKC", line).casefold().split()
+            )
+        )
+    )
 
 
 _CHECK_RE = re.compile(

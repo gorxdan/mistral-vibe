@@ -6,8 +6,7 @@ from pathlib import PurePosixPath
 
 def path_matches_scope(path: str, pattern: str) -> bool:
     if not any(character in pattern for character in "*?["):
-        prefix = pattern.rstrip("/")
-        return path == prefix or path.startswith(f"{prefix}/")
+        return path == pattern.rstrip("/")
 
     path_parts = PurePosixPath(path).parts
     pattern_parts = PurePosixPath(pattern).parts

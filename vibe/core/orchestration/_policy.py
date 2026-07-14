@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import ast
-import fnmatch
 import json
+from pathlib import Path
 import re
 from typing import Any, Literal
 
@@ -18,6 +18,7 @@ from vibe.core.orchestration.models import (
     StrategyReceipt,
     WorkRisk,
 )
+from vibe.core.tasking._path_scope import path_matches_scope
 
 _CONTROL_TOOLS = frozenset({
     "ask_user_question",
@@ -92,7 +93,8 @@ _WORKFLOW_UNKNOWN = object()
 
 
 class OrchestrationController:
-    def __init__(self) -> None:
+    def __init__(self, *, workspace_root: Path | None = None) -> None:
+        self._workspace_root = (workspace_root or Path.cwd()).expanduser().resolve()
         self.state = OrchestrationState.OFF
         self.capabilities = OrchestrationCapabilities()
         self.decision: OrchestrationDecision | None = None
@@ -105,6 +107,8 @@ class OrchestrationController:
         self._reconnaissance_calls = 0
         self._mutation_calls = 0
         self._mutation_paths: set[str] = set()
+        self._total_mutation_calls = 0
+        self._total_mutation_paths: set[str] = set()
         self._productive_delegations = 0
         self._verifier_delegations = 0
         self._required_delegations = 0
@@ -186,6 +190,8 @@ class OrchestrationController:
         self._reconnaissance_calls = 0
         self._mutation_calls = 0
         self._mutation_paths.clear()
+        self._total_mutation_calls = 0
+        self._total_mutation_paths.clear()
         self._verifier_delegations = 0
         self._delegation_failures = self._unresolved_terminal_failures
         self._policy_nudges = 0
@@ -318,6 +324,7 @@ class OrchestrationController:
         if fallback is not None:
             decision = fallback
         try:
+            decision = self._canonicalize_expected_paths(decision)
             self._validate_decision(decision)
         except ValueError as exc:
             self.state = OrchestrationState.ROUTE_REQUIRED
@@ -342,6 +349,9 @@ class OrchestrationController:
         self._launched_lane_ids.clear()
         self._completed_lane_ids.clear()
         self._reserved_lanes_by_call.clear()
+        self._mutation_calls = 0
+        self._mutation_paths.clear()
+        self._implicit_direct_path = None
 
         agent_lanes = sum(lane.owner is LaneOwner.AGENT for lane in decision.lanes)
         lane_ids = [lane.id for lane in decision.lanes if lane.owner is LaneOwner.AGENT]
@@ -405,7 +415,20 @@ class OrchestrationController:
 
         if read_only:
             return None
+        if path_error := self._workspace_path_error(args):
+            return path_error
         return self._before_mutation(tool_name, args)
+
+    def _workspace_path_error(self, args: dict[str, Any]) -> str | None:
+        raw_path = self._raw_tool_path(args)
+        if raw_path is None or self._tool_path(args) is not None:
+            return None
+        self._scope_drift = True
+        self.state = OrchestrationState.ROUTE_REQUIRED
+        return (
+            f"Path '{raw_path}' escapes the workspace. Record a strategy "
+            "scoped to workspace-relative paths before mutating it."
+        )
 
     def _before_delegation(
         self,
@@ -576,8 +599,10 @@ class OrchestrationController:
             return
 
         self._mutation_calls += 1
+        self._total_mutation_calls += 1
         if path := self._tool_path(args):
             self._mutation_paths.add(path)
+            self._total_mutation_paths.add(path)
         if self.state is OrchestrationState.DIRECT:
             expected = self.decision.expected_paths if self.decision is not None else []
             outside_expected = bool(
@@ -737,8 +762,8 @@ class OrchestrationController:
             reason=decision.reason if decision is not None else None,
             capabilities=self.capabilities,
             reconnaissance_calls=self._reconnaissance_calls,
-            direct_mutations=self._mutation_calls,
-            unique_paths=len(self._mutation_paths),
+            direct_mutations=self._total_mutation_calls,
+            unique_paths=len(self._total_mutation_paths),
             productive_delegations=self._productive_delegations,
             completed_delegations=len(self._completed_lane_ids),
             pending_delegations=self._pending_delegations,
@@ -1849,18 +1874,39 @@ class OrchestrationController:
         return decision.reason
 
     @staticmethod
-    def _tool_path(args: dict[str, Any]) -> str | None:
+    def _raw_tool_path(args: dict[str, Any]) -> str | None:
         for key in _PATH_KEYS:
             value = args.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return None
 
+    def _tool_path(self, args: dict[str, Any]) -> str | None:
+        raw_path = self._raw_tool_path(args)
+        if raw_path is None:
+            return None
+        return self._workspace_relative_path(raw_path)
+
+    def _workspace_relative_path(self, value: str) -> str | None:
+        candidate = Path(value.replace("\\", "/")).expanduser()
+        if not candidate.is_absolute():
+            candidate = self._workspace_root / candidate
+        try:
+            return candidate.resolve().relative_to(self._workspace_root).as_posix()
+        except (OSError, ValueError):
+            return None
+
+    def _canonicalize_expected_paths(
+        self, decision: OrchestrationDecision
+    ) -> OrchestrationDecision:
+        expected_paths: list[str] = []
+        for path in decision.expected_paths:
+            normalized = self._workspace_relative_path(path)
+            if normalized is None:
+                raise ValueError(f"Expected path '{path}' escapes the workspace")
+            expected_paths.append(normalized)
+        return decision.model_copy(update={"expected_paths": expected_paths})
+
     @staticmethod
     def _path_matches(path: str, expected: str) -> bool:
-        normalized = expected.rstrip("/")
-        return (
-            path == normalized
-            or path.startswith(f"{normalized}/")
-            or fnmatch.fnmatch(path, expected)
-        )
+        return path_matches_scope(path, expected)

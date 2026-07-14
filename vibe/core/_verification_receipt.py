@@ -6,8 +6,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum, auto
 import hashlib
+import os
 from pathlib import Path, PurePosixPath
 import re
+import subprocess
+import tempfile
 from typing import TYPE_CHECKING, Any, Literal
 
 import orjson
@@ -21,15 +24,26 @@ from pydantic import (
 )
 
 from vibe import __version__
+from vibe.core._immutable_store import ImmutableFileStore, ImmutableStoreError
+from vibe.core._trusted_command import (
+    TRUSTED_GIT_CONFIG_ARGS,
+    TrustedCommandError,
+    minimal_trusted_git_environment,
+    resolve_trusted_system_executable,
+)
 from vibe.core.paths import VIBE_HOME
 from vibe.core.tasking._path_scope import path_matches_scope
-from vibe.core.utils.io import read_safe, write_durable
 
 if TYPE_CHECKING:
     from git import Repo
 
 RECEIPT_VERSION = 1
 OUTPUT_EXCERPT_CHARS = 4_000
+_MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
+_MAX_RECEIPT_BYTES = 8 * 1024 * 1024
+_MAX_GIT_TEXT_BYTES = 8 * 1024 * 1024
+_MAX_GIT_DIFF_BYTES = 512 * 1024 * 1024
+_MAX_REPOSITORY_PATHS = 100_000
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _EMPTY_CONTENT_HASHES = frozenset(
     hash_payload
@@ -94,6 +108,10 @@ class CheckEvidence(BaseModel):
     output_artifact_hash: str
     output_artifact_path: str
     output_artifact_size: int = Field(ge=0)
+    executable_sha256: str | None = None
+    environment_attestation_sha256: str | None = None
+    assertions_passed: bool = True
+    assertion_diagnostics: tuple[str, ...] = ()
 
     @field_validator("output_artifact_hash")
     @classmethod
@@ -102,9 +120,16 @@ class CheckEvidence(BaseModel):
             raise ValueError("expected a lowercase SHA-256 digest")
         return value
 
+    @field_validator("executable_sha256", "environment_attestation_sha256")
+    @classmethod
+    def _validate_optional_hash(cls, value: str | None) -> str | None:
+        if value is not None and not _HASH_PATTERN.fullmatch(value):
+            raise ValueError("expected a lowercase SHA-256 digest")
+        return value
+
     @property
     def passed(self) -> bool:
-        return not self.timed_out and self.exit_code == 0
+        return not self.timed_out and self.exit_code == 0 and self.assertions_passed
 
 
 class VerificationReceipt(BaseModel):
@@ -169,6 +194,24 @@ class VerificationReceipt(BaseModel):
             raise ValueError("receipt creation precedes check completion")
         return self
 
+    @model_validator(mode="after")
+    def _validate_pass_authority(self) -> VerificationReceipt:
+        if self.outcome != ReceiptOutcome.PASS:
+            return self
+        if not self.evidence:
+            raise ValueError("passing receipt must contain trusted check evidence")
+        if any(not item.passed for item in self.evidence):
+            raise ValueError("passing receipt contains failed trusted check evidence")
+        if self.repository.dirty or not self.allowed_paths_passed:
+            raise ValueError("passing receipt does not describe an allowed clean tree")
+        if self.checks_hash != check_evidence_hash(self.evidence):
+            raise ValueError("passing receipt has an inconsistent check-command hash")
+        if any(item.executable_sha256 is None for item in self.evidence):
+            raise ValueError("passing receipt check is missing executable identity")
+        if any(item.environment_attestation_sha256 is None for item in self.evidence):
+            raise ValueError("passing receipt check is missing environment attestation")
+        return self
+
     @property
     def passed(self) -> bool:
         return self.outcome == ReceiptOutcome.PASS
@@ -194,11 +237,22 @@ class _RawRepositoryState:
     candidate_tree: str
     branch: str | None
     index_tree: str
-    staged_diff: str
-    working_diff: str
-    committed_diff: str
+    staged_diff_hash: str
+    staged_diff_present: bool
+    working_diff_hash: str
+    working_diff_present: bool
+    committed_diff_hash: str
     untracked: tuple[tuple[str, str], ...]
     changed_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _GitProbeResult:
+    stdout: bytes
+    stdout_sha256: str
+    stdout_present: bool
+    stderr: bytes
+    returncode: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,9 +290,25 @@ def validate_binding_hash(value: str, label: str, *, allow_empty: bool = True) -
 
 def repository_identity(path: Path | None = None) -> str:
     repo = _open_repo(path)
-    roots = sorted(repo.git.rev_list("--max-parents=0", "--all").splitlines())
+    if repo.working_tree_dir is None:
+        raise VerificationReceiptError("verification requires a non-bare repository")
+    root = Path(repo.working_tree_dir)
+    roots = sorted(
+        _trusted_git(root, "rev-list", "--max-parents=0", "--all").splitlines()
+    )
+    remote_config = _trusted_git(
+        root,
+        "config",
+        "--local",
+        "--no-includes",
+        "--get-regexp",
+        r"^remote\..*\.url$",
+        allowed_exit_codes=(0, 1),
+    )
     remote_urls = sorted({
-        url for remote in repo.remotes for url in remote.urls if url.strip()
+        value
+        for line in remote_config.splitlines()
+        if (value := line.partition(" ")[2].strip())
     })
     return hash_payload({"root_commits": roots, "remote_urls": remote_urls})
 
@@ -253,15 +323,15 @@ def capture_repository_state(path: Path | None, base_sha: str) -> RepositoryStat
     untracked_payload = [
         {"path": name, "blob_hash": blob_hash} for name, blob_hash in raw.untracked
     ]
-    index_diff_hash = hash_payload(raw.staged_diff)
+    index_diff_hash = raw.staged_diff_hash
     worktree_hash = hash_payload({
-        "working_diff": raw.working_diff,
+        "working_diff_hash": raw.working_diff_hash,
         "untracked": untracked_payload,
     })
     diff_hash = hash_payload({
-        "committed_diff": raw.committed_diff,
-        "staged_diff": raw.staged_diff,
-        "working_diff": raw.working_diff,
+        "committed_diff_hash": raw.committed_diff_hash,
+        "staged_diff_hash": raw.staged_diff_hash,
+        "working_diff_hash": raw.working_diff_hash,
         "untracked": untracked_payload,
     })
     workspace_hash = hash_payload({
@@ -284,7 +354,9 @@ def capture_repository_state(path: Path | None, base_sha: str) -> RepositoryStat
         worktree_hash=worktree_hash,
         diff_hash=diff_hash,
         workspace_hash=workspace_hash,
-        dirty=bool(raw.staged_diff or raw.working_diff or raw.untracked),
+        dirty=bool(
+            raw.staged_diff_present or raw.working_diff_present or raw.untracked
+        ),
         changed_paths=raw.changed_paths,
     )
 
@@ -351,7 +423,12 @@ def receipt_content_hash(receipt: VerificationReceipt) -> str:
 
 class VerificationReceiptStore:
     def __init__(self, root: Path | None = None) -> None:
-        self.root = (root or VIBE_HOME.path / "verification").resolve()
+        requested = (root or VIBE_HOME.path / "verification").expanduser()
+        self.root = requested if requested.is_absolute() else requested.absolute()
+        try:
+            self._files = ImmutableFileStore(self.root)
+        except ImmutableStoreError as exc:
+            raise VerificationReceiptError(str(exc)) from exc
 
     def persist_artifact(
         self, repository_id: str, stdout: bytes, stderr: bytes
@@ -365,43 +442,69 @@ class VerificationReceiptStore:
             },
             option=orjson.OPT_SORT_KEYS,
         )
+        if len(payload) > _MAX_ARTIFACT_BYTES:
+            raise VerificationReceiptError(
+                "verification output artifact exceeds the store size limit"
+            )
         digest = hashlib.sha256(payload).hexdigest()
-        relative = Path("artifacts") / repository_id / f"{digest}.json"
-        target = self.root / relative
-        self._persist_immutable(target, payload)
-        return digest, relative.as_posix(), len(payload)
+        relative = PurePosixPath("artifacts") / repository_id / f"{digest}.json"
+        self._persist_immutable(relative, payload)
+        return digest, str(relative), len(payload)
 
     def persist_receipt(self, receipt: VerificationReceipt) -> Path:
         if receipt.receipt_id != receipt_content_hash(receipt):
             raise VerificationReceiptError("receipt content hash does not match its ID")
-        target = self.receipt_path(
+        relative = self._receipt_relative(
             receipt.repository.repository_identity, receipt.receipt_id
         )
         payload = (receipt.model_dump_json(indent=2) + "\n").encode("utf-8")
-        self._persist_immutable(target, payload)
-        return target
+        if len(payload) > _MAX_RECEIPT_BYTES:
+            raise VerificationReceiptError(
+                "verification receipt exceeds the store size limit"
+            )
+        self._persist_immutable(relative, payload)
+        return self.root.joinpath(*relative.parts)
 
     def receipt_path(self, repository_id: str, receipt_id: str) -> Path:
+        relative = self._receipt_relative(repository_id, receipt_id)
+        return self.root.joinpath(*relative.parts)
+
+    @staticmethod
+    def _receipt_relative(repository_id: str, receipt_id: str) -> PurePosixPath:
         _require_hash(repository_id, "repository ID")
         _require_hash(receipt_id, "receipt ID")
-        return self.root / "receipts" / repository_id / f"{receipt_id}.json"
+        return PurePosixPath("receipts") / repository_id / f"{receipt_id}.json"
 
     def load(self, repository_id: str, receipt_id: str) -> VerificationReceipt:
-        target = self.receipt_path(repository_id, receipt_id)
-        return self._load_path(target, receipt_id)
+        relative = self._receipt_relative(repository_id, receipt_id)
+        return self._load_path(relative, receipt_id)
 
     def load_any(self, receipt_id: str) -> VerificationReceipt:
         _require_hash(receipt_id, "receipt ID")
-        receipts_root = self.root / "receipts"
-        if not receipts_root.exists():
+        try:
+            repository_ids = self._files.list_directory(PurePosixPath("receipts"))
+        except FileNotFoundError:
             raise VerificationReceiptError(
                 f"verification receipt {receipt_id} was not found"
-            )
-        matches = [
-            path
-            for path in receipts_root.glob(f"*/{receipt_id}.json")
-            if path.is_file() and not path.is_symlink()
-        ]
+            ) from None
+        except (ImmutableStoreError, OSError) as exc:
+            raise VerificationReceiptError(
+                f"verification receipt store could not be inspected: {exc}"
+            ) from exc
+        matches: list[PurePosixPath] = []
+        for repository_id in repository_ids:
+            if _HASH_PATTERN.fullmatch(repository_id) is None:
+                continue
+            relative = self._receipt_relative(repository_id, receipt_id)
+            try:
+                self._files.read(relative, max_bytes=_MAX_RECEIPT_BYTES)
+            except FileNotFoundError:
+                continue
+            except (ImmutableStoreError, OSError) as exc:
+                raise VerificationReceiptError(
+                    f"verification receipt {receipt_id} could not be read: {exc}"
+                ) from exc
+            matches.append(relative)
         if len(matches) != 1:
             raise VerificationReceiptError(
                 f"expected one stored verification receipt {receipt_id}, found {len(matches)}"
@@ -417,24 +520,18 @@ class VerificationReceiptStore:
 
     def _validate_artifact(self, evidence: CheckEvidence) -> None:
         relative = PurePosixPath(evidence.output_artifact_path)
-        if relative.is_absolute() or ".." in relative.parts:
+        expected_name = f"{evidence.output_artifact_hash}.json"
+        if not _valid_artifact_path(relative, expected_name):
             raise VerificationReceiptError(
                 "output artifact path escapes the receipt store"
             )
-        target = self.root.joinpath(*relative.parts)
         try:
-            target.resolve().relative_to(self.root)
-        except (OSError, ValueError) as exc:
-            raise VerificationReceiptError(
-                "output artifact path escapes the receipt store"
-            ) from exc
-        if target.is_symlink() or not target.is_file():
+            payload = self._files.read(relative, max_bytes=_MAX_ARTIFACT_BYTES)
+        except FileNotFoundError as exc:
             raise VerificationReceiptError(
                 f"output artifact is missing: {evidence.output_artifact_path}"
-            )
-        try:
-            payload = read_safe(target, raise_on_error=True).text.encode("utf-8")
-        except (OSError, UnicodeError) as exc:
+            ) from exc
+        except (ImmutableStoreError, OSError) as exc:
             raise VerificationReceiptError(
                 f"output artifact could not be read: {exc}"
             ) from exc
@@ -459,16 +556,22 @@ class VerificationReceiptStore:
                 f"output artifact is malformed: {evidence.output_artifact_path}"
             ) from exc
 
-    def _load_path(self, target: Path, receipt_id: str) -> VerificationReceipt:
-        if target.is_symlink() or not target.is_file():
+    def _load_path(
+        self, relative: PurePosixPath, receipt_id: str
+    ) -> VerificationReceipt:
+        try:
+            payload = self._files.read(relative, max_bytes=_MAX_RECEIPT_BYTES)
+        except FileNotFoundError as exc:
             raise VerificationReceiptError(
                 f"verification receipt {receipt_id} was not found"
-            )
+            ) from exc
+        except (ImmutableStoreError, OSError) as exc:
+            raise VerificationReceiptError(
+                f"verification receipt {receipt_id} could not be read: {exc}"
+            ) from exc
         try:
-            receipt = VerificationReceipt.model_validate_json(
-                read_safe(target, raise_on_error=True).text
-            )
-        except (OSError, UnicodeError, ValidationError) as exc:
+            receipt = VerificationReceipt.model_validate_json(payload)
+        except ValidationError as exc:
             raise VerificationReceiptError(
                 f"verification receipt {receipt_id} is malformed: {exc}"
             ) from exc
@@ -481,21 +584,13 @@ class VerificationReceiptStore:
             )
         return receipt
 
-    @staticmethod
-    def _persist_immutable(target: Path, payload: bytes) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            if target.is_symlink():
-                raise VerificationReceiptError(
-                    f"refusing receipt-store symlink: {target}"
-                )
-            existing = read_safe(target, raise_on_error=True).text.encode("utf-8")
-            if existing != payload:
-                raise VerificationReceiptError(
-                    f"immutable receipt artifact already exists with different content: {target}"
-                )
-            return
-        write_durable(target, payload, suffix=".receipt.tmp")
+    def _persist_immutable(self, relative: PurePosixPath, payload: bytes) -> None:
+        try:
+            self._files.write(relative, payload)
+        except (ImmutableStoreError, OSError) as exc:
+            raise VerificationReceiptError(
+                f"immutable receipt artifact could not be persisted: {exc}"
+            ) from exc
 
 
 def validate_receipt(
@@ -555,6 +650,12 @@ def _receipt_structure_errors(receipt: VerificationReceipt) -> list[str]:
         reasons.append("receipt contains no trusted checks")
     elif any(not evidence.passed for evidence in receipt.evidence):
         reasons.append("receipt contains a failed or timed-out check")
+    elif any(evidence.executable_sha256 is None for evidence in receipt.evidence):
+        reasons.append("receipt check is missing its executable identity")
+    elif any(
+        evidence.environment_attestation_sha256 is None for evidence in receipt.evidence
+    ):
+        reasons.append("receipt check is missing its environment attestation")
     if receipt.checks_hash != check_evidence_hash(receipt.evidence):
         reasons.append("receipt check-command hash is inconsistent")
     if not receipt.allowed_paths_passed or not allowed_paths_match(
@@ -654,7 +755,9 @@ def _open_repo(path: Path | None) -> Repo:
     from git.exc import GitError
 
     try:
-        repo = Repo(path or Path.cwd(), search_parent_directories=True)
+        requested = (path or Path.cwd()).expanduser().resolve()
+        root = Path(_trusted_git(requested, "rev-parse", "--show-toplevel")).resolve()
+        repo = Repo(root, search_parent_directories=False)
     except (GitError, OSError, ValueError) as exc:
         raise VerificationReceiptError(f"could not open repository: {exc}") from exc
     if repo.working_tree_dir is None:
@@ -666,49 +769,164 @@ def _read_repository_state(repo: Repo, base_sha: str) -> _RawRepositoryState:
     from git.exc import GitError
 
     try:
-        base = repo.commit(base_sha).hexsha
-        candidate = repo.head.commit
-        staged_diff = repo.git.diff("--binary", "--cached", "HEAD", "--")
-        working_diff = repo.git.diff("--binary", "HEAD", "--")
-        committed_diff = repo.git.diff("--binary", base, candidate.hexsha, "--")
-        index_tree = repo.git.write_tree().strip()
-        untracked = tuple(
-            (name, repo.git.hash_object("--", name).strip())
-            for name in sorted(repo.untracked_files)
+        if repo.working_tree_dir is None:
+            raise VerificationReceiptError(
+                "verification requires a non-bare repository"
+            )
+        root = Path(repo.working_tree_dir)
+        base = _trusted_git(root, "rev-parse", f"{base_sha}^{{commit}}")
+        candidate_head = _trusted_git(root, "rev-parse", "HEAD")
+        candidate_tree = _trusted_git(root, "rev-parse", "HEAD^{tree}")
+        diff_guards = ("--no-ext-diff", "--no-textconv")
+        staged_diff_hash, staged_diff_present = _trusted_git_digest(
+            root, "diff", *diff_guards, "--binary", "--cached", "HEAD", "--"
         )
-        try:
-            branch = repo.active_branch.name
-        except (TypeError, GitError):
-            branch = None
-    except (GitError, OSError, ValueError) as exc:
+        working_diff_hash, working_diff_present = _trusted_git_digest(
+            root, "diff", *diff_guards, "--binary", "HEAD", "--"
+        )
+        committed_diff_hash, _ = _trusted_git_digest(
+            root, "diff", *diff_guards, "--binary", base, candidate_head, "--"
+        )
+        index_tree = _trusted_git(root, "write-tree")
+        untracked_names = _trusted_git(
+            root, "ls-files", "--others", "--exclude-standard", "-z"
+        ).split("\0")
+        if len(untracked_names) > _MAX_REPOSITORY_PATHS:
+            raise VerificationReceiptError(
+                "repository contains too many untracked paths to verify safely"
+            )
+        untracked = tuple(
+            (name, _trusted_git(root, "hash-object", "--no-filters", "--", name))
+            for name in sorted(name for name in untracked_names if name)
+        )
+        branch = (
+            _trusted_git(
+                root,
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "HEAD",
+                allowed_exit_codes=(0, 1),
+            )
+            or None
+        )
+    except (GitError, OSError, ValueError, VerificationReceiptError) as exc:
         raise VerificationReceiptError(
             f"could not inspect repository state: {exc}"
         ) from exc
     return _RawRepositoryState(
         base_sha=base,
-        candidate_head=candidate.hexsha,
-        candidate_tree=candidate.tree.hexsha,
+        candidate_head=candidate_head,
+        candidate_tree=candidate_tree,
         branch=branch,
         index_tree=index_tree,
-        staged_diff=staged_diff,
-        working_diff=working_diff,
-        committed_diff=committed_diff,
+        staged_diff_hash=staged_diff_hash,
+        staged_diff_present=staged_diff_present,
+        working_diff_hash=working_diff_hash,
+        working_diff_present=working_diff_present,
+        committed_diff_hash=committed_diff_hash,
         untracked=untracked,
-        changed_paths=_changed_paths(repo, base, candidate.hexsha, untracked),
+        changed_paths=_changed_paths(root, base, candidate_head, untracked),
     )
 
 
 def _changed_paths(
-    repo: Repo, base_sha: str, candidate_sha: str, untracked: Sequence[tuple[str, str]]
+    root: Path, base_sha: str, candidate_sha: str, untracked: Sequence[tuple[str, str]]
 ) -> tuple[str, ...]:
+    guards = ("--no-ext-diff", "--no-textconv", "--no-renames", "--name-only")
     outputs = (
-        repo.git.diff("--no-renames", "--name-only", base_sha, candidate_sha, "--"),
-        repo.git.diff("--no-renames", "--name-only", "--cached", "HEAD", "--"),
-        repo.git.diff("--no-renames", "--name-only", "HEAD", "--"),
+        _trusted_git(root, "diff", *guards, base_sha, candidate_sha, "--"),
+        _trusted_git(root, "diff", *guards, "--cached", "HEAD", "--"),
+        _trusted_git(root, "diff", *guards, "HEAD", "--"),
     )
     paths = {line for output in outputs for line in output.splitlines() if line}
     paths.update(name for name, _ in untracked)
+    if len(paths) > _MAX_REPOSITORY_PATHS:
+        raise VerificationReceiptError(
+            "repository contains too many changed paths to verify safely"
+        )
     return tuple(sorted(paths))
+
+
+def _trusted_git_environment() -> dict[str, str]:
+    return minimal_trusted_git_environment(Path("/"))
+
+
+def _trusted_git(
+    root: Path, *arguments: str, allowed_exit_codes: tuple[int, ...] = (0,)
+) -> str:
+    result = _run_trusted_git(root, arguments, capture_stdout=True)
+    if result.returncode not in allowed_exit_codes:
+        diagnostic = _decode_git_diagnostic(result.stderr, result.stdout)
+        raise VerificationReceiptError(
+            f"trusted Git probe failed ({' '.join(arguments)}): {diagnostic}"
+        )
+    return result.stdout.decode("utf-8", errors="surrogateescape").strip()
+
+
+def _trusted_git_digest(root: Path, *arguments: str) -> tuple[str, bool]:
+    result = _run_trusted_git(root, arguments, capture_stdout=False)
+    if result.returncode != 0:
+        diagnostic = _decode_git_diagnostic(result.stderr, result.stdout)
+        raise VerificationReceiptError(
+            f"trusted Git probe failed ({' '.join(arguments)}): {diagnostic}"
+        )
+    return result.stdout_sha256, result.stdout_present
+
+
+def _run_trusted_git(
+    root: Path, arguments: tuple[str, ...], *, capture_stdout: bool
+) -> _GitProbeResult:
+    try:
+        git = resolve_trusted_system_executable("git")
+        with (
+            tempfile.TemporaryFile() as stdout_file,
+            tempfile.TemporaryFile() as stderr_file,
+        ):
+            result = subprocess.run(
+                [str(git), *TRUSTED_GIT_CONFIG_ARGS, "-C", str(root), *arguments],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                env=_trusted_git_environment(),
+                text=False,
+                timeout=30,
+            )
+            stdout_size = os.fstat(stdout_file.fileno()).st_size
+            output_limit = (
+                _MAX_GIT_TEXT_BYTES if capture_stdout else _MAX_GIT_DIFF_BYTES
+            )
+            if stdout_size > output_limit:
+                raise VerificationReceiptError(
+                    f"trusted Git probe output exceeded the {output_limit}-byte limit"
+                )
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            digest = hashlib.sha256()
+            while chunk := stdout_file.read(64 * 1024):
+                digest.update(chunk)
+            stdout_file.seek(0)
+            stdout = stdout_file.read() if capture_stdout else b""
+            stderr = stderr_file.read(_MAX_GIT_TEXT_BYTES + 1)
+    except (OSError, subprocess.SubprocessError, TrustedCommandError) as exc:
+        raise VerificationReceiptError(f"trusted Git probe failed: {exc}") from exc
+    if len(stderr) > _MAX_GIT_TEXT_BYTES:
+        raise VerificationReceiptError(
+            "trusted Git diagnostic exceeded the bounded text limit"
+        )
+    return _GitProbeResult(
+        stdout=stdout,
+        stdout_sha256=digest.hexdigest(),
+        stdout_present=stdout_size > 0,
+        stderr=stderr,
+        returncode=result.returncode,
+    )
+
+
+def _decode_git_diagnostic(stderr: bytes, stdout: bytes) -> str:
+    raw = stderr or stdout[:_MAX_GIT_TEXT_BYTES]
+    return raw.decode("utf-8", errors="replace").strip() or "no output"
 
 
 def _normalize_allowed_pattern(pattern: str) -> str:
@@ -717,6 +935,19 @@ def _normalize_allowed_pattern(pattern: str) -> str:
     if not normalized or path.is_absolute() or ".." in path.parts:
         raise VerificationReceiptError(f"invalid allowed-path pattern: {pattern!r}")
     return normalized
+
+
+def _valid_artifact_path(relative: PurePosixPath, expected_name: str) -> bool:
+    artifact_path_parts = 3
+    if relative.is_absolute() or ".." in relative.parts:
+        return False
+    if len(relative.parts) != artifact_path_parts:
+        return False
+    return (
+        relative.parts[0] == "artifacts"
+        and _HASH_PATTERN.fullmatch(relative.parts[1]) is not None
+        and relative.name == expected_name
+    )
 
 
 def _require_hash(value: str, label: str) -> None:

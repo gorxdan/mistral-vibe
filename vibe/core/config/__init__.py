@@ -35,6 +35,7 @@ from vibe.core.config._settings import (
 )
 from vibe.core.config._spend_config import PromptEstimatorMode, SpendConfig
 from vibe.core.config._verification_config import (
+    TrustedExecutionTopologyConfig,
     TrustedVerificationCheckConfig,
     TrustedVerificationRecipeConfig,
 )
@@ -181,6 +182,7 @@ __all__ = [
     "TranscribeProviderConfig",
     "TrustNotResolvedError",
     "TrustResolutionError",
+    "TrustedExecutionTopologyConfig",
     "TrustedVerificationCheckConfig",
     "TrustedVerificationRecipeConfig",
     "UntrustedLayerError",

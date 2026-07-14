@@ -9,6 +9,7 @@ from typing import Any
 from git import Repo
 import pytest
 
+from vibe.core.candidate_delivery import CandidateDelivery, CandidateDeliveryStatus
 from vibe.core.tools.base import InvokeContext
 from vibe.core.verification_state import VerificationState
 from vibe.core.workflows.contract import ContractFailure, ContractReport, ContractSpec
@@ -40,9 +41,15 @@ def _setup_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> P
     repo.index.add(["f.txt"])
     repo.index.commit("init")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(ephemeral, "VIBE_HOME", SimpleNamespace(path=tmp_path / "vh"))
+    monkeypatch.setattr(
+        ephemeral,
+        "VIBE_HOME",
+        SimpleNamespace(path=tmp_path.parent / f"{tmp_path.name}-vh"),
+    )
     fake = tmp_path / "fake_vibe.py"
     fake.write_text(body)
+    repo.index.add(["fake_vibe.py"])
+    repo.index.commit("test executor")
     monkeypatch.setenv(
         "VIBE_ISOLATED_EXECUTOR_CMD",
         f"{shlex.quote(sys.executable)} {shlex.quote(str(fake))}",
@@ -81,6 +88,11 @@ async def test_default_executor_contract_passes_and_delivers(
     assert report is not None
     assert report.passed
     assert report.delivered
+    assert report.candidate_delivery is not None
+    assert report.candidate_delivery.status is CandidateDeliveryStatus.LANDED
+    assert report.candidate_delivery.base_sha is not None
+    assert report.candidate_delivery.candidate_sha is not None
+    assert report.candidate_delivery.parent_sha_after is not None
     assert not verification_state.has_pass()
     # Delivery ff-merged the worktree into the parent; the file landed.
     assert (root / "auth.py").read_text().startswith("JWT_TOKEN")
@@ -114,7 +126,20 @@ async def test_default_executor_does_not_record_pass_when_delivery_fails(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _setup_repo(tmp_path, monkeypatch, _FAKE_VIBE_WRITE)
-    monkeypatch.setattr(ephemeral, "deliver_ephemeral_worktree", lambda wt: False)
+    monkeypatch.setattr(
+        ephemeral,
+        "deliver_verified_ephemeral_worktree_result",
+        lambda wt, **kwargs: CandidateDelivery(
+            status=CandidateDeliveryStatus.PRESERVED,
+            base_sha=kwargs["expected_parent_sha"],
+            candidate_sha=kwargs["expected_candidate_sha"],
+            parent_sha_before=kwargs["expected_parent_sha"],
+            parent_sha_after=kwargs["expected_parent_sha"],
+            branch=wt.branch,
+            worktree_path=str(wt.path),
+            diagnostic="exact delivery refused",
+        ),
+    )
     verification_state = VerificationState()
     rt = WorkflowRuntime(
         parent_context=InvokeContext(
@@ -133,6 +158,31 @@ async def test_default_executor_does_not_record_pass_when_delivery_fails(
     assert report.passed
     assert not report.delivered
     assert not verification_state.has_pass()
+
+
+@pytest.mark.asyncio
+async def test_undelivered_contract_candidate_is_not_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = ContractReport(passed=True, delivered=False)
+    runtime = WorkflowRuntime()
+
+    async def isolated_executor(*args: Any, **kwargs: Any):
+        return "implemented", None, report
+
+    monkeypatch.setattr(runtime, "_default_isolated_executor", isolated_executor)
+    output, _stats, returned_report, completed, error = await runtime._execute_isolated(
+        "implement",
+        "worker",
+        "candidate",
+        ContractSpec.model_validate({"outputs": [{"path": "auth.py"}]}),
+        SimpleNamespace(cancel_requested=False),
+    )
+
+    assert output == "implemented"
+    assert returned_report is report
+    assert completed is False
+    assert error == "contract passed but delivery skipped (branch kept)"
 
 
 @pytest.mark.asyncio
@@ -192,6 +242,20 @@ def test_isolated_failure_value_returns_contract_failure() -> None:
     # so the failure survives json.dumps. The passed flag round-trips.
     assert result.report == failed.model_dump(mode="json")
     assert not result.report["passed"]
+    assert not result
+
+
+def test_isolated_failure_value_preserves_undelivered_candidate() -> None:
+    runtime = WorkflowRuntime()
+    report = ContractReport(passed=True, delivered=False)
+
+    result = runtime._isolated_failure_value(
+        report, None, [], report.summary(), "worker completed"
+    )
+
+    assert isinstance(result, ContractFailure)
+    assert result.report["passed"] is True
+    assert result.report["delivered"] is False
     assert not result
 
 

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import signal
 
-from vibe.core.logger import logger
+from vibe.core.utils._process_groups import signal_owned_process_group
 from vibe.core.utils.platform import is_windows
 
 
@@ -44,17 +43,8 @@ async def kill_async_subprocess(
                     await subprocess_proc.wait()
                 except (FileNotFoundError, OSError):
                     proc.terminate()
-            else:
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
-                except Exception:
-                    logger.debug(
-                        "Unexpected error killing process group for pid %s",
-                        proc.pid,
-                        exc_info=True,
-                    )
+            elif not signal_owned_process_group(proc.pid, signal.SIGKILL):
+                proc.kill()
 
             await proc.wait()
     except (ProcessLookupError, PermissionError, OSError):

@@ -169,6 +169,17 @@ class TomlFileSettingsSource(PydanticBaseSettingsSource):
         return merged
 
     @staticmethod
+    def _pop_case_insensitive(data: dict[str, Any], field_name: str) -> bool:
+        matching = [key for key in data if key.casefold() == field_name.casefold()]
+        for key in matching:
+            data.pop(key, None)
+        return bool(matching)
+
+    @staticmethod
+    def _has_case_insensitive(data: dict[str, Any], field_name: str) -> bool:
+        return any(key.casefold() == field_name.casefold() for key in data)
+
+    @staticmethod
     def _confine_plugin_paths(
         data: dict[str, Any], project_root: Path
     ) -> dict[str, Any]:
@@ -216,6 +227,14 @@ class TomlFileSettingsSource(PydanticBaseSettingsSource):
             project_data = self._confine_plugin_paths(
                 self._read_toml(file), project_root
             )
+            if self._pop_case_insensitive(project_data, "trusted_verification_recipe"):
+                logger.warning(
+                    "Ignoring trusted_verification_recipe from project config %s; "
+                    "trusted recipes may only come from user or programmatic config",
+                    file,
+                )
+            if self._has_case_insensitive(data, "trusted_verification_recipe"):
+                self._pop_case_insensitive(project_data, "verification_subsystem")
             data = self._deep_merge(data, project_data)
         return data
 
@@ -1034,7 +1053,9 @@ class VibeConfig(BaseSettings):
         description=(
             "Optional host-authored verification plan. AgentLoop freezes this recipe "
             "at session creation; verify_work executes its exact checks without "
-            "accepting model-supplied commands or paths."
+            "accepting model-supplied commands or paths. Checks cannot invoke a "
+            "shell. An optional execution_topology fails startup unless managed "
+            "worktrees, SHAs, lifecycle metadata, and durable evidence agree."
         ),
     )
     investigation_subsystem: bool = Field(
@@ -1082,6 +1103,8 @@ class VibeConfig(BaseSettings):
 
     @property
     def system_prompt(self) -> str:
+        if self.system_prompt_id == SystemPrompt.VERIFIER:
+            return SystemPrompt.VERIFIER.read()
         return load_system_prompt(self.system_prompt_id, extra_dirs=self.prompt_paths)
 
     @property
@@ -1200,6 +1223,12 @@ class VibeConfig(BaseSettings):
             TomlFileSettingsSource(settings_cls),
             file_secret_settings,
         )
+
+    @model_validator(mode="after")
+    def _keep_trusted_verification_enabled(self) -> VibeConfig:
+        if self.trusted_verification_recipe is not None:
+            self.verification_subsystem = True
+        return self
 
     @model_validator(mode="after")
     def _apply_global_auto_compact_threshold(self) -> VibeConfig:

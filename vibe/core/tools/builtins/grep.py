@@ -13,6 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from vibe.core.lsp._adherence import record_symbol_grep_miss, symbol_grep_hint
 from vibe.core.lsp._manager import get_lsp_manager
 from vibe.core.paths import VIBE_HOME
+from vibe.core.tools._model_read_policy import (
+    ManagedReadPolicyError,
+    managed_read_scope,
+    resolve_managed_read_path,
+)
 from vibe.core.tools.base import (
     BaseTool,
     BaseToolConfig,
@@ -241,6 +246,7 @@ def _normalize_search_output(
     stdout: bytes, output_mode: GrepOutputMode, ctx: InvokeContext | None
 ) -> str:
     contract = ctx.task_contract if ctx is not None else None
+    scope = managed_read_scope(ctx)
     if output_mode is GrepOutputMode.FILES_WITH_MATCHES:
         records = ((path, b"") for path in stdout.split(b"\0") if path)
     else:
@@ -264,9 +270,14 @@ def _normalize_search_output(
     for raw_path, raw_payload in records:
         path = decode_safe(raw_path, from_subprocess=True).text
         payload = decode_safe(raw_payload, from_subprocess=True).text
-        if not path or (
-            contract is not None and not contract.allows_search_result(path)
-        ):
+        if not path:
+            continue
+        if scope is not None:
+            try:
+                path = str(scope.resolve(path))
+            except ManagedReadPolicyError:
+                continue
+        if contract is not None and not contract.allows_search_result(path):
             continue
         if output_mode is GrepOutputMode.FILES_WITH_MATCHES:
             lines.append(path)
@@ -440,27 +451,36 @@ class Grep(
         self, args: GrepArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | GrepResult, None]:
         backend = self._detect_backend()
-        self._validate_args(args)
+        try:
+            managed_path = resolve_managed_read_path(args.path, ctx)
+        except ManagedReadPolicyError as exc:
+            raise ToolError(str(exc)) from exc
+        effective_args = (
+            args.model_copy(update={"path": str(managed_path)})
+            if managed_path is not None
+            else args
+        )
+        self._validate_args(effective_args)
 
         exclude_patterns = self._collect_exclude_patterns()
         if ctx is not None and ctx.task_contract is not None:
             exclude_patterns.extend(ctx.task_contract.search_exclude_patterns)
-        cmd = self._build_command(args, exclude_patterns, backend)
+        cmd = self._build_command(effective_args, exclude_patterns, backend)
         stdout = await self._execute_search(cmd)
-        stdout = _normalize_search_output(stdout, args.output_mode, ctx)
+        stdout = _normalize_search_output(stdout, effective_args.output_mode, ctx)
 
         result = self._parse_output(
             stdout,
-            args.max_matches or self.config.default_max_matches,
-            output_mode=args.output_mode,
-            head_limit=args.head_limit,
+            effective_args.max_matches or self.config.default_max_matches,
+            output_mode=effective_args.output_mode,
+            head_limit=effective_args.head_limit,
         )
-        if _is_symbol_shaped(args.pattern) and _lsp_available(
-            ctx, args=args, result=result
+        if _is_symbol_shaped(effective_args.pattern) and _lsp_available(
+            ctx, args=effective_args, result=result
         ):
             consecutive = record_symbol_grep_miss(ctx=ctx)
             result._hint = symbol_grep_hint(
-                args.pattern, consecutive=consecutive, ctx=ctx
+                effective_args.pattern, consecutive=consecutive, ctx=ctx
             )
         yield result
 
