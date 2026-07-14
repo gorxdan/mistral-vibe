@@ -51,7 +51,15 @@ from vibe.core.agent_loop_memory import (
 from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
 from vibe.core.agent_loop_orchestration import AgentLoopOrchestrationMixin
 from vibe.core.agent_loop_safety_judge import AgentLoopSafetyJudgeMixin
-from vibe.core.agent_loop_tool_scheduler import EventSink, stream_tool_call_waves
+from vibe.core.agent_loop_spawn_gate import (
+    AGENT_SPAWN_BATCH_DENIAL,
+    plan_agent_spawn_batch,
+)
+from vibe.core.agent_loop_tool_scheduler import (
+    EventSink,
+    ToolCallWaveCancelled,
+    stream_tool_call_waves,
+)
 from vibe.core.agent_loop_verification import AgentLoopVerificationMixin
 from vibe.core.agents.manager import AgentManager
 from vibe.core.agents.models import AgentProfile, BuiltinAgentName
@@ -146,6 +154,7 @@ from vibe.core.tools.base import (
     BaseTool,
     CancellableToolResult,
     InvokeContext,
+    ToolAuthorizationSource,
     ToolError,
     ToolPermission,
     ToolPermissionError,
@@ -157,6 +166,7 @@ from vibe.core.tools.permissions import (
     PermissionContext,
     PermissionStore,
     RequiredPermission,
+    authorization_context_fingerprint,
 )
 from vibe.core.tools.tool_result_store import ToolResultStore
 from vibe.core.tracing import (
@@ -256,7 +266,8 @@ if TYPE_CHECKING:
     from vibe.core.tools.background import BackgroundRegistry
     from vibe.core.tools.connectors import ConnectorRegistry
     from vibe.core.tools.mcp import MCPRegistry
-    from vibe.core.tools.safety_judge import JudgeVerdict
+    from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
+    from vibe.core.workflows.models import WorkflowLaneExpectation
 
 
 class AgentLoopError(Exception): ...
@@ -465,7 +476,7 @@ if TYPE_CHECKING:
     from vibe.core.tools.background import BackgroundRegistry
     from vibe.core.tools.connectors import ConnectorRegistry
     from vibe.core.tools.mcp import MCPRegistry
-    from vibe.core.tools.safety_judge import JudgeVerdict
+    from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
@@ -1640,12 +1651,6 @@ class AgentLoop(
             or guard_managed_claims
             or managed_root
         )
-        publish_buffered_assistant = (
-            buffer_for_verification
-            and verification_constraint is None
-            and not guard_managed_claims
-            and not managed_root
-        )
         buffered_turn_events: list[AssistantEvent | ReasoningEvent | ToolCallEvent] = []
         observer_context = (
             self.messages.silent() if buffer_assistant else contextlib.nullcontext()
@@ -1672,6 +1677,19 @@ class AgentLoop(
         )
         guard_managed_claims = self._guard_managed_completion_claims(
             receipt_valid=receipt_valid
+        )
+        (
+            last_message,
+            verification_constraint,
+            guard_managed_claims,
+            visible_content,
+            publish_buffered_assistant,
+        ) = self._prepare_verification_turn_output(
+            last_message,
+            verification_constraint,
+            guard_managed_claims,
+            buffer_for_verification=buffer_for_verification,
+            managed_root=managed_root,
         )
         completion_replaced = False
         if verification_constraint is not None:
@@ -1709,7 +1727,6 @@ class AgentLoop(
             yield AssistantEvent(
                 content=last_message.content, message_id=last_message.message_id
             )
-        visible_content = (last_message.content or "").strip()
         if self._force_toolless_response and (
             last_message.tool_calls or not visible_content
         ):
@@ -1849,6 +1866,23 @@ class AgentLoop(
     ) -> AsyncGenerator[ToolCallEvent | ToolResultEvent | ToolStreamEvent | HookEvent]:
         all_tool_calls = tuple(tool_calls)
         terminal_calls: set[int] = set()
+        spawn_plan = plan_agent_spawn_batch(tool_calls)
+        tool_calls = list(spawn_plan.accepted)
+        for rejected in spawn_plan.rejected:
+            terminal_calls.add(id(rejected))
+            self.stats.tool_calls_rejected += 1
+            error_msg = (
+                f"<{TOOL_ERROR_TAG}>{AGENT_SPAWN_BATCH_DENIAL}</{TOOL_ERROR_TAG}>"
+            )
+            self._handle_tool_response(
+                rejected, error_msg, "failure", observe_orchestration=False
+            )
+            yield ToolResultEvent(
+                tool_name=rejected.tool_name,
+                tool_class=rejected.tool_class,
+                error=error_msg,
+                tool_call_id=rejected.call_id,
+            )
 
         def record_terminal(
             tool_call: ResolvedToolCall,
@@ -1882,7 +1916,6 @@ class AgentLoop(
                 return
 
             def _concurrent_safe(tc: ResolvedToolCall) -> bool:
-                # Dynamic tools such as `task` classify each invocation independently.
                 return tc.tool_class.call_is_read_only(
                     tc.validated_args, agent_manager=self.agent_manager
                 )
@@ -1899,13 +1932,26 @@ class AgentLoop(
                 )
 
             stream = stream_tool_call_waves(
-                tool_calls, concurrent_safe=_concurrent_safe, execute=_execute
+                tool_calls,
+                concurrent_safe=_concurrent_safe,
+                execute=_execute,
+                terminal_delivered=lambda call: id(call) in terminal_calls,
             )
             try:
                 async for event in stream:
                     yield event
             finally:
                 await stream.aclose()
+        except ToolCallWaveCancelled:
+            cancel = str(
+                get_user_cancellation_message(CancellationReason.TOOL_INTERRUPTED)
+            )
+            for pending_call in all_tool_calls:
+                if id(pending_call) in terminal_calls:
+                    continue
+                self.stats.tool_calls_failed += 1
+                yield self._tool_failure_event(pending_call, cancel, cancelled=True)
+            return
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -2016,6 +2062,7 @@ class AgentLoop(
                 "from read-only to mutating after scheduling. Retry the mutation "
                 f"as a separate tool call.</{TOOL_ERROR_TAG}>"
             )
+            self._release_orchestration_reservation(candidate)
             self._handle_tool_response(
                 candidate, error_msg, "failure", span=span, observe_orchestration=False
             )
@@ -2032,6 +2079,26 @@ class AgentLoop(
             error_msg = f"Error getting tool '{tool_call.tool_name}': {exc}"
             yield self._tool_failure_event(tool_call, error_msg, span=span)
             return
+
+        def reject_hard_denial_after_modification(
+            candidate: ResolvedToolCall,
+        ) -> ToolResultEvent | None:
+            permission = tool_instance.resolve_permission(candidate.validated_args)
+            if permission is None or permission.permission is not ToolPermission.NEVER:
+                return None
+            self.stats.tool_calls_rejected += 1
+            reason = permission.reason or "Modified arguments are not allowed"
+            error_msg = f"<{TOOL_ERROR_TAG}>{reason}</{TOOL_ERROR_TAG}>"
+            self._release_orchestration_reservation(candidate)
+            self._handle_tool_response(
+                candidate, error_msg, "failure", span=span, observe_orchestration=False
+            )
+            return ToolResultEvent(
+                tool_name=candidate.tool_name,
+                tool_class=candidate.tool_class,
+                error=error_msg,
+                tool_call_id=candidate.call_id,
+            )
 
         try:
             tool_input = self._serialize_tool_input(tool_call)
@@ -2088,6 +2155,7 @@ class AgentLoop(
 
         decision: ToolDecision | None = None
         tool_started = False
+        terminal_emitted = False
         try:
             decision = await self._should_execute_tool(
                 tool_instance, tool_call.validated_args, tool_call.call_id
@@ -2105,6 +2173,12 @@ class AgentLoop(
                 if tool_call.validated_args != pre_modification_args
                 else None
             )
+            if (
+                denial_event is None
+                and decision.modified_args is not None
+                and decision.verdict is not ToolExecutionResponse.SKIP
+            ):
+                denial_event = reject_hard_denial_after_modification(tool_call)
             if (
                 denial_event is None
                 and decision.modified_args is not None
@@ -2129,6 +2203,26 @@ class AgentLoop(
             if denial_event is not None:
                 yield denial_event
                 return
+
+            if decision.verdict is not ToolExecutionResponse.SKIP:
+                permission = tool_instance.resolve_permission(tool_call.validated_args)
+                if permission is None:
+                    configured = self.tool_manager.get_tool_config(
+                        tool_call.tool_name
+                    ).permission
+                    permission = PermissionContext(permission=configured)
+                current_fingerprint = authorization_context_fingerprint(
+                    tool_call.tool_name, tool_call.validated_args, permission
+                )
+                if decision.modified_args is not None:
+                    decision = decision.model_copy(
+                        update={"authorization_fingerprint": current_fingerprint}
+                    )
+                elif decision.authorization_fingerprint != current_fingerprint:
+                    raise ToolPermissionError(
+                        "Tool arguments or authorization context changed after "
+                        "approval; submit the call again."
+                    )
 
             if self._task_contract is not None:
                 try:
@@ -2155,13 +2249,33 @@ class AgentLoop(
             async for ev in self._invoke_tool(
                 tool_call, tool_instance, tool_input, decision, span=span
             ):
+                if isinstance(ev, ToolResultEvent):
+                    terminal_emitted = True
                 yield ev
 
         except asyncio.CancelledError:
+            if terminal_emitted:
+                raise
             cancel = str(
                 get_user_cancellation_message(CancellationReason.TOOL_INTERRUPTED)
             )
             self.stats.tool_calls_failed += 1
+            hook_events, finalization_error = await self._finalize_cancelled_tool(
+                tool_call,
+                tool_input,
+                decision,
+                cancel,
+                span=span,
+                tool_started=tool_started,
+            )
+            if finalization_error is not None:
+                logger.error(
+                    "After-tool cancellation finalization failed for %s: %s",
+                    tool_call.tool_name,
+                    finalization_error,
+                )
+            for ev in hook_events:
+                yield ev
             yield ToolResultEvent(
                 tool_name=tool_call.tool_name,
                 tool_class=tool_call.tool_class,
@@ -2169,31 +2283,19 @@ class AgentLoop(
                 cancelled=True,
                 tool_call_id=tool_call.call_id,
             )
-            async for ev in self._finalize_cancelled_tool(
-                tool_call,
-                tool_input,
-                decision,
-                cancel,
-                span=span,
-                tool_started=tool_started,
-            ):
-                yield ev
             raise
 
         except Exception as exc:
+            if terminal_emitted:
+                raise
             error_msg = f"<{TOOL_ERROR_TAG}>{tool_instance.get_name()} failed: {exc}</{TOOL_ERROR_TAG}>"
             if isinstance(exc, ToolPermissionError):
-                self.stats.tool_calls_agreed -= 1
+                if tool_started:
+                    self.stats.tool_calls_agreed -= 1
                 self.stats.tool_calls_rejected += 1
             else:
                 self.stats.tool_calls_failed += 1
-            yield ToolResultEvent(
-                tool_name=tool_call.tool_name,
-                tool_class=tool_call.tool_class,
-                error=error_msg,
-                tool_call_id=tool_call.call_id,
-            )
-            async for ev in self._run_after_tool_and_finalize(
+            hook_events, finalization_error = await self._run_after_tool_and_finalize(
                 tool_call,
                 tool_input=tool_input,
                 tool_status="failure",
@@ -2202,8 +2304,23 @@ class AgentLoop(
                 span=span,
                 tool_error=str(exc),
                 initial_text=error_msg,
-            ):
+            )
+            if finalization_error is not None:
+                logger.error(
+                    "After-tool failure finalization failed for %s: %s",
+                    tool_call.tool_name,
+                    finalization_error,
+                )
+            for ev in hook_events:
                 yield ev
+            yield ToolResultEvent(
+                tool_name=tool_call.tool_name,
+                tool_class=tool_call.tool_class,
+                error=error_msg,
+                tool_call_id=tool_call.call_id,
+            )
+            if finalization_error is not None:
+                raise finalization_error from exc
 
     async def _invoke_tool(
         self,
@@ -2296,7 +2413,9 @@ class AgentLoop(
                         hook_config_result=self._hook_config_result,
                         session_id=self.session_id,
                         terminal_emulator=self.terminal_emulator,
-                        launch_workflow_callback=self.launch_workflow_callback,
+                        launch_workflow_callback=self._bound_workflow_launch_callback(
+                            tool_call
+                        ),
                         workflow_status_callback=self.workflow_status_callback,
                         workflow_results_callback=self.workflow_results_callback,
                         workflow_stop_callback=self.workflow_stop_callback,
@@ -2308,6 +2427,8 @@ class AgentLoop(
                         tool_manager=self.tool_manager,
                         spend_adapter=self._spend_adapter,
                         task_contract=self._task_contract,
+                        authorization_source=decision.authorization_source,
+                        authorization_fingerprint=decision.authorization_fingerprint,
                         work_strategy_callback=self._declare_orchestration_strategy,
                     ),
                     **tool_call.args_dict,
@@ -2336,16 +2457,8 @@ class AgentLoop(
                 and result_model.cancelled
             )
             _observe_candidate_tool()
-            yield ToolResultEvent(
-                tool_name=tool_call.tool_name,
-                tool_class=tool_call.tool_class,
-                result=result_model,
-                cancelled=result_cancelled,
-                duration=duration,
-                tool_call_id=tool_call.call_id,
-                approval_note=decision.feedback if decision.judge_approved else None,
-            )
-            async for ev in self._run_after_tool_and_finalize(
+            self._record_orchestration_tool_result(tool_call, "success", result_dict)
+            hook_events, finalization_error = await self._run_after_tool_and_finalize(
                 tool_call,
                 tool_input=tool_input,
                 tool_status="cancelled" if result_cancelled else "success",
@@ -2355,12 +2468,31 @@ class AgentLoop(
                 tool_output=result_dict,
                 duration_ms=duration * 1000.0,
                 initial_text=text,
-            ):
-                yield ev
+                observe_orchestration=False,
+            )
             self.stats.tool_calls_succeeded += 1
             self._record_successful_verification_observation(
                 tool_call.tool_name, tool_call.validated_args, result_dict
             )
+            if finalization_error is not None:
+                logger.error(
+                    "After-tool success finalization failed for %s: %s",
+                    tool_call.tool_name,
+                    finalization_error,
+                )
+            for ev in hook_events:
+                yield ev
+            yield ToolResultEvent(
+                tool_name=tool_call.tool_name,
+                tool_class=tool_call.tool_class,
+                result=result_model,
+                cancelled=result_cancelled,
+                duration=duration,
+                tool_call_id=tool_call.call_id,
+                approval_note=decision.feedback if decision.judge_approved else None,
+            )
+            if finalization_error is not None:
+                raise finalization_error
         finally:
             _observe_candidate_tool()
 
@@ -2374,6 +2506,7 @@ class AgentLoop(
             if ctx is None:
                 config_perm = self.tool_manager.get_tool_config(tool_name).permission
                 ctx = PermissionContext(permission=config_perm)
+            fingerprint = authorization_context_fingerprint(tool_name, args, ctx)
 
             if ctx.permission != ToolPermission.ASK:
                 allowed = ctx.permission == ToolPermission.ALWAYS
@@ -2384,6 +2517,8 @@ class AgentLoop(
                         else ToolExecutionResponse.SKIP
                     ),
                     approval_type=ctx.permission,
+                    authorization_source=ToolAuthorizationSource.POLICY,
+                    authorization_fingerprint=fingerprint,
                     feedback=(
                         None
                         if allowed
@@ -2396,36 +2531,18 @@ class AgentLoop(
                 if not self._permission_store.covers(tool_name, rp)
             ]
             if ctx.required_permissions and not uncovered:
-                return ToolDecision(
-                    verdict=ToolExecutionResponse.EXECUTE,
-                    approval_type=ToolPermission.ALWAYS,
-                )
+                if not ctx.requires_explicit_user_approval:
+                    return ToolDecision(
+                        verdict=ToolExecutionResponse.EXECUTE,
+                        approval_type=ToolPermission.ALWAYS,
+                        authorization_source=ToolAuthorizationSource.STORED_USER,
+                        authorization_fingerprint=fingerprint,
+                    )
 
-        # Lock released: the safety-judge LLM call and human approval are slow;
-        # holding the permission lock across them would serialize every concurrent
-        # read-wave ASK-gated tool. The rule-store reads above happened under the lock.
-        judged, judge_deferral = await self._judge_tool_safety(
-            tool_name, args, uncovered
+        decision = await self._resolve_ask_permission(
+            tool_name, args, tool_call_id, ctx, uncovered
         )
-        if judged is not None:
-            return judged
-        if self.bypass_tool_permissions:
-            if judge_deferral is not None:
-                return ToolDecision(
-                    verdict=ToolExecutionResponse.SKIP,
-                    approval_type=ToolPermission.NEVER,
-                    feedback=(
-                        "Auto-approve cannot override a safety-judge deferral: "
-                        f"{judge_deferral}"
-                    ),
-                )
-            return ToolDecision(
-                verdict=ToolExecutionResponse.EXECUTE,
-                approval_type=ToolPermission.ALWAYS,
-            )
-        return await self._ask_approval(
-            tool_name, args, tool_call_id, uncovered, judge_deferral=judge_deferral
-        )
+        return decision.model_copy(update={"authorization_fingerprint": fingerprint})
 
     async def _ask_approval(
         self,
@@ -2468,6 +2585,7 @@ class AgentLoop(
         return ToolDecision(
             verdict=verdict,
             approval_type=ToolPermission.ASK,
+            authorization_source=ToolAuthorizationSource.USER,
             feedback=feedback,
             modified_args=modified_args
             if response == ApprovalResponse.MODIFY
@@ -3615,10 +3733,8 @@ class AgentLoop(
             tuple[str, str, tuple[str, ...], str], JudgeVerdict
         ] = OrderedDict()
         self._judge_verdict_cache_maxsize: int = config.safety_judge.verdict_cache_size
-        # Judge model alias the cached verdicts were produced under. When the
-        # configured judge model changes mid-session, the cache is cleared so a
-        # verdict from one model is never reused under another.
-        self._judge_model_alias_for_cache: str | None = None
+        self._safety_judge_instance: SafetyJudge | None = None
+        self._safety_judge_identity: tuple[str, str, str, str, str, int] | None = None
         # When the active model is rate-limited/overloaded, the loop switches to
         # a configured fallback model for the rest of the session. Tracks the
         # override + which fallback aliases have already been tried.
@@ -3711,7 +3827,10 @@ class AgentLoop(
         self._pending_injected_messages: list[LLMMessage] = []
         self._subagent_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SUBAGENTS)
         self._response_format: dict[str, Any] | None = None
-        self.launch_workflow_callback: Callable[[str, str | None], str] | None = None
+        self.launch_workflow_callback: (
+            Callable[[str, str | None, tuple[WorkflowLaneExpectation, ...] | None], str]
+            | None
+        ) = None
         self.workflow_status_callback: (
             Callable[[str | None], list[dict[str, Any]]] | None
         ) = None

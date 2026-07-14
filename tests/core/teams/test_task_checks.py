@@ -8,6 +8,12 @@ import pytest
 
 from vibe.core._verification_runner import TrustedCheck
 from vibe.core.teams._task_checks import run_trusted_task_checks
+from vibe.core.tools.sandbox import ResolvedSandboxBackend
+
+
+def _backend(name: str) -> ResolvedSandboxBackend:
+    executable = None if name == "none" else Path(f"/usr/bin/{name}")
+    return ResolvedSandboxBackend(name, executable)
 
 
 def _check() -> TrustedCheck:
@@ -29,7 +35,8 @@ def test_trusted_checks_fail_closed_without_filesystem_sandbox(
         called = True
 
     monkeypatch.setattr(
-        "vibe.core.teams._task_checks.detect_backend", lambda _override: "none"
+        "vibe.core.teams._task_checks.resolve_backend",
+        lambda _override: _backend("none"),
     )
     monkeypatch.setattr(subprocess, "run", forbidden_run)
 
@@ -50,7 +57,8 @@ def test_bwrap_reexposes_temporary_workspace_read_only(
         return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(
-        "vibe.core.teams._task_checks.detect_backend", lambda _override: "bwrap"
+        "vibe.core.teams._task_checks.resolve_backend",
+        lambda _override: _backend("bwrap"),
     )
     monkeypatch.setattr(subprocess, "run", fake_run)
 

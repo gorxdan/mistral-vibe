@@ -6,8 +6,8 @@ from functools import lru_cache
 import os
 from pathlib import Path
 import re
-import shlex
 import shutil
+import sys
 import time
 from typing import ClassVar, Literal, NamedTuple, final
 
@@ -16,13 +16,19 @@ from tree_sitter import Language, Node, Parser
 import tree_sitter_bash as tsbash
 
 from vibe.core.config import SandboxConfig
+from vibe.core.config.harness_files import get_harness_files_manager
 from vibe.core.logger import logger
 from vibe.core.paths import VIBE_HOME
-from vibe.core.scratchpad import is_scratchpad_path
+from vibe.core.tools._command_tokens import split_bash_tokens
 from vibe.core.tools._model_write_policy import (
     hard_control_plane_command_reason,
     model_protected_roots,
     verification_protected_roots,
+)
+from vibe.core.tools._shell import (
+    get_autoapproved_shell_env,
+    get_base_shell_env,
+    get_bash_executable,
 )
 from vibe.core.tools._team_safety import enforce_shared_ask
 from vibe.core.tools.arity import build_session_pattern
@@ -31,35 +37,46 @@ from vibe.core.tools.base import (
     BaseToolConfig,
     BaseToolState,
     InvokeContext,
+    ToolAuthorizationSource,
     ToolError,
     ToolPermission,
+)
+from vibe.core.tools.builtins._bash_command_policy import (
+    CommandPolicyAnalysis,
+    analyze_command_policy,
+    auto_approval_blocker,
+    command_analysis_preflight_denial,
+    command_uses_unmanaged_background,
+    execution_match_candidates,
+    harden_automated_command,
+    masked_verification_status_reason,
+    shell_input_payloads,
+)
+from vibe.core.tools.builtins._bash_path_policy import (
+    collect_outside_dirs as _collect_outside_dirs,
 )
 from vibe.core.tools.command_safety import (
     allowlisted_argument_is_unsafe,
     destructive_command_reason,
-    unwrapped_command,
 )
 from vibe.core.tools.permissions import (
     PermissionContext,
     PermissionScope,
     RequiredPermission,
+    authorization_context_fingerprint,
 )
 from vibe.core.tools.sandbox import (
     HOST_GIT_ENV_PASSTHROUGH,
     SandboxSpec,
     build_sandbox_command,
-    detect_backend,
+    resolve_backend,
     scrub_env,
     strict_read_hidden_roots,
 )
 from vibe.core.tools.sandbox_seccomp import build_seccomp_bpf, open_seccomp_fd
 from vibe.core.tools.tool_result_store import ToolResultStore
 from vibe.core.tools.ui import ToolCallDisplay, ToolResultDisplay, ToolUIData
-from vibe.core.tools.utils import (
-    is_path_within_workdir,
-    isolated_scratchpad_root,
-    isolated_worktree_root,
-)
+from vibe.core.tools.utils import isolated_scratchpad_root, isolated_worktree_root
 from vibe.core.types import ToolResultEvent, ToolStreamEvent
 from vibe.core.utils import is_windows, kill_async_subprocess
 from vibe.core.utils.io import decode_safe, read_safe
@@ -71,6 +88,14 @@ def _get_parser() -> Parser:
 
 
 _sandbox_unavailable_warned = False
+_BASH_EXECUTABLE_UNAVAILABLE = (
+    "A compatible Bash executable is unavailable; command execution is disabled."
+)
+_AUTOMATED_AUTHORIZATION_SOURCES = frozenset({
+    ToolAuthorizationSource.POLICY,
+    ToolAuthorizationSource.SAFETY_JUDGE,
+    ToolAuthorizationSource.BYPASS,
+})
 
 
 def _close_fd_quietly(fd: int | None) -> None:
@@ -140,6 +165,9 @@ def _model_sandbox_control(
         and ctx.agent_manager is not None
         and getattr(ctx.agent_manager.config, "system_prompt_id", None) == "verifier"
     )
+    bypass_authorization = bool(
+        ctx is not None and ctx.authorization_source is ToolAuthorizationSource.BYPASS
+    )
     return _ModelSandboxControl(
         protected_roots=protected_roots,
         topology_state=topology.state if topology is not None else None,
@@ -149,6 +177,7 @@ def _model_sandbox_control(
             or protected_roots
             or autoapprove
             or verifier
+            or bypass_authorization
         ),
         protect_git_metadata=bool(
             iso_root is not None or task_contract or protected_roots or verifier
@@ -224,6 +253,11 @@ def _strict_read_roots(
     home = Path.home().resolve()
     repository = (iso_root or _repository_root(Path.cwd())).resolve()
     roots = {repository, *write_roots, *control.protected_roots}
+    if control.topology_state is None:
+        try:
+            roots.update(get_harness_files_manager().project_roots)
+        except RuntimeError:
+            pass
     if git_common := _linked_git_common(repository):
         roots.add(git_common)
     for entry in env.get("PATH", "").split(os.pathsep):
@@ -341,58 +375,177 @@ def _extract_commands_cached(command: str) -> tuple[str, ...]:
 
     commands: list[str] = []
 
-    def find_commands(node: Node) -> None:
-        if node.type == "command":
-            parts = []
-            for child in node.children:
-                if (
-                    child.type
-                    in {"command_name", "word", "string", "raw_string", "concatenation"}
-                    and child.text is not None
-                ):
-                    parts.append(child.text.decode("utf-8"))
-            # When a command has a heredoc (or other redirect), tree-sitter
-            # wraps it in a redirected_statement and the redirect is a sibling
-            # of the command node, not a child.  Without this check,
-            # `python3 << 'EOF'` is extracted as bare `python3` and
-            # incorrectly blocked by the standalone denylist.
-            if parts and node.parent and node.parent.type == "redirected_statement":
-                parts.append("<redirect>")
-            if parts:
-                commands.append(" ".join(parts))
-
-        for child in node.children:
-            find_commands(child)
+    def find_commands(root: Node) -> None:
+        pending = [root]
+        while pending:
+            node = pending.pop()
+            if node.type == "command":
+                parts = []
+                for child in node.children:
+                    if (
+                        child.type
+                        in {
+                            "command_name",
+                            "variable_assignment",
+                            "ansi_c_string",
+                            "expansion",
+                            "simple_expansion",
+                            "word",
+                            "number",
+                            "string",
+                            "raw_string",
+                            "concatenation",
+                        }
+                        and child.text is not None
+                    ):
+                        parts.append(child.text.decode("utf-8"))
+                if parts and node.parent and node.parent.type == "redirected_statement":
+                    parts.append("<redirect>")
+                if parts:
+                    commands.append(" ".join(parts))
+            pending.extend(reversed(node.children))
 
     find_commands(tree.root_node)
-    return tuple(commands)
+    for body in shell_input_payloads(command):
+        find_commands(parser.parse(body.encode("utf-8")).root_node)
+    return tuple(dict.fromkeys(commands))
 
 
 def _extract_commands(command: str) -> list[str]:
     return list(_extract_commands_cached(command))
 
 
-def _get_shell_executable() -> str | None:
-    if is_windows():
-        return None
-    return os.environ.get("SHELL")
+def _analyze_command_policy(command: str) -> CommandPolicyAnalysis:
+    if denial := command_analysis_preflight_denial(command):
+        return CommandPolicyAnalysis(denial=denial)
+    command_parts = _extract_commands(command)
+    analysis = analyze_command_policy(
+        command, command_parts, extract_commands=_extract_commands
+    )
+    if analysis.denial is not None:
+        return analysis
+    denial = masked_verification_status_reason(
+        command, command_parts, extract_commands=_extract_commands
+    )
+    return CommandPolicyAnalysis(denial=denial, deferral=analysis.deferral)
 
 
-def _get_base_env() -> dict[str, str]:
-    base_env = {**os.environ, "CI": "true", "NONINTERACTIVE": "1", "NO_TTY": "1"}
+_get_shell_executable = get_bash_executable
 
-    if is_windows():
-        base_env["GIT_PAGER"] = "more"
-        base_env["PAGER"] = "more"
-    else:
-        base_env["TERM"] = "dumb"
-        base_env["DEBIAN_FRONTEND"] = "noninteractive"
-        base_env["GIT_PAGER"] = "cat"
-        base_env["PAGER"] = "cat"
-        base_env["LESS"] = "-FX"
-        base_env["LC_ALL"] = "en_US.UTF-8"
 
-    return base_env
+def _runtime_shell_executable() -> str | None:
+    executable = _get_shell_executable()
+    if executable is None and not is_windows():
+        raise ToolError(_BASH_EXECUTABLE_UNAVAILABLE)
+    return executable
+
+
+def _autoapproved_shell_env(ctx: InvokeContext | None) -> dict[str, str]:
+    tmpdir = (
+        str(Path(ctx.scratchpad_dir).resolve())
+        if ctx is not None and ctx.scratchpad_dir is not None
+        else "/tmp"
+    )
+    return get_autoapproved_shell_env(tmpdir=tmpdir)
+
+
+def _automated_authorization_is_current(
+    source: ToolAuthorizationSource,
+    permission: PermissionContext | None,
+    configured: ToolPermission,
+) -> bool:
+    effective = permission.permission if permission is not None else configured
+    if source is ToolAuthorizationSource.POLICY:
+        return effective is ToolPermission.ALWAYS
+    return effective is not ToolPermission.NEVER and not (
+        permission is not None and permission.requires_explicit_user_approval
+    )
+
+
+def _stored_authorization_is_current(
+    ctx: InvokeContext, permission: PermissionContext | None, configured: ToolPermission
+) -> bool:
+    effective = permission.permission if permission is not None else configured
+    if effective is ToolPermission.ALWAYS:
+        return True
+    if (
+        effective is not ToolPermission.ASK
+        or permission is None
+        or permission.requires_explicit_user_approval
+        or not permission.required_permissions
+        or ctx.permission_store is None
+    ):
+        return False
+    return all(
+        ctx.permission_store.covers("bash", required)
+        for required in permission.required_permissions
+    )
+
+
+def _trusted_execution_required(
+    args: BashArgs,
+    ctx: InvokeContext | None,
+    permission: PermissionContext | None,
+    configured: ToolPermission,
+) -> bool:
+    source = ctx.authorization_source if ctx is not None else None
+    if source is not None:
+        current = permission or PermissionContext(permission=configured)
+        if (
+            ctx is None
+            or ctx.authorization_fingerprint is None
+            or ctx.authorization_fingerprint
+            != authorization_context_fingerprint("bash", args, current)
+        ):
+            raise ToolError(
+                "Bash authorization context changed after approval; submit the "
+                "command again so it can be re-evaluated."
+            )
+    if source is ToolAuthorizationSource.BYPASS and (
+        ctx is None
+        or ctx.agent_manager is None
+        or not getattr(ctx.agent_manager.config, "bypass_tool_permissions", False)
+    ):
+        raise ToolError(
+            "Bash auto-approve authority changed before execution; submit the "
+            "command again so it can be re-evaluated."
+        )
+    if source is not None and source in _AUTOMATED_AUTHORIZATION_SOURCES:
+        if not _automated_authorization_is_current(source, permission, configured):
+            raise ToolError(
+                "Bash authorization changed after approval; submit the command "
+                "again so it can be re-evaluated."
+            )
+        return True
+    if source is ToolAuthorizationSource.STORED_USER:
+        if ctx is None or not _stored_authorization_is_current(
+            ctx, permission, configured
+        ):
+            raise ToolError(
+                "Stored Bash authorization no longer covers this command; "
+                "submit it again for approval."
+            )
+        return False
+    effective = permission.permission if permission is not None else configured
+    if source is not None:
+        if effective is ToolPermission.NEVER:
+            raise ToolError(
+                "Bash was disabled after approval; the command was not started."
+            )
+        return False
+    if effective is ToolPermission.NEVER:
+        reason = permission.reason if permission is not None else None
+        raise ToolError(reason or "Bash execution is disabled by configuration.")
+    return effective is ToolPermission.ALWAYS
+
+
+def _hard_guardrail_reason(command_parts: list[str], raw_command: str) -> str | None:
+    if not is_windows() and _get_shell_executable() is None:
+        return _BASH_EXECUTABLE_UNAVAILABLE
+    return hard_control_plane_command_reason(command_parts, raw_command)
+
+
+_get_base_env = get_base_shell_env
 
 
 _READ_ONLY_COMMANDS_WINDOWS = ["dir", "findstr", "more", "type", "ver", "where"]
@@ -444,7 +597,7 @@ def default_read_only_commands() -> list[str]:
 
 
 def _get_default_allowlist() -> list[str]:
-    common = ["cd", "echo", "git diff", "git log", "git status", "tree", "whoami"]
+    common = ["echo", "git log", "tree", "whoami"]
     return common + default_read_only_commands()
 
 
@@ -478,56 +631,7 @@ def _get_default_denylist_standalone() -> list[str]:
         return common + ["bash", "sh", "nohup", "vi", "vim", "emacs", "nano", "su"]
 
 
-_PATH_COMMANDS = {
-    "cat",
-    "cd",
-    "chmod",
-    "chown",
-    "cp",
-    "head",
-    "ls",
-    "mkdir",
-    "mv",
-    "rm",
-    "stat",
-    "tail",
-    "touch",
-    "wc",
-}
-
 _FIND_EXECUTION_PREDICATES = {"-exec", "-execdir", "-ok", "-okdir"}
-
-
-def _collect_outside_dirs(command_parts: list[str]) -> set[str]:
-    dirs: set[str] = set()
-    for part in command_parts:
-        tokens = part.split()
-        command = tokens[0] if tokens else None
-        if not command or command not in _PATH_COMMANDS:
-            continue
-        for token in tokens[1:]:
-            if token.startswith("-"):
-                continue
-            if command == "chmod" and token.startswith("+"):
-                continue
-            if not (
-                token.startswith(os.sep)
-                or token.startswith("~")
-                or token.startswith(".")
-                or os.sep in token
-            ):
-                continue
-            if is_path_within_workdir(token):
-                continue
-            if is_scratchpad_path(token):
-                continue
-            resolved = Path(token).expanduser()
-            if not resolved.is_absolute():
-                resolved = Path.cwd() / resolved
-            resolved = resolved.resolve()
-            parent = str(resolved) if resolved.is_dir() else str(resolved.parent)
-            dirs.add(parent)
-    return dirs
 
 
 def _matches_pattern(command: str, pattern: str) -> bool:
@@ -571,13 +675,6 @@ def _blocking_sleep_reason(command: str) -> str | None:
 # some configs while tree-sitter swallows it, so the validator and the shell
 # disagree on what runs. NUL and the rest have no valid use in a command.
 _FORBIDDEN_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0d\x0e-\x1f\x7f]")
-
-# Shell operators that either tree-sitter drops from its extracted command text
-# (redirections) or that compose commands in ways the allowlist prefix check is
-# not sound for (pipes, lists, substitution). Presence forces ASK even when the
-# leading command word is allowlisted. Longer/compound forms first so the
-# reported operator is the most specific.
-_SIDE_EFFECTING_OPERATORS = (">>", "||", "&&", ">", "|", ";", "$(", "`")
 
 
 def _forbidden_control_char_reason(command: str) -> str | None:
@@ -815,22 +912,11 @@ def _shape_output(
     return _ShapedOutput(stdout, stderr, artifact_path)
 
 
-def _auto_approval_blocker(command: str) -> str | None:
-    for op in _SIDE_EFFECTING_OPERATORS:
-        if op in command:
-            return (
-                f"Command uses shell operator '{op}'. The allowlist inspects "
-                "only the leading command word, so it cannot soundly "
-                "auto-approve composition or redirection."
-            )
-    try:
-        shlex.split(command, posix=True)
-    except ValueError:
-        return (
-            "Command could not be tokenized (unbalanced quotes); the "
-            "validator's view may not match what the shell executes."
-        )
-    return None
+def _command_syntax_denial(command: str) -> PermissionContext | None:
+    reason = _blocking_sleep_reason(command) or _forbidden_control_char_reason(command)
+    if reason is None:
+        return None
+    return PermissionContext(permission=ToolPermission.NEVER, reason=reason)
 
 
 class BashToolConfig(BaseToolConfig):
@@ -945,6 +1031,10 @@ class Bash(
         return "Running command"
 
     @staticmethod
+    def model_approval_deferral_reason(args: BashArgs) -> str | None:
+        return _analyze_command_policy(args.command).deferral
+
+    @staticmethod
     def _has_find_execution_predicate(command: str) -> bool:
         if not _matches_pattern(command, "find"):
             return False
@@ -971,9 +1061,9 @@ class Bash(
         )
 
     def _find_denylist_match(self, command: str) -> str | None:
-        candidates = [command]
-        if (unwrapped := unwrapped_command(command)) and unwrapped != command:
-            candidates.append(unwrapped)
+        candidates = execution_match_candidates(
+            command, extract_commands=_extract_commands
+        )
         return next(
             (
                 pattern
@@ -983,16 +1073,32 @@ class Bash(
             None,
         )
 
-    def _is_standalone_denylisted(self, command: str) -> bool:
-        parts = command.split()
-        if not parts:
-            return False
-        base_command = parts[0]
-        if len(parts) == 1:
-            command_name = os.path.basename(base_command)
-            if command_name in self.config.denylist_standalone:
-                return True
-            if base_command in self.config.denylist_standalone:
+    def _is_standalone_denylisted(self, command: str, raw_command: str) -> bool:
+        pending = [_get_parser().parse(raw_command.encode("utf-8")).root_node]
+        while pending:
+            node = pending.pop()
+            if node.type in {
+                "file_redirect",
+                "heredoc_redirect",
+                "herestring_redirect",
+            }:
+                return False
+            pending.extend(reversed(node.named_children))
+        for candidate in execution_match_candidates(
+            command, extract_commands=_extract_commands
+        ):
+            try:
+                parts = split_bash_tokens(candidate)
+            except ValueError:
+                continue
+            if len(parts) != 1:
+                continue
+            base_command = parts[0]
+            normalized = os.path.basename(base_command)
+            if (
+                normalized in self.config.denylist_standalone
+                or base_command in self.config.denylist_standalone
+            ):
                 return True
         return False
 
@@ -1007,19 +1113,23 @@ class Bash(
         )
 
     def _is_sensitive(self, command: str) -> bool:
-        tokens = command.split()
-        if not tokens:
-            return False
-        return tokens[0] in self.config.sensitive_patterns
+        return any(
+            _matches_pattern(candidate, pattern)
+            for candidate in execution_match_candidates(
+                command, extract_commands=_extract_commands
+            )
+            for pattern in self.config.sensitive_patterns
+        )
 
     def _resolve_guardrail_permission(
-        self, command_parts: list[str], raw_command: str
+        self,
+        command_parts: list[str],
+        raw_command: str,
+        policy_analysis: CommandPolicyAnalysis,
     ) -> PermissionContext | None:
-        if control_plane := hard_control_plane_command_reason(
-            command_parts, raw_command
-        ):
+        if policy_denial := policy_analysis.denial:
             return PermissionContext(
-                permission=ToolPermission.NEVER, reason=control_plane
+                permission=ToolPermission.NEVER, reason=policy_denial
             )
         find_execution_required: list[RequiredPermission] = []
         seen_find_execution: set[str] = set()
@@ -1030,7 +1140,7 @@ class Bash(
                     permission=ToolPermission.NEVER,
                     reason=f"Command denied: '{part}' matches denylist pattern '{matched}'. Do not attempt to run this command.",
                 )
-            if self._is_standalone_denylisted(part):
+            if self._is_standalone_denylisted(part, raw_command):
                 return PermissionContext(
                     permission=ToolPermission.NEVER,
                     reason=f"Command denied: '{part}' is not allowed as a standalone command. Do not attempt to run this command.",
@@ -1107,37 +1217,89 @@ class Bash(
 
         return required
 
-    def resolve_permission(self, args: BashArgs) -> PermissionContext | None:
-        if is_windows():
-            return None
-
-        if blocking_sleep := _blocking_sleep_reason(args.command):
+    def _resolve_permission_from_parts(
+        self,
+        args: BashArgs,
+        command_parts: list[str],
+        policy_analysis: CommandPolicyAnalysis | None,
+    ) -> PermissionContext | None:
+        if hard_denial := _hard_guardrail_reason(command_parts, args.command):
             return PermissionContext(
-                permission=ToolPermission.NEVER, reason=blocking_sleep
+                permission=ToolPermission.NEVER, reason=hard_denial
             )
-
-        if control_char := _forbidden_control_char_reason(args.command):
-            return PermissionContext(
-                permission=ToolPermission.NEVER, reason=control_char
-            )
-
-        command_parts = _extract_commands(args.command)
-        if not command_parts:
-            return None
-
+        if policy_analysis is None:
+            policy_analysis = _analyze_command_policy(args.command)
         guardrail_permission = self._resolve_guardrail_permission(
-            command_parts, args.command
+            command_parts, args.command, policy_analysis
         )
         if (
             guardrail_permission
             and guardrail_permission.permission == ToolPermission.NEVER
         ):
             return guardrail_permission
-        outside_dirs = _collect_outside_dirs(command_parts)
-        blocker = _auto_approval_blocker(args.command)
+        outside_dirs = (
+            set()
+            if is_windows()
+            else _collect_outside_dirs(command_parts, args.command)
+        )
+        forced_permission: PermissionContext | None = None
+        if self.config.permission is ToolPermission.NEVER:
+            forced_permission = PermissionContext(
+                permission=ToolPermission.NEVER,
+                reason="The bash tool is disabled by configuration.",
+            )
+        elif authority_reason := policy_analysis.deferral:
+            required_permissions: list[RequiredPermission] = []
+            if guardrail_permission is not None:
+                required_permissions.extend(
+                    self._build_required_permissions(command_parts, outside_dirs)
+                )
+                required_permissions.extend(guardrail_permission.required_permissions)
+            forced_permission = PermissionContext(
+                permission=ToolPermission.ASK,
+                required_permissions=required_permissions,
+                reason=authority_reason,
+                requires_explicit_user_approval=True,
+            )
+        if forced_permission is not None:
+            return forced_permission
+        if not command_parts:
+            blocker = auto_approval_blocker(args.command)
+            return (
+                PermissionContext(permission=ToolPermission.ASK, reason=blocker)
+                if blocker is not None
+                else None
+            )
+        if is_windows():
+            return None
+        blocker = auto_approval_blocker(args.command)
         return self._resolve_auto_or_ask(
             args.command, command_parts, outside_dirs, blocker, guardrail_permission
         )
+
+    def resolve_permission(self, args: BashArgs) -> PermissionContext | None:
+        if preflight_denial := command_analysis_preflight_denial(args.command):
+            return PermissionContext(
+                permission=ToolPermission.NEVER, reason=preflight_denial
+            )
+        if syntax_denial := _command_syntax_denial(args.command):
+            return syntax_denial
+
+        command_parts = _extract_commands(args.command)
+        return self._resolve_permission_from_parts(args, command_parts, None)
+
+    def _resolve_execution_permission(
+        self,
+        args: BashArgs,
+        command_parts: list[str],
+        policy_analysis: CommandPolicyAnalysis,
+    ) -> PermissionContext | None:
+        resolver = self.resolve_permission
+        if getattr(resolver, "__func__", None) is Bash.resolve_permission:
+            return self._resolve_permission_from_parts(
+                args, command_parts, policy_analysis
+            )
+        return resolver(args)
 
     def _resolve_auto_or_ask(
         self,
@@ -1211,22 +1373,38 @@ class Bash(
         )
 
     def _resolve_sandbox(
-        self, ctx: InvokeContext | None, command: str
+        self,
+        ctx: InvokeContext | None,
+        command: str,
+        *,
+        trusted_system_path_only: bool = False,
     ) -> tuple[list[str] | None, Path | None, dict[str, str], int | None]:
         sb = self.config.sandbox
         iso_root = isolated_worktree_root()
         control = _model_sandbox_control(ctx, iso_root)
         if not sb.enabled and iso_root is None and not control.strict:
-            return None, None, _get_base_env(), None
+            env = (
+                _autoapproved_shell_env(ctx)
+                if trusted_system_path_only
+                else _get_base_env()
+            )
+            return None, None, env, None
         write_roots, env = _sandbox_write_scope(sb, ctx, command, iso_root, control)
+        if trusted_system_path_only:
+            env = _autoapproved_shell_env(ctx)
+            if control.strict:
+                env["VIBE_STRICT_MODEL_CONTROL"] = "1"
 
-        backend = detect_backend(sb.backend)
-        if control.strict and backend not in {"bwrap", "sandbox-exec"}:
+        backend = resolve_backend(sb.backend)
+        strict_backend = (
+            backend.name == "bwrap" and sys.platform.startswith("linux")
+        ) or (backend.name == "sandbox-exec" and sys.platform == "darwin")
+        if control.strict and not strict_backend:
             raise ToolError(
                 "Strict model control requires a filesystem-confining sandbox "
-                "backend (bubblewrap or sandbox-exec); refusing unconfined bash"
+                "backend for this platform; refusing unconfined bash"
             )
-        if backend == "none":
+        if backend.name == "none":
             if sb.require_backend:
                 raise ToolError(
                     "Sandbox required (require_backend=true) but no sandbox "
@@ -1260,8 +1438,12 @@ class Bash(
         )
         argv, _name, profile = build_sandbox_command(spec, backend)
         if argv is None:
+            if control.strict:
+                raise ToolError(
+                    "Strict model control could not construct its sandbox wrapper"
+                )
             return None, None, env, None
-        seccomp_fd = self._maybe_seccomp_fd(sb, backend, argv)
+        seccomp_fd = self._maybe_seccomp_fd(sb, backend.name, argv)
         return argv, profile, env, seccomp_fd
 
     def _maybe_seccomp_fd(
@@ -1296,7 +1478,11 @@ class Bash(
         return fd
 
     async def _run_background(
-        self, args: BashArgs, ctx: InvokeContext | None
+        self,
+        args: BashArgs,
+        ctx: InvokeContext | None,
+        *,
+        trusted_system_path_only: bool = False,
     ) -> AsyncGenerator[ToolStreamEvent | BashResult, None]:
         if ctx is None:
             raise ToolError(
@@ -1316,6 +1502,7 @@ class Bash(
                 "background execution is not available in this context "
                 "(no background registry)"
             )
+        shell_exe = _runtime_shell_executable()
         bg_dir = Path(log_root) / "bg"
         bg_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1328,13 +1515,18 @@ class Bash(
         kwargs: dict[Literal["start_new_session"], bool] = (
             {} if is_windows() else {"start_new_session": True}
         )
-        sandbox_argv, _profile_path, run_env, seccomp_fd = self._resolve_sandbox(
-            ctx, args.command
-        )
-        shell_exe = _get_shell_executable()
+        if trusted_system_path_only:
+            sandbox = self._resolve_sandbox(
+                ctx, args.command, trusted_system_path_only=True
+            )
+        else:
+            sandbox = self._resolve_sandbox(ctx, args.command)
+        sandbox_argv, _profile_path, run_env, seccomp_fd = sandbox
         try:
             if sandbox_argv is not None:
-                argv = [*sandbox_argv, shell_exe or "/bin/sh", "-c", args.command]
+                if shell_exe is None:
+                    raise ToolError(_BASH_EXECUTABLE_UNAVAILABLE)
+                argv = [*sandbox_argv, shell_exe, "-c", args.command]
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
                     stdout=log_handle,
@@ -1396,14 +1588,21 @@ class Bash(
         )
 
     async def _start_foreground(
-        self, command: str, ctx: InvokeContext | None
+        self,
+        command: str,
+        ctx: InvokeContext | None,
+        *,
+        trusted_system_path_only: bool = False,
     ) -> tuple[asyncio.subprocess.Process, Path | None, int | None, bool]:
+        shell_exe = _runtime_shell_executable()
         kwargs: dict[Literal["start_new_session"], bool] = (
             {} if is_windows() else {"start_new_session": True}
         )
-        sandbox_argv, profile_path, run_env, seccomp_fd = self._resolve_sandbox(
-            ctx, command
-        )
+        if trusted_system_path_only:
+            sandbox = self._resolve_sandbox(ctx, command, trusted_system_path_only=True)
+        else:
+            sandbox = self._resolve_sandbox(ctx, command)
+        sandbox_argv, profile_path, run_env, seccomp_fd = sandbox
         if sandbox_argv is None:
             proc = await asyncio.create_subprocess_shell(
                 command,
@@ -1411,12 +1610,14 @@ class Bash(
                 stderr=asyncio.subprocess.PIPE,
                 stdin=asyncio.subprocess.DEVNULL,
                 env=run_env,
-                executable=_get_shell_executable(),
+                executable=shell_exe,
                 **kwargs,
             )
             return proc, profile_path, seccomp_fd, False
 
-        argv = [*sandbox_argv, _get_shell_executable() or "/bin/sh", "-c", command]
+        if shell_exe is None:
+            raise ToolError(_BASH_EXECUTABLE_UNAVAILABLE)
+        argv = [*sandbox_argv, shell_exe, "-c", command]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -1447,7 +1648,7 @@ class Bash(
                     stderr=asyncio.subprocess.PIPE,
                     stdin=asyncio.subprocess.DEVNULL,
                     env=run_env,
-                    executable=_get_shell_executable(),
+                    executable=shell_exe,
                     **kwargs,
                 )
             except BaseException:
@@ -1487,32 +1688,21 @@ class Bash(
     ) -> AsyncGenerator[ToolStreamEvent | BashResult, None]:
         timeout = args.timeout or self.config.default_timeout
         max_bytes = self.config.max_output_bytes
-        verification_roots = verification_protected_roots(
-            ctx.verification_state if ctx is not None else None
+        trusted_system_path_only = await self._validate_execution_authorization(
+            args, ctx, require_local_shell=True
         )
-        if control_plane := hard_control_plane_command_reason(
-            _extract_commands(args.command),
-            args.command,
-            extra_roots=verification_roots,
-        ):
-            raise ToolError(control_plane)
-        if (
-            args.background
-            and _model_sandbox_control(ctx, isolated_worktree_root()).strict
-        ):
-            raise ToolError(
-                "Strict model control does not permit background Bash commands"
-            )
-        await enforce_shared_ask(
-            self.get_name(),
-            args.command,
-            self.resolve_permission(args),
-            self.config.permission,
+        execution_command = (
+            harden_automated_command(args.command)
+            if trusted_system_path_only
+            else args.command
         )
 
         # Returns BEFORE foreground try/finally below — finally never kills backgrounds.
         if args.background:
-            async for item in self._run_background(args, ctx):
+            execution_args = args.model_copy(update={"command": execution_command})
+            async for item in self._run_background(
+                execution_args, ctx, trusted_system_path_only=trusted_system_path_only
+            ):
                 yield item
             return
 
@@ -1526,7 +1716,11 @@ class Bash(
                 profile_path,
                 seccomp_fd,
                 ran_sandboxed,
-            ) = await self._start_foreground(args.command, ctx)
+            ) = await self._start_foreground(
+                execution_command,
+                ctx,
+                trusted_system_path_only=trusted_system_path_only,
+            )
             stdout_bytes, stderr_bytes = await self._collect_foreground(
                 proc, args.command, timeout
             )
@@ -1558,3 +1752,39 @@ class Bash(
                 await kill_async_subprocess(proc)
             _unlink_quietly(profile_path)
             _close_fd_quietly(seccomp_fd)
+
+    async def _validate_execution_authorization(
+        self, args: BashArgs, ctx: InvokeContext | None, *, require_local_shell: bool
+    ) -> bool:
+        verification_roots = verification_protected_roots(
+            ctx.verification_state if ctx is not None else None
+        )
+        if preflight_denial := command_analysis_preflight_denial(args.command):
+            raise ToolError(preflight_denial)
+        if require_local_shell:
+            _runtime_shell_executable()
+        command_parts = _extract_commands(args.command)
+        policy_analysis = _analyze_command_policy(args.command)
+        if policy_denial := policy_analysis.denial:
+            raise ToolError(policy_denial)
+        if control_plane := hard_control_plane_command_reason(
+            command_parts, args.command, extra_roots=verification_roots
+        ):
+            raise ToolError(control_plane)
+        if _model_sandbox_control(ctx, isolated_worktree_root()).strict and (
+            args.background or command_uses_unmanaged_background(args.command)
+        ):
+            raise ToolError(
+                "Strict model control does not permit background Bash commands"
+            )
+        permission = _command_syntax_denial(args.command)
+        if permission is None:
+            permission = self._resolve_execution_permission(
+                args, command_parts, policy_analysis
+            )
+        await enforce_shared_ask(
+            self.get_name(), args.command, permission, self.config.permission
+        )
+        return _trusted_execution_required(
+            args, ctx, permission, self.config.permission
+        )

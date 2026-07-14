@@ -14,7 +14,7 @@ from vibe.core._verification_runner import TrustedCheck
 from vibe.core.tools.sandbox import (
     SandboxSpec,
     build_sandbox_command,
-    detect_backend,
+    resolve_backend,
     scrub_env,
 )
 from vibe.core.utils.io import decode_safe
@@ -96,8 +96,8 @@ def _run_check(check: TrustedCheck, workspace_root: Path) -> TaskCheckEvidence:
     profile: Path | None = None
     try:
         cwd = _check_cwd(workspace_root, check.cwd)
-        backend = detect_backend("auto")
-        if backend not in {"bwrap", "sandbox-exec"}:
+        backend = resolve_backend("auto")
+        if backend.name not in {"bwrap", "sandbox-exec"}:
             raise ValueError("trusted checks require a filesystem-containment sandbox")
         temp_dir = Path(tempfile.mkdtemp(prefix="vibe-task-check-"))
         try:

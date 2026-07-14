@@ -489,6 +489,27 @@ class TestLoadSession:
             )
 
     @pytest.mark.asyncio
+    async def test_load_session_rejects_history_from_another_workspace(
+        self,
+        acp_agent_with_session_config: tuple[VibeAcpAgentLoop, FakeClient],
+        temp_session_dir: Path,
+        create_test_session,
+        tmp_path: Path,
+    ) -> None:
+        acp_agent, _client = acp_agent_with_session_config
+        workspace = tmp_path / "workspace"
+        other = tmp_path / "other"
+        workspace.mkdir()
+        other.mkdir()
+        session_id = "other-workspace-123"
+        create_test_session(temp_session_dir, session_id, str(other))
+
+        with pytest.raises(RequestError):
+            await acp_agent.load_session(
+                cwd=str(workspace), mcp_servers=[], session_id=session_id
+            )
+
+    @pytest.mark.asyncio
     async def test_load_session_replays_full_conversation(
         self,
         acp_agent_with_session_config: tuple[VibeAcpAgentLoop, FakeClient],

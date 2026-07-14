@@ -12,7 +12,7 @@ available. The sandbox is one layer in the tool authorization path:
 
 A later layer cannot reverse an earlier denial. In particular, auto-approve
 does not bypass a `NEVER` permission, protected host state, the managed tool
-catalog, or a configured safety-judge deferral.
+catalog, a configured safety-judge deferral, or a Bash explicit-user gate.
 
 This document covers model-invoked Bash and the separate trusted-check runner.
 The [harness integrity contract](harness-integrity.md) defines the full managed
@@ -24,7 +24,7 @@ maintenance boundary.
 |---|---|---|---|---|
 | Ordinary session, sandbox enabled | Best available backend; may fall back | Current workspace, session scratchpad, configured `write_dirs`, permission-derived outside directories, and a private Vibe tool cache | Controlled by `allow_network` only on a capable backend | Scrubbed by default; host Git, SSH, and GitHub variables are retained for the user's session |
 | Ordinary session, sandbox disabled | None | Host process permissions | Host process access | Existing unsandboxed shell environment |
-| Auto-approve | Bubblewrap on Linux or Seatbelt on macOS; otherwise fail closed | Current workspace, session scratchpad, and configured `write_dirs` | Disabled | Strict scrubbed environment and disposable caches; ordinary Git commit compatibility is retained |
+| Auto-approve | Bubblewrap on Linux or Seatbelt on macOS; otherwise fail closed | Current workspace, session scratchpad, and configured `write_dirs` | Disabled | Strict scrubbed environment and disposable caches; an interactive root user may explicitly approve Git commits |
 | Isolated or task-contracted writer | Bubblewrap or Seatbelt; otherwise fail closed | Assigned isolated root and scratchpad | Disabled | Strict scrubbed environment and disposable caches; Git administration is read-only and host delivery creates the commit |
 | Topology-bound model Bash | Bubblewrap or Seatbelt; otherwise fail closed | Session scratchpad only | Disabled | Strict scrubbed environment and disposable caches; candidate, control, evidence, Git administration, logs, and receipts are read-only |
 | Receipt-authorizing trusted check | Linux Bubblewrap only; every other platform/backend fails | A new per-check run directory only | Disabled | Direct `argv` against an exact-HEAD Git-exported snapshot with no Git metadata, private copy of a pinned native executable, host environment attestation, scrubbed offline environment, disposable home and caches |
@@ -36,11 +36,44 @@ maintenance session. A topology-bound worker changes candidate files through
 no writable candidate bind in that mode. A topology-bound verification root has
 neither file-writing tool.
 
+Authorization origin controls the child environment independently of runtime
+mode. Policy-, Safety-Judge-, and bypass-authorized core Bash calls use a trusted
+system `PATH` and minimal noninteractive environment without ambient
+credentials, loader settings, Python paths, or configured passthrough. Human and
+stored-human approvals use the configured compatibility environment, scrubbed by
+default and retaining the remaining host environment only when
+`sandbox.scrub_env = false`.
+Minimal environment selection alone does not make a non-strict call require a
+sandbox; the strict modes in the table do.
+
+ACP preserves this boundary in two paths. Automated policy, Safety-Judge, and
+bypass calls use core-managed Bash. Human and stored-human approvals are
+revalidated immediately before launch and then use the editor client's terminal
+at the process-bound workspace. One ACP process accepts multiple sessions only
+for the same canonical cwd and exact additional-directory request; a different
+workspace is rejected before process cwd or harness roots change. Full
+concurrent multi-workspace ACP requires separate server processes.
+
 ## Backends and fallback behavior
 
 `backend = "auto"` selects Bubblewrap (`bwrap`) on Linux when usable, then the
 Linux `unshare` fallback, or Seatbelt (`sandbox-exec`) on macOS. Unsupported
 platforms resolve to no backend.
+
+Backend binaries and the Bubblewrap probe helper are resolved from the sanitized
+system path and cached as absolute paths. The builder receives that resolved
+identity and emits it directly, so ambient or project `PATH` changes cannot swap
+the wrapper between capability detection and launch.
+
+On Linux, automated execution also requires a root-owned regular executable with
+no set-ID or group/world-write bits and no write access for the current non-root
+user. Both its lexical and resolved path must have root-controlled ancestry that
+is non-group/world-writable and non-writable by that user. Project, user,
+symlink-ambiguous, or otherwise unprovable executable graphs require explicit
+user approval. Automated Git inspection is limited to exact standalone `git
+log`, `show`, `blame`, and `grep` forms, which are rewritten with fixed config and
+renderer-disabling flags. Worktree `diff`/`status` and unhardenable Git forms need
+explicit user approval.
 
 - Bubblewrap mounts the host filesystem read-only, adds only the selected write
   roots, creates a fresh `/tmp`, and can create a network namespace. Its seccomp
@@ -61,9 +94,10 @@ platforms resolve to no backend.
 
 Bubblewrap `extra_args` is retained for narrow namespace/runtime compatibility;
 it is not a path grant or filesystem-policy extension. Vibe rejects mount,
-overlay, tmpfs, device, proc, chdir, argument-file, and command-terminator flags
-before constructing the wrapper. Host policy mounts are appended after accepted
-arguments. Do not use `extra_args` to add read or write access.
+overlay, tmpfs, device, proc, chdir, environment, argv, argument-file, and
+command-terminator flags before constructing the wrapper. Host policy mounts are
+appended after accepted arguments. The weaker `unshare` backend rejects all
+`extra_args`. Do not use `extra_args` to alter the command graph or add access.
 
 ## Configuration
 
@@ -97,6 +131,12 @@ are manual isolated checks and are not part of the parallel test suite.
 `env_passthrough` should contain variable names, never values. It applies to the
 ordinary scrubbed environment. Strict modes do not pass configured environment
 exceptions through to model processes.
+
+Startup and injection variables such as `BASH_ENV`, exported Bash functions,
+`LD_PRELOAD`, `LD_AUDIT`, and `DYLD_INSERT_LIBRARIES` are always stripped.
+Automated calls inherit no ambient loader configuration. The default human
+compatibility scrub also removes loader variables; they survive only when
+`sandbox.scrub_env = false`.
 
 ## Protected state
 

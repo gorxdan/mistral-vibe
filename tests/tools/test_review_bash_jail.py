@@ -25,16 +25,26 @@ def _permission(cmd: str) -> ToolPermission | None:
     return ctx.permission if ctx is not None else None
 
 
-# Read-only inspection + tests auto-run (ALWAYS) → capable headless.
+# Read-only inspection can run headlessly.
 @pytest.mark.parametrize(
     "cmd",
     [
-        "git diff",
-        "git diff --stat HEAD~1",
         "git log --oneline -20",
         "git show abc123",
         "git blame vibe/core/agent_loop.py",
-        "git status",
+        "git grep authorization_fingerprint",
+        "cat README.md",
+        "ls -la",
+        "grep -r TODO vibe/",
+    ],
+)
+def test_inspection_auto_runs(cmd: str) -> None:
+    assert _permission(cmd) == ToolPermission.ALWAYS, cmd
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
         "pytest tests/",
         "python -m pytest -q",
         "ruff check --no-fix .",
@@ -44,13 +54,23 @@ def _permission(cmd: str) -> ToolPermission | None:
         "ruff format --check .",
         "uv run ruff format --diff .",
         "uv run pyright",
-        "cat README.md",
-        "ls -la",
-        "grep -r TODO vibe/",
     ],
 )
-def test_inspection_and_tests_auto_run(cmd: str) -> None:
-    assert _permission(cmd) == ToolPermission.ALWAYS, cmd
+def test_tests_and_builds_require_explicit_authority(cmd: str) -> None:
+    permission = _review_bash().resolve_permission(BashArgs(command=cmd))
+
+    assert permission is not None
+    assert permission.permission is ToolPermission.ASK, cmd
+    assert permission.requires_explicit_user_approval is True
+
+
+@pytest.mark.parametrize("cmd", ["git diff", "git status", "git rev-parse HEAD"])
+def test_unhardened_git_inspection_requires_explicit_authority(cmd: str) -> None:
+    permission = _review_bash().resolve_permission(BashArgs(command=cmd))
+
+    assert permission is not None
+    assert permission.permission is ToolPermission.ASK
+    assert permission.requires_explicit_user_approval is True
 
 
 # Mutating / network / install / privilege commands are HARD-denied (NEVER).
@@ -151,7 +171,7 @@ def test_all_four_review_agents_carry_the_policy() -> None:
             .get("bash", {})
         )
         assert "git commit" in bash_cfg.get("denylist", [])
-        assert "git diff" in bash_cfg.get("allowlist", [])
+        assert "git log" in bash_cfg.get("allowlist", [])
 
 
 def test_policy_lands_in_the_effective_config_end_to_end() -> None:
@@ -167,7 +187,7 @@ def test_policy_lands_in_the_effective_config_end_to_end() -> None:
     bash_cfg = ToolManager(lambda: reviewer_cfg).get_tool_config("bash")
 
     assert "git commit" in bash_cfg.denylist  # type: ignore[attr-defined]
-    assert "git diff" in bash_cfg.allowlist  # type: ignore[attr-defined]
+    assert "git log" in bash_cfg.allowlist  # type: ignore[attr-defined]
     assert bash_cfg.permission == ToolPermission.ASK  # not clobbered
 
     # And the merged config actually denies a mutation through the real tool.

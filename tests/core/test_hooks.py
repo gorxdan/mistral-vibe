@@ -443,6 +443,7 @@ class TestHookExecutor:
         assert "oops" in result.stdout
 
     @pytest.mark.asyncio
+    @pytest.mark.process_e2e
     async def test_timeout(self, sample_invocation: PostAgentTurnInvocation) -> None:
         hook = _make_hook(command="sleep 60", timeout=0.5)
         result = await HookExecutor().run(hook, sample_invocation)
@@ -450,6 +451,7 @@ class TestHookExecutor:
         assert result.exit_code is None
 
     @pytest.mark.asyncio
+    @pytest.mark.process_e2e
     async def test_timeout_after_stdio_closed(
         self, sample_invocation: PostAgentTurnInvocation
     ) -> None:
@@ -631,6 +633,7 @@ class TestPostAgentTurnHook:
         assert warnings[0].content == "only-stdout"
 
     @pytest.mark.asyncio
+    @pytest.mark.process_e2e
     async def test_timeout_emits_warning(self, ctx: HookSessionContext) -> None:
         handler = HooksManager([_make_hook(command="sleep 60", timeout=0.5)])
         events = [ev async for ev in _run(handler, HookType.POST_AGENT_TURN, ctx)]
@@ -829,6 +832,7 @@ class TestBeforeToolHook:
         assert [e.hook_name for e in starts] == ["guard"]
 
     @pytest.mark.asyncio
+    @pytest.mark.process_e2e
     async def test_strict_timeout_denies(self, ctx: HookSessionContext) -> None:
         handler = HooksManager([
             _make_tool_hook(
@@ -1105,6 +1109,7 @@ class TestAfterToolHook:
         assert [e.hook_name for e in starts] == ["guard"]
 
     @pytest.mark.asyncio
+    @pytest.mark.process_e2e
     async def test_strict_timeout_empties_text(self, ctx: HookSessionContext) -> None:
         handler = HooksManager([
             _make_tool_hook(

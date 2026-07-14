@@ -7,16 +7,19 @@ import pytest
 
 from vibe.core.agent_loop_orchestration import is_observational_shell_command
 from vibe.core.orchestration import (
+    LaneOwner,
     OrchestrationCapabilities,
     OrchestrationController,
     OrchestrationDecision,
     OrchestrationLane,
     OrchestrationRoute,
     OrchestrationState,
+    StrategyEvidenceGap,
     StrategyReason,
     WorkRisk,
 )
 from vibe.core.tasking import TaskOutcomeStatus
+from vibe.core.workflows.models import WorkflowLaneAttestation, WorkflowLaneExpectation
 
 
 def _capabilities(
@@ -46,15 +49,99 @@ def _decision(
     lanes: list[OrchestrationLane] | None = None,
     reason: StrategyReason = StrategyReason.INDEPENDENT_LANES,
     risk: WorkRisk = WorkRisk.MEDIUM,
+    objective: str = "Adaptive turn strategy",
     expected_paths: list[str] | None = None,
+    evidence_gap: StrategyEvidenceGap | None = None,
 ) -> OrchestrationDecision:
     return OrchestrationDecision(
         route=route,
+        objective=objective,
         reason=reason,
         risk=risk,
         lanes=lanes or [],
         expected_paths=expected_paths or [],
+        evidence_gap=evidence_gap,
     )
+
+
+def _workflow_attestation(
+    expected: tuple[WorkflowLaneExpectation, ...],
+) -> WorkflowLaneAttestation:
+    labels = tuple(lane.label for lane in expected)
+    return WorkflowLaneAttestation(
+        expected=expected,
+        attempted_labels=labels,
+        started_labels=labels,
+        successful_labels=labels,
+    )
+
+
+def _bind_workflow(
+    controller: OrchestrationController, args: dict[str, str], *, call_id: str
+) -> WorkflowLaneAttestation:
+    assert (
+        controller.before_tool(
+            "launch_workflow", args, read_only=False, call_id=call_id
+        )
+        is None
+    )
+    expected = controller.workflow_lane_expectations(call_id, args["script"])
+    assert expected is not None
+    return _workflow_attestation(expected)
+
+
+def _controller_with_failed_task_lanes(
+    decision: OrchestrationDecision,
+) -> OrchestrationController:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate two independent areas.",
+        capabilities=_capabilities(),
+    )
+    assert controller.declare(decision).accepted is True
+    for lane in decision.lanes:
+        args = {"agent": lane.profile, "task": f"[lane:{lane.id}] {lane.objective}"}
+        assert controller.before_tool("task", args, read_only=False) is None
+        controller.record_tool_result("task", args, "failure")
+    assert controller.state is OrchestrationState.RECOVERY
+    return controller
+
+
+def _controller_with_failed_dependent_lane() -> tuple[
+    OrchestrationController, OrchestrationDecision
+]:
+    decision = _decision(
+        OrchestrationRoute.TASK,
+        lanes=[
+            OrchestrationLane(
+                id="lane-1", objective="Inspect the parser", profile="explore"
+            ),
+            OrchestrationLane(
+                id="lane-2",
+                objective="Inspect the serializer",
+                profile="reviewer",
+                dependencies=["lane-1"],
+            ),
+        ],
+        objective="Find the serialization regression",
+        expected_paths=["src/core.py"],
+    )
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate the dependent parser and serializer lanes.",
+        capabilities=_capabilities(),
+    )
+    assert controller.declare(decision).accepted is True
+    first = {"agent": "explore", "task": "[lane:lane-1] Inspect the parser"}
+    assert controller.before_tool("task", first, read_only=False) is None
+    controller.record_tool_result("task", first, "success", {"completed": True})
+    second = {"agent": "reviewer", "task": "[lane:lane-2] Inspect the serializer"}
+    assert controller.before_tool("task", second, read_only=False) is None
+    controller.record_tool_result("task", second, "failure")
+    assert controller.state is OrchestrationState.RECOVERY
+    return controller, decision
 
 
 def test_localized_change_can_stay_direct_without_strategy() -> None:
@@ -80,6 +167,21 @@ def test_localized_change_can_stay_direct_without_strategy() -> None:
 
     assert controller.completion_nudge() is None
     assert controller.summary.direct_mutations == 1
+
+
+def test_high_risk_prompt_cannot_claim_implicit_direct() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Apply this security-critical fix in src/core.py",
+        capabilities=_capabilities(),
+    )
+
+    denial = controller.before_tool("edit", {"path": "src/core.py"}, read_only=False)
+
+    assert denial is not None
+    assert "work_strategy" in denial
+    assert controller.state is OrchestrationState.ROUTE_REQUIRED
 
 
 def test_inferred_direct_route_is_bound_to_the_user_named_path() -> None:
@@ -122,6 +224,192 @@ def test_direct_strategy_cannot_spoof_a_constraint(reason: StrategyReason) -> No
     assert controller.state is OrchestrationState.ROUTE_REQUIRED
 
 
+def test_high_risk_direct_rejection_cannot_be_bypassed_by_risk_downgrade() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Perform the full multi-system acceptance audit and fixes.",
+        capabilities=_capabilities(),
+    )
+    high = _decision(
+        OrchestrationRoute.DIRECT,
+        reason=StrategyReason.SEQUENTIALLY_COUPLED,
+        risk=WorkRisk.HIGH,
+        expected_paths=["src/core.py", "src/game.py"],
+    )
+
+    assert controller.declare(high).accepted is False
+
+    downgraded = high.model_copy(update={"risk": WorkRisk.MEDIUM})
+    receipt = controller.declare(downgraded)
+
+    assert receipt.accepted is False
+    assert "risk" in receipt.message.lower()
+
+
+def test_host_inferred_high_risk_rejects_initial_medium_direct_strategy() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Perform this high-risk multi-system acceptance audit and fixes.",
+        capabilities=_capabilities(),
+    )
+
+    receipt = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.SEQUENTIALLY_COUPLED,
+            risk=WorkRisk.MEDIUM,
+            expected_paths=["src/core.py"],
+        )
+    )
+
+    assert receipt.accepted is False
+    assert "risk" in receipt.message.lower()
+
+
+def test_invalid_high_risk_path_still_latches_risk_floor() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Apply the requested update.",
+        capabilities=_capabilities(),
+    )
+
+    malformed = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.SEQUENTIALLY_COUPLED,
+            risk=WorkRisk.HIGH,
+            expected_paths=["../outside.py"],
+        )
+    )
+    corrected = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.SEQUENTIALLY_COUPLED,
+            risk=WorkRisk.MEDIUM,
+            expected_paths=["src/core.py"],
+        )
+    )
+
+    assert malformed.accepted is False
+    assert "escapes the workspace" in malformed.message
+    assert corrected.accepted is False
+    assert "risk" in corrected.message.lower()
+
+
+def test_high_risk_delegation_latches_risk_for_later_direct_strategy() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Perform the full multi-system acceptance audit and fixes.",
+        capabilities=_capabilities(),
+    )
+    delegated = controller.declare(
+        _decision(OrchestrationRoute.TASK, lanes=[_lane(1)], risk=WorkRisk.HIGH)
+    )
+    assert delegated.accepted is True
+
+    direct = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.SEQUENTIALLY_COUPLED,
+            risk=WorkRisk.MEDIUM,
+            expected_paths=["src/core.py", "src/game.py"],
+        )
+    )
+
+    assert direct.accepted is False
+    assert "risk" in direct.message.lower()
+
+
+def test_invalid_redeclaration_preserves_launched_task_strategy() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Perform the high-risk audit with an independent task lane.",
+        capabilities=_capabilities(background_delivery=True),
+    )
+    accepted = controller.declare(
+        _decision(OrchestrationRoute.TASK, lanes=[_lane(1)], risk=WorkRisk.HIGH)
+    )
+    args = {
+        "agent": "explore",
+        "task": "[lane:lane-1] Inspect the independent area",
+        "async_run": True,
+    }
+    assert accepted.accepted is True
+    assert (
+        controller.before_tool("task", args, read_only=False, call_id="task-call")
+        is None
+    )
+    controller.record_tool_result(
+        "task",
+        args,
+        "success",
+        {"task_id": "asub-1", "completed": False},
+        call_id="task-call",
+    )
+    assert controller.state is OrchestrationState.DISTRIBUTED
+
+    rejected = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.SEQUENTIALLY_COUPLED,
+            risk=WorkRisk.MEDIUM,
+            expected_paths=["src/core.py"],
+        )
+    )
+
+    assert rejected.accepted is False
+    assert rejected.route is OrchestrationRoute.TASK
+    assert controller.state is OrchestrationState.DISTRIBUTED
+    assert controller.decision is not None
+    assert controller.decision.route is OrchestrationRoute.TASK
+    assert controller.summary.productive_delegations == 1
+    assert controller.summary.pending_delegations == 1
+    assert "remains active" in rejected.message
+    assert (
+        controller.before_tool(
+            "edit", {"path": "src/core.py"}, read_only=False, call_id="edit-call"
+        )
+        is None
+    )
+
+
+def test_invalid_high_risk_redeclaration_invalidates_stale_direct_route() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Apply the requested update.",
+        capabilities=_capabilities(),
+    )
+    accepted = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.SEQUENTIALLY_COUPLED,
+            expected_paths=["src/core.py"],
+        )
+    )
+    assert accepted.accepted is True
+
+    rejected = controller.declare(
+        _decision(
+            OrchestrationRoute.DIRECT,
+            reason=StrategyReason.SEQUENTIALLY_COUPLED,
+            risk=WorkRisk.HIGH,
+            expected_paths=["../outside.py"],
+        )
+    )
+
+    assert rejected.accepted is False
+    assert rejected.route is OrchestrationRoute.DIRECT
+    assert controller.state is OrchestrationState.ROUTE_REQUIRED
+    denial = controller.before_tool("edit", {"path": "src/core.py"}, read_only=False)
+    assert "no longer satisfies" in (denial or "")
+
+
 def test_unscoped_effectful_tool_cannot_claim_implicit_direct() -> None:
     controller = OrchestrationController()
     controller.begin_turn(
@@ -137,6 +425,69 @@ def test_unscoped_effectful_tool_cannot_claim_implicit_direct() -> None:
     assert nudge is not None
     assert "work_strategy" in nudge
     assert controller.state is OrchestrationState.ROUTE_REQUIRED
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "args"),
+    [
+        ("task", {"agent": "explore", "task": "Inspect it"}),
+        ("launch_workflow", {"script": "async def main():\n    return None\n"}),
+        ("team_spawn", {"name": "reader", "prompt": "Inspect it"}),
+    ],
+)
+def test_productive_delegation_requires_recorded_strategy(
+    tool_name: str, args: dict[str, str]
+) -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True, user_prompt="Take a look.", capabilities=_capabilities()
+    )
+
+    denial = controller.before_tool(tool_name, args, read_only=False)
+
+    assert denial is not None
+    assert "work_strategy" in denial
+    assert controller.state is OrchestrationState.ROUTE_REQUIRED
+
+
+def test_unbound_verifier_remains_a_completion_check() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Check the finished change.",
+        capabilities=_capabilities(),
+    )
+    args = {"agent": "verifier", "task": "Verify the frozen candidate"}
+
+    denial = controller.before_tool("task", args, read_only=False)
+    controller.record_tool_result("task", args, "success", {"completed": True})
+
+    assert denial is None
+    assert controller.summary.verifier_delegations == 1
+    assert controller.summary.productive_delegations == 0
+
+
+def test_unbound_delegation_result_cannot_open_mutation_or_more_lanes() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True, user_prompt="Take a look.", capabilities=_capabilities()
+    )
+    args = {"agent": "explore", "task": "Inspect it"}
+
+    controller.record_tool_result(
+        "task", args, "success", {"task_id": "unbound-task", "completed": False}
+    )
+    mutation_denial = controller.before_tool(
+        "edit", {"file_path": "target.py"}, read_only=False
+    )
+    second_denial = controller.before_tool(
+        "task", args, read_only=False, call_id="second-unbound"
+    )
+
+    assert controller.state is OrchestrationState.ROUTE_REQUIRED
+    assert "work_strategy" in (second_denial or "")
+    assert "failed" in (mutation_denial or "").lower()
+    assert controller.summary.productive_delegations == 0
 
 
 def test_substantive_scope_requires_strategy_before_mutation() -> None:
@@ -169,16 +520,16 @@ def test_substantive_scope_requires_strategy_before_mutation() -> None:
 @pytest.mark.parametrize(
     "route", [OrchestrationRoute.TASK, OrchestrationRoute.WORKFLOW]
 )
-def test_three_independent_lanes_reject_direct_and_accept_delegation(
+def test_two_independent_lanes_reject_direct_and_accept_delegation(
     route: OrchestrationRoute,
 ) -> None:
     controller = OrchestrationController()
     controller.begin_turn(
         enabled=True,
-        user_prompt="Investigate three independent subsystems and synthesize them.",
+        user_prompt="Investigate two independent subsystems and synthesize them.",
         capabilities=_capabilities(),
     )
-    lanes = [_lane(1), _lane(2), _lane(3)]
+    lanes = [_lane(1), _lane(2)]
 
     rejected = controller.declare(_decision(OrchestrationRoute.DIRECT, lanes=lanes))
 
@@ -190,6 +541,47 @@ def test_three_independent_lanes_reject_direct_and_accept_delegation(
     assert accepted.accepted is True
     assert accepted.route is route
     assert controller.state is OrchestrationState.DELEGATION_PENDING
+
+
+@pytest.mark.parametrize(
+    "route",
+    [OrchestrationRoute.TASK, OrchestrationRoute.WORKFLOW, OrchestrationRoute.TEAM],
+)
+def test_strategy_rejects_more_than_two_agent_lanes(route: OrchestrationRoute) -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Audit the system with independent evidence lanes.",
+        capabilities=_capabilities(),
+    )
+
+    receipt = controller.declare(_decision(route, lanes=[_lane(1), _lane(2), _lane(3)]))
+
+    assert receipt.accepted is False
+    assert receipt.state is OrchestrationState.ROUTE_REQUIRED
+    assert "at most two" in receipt.message
+    assert controller.decision is None
+
+
+def test_agent_lane_limit_does_not_count_host_owned_lanes() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Audit two independent areas and synthesize locally.",
+        capabilities=_capabilities(),
+    )
+    host_lane = OrchestrationLane(
+        id="host-synthesis",
+        objective="Synthesize returned evidence",
+        owner=LaneOwner.HOST,
+    )
+
+    receipt = controller.declare(
+        _decision(OrchestrationRoute.TASK, lanes=[_lane(1), _lane(2), host_lane])
+    )
+
+    assert receipt.accepted is True
+    assert receipt.required_delegations == 2
 
 
 def test_explicit_user_prohibition_rejects_agents_and_allows_direct() -> None:
@@ -271,6 +663,496 @@ def test_task_debt_counts_distinct_bound_lanes() -> None:
     assert controller.summary.productive_delegations == 2
 
 
+def test_redeclaration_cannot_discard_unfinished_synchronous_lane_debt() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate two independent areas.",
+        capabilities=_capabilities(),
+    )
+    controller.declare(_decision(OrchestrationRoute.TASK, lanes=[_lane(1), _lane(2)]))
+    first = {"agent": "explore", "task": "[lane:lane-1] Inspect area one"}
+    assert controller.before_tool("task", first, read_only=False) is None
+    controller.record_tool_result("task", first, "success", {"completed": True})
+
+    replacement = controller.declare(
+        _decision(OrchestrationRoute.TASK, lanes=[_lane(3)])
+    )
+
+    assert replacement.accepted is False
+    assert replacement.route is OrchestrationRoute.TASK
+    assert "lane-2" in replacement.message
+    assert "terminal evidence" in replacement.message
+    assert controller.state is OrchestrationState.DELEGATION_PENDING
+
+
+def test_delegated_expansion_requires_bound_terminal_evidence_gap() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate independent areas and follow returned evidence.",
+        capabilities=_capabilities(),
+    )
+    first_receipt = controller.declare(
+        _decision(OrchestrationRoute.TASK, lanes=[_lane(1)])
+    )
+    assert first_receipt.accepted is True
+    assert first_receipt.strategy_id is not None
+    first = {"agent": "explore", "task": "[lane:lane-1] Inspect area one"}
+    assert controller.before_tool("task", first, read_only=False) is None
+    controller.record_tool_result("task", first, "success", {"completed": True})
+
+    missing = controller.declare(_decision(OrchestrationRoute.TASK, lanes=[_lane(2)]))
+    unknown_strategy = controller.declare(
+        _decision(
+            OrchestrationRoute.TASK,
+            lanes=[_lane(2)],
+            evidence_gap=StrategyEvidenceGap(
+                strategy_id="strategy-missing",
+                lane_ids=["lane-1"],
+                description="The first result identified another subsystem.",
+            ),
+        )
+    )
+    wrong_lane = controller.declare(
+        _decision(
+            OrchestrationRoute.TASK,
+            lanes=[_lane(2)],
+            evidence_gap=StrategyEvidenceGap(
+                strategy_id=first_receipt.strategy_id,
+                lane_ids=["lane-missing"],
+                description="The first result identified another subsystem.",
+            ),
+        )
+    )
+    second_receipt = controller.declare(
+        _decision(
+            OrchestrationRoute.TASK,
+            lanes=[_lane(2)],
+            evidence_gap=StrategyEvidenceGap(
+                strategy_id=first_receipt.strategy_id,
+                lane_ids=["lane-1"],
+                description="The first result identified another subsystem.",
+            ),
+        )
+    )
+
+    assert missing.accepted is False
+    assert "requires evidence_gap" in missing.message
+    assert unknown_strategy.accepted is False
+    assert "not terminal and successful" in unknown_strategy.message
+    assert wrong_lane.accepted is False
+    assert "without successful terminal evidence" in wrong_lane.message
+    assert second_receipt.accepted is True
+    assert second_receipt.strategy_id is not None
+
+    second = {"agent": "explore", "task": "[lane:lane-2] Inspect area two"}
+    assert controller.before_tool("task", second, read_only=False) is None
+    controller.record_tool_result("task", second, "success", {"completed": True})
+    reused = controller.declare(
+        _decision(
+            OrchestrationRoute.TASK,
+            lanes=[_lane(3)],
+            evidence_gap=StrategyEvidenceGap(
+                strategy_id=first_receipt.strategy_id,
+                lane_ids=["lane-1"],
+                description="Reuse old evidence for another fan-out.",
+            ),
+        )
+    )
+    next_expansion = controller.declare(
+        _decision(
+            OrchestrationRoute.TASK,
+            lanes=[_lane(3)],
+            evidence_gap=StrategyEvidenceGap(
+                strategy_id=second_receipt.strategy_id,
+                lane_ids=["lane-2"],
+                description="The second result exposed a concrete remaining gap.",
+            ),
+        )
+    )
+
+    assert reused.accepted is False
+    assert "already authorized" in reused.message
+    assert next_expansion.accepted is True
+
+
+def test_evidence_gap_description_is_trimmed_and_cannot_be_blank() -> None:
+    gap = StrategyEvidenceGap(
+        strategy_id="strategy-1",
+        lane_ids=["lane-1"],
+        description="  Missing serializer evidence.  ",
+    )
+
+    assert gap.description == "Missing serializer evidence."
+    with pytest.raises(ValidationError, match="cannot be blank"):
+        StrategyEvidenceGap(
+            strategy_id="strategy-1", lane_ids=["lane-1"], description="   "
+        )
+
+
+def test_delegated_expansion_cannot_reuse_a_successful_lane_identity() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate an area and follow returned evidence.",
+        capabilities=_capabilities(),
+    )
+    first_receipt = controller.declare(
+        _decision(OrchestrationRoute.TASK, lanes=[_lane(1)])
+    )
+    assert first_receipt.strategy_id is not None
+    args = {"agent": "explore", "task": "[lane:lane-1] Inspect area one"}
+    controller.record_tool_result("task", args, "success", {"completed": True})
+
+    receipt = controller.declare(
+        _decision(
+            OrchestrationRoute.TASK,
+            lanes=[
+                OrchestrationLane(
+                    id="lane-1",
+                    objective="Inspect a different area",
+                    profile="reviewer",
+                )
+            ],
+            evidence_gap=StrategyEvidenceGap(
+                strategy_id=first_receipt.strategy_id,
+                lane_ids=["lane-1"],
+                description="The result exposed a new gap.",
+            ),
+        )
+    )
+
+    assert receipt.accepted is False
+    assert "cannot reuse successful lane identities" in receipt.message
+
+
+def test_gap_free_recovery_accepts_only_the_exact_failed_decision() -> None:
+    lanes = [
+        OrchestrationLane(
+            id="lane-1",
+            objective="Inspect the parser",
+            profile="reviewer",
+            acceptance=["Parser finding is reproducible", "Paths are identified"],
+            expected_paths=["./src/parser.py"],
+        ),
+        OrchestrationLane(
+            id="lane-2",
+            objective="Inspect the serializer",
+            profile="explore",
+            acceptance=["Serializer finding is reproducible"],
+            expected_paths=["src/serializer.py"],
+        ),
+    ]
+    failed = _decision(
+        OrchestrationRoute.TASK,
+        lanes=lanes,
+        objective="Find the serialization regression",
+        expected_paths=["./src/core.py"],
+    )
+    controller = _controller_with_failed_task_lanes(failed)
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Retry the failed evidence lanes.",
+        capabilities=_capabilities(),
+    )
+
+    retry = failed.model_copy(deep=True)
+    retry.expected_paths = ["src/core.py"]
+    retry.lanes[0].expected_paths = ["src/parser.py"]
+    retry.lanes[0].acceptance.reverse()
+    retry.lanes.reverse()
+    receipt = controller.declare(retry)
+
+    assert receipt.accepted is True
+    assert receipt.state is OrchestrationState.DELEGATION_PENDING
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "route",
+        "subset",
+        "lane_id",
+        "decision_objective",
+        "decision_risk_high",
+        "decision_risk_low",
+        "decision_path",
+        "profile",
+        "lane_objective",
+        "dependencies",
+        "acceptance",
+        "lane_path",
+    ],
+)
+def test_gap_free_recovery_rejects_changed_failed_identity(change: str) -> None:
+    lanes = [
+        OrchestrationLane(
+            id="lane-1",
+            objective="Inspect the parser",
+            profile="reviewer",
+            acceptance=["Parser finding is reproducible"],
+            expected_paths=["src/parser.py"],
+        ),
+        OrchestrationLane(
+            id="lane-2",
+            objective="Inspect the serializer",
+            profile="explore",
+            acceptance=["Serializer finding is reproducible"],
+            expected_paths=["src/serializer.py"],
+        ),
+    ]
+    failed = _decision(
+        OrchestrationRoute.TASK,
+        lanes=lanes,
+        objective="Find the serialization regression",
+        expected_paths=["src/core.py"],
+    )
+    controller = _controller_with_failed_task_lanes(failed)
+    retry = failed.model_copy(deep=True)
+
+    if change == "route":
+        retry = retry.model_copy(update={"route": OrchestrationRoute.TEAM})
+    elif change == "subset":
+        retry = retry.model_copy(update={"lanes": [retry.lanes[0]]})
+    elif change == "lane_id":
+        retry.lanes[0] = retry.lanes[0].model_copy(update={"id": "lane-3"})
+    elif change == "decision_objective":
+        retry = retry.model_copy(update={"objective": "Inspect a different defect"})
+    elif change == "decision_risk_high":
+        retry = retry.model_copy(update={"risk": WorkRisk.HIGH})
+    elif change == "decision_risk_low":
+        retry = retry.model_copy(update={"risk": WorkRisk.LOW})
+    elif change == "decision_path":
+        retry = retry.model_copy(update={"expected_paths": ["src/other.py"]})
+    elif change == "profile":
+        retry.lanes[0] = retry.lanes[0].model_copy(update={"profile": "explore"})
+    elif change == "lane_objective":
+        retry.lanes[0] = retry.lanes[0].model_copy(
+            update={"objective": "Inspect another parser"}
+        )
+    elif change == "dependencies":
+        retry.lanes[1] = retry.lanes[1].model_copy(update={"dependencies": ["lane-1"]})
+    elif change == "acceptance":
+        retry.lanes[0] = retry.lanes[0].model_copy(
+            update={"acceptance": ["A different fact is established"]}
+        )
+    else:
+        retry.lanes[0] = retry.lanes[0].model_copy(
+            update={"expected_paths": ["src/other-parser.py"]}
+        )
+
+    receipt = controller.declare(retry)
+
+    assert receipt.accepted is False
+    assert "exactly match" in receipt.message
+    assert controller.state is OrchestrationState.RECOVERY
+
+
+def test_gap_free_recovery_preserves_satisfied_external_dependency() -> None:
+    controller, failed = _controller_with_failed_dependent_lane()
+    failed_lane = failed.lanes[1]
+    retry = OrchestrationDecision(
+        route=failed.route,
+        objective=failed.objective,
+        risk=failed.risk,
+        reason=failed.reason,
+        expected_paths=failed.expected_paths,
+        lanes=[failed_lane],
+    )
+
+    receipt = controller.declare(retry)
+
+    assert receipt.accepted is True
+    assert receipt.state is OrchestrationState.DELEGATION_PENDING
+    rejected = controller.declare(
+        retry.model_copy(update={"objective": "Replace the active recovery"})
+    )
+    assert rejected.accepted is False
+    assert rejected.state is OrchestrationState.DELEGATION_PENDING
+    retry_args = {"agent": "reviewer", "task": "[lane:lane-2] Retry the serializer"}
+    assert controller.before_tool("task", retry_args, read_only=False) is None
+
+
+def test_gap_free_recovery_preserves_prior_host_dependency() -> None:
+    host_lane = OrchestrationLane(
+        id="host-context", objective="Supply the local context", owner=LaneOwner.HOST
+    )
+    failed_lane = OrchestrationLane(
+        id="lane-1", objective="Inspect the parser", dependencies=[host_lane.id]
+    )
+    failed = _decision(OrchestrationRoute.TASK, lanes=[host_lane, failed_lane])
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate the parser with local host context.",
+        capabilities=_capabilities(),
+    )
+    assert controller.declare(failed).accepted is True
+    args = {"agent": "explore", "task": "[lane:lane-1] Inspect the parser"}
+    assert controller.before_tool("task", args, read_only=False) is None
+    controller.record_tool_result("task", args, "failure")
+    retry = OrchestrationDecision(
+        route=failed.route,
+        objective=failed.objective,
+        risk=failed.risk,
+        reason=failed.reason,
+        lanes=[failed_lane],
+    )
+
+    receipt = controller.declare(retry)
+
+    assert receipt.accepted is True
+
+
+def test_non_recovery_strategy_rejects_unknown_lane_dependency() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate one independent area.",
+        capabilities=_capabilities(),
+    )
+    decision = _decision(
+        OrchestrationRoute.TASK,
+        lanes=[
+            OrchestrationLane(
+                id="lane-1",
+                objective="Inspect the parser",
+                dependencies=["missing-lane"],
+            )
+        ],
+    )
+
+    receipt = controller.declare(decision)
+
+    assert receipt.accepted is False
+    assert "unknown dependencies: missing-lane" in receipt.message
+
+
+def test_partial_success_lane_identity_cannot_be_reused_after_recovery() -> None:
+    controller, failed = _controller_with_failed_dependent_lane()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Continue the failed serializer lane.",
+        capabilities=_capabilities(),
+    )
+    retry = OrchestrationDecision(
+        route=failed.route,
+        objective=failed.objective,
+        risk=failed.risk,
+        reason=failed.reason,
+        expected_paths=failed.expected_paths,
+        lanes=[failed.lanes[1]],
+    )
+    retry_receipt = controller.declare(retry)
+    assert retry_receipt.accepted is True
+    assert retry_receipt.strategy_id is not None
+    retry_args = {"agent": "reviewer", "task": "[lane:lane-2] Retry the serializer"}
+    assert controller.before_tool("task", retry_args, read_only=False) is None
+    controller.record_tool_result("task", retry_args, "success", {"completed": True})
+
+    expansion = controller.declare(
+        _decision(
+            OrchestrationRoute.TASK,
+            lanes=[_lane(1)],
+            evidence_gap=StrategyEvidenceGap(
+                strategy_id=retry_receipt.strategy_id,
+                lane_ids=["lane-2"],
+                description="The retry exposed another parser question.",
+            ),
+        )
+    )
+
+    assert expansion.accepted is False
+    assert "cannot reuse successful lane identities" in expansion.message
+
+
+def test_successful_agent_lane_identity_cannot_be_reused_as_host_lane() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate an area and follow returned evidence.",
+        capabilities=_capabilities(),
+    )
+    first_receipt = controller.declare(
+        _decision(OrchestrationRoute.TASK, lanes=[_lane(1)])
+    )
+    assert first_receipt.strategy_id is not None
+    args = {"agent": "explore", "task": "[lane:lane-1] Inspect area one"}
+    controller.record_tool_result("task", args, "success", {"completed": True})
+    reused_host = OrchestrationLane(
+        id="lane-1", objective="Synthesize the earlier result", owner=LaneOwner.HOST
+    )
+
+    receipt = controller.declare(
+        _decision(
+            OrchestrationRoute.TASK,
+            lanes=[reused_host, _lane(2)],
+            evidence_gap=StrategyEvidenceGap(
+                strategy_id=first_receipt.strategy_id,
+                lane_ids=["lane-1"],
+                description="The first result exposed another area.",
+            ),
+        )
+    )
+
+    assert receipt.accepted is False
+    assert "cannot reuse successful lane identities" in receipt.message
+
+
+def test_host_risk_escalation_recanonicalizes_failed_recovery() -> None:
+    failed = _decision(OrchestrationRoute.TASK, lanes=[_lane(1)])
+    controller = _controller_with_failed_task_lanes(failed)
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Continue this security-critical recovery.",
+        capabilities=_capabilities(),
+    )
+
+    receipt = controller.declare(failed.model_copy(update={"risk": WorkRisk.HIGH}))
+
+    assert receipt.accepted is True
+    assert receipt.state is OrchestrationState.DELEGATION_PENDING
+
+
+def test_host_risk_escalation_recanonicalizes_inflight_decision_before_failure() -> (
+    None
+):
+    failed = _decision(OrchestrationRoute.TASK, lanes=[_lane(1)])
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate one independent area.",
+        capabilities=_capabilities(background_delivery=True),
+    )
+    assert controller.declare(failed).accepted is True
+    args = {"agent": "explore", "task": "[lane:lane-1] Inspect it", "async_run": True}
+    controller.record_tool_result(
+        "task", args, "success", {"task_id": "asub-risk", "completed": False}
+    )
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Continue this security-critical investigation.",
+        capabilities=_capabilities(background_delivery=True),
+    )
+    controller.record_task_completion("asub-risk", succeeded=False)
+
+    receipt = controller.declare(failed.model_copy(update={"risk": WorkRisk.HIGH}))
+
+    assert receipt.accepted is True
+
+
+def test_rejected_recovery_risk_change_does_not_poison_exact_retry() -> None:
+    failed = _decision(OrchestrationRoute.TASK, lanes=[_lane(1)])
+    controller = _controller_with_failed_task_lanes(failed)
+
+    changed = controller.declare(failed.model_copy(update={"risk": WorkRisk.HIGH}))
+    retry = controller.declare(failed)
+
+    assert changed.accepted is False
+    assert retry.accepted is True
+
+
 def test_parallel_preflight_reserves_each_declared_lane_once() -> None:
     controller = OrchestrationController()
     controller.begin_turn(
@@ -304,6 +1186,27 @@ def test_parallel_preflight_reserves_each_declared_lane_once() -> None:
     assert controller.state is OrchestrationState.DISTRIBUTED
 
 
+def test_released_preflight_reservation_allows_retry_with_new_call_id() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate one independent lane.",
+        capabilities=_capabilities(),
+    )
+    controller.declare(_decision(OrchestrationRoute.TASK, lanes=[_lane(1)]))
+    args = {"agent": "explore", "task": "[lane:lane-1] Inspect it"}
+
+    assert (
+        controller.before_tool("task", args, read_only=False, call_id="modified")
+        is None
+    )
+    controller.release_reservation("modified")
+
+    assert (
+        controller.before_tool("task", args, read_only=False, call_id="retry") is None
+    )
+
+
 def test_workflow_debt_requires_literal_agent_labels() -> None:
     controller = OrchestrationController()
     controller.begin_turn(
@@ -329,21 +1232,131 @@ def test_workflow_debt_requires_literal_agent_labels() -> None:
             "    )\n"
         )
     }
-    assert (
-        controller.before_tool("launch_workflow", bound_args, read_only=False) is None
-    )
+    attestation = _bind_workflow(controller, bound_args, call_id="wf-call")
     controller.record_tool_result(
-        "launch_workflow", bound_args, "success", {"run_id": "wf-1"}
+        "launch_workflow", bound_args, "success", {"run_id": "wf-1"}, call_id="wf-call"
     )
     assert controller.state is OrchestrationState.DISTRIBUTED
     assert controller.summary.productive_delegations == 2
     assert controller.summary.completed_delegations == 0
     assert controller.summary.pending_delegations == 2
 
-    controller.record_workflow_completion("wf-1", succeeded=True)
+    controller.record_workflow_completion(
+        "wf-1", succeeded=True, attestation=attestation
+    )
 
     assert controller.summary.completed_delegations == 2
     assert controller.summary.pending_delegations == 0
+
+
+@pytest.mark.parametrize("attestation_kind", ["missing", "profile-mismatch"])
+def test_workflow_completion_requires_matching_host_bound_attestation(
+    attestation_kind: str,
+) -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Run a two-lane workflow.",
+        capabilities=_capabilities(),
+    )
+    controller.declare(
+        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
+    )
+    args = {
+        "script": (
+            "async def main():\n"
+            "    return await parallel(\n"
+            "        agent('one', label='lane-1'),\n"
+            "        agent('two', label='lane-2'),\n"
+            "    )\n"
+        )
+    }
+    valid = _bind_workflow(controller, args, call_id="wf-receipt")
+    controller.record_tool_result(
+        "launch_workflow",
+        args,
+        "success",
+        {"run_id": "wf-receipt"},
+        call_id="wf-receipt",
+    )
+    attestation = None
+    if attestation_kind == "profile-mismatch":
+        mismatched = tuple(
+            lane.model_copy(update={"profile": "reviewer"}) for lane in valid.expected
+        )
+        attestation = _workflow_attestation(mismatched)
+
+    controller.record_workflow_completion(
+        "wf-receipt", succeeded=True, attestation=attestation
+    )
+
+    assert controller.state is OrchestrationState.RECOVERY
+    assert controller.summary.completed_delegations == 0
+    assert controller.summary.failed_delegations == 1
+
+
+def test_fast_workflow_completion_is_deferred_with_its_attestation() -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Run a two-lane workflow.",
+        capabilities=_capabilities(),
+    )
+    controller.declare(
+        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
+    )
+    args = {
+        "script": (
+            "async def main():\n"
+            "    await agent('one', label='lane-1')\n"
+            "    return await agent('two', label='lane-2')\n"
+        )
+    }
+    attestation = _bind_workflow(controller, args, call_id="wf-fast")
+
+    controller.record_workflow_completion(
+        "wf-fast", succeeded=True, attestation=attestation
+    )
+    controller.record_tool_result(
+        "launch_workflow", args, "success", {"run_id": "wf-fast"}, call_id="wf-fast"
+    )
+
+    assert controller.summary.completed_delegations == 2
+    assert controller.summary.pending_delegations == 0
+
+
+def test_workflow_runtime_contract_freezes_static_profile_before_alias_override() -> (
+    None
+):
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Run a two-lane workflow.",
+        capabilities=_capabilities(),
+    )
+    controller.declare(
+        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
+    )
+    script = (
+        "async def main():\n"
+        "    await agent('one', label='lane-1', agentType='reviewer')\n"
+        "    return await agent('two', label='lane-2')\n"
+    )
+    args = {"script": script}
+
+    assert (
+        controller.before_tool(
+            "launch_workflow", args, read_only=False, call_id="wf-alias"
+        )
+        is None
+    )
+    expected = controller.workflow_lane_expectations("wf-alias", script)
+
+    assert expected is not None
+    assert {lane.label: lane.profile for lane in expected} == {
+        "lane-1": "explore",
+        "lane-2": "explore",
+    }
 
 
 @pytest.mark.parametrize(
@@ -683,13 +1696,15 @@ def test_workflow_rejects_rebound_named_pipeline_stages(script: str) -> None:
         "b''",
         "set()",
         "list()",
+        "['one', 'two']",
+        "'work'",
         "items",
         "make_items()",
         "[*items]",
         "[item for item in items]",
     ],
 )
-def test_workflow_rejects_pipeline_seed_not_proven_nonempty(seed: str) -> None:
+def test_workflow_rejects_pipeline_seed_not_proven_singleton(seed: str) -> None:
     controller = OrchestrationController()
     controller.begin_turn(
         enabled=True,
@@ -716,11 +1731,11 @@ def test_workflow_rejects_pipeline_seed_not_proven_nonempty(seed: str) -> None:
         "launch_workflow", {"script": script}, read_only=False
     )
 
-    assert "statically provable non-empty seed" in (denial or "")
+    assert "statically provable singleton seed" in (denial or "")
 
 
-@pytest.mark.parametrize("seed", ["['work']", "('work',)", "'work'"])
-def test_workflow_accepts_provably_nonempty_pipeline_seed(seed: str) -> None:
+@pytest.mark.parametrize("seed", ["['work']", "('work',)", "'x'"])
+def test_workflow_accepts_provably_singleton_pipeline_seed(seed: str) -> None:
     controller = OrchestrationController()
     controller.begin_turn(
         enabled=True,
@@ -1104,6 +2119,70 @@ def test_workflow_rejects_comment_and_dynamic_lane_labels(script: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ("await agent('extra')", "declared literal lane label"),
+        ("await agent('extra', label='lane-extra')", "not declared strategy lanes"),
+    ],
+)
+def test_workflow_rejects_agent_calls_outside_declared_lanes(
+    extra: str, expected: str
+) -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Run a two-lane workflow.",
+        capabilities=_capabilities(),
+    )
+    controller.declare(
+        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
+    )
+    script = (
+        "async def main():\n"
+        "    await agent('one', label='lane-1')\n"
+        "    await agent('two', label='lane-2')\n"
+        f"    {extra}\n"
+    )
+
+    denial = controller.before_tool(
+        "launch_workflow", {"script": script}, read_only=False
+    )
+
+    assert expected in (denial or "")
+
+
+@pytest.mark.parametrize(
+    "carrier",
+    [
+        "spawn = agent\n    await spawn('extra')",
+        "spawners = [agent]\n    await spawners[0]('extra')",
+    ],
+)
+def test_workflow_rejects_indirect_agent_carriers(carrier: str) -> None:
+    controller = OrchestrationController()
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Run a two-lane workflow.",
+        capabilities=_capabilities(),
+    )
+    controller.declare(
+        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
+    )
+    script = (
+        "async def main():\n"
+        "    await agent('one', label='lane-1')\n"
+        "    await agent('two', label='lane-2')\n"
+        f"    {carrier}\n"
+    )
+
+    denial = controller.before_tool(
+        "launch_workflow", {"script": script}, read_only=False
+    )
+
+    assert "agent indirectly" in (denial or "")
+
+
+@pytest.mark.parametrize(
     ("script", "expected"),
     [
         (
@@ -1314,12 +2393,12 @@ def test_unavailable_workflow_falls_back_to_task() -> None:
     controller = OrchestrationController()
     controller.begin_turn(
         enabled=True,
-        user_prompt="Investigate three independent areas in parallel.",
+        user_prompt="Investigate two independent areas in parallel.",
         capabilities=_capabilities(workflow=False),
     )
 
     receipt = controller.declare(
-        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2), _lane(3)])
+        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
     )
 
     assert receipt.accepted is True
@@ -1332,12 +2411,12 @@ def test_unavailable_workflow_without_fallback_is_rejected() -> None:
     controller = OrchestrationController()
     controller.begin_turn(
         enabled=True,
-        user_prompt="Investigate three independent areas in parallel.",
+        user_prompt="Investigate two independent areas in parallel.",
         capabilities=_capabilities(task=False, workflow=False, team=False),
     )
 
     receipt = controller.declare(
-        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2), _lane(3)])
+        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
     )
 
     assert receipt.accepted is False
@@ -1528,6 +2607,31 @@ def test_direct_strategy_rejects_expected_path_outside_workspace(
     assert "escapes the workspace" in receipt.message
 
 
+def test_strategy_rejects_lane_expected_path_outside_workspace(tmp_path: Path) -> None:
+    controller = OrchestrationController(workspace_root=tmp_path)
+    controller.begin_turn(
+        enabled=True,
+        user_prompt="Investigate one independent area.",
+        capabilities=_capabilities(),
+    )
+
+    receipt = controller.declare(
+        _decision(
+            OrchestrationRoute.TASK,
+            lanes=[
+                OrchestrationLane(
+                    id="lane-1",
+                    objective="Inspect the area",
+                    expected_paths=["../outside.py"],
+                )
+            ],
+        )
+    )
+
+    assert receipt.accepted is False
+    assert "escapes the workspace" in receipt.message
+
+
 def test_completion_nudge_is_emitted_only_once() -> None:
     controller = OrchestrationController()
     controller.begin_turn(
@@ -1555,16 +2659,16 @@ def test_failed_delegation_enters_recovery() -> None:
     controller = OrchestrationController()
     controller.begin_turn(
         enabled=True,
-        user_prompt="Run a three-lane workflow and synthesize its results.",
+        user_prompt="Run a two-lane workflow and synthesize its results.",
         capabilities=_capabilities(),
     )
     receipt = controller.declare(
-        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2), _lane(3)])
+        _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
     )
     assert receipt.accepted is True
 
     controller.record_tool_result(
-        "launch_workflow", {"name": "three-lane", "script": "..."}, "failure"
+        "launch_workflow", {"name": "two-lane", "script": "..."}, "failure"
     )
 
     assert controller.state is OrchestrationState.RECOVERY
@@ -1856,7 +2960,10 @@ def test_pending_debt_preserves_route_constraint_across_synthetic_turn() -> None
         user_prompt="Analyze the codebase, but do not use workflows.",
         capabilities=capabilities,
     )
-    controller.declare(_decision(OrchestrationRoute.TASK, lanes=[_lane(1)]))
+    task_receipt = controller.declare(
+        _decision(OrchestrationRoute.TASK, lanes=[_lane(1)])
+    )
+    assert task_receipt.strategy_id is not None
     args = {"agent": "explore", "task": "[lane:lane-1] Inspect it"}
     controller.record_tool_result(
         "task", args, "success", {"task_id": "asub-1", "completed": False}
@@ -1884,6 +2991,22 @@ def test_pending_debt_preserves_route_constraint_across_synthetic_turn() -> None
     )
 
     assert controller.summary.user_allows_workflow is True
+    assert workflow.accepted is False
+    assert "active delegation" in workflow.message
+
+    controller.record_task_completion("asub-1", succeeded=True)
+    workflow = controller.declare(
+        _decision(
+            OrchestrationRoute.WORKFLOW,
+            lanes=[_lane(2), _lane(3)],
+            evidence_gap=StrategyEvidenceGap(
+                strategy_id=task_receipt.strategy_id,
+                lane_ids=["lane-1"],
+                description="The completed task exposed two workflow evidence lanes.",
+            ),
+        )
+    )
+
     assert workflow.accepted is True
 
 
@@ -2142,7 +3265,7 @@ def test_team_failure_is_carried_into_next_turn() -> None:
     assert "failed" in (controller.completion_nudge() or "").lower()
 
 
-def test_redeclared_lane_is_not_completed_by_a_superseded_task() -> None:
+def test_redeclaration_waits_for_active_task_result() -> None:
     controller = OrchestrationController()
     controller.begin_turn(
         enabled=True,
@@ -2151,22 +3274,34 @@ def test_redeclared_lane_is_not_completed_by_a_superseded_task() -> None:
     )
     args = {"agent": "explore", "task": "[lane:lane-1] Inspect it", "async_run": True}
     decision = _decision(OrchestrationRoute.TASK, lanes=[_lane(1)])
-    controller.declare(decision)
+    first_receipt = controller.declare(decision)
+    assert first_receipt.strategy_id is not None
     controller.record_tool_result(
         "task", args, "success", {"task_id": "superseded", "completed": False}
     )
-    controller.declare(decision)
-    controller.record_tool_result(
-        "task", args, "success", {"task_id": "replacement", "completed": False}
-    )
+    rejected = controller.declare(decision)
+
+    assert rejected.accepted is False
+    assert "active delegation" in rejected.message
 
     controller.record_task_completion("superseded", succeeded=True)
+    accepted = controller.declare(
+        _decision(
+            OrchestrationRoute.TASK,
+            lanes=[_lane(2)],
+            evidence_gap=StrategyEvidenceGap(
+                strategy_id=first_receipt.strategy_id,
+                lane_ids=["lane-1"],
+                description="The completed lane identified a follow-up gap.",
+            ),
+        )
+    )
 
-    assert controller.summary.completed_delegations == 0
-    assert controller.summary.pending_delegations == 1
+    assert accepted.accepted is True
+    assert controller.summary.pending_delegations == 0
 
 
-def test_superseded_task_failure_does_not_poison_replacement_strategy() -> None:
+def test_failed_active_task_allows_recovery_strategy() -> None:
     controller = OrchestrationController()
     controller.begin_turn(
         enabled=True,
@@ -2179,23 +3314,25 @@ def test_superseded_task_failure_does_not_poison_replacement_strategy() -> None:
     controller.record_tool_result(
         "task", args, "success", {"task_id": "superseded", "completed": False}
     )
-    controller.declare(decision)
+    rejected = controller.declare(decision)
+
+    assert rejected.accepted is False
+    assert controller.summary.pending_delegations == 1
+
+    controller.record_task_completion("superseded", succeeded=False)
+    replacement = controller.declare(decision)
     controller.record_tool_result(
         "task", args, "success", {"task_id": "replacement", "completed": False}
     )
 
+    assert replacement.accepted is True
+    assert controller.summary.failed_delegations == 1
     assert controller.summary.pending_delegations == 1
 
     controller.record_task_completion("replacement", succeeded=True)
 
     assert controller.state is OrchestrationState.DISTRIBUTED
-    assert controller.summary.failed_delegations == 0
-    assert controller.summary.pending_delegations == 0
-
-    controller.record_task_completion("superseded", succeeded=False)
-
-    assert controller.state is OrchestrationState.DISTRIBUTED
-    assert controller.summary.failed_delegations == 0
+    assert controller.summary.failed_delegations == 1
 
 
 def test_late_async_task_failure_enters_recovery_on_delivery_turn() -> None:
@@ -2298,10 +3435,13 @@ def test_workflow_failure_is_carried_into_the_delivery_turn() -> None:
     controller.declare(
         _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
     )
+    attestation = _bind_workflow(controller, args, call_id="wf-failure")
     controller.record_tool_result(
-        "launch_workflow", args, "success", {"run_id": "wf-1"}
+        "launch_workflow", args, "success", {"run_id": "wf-1"}, call_id="wf-failure"
     )
-    controller.record_workflow_completion("wf-1", succeeded=False)
+    controller.record_workflow_completion(
+        "wf-1", succeeded=False, attestation=attestation
+    )
 
     controller.begin_turn(
         enabled=True,
@@ -2333,8 +3473,9 @@ def test_workflow_success_completes_all_lanes_across_turn_boundary() -> None:
     controller.declare(
         _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
     )
+    attestation = _bind_workflow(controller, args, call_id="wf-success")
     controller.record_tool_result(
-        "launch_workflow", args, "success", {"run_id": "wf-1"}
+        "launch_workflow", args, "success", {"run_id": "wf-1"}, call_id="wf-success"
     )
 
     controller.begin_turn(
@@ -2342,7 +3483,9 @@ def test_workflow_success_completes_all_lanes_across_turn_boundary() -> None:
         user_prompt="A background workflow finished; act on its result.",
         capabilities=_capabilities(),
     )
-    controller.record_workflow_completion("wf-1", succeeded=True)
+    controller.record_workflow_completion(
+        "wf-1", succeeded=True, attestation=attestation
+    )
 
     assert controller.summary.completed_delegations == 2
     assert controller.summary.pending_delegations == 0
@@ -2408,10 +3551,13 @@ def test_workflow_terminal_continuation_preserves_exact_user_constraints() -> No
     controller.declare(
         _decision(OrchestrationRoute.WORKFLOW, lanes=[_lane(1), _lane(2)])
     )
+    attestation = _bind_workflow(controller, args, call_id="wf-constraints")
     controller.record_tool_result(
-        "launch_workflow", args, "success", {"run_id": "wf-1"}
+        "launch_workflow", args, "success", {"run_id": "wf-1"}, call_id="wf-constraints"
     )
-    controller.record_workflow_completion("wf-1", succeeded=True)
+    controller.record_workflow_completion(
+        "wf-1", succeeded=True, attestation=attestation
+    )
     continuation_id = controller.issue_continuation(
         route=OrchestrationRoute.WORKFLOW, launch_id="wf-1"
     )

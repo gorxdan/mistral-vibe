@@ -81,6 +81,10 @@ class TestToolManagerFiltering:
         assert "grep" in tools
         assert "read" not in tools
         assert "write_file" not in tools
+        assert manager.is_tool_enabled("bash")
+        assert manager.is_tool_enabled("grep")
+        assert not manager.is_tool_enabled("read")
+        assert not manager.is_tool_enabled("missing")
 
     def test_disabled_tools_excludes_disabled(self):
         vibe_config = build_test_vibe_config(disabled_tools=["bash", "write_file"])

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from enum import StrEnum, auto
 import fnmatch
+import hashlib
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,6 +31,7 @@ class PermissionContext(BaseModel):
     permission: ToolPermission
     required_permissions: list[RequiredPermission] = Field(default_factory=list)
     reason: str | None = None
+    requires_explicit_user_approval: bool = False
 
 
 class ApprovedRule(BaseModel):
@@ -36,6 +39,18 @@ class ApprovedRule(BaseModel):
     tool_name: str
     scope: PermissionScope
     session_pattern: str
+
+
+def authorization_context_fingerprint(
+    tool_name: str, args: BaseModel, context: PermissionContext
+) -> str:
+    payload = "\0".join((
+        str(Path.cwd().resolve()),
+        tool_name,
+        args.model_dump_json(),
+        context.model_dump_json(),
+    ))
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def wildcard_match(text: str, pattern: str) -> bool:

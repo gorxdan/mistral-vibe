@@ -18,11 +18,15 @@ from dataclasses import dataclass, field
 import functools
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
 
+from vibe.core._trusted_command import (
+    TRUSTED_SYSTEM_PATH,
+    TrustedCommandError,
+    resolve_trusted_system_executable,
+)
 from vibe.core.logger import logger
 from vibe.core.utils import is_windows
 
@@ -76,20 +80,31 @@ class SandboxSpec:
     cwd: Path | None = None
 
 
-def _bwrap_usable() -> bool:
+@dataclass(frozen=True, slots=True)
+class ResolvedSandboxBackend:
+    name: str
+    executable: Path | None = None
+
+
+@functools.cache
+def _backend_executable(name: str) -> Path | None:
+    try:
+        return resolve_trusted_system_executable(name)
+    except TrustedCommandError:
+        return None
+
+
+def _bwrap_usable(executable: Path, true_executable: Path) -> bool:
     """Whether bwrap can actually create namespaces here, not just exist.
 
     Docker/CI often deny unprivileged user-namespace creation, so a present
     bwrap dies with a cryptic 'bwrap:' error on every invocation. Probe once
     with a trivial sandbox; the result is cached by _detect_auto_backend.
     """
-    exe = shutil.which("bwrap")
-    if exe is None:
-        return False
     try:
         proc = subprocess.run(
             [
-                exe,
+                str(executable),
                 "--ro-bind",
                 "/",
                 "/",
@@ -99,11 +114,12 @@ def _bwrap_usable() -> bool:
                 "/proc",
                 "--unshare-pid",
                 "--",
-                "true",
+                str(true_executable),
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PATH": TRUSTED_SYSTEM_PATH},
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
@@ -112,29 +128,46 @@ def _bwrap_usable() -> bool:
 
 
 @functools.lru_cache(maxsize=1)
-def _detect_auto_backend() -> str:
+def _detect_auto_backend() -> ResolvedSandboxBackend:
     """Resolve the auto-detected sandbox backend. Process-stable, so cached.
 
-    Tests that monkeypatch is_windows/shutil.which call _detect_auto_backend.cache_clear().
+    Tests that replace executable resolution call _detect_auto_backend.cache_clear().
     """
     if is_windows():
-        return "none"
+        return ResolvedSandboxBackend("none")
     if sys.platform == "darwin":
-        return "sandbox-exec" if shutil.which("sandbox-exec") else "none"
+        executable = _backend_executable("sandbox-exec")
+        return ResolvedSandboxBackend(
+            "sandbox-exec" if executable else "none", executable
+        )
     # Linux / other POSIX. bwrap must be usable, not merely present: a present
     # but namespace-denied bwrap is treated exactly like a missing backend.
-    if _bwrap_usable():
-        return "bwrap"
-    if shutil.which("unshare"):
-        return "unshare"
-    return "none"
+    bwrap = _backend_executable("bwrap")
+    true_executable = _backend_executable("true")
+    if bwrap and true_executable and _bwrap_usable(bwrap, true_executable):
+        return ResolvedSandboxBackend("bwrap", bwrap)
+    unshare = _backend_executable("unshare")
+    if unshare:
+        return ResolvedSandboxBackend("unshare", unshare)
+    return ResolvedSandboxBackend("none")
+
+
+def resolve_backend(override: str = "auto") -> ResolvedSandboxBackend:
+    if override == "auto":
+        return _detect_auto_backend()
+    if override == "none":
+        return ResolvedSandboxBackend("none")
+    if override not in {"bwrap", "sandbox-exec", "unshare"}:
+        return ResolvedSandboxBackend("none")
+    executable = _backend_executable(override)
+    if executable is None:
+        return ResolvedSandboxBackend("none")
+    return ResolvedSandboxBackend(override, executable)
 
 
 def detect_backend(override: str = "auto") -> str:
     """Resolve the sandbox backend name, or 'none' when unavailable."""
-    if override != "auto":
-        return override
-    return _detect_auto_backend()
+    return resolve_backend(override).name
 
 
 # BUBBLEWRAP_INSTALL_NUDGE is surfaced to the user (UI toast / startup issue)
@@ -239,34 +272,20 @@ def _canonical_roots(roots: list[Path]) -> list[str]:
 # keeps the repo's git metadata writable but re-protects `hooks/`).
 _PROTECTED_SUBPATHS = (".vibe", ".env")
 
-# extra_args may add runtime flags, never mounts or command boundaries.
-_UNSAFE_BWRAP_EXTRA_ARGS = frozenset({
-    "--args",
-    "--bind",
-    "--bind-data",
-    "--bind-fd",
-    "--bind-try",
-    "--chdir",
-    "--dev",
-    "--dev-bind",
-    "--dev-bind-try",
-    "--dir",
-    "--file",
-    "--file-label",
-    "--mqueue",
-    "--overlay",
-    "--overlay-src",
-    "--proc",
-    "--remount-ro",
-    "--ro-bind",
-    "--ro-bind-data",
-    "--ro-bind-fd",
-    "--ro-bind-try",
-    "--symlink",
-    "--tmp-overlay",
-    "--tmpfs",
-    "--tmpfs-overlay",
-    "--",
+# extra_args is intentionally flag-only. Every accepted option adds isolation or
+# process containment without consuming a following argv token.
+_ALLOWED_BWRAP_EXTRA_FLAGS = frozenset({
+    "--assert-userns-disabled",
+    "--die-with-parent",
+    "--disable-userns",
+    "--new-session",
+    "--unshare-all",
+    "--unshare-cgroup",
+    "--unshare-ipc",
+    "--unshare-net",
+    "--unshare-pid",
+    "--unshare-user",
+    "--unshare-uts",
 })
 
 _STRICT_RUNTIME_ROOT_NAMES = frozenset({
@@ -302,11 +321,15 @@ def strict_read_hidden_roots(root: Path = Path("/")) -> list[Path]:
 
 def _validate_bwrap_extra_args(extra_args: list[str]) -> None:
     for argument in extra_args:
-        option = argument.split("=", 1)[0]
-        if option in _UNSAFE_BWRAP_EXTRA_ARGS:
+        if argument not in _ALLOWED_BWRAP_EXTRA_FLAGS:
             raise ValueError(
                 f"unsafe bubblewrap extra argument is not allowed: {argument!r}"
             )
+
+
+def _validate_unshare_extra_args(extra_args: list[str]) -> None:
+    if extra_args:
+        raise ValueError("unshare extra arguments are not supported")
 
 
 def _worktree_gitdir(root: Path) -> Path | None:
@@ -414,7 +437,7 @@ def _sibling_worktree_readonly_targets(common: Path, skip: Path | None) -> list[
 
 
 def build_sandbox_command(
-    spec: SandboxSpec, backend: str
+    spec: SandboxSpec, backend: ResolvedSandboxBackend
 ) -> tuple[list[str] | None, str, Path | None]:
     """Return (argv_prefix, backend_name, profile_path).
 
@@ -422,27 +445,36 @@ def build_sandbox_command(
     is a temp file to unlink after the run (seatbelt only), else None. Returns
     (None, 'none', None) when the backend cannot build a command.
     """
-    if backend == "bwrap":
-        return _bwrap_argv(spec), "bwrap", None
-    if backend == "unshare":
+    if backend.executable is None:
+        return None, "none", None
+    if backend.name == "bwrap":
+        return _bwrap_argv(spec, backend.executable), "bwrap", None
+    if backend.name == "unshare":
         # The unshare backend provides PID/IPC/net namespace isolation but NO
         # filesystem write confinement: it does not remount / read-only or
         # bind-mount write_roots. If the spec asks for containment the user can
         # reasonably believe is enforced, warn loudly so they know it is not —
         # this is the common case on minimal containers/CI without bubblewrap,
         # i.e. exactly the hosts where people reach for sandboxing.
-        if spec.write_roots or not spec.allow_network:
+        filesystem_policy = bool(
+            spec.write_roots
+            or spec.read_roots
+            or spec.hidden_roots
+            or spec.protected_roots
+            or spec.protect_git_metadata
+        )
+        if filesystem_policy or not spec.allow_network:
             logger.warning(
                 "sandbox backend 'unshare' provides namespace isolation but NO "
-                "filesystem write confinement or network enforcement: write_roots "
-                "and allow_network are IGNORED. Commands can still read/write "
-                "anywhere the running user can. Install bubblewrap (bwrap) for "
-                "real containment, or accept this by setting backend='unshare' "
-                "explicitly."
+                "filesystem policy enforcement and no complete network policy: "
+                "requested read/write/hidden/protected roots are IGNORED. Commands "
+                "can still read/write anywhere the running user can. Install "
+                "bubblewrap (bwrap) for real containment, or accept this by setting "
+                "backend='unshare' explicitly."
             )
-        return _unshare_argv(spec), "unshare", None
-    if backend == "sandbox-exec":
-        argv, profile = _seatbelt_argv(spec)
+        return _unshare_argv(spec, backend.executable), "unshare", None
+    if backend.name == "sandbox-exec":
+        argv, profile = _seatbelt_argv(spec, backend.executable)
         return argv, "sandbox-exec", profile
     return None, "none", None
 
@@ -466,7 +498,7 @@ def _protected_subpaths_for(root: str) -> list[str]:
     return found
 
 
-def _bwrap_argv(spec: SandboxSpec) -> list[str]:
+def _bwrap_argv(spec: SandboxSpec, executable: Path) -> list[str]:
     _validate_bwrap_extra_args(spec.extra_args)
     # bwrap applies operations left to right inside the new namespace, so the
     # read-only root bind MUST precede the pseudo-filesystem overlays. Placing
@@ -474,7 +506,7 @@ def _bwrap_argv(spec: SandboxSpec) -> list[str]:
     # them and makes /tmp (etc.) read-only, breaking any command that writes to
     # /tmp (mktemp, pip, compilers, editors, sort, ...).
     argv = [
-        "bwrap",
+        str(executable),
         "--die-with-parent",
         "--unshare-pid",
         "--unshare-uts",
@@ -552,12 +584,12 @@ def _masked_mount_targets(roots: set[str], hidden: set[str]) -> list[str]:
     return sorted(targets, key=lambda value: (len(Path(value).parts), value))
 
 
-def _unshare_argv(spec: SandboxSpec) -> list[str]:
+def _unshare_argv(spec: SandboxSpec, executable: Path) -> list[str]:
+    _validate_unshare_extra_args(spec.extra_args)
     # Weaker fallback: namespace isolation without bind-mount confinement of /.
-    argv = ["unshare", "--user", "--map-root-user", "--mount"]
+    argv = [str(executable), "--user", "--map-root-user", "--mount"]
     if not spec.allow_network:
         argv.append("--net")
-    argv += spec.extra_args
     argv.append("--")
     return argv
 
@@ -600,9 +632,9 @@ def build_seatbelt_profile(spec: SandboxSpec) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _seatbelt_argv(spec: SandboxSpec) -> tuple[list[str], Path]:
+def _seatbelt_argv(spec: SandboxSpec, executable: Path) -> tuple[list[str], Path]:
     profile = build_seatbelt_profile(spec)
     fd, path = tempfile.mkstemp(suffix=".sb", prefix="vibe-sandbox-")
     os.close(fd)
     Path(path).write_text(profile)
-    return ["sandbox-exec", "-f", path], Path(path)
+    return [str(executable), "-f", path], Path(path)

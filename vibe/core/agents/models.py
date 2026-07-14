@@ -151,47 +151,17 @@ def _plan_overrides() -> dict[str, Any]:
     }
 
 
-# Read-only review agents (reviewer / debugger / security / verifier) get `bash` so they
-# can run git inspection and tests — but they must NOT mutate the user's code.
-# This is a hard policy jail on bash, enforced by the tool's AST-split
-# allow/deny engine (every command node in a compound command is checked):
-#   - ALLOW (auto-run, works headless): git inspection + file-reading + named
-#     test/lint runners → the agent can do its job without an approval prompt.
-#   - DENY (hard NEVER, precedence over allow): anything that mutates code/git
-#     state, touches the network, installs packages, or escalates privilege.
-#   - Anything else falls through to the default ASK (skipped headless; the
-#     user can approve "when necessary" in an interactive session).
-# General-purpose write-capable tools (sed/awk/find/python/perl/env/xargs/sort
-# -o, shell redirects) are deliberately NOT allowlisted — they fall to ASK
-# rather than auto-run, since a prefix policy can't prove they won't write.
+# Review profiles auto-run hardened reads; mutations and unknown commands defer.
 _REVIEW_BASH_ALLOWLIST = [
-    "cd",
     "echo",
     "pwd",
     "true",
     "false",
-    # git inspection (read-only)
-    "git diff",
+    # Git inspection hardened before automated execution.
     "git log",
-    "git status",
     "git show",
     "git blame",
-    "git rev-parse",
-    "git diff-tree",
-    "git ls-files",
-    "git ls-tree",
-    "git cat-file",
-    "git shortlog",
-    "git describe",
-    "git for-each-ref",
-    "git rev-list",
-    "git name-rev",
-    "git merge-base",
     "git grep",
-    "git branch --list",
-    "git branch -a",
-    "git branch -v",
-    "git tag --list",
     # file reading / inspection
     "cat",
     "head",
@@ -204,11 +174,8 @@ _REVIEW_BASH_ALLOWLIST = [
     "diff",
     "comm",
     "nl",
-    "column",
-    "jq",
     "grep",
     "rg",
-    "ag",
     "whoami",
     "date",
     "which",
@@ -216,43 +183,6 @@ _REVIEW_BASH_ALLOWLIST = [
     "uname",
     "basename",
     "dirname",
-    # test / lint / typecheck runners (run the repo's own checks)
-    "pytest",
-    "python -m pytest",
-    "python3 -m pytest",
-    "tox",
-    "ruff",
-    "mypy",
-    "pyright",
-    "flake8",
-    "bandit",
-    "npm test",
-    "npm run test",
-    "yarn test",
-    "pnpm test",
-    "jest",
-    "vitest",
-    "eslint",
-    "tsc",
-    "cargo test",
-    "cargo check",
-    "cargo clippy",
-    "go test",
-    "go vet",
-    "make test",
-    "make check",
-    "make lint",
-]
-_REVIEW_UV_RUN_ALLOWLIST = [
-    "uv run pytest",
-    "uv run python -m pytest",
-    "uv run python3 -m pytest",
-    "uv run tox",
-    "uv run ruff",
-    "uv run mypy",
-    "uv run pyright",
-    "uv run flake8",
-    "uv run bandit",
 ]
 _REVIEW_BASH_DENYLIST = [
     # git mutation / network
@@ -347,14 +277,11 @@ _REVIEW_BASH_DENYLIST = [
 
 
 def _review_bash_overrides() -> dict[str, Any]:
-    """Per-agent bash policy for read-only review agents — see the comment on
-    _REVIEW_BASH_ALLOWLIST. Permission stays the default ASK so unknown
-    commands are skipped headless / approvable interactively.
-    """
+    """Return the shared read-only review Bash policy."""
     return {
         "tools": {
             "bash": {
-                "allowlist": [*_REVIEW_BASH_ALLOWLIST, *_REVIEW_UV_RUN_ALLOWLIST],
+                "allowlist": list(_REVIEW_BASH_ALLOWLIST),
                 "denylist": [
                     *_REVIEW_BASH_DENYLIST,
                     *(f"uv run {command}" for command in _REVIEW_BASH_DENYLIST),
@@ -401,7 +328,7 @@ ACCEPT_EDITS = AgentProfile(
 AUTO_APPROVE = AgentProfile(
     BuiltinAgentName.AUTO_APPROVE,
     "Auto Approve",
-    "Auto-approves all tool executions",
+    "Bypasses ordinary prompts while preserving hard and explicit-user gates",
     AgentSafety.YOLO,
     overrides={"bypass_tool_permissions": True, "base_disabled": ["exit_plan_mode"]},
 )
@@ -435,7 +362,7 @@ REVIEWER = AgentProfile(
     display_name="Reviewer",
     description=(
         "Adversarial code review of a diff/branch/file; jailed bash for "
-        "inspection and tests only (no mutations)."
+        "hardened inspection, with tests requiring root-user authority."
     ),
     safety=AgentSafety.NEUTRAL,
     agent_type=AgentType.SUBAGENT,

@@ -10,11 +10,15 @@ from tests.stubs.fake_tool import FakeTool, FakeToolArgs, FakeToolState
 from vibe.core.agent_loop import ToolDecision, ToolExecutionResponse
 from vibe.core.llm.models import ResolvedToolCall
 from vibe.core.tools.background import BackgroundRegistry
-from vibe.core.tools.base import BaseToolConfig, ToolError
+from vibe.core.tools.base import BaseToolConfig, ToolAuthorizationSource, ToolError
 from vibe.core.tools.builtins.bash import Bash, BashArgs
 from vibe.core.tools.builtins.task import Task, TaskArgs
 from vibe.core.tools.builtins.write_file import WriteFileArgs
-from vibe.core.tools.permissions import ToolPermission
+from vibe.core.tools.permissions import (
+    PermissionContext,
+    ToolPermission,
+    authorization_context_fingerprint,
+)
 from vibe.core.tracing import tool_span
 from vibe.core.verification_contract import (
     CommandEvidence,
@@ -46,6 +50,25 @@ def _record_current_verifier_pass(state) -> None:
         "Verifier PASS was recorded for the current candidate.",
     )
     state.record_verifier_pass(_verifier_pass(), verifier_attempt_generation=generation)
+
+
+def _authorized_decision(tool, args) -> ToolDecision:
+    permission = tool.resolve_permission(args) or PermissionContext(
+        permission=tool.config.permission
+    )
+    return ToolDecision(
+        verdict=ToolExecutionResponse.EXECUTE,
+        approval_type=ToolPermission.ASK,
+        authorization_source=ToolAuthorizationSource.USER,
+        authorization_fingerprint=authorization_context_fingerprint(
+            tool.get_name(), args, permission
+        ),
+    )
+
+
+def _register_fake_tool(loop, tool: FakeTool) -> None:
+    loop.tool_manager._all_tools[tool.get_name()] = type(tool)
+    loop.tool_manager._instances[tool.get_name()] = tool
 
 
 def test_read_only_verifier_task_is_not_a_candidate_mutation() -> None:
@@ -101,15 +124,14 @@ async def test_non_read_only_noop_keeps_current_verifier_pass(
     tool_instance = FakeTool(
         lambda: BaseToolConfig(permission=ToolPermission.ALWAYS), FakeToolState()
     )
+    _register_fake_tool(loop, tool_instance)
     tc = ResolvedToolCall(
         tool_name="stub_tool",
         tool_class=FakeTool,
         validated_args=FakeToolArgs(text="noop"),
         call_id="c1",
     )
-    decision = ToolDecision(
-        verdict=ToolExecutionResponse.EXECUTE, approval_type=ToolPermission.ALWAYS
-    )
+    decision = _authorized_decision(tool_instance, tc.validated_args)
 
     async with tool_span(
         tool_name="stub_tool", call_id="c1", arguments='{"text":"noop"}'
@@ -141,9 +163,7 @@ async def test_workspace_mutation_invalidates_preserved_verifier_pass(
         validated_args=WriteFileArgs(path=str(marker), content="changed"),
         call_id="c2",
     )
-    decision = ToolDecision(
-        verdict=ToolExecutionResponse.EXECUTE, approval_type=ToolPermission.ALWAYS
-    )
+    decision = _authorized_decision(tool_instance, tc.validated_args)
 
     async with tool_span(tool_name="write_file", call_id="c2", arguments="{}") as span:
         async for _ in loop._invoke_tool(
@@ -171,9 +191,7 @@ async def test_effectful_tool_requires_verification_when_git_fingerprint_is_unkn
         validated_args=WriteFileArgs(path="outside-git.txt", content="changed"),
         call_id="outside-git",
     )
-    decision = ToolDecision(
-        verdict=ToolExecutionResponse.EXECUTE, approval_type=ToolPermission.ALWAYS
-    )
+    decision = _authorized_decision(tool_instance, tc.validated_args)
 
     async with tool_span(
         tool_name="write_file", call_id="outside-git", arguments="{}"
@@ -202,6 +220,7 @@ async def test_failed_effectful_tool_is_observed_when_fingerprint_is_unknown(
     tool_instance = FakeTool(
         lambda: BaseToolConfig(permission=ToolPermission.ALWAYS), FakeToolState()
     )
+    _register_fake_tool(loop, tool_instance)
     tool_instance._exception_to_raise = ToolError("failed after a partial write")
     call = ResolvedToolCall(
         tool_name="stub_tool",
@@ -209,9 +228,7 @@ async def test_failed_effectful_tool_is_observed_when_fingerprint_is_unknown(
         validated_args=FakeToolArgs(text="mutate"),
         call_id="failed-write",
     )
-    decision = ToolDecision(
-        verdict=ToolExecutionResponse.EXECUTE, approval_type=ToolPermission.ALWAYS
-    )
+    decision = _authorized_decision(tool_instance, call.validated_args)
 
     with pytest.raises(ToolError, match="partial write"):
         async with tool_span(
@@ -240,6 +257,9 @@ async def test_failed_effectful_tool_is_observed_when_fingerprint_is_unknown(
 def test_pending_background_work_revokes_reverification_authority(
     monkeypatch: pytest.MonkeyPatch, category: str, status: str
 ) -> None:
+    monkeypatch.setattr(
+        "vibe.core.verification_state.workspace_fingerprint", lambda: "workspace"
+    )
     loop = build_test_agent_loop()
     state = loop._verification_state
     _record_current_verifier_pass(state)
@@ -272,6 +292,9 @@ def test_pending_background_work_revokes_reverification_authority(
 def test_terminal_background_work_preserves_reverification_authority(
     monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:
+    monkeypatch.setattr(
+        "vibe.core.verification_state.workspace_fingerprint", lambda: "workspace"
+    )
     loop = build_test_agent_loop()
     state = loop._verification_state
     _record_current_verifier_pass(state)
@@ -290,6 +313,9 @@ def test_terminal_background_work_preserves_reverification_authority(
 def test_background_registry_failure_revokes_reverification_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "vibe.core.verification_state.workspace_fingerprint", lambda: "workspace"
+    )
     loop = build_test_agent_loop()
     state = loop._verification_state
     _record_current_verifier_pass(state)

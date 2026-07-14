@@ -51,6 +51,14 @@ if TYPE_CHECKING:
 ARGS_COUNT = 4
 
 
+class ToolAuthorizationSource(StrEnum):
+    POLICY = auto()
+    STORED_USER = auto()
+    USER = auto()
+    SAFETY_JUDGE = auto()
+    BYPASS = auto()
+
+
 @dataclass
 class InvokeContext:
     tool_call_id: str
@@ -132,6 +140,8 @@ class InvokeContext:
     # team, narration, verification, and observable provider-retry calls.
     spend_adapter: SessionSpendAdapter | None = field(default=None)
     task_contract: BoundTaskContract | None = field(default=None)
+    authorization_source: ToolAuthorizationSource | None = field(default=None)
+    authorization_fingerprint: str | None = field(default=None)
     work_strategy_callback: (
         Callable[[OrchestrationDecision], StrategyReceipt] | None
     ) = field(default=None)
@@ -225,8 +235,7 @@ class BaseTool[
 
     prompt_path: ClassVar[Path] | None = None
 
-    # Read-only calls may share an ordered concurrent wave. False creates a
-    # conservative mutation barrier for unknown and third-party tools.
+    # False keeps unknown and third-party tools behind mutation barriers.
     read_only: ClassVar[bool] = False
 
     # Whether this tool spawns subagents (the task tool). Used to cap how many
@@ -287,6 +296,51 @@ class BaseTool[
             raise ToolError(
                 f"Validation error in tool {self.get_name()}: {err}"
             ) from err
+
+        if ctx is not None and ctx.authorization_source is not None:
+            if ctx.tool_manager is not None:
+                name = self.get_name()
+                if not ctx.tool_manager.is_tool_enabled(name):
+                    raise ToolPermissionError(
+                        f"Tool '{name}' is no longer enabled; submit the call again."
+                    )
+                from vibe.core.tools.manager import NoSuchToolError
+
+                try:
+                    current_tool = ctx.tool_manager.get(name)
+                except NoSuchToolError as err:
+                    raise ToolPermissionError(
+                        f"Tool '{name}' is no longer registered; submit the call again."
+                    ) from err
+                if current_tool is not self:
+                    raise ToolPermissionError(
+                        f"Tool '{name}' changed after authorization; submit the "
+                        "call again."
+                    )
+            if ctx.authorization_source is ToolAuthorizationSource.BYPASS and (
+                ctx.agent_manager is None
+                or not ctx.agent_manager.config.bypass_tool_permissions
+            ):
+                raise ToolPermissionError(
+                    "Tool auto-approve authority changed before execution; submit "
+                    "the call again."
+                )
+            from vibe.core.tools.permissions import (
+                PermissionContext,
+                authorization_context_fingerprint,
+            )
+
+            permission = self.resolve_permission(args)
+            if permission is None:
+                permission = PermissionContext(permission=self.config.permission)
+            current = authorization_context_fingerprint(
+                self.get_name(), args, permission
+            )
+            if ctx.authorization_fingerprint != current:
+                raise ToolPermissionError(
+                    "Tool arguments or authorization context changed after "
+                    "approval; submit the call again."
+                )
 
         async for item in self.run(args, ctx):
             yield item

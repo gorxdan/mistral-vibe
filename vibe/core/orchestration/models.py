@@ -3,7 +3,14 @@ from __future__ import annotations
 from enum import StrEnum, auto
 from typing import Self
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class OrchestrationRoute(StrEnum):
@@ -71,10 +78,46 @@ class OrchestrationLane(BaseModel):
         default_factory=list,
         description="Observable facts that establish this lane is complete.",
     )
+    expected_paths: list[str] = Field(
+        default_factory=list,
+        description="Narrow files or directories this lane is expected to inspect.",
+    )
 
     @property
     def depends_on(self) -> list[str]:
         return self.dependencies
+
+
+class StrategyEvidenceGap(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    strategy_id: str = Field(
+        min_length=1,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+        description="Host-issued ID of the completed strategy that exposed the gap.",
+    )
+    lane_ids: list[str] = Field(
+        min_length=1,
+        description="Completed lane IDs whose returned evidence exposed the gap.",
+    )
+    description: str = Field(
+        min_length=1,
+        description="Concrete missing evidence that justifies another bounded fan-out.",
+    )
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str) -> str:
+        description = value.strip()
+        if not description:
+            raise ValueError("Evidence-gap description cannot be blank")
+        return description
+
+    @model_validator(mode="after")
+    def validate_lane_ids(self) -> Self:
+        if len(self.lane_ids) != len(set(self.lane_ids)):
+            raise ValueError("Evidence-gap lane IDs must be unique")
+        return self
 
 
 class OrchestrationDecision(BaseModel):
@@ -97,7 +140,17 @@ class OrchestrationDecision(BaseModel):
     )
     lanes: list[OrchestrationLane] = Field(
         default_factory=list,
-        description="Concrete host and agent work lanes with dependencies.",
+        description=(
+            "Concrete host and agent work lanes with dependencies; delegated routes "
+            "may start at most two agent-owned evidence lanes."
+        ),
+    )
+    evidence_gap: StrategyEvidenceGap | None = Field(
+        default=None,
+        description=(
+            "Required for delegated expansion after a prior delegated strategy; "
+            "binds the expansion to returned evidence from completed lanes."
+        ),
     )
 
     @model_validator(mode="after")
@@ -109,10 +162,6 @@ class OrchestrationDecision(BaseModel):
         for lane in self.lanes:
             if lane.id in lane.dependencies:
                 raise ValueError(f"Lane '{lane.id}' cannot depend on itself")
-            unknown = set(lane.dependencies) - known
-            if unknown:
-                names = ", ".join(sorted(unknown))
-                raise ValueError(f"Lane '{lane.id}' has unknown dependencies: {names}")
         dependencies = {lane.id: lane.dependencies for lane in self.lanes}
         visiting: list[str] = []
         visited: set[str] = set()
@@ -126,7 +175,8 @@ class OrchestrationDecision(BaseModel):
                 raise ValueError(f"Lane dependencies contain a cycle: {cycle}")
             visiting.append(lane_id)
             for dependency in dependencies[lane_id]:
-                visit(dependency)
+                if dependency in known:
+                    visit(dependency)
             visiting.pop()
             visited.add(lane_id)
 
@@ -153,6 +203,7 @@ class StrategyReceipt(BaseModel):
     accepted: bool = True
     reason: StrategyReason | None = None
     required_delegations: int = Field(ge=0)
+    strategy_id: str | None = None
 
 
 class OrchestrationTurnSummary(BaseModel):

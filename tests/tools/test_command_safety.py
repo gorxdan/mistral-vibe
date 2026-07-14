@@ -45,6 +45,16 @@ class TestDestructiveDetection:
     def test_nohup_wrapper_unwrapped(self):
         assert destructive_command_reason(["nohup rm -rf build"]) is not None
 
+    def test_command_carriers_are_unwrapped(self):
+        for command in (
+            "env -S 'rm -rf build'",
+            "env -a fake rm -rf build",
+            "bash --norc -c 'rm -rf build'",
+            'cmd.exe /c "rm -rf build"',
+            'powershell.exe -Command "rm -rf build"',
+        ):
+            assert destructive_command_reason([command]) is not None
+
     def test_chmod_open_mode_flagged(self):
         assert destructive_command_reason(["chmod 777 ."]) is not None
         assert destructive_command_reason(["chmod -R 777 src"]) is not None
@@ -70,6 +80,9 @@ class TestDestructiveDetection:
     def test_safe_commands_not_flagged(self):
         for parts in (["ls -la"], ["git status"], ["echo hello"], ["grep foo file"]):
             assert destructive_command_reason(parts) is None
+
+    def test_ansi_c_encoded_flags_are_decoded(self):
+        assert destructive_command_reason(["rm $'-\\x72f' build"]) is not None
 
 
 class TestArgumentGate:
@@ -117,3 +130,42 @@ class TestArgumentGate:
             allowlisted_argument_is_unsafe("ruff check --no-fix --add-noqa .")
             is not None
         )
+
+    def test_effectful_modes_of_read_commands_are_unsafe(self):
+        for command in (
+            "sort -o output input",
+            "tree -o output .",
+            "less --LOG-FILE=output input",
+            "less --log-f=output input",
+            "less --LOG-F=output input",
+            "date --set=tomorrow",
+            "date --se=tomorrow",
+            "date --s=tomorrow",
+            "date 071412002026",
+            "date 0714120026",
+            "date 071412002026.30",
+            "diff --output=patch before after",
+            "uniq input output",
+        ):
+            assert allowlisted_argument_is_unsafe(command) is not None
+
+    def test_ansi_c_encoded_effectful_modes_are_unsafe(self):
+        for command in (
+            "find . $'-\\x64elete'",
+            "less $'--log-file=output' input",
+            "date $'--set=tomorrow'",
+            "diff $'--output=patch' before after",
+            "sort $'-\\x6f' output input",
+        ):
+            assert allowlisted_argument_is_unsafe(command) is not None
+
+    def test_read_only_modes_remain_safe(self):
+        for command in (
+            "sort input",
+            "tree .",
+            "less input",
+            "date",
+            "diff before after",
+            "uniq input",
+        ):
+            assert allowlisted_argument_is_unsafe(command) is None

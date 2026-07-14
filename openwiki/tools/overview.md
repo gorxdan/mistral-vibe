@@ -16,8 +16,13 @@ The tool system is how the agent interacts with the world — reading files, run
 `call_is_read_only(args)` may refine it per invocation. Maximal adjacent
 read-only sequences run concurrently. A false classification, including the
 conservative default for unknown tools, creates an ordered singleton barrier.
+The scheduler computes this classification once, stores it on the wave, and
+passes the bound value through execution rather than recomputing it after hooks.
 If a hook or approval edit changes a scheduled read-only call into a mutation,
 the call is rejected and must be retried as a separate mutation.
+An unexpected executor exception produces a terminal failure for its call when
+needed, drains the current wave, synthesizes failures for every announced call
+that lacks a terminal result, aborts later waves, and then propagates.
 
 ### InvokeContext
 
@@ -52,7 +57,7 @@ the call is rejected and must be retried as a separate mutation.
 | Category | Tools |
 |---|---|
 | **File ops** | `read`, `write_file`, `edit`, `glob`, `grep` |
-| **Execution** | `bash` (37 KB — sandbox, background processes), `background` |
+| **Execution** | `bash` (sandbox, background processes), `background` |
 | **Agent coordination** | `task` (subagent spawning, 27 KB), `team`, `team_message`, `team_spawn`, `ask_user_question` |
 | **Planning** | `enter_plan_mode`, `exit_plan_mode`, `todo` |
 | **Memory** | `manage_memory` |
@@ -77,10 +82,17 @@ the call is rejected and must be retried as a separate mutation.
 
 `PermissionStore` manages the approval gate for tool execution. The flow:
 1. LLM proposes a tool call
-2. `before_tool` hooks fire (can deny or rewrite)
-3. Safety Judge pre-screens ASK-gated calls (if enabled)
-4. Permission Store checks: `ALWAYS` → auto-approve, `NEVER` → hard-block, `ASK` → user prompt
-5. User approves or denies (interactive), or auto-approve bypasses consent for calls not resolved as `NEVER` (programmatic)
+2. The scheduler binds the invocation's read-only classification
+3. `before_tool` hooks fire and any rewrite is validated against that classification
+4. Tool-specific resolution applies hard denials, then nondelegable explicit-authority gates
+5. Permission Store coverage may satisfy ordinary ASK patterns
+6. Safety Judge pre-screens only the remaining eligible ASK calls
+7. The human or ordinary auto-approve gate decides the remaining call
+
+Bash package acquisition, dependency-graph changes, and recognized
+verification/build commands are explicit-user gates. Stored wildcard/session
+rules, `permission = "always"`, auto-approve, and Safety Judge verdicts cannot
+authorize them. Hard `NEVER` decisions remain authoritative.
 
 Permissions can be configured per-tool in `config.toml`:
 ```toml
@@ -98,6 +110,9 @@ An experimental LLM-based safety gate that pre-screens ASK-gated tool calls. Off
 - Pre-screens tool calls before the user prompt
 - **Fails closed**: API error, timeout, refusal, or unparsable answer all fall back to human prompt
 - Verdict cache keyed by tool name + args hash + transcript hash
+- Reuses one judge instance while model/provider/config/timeout/spend identity is unchanged
+- Clears cached verdicts whenever any part of that full identity changes, even when the model alias is unchanged
+- After a provider rejects `temperature`, retries without it and remembers that omission for later calls in the session
 - Truncation guards: args capped at 4000 chars, transcript at 2000 chars (last 4 turns)
 - Force-defers to user when args are truncated AND a risk flag is present
 
@@ -145,14 +160,40 @@ Language Server Protocol support provides semantic code intelligence:
 
 ## Bash Sandboxing
 
-**Sources**: `vibe/core/tools/builtins/bash.py` (37 KB), `vibe/core/tools/sandbox.py`, `vibe/core/tools/sandbox_seccomp.py`
+**Sources**: `vibe/core/tools/builtins/bash.py`, `vibe/core/tools/sandbox.py`, `vibe/core/tools/sandbox_seccomp.py`
 
 The `bash` tool runs shell commands in a sandboxed environment:
 - `sandbox.py` — bubblewrap (Linux) / sandbox-exec (macOS) wrapper
 - `sandbox_seccomp.py` — seccomp filter for additional syscall restrictions
 - `command_safety.py` — analyzes commands for dangerous patterns
 - Background process support via `BackgroundRegistry` (`vibe/core/tools/background.py`)
-- Stateful terminal — maintains working directory and environment across calls
+- Each foreground call starts a fresh shell in the current process working directory; shell-local `cd` and environment changes do not persist across calls
+- Core-managed Unix policy parsing and execution use one process-frozen absolute Bash executable, independent of the user's login shell
+- Startup and injection variables such as `BASH_ENV`, exported Bash functions, `LD_PRELOAD`, `LD_AUDIT`, and `DYLD_INSERT_LIBRARIES` are always stripped; the default human compatibility scrub also removes other loader variables, which survive only with `sandbox.scrub_env = false`
+- Nested shells, language interpreters, leading environment assignments, and executable-bearing package/Git forms require explicit user approval
+- Sandbox backends and the probe helper are resolved once from the sanitized system path; the exact absolute backend executable that was selected is placed in the launch argv
+- On Linux, automated execution accepts only root-owned regular executables without set-ID or group/world-write bits and without write access for the current non-root user; lexical and resolved ancestry must satisfy the same root-control and write restrictions
+- Exact standalone `git log`, `show`, `blame`, and `grep` calls are hardened for automated execution; `diff`, `status`, wrapped/composed/redirected calls, and other Git forms require explicit user approval
+
+Policy-, Safety-Judge-, and bypass-authorized core Bash calls use a trusted
+system `PATH` and minimal noninteractive environment. Human and stored-human ACP
+approvals are revalidated immediately before the editor client creates its
+terminal. An ACP server binds its first canonical cwd and exact additional-
+directory request for the process lifetime; same-workspace sessions may overlap,
+while another workspace requires another ACP process.
+
+Before sandbox launch, Bash rejects proven verification commands whose exit
+status is hidden by pipes, lists, backgrounding, inversion, substitutions,
+embedded newlines, nested shells, `find -exec`, or equivalent literal carriers.
+Opaque or dynamic execution carriers require explicit user approval and are not
+treated as verification evidence. Run checks directly; Bash already caps
+displayed output and persists truncated output. Fish in a proven executable
+position or recognized literal execution carrier is rejected because the Bash
+parser cannot validate Fish syntax. Opaque or dynamic Fish-like positions and
+the exact standalone `fish -v` and `fish --version` diagnostic exceptions require
+explicit user approval.
+Package/dependency changes and recognized test/build commands always require an
+explicit user decision, including `dotnet test --no-restore`.
 
 Background cleanup signals a process group only when the child PID is still
 verified as both the process-group leader and session leader; otherwise it

@@ -56,7 +56,7 @@ from vibe.core._verification_receipt import (
 from vibe.core.tools.sandbox import (
     SandboxSpec,
     build_sandbox_command,
-    detect_backend,
+    resolve_backend,
     strict_read_hidden_roots,
 )
 from vibe.core.utils.io import decode_safe
@@ -421,11 +421,11 @@ def _prepare_sandbox_invocation(
     snapshot: FrozenSourceSnapshot,
     cwd: Path,
 ) -> _SandboxInvocation:
-    backend = detect_backend("auto")
-    if not sys.platform.startswith("linux") or backend != "bwrap":
+    backend = resolve_backend("auto")
+    if not sys.platform.startswith("linux") or backend.name != "bwrap":
         raise VerificationReceiptError(
             "authority-bearing trusted checks require Linux bubblewrap; "
-            f"observed sandbox backend {backend!r}"
+            f"observed sandbox backend {backend.name!r}"
         )
     writable_parent = snapshot.run_root / "checks"
     writable_parent.mkdir(exist_ok=True)

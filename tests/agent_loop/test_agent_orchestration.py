@@ -235,7 +235,7 @@ async def test_modified_tool_arguments_are_rechecked_against_inferred_scope() ->
 
 
 def _strategy_args(route: str) -> dict[str, object]:
-    lane_count = 3 if route == "workflow" else 1
+    lane_count = 2 if route == "workflow" else 1
     return {
         "route": route,
         "objective": "Inspect the independent implementation lanes",
@@ -284,7 +284,9 @@ async def test_declared_delegation_debt_gets_one_completion_continuation(
     )
     loop = build_test_agent_loop(config=config, backend=backend)
     if route == "workflow":
-        loop.launch_workflow_callback = lambda _script, _name: "wf-test"
+        loop.launch_workflow_callback = lambda _script, _name, _expected_lanes: (
+            "wf-test"
+        )
 
     events = await _act(loop, "Review the independent implementation lanes")
 
@@ -344,7 +346,8 @@ async def test_normal_mode_allows_effectful_edit_without_work_strategy() -> None
     assert len(backend.requests_messages) == 3
     assert read_safe(path).text == "value = 'new'\n"
     assert isinstance(events[-1], AssistantEvent)
-    assert events[-1].content == "Updated the value."
+    assert "HOST VERIFICATION STATUS: UNVERIFIED" in events[-1].content
+    assert "Updated the value" not in events[-1].content
 
 
 @pytest.mark.parametrize(

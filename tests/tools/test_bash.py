@@ -48,6 +48,7 @@ async def test_uses_effective_workdir(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.process_e2e
 async def test_handles_timeout(bash):
     with pytest.raises(ToolError) as err:
         await collect_result(bash.run(BashArgs(command="sleep 2", timeout=1)))
@@ -56,6 +57,7 @@ async def test_handles_timeout(bash):
 
 
 @pytest.mark.asyncio
+@pytest.mark.process_e2e
 async def test_terminates_command_when_combined_capture_limit_is_exceeded() -> None:
     config = BashToolConfig(max_capture_bytes=1_024)
     bash_tool = Bash(config_getter=lambda: config, state=BaseToolState())

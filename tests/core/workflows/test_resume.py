@@ -12,8 +12,12 @@ from vibe.core.tools.base import InvokeContext
 from vibe.core.tools.manager import ToolManager
 from vibe.core.types import AssistantEvent as MockEvent
 from vibe.core.workflows import _cache_identity
-from vibe.core.workflows.models import WorkflowRunSnapshot, WorkflowStatus
-from vibe.core.workflows.runtime import WorkflowRuntime
+from vibe.core.workflows.models import (
+    WorkflowLaneExpectation,
+    WorkflowRunSnapshot,
+    WorkflowStatus,
+)
+from vibe.core.workflows.runtime import WorkflowError, WorkflowRuntime
 
 pytestmark = pytest.mark.asyncio
 _TRUSTED_DEPENDENCIES = "a" * 64
@@ -159,6 +163,20 @@ async def test_snapshot_captures_cache() -> None:
     assert snap.run_id == "wf-1"
     assert snap.cached_count == 2
     assert snap.status == WorkflowStatus.PAUSED
+
+
+async def test_strategy_bound_snapshot_records_lanes_and_rejects_restore() -> None:
+    lanes = (WorkflowLaneExpectation(label="audit", profile="reviewer"),)
+    rt = _runtime(agent_loop_factory=make_factory(), expected_lanes=lanes, max_agents=1)
+    snap = rt.snapshot("wf-bound", "script")
+
+    assert snap.expected_lanes == lanes
+    restored = WorkflowRunSnapshot.model_validate_json(snap.model_dump_json())
+    assert restored.expected_lanes == lanes
+
+    resumed = _runtime(agent_loop_factory=make_factory())
+    with pytest.raises(WorkflowError, match="cannot be resumed safely"):
+        resumed.restore_from_snapshot(restored)
 
 
 async def test_restore_from_snapshot_populates_cache() -> None:

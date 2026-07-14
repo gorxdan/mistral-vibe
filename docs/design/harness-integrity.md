@@ -397,7 +397,8 @@ hard policy:
 Auto-approve also forces strict model-process control for Bash: Bubblewrap or
 Seatbelt is required, network is disabled, the environment is scrubbed, and
 tool caches are disposable. In an ordinary session, the current workspace,
-scratchpad, configured `write_dirs`, and normal Git commit path remain writable.
+scratchpad, and configured `write_dirs` remain writable. In an interactive
+session, the root user can explicitly approve the Git commit path.
 That is deliberately not the managed maintenance boundary. When execution
 topology is present, its smaller tool catalog and protected-path policy apply,
 and model Bash has no writable candidate bind.
@@ -415,7 +416,7 @@ For a managed packet, use this order:
 4. AgentLoop revalidates the full active topology before the worker receives a
    turn. The worker edits only allowed candidate paths.
 5. The worker reports implementation results without committing or changing
-   campaign state. Its final line starts with `READY_FOR_HOST_FREEZE:`,
+   campaign state. Its response starts with `READY_FOR_HOST_FREEZE:`,
    `BLOCKED:`, or `IN_PROGRESS:`; the host labels the quoted text as untrusted
    operator context.
 6. The host ends the active session. After lead approval, it creates the

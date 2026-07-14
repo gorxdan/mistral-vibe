@@ -73,6 +73,7 @@ from keyring.errors import KeyringError
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from vibe import VIBE_ROOT, __version__
+from vibe.acp._workspace_binding import AcpWorkspace, AcpWorkspaceBinding
 from vibe.acp.acp_logger import acp_message_observer
 from vibe.acp.commands import AcpCommandAvailabilityContext, AcpCommandRegistry
 from vibe.acp.exceptions import (
@@ -128,7 +129,6 @@ from vibe.core.config import (
     VibeConfig,
     load_dotenv_values,
 )
-from vibe.core.config.harness_files import add_session_dirs
 from vibe.core.data_retention import DATA_RETENTION_MESSAGE
 from vibe.core.feedback import record_feedback_asked, should_show_feedback
 from vibe.core.hooks.config import load_hooks_from_fs
@@ -191,7 +191,6 @@ from vibe.core.utils import (
     CancellationReason,
     ConversationLimitException,
     get_user_cancellation_message,
-    is_dangerous_directory,
 )
 from vibe.setup.auth import (
     AuthState,
@@ -416,6 +415,7 @@ class VibeAcpAgentLoop(AcpAgent):
         self._pending_browser_sign_in_attempts: dict[
             str, PendingBrowserSignInAttempt
         ] = {}
+        self._workspace_binding = AcpWorkspaceBinding(self._resolve_workspace_trust)
         self._load_onboarding_context = (
             onboarding_context_loader or OnboardingContext.load
         )
@@ -723,7 +723,7 @@ class VibeAcpAgentLoop(AcpAgent):
         config.vibe_code_project_name = self._resolve_project_name()
 
     async def _create_acp_session(
-        self, session_id: str, agent_loop: AgentLoop
+        self, session_id: str, agent_loop: AgentLoop, workspace: AcpWorkspace
     ) -> AcpSessionLoop:
         command_registry = AcpCommandRegistry(
             availability_context=AcpCommandAvailabilityContext(
@@ -731,7 +731,10 @@ class VibeAcpAgentLoop(AcpAgent):
             )
         )
         session = AcpSessionLoop(
-            id=session_id, agent_loop=agent_loop, command_registry=command_registry
+            id=session_id,
+            agent_loop=agent_loop,
+            command_registry=command_registry,
+            workspace=workspace,
         )
         self.sessions[session.id] = session
 
@@ -786,7 +789,7 @@ class VibeAcpAgentLoop(AcpAgent):
             return HookSessionContext(
                 session_id=session.agent_loop.session_id,
                 transcript_path=transcript,
-                cwd=str(Path.cwd().resolve()),
+                cwd=str(session.workspace.cwd),
                 parent_session_id=session.agent_loop.parent_session_id,
             )
 
@@ -1024,6 +1027,10 @@ class VibeAcpAgentLoop(AcpAgent):
         session = self.sessions.get(request.session_id) if request.session_id else None
         if request.session_id is not None and session is None:
             raise SessionNotFoundError(request.session_id)
+        if session is not None and cwd != session.workspace.cwd:
+            raise InvalidRequestError(
+                "Workspace trust decision does not match the session's bound workspace."
+            )
 
         prompt = self._workspace_trust_prompt_for_decision(cwd, request.decision)
 
@@ -1042,31 +1049,13 @@ class VibeAcpAgentLoop(AcpAgent):
     async def _reload_session_after_trust(
         self, cwd: Path, session: AcpSessionLoop
     ) -> None:
-        os.chdir(cwd)
+        if cwd.resolve() != session.workspace.cwd:
+            raise InvalidRequestError(
+                "Workspace trust reload must target the session's bound workspace."
+            )
+        self._workspace_binding.assert_session(session.workspace)
         await self._reload_session_config(session)
         await session.command_registry.notify_changed()
-
-    async def _register_additional_directories(
-        self, additional_directories: list[str] | None
-    ) -> None:
-        resolved: list[Path] = []
-        for d in additional_directories or []:
-            path = Path(d).expanduser().resolve()
-            if not path.is_dir():
-                raise InvalidRequestError(
-                    f"additional_directories path does not exist or is not a directory: {d}"
-                )
-            is_dangerous, reason = is_dangerous_directory(path)
-            if is_dangerous:
-                raise InvalidRequestError(
-                    f"additional_directories path is not allowed: {path} ({reason})"
-                )
-            decision = await self._resolve_workspace_trust(path)
-            if decision == WorkspaceTrustDecision.DECLINE:
-                continue
-            trusted_folders_manager.trust_for_session(path)
-            resolved.append(path)
-        add_session_dirs(resolved)
 
     @override
     async def new_session(
@@ -1076,10 +1065,8 @@ class VibeAcpAgentLoop(AcpAgent):
         mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
+        workspace = await self._workspace_binding.bind(cwd, additional_directories)
         load_dotenv_values()
-        os.chdir(cwd)
-        await self._resolve_workspace_trust(Path.cwd())
-        await self._register_additional_directories(additional_directories)
 
         config = self._load_config()
         plugin_result = load_and_apply_plugins(config)
@@ -1091,7 +1078,9 @@ class VibeAcpAgentLoop(AcpAgent):
             agent_loop = self._create_agent_loop(
                 config, config.default_agent, hook_config_result=hook_config_result
             )
-            session = await self._create_acp_session(agent_loop.session_id, agent_loop)
+            session = await self._create_acp_session(
+                agent_loop.session_id, agent_loop, workspace
+            )
         except Exception as e:
             raise ConfigurationError(str(e)) from e
 
@@ -1354,10 +1343,8 @@ class VibeAcpAgentLoop(AcpAgent):
         mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
         **kwargs: Any,
     ) -> LoadSessionResponse | None:
+        workspace = await self._workspace_binding.bind(cwd, additional_directories)
         load_dotenv_values()
-        os.chdir(cwd)
-        await self._resolve_workspace_trust(Path.cwd())
-        await self._register_additional_directories(additional_directories)
 
         config = self._load_config()
         plugin_result = load_and_apply_plugins(config)
@@ -1366,7 +1353,7 @@ class VibeAcpAgentLoop(AcpAgent):
         )
 
         session_dir = SessionLoader.find_session_by_id(
-            session_id, config.session_logging
+            session_id, config.session_logging, working_directory=workspace.cwd
         )
         if session_dir is None:
             raise SessionNotFoundError(session_id)
@@ -1393,7 +1380,7 @@ class VibeAcpAgentLoop(AcpAgent):
         ]
         if non_system_messages:
             agent_loop.messages.extend(non_system_messages)
-        session = await self._create_acp_session(session_id, agent_loop)
+        session = await self._create_acp_session(session_id, agent_loop, workspace)
         await self._replay_conversation_history(session.id, non_system_messages)
         self._send_usage_update(session)
 
@@ -1422,12 +1409,13 @@ class VibeAcpAgentLoop(AcpAgent):
         return True
 
     async def _reload_config(self, session: AcpSessionLoop) -> None:
+        self._workspace_binding.assert_session(session.workspace)
         new_config = VibeConfig.load(tool_paths=session.agent_loop.config.tool_paths)
         self._apply_client_project_name(new_config)
         _merge_non_interactive_disabled_tools(new_config)
         await session.agent_loop.reload_with_initial_messages(base_config=new_config)
         setup_lsp_for_config(
-            new_config, lambda: session.agent_loop.base_config, Path.cwd()
+            new_config, lambda: session.agent_loop.base_config, session.workspace.cwd
         )
 
     async def _apply_model_change(self, session: AcpSessionLoop, model_id: str) -> bool:
@@ -1517,7 +1505,7 @@ class VibeAcpAgentLoop(AcpAgent):
         cwd: str | None = None,
         **kwargs: Any,
     ) -> ListSessionsResponse:
-        await self._register_additional_directories(additional_directories)
+        await self._workspace_binding.bind_for_listing(cwd, additional_directories)
         try:
             config = VibeConfig.load()
             session_logging_config = config.session_logging
@@ -1549,6 +1537,7 @@ class VibeAcpAgentLoop(AcpAgent):
         **kwargs: Any,
     ) -> PromptResponse:
         session = self._get_session(session_id)
+        self._workspace_binding.assert_session(session.workspace)
 
         if session.prompt_task is not None:
             raise InvalidRequestError(
@@ -1725,7 +1714,8 @@ class VibeAcpAgentLoop(AcpAgent):
         *,
         auto_title: str | None = None,
     ) -> AsyncGenerator[SessionUpdate | UsageUpdate]:
-        rendered_prompt = render_path_prompt(prompt, base_dir=Path.cwd())
+        self._workspace_binding.assert_session(session.workspace)
+        rendered_prompt = render_path_prompt(prompt, base_dir=session.workspace.cwd)
 
         async with aclosing(
             session.agent_loop.act(
@@ -1760,6 +1750,7 @@ class VibeAcpAgentLoop(AcpAgent):
                             tool_manager=session.agent_loop.tool_manager,
                             client=self.client,
                             session_id=session.id,
+                            cwd=session.workspace.cwd,
                         )
 
                     session_update = tool_call_session_update(event, status="pending")
@@ -1868,12 +1859,11 @@ class VibeAcpAgentLoop(AcpAgent):
         mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
         **kwargs: Any,
     ) -> ForkSessionResponse:
+        workspace = await self._workspace_binding.bind(cwd, additional_directories)
         load_dotenv_values()
-        os.chdir(cwd)
-        await self._resolve_workspace_trust(Path.cwd())
-        await self._register_additional_directories(additional_directories)
 
         source_session = self._get_session(session_id)
+        self._workspace_binding.assert_session(source_session.workspace)
         try:
             message_id = ForkSessionParams.model_validate(kwargs).message_id
         except ValidationError as e:
@@ -1889,7 +1879,9 @@ class VibeAcpAgentLoop(AcpAgent):
         try:
             agent_loop = await source_session.agent_loop.fork(message_id)
             agent_loop.agent_manager.register_agent(CHAT_AGENT)
-            session = await self._create_acp_session(agent_loop.session_id, agent_loop)
+            session = await self._create_acp_session(
+                agent_loop.session_id, agent_loop, workspace
+            )
         except InvalidRequestError:
             raise
         except ValueError as e:
@@ -2250,12 +2242,13 @@ class VibeAcpAgentLoop(AcpAgent):
         return PromptResponse(stop_reason="end_turn", user_message_id=message_id)
 
     async def _reload_session_config(self, session: AcpSessionLoop) -> None:
+        self._workspace_binding.assert_session(session.workspace)
         new_config = VibeConfig.load(tool_paths=session.agent_loop.config.tool_paths)
         self._apply_client_project_name(new_config)
         _merge_non_interactive_disabled_tools(new_config)
         await session.agent_loop.reload_with_initial_messages(base_config=new_config)
         setup_lsp_for_config(
-            new_config, lambda: session.agent_loop.base_config, Path.cwd()
+            new_config, lambda: session.agent_loop.base_config, session.workspace.cwd
         )
 
     async def _handle_reload(

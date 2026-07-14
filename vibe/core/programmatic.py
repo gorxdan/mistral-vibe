@@ -125,6 +125,8 @@ async def _isolated_auto_approve(
     work. Read-only profiles use a rejecting callback so ASK cannot bypass their
     jailed allowlist — see programmatic.run_programmatic for the env handshake.
     """
+    if judge_deferral is not None:
+        return ApprovalResponse.NO, judge_deferral, None
     return ApprovalResponse.YES, None, None
 
 

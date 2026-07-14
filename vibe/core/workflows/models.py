@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections import Counter
 from enum import StrEnum, auto
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from vibe.core.workflows._limits import DEFAULT_MAX_AGENTS
 
 
 class WorkflowStatus(StrEnum):
@@ -14,6 +17,41 @@ class WorkflowStatus(StrEnum):
     BLOCKED = auto()
     FAILED = auto()
     STOPPED = auto()
+
+
+class WorkflowLaneExpectation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: str = Field(min_length=1)
+    profile: str | None = None
+
+
+class WorkflowLaneAttestation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    expected: tuple[WorkflowLaneExpectation, ...]
+    attempted_labels: tuple[str, ...] = ()
+    started_labels: tuple[str, ...] = ()
+    successful_labels: tuple[str, ...] = ()
+    violations: tuple[str, ...] = ()
+
+    @property
+    def is_valid(self) -> bool:
+        expected = [lane.label for lane in self.expected]
+        expected_counts = Counter(expected)
+        return bool(
+            expected
+            and len(expected_counts) == len(expected)
+            and not self.violations
+            and Counter(self.attempted_labels) == expected_counts
+            and Counter(self.started_labels) == expected_counts
+            and Counter(self.successful_labels) == expected_counts
+        )
+
+    def satisfies(self, expected: tuple[WorkflowLaneExpectation, ...]) -> bool:
+        return self.is_valid and Counter(
+            (lane.label, lane.profile) for lane in self.expected
+        ) == Counter((lane.label, lane.profile) for lane in expected)
 
 
 class BudgetSnapshot(BaseModel):
@@ -125,6 +163,7 @@ class WorkflowRun(BaseModel):
     budget: BudgetSnapshot = Field(
         default_factory=lambda: BudgetSnapshot(total=None, reserved=0, spent=0)
     )
+    lane_attestation: WorkflowLaneAttestation | None = None
 
     @property
     def tokens_total(self) -> int:
@@ -176,6 +215,9 @@ class WorkflowRunSnapshot(BaseModel):
     started_at: float = 0.0
     budget_total: int | None = None
     budget_spent: int = 0
+    max_agents: int = DEFAULT_MAX_AGENTS
+    agent_count: int = 0
+    expected_lanes: tuple[WorkflowLaneExpectation, ...] | None = None
     cached_results: list[CachedAgentResult] = Field(default_factory=list)
     # Inter-agent message board channels, captured so multi-phase scripts that
     # use post_message survive resume. Empty unless the script used the board.

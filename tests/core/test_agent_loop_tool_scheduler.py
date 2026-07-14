@@ -7,6 +7,7 @@ import pytest
 
 from vibe.core.agent_loop_tool_scheduler import (
     EventSink,
+    ToolCallWaveCancelled,
     build_tool_call_waves,
     stream_tool_call_waves,
 )
@@ -156,7 +157,7 @@ async def test_scheduler_binds_classification_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_executor_does_not_cancel_remaining_waves() -> None:
+async def test_cancelled_executor_aborts_remaining_waves() -> None:
     calls = [
         _call("read1", read_only=True),
         _call("read2", read_only=True),
@@ -174,17 +175,51 @@ async def test_cancelled_executor_does_not_cancel_remaining_waves() -> None:
             raise asyncio.CancelledError
         await queue.put(call.tool_name)
 
-    results = [
-        event
+    results: list[str] = []
+    with pytest.raises(RuntimeError, match="tool executor was cancelled unexpectedly"):
         async for event in stream_tool_call_waves(
             calls,
             concurrent_safe=lambda call: call.tool_class.read_only,
             execute=execute,
-        )
-    ]
+        ):
+            results.append(event)
 
-    assert started == {"read1", "read2", "write1"}
-    assert set(results) == {"read1-cancelled", "read2", "write1"}
+    assert started == {"read1", "read2"}
+    assert set(results) == {"read1-cancelled", "read2"}
+
+
+@pytest.mark.asyncio
+async def test_terminal_cancellation_stops_before_later_waves() -> None:
+    calls = [
+        _call("read1", read_only=True),
+        _call("read2", read_only=True),
+        _call("write1", read_only=False),
+    ]
+    started: set[str] = set()
+    terminal: set[str] = set()
+
+    async def execute(
+        call: ResolvedToolCall, scheduled_read_only: bool, queue: EventSink[str]
+    ) -> None:
+        assert scheduled_read_only is call.tool_class.read_only
+        started.add(call.tool_name)
+        terminal.add(call.tool_name)
+        await queue.put(call.tool_name)
+        if call.tool_name == "read1":
+            raise asyncio.CancelledError
+
+    results: list[str] = []
+    with pytest.raises(ToolCallWaveCancelled):
+        async for event in stream_tool_call_waves(
+            calls,
+            concurrent_safe=lambda call: call.tool_class.read_only,
+            execute=execute,
+            terminal_delivered=lambda call: call.tool_name in terminal,
+        ):
+            results.append(event)
+
+    assert started == {"read1", "read2"}
+    assert set(results) == {"read1", "read2"}
 
 
 @pytest.mark.asyncio

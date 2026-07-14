@@ -195,10 +195,12 @@ async def test_completion_constraint_allows_remediation_tool_calls(
     evidence = tmp_path / "evidence.txt"
     evidence.write_text("inspect me", encoding="utf-8")
     backend = FakeBackend([
-        mock_llm_chunk(
-            content="I will inspect the failure.", tool_calls=[_read_call(evidence)]
-        ),
-        mock_llm_chunk(content="The candidate is now verified."),
+        [
+            mock_llm_chunk(
+                content="I will inspect the failure.", tool_calls=[_read_call(evidence)]
+            )
+        ],
+        [mock_llm_chunk(content="The candidate is now verified.")],
     ])
     loop = build_test_agent_loop(
         config=build_test_vibe_config(enabled_tools=["read"]),
@@ -213,6 +215,7 @@ async def test_completion_constraint_allows_remediation_tool_calls(
     assistant = [event for event in events if isinstance(event, AssistantEvent)]
     assert len(assistant) == 1
     assert "HOST VERIFICATION STATUS: BLOCKED" in assistant[0].content
+    assert "I will inspect the failure" not in assistant[0].content
     assert "candidate is now verified" not in assistant[0].content
 
 
@@ -472,6 +475,318 @@ async def test_open_todos_force_partial_handoff() -> None:
     assert "t8" in assistant[0].content
     assert "t11" in assistant[0].content
     assert "Everything is complete" not in assistant[0].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_streaming", [False, True])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "IN_PROGRESS: Reconnaissance is complete; implementation remains.",
+        "Status: Reconnaissance is complete; implementation remains.",
+        "STATUS: Reconnaissance is complete; implementation remains.",
+    ],
+)
+async def test_open_todos_preserve_typed_progress_handoff(
+    enable_streaming: bool, content: str
+) -> None:
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(),
+        backend=FakeBackend([[mock_llm_chunk(content=content)]]),
+        enable_streaming=enable_streaming,
+    )
+    loop._verification_state.record_open_todos(("t1", "t2"))
+
+    events = [event async for event in loop.act("Report status.")]
+
+    assistant = [event for event in events if isinstance(event, AssistantEvent)]
+    assert len(assistant) == 1
+    assert "HOST VERIFICATION STATUS: PARTIAL" in assistant[0].content
+    assert f"> {content}" in assistant[0].content
+
+
+@pytest.mark.asyncio
+async def test_status_handoff_cannot_authorize_open_work() -> None:
+    content = "Status: all work is complete and safe to land."
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(),
+        backend=FakeBackend([[mock_llm_chunk(content=content)]]),
+    )
+    loop._verification_state.record_open_todos(("active",))
+
+    events = [event async for event in loop.act("Report status.")]
+
+    assistant = [event for event in events if isinstance(event, AssistantEvent)]
+    assert len(assistant) == 1
+    assert assistant[0].content.startswith("HOST VERIFICATION STATUS: PARTIAL")
+    assert "UNTRUSTED MODEL HANDOFF" in assistant[0].content
+    assert f"> {content}" in assistant[0].content
+    assert not loop._verification_state.completion_claim_is_authorized(
+        receipt_valid=False
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_streaming", [False, True])
+async def test_managed_open_todos_reject_generic_status_handoff(
+    tmp_path: Path, enable_streaming: bool
+) -> None:
+    content = "Status: active packet work remains."
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(),
+        backend=FakeBackend([[mock_llm_chunk(content=content)]]),
+        enable_streaming=enable_streaming,
+    )
+    _enable_managed_guard(loop, tmp_path)
+    loop._verification_state.record_open_todos(("active",))
+
+    events = [event async for event in loop.act("Report managed status.")]
+
+    assistant = [event for event in events if isinstance(event, AssistantEvent)]
+    assert len(assistant) == 1
+    assert assistant[0].content.startswith("HOST VERIFICATION STATUS: PARTIAL")
+    assert content not in assistant[0].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_streaming", [False, True])
+@pytest.mark.parametrize(
+    "progress",
+    [
+        "I will inspect the remaining evidence.",
+        "Status: evidence inspection is continuing.",
+    ],
+)
+async def test_open_todos_suppress_nonempty_progress_with_tool_calls(
+    tmp_path: Path, enable_streaming: bool, progress: str
+) -> None:
+    evidence = tmp_path / "evidence.txt"
+    write_safe(evidence, "inspect me")
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(enabled_tools=["read"]),
+        backend=FakeBackend([
+            [mock_llm_chunk(content=progress, tool_calls=[_read_call(evidence)])],
+            [mock_llm_chunk(content="Everything is complete.")],
+        ]),
+        enable_streaming=enable_streaming,
+    )
+    loop._verification_state.record_open_todos(("active",))
+
+    events = [event async for event in loop.act("Continue the active work.")]
+
+    assert any(isinstance(event, ToolResultEvent) for event in events)
+    assistant = [event for event in events if isinstance(event, AssistantEvent)]
+    assert len(assistant) == 1
+    assert "HOST VERIFICATION STATUS: PARTIAL" in assistant[0].content
+    assert progress not in assistant[0].content
+    progress_messages = [
+        message
+        for message in loop.messages
+        if message.role.value == "assistant" and message.tool_calls
+    ]
+    assert len(progress_messages) == 1
+    assert not (progress_messages[0].content or "").strip()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_streaming", [False, True])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Done.",
+        "Complete.",
+        "All done.",
+        "Implementation complete.",
+        "No blockers remain.",
+        "I completed the work.",
+    ],
+)
+async def test_open_todos_block_terse_claim_attached_to_tool_call(
+    tmp_path: Path, enable_streaming: bool, raw: str
+) -> None:
+    evidence = tmp_path / "evidence.txt"
+    write_safe(evidence, "inspect me")
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(enabled_tools=["read"]),
+        backend=FakeBackend([
+            [mock_llm_chunk(content=raw, tool_calls=[_read_call(evidence)])],
+            [mock_llm_chunk(content="Everything is complete.")],
+        ]),
+        enable_streaming=enable_streaming,
+    )
+    loop._verification_state.record_open_todos(("active",))
+
+    events = [event async for event in loop.act("Continue the active work.")]
+
+    assert any(isinstance(event, ToolResultEvent) for event in events)
+    assert raw not in "\n".join(
+        event.content
+        for event in events
+        if isinstance(event, AssistantEvent | ReasoningEvent)
+    )
+    assert all(raw not in str(message.content) for message in loop.messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_streaming", [False, True])
+async def test_open_todos_allow_empty_prose_tool_call(
+    tmp_path: Path, enable_streaming: bool
+) -> None:
+    evidence = tmp_path / "evidence.txt"
+    write_safe(evidence, "inspect me")
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(enabled_tools=["read"]),
+        backend=FakeBackend([
+            [mock_llm_chunk(content="", tool_calls=[_read_call(evidence)])],
+            [mock_llm_chunk(content="Everything is complete.")],
+        ]),
+        enable_streaming=enable_streaming,
+    )
+    loop._verification_state.record_open_todos(("active",))
+
+    events = [event async for event in loop.act("Continue the active work.")]
+
+    assert any(isinstance(event, ToolResultEvent) for event in events)
+    tool_messages = [
+        message
+        for message in loop.messages
+        if message.role.value == "assistant" and message.tool_calls
+    ]
+    assert len(tool_messages) == 1
+    assert not (tool_messages[0].content or "").strip()
+    assistant = [event for event in events if isinstance(event, AssistantEvent)]
+    assert len(assistant) == 1
+    assert "HOST VERIFICATION STATUS: PARTIAL" in assistant[0].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_streaming", [False, True])
+async def test_open_todos_replace_reasoning_attached_to_tool_call(
+    tmp_path: Path, enable_streaming: bool
+) -> None:
+    evidence = tmp_path / "evidence.txt"
+    write_safe(evidence, "inspect me")
+    reasoning = "Everything is complete; I only need to make this read call."
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(enabled_tools=["read"]),
+        backend=FakeBackend([
+            [
+                mock_llm_chunk(
+                    content="",
+                    reasoning_content=reasoning,
+                    tool_calls=[_read_call(evidence)],
+                )
+            ],
+            [mock_llm_chunk(content="Everything is complete.")],
+        ]),
+        enable_streaming=enable_streaming,
+    )
+    loop._verification_state.record_open_todos(("active",))
+
+    events = [event async for event in loop.act("Continue the active work.")]
+
+    assert any(isinstance(event, ToolResultEvent) for event in events)
+    assert reasoning not in "\n".join(
+        event.content
+        for event in events
+        if isinstance(event, AssistantEvent | ReasoningEvent)
+    )
+    assert all(
+        reasoning not in str(message.reasoning_content) for message in loop.messages
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_streaming", [False, True])
+async def test_unverified_candidate_replaces_nonempty_tool_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_streaming: bool
+) -> None:
+    fingerprint = "before"
+    monkeypatch.setattr(
+        "vibe.core.verification_state.workspace_fingerprint", lambda: fingerprint
+    )
+    evidence = tmp_path / "evidence.txt"
+    write_safe(evidence, "inspect me")
+    progress = "I will inspect the changed candidate before continuing."
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(enabled_tools=["read"]),
+        backend=FakeBackend([
+            [mock_llm_chunk(content=progress, tool_calls=[_read_call(evidence)])],
+            [mock_llm_chunk(content="Everything is complete.")],
+        ]),
+        enable_streaming=enable_streaming,
+    )
+    loop._verification_state.observe_workspace_baseline()
+    fingerprint = "after"
+
+    events = [event async for event in loop.act("Continue the changed work.")]
+
+    assert any(isinstance(event, ToolResultEvent) for event in events)
+    assistant = [event for event in events if isinstance(event, AssistantEvent)]
+    assert len(assistant) == 1
+    assert "HOST VERIFICATION STATUS: UNVERIFIED" in assistant[0].content
+    assert progress not in assistant[0].content
+    assert all(progress not in str(message.content) for message in loop.messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_streaming", [False, True])
+async def test_managed_active_candidate_replaces_nonempty_tool_progress(
+    tmp_path: Path, enable_streaming: bool
+) -> None:
+    evidence = tmp_path / "evidence.txt"
+    write_safe(evidence, "inspect me")
+    progress = "I will inspect the assigned candidate before the next edit."
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(enabled_tools=["read"]),
+        backend=FakeBackend([
+            [mock_llm_chunk(content=progress, tool_calls=[_read_call(evidence)])],
+            [mock_llm_chunk(content="IN_PROGRESS: Candidate inspection finished.")],
+        ]),
+        enable_streaming=enable_streaming,
+    )
+    _enable_managed_guard(loop, tmp_path)
+
+    events = [event async for event in loop.act("Continue the active packet.")]
+
+    assert any(isinstance(event, ToolResultEvent) for event in events)
+    assistant = [event for event in events if isinstance(event, AssistantEvent)]
+    assert len(assistant) == 1
+    assert "HOST ACTIVE-PHASE STATUS: HANDOFF" in assistant[0].content
+    assert progress not in assistant[0].content
+    assert all(progress not in str(message.content) for message in loop.messages)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_streaming", [False, True])
+async def test_managed_active_candidate_allows_empty_prose_tool_call(
+    tmp_path: Path, enable_streaming: bool
+) -> None:
+    evidence = tmp_path / "evidence.txt"
+    write_safe(evidence, "inspect me")
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(enabled_tools=["read"]),
+        backend=FakeBackend([
+            [mock_llm_chunk(content="", tool_calls=[_read_call(evidence)])],
+            [mock_llm_chunk(content="IN_PROGRESS: Candidate inspection finished.")],
+        ]),
+        enable_streaming=enable_streaming,
+    )
+    _enable_managed_guard(loop, tmp_path)
+
+    events = [event async for event in loop.act("Continue the active packet.")]
+
+    assert any(isinstance(event, ToolResultEvent) for event in events)
+    tool_messages = [
+        message
+        for message in loop.messages
+        if message.role.value == "assistant" and message.tool_calls
+    ]
+    assert len(tool_messages) == 1
+    assert not (tool_messages[0].content or "").strip()
+    assistant = [event for event in events if isinstance(event, AssistantEvent)]
+    assert len(assistant) == 1
+    assert "HOST ACTIVE-PHASE STATUS: HANDOFF" in assistant[0].content
 
 
 def test_todo_tool_result_updates_completion_ledger() -> None:

@@ -2,15 +2,25 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
 from vibe.cli.textual_ui.app import _WORKFLOW_CONTINUE_PROMPT, VibeApp
 from vibe.cli.textual_ui.widgets.messages import ErrorMessage, UserCommandMessage
 from vibe.cli.textual_ui.workflow_runner import WorkflowRunner
+from vibe.core.tools.base import InvokeContext
 from vibe.core.types import Role
-from vibe.core.workflows.models import WorkflowResult, WorkflowRun, WorkflowStatus
+from vibe.core.workflows._limits import MODEL_LAUNCHED_MAX_AGENTS
+from vibe.core.workflows.models import (
+    WorkflowLaneAttestation,
+    WorkflowLaneExpectation,
+    WorkflowResult,
+    WorkflowRun,
+    WorkflowStatus,
+)
 from vibe.core.workflows.runtime import WorkflowRuntime
 
 pytestmark = pytest.mark.asyncio
@@ -43,6 +53,31 @@ def make_factory(response_text: str = "ok") -> Any:
         return MockAgentLoop(response_text=response_text)
 
     return factory
+
+
+async def test_model_launched_workflow_uses_two_agent_cap() -> None:
+    runner = SimpleNamespace(launch=Mock(return_value="wf-tool"))
+    host: Any = SimpleNamespace(
+        config=SimpleNamespace(disable_workflows=False),
+        _workflow_runner=runner,
+        _build_workflow_parent_context=lambda call_id: InvokeContext(
+            tool_call_id=call_id
+        ),
+        _resolve_workflow_source=lambda _name: None,
+    )
+
+    expected = (
+        WorkflowLaneExpectation(label="lane-1", profile="explore"),
+        WorkflowLaneExpectation(label="lane-2", profile="reviewer"),
+    )
+    run_id = VibeApp._launch_workflow_from_tool(
+        host, "async def main(): pass", expected_lanes=expected
+    )
+
+    assert run_id == "wf-tool"
+    runtime = runner.launch.call_args.kwargs["runtime"]
+    assert runtime.max_agents == MODEL_LAUNCHED_MAX_AGENTS == 2
+    assert runtime.expected_lanes == expected
 
 
 async def test_launch_and_complete() -> None:
@@ -91,6 +126,31 @@ async def test_terminal_callback_carries_exact_run_id_and_status_once() -> None:
 
     assert terminal == [(run_id, WorkflowStatus.COMPLETED)]
     assert entry.terminal_delivered is True
+
+
+async def test_app_terminal_callback_forwards_runtime_lane_attestation() -> None:
+    expected = (WorkflowLaneExpectation(label="lane-1", profile="explore"),)
+    attestation = WorkflowLaneAttestation(
+        expected=expected,
+        attempted_labels=("lane-1",),
+        started_labels=("lane-1",),
+        successful_labels=("lane-1",),
+    )
+    observe = Mock()
+    host: Any = SimpleNamespace(
+        _workflow_runner=SimpleNamespace(
+            find_run=lambda _run_id: SimpleNamespace(
+                result=SimpleNamespace(
+                    run=SimpleNamespace(lane_attestation=attestation)
+                )
+            )
+        ),
+        agent_loop=SimpleNamespace(observe_workflow_completion=observe),
+    )
+
+    await VibeApp._on_workflow_terminal(host, "wf-1", WorkflowStatus.COMPLETED)
+
+    observe.assert_called_once_with("wf-1", succeeded=True, attestation=attestation)
 
 
 async def test_launch_records_args_for_snapshot() -> None:
@@ -617,6 +677,32 @@ async def main():
     new_entry = runner.runs[-1]
     # The resumed runtime restored the cached result from the snapshot.
     assert "abc123" in new_entry.runtime._cache, "cached results must be restored"
+
+
+async def test_resume_rejects_strategy_bound_snapshot() -> None:
+    from vibe.core.workflows.models import WorkflowLaneExpectation, WorkflowRunSnapshot
+
+    async def mount(w: Any) -> None:
+        pass
+
+    snapshot = WorkflowRunSnapshot(
+        run_id="wf-bound",
+        script_source="async def main(): pass",
+        expected_lanes=(WorkflowLaneExpectation(label="audit"),),
+    )
+    runner = WorkflowRunner(
+        mount=mount,
+        snapshot_loader=lambda: [snapshot.model_dump(mode="json")],
+        resume_runtime_factory=lambda: WorkflowRuntime(
+            agent_loop_factory=make_factory()
+        ),
+    )
+
+    widget = await runner.handle_command("resume wf-bound")
+
+    assert isinstance(widget, ErrorMessage)
+    assert "Cannot resume a strategy-bound workflow" in str(widget._error)
+    assert runner.runs == []
 
 
 async def test_resume_without_snapshot_is_an_error() -> None:

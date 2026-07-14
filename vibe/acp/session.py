@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Coroutine
 from typing import Any
 
+from vibe.acp._workspace_binding import AcpWorkspace
 from vibe.acp.commands import AcpCommandRegistry
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.teams import TeamManager
@@ -18,11 +19,17 @@ class AcpSessionLoop:
     """
 
     def __init__(
-        self, *, id: str, agent_loop: AgentLoop, command_registry: AcpCommandRegistry
+        self,
+        *,
+        id: str,
+        agent_loop: AgentLoop,
+        command_registry: AcpCommandRegistry,
+        workspace: AcpWorkspace,
     ) -> None:
         self.id = id
         self.agent_loop = agent_loop
         self.command_registry = command_registry
+        self.workspace = workspace
         self.team_manager: TeamManager | None = None
         self._closed = False
         self._tasks: set[asyncio.Task[None]] = set()

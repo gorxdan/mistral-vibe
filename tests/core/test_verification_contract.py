@@ -7,6 +7,7 @@ from vibe.core.verification_contract import (
     VerificationVerdict,
     is_trivial_change_set,
     is_trivial_verification_note,
+    is_verification_command,
     is_verification_todo,
     parse_verification_report,
     report_evidence_was_observed,
@@ -79,6 +80,81 @@ def test_compound_shell_commands_are_not_verification_evidence(command: str) -> 
 )
 def test_arbitrary_output_producers_are_not_verification_evidence(command: str) -> None:
     assert not verification_observation_hashes(command, "5 passed\n", "")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "./pytest",
+        "./ruff check .",
+        "tools/pytest",
+        r".\pytest.exe",
+        r"tools\\pytest.exe",
+        "pytest.cmd",
+        "pytest.bat",
+        "pytest.com",
+        "uv run ./pytest",
+        "npx --no-install ./pytest",
+        "npm exec -- pytest.cmd",
+    ],
+)
+def test_candidate_owned_runner_names_are_not_verification_evidence(
+    command: str,
+) -> None:
+    assert not is_verification_command(command)
+    assert not verification_observation_hashes(command, "5 passed\n", "")
+
+
+def test_windows_bash_output_never_becomes_verification_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("vibe.core.verification_contract.is_windows", lambda: True)
+
+    assert not verification_observation_hashes("pytest", "5 passed\n", "")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "uv run --offline pytest",
+        "uv --project . run --frozen pytest",
+        "python -I -m pytest",
+        "npm --silent test",
+        "ruff --config pyproject.toml check .",
+        "make -j test",
+        "npx --no-install pytest",
+        "uvx ruff check .",
+        "npm exec -- pytest",
+        "pnpm dlx vitest",
+        "cargo +nightly test",
+        "cargo --color always test",
+        "dotnet --diagnostics test --no-restore",
+        "make -j 4 test",
+    ],
+)
+def test_verification_recognition_normalizes_common_runner_options(
+    command: str,
+) -> None:
+    assert is_verification_command(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cargo run",
+        "dotnet publish --no-restore",
+        "dotnet run --no-restore",
+        "go generate ./...",
+        "npm run build",
+    ],
+)
+def test_project_execution_is_not_accepted_as_verification_evidence(
+    command: str,
+) -> None:
+    assert not is_verification_command(command)
+    assert not verification_observation_hashes(
+        command, "candidate says checks passed\n", ""
+    )
 
 
 def test_dotnet_test_requires_a_nonzero_observed_test_count() -> None:

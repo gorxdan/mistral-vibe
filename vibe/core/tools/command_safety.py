@@ -20,13 +20,12 @@ These run *after* hard denials (denylist) and never relax an existing NEVER.
 
 from __future__ import annotations
 
+import re
 import shlex
 
-# Command prefixes that wrap another command. Unwrapped before danger analysis
-# so `sudo rm -rf /` is treated as `rm -rf /`. `env` also swallows VAR=val
-# assignments and its own flags between the keyword and the real command.
-_WRAPPERS = {"sudo", "nohup", "time", "command", "exec", "nice", "ionice"}
-_UV_RUN_MIN_TOKENS = 3
+from vibe.core.tools._command_tokens import split_bash_tokens, unwrap_command_tokens
+
+_SHORT_OPTION_LENGTH = 2
 
 # chmod modes that broadly open permissions or wipe them — a security smell worth
 # an explicit prompt rather than silent auto-approval.
@@ -73,44 +72,31 @@ _RUFF_WRITE_OPTIONS = {
     "--watch",
     "-w",
 }
-
-
-def _unwrap(tokens: list[str]) -> list[str]:
-    """Drop leading privilege/wrapper prefixes and env VAR=val assignments."""
-    out = list(tokens)
-    while out:
-        head = out[0]
-        basename = head.rsplit("/", 1)[-1]
-        if (
-            basename == "uv"
-            and len(out) >= _UV_RUN_MIN_TOKENS
-            and out[1] == "run"
-            and (out[2] == "--" or not out[2].startswith("-"))
-        ):
-            out = out[3:] if out[2] == "--" else out[2:]
-            continue
-        if basename in _WRAPPERS:
-            out = out[1:]
-            continue
-        if basename == "env":
-            out = out[1:]
-            while out and (out[0].startswith("-") or "=" in out[0]):
-                out = out[1:]
-            continue
-        # Bare `VAR=val` assignment prefixing the real command (no `env`).
-        if "=" in head and not head.startswith("-"):
-            out = out[1:]
-            continue
-        break
-    return out
+_OUTPUT_OPTION_COMMANDS = {
+    "diff": (("--output",), ()),
+    "sort": (("--output",), ("-o",)),
+    "tree": ((), ("-o",)),
+}
+_UNIQ_VALUE_OPTIONS = frozenset({
+    "--check-chars",
+    "--skip-chars",
+    "--skip-fields",
+    "-f",
+    "-s",
+    "-w",
+})
+_DATE_VALUE_OPTIONS = frozenset({"--date", "--file", "--reference", "-d", "-f", "-r"})
+_DATE_SET_OPERAND = re.compile(r"\d{8}(?:\d{2}|\d{4})?(?:\.\d{2})?")
 
 
 def unwrapped_command(command: str) -> str | None:
     try:
-        tokens = _unwrap(shlex.split(command, posix=True))
+        result = unwrap_command_tokens(split_bash_tokens(command))
     except ValueError:
         return None
-    return shlex.join(tokens) if tokens else None
+    if result.ambiguous or not result.tokens:
+        return None
+    return shlex.join(result.tokens)
 
 
 def _ruff_subcommand(args: list[str]) -> tuple[str, list[str]] | None:
@@ -153,6 +139,114 @@ def _ruff_is_read_only(args: list[str]) -> bool:
     if subcommand == "format":
         return "--check" in subcommand_args or "--diff" in subcommand_args
     return False
+
+
+def _has_output_option(
+    args: list[str], long_options: tuple[str, ...], short_options: tuple[str, ...]
+) -> bool:
+    for argument in args:
+        option = argument.partition("=")[0]
+        if any(
+            option == candidate
+            or (
+                option.startswith("--")
+                and len(option) > _SHORT_OPTION_LENGTH
+                and candidate.startswith(option)
+            )
+            for candidate in long_options
+        ):
+            return True
+        if any(
+            argument == candidate
+            or (argument.startswith(candidate) and len(argument) > len(candidate))
+            for candidate in short_options
+        ):
+            return True
+    return False
+
+
+def _less_can_write(args: list[str]) -> bool:
+    for argument in args:
+        option = argument.partition("=")[0]
+        folded = option.casefold()
+        if (
+            folded.startswith("--")
+            and len(folded) > _SHORT_OPTION_LENGTH
+            and any(
+                candidate.startswith(folded)
+                for candidate in {"--log-file", "--log-file2"}
+            )
+        ):
+            return True
+        if argument in {"-o", "-O"} or (
+            argument.startswith(("-o", "-O")) and len(argument) > _SHORT_OPTION_LENGTH
+        ):
+            return True
+    return False
+
+
+def _date_can_set_clock(args: list[str]) -> bool:
+    index = 0
+    while index < len(args):
+        argument = args[index]
+        if argument == "--":
+            return any(_DATE_SET_OPERAND.fullmatch(item) for item in args[index + 1 :])
+        option, separator, _value = argument.partition("=")
+        if option in _DATE_VALUE_OPTIONS:
+            index += 1 if separator or argument != option else _SHORT_OPTION_LENGTH
+            continue
+        if option.startswith("--") and len(option) > _SHORT_OPTION_LENGTH:
+            if "--set".startswith(option):
+                return True
+            index += 1
+            continue
+        if argument.startswith("-") and argument != "-":
+            if "s" in argument[1:]:
+                return True
+            index += 1
+            continue
+        if _DATE_SET_OPERAND.fullmatch(argument):
+            return True
+        index += 1
+    return False
+
+
+def _uniq_has_output_operand(args: list[str]) -> bool:
+    operands: list[str] = []
+    index = 0
+    while index < len(args):
+        argument = args[index]
+        if argument == "--":
+            operands.extend(args[index + 1 :])
+            break
+        option = argument.partition("=")[0]
+        if option in _UNIQ_VALUE_OPTIONS:
+            if "=" not in argument and argument == option:
+                index += 2
+            else:
+                index += 1
+            continue
+        if argument.startswith("-") and argument != "-":
+            index += 1
+            continue
+        operands.append(argument)
+        index += 1
+    return len(operands) > 1
+
+
+def _allowlisted_effect_reason(
+    command: str, name: str, arguments: list[str]
+) -> str | None:
+    output_options = _OUTPUT_OPTION_COMMANDS.get(name)
+    if output_options and _has_output_option(arguments, *output_options):
+        return f"`{command}` selects an output file and is not read-only."
+    if name == "less" and _less_can_write(arguments):
+        return f"`{command}` enables less logging and can write a file."
+    if name == "date" and _date_can_set_clock(arguments):
+        return f"`{command}` can change the system clock."
+    if name == "uniq" and _uniq_has_output_operand(arguments):
+        return f"`{command}` supplies uniq's output-file operand."
+    return None
 
 
 def _rm_is_destructive(args: list[str]) -> bool:
@@ -230,10 +324,12 @@ def _destructive_reason_for_tokens(command: str, tokens: list[str]) -> str | Non
 
 def _single_command_destructive_reason(command: str) -> str | None:
     try:
-        tokens = _unwrap(shlex.split(command, posix=True))
+        result = unwrap_command_tokens(split_bash_tokens(command))
     except ValueError:
         return f"`{command}` could not be tokenized safely; it is not auto-approved."
-    return _destructive_reason_for_tokens(command, tokens)
+    if result.ambiguous:
+        return f"`{command}` uses a command wrapper that could not be classified safely; it is not auto-approved."
+    return _destructive_reason_for_tokens(command, list(result.tokens))
 
 
 def destructive_command_reason(command_parts: list[str]) -> str | None:
@@ -259,9 +355,12 @@ def allowlisted_argument_is_unsafe(command: str) -> str | None:
     arguments are safe to auto-approve.
     """
     try:
-        tokens = _unwrap(shlex.split(command, posix=True))
+        result = unwrap_command_tokens(split_bash_tokens(command))
     except ValueError:
         return f"`{command}` could not be tokenized safely; it is not auto-approved."
+    if result.ambiguous:
+        return f"`{command}` uses a command wrapper that could not be classified safely; it is not auto-approved."
+    tokens = list(result.tokens)
     if not tokens:
         return None
     name = tokens[0].rsplit("/", 1)[-1]
@@ -279,4 +378,4 @@ def allowlisted_argument_is_unsafe(command: str) -> str | None:
                 "use `ruff check --no-fix ...`, `ruff check --diff ...`, or "
                 "`ruff format --check/--diff ...`."
             )
-    return None
+    return _allowlisted_effect_reason(command, name, tokens[1:])

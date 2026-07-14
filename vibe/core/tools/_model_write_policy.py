@@ -4,11 +4,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 import os
 from pathlib import Path, PurePosixPath
-import shlex
 from typing import TYPE_CHECKING
 
 from vibe.core.paths import LOG_DIR, VIBE_HOME
 from vibe.core.tasking._path_scope import path_matches_scope
+from vibe.core.tools._command_tokens import split_bash_tokens
 from vibe.core.tools.command_safety import unwrapped_command
 
 if TYPE_CHECKING:
@@ -182,7 +182,7 @@ def hard_control_plane_command_reason(
     for part in command_parts:
         unwrapped = unwrapped_command(part) or part
         try:
-            tokens = shlex.split(unwrapped, posix=True)
+            tokens = split_bash_tokens(unwrapped)
         except ValueError:
             continue
         if not tokens:

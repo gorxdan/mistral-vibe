@@ -3,16 +3,18 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
+import sys
 from typing import BinaryIO, cast
 
 import pytest
 
 from vibe.core._immutable_store import ImmutableFileStore, ImmutableStoreError
 from vibe.core._trusted_command import (
-    TRUSTED_SYSTEM_PATH,
     TrustedCommandError,
     minimal_trusted_git_environment,
     resolve_trusted_system_executable,
+    trusted_system_path,
+    validate_trusted_system_executable,
 )
 from vibe.core._trusted_host_runner import (
     FrozenSourceSnapshot,
@@ -32,7 +34,7 @@ from vibe.core._verification_runner import (
     _cleanup_sandbox_invocation,
     _prepare_sandbox_invocation,
 )
-from vibe.core.tools.sandbox import SandboxSpec
+from vibe.core.tools.sandbox import ResolvedSandboxBackend, SandboxSpec
 from vibe.core.utils.io import read_safe, write_safe
 
 
@@ -45,7 +47,7 @@ def test_minimal_trusted_git_environment_drops_ambient_injection(
 
     env = minimal_trusted_git_environment(tmp_path / "home")
 
-    assert env["PATH"] == TRUSTED_SYSTEM_PATH
+    assert env["PATH"] == trusted_system_path()
     assert env["HOME"] == str((tmp_path / "home").resolve())
     assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
     assert env["GIT_CONFIG_NOSYSTEM"] == "1"
@@ -70,10 +72,43 @@ def test_system_executable_resolution_ignores_ambient_path(
     assert resolved.name == "git"
 
 
-@pytest.mark.parametrize("name", ["/tmp/git", "../git", "bin/git", ""])
+def test_system_executable_validation_rejects_user_controlled_symlink(
+    tmp_path: Path,
+) -> None:
+    alias = tmp_path / "true"
+    alias.symlink_to(resolve_trusted_system_executable("true"))
+
+    with pytest.raises(TrustedCommandError, match="root-controlled"):
+        validate_trusted_system_executable(alias)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="Linux executable provenance policy"
+)
+def test_trusted_system_path_rejects_user_controlled_directory_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alias = tmp_path / "bin"
+    alias.symlink_to("/usr/bin", target_is_directory=True)
+    monkeypatch.setattr("vibe.core._trusted_command.TRUSTED_SYSTEM_PATH", str(alias))
+
+    assert trusted_system_path() == "/__vibe_no_trusted_executables__"
+
+
+@pytest.mark.parametrize("name", ["/tmp/git", "../git", "./git", "bin/git", ""])
 def test_system_executable_resolution_rejects_non_bare_name(name: str) -> None:
     with pytest.raises(TrustedCommandError, match="bare name"):
         resolve_trusted_system_executable(name)
+
+
+def test_trusted_check_rejects_dot_relative_executable(tmp_path: Path) -> None:
+    with pytest.raises(VerificationReceiptError, match="bare name"):
+        resolve_trusted_executable(
+            "./true",
+            forbidden_roots=(),
+            expected_sha256=None,
+            materialization_root=tmp_path / "materialized",
+        )
 
 
 def test_trusted_executable_rejects_shell_hidden_behind_alias(tmp_path: Path) -> None:
@@ -199,19 +234,20 @@ def test_immutable_store_detects_listed_directory_replacement(
     store = ImmutableFileStore(tmp_path / "store")
     store.write(PurePosixPath("receipts/repository/receipt.json"), b"payload")
     moved = tmp_path / "moved-receipts"
-    original_listdir = os.listdir
+    original_scandir = os.scandir
     swapped = False
 
-    def replacing_listdir(path) -> list[str]:
+    def replacing_scandir(path):
         nonlocal swapped
-        entries = original_listdir(path)
+        entries = original_scandir(path)
         if not swapped:
             swapped = True
             (store.root / "receipts").rename(moved)
             (store.root / "receipts").mkdir()
+            (store.root / "receipts" / "repository").mkdir()
         return entries
 
-    monkeypatch.setattr("vibe.core._immutable_store.os.listdir", replacing_listdir)
+    monkeypatch.setattr("vibe.core._immutable_store.os.scandir", replacing_scandir)
 
     with pytest.raises(ImmutableStoreError, match="ancestor changed"):
         store.list_directory(PurePosixPath("receipts/repository"))
@@ -281,7 +317,7 @@ def test_trusted_sandbox_policy_exposes_only_exported_source(
         sha256="a" * 64,
         source_identity=(1, 2, 3, 4, 5),
         materialized_identity=(6, 7, 8, 9, 10),
-        read_roots=(Path("/usr"),),
+        read_roots=(Path("/usr"), run_root / "materialized"),
     )
     snapshot = FrozenSourceSnapshot(
         run_root=run_root,
@@ -291,12 +327,13 @@ def test_trusted_sandbox_policy_exposes_only_exported_source(
         content_sha256="d" * 64,
     )
 
-    def capture(spec: SandboxSpec, _backend: str):
+    def capture(spec: SandboxSpec, _backend: ResolvedSandboxBackend):
         captured.append(spec)
         return ["bwrap", "--"], "bwrap", None
 
     monkeypatch.setattr(
-        "vibe.core._verification_runner.detect_backend", lambda _override: "bwrap"
+        "vibe.core._verification_runner.resolve_backend",
+        lambda _override: ResolvedSandboxBackend("bwrap", Path("/usr/bin/bwrap")),
     )
     monkeypatch.setattr(
         "vibe.core._verification_runner._git_common_root", lambda _root: git_common

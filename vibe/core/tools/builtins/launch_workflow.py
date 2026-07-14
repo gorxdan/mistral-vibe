@@ -105,6 +105,8 @@ class LaunchWorkflow(
     ],
     ToolUIData[LaunchWorkflowArgs, LaunchWorkflowResult],
 ):
+    host_only: ClassVar[bool] = True
+    is_subagent_spawner: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Launch a workflow script that orchestrates parallel agents. "
         "Pass the script's SOURCE TEXT in the `script` argument inline (not a "

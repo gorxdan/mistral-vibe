@@ -101,7 +101,7 @@ pip install mistral-vibe
 - **Interactive Chat**: A conversational AI agent that understands your requests and breaks down complex tasks.
 - **Powerful Toolset**: A suite of tools for file manipulation, code searching, version control, and command execution, right from the chat prompt.
   - Read, write, and patch files (`read`, `write_file`, `edit`).
-  - Execute shell commands in a stateful terminal (`bash`).
+  - Execute one-off shell commands in fresh, stateless core-managed Bash processes (`bash`); human-approved ACP calls use the editor client's terminal.
   - Search file contents with `grep` (ripgrep-backed: output modes, context lines, `glob`/`type` filters).
   - Find files by name with `glob` (patterns like `**/*.py`, most recently modified first).
   - Manage a `todo` list to track the agent's work.
@@ -131,7 +131,7 @@ Vibe comes with several built-in agent profiles, each designed for different use
 - **`default`**: Standard agent that requires approval for tool executions. Best for general use.
 - **`plan`**: Read-only agent for exploration and planning. Auto-approves safe tools like `grep` and `read`.
 - **`accept-edits`**: Auto-approves file edits only (`write_file`, `edit`). Useful for code refactoring.
-- **`auto-approve`**: Auto-approves permitted tool executions; `NEVER` policy still blocks. Use with caution.
+- **`auto-approve`**: Auto-approves ordinary permitted calls. Hard `NEVER` decisions and Bash explicit-user gates are skipped rather than bypassed in headless runs. Use with caution.
 
 Use the `--agent` flag to select a different agent:
 
@@ -153,7 +153,8 @@ directory. Subagents such as `explore` are not accepted.
 
 > Note: `default_agent` applies in both interactive and programmatic
 > (`-p` / `--prompt`) sessions. Pass `--auto-approve` or `--yolo` with any
-> agent when a run should approve all tool calls without prompting.
+> agent to approve ordinary permitted calls without prompting. Hard denials and
+> Bash explicit-user gates still do not run headlessly.
 
 ### Plan Mode
 
@@ -288,7 +289,7 @@ vibe --prompt "Refactor the main function in cli/main.py to be more modular."
 ```
 
 By default, it uses your configured `default_agent` (`default` unless changed).
-To approve all permitted tool calls without prompting, pass `--auto-approve` or `--yolo`
+To approve ordinary permitted tool calls without prompting, pass `--auto-approve` or `--yolo`
 (also available for interactive sessions):
 
 ```bash
@@ -303,7 +304,7 @@ When using `--prompt`, you can specify additional options:
 - **`--max-price DOLLARS`**: Set a maximum cost limit in dollars. The session will be interrupted if the cost exceeds this limit.
 - **`--max-tokens N`**: Set a maximum cumulative LLM token budget for the session, counting both prompt and completion tokens. The session will be interrupted if usage exceeds this limit.
 - **`--agent NAME`**: Select the agent profile for this run.
-- **`--auto-approve`, `--yolo`**: Approves permitted tool calls without prompting, including in interactive sessions. Calls resolved as `NEVER` remain blocked. Can be combined with any `--agent` value.
+- **`--auto-approve`, `--yolo`**: Approves ordinary permitted tool calls without prompting, including in interactive sessions. Hard `NEVER` decisions and Bash explicit-user gates remain blocked or are skipped headlessly. Can be combined with any `--agent` value.
 - **`--enabled-tools TOOL`**: Enable specific tools. In programmatic mode, this disables all other tools. Can be specified multiple times. Supports exact names, glob patterns (e.g., `bash*`), or regex with `re:` prefix (e.g., `re:^serena_.*$`).
 - **`--output FORMAT`**: Set the output format. Options:
   - `text` (default): Human-readable text output
@@ -680,7 +681,7 @@ timeout = 15.0             # seconds; on timeout the judge fails closed (you are
 How it fits the existing controls:
 
 - It only fills the **approval prompt** gap. Calls your denylist/guardrails mark as denied (`NEVER`) are still hard-blocked — the judge never sees them.
-- `--auto-approve` never bypasses immutable `NEVER` policy. When a judge is configured, ASK calls still pass through it: an approval executes and a deferral is skipped without a user prompt. With no configured judge, auto-approve retains its normal permitted-call behavior.
+- `--auto-approve` never bypasses immutable `NEVER` policy or Bash explicit-user gates. When a judge is configured, eligible ASK calls still pass through it: an approval executes and a deferral is skipped without a user prompt. With no configured judge, auto-approve retains its ordinary permitted-call behavior.
 - It **fails closed when configured**. An API error, timeout, refusal, spend denial, or unparsable answer becomes a deferral; interactive sessions ask the user and auto-approved sessions skip the call.
 - Every judge auto-approval is logged.
 
@@ -700,7 +701,30 @@ policy.
 Auto-approve, isolated/task-contracted work, and managed model Bash always
 require Bubblewrap or Seatbelt, disable network, use a strict scrubbed
 environment, and fail closed when confinement cannot start. Ordinary
-auto-approve still permits writes to its workspace and normal Git commits.
+auto-approve still permits workspace writes; the root user can explicitly approve
+Git commits in an interactive session.
+Authorization origin adds a second distinction. Policy-, Safety-Judge-, and
+bypass-authorized core Bash calls use a trusted system `PATH` and minimal
+noninteractive environment without ambient credentials, loader settings, Python
+paths, or configured passthrough. Human and stored-human approvals use the
+configured compatibility environment. It is scrubbed by default; setting
+`sandbox.scrub_env = false` retains the remaining host environment. Only strict
+modes in the preceding paragraph make the sandbox mandatory.
+Backend detection and launch use the same process-frozen absolute executable
+from the sanitized system path; project or user `PATH` entries cannot replace
+Bubblewrap, `unshare`, or Seatbelt between the probe and the command.
+On Linux, automated execution accepts only root-owned regular executables without
+set-ID or group/world-write bits and which the current non-root user cannot write.
+Their lexical and resolved directory ancestry must also be root-controlled,
+non-group/world-writable, and non-writable by that user. Project, user, or
+unprovable executable graphs require explicit user approval. Exact standalone
+`git log`, `show`, `blame`, and `grep` inspections are hardened before automated
+execution; `git diff`, `status`, wrappers, composition, redirection, and other Git
+forms require explicit user approval. Startup/injection
+variables such as `BASH_ENV`, exported Bash functions, `LD_PRELOAD`, `LD_AUDIT`,
+and `DYLD_INSERT_LIBRARIES` are stripped. Automated calls inherit no ambient
+loader configuration. The default human compatibility scrub also removes loader
+variables; they survive only when `sandbox.scrub_env = false`.
 Topology-bound Bash is narrower: only its scratchpad is writable, background
 execution is rejected, and candidate changes must use the path-checked file
 tools. Receipt-authorizing trusted checks are a separate Linux-Bubblewrap-only
@@ -721,7 +745,8 @@ opt-in.
 
 See [Shell sandbox](docs/design/sandbox.md) for the mode table, configuration,
 backend limits, and protected paths. `extra_args` is not a filesystem escape
-hatch; Bubblewrap mount and command-graph flags are rejected.
+hatch; Bubblewrap mount, environment, argv, and command-graph flags are rejected,
+and `unshare` does not accept `extra_args`.
 
 ### Trusted Verification Recipe
 
@@ -832,6 +857,10 @@ max_turns = 80
 max_session_tokens = 2000000
 ```
 
+Start a topology-bound run from the assigned candidate with `--no-worktree` or
+`worktree.mode = "off"`. Entering another automatic worktree intentionally fails
+topology validation.
+
 At startup the host verifies the exact control commit, physical registered
 control and candidate worktrees, clean assigned candidate SHA and branch,
 completed dependencies, and a durable evidence workspace that neither contains
@@ -869,10 +898,12 @@ managed catalog. Managed `task` delegates only to effective read-only built-in
 most `bash`, `glob`, `grep`, `read`, and `skill`; structured manifests
 intersect this ceiling and use `task_checks` only for host-bound checks.
 
-Complete every intended candidate edit and any commit required by the current
-workflow before spawning the verifier, and do not mutate the candidate while it
-runs. Verifier scratch artifacts are removed by the host; the verifier leaves
-them in place instead of issuing cleanup commands. After a current verifier
+During the active phase, the model completes only its allowed edits and begins
+its handoff with `READY_FOR_HOST_FREEZE:`, `BLOCKED:`, or `IN_PROGRESS:`. It does
+not commit, spawn a verifier, or call `verify_work`. The host freezes and commits
+the candidate, finalizes evidence and control metadata, then starts a fresh
+verification session. Verifier scratch artifacts are removed by the host; the
+verifier leaves them in place instead of issuing cleanup commands. After a current verifier
 `PASS`, the no-argument `verify_work` tool executes the prebound recipe against
 the active worktree candidate and current main `HEAD`; a topology-bound
 verification session instead uses its exact candidate and baseline SHAs without
@@ -1514,16 +1545,18 @@ background as asyncio tasks, so the session stays responsive while agents work.
 
 A workflow script is a `.py` file with an `async def main()` function. Optional
 YAML frontmatter (`name:`, `description:`) precedes the Python source. The
-runtime injects these functions:
-
-- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent. Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `worker` (full tools incl. any configured MCP; **requires** `isolation="worktree"`). `isolation="worktree"` runs it as a `vibe -p` subprocess in a fresh git worktree (isolates file mutations for parallel agents); the branch is kept for manual merge if it changed files.
-- `parallel(*thunks)` — run thunks concurrently, results in order (a thunk that raises yields `None`)
-- `pipeline(items, *stages)` — run each item through all stages independently, no barrier between stages; each stage receives `(prev, item, index)`. One stage acts as a concurrent map.
-- `phase(name)` — declare a phase for progress tracking
-- `log(msg)` — log a progress message
-- `budget` — token budget object with `.total` and `.remaining()`
-- `workflow(name, args=None)` — run another discovered workflow inline as a sub-step, returning its result (shares this run's budget/agent count; one level deep)
-- `args` — structured input from the invocation command
+current authoring API is documented in
+[OpenWiki: Workflows and Teams](openwiki/workflows-teams/overview.md). Its main
+entry point is
+`agent(prompt, *, agent="explore", model=None, label=None, phase=None,
+schema=None, budget_estimate=None, isolation=None, strip_unknown=True,
+contract=None, citations=None, then=None)`.
+The runtime also provides `parallel`, `pipeline`, `recipe`, `workflow`, `phase`,
+`log`, `post_message`, `fetch_messages`, `flatten`, `dedup_by`, `merge_by`,
+`team_task`, `budget`, and `args`.
+Workflow launches share the host's two-agent-slot cap; one workflow reserves
+both slots, and every nested launch shares the same run budget and total-agent
+ceiling.
 
 Scripts are validated via AST before execution (unsafe imports, dangerous calls,
 dunder access blocked). Discovered from `workflow_paths` config, `.vibe/workflows/`,
@@ -1548,6 +1581,7 @@ dunder access blocked). Discovered from `workflow_paths` config, `.vibe/workflow
 - `/workflows list` — list runs as text
 - `/workflows stop <id|all>` — stop one or all runs
 - `/workflows snapshot <id>` — show cached results for a run
+- `/workflows resume <id>` — resume an unbound persisted snapshot
 
 Workflow result reuse is disabled unless the trusted host supplies a canonical
 SHA-256 fingerprint of the complete dependency closure, including ignored or
@@ -1556,7 +1590,9 @@ bound with repository state, effective model/provider and routing policy, tool
 schemas and policy, prompt, schema/contract, and harness version. Only known
 in-process read-only profiles are eligible; isolated, mutating, verifier,
 citation, and receipt-bearing work is never replayed. A resumed snapshot must be
-given the same trusted dependency fingerprint or it misses safely.
+given the same trusted dependency fingerprint or it misses safely. Strategy-bound
+workflow snapshots cannot be resumed because replay cannot yet restore the exact
+host-issued lane authorization; start a new strategy-bound run instead.
 
 ### Effort Modes
 
@@ -1619,6 +1655,12 @@ Team directories live under `~/.vibe/teams/<name>/` and are cleaned up on exit.
 ## Editors/IDEs
 
 Mistral Vibe can be used in text editors and IDEs that support [Agent Client Protocol](https://agentclientprotocol.com/overview/clients). See the [ACP Setup documentation](docs/acp-setup.md) for setup instructions for various editors and IDEs.
+
+An ACP server process binds its first canonical cwd and exact requested
+additional-directory set. Multiple same-workspace sessions may overlap, but a
+different workspace requires a separate ACP process. Automated Bash calls use
+core-managed confinement; human and stored-human approvals are revalidated and
+run in the editor client's terminal with the bound cwd.
 
 ## Resources
 

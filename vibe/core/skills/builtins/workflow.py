@@ -4,7 +4,8 @@ from pathlib import Path
 
 from vibe.core.skills.models import SkillInfo, SkillScope, SkillSource
 from vibe.core.utils.io import read_safe
-from vibe.core.workflows.runtime import DEFAULT_MAX_AGENTS, DEFAULT_MAX_CONCURRENT
+from vibe.core.workflows._limits import MODEL_LAUNCHED_MAX_AGENTS
+from vibe.core.workflows.runtime import DEFAULT_MAX_CONCURRENT
 
 # Single source of truth: the workflow authoring guide lives in the
 # launch_workflow tool's prompt file. It is loaded on demand via this skill
@@ -23,7 +24,7 @@ _GUIDE_PATH = (
 _PROMPT = (
     read_safe(_GUIDE_PATH)
     .text.replace("__MAX_CONCURRENT_AGENTS__", str(DEFAULT_MAX_CONCURRENT))
-    .replace("__MAX_TOTAL_AGENTS__", str(DEFAULT_MAX_AGENTS))
+    .replace("__MAX_TOTAL_AGENTS__", str(MODEL_LAUNCHED_MAX_AGENTS))
 )
 
 

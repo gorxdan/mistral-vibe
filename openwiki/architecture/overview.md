@@ -78,6 +78,12 @@ Handles model failover on rate-limit/overload/content-filter errors. Key methods
 **Source**: `vibe/core/agent_loop_safety_judge.py`
 
 Fork-only LLM safety judge that pre-screens ASK-gated tool calls. Uses a verdict cache (`OrderedDict` keyed by tool name + args hash + transcript hash), truncation guards (args capped at `JUDGE_ARGS_LIMIT=4000` chars), and a transcript window (last 4 turns, 2000 chars). Force-defers to user when args are truncated AND a risk flag is present — never auto-approves on a blind prefix.
+The session reuses the same judge instance while its model/provider/config,
+timeout, and spend identity remain unchanged. If the provider rejects
+`temperature`, the judge retries without it once and remembers the omission for
+subsequent calls on that instance. A change to any part of that full identity
+clears the verdict cache, including same-alias provider, model-config, or timeout
+changes.
 
 ### AgentLoopMemoryMixin
 **Source**: `vibe/core/agent_loop_memory.py`
@@ -95,7 +101,9 @@ coordination helpers used by Task and workflow execution.
 
 Installs the managed runtime capability ceiling, validates an optional frozen
 execution topology before the first root turn, checks receipt freshness, and
-replaces unsupported completion claims with host verification status.
+replaces unsupported terminal completion claims with host verification status.
+Intermediate tool turns suppress final-looking status banners, while typed or
+ordinary tool-free status handoffs remain visibly quoted as untrusted context.
 
 ## AgentLoopLimits
 
@@ -116,11 +124,13 @@ After the host-only `work_strategy` pre-batch barrier, tool calls are partitione
 in model-emitted order. Consecutive read-only calls form a concurrent wave. Each
 non-read-only call is a singleton mutation barrier: prior reads finish before it
 starts, and later calls wait for it to finish. Unknown and third-party tools use
-the conservative non-read-only default. All call events are announced before
-execution. Events and results inside a read wave are then forwarded as produced;
-the next wave waits until every invocation in the current wave fully finalizes.
-An unexpected executor failure drains that wave, emits terminal failures for
-unstarted announced calls, and aborts the remaining batch.
+the conservative non-read-only default. Classification is computed once when
+the wave is built and passed unchanged to execution. All call events are
+announced before execution. Events and results inside a read wave are then
+forwarded as produced; the next wave waits until every invocation in the current
+wave fully finalizes. An unexpected executor failure emits a terminal failure
+for its call if needed, drains that wave, synthesizes failures for all announced
+nonterminal calls, aborts later waves, and propagates.
 
 ## Data Flow: A Single Turn
 
@@ -142,10 +152,12 @@ AgentLoop (agent_loop.py)
     ├── Tool Execution Flow:
     │   ├── Canonical managed catalog / normal discovery → ToolManager
     │   ├── Parse LLM response → ParsedToolCall → ResolvedToolCall
-    │   ├── Ordered scheduler → concurrent read waves + mutation barriers
-    │   ├── Safety Judge — pre-screen ASK-gated tools
-    │   ├── Hooks — before_tool / after_tool lifecycle
-    │   ├── Permission Store — approval gate
+    │   ├── Ordered scheduler → bind classification; read waves + mutation barriers
+    │   ├── Hooks — before_tool rewrite/deny; validate bound classification
+    │   ├── Tool permission resolution — hard denials + explicit-user gates
+    │   ├── Permission Store — ordinary ASK-pattern coverage
+    │   ├── Safety Judge — pre-screen remaining eligible ASK calls
+    │   ├── Human / ordinary auto-approve gate
     │   ├── InvokeContext → BaseTool.invoke() → ToolResultEvent
     │   └── Result size enforcement — preview + persist to disk
     │
@@ -254,9 +266,10 @@ while `land_work` remains limited to the normal host-managed landing session.
 
 Trusted checks run direct argument arrays with `shell=False`; a shell or `env`
 cannot be the executable, and either is rejected behind `uv run`. They use an
-independent fail-closed Bubblewrap/Seatbelt sandbox with network disabled,
-scrubbed host credentials and config, disposable home/temp/caches, candidate and
-Git metadata read-only, and only a per-check run directory writable. The runner
+independent fail-closed Linux Bubblewrap sandbox with network disabled, scrubbed
+host credentials and config, and disposable home/temp/caches. Each check receives
+an exact-HEAD Git-exported snapshot with no Git metadata, a private digest-pinned
+native executable, and only a per-check run directory writable. The runner
 compares repository state before and after all checks.
 
 A recipe may also carry a frozen execution topology. In that mode the host
@@ -276,11 +289,13 @@ generation changes invalidate the result. Session scratch artifacts are cleaned
 by the host, so the verifier leaves them in place; denied or skipped tool calls
 invalidate the run.
 
-Without a configured recipe, only a current workspace- and base-bound verifier
-PASS remains the compatibility authorization path. A workflow contract can gate
-candidate delivery, but its model-authored PASS cannot authorize landing; a
-workflow `then="verifier"` stage may do so only by recording an actual current
-verifier PASS. It commits and fingerprints the isolated candidate before the
+Without a configured recipe, a current workspace- and base-bound verifier PASS
+may authorize completion reporting, but it never authorizes non-trivial landing.
+A workflow contract can gate
+candidate delivery, but its model-authored PASS cannot authorize landing. A
+workflow `then="verifier"` stage may authorize only exact-candidate delivery by
+recording an actual current verifier PASS; it never authorizes landing. It
+commits and fingerprints the isolated candidate before the
 verifier runs, requires a clean and unchanged parent workspace, and records
 authorization only when the delivered workspace exactly matches that candidate.
 Pasted verification prose never authorizes a merge. The
@@ -334,6 +349,20 @@ Templates are loaded from `UtilityPrompt` / `SystemPrompt` enums. Prompt section
 **Source**: `vibe/acp/`
 
 The ACP server is an alternative frontend driven by external ACP clients (editors/IDEs). The same `AgentLoop` core runs underneath.
+
+One ACP process binds the first canonical cwd and exact requested additional-
+directory set for its lifetime. Multiple sessions may run concurrently only
+inside that same workspace contract; another workspace requires a separate ACP
+process. The server rejects mismatched new/load/fork operations before changing
+cwd, trust-dependent configuration, or harness roots, and rejects prompt work if
+the bound process cwd or roots drift. Loaded history must match the bound cwd.
+
+Automated policy, Safety-Judge, and bypass-authorized Bash calls use the
+core-managed sandbox and minimal environment. Human and stored-human calls are
+revalidated against the same permission context and cwd immediately before the
+editor client's terminal is created; that terminal receives the session's bound
+cwd. Contextless direct tool calls are an internal test/embedding compatibility
+path, not ACP authorization.
 
 - `entrypoint.py` — bootstraps config, optionally runs `--setup`, starts `run_acp_server()`
 - `acp_agent_loop.py` — implements the ACP protocol: initialize → new session → prompt → stream chunks → close

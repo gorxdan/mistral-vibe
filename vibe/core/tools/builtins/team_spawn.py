@@ -70,6 +70,8 @@ class TeamSpawn(
     BaseTool[TeamSpawnArgs, TeamSpawnResult, TeamSpawnConfig, BaseToolState],
     ToolUIData[TeamSpawnArgs, TeamSpawnResult],
 ):
+    host_only: ClassVar[bool] = True
+    is_subagent_spawner: ClassVar[bool] = True
     description: ClassVar[str] = (
         "Spawn a teammate subprocess for team-based work. This creates a shared "
         "team workspace so the host can coordinate via team_message and inspect "

@@ -464,8 +464,6 @@ def add_session_dirs(dirs: list[Path]) -> None:
         raise RuntimeError(
             "HarnessFilesManager not initialized — call init_harness_files_manager() first"
         )
-    if not dirs:
-        return
     resolved = tuple(dedup_paths(dirs))
     if resolved == _manager.additional_dirs:
         return

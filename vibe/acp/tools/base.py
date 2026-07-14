@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from pathlib import Path
 from typing import Annotated, cast
 
 from acp import Client
@@ -17,6 +18,7 @@ class AcpToolState(BaseModel):
         default=None, description="ACP Client"
     )
     session_id: str | None = Field(default=None, description="Current ACP session ID")
+    cwd: str | None = Field(default=None, description="Bound ACP workspace")
 
 
 class BaseAcpTool[ToolState: AcpToolState](BaseTool):
@@ -30,11 +32,17 @@ class BaseAcpTool[ToolState: AcpToolState](BaseTool):
 
     @classmethod
     def update_tool_state(
-        cls, *, tool_manager: ToolManager, client: Client | None, session_id: str | None
+        cls,
+        *,
+        tool_manager: ToolManager,
+        client: Client | None,
+        session_id: str | None,
+        cwd: Path | None = None,
     ) -> None:
         tool_instance = cls.get_tool_instance(cls.get_name(), tool_manager)
         tool_instance.state.client = client
         tool_instance.state.session_id = session_id
+        tool_instance.state.cwd = str(cwd) if cwd is not None else None
 
     @classmethod
     @abstractmethod

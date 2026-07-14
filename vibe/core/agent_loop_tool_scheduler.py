@@ -8,9 +8,14 @@ from typing import Protocol
 __all__ = [
     "EventSink",
     "ToolCallWave",
+    "ToolCallWaveCancelled",
     "build_tool_call_waves",
     "stream_tool_call_waves",
 ]
+
+
+class ToolCallWaveCancelled(Exception):
+    pass
 
 
 class EventSink[EventT](Protocol):
@@ -63,6 +68,7 @@ async def _stream_wave[CallT, EventT](
     wave: ToolCallWave[CallT],
     *,
     execute: Callable[[CallT, bool, EventSink[EventT]], Awaitable[None]],
+    terminal_delivered: Callable[[CallT], bool],
 ) -> AsyncGenerator[EventT, None]:
     queue: asyncio.Queue[EventT | _WaveComplete] = asyncio.Queue()
     event_sink = _QueueEventSink(queue)
@@ -76,9 +82,22 @@ async def _stream_wave[CallT, EventT](
         error: Exception | None = None
         try:
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            error = next(
+            cancelled_calls = [
+                call
+                for call, result in zip(wave.calls, results, strict=True)
+                if isinstance(result, asyncio.CancelledError)
+            ]
+            ordinary_error = next(
                 (result for result in results if isinstance(result, Exception)), None
             )
+            if ordinary_error is not None:
+                error = ordinary_error
+            elif cancelled_calls and all(
+                terminal_delivered(call) for call in cancelled_calls
+            ):
+                error = ToolCallWaveCancelled()
+            elif cancelled_calls:
+                error = RuntimeError("tool executor was cancelled unexpectedly")
         finally:
             await queue.put(_WaveComplete(error=error))
 
@@ -114,9 +133,11 @@ async def stream_tool_call_waves[CallT, EventT](
     *,
     concurrent_safe: Callable[[CallT], bool],
     execute: Callable[[CallT, bool, EventSink[EventT]], Awaitable[None]],
+    terminal_delivered: Callable[[CallT], bool] | None = None,
 ) -> AsyncGenerator[EventT, None]:
+    delivered = terminal_delivered or (lambda _call: False)
     for wave in build_tool_call_waves(tool_calls, concurrent_safe=concurrent_safe):
-        stream = _stream_wave(wave, execute=execute)
+        stream = _stream_wave(wave, execute=execute, terminal_delivered=delivered)
         try:
             async for event in stream:
                 yield event

@@ -119,6 +119,17 @@ class TestAddSessionDirs:
         assert get_harness_files_manager().additional_dirs == (d2.resolve(),)
         assert d1.resolve() not in get_harness_files_manager().additional_dirs
 
+    def test_empty_list_clears_previous_session_dirs(self, tmp_path: Path) -> None:
+        extra = tmp_path / "extra"
+        extra.mkdir()
+
+        reset_harness_files_manager()
+        init_harness_files_manager("user", "project")
+        add_session_dirs([extra])
+        add_session_dirs([])
+
+        assert get_harness_files_manager().additional_dirs == ()
+
     def test_preserves_cwd_on_rebuild(self, tmp_path: Path) -> None:
         cwd = tmp_path / "cwd"
         extra = tmp_path / "extra"

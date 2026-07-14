@@ -23,6 +23,7 @@ from vibe.core._immutable_store import (
 from vibe.core._trusted_command import (
     TRUSTED_GIT_CONFIG_ARGS,
     TRUSTED_SYSTEM_PATH,
+    TrustedCommandError,
     minimal_trusted_git_environment,
     resolve_trusted_system_executable,
     validate_trusted_command_argv,
@@ -662,13 +663,14 @@ def resolve_trusted_executable(
     requested = Path(argv0).expanduser()
     if requested.is_absolute():
         lexical = requested.absolute()
-    elif requested.parent == Path("."):
-        lexical = resolve_trusted_system_executable(argv0)
     else:
-        raise VerificationReceiptError(
-            "trusted check executable must be an absolute path or a bare name on "
-            f"the sanitized system PATH: {argv0!r}"
-        )
+        try:
+            lexical = resolve_trusted_system_executable(argv0)
+        except TrustedCommandError as exc:
+            raise VerificationReceiptError(
+                "trusted check executable must be an absolute path or a bare name "
+                f"on the sanitized system PATH: {argv0!r}"
+            ) from exc
     try:
         resolved = lexical.resolve(strict=True)
     except OSError as exc:

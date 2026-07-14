@@ -12,6 +12,7 @@ from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
 from vibe.core.tools.sandbox import (
     BUBBLEWRAP_INSTALL_NUDGE,
+    ResolvedSandboxBackend,
     SandboxSpec,
     _detect_auto_backend,
     build_sandbox_command,
@@ -22,6 +23,12 @@ from vibe.core.tools.sandbox import (
     strict_read_hidden_roots,
     unshare_confinement_nudge,
 )
+
+
+def _backend(name: str) -> ResolvedSandboxBackend:
+    executable = None if name == "none" else Path(f"/usr/bin/{name}")
+    return ResolvedSandboxBackend(name, executable)
+
 
 # --------------------------------------------------------------------------- #
 # Pure helpers (no OS dependency)                                              #
@@ -51,7 +58,7 @@ def test_bwrap_recreates_only_assigned_path_below_masked_root(tmp_path: Path) ->
         SandboxSpec(
             write_roots=[], read_roots=[assigned], hidden_roots=[masked], cwd=assigned
         ),
-        "bwrap",
+        _backend("bwrap"),
     )
 
     assert backend == "bwrap"
@@ -65,8 +72,17 @@ def test_bwrap_recreates_only_assigned_path_below_masked_root(tmp_path: Path) ->
     assert argv[assigned_index - 1] in {"--dir", "--ro-bind"}
 
 
-def test_detect_backend_honors_override() -> None:
+def test_detect_backend_honors_override(monkeypatch) -> None:
+    from vibe.core.tools import sandbox as sbmod
+
+    monkeypatch.setattr(
+        sbmod,
+        "_backend_executable",
+        lambda name: Path(f"/trusted/{name}") if name == "bwrap" else None,
+    )
+
     assert detect_backend("bwrap") == "bwrap"
+    assert detect_backend("unshare") == "none"
     assert detect_backend("none") == "none"
 
 
@@ -85,9 +101,11 @@ def test_detect_backend_skips_unusable_bwrap(monkeypatch) -> None:
     monkeypatch.setattr(sbmod, "is_windows", lambda: False)
     monkeypatch.setattr(sbmod.sys, "platform", "linux")
     monkeypatch.setattr(
-        sbmod.shutil,
-        "which",
-        lambda name: f"/usr/bin/{name}" if name in {"bwrap", "unshare"} else None,
+        sbmod,
+        "_backend_executable",
+        lambda name: (
+            Path(f"/usr/bin/{name}") if name in {"bwrap", "true", "unshare"} else None
+        ),
     )
 
     class _FailedProbe:
@@ -122,9 +140,11 @@ def test_detect_backend_uses_bwrap_when_probe_succeeds(monkeypatch) -> None:
     monkeypatch.setattr(sbmod, "is_windows", lambda: False)
     monkeypatch.setattr(sbmod.sys, "platform", "linux")
     monkeypatch.setattr(
-        sbmod.shutil,
-        "which",
-        lambda name: f"/usr/bin/{name}" if name in {"bwrap", "unshare"} else None,
+        sbmod,
+        "_backend_executable",
+        lambda name: (
+            Path(f"/usr/bin/{name}") if name in {"bwrap", "true", "unshare"} else None
+        ),
     )
 
     class _OkProbe:
@@ -138,11 +158,47 @@ def test_detect_backend_uses_bwrap_when_probe_succeeds(monkeypatch) -> None:
         _detect_auto_backend.cache_clear()
 
 
+def test_bwrap_probe_uses_absolute_argv_and_scrubbed_env(monkeypatch) -> None:
+    from vibe.core.tools import sandbox as sbmod
+
+    captured: dict[str, object] = {}
+
+    class _OkProbe:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return _OkProbe()
+
+    monkeypatch.setattr(sbmod.subprocess, "run", fake_run)
+
+    assert sbmod._bwrap_usable(Path("/trusted/bin/bwrap"), Path("/trusted/bin/true"))
+    assert captured["argv"] == [
+        "/trusted/bin/bwrap",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--unshare-pid",
+        "--",
+        "/trusted/bin/true",
+    ]
+    assert captured["env"] == {
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": sbmod.TRUSTED_SYSTEM_PATH,
+    }
+
+
 def test_bwrap_argv_network_and_binds(tmp_path) -> None:
     spec = SandboxSpec(
         write_roots=[tmp_path], allow_network=False, extra_args=["--new-session"]
     )
-    argv, name, profile = build_sandbox_command(spec, "bwrap")
+    argv, name, profile = build_sandbox_command(spec, _backend("bwrap"))
     assert name == "bwrap" and profile is None
     assert argv is not None
     assert "--unshare-net" in argv  # network blocked
@@ -153,14 +209,44 @@ def test_bwrap_argv_network_and_binds(tmp_path) -> None:
     assert argv.index("--new-session") < argv.index("--")
 
 
+def test_bwrap_extra_args_accept_monotonic_isolation_flags(tmp_path) -> None:
+    extra_args = [
+        "--assert-userns-disabled",
+        "--disable-userns",
+        "--new-session",
+        "--unshare-all",
+        "--unshare-cgroup",
+        "--unshare-net",
+        "--unshare-user",
+    ]
+    spec = SandboxSpec(write_roots=[tmp_path], extra_args=extra_args)
+
+    argv, _name, _profile = build_sandbox_command(spec, _backend("bwrap"))
+
+    assert argv is not None
+    start = argv.index(extra_args[0])
+    assert argv[start : start + len(extra_args)] == extra_args
+    assert start + len(extra_args) < argv.index("--")
+
+
 @pytest.mark.parametrize(
     "extra_args",
     [
+        ["/bin/false"],
+        ["--hostname"],
+        ["--hostname", "sandbox"],
+        ["--new-session=true"],
+        ["--not-a-security-boundary"],
+        ["--share-net"],
         ["--bind", "/", "/"],
         ["--ro-bind=/", "/"],
         ["--args", "9"],
         ["--"],
         ["--chdir", "/tmp"],
+        ["--setenv", "BASH_ENV", "/tmp/startup"],
+        ["--unsetenv", "SHELLOPTS"],
+        ["--clearenv"],
+        ["--argv0", "-bash"],
     ],
 )
 def test_bwrap_extra_args_cannot_reopen_or_skip_policy(
@@ -169,12 +255,12 @@ def test_bwrap_extra_args_cannot_reopen_or_skip_policy(
     spec = SandboxSpec(write_roots=[tmp_path], extra_args=extra_args)
 
     with pytest.raises(ValueError, match="unsafe bubblewrap extra argument"):
-        build_sandbox_command(spec, "bwrap")
+        build_sandbox_command(spec, _backend("bwrap"))
 
 
 def test_bwrap_argv_network_allowed_has_no_unshare_net(tmp_path) -> None:
     spec = SandboxSpec(write_roots=[tmp_path], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None and "--unshare-net" not in argv
 
 
@@ -182,7 +268,7 @@ def test_bwrap_argv_ro_bind_precedes_pseudo_fs(tmp_path) -> None:
     # Regression: --ro-bind / / must come BEFORE --dev/--proc/--tmpfs, else the
     # read-only root overlays them and makes /tmp read-only.
     spec = SandboxSpec(write_roots=[tmp_path], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None
     ro = argv.index("--ro-bind")
     assert argv[ro + 1] == "/" and argv[ro + 2] == "/"
@@ -204,7 +290,7 @@ def test_bwrap_hidden_home_does_not_reexpose_protected_host_state(tmp_path) -> N
         protected_roots=[logs],
     )
 
-    argv, _name, _profile = build_sandbox_command(spec, "bwrap")
+    argv, _name, _profile = build_sandbox_command(spec, _backend("bwrap"))
 
     assert argv is not None
     ro_targets = [
@@ -254,7 +340,7 @@ def test_bwrap_env_readonly_but_git_writable(tmp_path) -> None:
     (root / "src").mkdir()
 
     spec = SandboxSpec(write_roots=[root], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None
     r = str(root.resolve())
     bind_idx = argv.index("--bind")
@@ -273,7 +359,7 @@ def test_bwrap_git_hooks_stay_readonly(tmp_path) -> None:
     (root / ".git" / "hooks").mkdir(parents=True)
 
     spec = SandboxSpec(write_roots=[root], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None
     r = str(root.resolve())
     ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
@@ -289,7 +375,7 @@ def test_bwrap_skips_nonexistent_write_root(tmp_path) -> None:
     missing = tmp_path / "does-not-exist"
 
     spec = SandboxSpec(write_roots=[real, missing], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None
     assert str(real.resolve()) in argv
     assert str(missing.resolve()) not in argv  # skipped, not bound
@@ -304,7 +390,7 @@ def test_bwrap_git_config_stays_readonly(tmp_path) -> None:
     (root / ".git" / "config").write_text("[core]\n")
 
     spec = SandboxSpec(write_roots=[root], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None
     r = str(root.resolve())
     ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
@@ -326,7 +412,7 @@ def test_bwrap_worktree_external_gitdir_writable(tmp_path) -> None:
     (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
 
     spec = SandboxSpec(write_roots=[wt], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None
     binds = [argv[i + 1] for i, a in enumerate(argv) if a == "--bind"]
     ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
@@ -347,7 +433,7 @@ def test_strict_model_control_keeps_shared_git_metadata_readonly(tmp_path) -> No
     (wt / ".git").write_text(f"gitdir: {gitdir}\n")
 
     spec = SandboxSpec(write_roots=[wt], protect_git_metadata=True, allow_network=True)
-    argv, _name, _profile = build_sandbox_command(spec, "bwrap")
+    argv, _name, _profile = build_sandbox_command(spec, _backend("bwrap"))
 
     assert argv is not None
     binds = [argv[i + 1] for i, value in enumerate(argv) if value == "--bind"]
@@ -365,7 +451,7 @@ def test_protected_roots_are_bound_after_overlapping_write_roots(tmp_path) -> No
     spec = SandboxSpec(
         write_roots=[protected, broad], protected_roots=[protected], allow_network=True
     )
-    argv, _name, _profile = build_sandbox_command(spec, "bwrap")
+    argv, _name, _profile = build_sandbox_command(spec, _backend("bwrap"))
 
     assert argv is not None
     target = str(protected.resolve())
@@ -389,7 +475,7 @@ def test_bwrap_skips_symlinked_protected_metadata(tmp_path) -> None:
     (root / ".git").symlink_to(tmp_path / "elsewhere")
 
     spec = SandboxSpec(write_roots=[root], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None
     assert f"{root.resolve()}/.git" not in argv
 
@@ -418,7 +504,7 @@ def test_bwrap_no_overlay_when_no_protected_metadata(tmp_path) -> None:
     root.mkdir()  # no .git/.vibe/.env
 
     spec = SandboxSpec(write_roots=[root], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None
     # Only the single root --ro-bind (the / / root), no metadata overlays.
     assert argv.count("--ro-bind") == 1
@@ -433,11 +519,25 @@ def test_unshare_backend_warns_when_containment_requested(tmp_path, caplog) -> N
 
     spec = SandboxSpec(write_roots=[tmp_path], allow_network=False)
     with caplog.at_level(logging.WARNING, logger="vibe.core.tools.sandbox"):
-        argv, name, _ = build_sandbox_command(spec, "unshare")
+        argv, name, _ = build_sandbox_command(spec, _backend("unshare"))
     assert name == "unshare" and argv is not None
     assert any(
-        "NO filesystem write confinement" in r.message for r in caplog.records
+        "NO filesystem policy enforcement" in r.message for r in caplog.records
     ), [r.message for r in caplog.records]
+
+
+def test_unshare_backend_warns_when_read_policy_is_ignored(tmp_path, caplog) -> None:
+    import logging
+
+    spec = SandboxSpec(write_roots=[], read_roots=[tmp_path], allow_network=True)
+    with caplog.at_level(logging.WARNING, logger="vibe.core.tools.sandbox"):
+        argv, name, _ = build_sandbox_command(spec, _backend("unshare"))
+
+    assert name == "unshare" and argv is not None
+    assert any(
+        "NO filesystem policy enforcement" in record.message
+        for record in caplog.records
+    )
 
 
 def test_unshare_backend_silent_when_no_containment_requested(caplog) -> None:
@@ -447,10 +547,55 @@ def test_unshare_backend_silent_when_no_containment_requested(caplog) -> None:
 
     spec = SandboxSpec(write_roots=[], allow_network=True)
     with caplog.at_level(logging.WARNING, logger="vibe.core.tools.sandbox"):
-        build_sandbox_command(spec, "unshare")
+        build_sandbox_command(spec, _backend("unshare"))
     assert not any(
-        "NO filesystem write confinement" in r.message for r in caplog.records
+        "NO filesystem policy enforcement" in r.message for r in caplog.records
     )
+
+
+def test_unshare_rejects_extra_arguments() -> None:
+    spec = SandboxSpec(write_roots=[], extra_args=["--root=/tmp/fake-root"])
+
+    with pytest.raises(ValueError, match="unshare extra arguments"):
+        build_sandbox_command(spec, _backend("unshare"))
+
+
+def test_builder_uses_resolved_backend_executable() -> None:
+    backend = ResolvedSandboxBackend("bwrap", Path("/opt/vibe/bin/bwrap"))
+
+    argv, name, profile = build_sandbox_command(SandboxSpec(write_roots=[]), backend)
+
+    assert argv is not None
+    assert argv[0] == "/opt/vibe/bin/bwrap"
+    assert name == "bwrap"
+    assert profile is None
+
+
+def test_backend_executable_identity_survives_cache_pressure(monkeypatch) -> None:
+    from vibe.core.tools import sandbox as sbmod
+
+    resolved = {
+        name: Path(f"/trusted/{name}")
+        for name in ("bwrap", "true", "unshare", "sandbox-exec")
+    }
+    calls: list[str] = []
+
+    def fake_resolve(name: str) -> Path:
+        calls.append(name)
+        return resolved[name]
+
+    monkeypatch.setattr(sbmod, "resolve_trusted_system_executable", fake_resolve)
+    sbmod._backend_executable.cache_clear()
+    try:
+        first = sbmod._backend_executable("bwrap")
+        for name in ("true", "unshare", "sandbox-exec"):
+            sbmod._backend_executable(name)
+        resolved["bwrap"] = Path("/replacement/bwrap")
+
+        assert sbmod._backend_executable("bwrap") == first
+        assert calls.count("bwrap") == 1
+    finally:
+        sbmod._backend_executable.cache_clear()
 
 
 def test_unshare_nudge_fires_whenever_backend_is_unshare(monkeypatch) -> None:
@@ -557,7 +702,8 @@ def test_resolve_sandbox_bwrap_injects_seccomp(monkeypatch) -> None:
     import os
 
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     bash = _bash(SandboxConfig(enabled=True, backend="bwrap", seccomp=True))
     argv, _profile, _env, fd = bash._resolve_sandbox(None, "echo hi")
@@ -573,7 +719,8 @@ def test_resolve_sandbox_bwrap_injects_seccomp(monkeypatch) -> None:
 
 def test_resolve_sandbox_bwrap_seccomp_disabled(monkeypatch) -> None:
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     bash = _bash(SandboxConfig(enabled=True, backend="bwrap", seccomp=False))
     argv, _profile, _env, fd = bash._resolve_sandbox(None, "echo hi")
@@ -591,7 +738,8 @@ def test_resolve_sandbox_isolated_forces_confine(tmp_path, monkeypatch) -> None:
     wt.mkdir()
     monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     bash = _bash(SandboxConfig(enabled=False))  # user never enabled the sandbox
     argv, _profile, _env, fd = bash._resolve_sandbox(None, "echo hi")
@@ -617,7 +765,8 @@ def test_resolve_sandbox_isolated_writer_keeps_shared_git_host_owned(
     (wt / ".git").write_text(f"gitdir: {gitdir}\n")
     monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     bash = _bash(SandboxConfig(enabled=False))
 
@@ -650,7 +799,8 @@ def test_resolve_sandbox_isolated_no_outside_widening(tmp_path, monkeypatch) -> 
     outside.mkdir()
     monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     bash = _bash(SandboxConfig(enabled=False))
     argv, _profile, _env, fd = bash._resolve_sandbox(None, f"echo x > {outside}/f.txt")
@@ -670,12 +820,51 @@ def test_isolated_model_control_rejects_nonconfining_backend(
     wt.mkdir()
     monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: backend
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend(backend),
     )
     bash = _bash(SandboxConfig(enabled=False))
 
     with pytest.raises(ToolError, match="Strict model control requires"):
         bash._resolve_sandbox(None, "echo hi")
+
+
+@pytest.mark.parametrize(
+    ("platform", "backend"), [("linux", "sandbox-exec"), ("darwin", "bwrap")]
+)
+def test_strict_model_control_rejects_backend_from_another_platform(
+    tmp_path, monkeypatch, platform: str, backend: str
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(worktree))
+    monkeypatch.setattr("vibe.core.tools.builtins.bash.sys.platform", platform)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda _override: _backend(backend),
+    )
+
+    with pytest.raises(ToolError, match="for this platform"):
+        _bash(SandboxConfig(enabled=False))._resolve_sandbox(None, "echo hi")
+
+
+def test_strict_model_control_rejects_failed_wrapper_construction(
+    tmp_path, monkeypatch
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(worktree))
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda _override: _backend("bwrap"),
+    )
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.build_sandbox_command",
+        lambda _spec, _backend: (None, "none", None),
+    )
+
+    with pytest.raises(ToolError, match="could not construct"):
+        _bash(SandboxConfig(enabled=False))._resolve_sandbox(None, "echo hi")
 
 
 def test_topology_bound_session_forces_strict_control_without_autoapprove(
@@ -688,7 +877,8 @@ def test_topology_bound_session_forces_strict_control_without_autoapprove(
         lambda state: (protected,),
     )
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "none"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("none"),
     )
     bash = _bash(SandboxConfig(enabled=False))
 
@@ -703,7 +893,8 @@ def test_resolve_sandbox_host_redirects_toolchain_cache(monkeypatch) -> None:
     from pathlib import Path
 
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     bash = _bash(SandboxConfig(enabled=True))
     argv, _profile, env, fd = bash._resolve_sandbox(None, "git commit -m x")
@@ -731,7 +922,8 @@ def test_resolve_sandbox_isolated_does_not_redirect_cache(
     wt.mkdir()
     monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     bash = _bash(SandboxConfig(enabled=True))
     argv, _profile, env, fd = bash._resolve_sandbox(None, "git commit -m x")
@@ -740,17 +932,24 @@ def test_resolve_sandbox_isolated_does_not_redirect_cache(
         assert env["UV_CACHE_DIR"].startswith("/tmp/")
         assert env["PRE_COMMIT_HOME"].startswith("/tmp/")
         assert "sandbox-cache" not in " ".join(argv)
-        home = str(Path.home().resolve())
+        home = Path.home().resolve()
         hidden = [
-            argv[index + 1] for index, item in enumerate(argv) if item == "--tmpfs"
+            Path(argv[index + 1])
+            for index, item in enumerate(argv)
+            if item == "--tmpfs"
         ]
-        assert home in hidden
+        assert any(home.is_relative_to(root) for root in hidden)
         assert str(wt.resolve()) in argv
         local_bin = str((Path.home() / ".local" / "bin").resolve())
         local_parent = str((Path.home() / ".local").resolve())
+        exposed = [
+            argv[index + 1]
+            for index, item in enumerate(argv)
+            if item in {"--bind", "--ro-bind"}
+        ]
         if Path(local_bin).is_dir():
-            assert local_bin in argv
-        assert local_parent not in argv
+            assert local_bin in exposed
+        assert local_parent not in exposed
     finally:
         if fd is not None:
             os.close(fd)
@@ -846,6 +1045,48 @@ def _verifier_context(*, scratchpad_dir: Path | None = None) -> InvokeContext:
     )
 
 
+def test_strict_sandbox_rebinds_trusted_additional_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from vibe.core.config.harness_files import add_session_dirs
+    from vibe.core.trusted_folders import trusted_folders_manager
+
+    repository = tmp_path / "repository"
+    hidden_home = tmp_path / "host-home"
+    additional = hidden_home / "additional"
+    repository.mkdir()
+    additional.mkdir(parents=True)
+    monkeypatch.chdir(repository)
+    trusted_folders_manager.trust_for_session(repository)
+    trusted_folders_manager.trust_for_session(additional)
+    add_session_dirs([additional])
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda _override: _backend("bwrap"),
+    )
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.strict_read_hidden_roots", lambda: [hidden_home]
+    )
+
+    argv, _profile, _env, fd = _bash(
+        SandboxConfig(enabled=False, seccomp=False)
+    )._resolve_sandbox(_autoapprove_context(), f"cat {additional}/input.txt")
+
+    try:
+        assert argv is not None
+        assert str(hidden_home.resolve()) in argv
+        assert str(additional.resolve()) in argv
+        read_only_targets = [
+            argv[index + 2] for index, value in enumerate(argv) if value == "--ro-bind"
+        ]
+        assert str(additional.resolve()) in read_only_targets
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def test_topology_active_bash_is_candidate_readonly_and_ignores_widening(
     tmp_path, monkeypatch
 ) -> None:
@@ -865,7 +1106,8 @@ def test_topology_active_bash_is_candidate_readonly_and_ignores_widening(
         lambda state: (protected,),
     )
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     bash = _bash(
         SandboxConfig(
@@ -912,7 +1154,8 @@ def test_strict_model_control_scrubs_host_credentials_even_when_disabled(
         lambda state: (protected,),
     )
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     monkeypatch.setenv("GH_TOKEN", "host-token")
     monkeypatch.setenv("SSH_AUTH_SOCK", "/run/host-ssh.sock")
@@ -946,7 +1189,8 @@ def test_autoapprove_keeps_same_session_git_commit_compatibility(
     (repo / ".git" / "config").write_text("[core]\n")
     monkeypatch.chdir(repo)
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
 
     argv, _profile, _env, fd = _bash(SandboxConfig(enabled=False))._resolve_sandbox(
@@ -980,7 +1224,8 @@ def test_autoapprove_hides_unrelated_host_home_and_runtime_state(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(repo)
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
 
     argv, _profile, env, fd = _bash(SandboxConfig(enabled=False))._resolve_sandbox(
@@ -990,12 +1235,39 @@ def test_autoapprove_hides_unrelated_host_home_and_runtime_state(
     try:
         assert argv is not None
         hidden = [
-            argv[index + 1] for index, value in enumerate(argv) if value == "--tmpfs"
+            Path(argv[index + 1])
+            for index, value in enumerate(argv)
+            if value == "--tmpfs"
         ]
-        assert str(home.resolve()) in hidden
-        assert "/run" in hidden
+        assert any(home.resolve().is_relative_to(root) for root in hidden)
+        assert Path("/run") in hidden
         assert env["HOME"] != str(home.resolve())
         assert str(repo.resolve()) in argv
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def test_automated_execution_preserves_strict_control_marker(
+    tmp_path, monkeypatch
+) -> None:
+    import os
+
+    repository = tmp_path / "repo"
+    (repository / ".git" / "hooks").mkdir(parents=True)
+    monkeypatch.chdir(repository)
+    monkeypatch.setattr(
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda _override: _backend("bwrap"),
+    )
+
+    argv, _profile, env, fd = _bash(SandboxConfig(enabled=False))._resolve_sandbox(
+        _autoapprove_context(), "git status --short", trusted_system_path_only=True
+    )
+
+    try:
+        assert argv is not None
+        assert env["VIBE_STRICT_MODEL_CONTROL"] == "1"
     finally:
         if fd is not None:
             os.close(fd)
@@ -1012,7 +1284,8 @@ def test_verifier_bash_is_fail_closed_and_candidate_readonly(
     scratchpad.mkdir()
     monkeypatch.chdir(repo)
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
 
     argv, _profile, env, fd = _bash(SandboxConfig(enabled=False))._resolve_sandbox(
@@ -1038,13 +1311,37 @@ def test_verifier_bash_is_fail_closed_and_candidate_readonly(
 
 
 @pytest.mark.asyncio
-async def test_strict_model_control_rejects_background_bash() -> None:
+@pytest.mark.parametrize(
+    "args",
+    [
+        BashArgs(command="sleep 60", background=True),
+        BashArgs(command="sleep 60 &"),
+        BashArgs(command="coproc sleep 60"),
+        BashArgs(command="bash -c 'sleep 60 &'"),
+        BashArgs(command="eval 'sleep 60 &'"),
+        BashArgs(command="printf 'sleep 60 &' | bash"),
+        BashArgs(command="cat commands.sh | bash"),
+        BashArgs(command='bash -c "$PAYLOAD"'),
+        BashArgs(command="setsid --fork sleep 60"),
+        BashArgs(command="systemd-run sleep 60"),
+        BashArgs(
+            command="start-stop-daemon --start --background --exec /bin/sleep -- 60"
+        ),
+        BashArgs(command="ssh -f localhost true"),
+    ],
+)
+async def test_strict_model_control_rejects_background_bash(
+    args: BashArgs, monkeypatch: pytest.MonkeyPatch
+) -> None:
     bash = _bash(SandboxConfig(enabled=False))
+    monkeypatch.setattr(
+        bash,
+        "_resolve_sandbox",
+        lambda *_args, **_kwargs: pytest.fail("background command reached spawn"),
+    )
 
     with pytest.raises(ToolError, match="does not permit background Bash"):
-        async for _ in bash.run(
-            BashArgs(command="sleep 60", background=True), _autoapprove_context()
-        ):
+        async for _ in bash.run(args, _autoapprove_context()):
             pass
 
 
@@ -1127,7 +1424,8 @@ def test_host_session_keeps_git_gh_creds_through_scrub(monkeypatch) -> None:
 
     monkeypatch.delenv("VIBE_ISOLATED_WORKTREE_ROOT", raising=False)
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     monkeypatch.setenv("GH_TOKEN", "ghp_host")
     monkeypatch.setenv("SSH_AUTH_SOCK", "/run/ssh-agent.sock")
@@ -1158,7 +1456,8 @@ def test_isolated_subagent_still_scrubs_git_gh_creds(tmp_path, monkeypatch) -> N
     wt.mkdir()
     monkeypatch.setenv("VIBE_ISOLATED_WORKTREE_ROOT", str(wt))
     monkeypatch.setattr(
-        "vibe.core.tools.builtins.bash.detect_backend", lambda override: "bwrap"
+        "vibe.core.tools.builtins.bash.resolve_backend",
+        lambda override: _backend("bwrap"),
     )
     monkeypatch.setenv("GH_TOKEN", "ghp_should_not_leak")
     monkeypatch.setenv("SSH_AUTH_SOCK", "/run/ssh-agent.sock")
@@ -1242,7 +1541,7 @@ async def test_default_config_bash_is_sandboxed(tmp_path, monkeypatch) -> None:
     bash = _bash(SandboxConfig())  # all defaults
     argv, _profile, _env, fd = bash._resolve_sandbox(None, "echo hi")
     try:
-        assert argv is not None and argv[0] == "bwrap"
+        assert argv is not None and Path(argv[0]).name == "bwrap"
     finally:
         if fd is not None:
             os.close(fd)
@@ -1471,7 +1770,7 @@ def test_bwrap_sibling_worktree_configs_readonly(tmp_path) -> None:
     (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
 
     spec = SandboxSpec(write_roots=[wt], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None
     ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
     assert f"{main}/.git/worktrees/other/config.worktree" in ro_targets
@@ -1486,7 +1785,7 @@ def test_bwrap_main_checkout_linked_worktree_configs_readonly(tmp_path) -> None:
     (root / ".git" / "worktrees" / "wt" / "config.worktree").write_text("[core]\n")
 
     spec = SandboxSpec(write_roots=[root], allow_network=True)
-    argv, _n, _p = build_sandbox_command(spec, "bwrap")
+    argv, _n, _p = build_sandbox_command(spec, _backend("bwrap"))
     assert argv is not None
     ro_targets = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
     assert f"{root}/.git/worktrees/wt/config.worktree" in ro_targets

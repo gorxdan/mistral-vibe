@@ -182,6 +182,33 @@ async def test_after_tool_container_anchors_after_tool_result(
 
 
 @pytest.mark.asyncio
+async def test_early_after_tool_events_wait_for_the_tool_result(
+    hook_container_factory: list[FakeHookRunContainer],
+) -> None:
+    mount_callback = AsyncMock()
+    handler = EventHandler(
+        mount_callback=mount_callback, get_tools_collapsed=lambda: False
+    )
+
+    await handler.handle_event(_tool_call_event("call_early"))
+    await handler.handle_event(
+        HookRunStartEvent(
+            scope=HookType.AFTER_TOOL, tool_name="stub_tool", tool_call_id="call_early"
+        )
+    )
+
+    assert "after_tool:call_early" not in handler._hook_containers
+
+    await handler.handle_event(_tool_result_event("call_early"))
+
+    assert "after_tool:call_early" in handler._hook_containers
+    result_mount = mount_callback.call_args_list[-2]
+    hook_mount = mount_callback.call_args_list[-1]
+    assert result_mount.kwargs.get("after") is not None
+    assert hook_mount.kwargs.get("after") is not None
+
+
+@pytest.mark.asyncio
 async def test_before_tool_container_for_unknown_tool_call_id(
     hook_container_factory: list[FakeHookRunContainer],
 ) -> None:

@@ -14,7 +14,8 @@ Attributes (set by AgentLoop.__init__):
     pending_judge_deferral       (str | None)
     _judge_verdict_cache         (OrderedDict[..., JudgeVerdict])
     _judge_verdict_cache_maxsize (int)
-    _judge_model_alias_for_cache (str | None)
+    _safety_judge_instance       (SafetyJudge | None)
+    _safety_judge_identity       (tuple[...] | None)
 
 Properties / methods (defined on AgentLoop / sibling mixins):
     config                     (VibeConfig)
@@ -39,13 +40,13 @@ from vibe.core.agent_loop_limits import (
 )
 from vibe.core.agent_loop_models import ToolDecision, ToolExecutionResponse
 from vibe.core.logger import logger
-from vibe.core.tools.base import ToolPermission
+from vibe.core.tools.base import ToolAuthorizationSource, ToolPermission
 from vibe.core.types import Role
 
 if TYPE_CHECKING:
     from vibe.core.config import VibeConfig
     from vibe.core.llm.models import ResolvedToolCall
-    from vibe.core.tools.permissions import RequiredPermission
+    from vibe.core.tools.permissions import PermissionContext, RequiredPermission
     from vibe.core.tools.safety_judge import JudgeVerdict, SafetyJudge
     from vibe.core.usage import UsageMeter
     from vibe.core.usage._session import SessionSpendAdapter
@@ -61,22 +62,87 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
     pending_judge_deferral: str | None
     _judge_verdict_cache: Any  # OrderedDict[tuple, JudgeVerdict]
     _judge_verdict_cache_maxsize: int
-    _judge_model_alias_for_cache: str | None
+    _safety_judge_instance: SafetyJudge | None
+    _safety_judge_identity: tuple[str, str, str, str, str, int] | None
     _usage_meter: UsageMeter
     _spend_adapter: SessionSpendAdapter
 
     @property
     def config(self) -> VibeConfig: ...
 
+    @property
+    def bypass_tool_permissions(self) -> bool: ...
+
     def _get_extra_headers(self, provider: Any | None = None) -> dict[str, str]: ...
 
+    async def _ask_approval(
+        self,
+        tool_name: str,
+        args: BaseModel,
+        tool_call_id: str,
+        required_permissions: list[RequiredPermission],
+        judge_deferral: str | None = None,
+    ) -> ToolDecision: ...
+
+    async def _resolve_ask_permission(
+        self,
+        tool_name: str,
+        args: BaseModel,
+        tool_call_id: str,
+        ctx: PermissionContext,
+        uncovered: list[RequiredPermission],
+    ) -> ToolDecision:
+        if ctx.requires_explicit_user_approval:
+            return await self._ask_approval(
+                tool_name, args, tool_call_id, uncovered, judge_deferral=ctx.reason
+            )
+        judged, judge_deferral = await self._judge_tool_safety(
+            tool_name, args, uncovered, permission_reason=ctx.reason
+        )
+        if judged is not None:
+            return judged
+        if self.bypass_tool_permissions:
+            if judge_deferral is not None:
+                return ToolDecision(
+                    verdict=ToolExecutionResponse.SKIP,
+                    approval_type=ToolPermission.NEVER,
+                    feedback=(
+                        "Auto-approve cannot override a safety-judge deferral: "
+                        f"{judge_deferral}"
+                    ),
+                )
+            return ToolDecision(
+                verdict=ToolExecutionResponse.EXECUTE,
+                approval_type=ToolPermission.ALWAYS,
+                authorization_source=ToolAuthorizationSource.BYPASS,
+            )
+        return await self._ask_approval(
+            tool_name, args, tool_call_id, uncovered, judge_deferral=judge_deferral
+        )
+
     async def _judge_tool_safety(
-        self, tool_name: str, args: BaseModel, uncovered: list[RequiredPermission]
+        self,
+        tool_name: str,
+        args: BaseModel,
+        uncovered: list[RequiredPermission],
+        *,
+        permission_reason: str | None = None,
     ) -> tuple[ToolDecision | None, str | None]:
         # Cleared each decision; set to the judge's reason when it defers so the
         # approval UI can show why the user is being asked. Must not leak stale
         # values to the next prompt.
         self.pending_judge_deferral = None
+        if tool_name == "bash":
+            from vibe.core.tools.builtins.bash import Bash, BashArgs
+
+            if isinstance(args, BashArgs) and (
+                reason := Bash.model_approval_deferral_reason(args)
+            ):
+                self.pending_judge_deferral = reason
+                logger.info(
+                    "Safety judge ineligible for tool %r: %s", tool_name, reason
+                )
+                return None, reason
         judge = self._resolve_safety_judge()
         if judge is None:
             judge_config = self.config.safety_judge
@@ -85,18 +151,14 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
                     f"configured safety judge {judge_config.model!r} is unavailable"
                 )
             return None, self.pending_judge_deferral
-        # Drop cached verdicts when the judge model changes: a verdict produced
-        # under one model must not be reused after swapping to another.
-        judge_model = self.config.safety_judge.model
-        if judge_model != self._judge_model_alias_for_cache:
-            self._judge_verdict_cache.clear()
-            self._judge_model_alias_for_cache = judge_model
         # args_key is a hash of the FULL serialized args so two calls differing
         # only past the judge-input window get distinct cache keys; args_repr is
         # what the judge actually sees (capped at JUDGE_ARGS_LIMIT, with a
         # sentinel appended when truncated).
         args_key, args_repr, truncated = self._serialize_args(args)
         flagged_reasons = [rp.label for rp in uncovered]
+        if permission_reason and permission_reason not in flagged_reasons:
+            flagged_reasons.append(permission_reason)
         # Recent transcript gives the judge intent context (a call the user
         # asked for vs one the agent decided unprompted). Hashed into the cache
         # key so different contexts don't share a verdict.
@@ -153,6 +215,7 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
         return ToolDecision(
             verdict=ToolExecutionResponse.EXECUTE,
             approval_type=ToolPermission.ALWAYS,
+            authorization_source=ToolAuthorizationSource.SAFETY_JUDGE,
             feedback=f"Auto-approved by safety judge: {verdict.reason}",
             judge_approved=True,
         ), None
@@ -269,7 +332,23 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
             )
         from vibe.core.tools.safety_judge import SafetyJudge
 
-        return SafetyJudge(
+        identity = (
+            judge_cfg.model_dump_json(),
+            judge_model.model_dump_json(),
+            provider.model_dump_json(),
+            str(self.config.api_timeout),
+            self.session_id,
+            id(self._spend_adapter),
+        )
+        self._judge_verdict_cache_maxsize = judge_cfg.verdict_cache_size
+        if (
+            self._safety_judge_identity == identity
+            and self._safety_judge_instance is not None
+        ):
+            return self._safety_judge_instance
+        if self._safety_judge_identity != identity:
+            self._judge_verdict_cache.clear()
+        judge = SafetyJudge(
             model=judge_model,
             provider=provider,
             config=self.config.safety_judge,
@@ -278,3 +357,6 @@ class AgentLoopSafetyJudgeMixin(AgentLoopHooksMixin):
             usage_meter=self._usage_meter,
             spend_adapter=self._spend_adapter,
         )
+        self._safety_judge_identity = identity
+        self._safety_judge_instance = judge
+        return judge

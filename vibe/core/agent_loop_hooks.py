@@ -98,6 +98,7 @@ class AgentLoopHooksMixin:
         decision: ToolDecision | None = None,
         result: dict[str, Any] | None = None,
         span: trace.Span | None = None,
+        observe_orchestration: bool = True,
     ) -> None: ...
 
     def _serialize_tool_input(self, tool_call: ResolvedToolCall) -> dict[str, Any]:
@@ -306,21 +307,6 @@ class AgentLoopHooksMixin:
             if isinstance(ev, (HookEvent, HookTextReplacement)):
                 yield ev
 
-    async def _collect_after_tool_events(
-        self, tool_call: ResolvedToolCall, **kwargs: Any
-    ) -> tuple[str, list[HookEvent]]:
-        """List-returning variant for shielded paths (cancel / exception)
-        where an async generator cannot be iterated inline.
-        """
-        final_text: str = kwargs.get("initial_text", "")
-        events: list[HookEvent] = []
-        async for ev in self._run_after_tool_hooks(tool_call, **kwargs):
-            if isinstance(ev, HookTextReplacement):
-                final_text = ev.text
-            elif isinstance(ev, HookEvent):
-                events.append(ev)
-        return final_text, events
-
     async def _run_after_tool_and_finalize(
         self,
         tool_call: ResolvedToolCall,
@@ -334,31 +320,39 @@ class AgentLoopHooksMixin:
         tool_error: str | None = None,
         duration_ms: float = 0.0,
         initial_text: str = "",
-    ) -> AsyncGenerator[HookEvent]:
-        """Run after-tool hooks, apply text replacements, and record the response.
-
-        Yields ``HookEvent`` instances for the caller to forward to the UI.
-        The final text (after any ``HookTextReplacement``) is passed to
-        ``_handle_tool_response`` together with the given *response_status*
-        and *decision*.
-        """
+        observe_orchestration: bool = True,
+    ) -> tuple[list[HookEvent], BaseException | None]:
         final_text = initial_text
-        async for ev in self._run_after_tool_hooks(
-            tool_call,
-            tool_input=tool_input,
-            tool_status=tool_status,
-            tool_output=tool_output,
-            tool_error=tool_error,
-            duration_ms=duration_ms,
-            initial_text=initial_text,
-        ):
-            if isinstance(ev, HookTextReplacement):
-                final_text = ev.text
-            else:
-                yield ev
+        events: list[HookEvent] = []
+        error: BaseException | None = None
+        try:
+            async for ev in self._run_after_tool_hooks(
+                tool_call,
+                tool_input=tool_input,
+                tool_status=tool_status,
+                tool_output=tool_output,
+                tool_error=tool_error,
+                duration_ms=duration_ms,
+                initial_text=initial_text,
+            ):
+                if isinstance(ev, HookTextReplacement):
+                    final_text = ev.text
+                else:
+                    events.append(ev)
+        except asyncio.CancelledError as exc:
+            error = exc
+        except Exception as exc:
+            error = exc
         self._handle_tool_response(
-            tool_call, final_text, response_status, decision, tool_output, span=span
+            tool_call,
+            final_text,
+            response_status,
+            decision,
+            tool_output,
+            span=span,
+            observe_orchestration=observe_orchestration,
         )
+        return events, error
 
     async def _run_before_tool_pipeline(
         self,
@@ -478,7 +472,7 @@ class AgentLoopHooksMixin:
                 CancellationReason.TOOL_SKIPPED, tool_call.tool_name
             )
         )
-        yield ToolResultEvent(
+        result_event = ToolResultEvent(
             tool_name=tool_call.tool_name,
             tool_class=tool_call.tool_class,
             skipped=True,
@@ -489,6 +483,7 @@ class AgentLoopHooksMixin:
         self._handle_tool_response(
             tool_call, skip_reason, "skipped", decision, span=span
         )
+        yield result_event
 
     async def _finalize_cancelled_tool(
         self,
@@ -499,40 +494,23 @@ class AgentLoopHooksMixin:
         *,
         span: trace.Span,
         tool_started: bool,
-    ) -> AsyncGenerator[HookEvent]:
-        """Shield after-tool hooks from cancellation so audit/redaction hooks
-        still observe the cancelled call.  Yields ``HookEvent`` instances.
-
-        Skips after_tool entirely when ``tool_started`` is False (cancel
-        landed before the tool body ran — e.g. during the approval prompt).
-        That matches the before_tool denial path, which also doesn't fire
-        after_tool: hooks never observe a phantom completion for a tool
-        that never executed.
-        """
+    ) -> tuple[list[HookEvent], BaseException | None]:
+        """Run cancellation hooks before publishing the terminal result."""
         if not tool_started:
             self._handle_tool_response(
                 tool_call, cancel_text, "failure", decision, span=span
             )
-            return
-        try:
-            final_text, hook_events = await asyncio.shield(
-                self._collect_after_tool_events(
-                    tool_call,
-                    tool_input=tool_input,
-                    tool_status="cancelled",
-                    tool_error=cancel_text,
-                    initial_text=cancel_text,
-                )
-            )
-            for ev in hook_events:
-                yield ev
-            self._handle_tool_response(
-                tool_call, final_text, "failure", decision, span=span
-            )
-        except asyncio.CancelledError:
-            self._handle_tool_response(
-                tool_call, cancel_text, "failure", decision, span=span
-            )
+            return [], None
+        return await self._run_after_tool_and_finalize(
+            tool_call,
+            tool_input=tool_input,
+            tool_status="cancelled",
+            response_status="failure",
+            decision=decision,
+            span=span,
+            tool_error=cancel_text,
+            initial_text=cancel_text,
+        )
 
     async def _dispatch_post_turn_hooks(
         self,

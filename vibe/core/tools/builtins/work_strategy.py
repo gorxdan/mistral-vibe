@@ -40,6 +40,10 @@ class WorkStrategy(
         "productive subagent lanes; workflow for staged fan-out or adversarial "
         "cross-checking; team for long-running coordination. The host keeps its "
         "normal tools after declaring a route and must reassess if scope drifts. "
+        "Declare the highest plausible risk; risk cannot be downgraded during the "
+        "active lifecycle. Start at most two agent-owned evidence lanes and wait "
+        "for terminal evidence before replacing an active strategy. A rejected "
+        "redeclaration leaves the accepted route and its debt active. "
         "The receipt supplies structural lane bindings: task/team prompts use "
         "[lane:<id>] markers, while workflow agent() calls use literal label='<id>'."
     )

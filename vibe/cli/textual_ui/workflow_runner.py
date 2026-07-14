@@ -453,6 +453,11 @@ class WorkflowRunner:
             return ErrorMessage(
                 f"No persisted snapshot for `{target_id}` in this session."
             )
+        if snapshot.expected_lanes is not None:
+            return ErrorMessage(
+                "Cannot resume a strategy-bound workflow: its lane authorization "
+                "cannot be restored safely. Start a new strategy-bound run."
+            )
         runtime = self._resume_runtime_factory()
         if runtime is None:
             return ErrorMessage("Cannot resume: no runtime factory configured.")

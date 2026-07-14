@@ -297,46 +297,58 @@ class ToolManager:
         ]
 
     def _filtered_available_tools(self) -> dict[str, type[BaseTool]]:
+        config = self._config
         with self._lock:
             runtime_available = {
                 name: cls
                 for name, cls in self._all_tools.items()
-                if self._is_tool_available(cls)
+                if self._is_tool_available(cls, config)
                 and (not cls.runtime_scoped or self._runtime_allowlist is not None)
                 and (self._host or not cls.host_only)
             }
 
         # Per-source filtering first (MCP server/connector disabled flags).
-        result = self._apply_per_source_filtering(runtime_available)
+        result = self._apply_per_source_filtering(runtime_available, config)
+        return {
+            name: cls
+            for name, cls in result.items()
+            if self._passes_global_filter(name, cls, config)
+        }
 
-        # Global overrides take precedence.
+    def is_tool_enabled(self, tool_name: str) -> bool:
+        config = self._config
+        with self._lock:
+            tool_cls = self._all_tools.get(tool_name)
+        if tool_cls is None or not self._is_tool_available(tool_cls, config):
+            return False
+        if tool_cls.runtime_scoped and self._runtime_allowlist is None:
+            return False
+        if tool_cls.host_only and not self._host:
+            return False
+        disabled_sources, per_source_disabled = self._build_source_disable_index(config)
+        if (disabled_sources or per_source_disabled) and self._is_source_disabled(
+            tool_cls, disabled_sources, per_source_disabled
+        ):
+            return False
+        return self._passes_global_filter(tool_name, tool_cls, config)
+
+    def _passes_global_filter(
+        self, tool_name: str, tool_cls: type[BaseTool], config: VibeConfig
+    ) -> bool:
         if self._runtime_allowlist is None:
-            if self._config.enabled_tools:
-                result = {
-                    name: cls
-                    for name, cls in result.items()
-                    if name_matches(name, self._config.enabled_tools)
-                    or (self._host and cls.host_policy_control)
-                }
-            elif self._config.disabled_tools:
-                result = {
-                    name: cls
-                    for name, cls in result.items()
-                    if not name_matches(name, self._config.disabled_tools)
-                }
-        elif self._config.disabled_tools and not self._authoritative_runtime_allowlist:
-            result = {
-                name: cls
-                for name, cls in result.items()
-                if not name_matches(name, self._config.disabled_tools)
-            }
-        if self._runtime_allowlist is not None:
-            result = {
-                name: cls
-                for name, cls in result.items()
-                if name in self._runtime_allowlist
-            }
-        return result
+            if config.enabled_tools:
+                return name_matches(tool_name, config.enabled_tools) or (
+                    self._host and tool_cls.host_policy_control
+                )
+            if config.disabled_tools:
+                return not name_matches(tool_name, config.disabled_tools)
+        elif (
+            config.disabled_tools
+            and not self._authoritative_runtime_allowlist
+            and name_matches(tool_name, config.disabled_tools)
+        ):
+            return False
+        return self._runtime_allowlist is None or tool_name in self._runtime_allowlist
 
     @staticmethod
     def _is_dynamic_remote_tool(tool_cls: type[BaseTool]) -> bool:
@@ -411,18 +423,19 @@ class ToolManager:
             for _, name, cls in scored[:limit]
         ]
 
-    def _is_tool_available(self, cls: type[BaseTool]) -> bool:
+    @staticmethod
+    def _is_tool_available(tool_cls: type[BaseTool], config: VibeConfig) -> bool:
         # Backwards-compatibility check to avoid breaking
         # existing custom tools that call is_available without parameters
-        if _is_available_takes_config(cls):
-            return cls.is_available(self._config)
-        return cls.is_available()
+        if _is_available_takes_config(tool_cls):
+            return tool_cls.is_available(config)
+        return tool_cls.is_available()
 
     def _apply_per_source_filtering(
-        self, tools: dict[str, type[BaseTool]]
+        self, tools: dict[str, type[BaseTool]], config: VibeConfig
     ) -> dict[str, type[BaseTool]]:
         """Filter out MCP/connector tools disabled at the server or connector level."""
-        disabled_sources, per_source_disabled = self._build_source_disable_index()
+        disabled_sources, per_source_disabled = self._build_source_disable_index(config)
         if not disabled_sources and not per_source_disabled:
             return tools
 
@@ -433,25 +446,25 @@ class ToolManager:
         }
 
     def _build_source_disable_index(
-        self,
+        self, config: VibeConfig
     ) -> tuple[set[tuple[str, bool]], dict[tuple[str, bool], set[str]]]:
         """Return (fully_disabled, per_tool_disabled) keyed by (source_name, is_connector)."""
         disabled_sources: set[tuple[str, bool]] = set()
         per_source_disabled: dict[tuple[str, bool], set[str]] = {}
 
-        for srv in self._config.mcp_servers:
+        for srv in config.mcp_servers:
             key = (srv.name, False)
             if srv.disabled:
                 disabled_sources.add(key)
             elif srv.disabled_tools:
                 per_source_disabled[key] = set(srv.disabled_tools)
 
-        for cfg in self._config.connectors:
+        for cfg in config.connectors:
             if cfg.disabled_tools and not cfg.disabled:
                 per_source_disabled[(cfg.name, True)] = set(cfg.disabled_tools)
 
         if self._connector_registry is not None:
-            by_name = self._config.connectors_by_name()
+            by_name = config.connectors_by_name()
             for name in self._connector_registry.get_connector_names():
                 cfg = by_name.get(name)
                 if cfg is None or cfg.disabled:

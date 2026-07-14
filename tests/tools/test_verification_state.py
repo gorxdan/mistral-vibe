@@ -247,6 +247,23 @@ def test_open_todo_diagnostic_escapes_untrusted_identifiers() -> None:
     assert "\\x1b" in constraint.diagnostic
 
 
+def test_open_todos_do_not_mask_verifier_failure() -> None:
+    state = VerificationState()
+    state.record_open_todos(("active",))
+    generation = state.begin_verifier_attempt()
+    state.record_verifier_result(
+        generation,
+        VerifierAttemptDisposition.FAIL,
+        "Verifier found a candidate defect.",
+    )
+
+    constraint = state.completion_constraint(receipt_valid=False)
+
+    assert constraint is not None
+    assert constraint.status is VerificationCompletionStatus.BLOCKED
+    assert constraint.diagnostic == "Verifier found a candidate defect."
+
+
 @pytest.mark.asyncio
 async def test_background_verifier_pass_still_requires_trusted_receipt(
     monkeypatch,
@@ -263,9 +280,10 @@ async def test_background_verifier_pass_still_requires_trusted_receipt(
 
     monkeypatch.setattr("vibe.core.tools.builtins.task.run_isolated_agent", finish)
     tool = Task(config_getter=lambda: TaskToolConfig(), state=BaseToolState())
+    attempt = _start_verification_attempt("verifier", state)
 
     result = await tool._collect_async_isolated(
-        TaskArgs(task="verify", agent="verifier"), ctx, finish(), None, None
+        TaskArgs(task="verify", agent="verifier"), ctx, finish(), attempt, None
     )
 
     assert result.outcome is not None

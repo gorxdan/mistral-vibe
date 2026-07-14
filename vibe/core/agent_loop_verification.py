@@ -307,6 +307,47 @@ class AgentLoopVerificationMixin:
         recipe = self._verification_state.trusted_recipe
         return bool(recipe is not None and recipe.config.execution_topology is not None)
 
+    def _prepare_verification_turn_output(
+        self,
+        message: LLMMessage,
+        constraint: VerificationCompletionConstraint | None,
+        guard_managed_claims: bool,
+        *,
+        buffer_for_verification: bool,
+        managed_root: bool,
+    ) -> tuple[LLMMessage, VerificationCompletionConstraint | None, bool, str, bool]:
+        visible_content = (message.content or "").strip()
+        visible_reasoning = (message.reasoning_content or "").strip()
+        suppressed_tool_prose = False
+        if message.tool_calls and (constraint is not None or guard_managed_claims):
+            suppressed_tool_prose = bool(visible_content or visible_reasoning)
+            if suppressed_tool_prose:
+                message = message.model_copy(
+                    update={"content": None, "reasoning_content": None}
+                )
+                self.messages.replace_at(len(self.messages) - 1, message)
+                visible_content = ""
+                visible_reasoning = ""
+            constraint = None
+            guard_managed_claims = False
+        empty_tool_turn = bool(
+            message.tool_calls and not visible_content and not visible_reasoning
+        )
+        publish_buffered_assistant = (
+            buffer_for_verification
+            and constraint is None
+            and not guard_managed_claims
+            and (not managed_root or empty_tool_turn)
+            and not suppressed_tool_prose
+        )
+        return (
+            message,
+            constraint,
+            guard_managed_claims,
+            visible_content,
+            publish_buffered_assistant,
+        )
+
     def _replace_with_verification_constraint(
         self,
         message: LLMMessage,
@@ -316,10 +357,11 @@ class AgentLoopVerificationMixin:
     ) -> AssistantEvent:
         from vibe.core.types import AssistantEvent
 
+        allowed_prefixes = ("BLOCKED:", "IN_PROGRESS:", "QUESTION:")
+        if not self._is_topology_managed_root():
+            allowed_prefixes += ("Status:", "STATUS:")
         content = self._host_handoff(
-            constraint.render(),
-            message.content,
-            allowed_prefixes=("BLOCKED:", "IN_PROGRESS:", "QUESTION:"),
+            constraint.render(), message.content, allowed_prefixes=allowed_prefixes
         )
         replacement = message.model_copy(
             update={

@@ -433,9 +433,10 @@ class TestACPNewSession:
         tmp_working_directory: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        (tmp_working_directory / "AGENTS.md").write_text(
-            "Cancelled prompt", encoding="utf-8"
-        )
+        original_cwd = Path.cwd().resolve()
+        requested = tmp_working_directory / "cancelled-workspace"
+        requested.mkdir()
+        (requested / "AGENTS.md").write_text("Cancelled prompt", encoding="utf-8")
         _enable_workspace_trust(acp_agent_loop)
         monkeypatch.setattr(
             acp_agent_loop.client,
@@ -444,12 +445,12 @@ class TestACPNewSession:
         )
 
         with pytest.raises(InvalidRequestError):
-            await acp_agent_loop.new_session(
-                cwd=str(tmp_working_directory), mcp_servers=[]
-            )
+            await acp_agent_loop.new_session(cwd=str(requested), mcp_servers=[])
 
-        assert trusted_folders_manager.is_trusted(tmp_working_directory) is None
+        assert trusted_folders_manager.is_trusted(requested) is None
         assert acp_agent_loop.sessions == {}
+        assert acp_agent_loop._workspace_binding.workspace is None
+        assert Path.cwd().resolve() == original_cwd
 
     @pytest.mark.skip(reason="TODO: Fix this test")
     @pytest.mark.asyncio

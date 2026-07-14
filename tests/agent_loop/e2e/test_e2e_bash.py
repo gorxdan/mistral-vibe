@@ -39,6 +39,7 @@ async def _run_bash(
     timeout: int | None = None,
     agent_name: str = BuiltinAgentName.AUTO_APPROVE,
     approval: ApprovalResponse | None = None,
+    modified_command: str | None = None,
 ) -> ToolResultEvent:
     mistral_api.reply(_bash_call(command, timeout), mistral_completion("done"))
     agent = build_e2e_agent_loop(
@@ -53,7 +54,12 @@ async def _run_bash(
             _rp: list[RequiredPermission] | None = None,
             _reason: str | None = None,
         ) -> tuple[ApprovalResponse, str | None, dict[str, Any] | None]:
-            return (approval, None, None)
+            modified_args = (
+                {"command": modified_command}
+                if approval is ApprovalResponse.MODIFY and modified_command is not None
+                else None
+            )
+            return (approval, None, modified_args)
 
         agent.set_approval_callback(approval_callback)
 
@@ -87,6 +93,7 @@ async def test_bash_nonzero_exit_surfaces_as_error(mistral_api: MistralAPI) -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.process_e2e
 async def test_bash_timeout_surfaces_as_error(mistral_api: MistralAPI) -> None:
     result = await _run_bash(mistral_api, "sleep 5", timeout=1)
 
@@ -170,3 +177,20 @@ async def test_bash_command_touching_outside_workdir_requires_approval(
 
     assert result.skipped is True
     assert not outside.exists()
+
+
+@pytest.mark.asyncio
+async def test_bash_modified_command_rechecks_hard_denials(
+    mistral_api: MistralAPI,
+) -> None:
+    result = await _run_bash(
+        mistral_api,
+        "touch never-created",
+        agent_name=BuiltinAgentName.DEFAULT,
+        approval=ApprovalResponse.MODIFY,
+        modified_command="pytest | head -n 1",
+    )
+
+    assert result.error is not None
+    assert "Run verification commands directly" in result.error
+    assert not (Path.cwd() / "never-created").exists()

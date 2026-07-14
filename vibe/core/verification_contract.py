@@ -9,6 +9,15 @@ import re
 import shlex
 import unicodedata
 
+from vibe.core.tools._command_tokens import (
+    UV_OPTION_SPEC,
+    OptionSpec,
+    command_name,
+    parse_leading_command,
+    parse_python_module,
+)
+from vibe.core.utils.platform import is_windows
+
 
 class VerificationVerdict(StrEnum):
     PASS = auto()
@@ -145,11 +154,97 @@ _RUNNER_SUBCOMMANDS = {
 }
 _SCRIPT_RUNNERS = frozenset({"bun", "npm", "pnpm", "yarn"})
 _VERIFICATION_SCRIPTS = frozenset({"lint", "test", "typecheck"})
+_RUNNER_OPTION_SPECS = {
+    "cargo": OptionSpec(
+        flags=frozenset({
+            "--frozen",
+            "--locked",
+            "--offline",
+            "--quiet",
+            "--verbose",
+            "-q",
+            "-v",
+        }),
+        values=frozenset({
+            "--color",
+            "--config",
+            "--manifest-path",
+            "--target-dir",
+            "-Z",
+        }),
+        cargo_toolchain=True,
+    ),
+    "dotnet": OptionSpec(
+        flags=frozenset({"--diagnostics", "--no-logo"}),
+        values=frozenset({
+            "--architecture",
+            "--roll-forward",
+            "--runtime",
+            "--verbosity",
+            "-a",
+            "-r",
+            "-v",
+        }),
+    ),
+    "make": OptionSpec(
+        flags=frozenset({"--dry-run", "--question", "--silent", "-n", "-q", "-s"}),
+        values=frozenset({"--directory", "--eval", "--file", "-C", "-f"}),
+        optional_numeric_values=frozenset({"--jobs", "-j"}),
+    ),
+    "npm": OptionSpec(
+        flags=frozenset({"--silent", "--verbose", "-s"}),
+        values=frozenset({
+            "--loglevel",
+            "--prefix",
+            "--userconfig",
+            "--workspace",
+            "-w",
+        }),
+    ),
+    "pnpm": OptionSpec(
+        flags=frozenset({"--silent", "--workspace-root", "-s", "-w"}),
+        values=frozenset({"--dir", "--filter", "-C"}),
+    ),
+    "pre-commit": OptionSpec(values=frozenset({"--config", "-c"})),
+    "ruff": OptionSpec(
+        flags=frozenset({
+            "--isolated",
+            "--quiet",
+            "--silent",
+            "--verbose",
+            "-q",
+            "-s",
+            "-v",
+        }),
+        values=frozenset({"--config", "--output-format"}),
+    ),
+    "yarn": OptionSpec(
+        flags=frozenset({"--silent", "--verbose", "-s"}), values=frozenset({"--cwd"})
+    ),
+}
+_LAUNCHER_OPTION_SPEC = OptionSpec(
+    flags=frozenset({"--no-install", "--yes", "-y"}),
+    values=frozenset({
+        "--cache",
+        "--cache-dir",
+        "--package",
+        "--registry",
+        "--userconfig",
+        "-p",
+    }),
+)
+
+
+def is_verification_command(command: str) -> bool:
+    tokens = _direct_command_tokens(command)
+    return tokens is not None and _verification_runner_tokens(tokens) is not None
 
 
 def verification_observation_hashes(
     command: str, stdout: str, stderr: str
 ) -> tuple[str, ...]:
+    if is_windows():
+        return ()
     tokens = _direct_command_tokens(command)
     output = "\n".join(part for part in (stdout, stderr) if part)
     if tokens is None or not _command_output_is_eligible(tokens, output):
@@ -381,14 +476,26 @@ def _option_values(arguments: list[str], option: str) -> tuple[str, ...]:
 
 def _verification_runner_tokens(tokens: list[str]) -> list[str] | None:
     normalized = list(tokens)
-    normalized[0] = re.split(r"[/\\]", normalized[0])[-1].removesuffix(".exe")
-    if normalized[:2] == ["uv", "run"]:
-        normalized = normalized[2:]
-        if normalized and normalized[0].startswith("-"):
-            return None
-    if not normalized:
+    if (
+        not normalized
+        or (executable := _evidence_executable_name(normalized[0])) is None
+    ):
         return None
-    normalized[0] = re.split(r"[/\\]", normalized[0])[-1].removesuffix(".exe")
+    normalized[0] = executable
+    if normalized[0] == "uv":
+        uv = parse_leading_command(normalized[1:], UV_OPTION_SPEC)
+        if uv.ambiguous or command_name(uv.token or "") != "run":
+            return None
+        run = parse_leading_command(list(uv.arguments), UV_OPTION_SPEC)
+        if run.ambiguous or run.token is None:
+            return None
+        normalized = [run.token, *run.arguments]
+    if (
+        not normalized
+        or (executable := _evidence_executable_name(normalized[0])) is None
+    ):
+        return None
+    normalized[0] = executable
     if len(normalized) >= _PYTHON_MODULE_PREFIX_LENGTH and re.fullmatch(
         r"python(?:3(?:\.\d+)*)?", normalized[0]
     ):
@@ -396,25 +503,91 @@ def _verification_runner_tokens(tokens: list[str]) -> list[str] | None:
     return _native_runner_tokens(normalized)
 
 
-def _python_module_runner_tokens(tokens: list[str]) -> list[str] | None:
-    if tokens[1] != "-m":
+def _evidence_executable_name(token: str) -> str | None:
+    normalized = token.casefold()
+    if command_name(token) != normalized:
         return None
-    runner = _PYTHON_MODULE_RUNNERS.get(tokens[2])
+    if re.fullmatch(r"[a-z0-9][a-z0-9.+_-]*", normalized) is None:
+        return None
+    return normalized
+
+
+def _python_module_runner_tokens(tokens: list[str]) -> list[str] | None:
+    parsed = parse_python_module(tokens[1:])
+    if parsed.ambiguous:
+        return None
+    runner = _PYTHON_MODULE_RUNNERS.get(parsed.module or "")
     if runner is None:
         return None
-    return [runner, *tokens[3:]]
+    return [runner, *parsed.arguments]
 
 
 def _native_runner_tokens(normalized: list[str]) -> list[str] | None:
     executable = normalized[0]
+    arguments = normalized[1:]
+    if executable in {"bunx", "npx", "uvx"}:
+        return _launched_runner_tokens(arguments)
+    if executable in {"bun", "npm", "pnpm", "yarn"}:
+        manager_tokens = _normalized_script_manager_tokens(executable, arguments)
+        if manager_tokens is None:
+            return None
+        normalized = manager_tokens
+        if child := _script_launcher_tokens(executable, manager_tokens[1:]):
+            return _verification_runner_tokens(child)
+        arguments = manager_tokens[1:]
     if executable in _DIRECT_RUNNERS:
         return normalized
+    return _subcommand_runner_tokens(executable, arguments, normalized)
+
+
+def _launched_runner_tokens(arguments: list[str]) -> list[str] | None:
+    launched = parse_leading_command(arguments, _LAUNCHER_OPTION_SPEC)
+    if launched.ambiguous or launched.token is None:
+        return None
+    return _verification_runner_tokens([launched.token, *launched.arguments])
+
+
+def _normalized_script_manager_tokens(
+    executable: str, arguments: list[str]
+) -> list[str] | None:
+    manager = parse_leading_command(
+        arguments, _RUNNER_OPTION_SPECS.get(executable, OptionSpec())
+    )
+    if manager.ambiguous:
+        return None
+    manager_args = [] if manager.token is None else [manager.token, *manager.arguments]
+    return [executable, *manager_args]
+
+
+def _subcommand_runner_tokens(
+    executable: str, arguments: list[str], normalized: list[str]
+) -> list[str] | None:
+    runner = parse_leading_command(
+        arguments, _RUNNER_OPTION_SPECS.get(executable, OptionSpec())
+    )
+    if runner.ambiguous:
+        return None
+    runner_args = [] if runner.token is None else [runner.token, *runner.arguments]
     allowed_subcommands = _RUNNER_SUBCOMMANDS.get(executable, frozenset())
-    if normalized[1:2] and normalized[1] in allowed_subcommands:
-        return normalized
+    if runner_args[:1] and runner_args[0] in allowed_subcommands:
+        return [executable, *runner_args]
     if executable in _SCRIPT_RUNNERS and _script_runner_is_supported(normalized):
         return normalized
     return None
+
+
+def _script_launcher_tokens(executable: str, arguments: list[str]) -> list[str] | None:
+    if executable == "npm" and arguments[:1] in (["exec"], ["x"]):
+        parsed = parse_leading_command(arguments[1:], _LAUNCHER_OPTION_SPEC)
+    elif executable in {"pnpm", "yarn"} and arguments[:1] == ["dlx"]:
+        parsed = parse_leading_command(arguments[1:], _LAUNCHER_OPTION_SPEC)
+    elif executable == "bun" and arguments[:1] == ["x"]:
+        parsed = parse_leading_command(arguments[1:], _LAUNCHER_OPTION_SPEC)
+    else:
+        return None
+    if parsed.ambiguous or parsed.token is None:
+        return None
+    return [parsed.token, *parsed.arguments]
 
 
 def _script_runner_is_supported(tokens: list[str]) -> bool:

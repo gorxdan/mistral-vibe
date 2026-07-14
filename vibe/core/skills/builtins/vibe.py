@@ -3,7 +3,7 @@ from __future__ import annotations
 from vibe import __version__
 from vibe.core.loop import MAX_LOOPS_PER_SESSION, MIN_INTERVAL_SECONDS
 from vibe.core.skills.builtins.capsules import SkillDocCapsule
-from vibe.core.workflows.runtime import DEFAULT_MAX_CONCURRENT
+from vibe.core.workflows._limits import DEFAULT_MAX_AGENTS, DEFAULT_MAX_CONCURRENT
 
 _PROMPT_TEMPLATE = """# Vibe CLI Self-Awareness
 
@@ -128,7 +128,7 @@ file_watcher_for_autocomplete = true   # default: on
 ask_confirmation_on_exit = true  # Require a second Ctrl+D to quit (Ctrl+C always confirms)
 
 # Behavior
-bypass_tool_permissions = false    # Skip approval prompts; NEVER remains blocked
+bypass_tool_permissions = false    # Skip ordinary prompts; NEVER and explicit-user gates remain
 system_prompt_id = "cli"          # System prompt: "cli", "lean", or custom .md filename
 compaction_prompt_id = "compact"  # Compaction prompt: built-in "compact" or custom .md filename
 enable_telemetry = true
@@ -370,6 +370,34 @@ Mistral. See `docs/searxng-setup.md`.
 **Special case — `find` command:** Even if `find` is in the bash allowlist,
 Vibe detects `-exec`, `-execdir`, `-ok`, and `-okdir` predicates and will
 prompt for user permission before running the command.
+
+**Bash execution authority:** Package acquisition, dependency-graph changes,
+and recognized test/build commands require explicit user approval. Safety Judge,
+auto-approve, `permission = "always"`, and stored/session wildcard rules cannot
+substitute. Verification status masking through pipes, command lists,
+backgrounding, inversion, substitutions, newlines, nested shells, or equivalent
+literal carriers is hard-denied when verification execution is proven. Opaque or
+dynamic executable positions require explicit user approval and do not count as
+verification evidence. Run checks directly because Bash already caps and
+persists output. On Unix, parsing and execution use one process-frozen absolute
+Bash executable regardless of the user's login shell. Policy-, Safety-Judge-,
+and bypass-authorized core calls use a trusted system `PATH` and minimal
+environment. On Linux, their executables must be root-owned regular files without
+set-ID or group/world-write bits and without write access for the current non-root
+user; lexical and resolved ancestry must satisfy the same restrictions. Project,
+user, or unprovable executables require approval. Exact standalone `git log`,
+`show`, `blame`, and `grep` calls are hardened; worktree `diff`/`status` and other
+Git forms require explicit approval. `BASH_ENV`, exported Bash functions, `LD_PRELOAD`,
+`LD_AUDIT`, and `DYLD_INSERT_LIBRARIES` are stripped. Automated calls inherit no
+ambient loader configuration. Human-authorized calls use the default scrubbed
+compatibility environment unless `sandbox.scrub_env = false`. Nested shells, language
+interpreters, leading environment assignments, and executable-bearing package/
+Git forms require explicit user approval. Fish in a proven executable position
+or recognized literal execution carrier is denied. Opaque or dynamic Fish-like
+positions and exact standalone `fish -v` or `fish --version` diagnostics require
+explicit user approval.
+`dotnet test --no-restore` still executes project code and still requires
+approval.
 
 #### File Tool Permission Resolution
 
@@ -840,6 +868,10 @@ non-conforming stdout) emits a UI warning and lets the gated action proceed
   barrier: prior reads finish before it starts, and later calls wait for it to
   finish. A call's hook chain remains serial; hook chains overlap only within a
   read-only wave. Hooks that touch shared state must coordinate themselves.
+- Read-only classification is computed once at wave construction and passed
+  unchanged to execution. An unexpected executor exception emits any missing
+  terminal failure, drains the current wave, fails every announced nonterminal
+  call, aborts later waves, and propagates.
 - A hook or approval edit that changes a scheduled read-only call into a
   mutation is rejected; issue that mutation as a separate tool call.
 - Classification-preserving `before_tool` rewrites take effect everywhere
@@ -863,6 +895,12 @@ envelope: a helper must pass both it and the shared session broker. Memory
 exhaustion skips optional work; safety-judge exhaustion falls back to human
 approval. USD enforcement requires known model pricing; token and call limits
 always apply. Restart Vibe to create a fresh auxiliary envelope.
+
+The session reuses one Safety Judge instance while its model/provider/config,
+timeout, and spend identity remain unchanged. After one provider rejects
+`temperature`, the judge retries without it and remembers the omission for later
+calls on that instance. Changing any part of the full identity clears the verdict
+cache, even when the configured model alias stays the same.
 
 ### Memory
 
@@ -925,7 +963,7 @@ Tool, skill, and agent names support three matching modes:
 ```
 vibe [PROMPT]                       # Start interactive session with optional prompt
 vibe -p TEXT / --prompt TEXT         # Programmatic mode using `default_agent`, one-shot, exit
-vibe -p TEXT --auto-approve          # Programmatic mode with permitted calls approved
+vibe -p TEXT --auto-approve          # Programmatic mode with ordinary permitted calls approved
 vibe -p TEXT --keep-alive SECONDS    # Keep firing scheduled-loop turns for SECONDS before exiting (-p only)
 vibe -p TEXT --agent lean --auto-approve  # Lean mode without consent prompts
 vibe --agent NAME                   # Select agent profile (falls back to `default_agent` config)
@@ -955,7 +993,8 @@ work is recoverable; land it explicitly with `vibe worktree merge <branch>`
 (rebases onto HEAD, then fast-forwards; aborts cleanly on conflict) or discard
 with `vibe worktree discard <branch>`. Set `worktree.mode = "off"` in config to
 disable persistently, or `"auto-by-entrypoint"` for the legacy programmatic-only
-split. ACP is not isolated (multi-session-per-process; tracked as a follow-up).
+split. ACP does not create worktrees: one server process binds one canonical cwd
+and additional-directory set, and another workspace requires another process.
 
 The `vibe worktree` subcommand manages stranded branches outside the TUI
 (dispatched before the main parser, so it works on a fresh checkout):
@@ -984,7 +1023,7 @@ There are two kinds of agents:
 - **chat**: Read-only conversational mode (grep/read/`ask_user_question`/`task`); no file edits or shell
 - **plan**: Read-only planning sandbox (writes only the plan file at `~/.vibe/plans/`)
 - **accept-edits**: Auto-approves file edits but asks for other tools
-- **auto-approve**: Auto-approves permitted tool calls; `NEVER` remains blocked
+- **auto-approve**: Auto-approves ordinary permitted calls; `NEVER` and Bash explicit-user package/test/build gates remain blocked or are skipped headlessly
 - **coordinator**: Orchestration-only lead (read/grep/glob + `task`/`launch_workflow`/`team`); cannot write files or run bash directly
 - **lean**: Specialized Lean 4 proof assistant. Not available by default — must be
   installed with `/leanstall` (removed with `/unleanstall`). Use `--agent lean
@@ -1021,8 +1060,9 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
 - **planner**: read-only (glob/grep/read, plus lsp when enabled); returns a phased,
   code-grounded plan.
 - **reviewer**, **debugger**, **security**: investigation/audit subagents that add a
-  **jailed read-only bash** (allowlist auto-runs tests/lint/git-inspection; denies
-  mutations, network, and package installs) — their key differentiator from explore/planner.
+  **jailed read-only bash** (allowlists inspection; recognized tests/builds still
+  require explicit user authority; denies mutations, network, and package installs)
+  — their key differentiator from explore/planner.
 - **editor**: workflow-only subagent for surgical file edits (glob/read/grep +
   write/edit, no bash/MCP). Requires `isolation="worktree"`, where lsp is disabled
   until language servers run inside the OS process sandbox.
@@ -1051,8 +1091,14 @@ authorizes the plan↔execute boundary. Neither tool is available in programmati
   verifier PASS is diagnostic only. Model-authored workflow contracts gate delivery
   but cannot authorize landing. The result's `completed`, `outcome`, and receipt
   state outrank raw subagent prose; contradictory success prose is replaced with
-  a host BLOCKED/PARTIAL status before emission. Pasted report prose is rejected
-  in either mode. Trusted checks are argv-only and reject shell executables, so
+  a host BLOCKED/PARTIAL status before emission. Tool-bearing intermediate turns
+  do not publish that terminal banner. Outside a managed topology, unfinished
+  work may use `IN_PROGRESS:`, `BLOCKED:`, or `QUESTION:` tool-free handoffs as
+  untrusted context; a managed topology permits only its phase-specific handoff
+  types. Outside a managed topology, ordinary tool-free
+  `Status:` snapshots can be quoted too. None authorizes completion or landing.
+  Pasted report prose is rejected in either mode. Trusted checks are argv-only
+  and reject shell executables, so
   pipelines cannot mask exit status. Non-executing, failure-masking, and empty
   selector modes are rejected. dotnet test, pytest, unittest, and cargo test
   must report positive executed-test counts. go test must emit at least one
@@ -1127,6 +1173,13 @@ checks, and receipts. The verification candidate is model-read-only and
 `verify_work` uses the bound baseline/candidate without requiring an active
 worktree-manager handle.
 
+Start the managed run from the assigned candidate with `--no-worktree` or
+`worktree.mode = "off"`; entering another automatic worktree intentionally fails
+topology validation. During active state the worker does not commit, spawn a
+verifier, or call `verify_work`. It begins its handoff with
+`READY_FOR_HOST_FREEZE:`, `BLOCKED:`, or `IN_PROGRESS:` so the host can freeze
+the candidate and create the later verification session.
+
 `task.task` accepts a frozen structured `TaskBrief` object with an objective, named
 inputs, allowed and denied change paths, trusted acceptance-check IDs, optional
 token/USD/call budget, deadline, and canonical tool-manifest identity. The host
@@ -1148,9 +1201,11 @@ free-form task strings remain supported.
 The `task` tool accepts `async_run=true` (default) to delegate work to a
 subagent in the background and return immediately with a `task_id` of the form
 `asub-N`, instead of blocking the turn for the result. The result is delivered
-to the host automatically when the subagent finishes. Use it for fan-out —
-spawn what you need, then keep working or end the turn; the completion surfaces
-at the top of a later turn. Isolated (write-capable) async subagents stream
+to the host automatically when the subagent finishes. Each assistant tool batch
+has a hard two-agent-slot budget shared by task, team, and workflow launches; a
+workflow reserves both slots. Review returned evidence before requesting a later
+bounded batch, and never duplicate a broad audit. The completion
+surfaces at the top of a later turn. Isolated (write-capable) async subagents stream
 their stdout to a log file under the scratchpad; in-process ones stream their
 partial response. Either way the Tasks pane and the `background` tool show the
 agent, model, elapsed time, turns used, worktree/branch, the prompt, and a live
@@ -1402,18 +1457,20 @@ A workflow script is a `.py` file with an `async def main()` function. Optional
 YAML frontmatter (`name:`, `description:`) precedes the Python source. The
 runtime injects these functions into the script's namespace:
 
-- `agent(prompt, *, agent="explore", model=None, label=None, phase=None, schema=None, budget_estimate=None, isolation=None, contract=None, then=None)` — spawn a subagent. Pass `isolation="worktree"` to run the agent as a `vibe -p` subprocess in a fresh git worktree (for parallel file-mutating agents that would otherwise conflict); its branch is kept for manual `git merge` if it changed files, else removed. Write-capable isolated profiles auto-approve ASK-gated tools inside their confined worktree; read-only profiles reject ASK and run only their explicitly allowlisted checks. Agent profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `debugger` (+bash; root-cause analysis), `planner` (grep/read; phased plan), `security` (+bash; vuln audit), `editor` (read/grep/write/edit, no bash/MCP — **requires** `isolation="worktree"`), `grunt` (full tool set like worker, but routes onto a cheap model via `grunt_model` and ships a no-decisions prompt for bulk/mechanical work — **requires** `isolation="worktree"`), or `worker` for the full tool set including any configured MCP tools (no allowlist — **requires** `isolation="worktree"`, where it runs auto-approved in its own worktree so its tools actually execute and writes can't race other agents). Pass `contract={...}` (requires `isolation="worktree"`) to validate the agent's FILES before delivery: `outputs` (path/must_contain/must_not_contain/must_match/must_not_match/min_size/max_size), `invariants` (grep pattern must or must not match across the tree), and `tests` (command + optional expected stdout). On pass the work is ff-merged into the parent repo; on fail a falsy `ContractFailure` (mirroring `SchemaValidationFailure`) carries the violations and the work is held back. Unlike `schema=`, which validates the agent's JSON return value, `contract=` validates the code it wrote. Set `then="verifier"` only with worktree isolation to freeze and verify the candidate before delivery; it requires a clean unchanged parent and records authorization only when the delivered workspace exactly matches the verified candidate. The bundled `/verify-contract` workflow demonstrates the contract pattern.
-- `parallel(*items, max_concurrency=None)` (or `parallel([items])`) — run items concurrently, results in argument order; an item that raises yields `None` (filter the results), so one failure does not abort the batch. Each item may be a **coroutine** (`parallel(agent("a"), agent("b"))`) or a zero-arg thunk (`parallel(lambda: agent("a"))`) — both work, since Python coroutines are lazy and bound concurrency identically. Pass `max_concurrency=N` to cap in-flight items (e.g. `3` when a provider limits concurrency) instead of hand-rolling chunked waves.
-- `pipeline(items, *stages, max_concurrency=None)` — run each item through all stages independently with no barrier between stages (item A can be in stage 3 while item B is still in stage 1); each stage receives `(prev, item, index)` and a stage that raises drops that item to `None`. A single stage behaves as a concurrent map. `max_concurrency=N` caps in-flight items.
+- `agent(prompt, *, agent="explore", model=None, label=None, phase=None, schema=None, budget_estimate=None, isolation=None, strip_unknown=True, contract=None, citations=None, then=None)` — spawn a subagent. Pass `isolation="worktree"` for write-capable profiles. Available profiles include `explore`, `research`, `reviewer`, `debugger`, `planner`, `security`, `verifier`, `editor`, `grunt`, and `worker`. `schema=` validates returned JSON; `strip_unknown` controls removal of extra keys. `contract=` validates isolated code artifacts, `citations=` verifies returned file/line/snippet evidence, and `then="verifier"` freezes and verifies an isolated candidate before delivery.
+- `parallel(*items, max_concurrency=None)` (or `parallel([items])`) — run coroutine or zero-argument callable items concurrently in argument order. Ordinary item failures yield `None`; expected-lane strategy failures and hard agent/budget/spend ceilings propagate.
+- `pipeline(items, *stages, max_concurrency=None)` — run each item through its stages independently; ordinary stage failures drop that item to `None`, while expected-lane and hard-ceiling failures propagate.
 - `phase(name)` — declare a phase for progress tracking
 - `log(msg)` — log a progress message
 - `budget` — token budget object with `.total` (int|None) and `.remaining()` (int|float)
 - `workflow(name, args=None)` — run another discovered workflow inline as a sub-step and return its result; it shares this run's budget, agent counter, and result cache, and its phases merge into the live monitor. Nesting is one level deep — calling `workflow()` inside a nested run raises.
+- `recipe(name, *, items=None, find_agent="explore", verify_agent="reviewer", synth=None, max_concurrency=None)` — run `find_verify` or `find_verify_synth`; every item expands into finder and verifier agent calls that share this run's budget and agent counter.
 - `post_message(channel, message)` — post to a named channel on this run's shared in-process message board. Visible to every agent/stage in the same run via `fetch_messages`. Use for inter-agent handoffs that don't fit the barrier-return model (e.g. a finder posting partial results a verifier polls for).
 - `fetch_messages(channel)` — return a copy of all messages posted to a channel so far.
 - `flatten(items)` — flatten one level of nested lists (strings/dicts/bytes are atoms, not iterated): `flatten([[1,2],[3]]) == [1,2,3]`.
 - `dedup_by(items, key)` — drop duplicates keeping the first occurrence; `key` maps each item to a hashable identity (e.g. `lambda f: f"{f['file']}:{f['line']}"`). Items whose key raises are kept as unique by `id()`.
 - `merge_by(items, key, merge)` — group by `key` and fold each group via `merge(acc, item)` (acc starts at the first item); returns one merged value per key in first-seen order. Use to union findings, sum counts, or pick the highest-scored item per group.
+- `team_task(description, dependencies=None)` — enqueue a task on the active process team and return its ID, or `None` when no team is active.
 - `args` — structured input from the invocation command (string or None)
 
 Scripts are validated via AST before execution — for **safety and correctness**: it
@@ -1431,6 +1488,11 @@ inside a string literal) — template with f-strings or `%` formatting instead.
 Also blocked: `exec`/`eval`/`compile`/`open`/`input`/`getattr`/`setattr`/`globals`/
 `vars`/`__import__`, all dunder access, and dunder dict keys. The builtins
 namespace is safelisted (no `open`, `exec`, `__import__`).
+
+When a workflow is bound to an active `work_strategy` receipt, `workflow()` and
+`recipe()` do not grant more lanes. Every downstream agent launch counts against
+the same cap and must map to an exact receipt lane. If the mapping cannot be
+proven before launch, use literal receipt-labeled `agent()` calls instead.
 
 ### Workflow Discovery
 
@@ -1478,8 +1540,9 @@ Inside the script, an `agent(schema=...)` whose output can't be validated after
 retries returns a **falsy** `SchemaValidationFailure` (a `dict` subclass): filter
 with `[r for r in results if r]` (NOT `isinstance(r, dict)`, which would now
 wrongly include it), `r.get(k, default)` is safe, `json.dumps(results)` will not
-crash, and `isinstance(r, SchemaValidationFailure)` / `r.schema_errors` expose
-the detail — so one failed agent degrades the batch instead of crashing the run.
+crash, and `r.get("schema_errors", [])` exposes the detail. The class name is not
+injected into workflow scripts, so do not use it in `isinstance`. One failed agent
+degrades the batch instead of crashing the run.
 
 ### Task Manager (background processes, workflows, teams, loops)
 
@@ -1562,10 +1625,10 @@ not prevented at spawn. `budget.total = None` means unlimited.
 
 ### Concurrency
 
-Up to __MAX_CONCURRENT_AGENTS__ concurrent agents, 1000 total per run (constructor defaults on
+Up to __MAX_CONCURRENT_AGENTS__ concurrent agents, __MAX_TOTAL_AGENTS__ total per run (constructor defaults on
 `WorkflowRuntime`; not exposed as a config.toml key). `parallel` and
 `pipeline` share the same semaphore as `spawn_agent`. Pass `max_concurrency=N`
-to either to cap in-flight work below the global __MAX_CONCURRENT_AGENTS__ (e.g. `3` when a provider
+to either to cap in-flight work below the global __MAX_CONCURRENT_AGENTS__ (e.g. `1` when a provider
 allows only a few concurrent agents) — prefer this over hand-rolling chunked
 waves.
 
@@ -1588,20 +1651,31 @@ The host remains hands-on with its normal read, edit, shell, and integration
 tools. After observing scope, it records a `work_strategy` route:
 
 - `direct` for localized or sequentially coupled work
-- `task` for one or more productive independent lanes
-- `workflow` for staged fan-out or adversarial review
+- `task` for one or two productive independent lanes
+- `workflow` for exactly two staged or adversarial evidence lanes
 - `team` for long-running coordination
 
 Follow the receipt's lane bindings: `task`/`team` prompts include exactly one
 `[lane:<id>]` marker, while workflow `agent()` calls use literal `label='<id>'`
 values. Distinct bound lanes, not raw launch count, satisfy delegation debt.
+Every strategy may start at most two agent-owned lanes; host-owned lanes do not
+count against that bound. Add another bounded strategy only after terminal
+evidence identifies a concrete gap. Workflow scripts must contain exactly one
+literal `agent()` call per declared lane, and a pipeline lane uses a singleton
+seed so hidden repeated fan-out cannot bypass the limit.
+
+Declare the highest plausible risk on the first strategy. The risk floor is
+monotonic for the active strategy lifecycle, including continuation turns:
+host/user high-risk cues and earlier high declarations cannot be downgraded. A
+rejected redeclaration preserves the prior accepted route, state, and debt. An
+active delegation must reach a terminal result before a replacement strategy
+can be accepted.
 
 The runtime blocks substantive mutation until the route is valid and any
 required productive delegation has launched, then checks the same debt before
 finalization. In-flight debt survives continuation turns and is correlated by
-immutable task, workflow, or team launch ID; a superseded launch cannot settle
-or poison its replacement. Preflight lane reservations prevent duplicate
-parallel launches, explicit async-task stops are terminal failures, and
+immutable task, workflow, or team launch ID. Preflight lane reservations prevent
+duplicate parallel launches, explicit async-task stops are terminal failures, and
 interactive teammate output is bounded and staged back into the host for
 synthesis. An edit or write can infer direct only for one path explicitly named
 by the user after at most two reconnaissance calls; the implicit route is
@@ -1755,6 +1829,7 @@ VIBE_DOC_CAPSULE = SkillDocCapsule(
     # __VIBE_VERSION__ is left intact for render_agent_prompt() to fill later.
     prompt_template=_PROMPT_TEMPLATE
     .replace("__MAX_CONCURRENT_AGENTS__", str(DEFAULT_MAX_CONCURRENT))
+    .replace("__MAX_TOTAL_AGENTS__", str(DEFAULT_MAX_AGENTS))
     .replace("__MIN_INTERVAL_S__", str(MIN_INTERVAL_SECONDS))
     .replace("__MAX_LOOPS__", str(MAX_LOOPS_PER_SESSION)),
 )

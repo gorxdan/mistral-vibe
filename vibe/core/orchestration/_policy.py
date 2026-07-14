@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 import re
 from typing import Any, Literal
 
+from vibe.core._agent_limits import HOST_AGENT_LANE_LIMIT
 from vibe.core.orchestration.models import (
     LaneOwner,
     OrchestrationCapabilities,
@@ -19,6 +21,7 @@ from vibe.core.orchestration.models import (
     WorkRisk,
 )
 from vibe.core.tasking._path_scope import path_matches_scope
+from vibe.core.workflows.models import WorkflowLaneAttestation, WorkflowLaneExpectation
 
 _CONTROL_TOOLS = frozenset({
     "ask_user_question",
@@ -83,6 +86,12 @@ _SUBSTANTIVE = re.compile(
     r"(?:the\s+)?(?:logs|traces|sessions|repository|repo|codebase))\b",
     re.IGNORECASE,
 )
+_HOST_HIGH_RISK = re.compile(
+    r"\b(?:high[- ]risk|multi[- ]system|cross[- ]system|"
+    r"production[- ]critical|security[- ]critical|release acceptance|"
+    r"credential rotation)\b",
+    re.IGNORECASE,
+)
 _DIRECT_MUTATION_LIMIT = 8
 _DIRECT_PATH_LIMIT = 2
 _IMPLICIT_DIRECT_RECON_LIMIT = 2
@@ -90,6 +99,31 @@ _RECON_NUDGE_THRESHOLD = 4
 _WORKFLOW_MIN_AGENT_LANES = 2
 _WORKFLOW_RESERVED_HELPERS = frozenset({"agent", "parallel", "pipeline"})
 _WORKFLOW_UNKNOWN = object()
+_WORK_RISK_RANK = {WorkRisk.LOW: 0, WorkRisk.MEDIUM: 1, WorkRisk.HIGH: 2}
+
+
+@dataclass(frozen=True)
+class _RecoveryDecisionIdentity:
+    route: OrchestrationRoute
+    objective: str
+    risk: WorkRisk
+    expected_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _RecoveryLaneIdentity:
+    id: str
+    agent_profile: str | None
+    objective: str
+    dependencies: tuple[str, ...]
+    acceptance: tuple[str, ...]
+    expected_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _RecoveryIdentity:
+    decision: _RecoveryDecisionIdentity
+    lanes: tuple[_RecoveryLaneIdentity, ...]
 
 
 class OrchestrationController:
@@ -120,23 +154,42 @@ class OrchestrationController:
         self._launched_lane_ids: set[str] = set()
         self._completed_lane_ids: set[str] = set()
         self._task_lanes_by_id: dict[str, tuple[int, set[str]]] = {}
-        self._workflow_lanes_by_id: dict[str, tuple[int, set[str]]] = {}
+        self._init_workflow_tracking()
         self._team_lanes_by_id: dict[str, tuple[int, set[str]]] = {}
         self._deferred_task_results: dict[str, bool] = {}
-        self._deferred_workflow_results: dict[str, bool] = {}
         self._deferred_team_results: dict[str, bool] = {}
         self._reserved_lanes_by_call: dict[str, set[str]] = {}
         self._failed_lane_ids: set[str] = set()
         self._failed_lane_groups: set[frozenset[str]] = set()
+        self._failed_recovery_identities: dict[frozenset[str], _RecoveryIdentity] = {}
         self._unbound_terminal_failures = 0
         self._unresolved_terminal_failures = 0
-        self._implicit_lane_counter = 0
         self._lifecycle_generation = 0
         self._terminal_deliveries: dict[tuple[OrchestrationRoute, str], int] = {}
         self._continuation_markers: dict[
             str, tuple[int, frozenset[tuple[OrchestrationRoute, str]]]
         ] = {}
         self._continuation_counter = 0
+        self._risk_floor = WorkRisk.LOW
+        self._current_strategy_id: str | None = None
+        self._delegated_strategy_started = False
+        self._terminal_strategy_evidence: dict[str, frozenset[str]] = {}
+        self._consumed_evidence_strategy_ids: set[str] = set()
+        self._successful_lane_ids: set[str] = set()
+        self._active_external_dependencies: set[str] = set()
+        self._route_revalidation_required = False
+
+    def _init_workflow_tracking(self) -> None:
+        self._workflow_lanes_by_id: dict[str, tuple[int, set[str]]] = {}
+        self._workflow_expectations_by_id: dict[
+            str, tuple[WorkflowLaneExpectation, ...]
+        ] = {}
+        self._deferred_workflow_results: dict[
+            str, tuple[bool, WorkflowLaneAttestation | None]
+        ] = {}
+        self._reserved_workflow_expectations_by_call: dict[
+            str, tuple[WorkflowLaneExpectation, ...]
+        ] = {}
 
     def begin_turn(
         self,
@@ -147,28 +200,29 @@ class OrchestrationController:
         continuation_id: str | None = None,
     ) -> None:
         self._reserved_lanes_by_call.clear()
+        self._reserved_workflow_expectations_by_call.clear()
         synthetic_continuation = self._consume_continuation_marker(
             continuation_id, enabled=enabled
         )
         open_debt = enabled and self._has_open_strategy_debt()
         if not enabled:
             self._lifecycle_generation += 1
+            self._risk_floor = WorkRisk.LOW
             self.state = OrchestrationState.OFF
             self.decision = None
-            self._unresolved_terminal_failures = 0
-            self._failed_lane_ids.clear()
-            self._failed_lane_groups.clear()
-            self._unbound_terminal_failures = 0
+            self._clear_terminal_failures()
             self._productive_delegations = 0
             self._required_delegations = 0
             self._inferred_route = None
             self._launched_lane_ids.clear()
             self._completed_lane_ids.clear()
+            self._reset_strategy_campaign()
         elif synthetic_continuation or open_debt:
             if self._unresolved_terminal_failures:
                 self.state = OrchestrationState.RECOVERY
         else:
             self._lifecycle_generation += 1
+            self._risk_floor = WorkRisk.LOW
             self.state = (
                 OrchestrationState.DISTRIBUTED
                 if self._pending_delegations
@@ -180,6 +234,7 @@ class OrchestrationController:
             self._inferred_route = None
             self._launched_lane_ids.clear()
             self._completed_lane_ids.clear()
+            self._reset_strategy_campaign()
         self.capabilities = capabilities
         if synthetic_continuation:
             pass
@@ -198,6 +253,23 @@ class OrchestrationController:
         self._implicit_direct_path = None
         self._scope_drift = False
         self._implicit_lane_counter = 0
+
+    def _reset_strategy_campaign(self) -> None:
+        self._current_strategy_id = None
+        self._delegated_strategy_started = False
+        self._terminal_strategy_evidence.clear()
+        self._consumed_evidence_strategy_ids.clear()
+        self._successful_lane_ids.clear()
+        self._failed_recovery_identities.clear()
+        self._active_external_dependencies.clear()
+        self._route_revalidation_required = False
+
+    def _clear_terminal_failures(self) -> None:
+        self._unresolved_terminal_failures = 0
+        self._failed_lane_ids.clear()
+        self._failed_lane_groups.clear()
+        self._failed_recovery_identities.clear()
+        self._unbound_terminal_failures = 0
 
     def issue_continuation(
         self, *, route: OrchestrationRoute | None = None, launch_id: str | None = None
@@ -282,6 +354,7 @@ class OrchestrationController:
             or (self._user_allows_workflow and _EXPLICIT_WORKFLOW.search(user_prompt))
             or (self._user_allows_team and _EXPLICIT_TEAM.search(user_prompt))
         )
+        self._raise_risk_floor_from_prompt(user_prompt)
 
     def _merge_user_intent(self, user_prompt: str) -> None:
         no_agents = _NO_AGENTS.search(user_prompt) is not None
@@ -315,44 +388,99 @@ class OrchestrationController:
         self._requires_strategy = bool(
             self._requires_strategy or _SUBSTANTIVE.search(user_prompt)
         )
+        self._raise_risk_floor_from_prompt(user_prompt)
+
+    def _raise_risk_floor_from_prompt(self, user_prompt: str) -> None:
+        if _HOST_HIGH_RISK.search(user_prompt) is None:
+            return
+        self._risk_floor = WorkRisk.HIGH
+        if self.decision is not None:
+            self.decision = self.decision.model_copy(update={"risk": WorkRisk.HIGH})
+        for group, identity in self._failed_recovery_identities.items():
+            self._failed_recovery_identities[group] = replace(
+                identity, decision=replace(identity.decision, risk=WorkRisk.HIGH)
+            )
 
     def declare(self, decision: OrchestrationDecision) -> StrategyReceipt:
         if self.state is OrchestrationState.OFF:
             raise ValueError("Work strategy is only available in Le Chaton host turns")
 
+        previous_state = self.state
+        previous_decision = self.decision
+        submitted_risk = decision.risk
+        decision = self._apply_risk_floor(
+            decision, latch=previous_state is not OrchestrationState.RECOVERY
+        )
         fallback = self._fallback_decision(decision)
         if fallback is not None:
             decision = fallback
         try:
-            decision = self._canonicalize_expected_paths(decision)
-            self._validate_decision(decision)
-        except ValueError as exc:
-            self.state = OrchestrationState.ROUTE_REQUIRED
-            return StrategyReceipt(
-                route=decision.route,
-                state=self.state,
-                message=str(exc),
-                accepted=False,
-                reason=self._rejection_reason(decision),
-                required_delegations=0,
+            (decision, evidence_strategy_id, external_dependencies) = (
+                self._validate_strategy_replacement(
+                    decision,
+                    previous_state=previous_state,
+                    previous_decision=previous_decision,
+                    submitted_risk=submitted_risk,
+                )
             )
+        except ValueError as exc:
+            return self._rejected_strategy_receipt(
+                decision,
+                exc,
+                previous_state=previous_state,
+                previous_decision=previous_decision,
+            )
+        self._latch_accepted_risk(decision.risk)
+        self._activate_strategy(
+            decision,
+            evidence_strategy_id=evidence_strategy_id,
+            external_dependencies=external_dependencies,
+        )
+        message = self._apply_strategy_route(decision)
+
+        return StrategyReceipt(
+            route=decision.route,
+            state=self.state,
+            message=message,
+            reason=(
+                StrategyReason.CAPABILITY_FALLBACK
+                if fallback is not None
+                else decision.reason
+            ),
+            required_delegations=self._required_delegations,
+            strategy_id=self._current_strategy_id,
+        )
+
+    def _activate_strategy(
+        self,
+        decision: OrchestrationDecision,
+        *,
+        evidence_strategy_id: str | None,
+        external_dependencies: set[str],
+    ) -> None:
         self._lifecycle_generation += 1
+        self._current_strategy_id = f"strategy-{self._lifecycle_generation}"
         self._terminal_deliveries.clear()
         self._continuation_markers.clear()
         self.decision = decision
-        self._unresolved_terminal_failures = 0
-        self._failed_lane_ids.clear()
-        self._failed_lane_groups.clear()
-        self._unbound_terminal_failures = 0
+        self._active_external_dependencies = set(external_dependencies)
+        self._clear_terminal_failures()
         self._inferred_route = None
         self._productive_delegations = 0
         self._launched_lane_ids.clear()
         self._completed_lane_ids.clear()
         self._reserved_lanes_by_call.clear()
+        self._reserved_workflow_expectations_by_call.clear()
         self._mutation_calls = 0
         self._mutation_paths.clear()
         self._implicit_direct_path = None
+        self._route_revalidation_required = False
+        if decision.route is not OrchestrationRoute.DIRECT:
+            self._delegated_strategy_started = True
+            if evidence_strategy_id is not None:
+                self._consumed_evidence_strategy_ids.add(evidence_strategy_id)
 
+    def _apply_strategy_route(self, decision: OrchestrationDecision) -> str:
         agent_lanes = sum(lane.owner is LaneOwner.AGENT for lane in decision.lanes)
         lane_ids = [lane.id for lane in decision.lanes if lane.owner is LaneOwner.AGENT]
         match decision.route:
@@ -383,18 +511,291 @@ class OrchestrationController:
                     "Team strategy recorded; spawn each declared lane with its "
                     "[lane:<id>] marker before substantive mutation."
                 )
+        return message
 
-        return StrategyReceipt(
+    def _validate_strategy_replacement(
+        self,
+        decision: OrchestrationDecision,
+        *,
+        previous_state: OrchestrationState,
+        previous_decision: OrchestrationDecision | None,
+        submitted_risk: WorkRisk,
+    ) -> tuple[OrchestrationDecision, str | None, set[str]]:
+        decision = self._canonicalize_expected_paths(decision)
+        external_dependencies = self._candidate_external_dependencies(
+            decision, previous_state=previous_state, previous_decision=previous_decision
+        )
+        self._validate_decision(
+            decision, allowed_external_dependencies=external_dependencies
+        )
+        if previous_decision is not None and self._has_active_strategy_launch():
+            raise ValueError(
+                "The accepted strategy still has an active delegation; wait "
+                "for its terminal result before replacing the route or lanes"
+            )
+        if (
+            previous_decision is not None
+            and previous_state is not OrchestrationState.RECOVERY
+        ):
+            unfinished = {
+                lane.id
+                for lane in previous_decision.lanes
+                if lane.owner is LaneOwner.AGENT
+            } - self._completed_lane_ids
+            if unfinished:
+                names = ", ".join(sorted(unfinished))
+                raise ValueError(
+                    "The accepted strategy still owes terminal evidence for "
+                    f"lane(s): {names}"
+                )
+        exact_recovery = self._validate_recovery_replacement(
+            decision, previous_state=previous_state, submitted_risk=submitted_risk
+        )
+        if decision.route is OrchestrationRoute.DIRECT:
+            if decision.evidence_gap is not None:
+                raise ValueError("evidence_gap applies only to a delegated expansion")
+            return decision, None, external_dependencies
+        if exact_recovery:
+            return decision, None, external_dependencies
+        evidence_strategy_id = self._validate_delegated_expansion(decision)
+        return decision, evidence_strategy_id, external_dependencies
+
+    def _validate_recovery_replacement(
+        self,
+        decision: OrchestrationDecision,
+        *,
+        previous_state: OrchestrationState,
+        submitted_risk: WorkRisk,
+    ) -> bool:
+        if previous_state is not OrchestrationState.RECOVERY:
+            return False
+        exact_recovery = self._matches_failed_recovery(
+            decision, submitted_risk=submitted_risk
+        )
+        if exact_recovery:
+            if decision.evidence_gap is not None:
+                raise ValueError(
+                    "An exact failed-lane retry does not accept evidence_gap"
+                )
+            return True
+        if decision.evidence_gap is None:
+            raise ValueError(
+                "A gap-free recovery must exactly match the failed route, lane set, "
+                "decision objective, risk, expected paths, and each failed lane's "
+                "profile, objective, dependencies, acceptance, and expected paths"
+            )
+        return False
+
+    def _validate_delegated_expansion(
+        self, decision: OrchestrationDecision
+    ) -> str | None:
+        gap = decision.evidence_gap
+        if not self._delegated_strategy_started:
+            if gap is not None:
+                raise ValueError(
+                    "The first delegated strategy cannot claim a prior evidence gap"
+                )
+            return None
+
+        if gap is None:
+            raise ValueError(
+                "Another delegated strategy requires evidence_gap bound to a "
+                "completed strategy and its returned lane evidence"
+            )
+        proposed_lane_ids = {lane.id for lane in decision.lanes}
+        if reused := proposed_lane_ids & self._successful_lane_ids:
+            names = ", ".join(sorted(reused))
+            raise ValueError(
+                "A delegated expansion cannot reuse successful lane identities: "
+                f"{names}"
+            )
+        completed_lane_ids = self._terminal_strategy_evidence.get(gap.strategy_id)
+        if completed_lane_ids is None:
+            raise ValueError(
+                f"Evidence strategy '{gap.strategy_id}' is not terminal and successful"
+            )
+        if gap.strategy_id in self._consumed_evidence_strategy_ids:
+            raise ValueError(
+                f"Evidence strategy '{gap.strategy_id}' already authorized an expansion"
+            )
+        referenced_lane_ids = set(gap.lane_ids)
+        if not referenced_lane_ids <= completed_lane_ids:
+            unknown = ", ".join(sorted(referenced_lane_ids - completed_lane_ids))
+            raise ValueError(
+                "Evidence gap references lane(s) without successful terminal "
+                f"evidence in strategy '{gap.strategy_id}': {unknown}"
+            )
+        return gap.strategy_id
+
+    def _matches_failed_recovery(
+        self, decision: OrchestrationDecision, *, submitted_risk: WorkRisk
+    ) -> bool:
+        if self._unbound_terminal_failures or not self._failed_lane_ids:
+            return False
+        candidate_lane_ids = {lane.id for lane in decision.lanes}
+        candidate_agent_lane_ids = {
+            lane.id for lane in decision.lanes if lane.owner is LaneOwner.AGENT
+        }
+        if (
+            candidate_lane_ids != self._failed_lane_ids
+            or candidate_agent_lane_ids != self._failed_lane_ids
+            or set(self._failed_recovery_identities) != self._failed_lane_groups
+        ):
+            return False
+
+        candidate = self._recovery_identity(decision, self._failed_lane_ids)
+        expected_decisions = {
+            identity.decision for identity in self._failed_recovery_identities.values()
+        }
+        if expected_decisions != {candidate.decision} or any(
+            identity.risk is not submitted_risk for identity in expected_decisions
+        ):
+            return False
+        expected_lanes = {
+            lane
+            for identity in self._failed_recovery_identities.values()
+            for lane in identity.lanes
+        }
+        return expected_lanes == set(candidate.lanes)
+
+    def _candidate_external_dependencies(
+        self,
+        decision: OrchestrationDecision,
+        *,
+        previous_state: OrchestrationState,
+        previous_decision: OrchestrationDecision | None,
+    ) -> set[str]:
+        lane_ids = {lane.id for lane in decision.lanes}
+        if (
+            previous_decision is not None
+            and decision.route is previous_decision.route
+            and lane_ids == {lane.id for lane in previous_decision.lanes}
+        ):
+            return set(self._active_external_dependencies)
+        if (
+            previous_state is not OrchestrationState.RECOVERY
+            or decision.evidence_gap is not None
+        ):
+            return set()
+        agent_lane_ids = {
+            lane.id for lane in decision.lanes if lane.owner is LaneOwner.AGENT
+        }
+        if lane_ids != self._failed_lane_ids or agent_lane_ids != self._failed_lane_ids:
+            return set()
+        dependencies = {
+            dependency
+            for identity in self._failed_recovery_identities.values()
+            for lane in identity.lanes
+            for dependency in lane.dependencies
+        }
+        prior_host_lane_ids = (
+            {lane.id for lane in self.decision.lanes if lane.owner is LaneOwner.HOST}
+            if self.decision is not None
+            else set()
+        )
+        satisfied_dependencies = self._successful_lane_ids | prior_host_lane_ids
+        return (dependencies - self._failed_lane_ids) & satisfied_dependencies
+
+    @staticmethod
+    def _recovery_identity(
+        decision: OrchestrationDecision, lane_ids: set[str] | frozenset[str]
+    ) -> _RecoveryIdentity:
+        decision_identity = _RecoveryDecisionIdentity(
             route=decision.route,
+            objective=decision.objective.strip(),
+            risk=decision.risk,
+            expected_paths=tuple(sorted(set(decision.expected_paths))),
+        )
+        lanes = tuple(
+            sorted(
+                (
+                    _RecoveryLaneIdentity(
+                        id=lane.id,
+                        agent_profile=lane.profile,
+                        objective=lane.objective.strip(),
+                        dependencies=tuple(sorted(set(lane.dependencies))),
+                        acceptance=tuple(
+                            sorted({item.strip() for item in lane.acceptance})
+                        ),
+                        expected_paths=tuple(sorted(set(lane.expected_paths))),
+                    )
+                    for lane in decision.lanes
+                    if lane.id in lane_ids
+                ),
+                key=lambda lane: lane.id,
+            )
+        )
+        return _RecoveryIdentity(decision=decision_identity, lanes=lanes)
+
+    def _rejected_strategy_receipt(
+        self,
+        decision: OrchestrationDecision,
+        error: ValueError,
+        *,
+        previous_state: OrchestrationState,
+        previous_decision: OrchestrationDecision | None,
+    ) -> StrategyReceipt:
+        if previous_decision is None:
+            self.state = OrchestrationState.ROUTE_REQUIRED
+            message = str(error)
+            required_delegations = 0
+            receipt_route = decision.route
+            strategy_id = None
+        else:
+            receipt_route = previous_decision.route
+            strategy_id = self._current_strategy_id
+            required_delegations = self._required_delegations
+            previous_at_floor = previous_decision.model_copy(
+                update={"risk": self._risk_floor}
+            )
+            try:
+                if self._route_revalidation_required:
+                    raise ValueError("the retained route already requires revalidation")
+                self._validate_decision(
+                    previous_at_floor,
+                    allowed_external_dependencies=self._active_external_dependencies,
+                )
+            except ValueError as previous_error:
+                self.state = OrchestrationState.ROUTE_REQUIRED
+                self._route_revalidation_required = True
+                message = (
+                    f"{error}. Existing {previous_decision.route} strategy no longer "
+                    "satisfies the current risk, intent, or capability constraints: "
+                    f"{previous_error}. Record a new valid strategy before mutation."
+                )
+            else:
+                self.decision = previous_at_floor
+                self.state = previous_state
+                message = (
+                    f"{error}. Existing {previous_decision.route} strategy remains "
+                    f"active in state '{previous_state}'."
+                )
+        return StrategyReceipt(
+            route=receipt_route,
             state=self.state,
             message=message,
-            reason=(
-                StrategyReason.CAPABILITY_FALLBACK
-                if fallback is not None
-                else decision.reason
-            ),
-            required_delegations=self._required_delegations,
+            accepted=False,
+            reason=self._rejection_reason(decision),
+            required_delegations=required_delegations,
+            strategy_id=strategy_id,
         )
+
+    def _apply_risk_floor(
+        self, decision: OrchestrationDecision, *, latch: bool
+    ) -> OrchestrationDecision:
+        submitted_rank = _WORK_RISK_RANK[decision.risk]
+        floor_rank = _WORK_RISK_RANK[self._risk_floor]
+        if submitted_rank > floor_rank:
+            if latch:
+                self._risk_floor = decision.risk
+            return decision
+        if submitted_rank == floor_rank:
+            return decision
+        return decision.model_copy(update={"risk": self._risk_floor})
+
+    def _latch_accepted_risk(self, risk: WorkRisk) -> None:
+        if _WORK_RISK_RANK[risk] > _WORK_RISK_RANK[self._risk_floor]:
+            self._risk_floor = risk
 
     def before_tool(
         self,
@@ -404,20 +805,28 @@ class OrchestrationController:
         read_only: bool,
         call_id: str = "",
     ) -> str | None:
-        if self.state is OrchestrationState.OFF:
+        if (
+            self.state is OrchestrationState.OFF
+            or tool_name in _CONTROL_TOOLS
+            or (self._route_revalidation_required and read_only)
+        ):
             return None
-        if tool_name in _CONTROL_TOOLS:
-            return None
+        if self._route_revalidation_required:
+            return (
+                "The retained strategy no longer satisfies current risk, intent, "
+                "or capability constraints. Record a new valid work_strategy "
+                "before another effectful tool."
+            )
 
         route = _DELEGATION_TO_ROUTE.get(tool_name)
         if route is not None:
             return self._before_delegation(tool_name, args, route, call_id=call_id)
 
-        if read_only:
-            return None
-        if path_error := self._workspace_path_error(args):
-            return path_error
-        return self._before_mutation(tool_name, args)
+        if not read_only:
+            if path_error := self._workspace_path_error(args):
+                return path_error
+            return self._before_mutation(tool_name, args)
+        return None
 
     def _workspace_path_error(self, args: dict[str, Any]) -> str | None:
         raw_path = self._raw_tool_path(args)
@@ -441,6 +850,14 @@ class OrchestrationController:
         if constraint := self._delegation_constraint_error(route):
             self._reserved_lanes_by_call.pop(call_id, None)
             return constraint
+        verifier = tool_name == "task" and args.get("agent") == "verifier"
+        if self.decision is None and not verifier:
+            self.state = OrchestrationState.ROUTE_REQUIRED
+            self._reserved_lanes_by_call.pop(call_id, None)
+            return (
+                "Record work_strategy before launching a productive delegation so "
+                "the harness can bind its route and lane identity."
+            )
         if self.state in {
             OrchestrationState.PROVISIONAL_LOCAL,
             OrchestrationState.ROUTE_REQUIRED,
@@ -560,7 +977,11 @@ class OrchestrationController:
     def _can_claim_implicit_direct(self, tool_name: str, args: dict[str, Any]) -> bool:
         if self.state is not OrchestrationState.PROVISIONAL_LOCAL:
             return False
-        if self._requires_strategy or self._explicit_delegation:
+        if (
+            self._risk_floor is WorkRisk.HIGH
+            or self._requires_strategy
+            or self._explicit_delegation
+        ):
             return False
         if (
             self._mutation_calls
@@ -590,7 +1011,17 @@ class OrchestrationController:
         route = _DELEGATION_TO_ROUTE.get(tool_name)
         if route is not None:
             self._reserved_lanes_by_call.pop(call_id, None)
-            self._record_delegation(tool_name, args, route, status, result)
+            workflow_expectations = self._reserved_workflow_expectations_by_call.pop(
+                call_id, None
+            )
+            self._record_delegation(
+                tool_name,
+                args,
+                route,
+                status,
+                result,
+                workflow_expectations=workflow_expectations,
+            )
             return
         if status != "success" or tool_name in _CONTROL_TOOLS:
             return
@@ -618,6 +1049,34 @@ class OrchestrationController:
                 self._scope_drift = True
                 self.state = OrchestrationState.ROUTE_REQUIRED
 
+    def release_reservation(self, call_id: str) -> None:
+        self._reserved_lanes_by_call.pop(call_id, None)
+        self._reserved_workflow_expectations_by_call.pop(call_id, None)
+
+    def workflow_lane_expectations(
+        self, call_id: str, script: str
+    ) -> tuple[WorkflowLaneExpectation, ...] | None:
+        if (
+            self.decision is None
+            or self.decision.route is not OrchestrationRoute.WORKFLOW
+        ):
+            return None
+        reserved = self._reserved_lanes_by_call.get(call_id)
+        lanes = {lane.id: lane for lane in self._agent_lanes()}
+        if not reserved or reserved != set(lanes):
+            return None
+        calls = self._workflow_agent_calls(script)
+        expected = tuple(
+            WorkflowLaneExpectation(
+                label=lane_id, profile=lanes[lane_id].profile or calls.get(lane_id)
+            )
+            for lane_id in sorted(reserved)
+        )
+        if any(lane.profile is None for lane in expected):
+            return None
+        self._reserved_workflow_expectations_by_call[call_id] = expected
+        return expected
+
     def record_task_completion(self, task_id: str, *, succeeded: bool) -> None:
         launch = self._task_lanes_by_id.pop(task_id, None)
         if launch is None:
@@ -632,19 +1091,32 @@ class OrchestrationController:
         )
         self._finish_lanes(lane_ids, succeeded=succeeded, launch_generation=generation)
 
-    def record_workflow_completion(self, run_id: str, *, succeeded: bool) -> None:
+    def record_workflow_completion(
+        self,
+        run_id: str,
+        *,
+        succeeded: bool,
+        attestation: WorkflowLaneAttestation | None,
+    ) -> None:
         launch = self._workflow_lanes_by_id.pop(run_id, None)
         if launch is None:
             if self.state is not OrchestrationState.OFF:
-                self._deferred_workflow_results[run_id] = succeeded
+                self._deferred_workflow_results[run_id] = (succeeded, attestation)
             return
         generation, lane_ids = launch
+        expected = self._workflow_expectations_by_id.pop(run_id, None)
         if self.state is OrchestrationState.OFF:
             return
         self._register_terminal_delivery(
             OrchestrationRoute.WORKFLOW, run_id, generation, lane_ids
         )
-        self._finish_lanes(lane_ids, succeeded=succeeded, launch_generation=generation)
+        attested = bool(
+            succeeded
+            and expected is not None
+            and attestation is not None
+            and attestation.satisfies(expected)
+        )
+        self._finish_lanes(lane_ids, succeeded=attested, launch_generation=generation)
 
     def record_team_completion(self, launch_id: str, *, succeeded: bool) -> None:
         launch = self._team_lanes_by_id.pop(launch_id, None)
@@ -829,7 +1301,29 @@ class OrchestrationController:
             )
         )
 
-    def _validate_decision(self, decision: OrchestrationDecision) -> None:
+    def _has_active_strategy_launch(self) -> bool:
+        return any(
+            generation == self._lifecycle_generation
+            for generation, _ in (
+                *self._task_lanes_by_id.values(),
+                *self._workflow_lanes_by_id.values(),
+                *self._team_lanes_by_id.values(),
+            )
+        )
+
+    def _validate_decision(
+        self,
+        decision: OrchestrationDecision,
+        *,
+        allowed_external_dependencies: set[str] | None = None,
+    ) -> None:
+        lane_ids = {lane.id for lane in decision.lanes}
+        allowed_dependencies = allowed_external_dependencies or set()
+        for lane in decision.lanes:
+            unknown = set(lane.dependencies) - lane_ids - allowed_dependencies
+            if unknown:
+                names = ", ".join(sorted(unknown))
+                raise ValueError(f"Lane '{lane.id}' has unknown dependencies: {names}")
         agent_lanes = [lane for lane in decision.lanes if lane.owner is LaneOwner.AGENT]
         if (
             not self.user_allows_agents
@@ -843,6 +1337,15 @@ class OrchestrationController:
             raise ValueError(
                 "A direct strategy under an explicit no-agent constraint must use "
                 "reason='user_constrained'"
+            )
+        if (
+            decision.route is not OrchestrationRoute.DIRECT
+            and len(agent_lanes) > HOST_AGENT_LANE_LIMIT
+        ):
+            raise ValueError(
+                "A strategy may start at most two agent-owned evidence lanes; "
+                "declare another bounded strategy only after returned evidence "
+                "identifies a concrete gap"
             )
 
         match decision.route:
@@ -931,6 +1434,8 @@ class OrchestrationController:
         route: OrchestrationRoute,
         status: Literal["success", "failure", "skipped"],
         result: dict[str, Any] | None,
+        *,
+        workflow_expectations: tuple[WorkflowLaneExpectation, ...] | None = None,
     ) -> None:
         verifier = tool_name == "task" and args.get("agent") == "verifier"
         if verifier:
@@ -953,25 +1458,26 @@ class OrchestrationController:
             return
 
         if self.decision is None:
-            lane_ids = {self._next_implicit_lane_id()}
-            self._inferred_route = route
-            self._required_delegations = 1
-        else:
-            if self.decision.route is not route:
-                return
-            lane_ids = self._bound_lane_ids(tool_name, args)
-            if not lane_ids:
-                return
+            self._delegation_failures += 1
+            self._unbound_terminal_failures += 1
+            self.state = OrchestrationState.RECOVERY
+            self._sync_terminal_failures()
+            return
+        if self.decision.route is not route:
+            return
+        lane_ids = self._bound_lane_ids(tool_name, args)
+        if not lane_ids:
+            return
 
         self._launched_lane_ids.update(lane_ids)
         self._update_delegation_state()
         if tool_name == "task":
             self._record_task_launch(lane_ids, result)
-            return
-        if tool_name == "launch_workflow":
-            self._record_workflow_launch(lane_ids, result)
-            return
-        if tool_name == "team_spawn":
+        elif tool_name == "launch_workflow":
+            self._record_workflow_launch(
+                lane_ids, result, expectations=workflow_expectations
+            )
+        elif tool_name == "team_spawn":
             self._record_team_launch(lane_ids, result)
 
     def _record_task_launch(
@@ -989,7 +1495,11 @@ class OrchestrationController:
         self._finish_lanes(lane_ids, succeeded=succeeded)
 
     def _record_workflow_launch(
-        self, lane_ids: set[str], result: dict[str, Any] | None
+        self,
+        lane_ids: set[str],
+        result: dict[str, Any] | None,
+        *,
+        expectations: tuple[WorkflowLaneExpectation, ...] | None,
     ) -> None:
         if result is None:
             self._finish_lanes(lane_ids, succeeded=False)
@@ -999,9 +1509,13 @@ class OrchestrationController:
             self._finish_lanes(lane_ids, succeeded=False)
             return
         self._workflow_lanes_by_id[run_id] = (self._lifecycle_generation, set(lane_ids))
+        if expectations is not None:
+            self._workflow_expectations_by_id[run_id] = expectations
         if run_id in self._deferred_workflow_results:
-            succeeded = self._deferred_workflow_results.pop(run_id)
-            self.record_workflow_completion(run_id, succeeded=succeeded)
+            succeeded, attestation = self._deferred_workflow_results.pop(run_id)
+            self.record_workflow_completion(
+                run_id, succeeded=succeeded, attestation=attestation
+            )
 
     def _record_team_launch(
         self, lane_ids: set[str], result: dict[str, Any] | None
@@ -1047,8 +1561,12 @@ class OrchestrationController:
                 group for group in self._failed_lane_groups if group <= relevant
             }
             self._failed_lane_groups.difference_update(resolved_groups)
+            for group in resolved_groups:
+                self._failed_recovery_identities.pop(group, None)
             self._sync_terminal_failures()
             self._completed_lane_ids.update(relevant)
+            self._successful_lane_ids.update(relevant)
+            self._record_terminal_strategy_evidence()
             self._update_delegation_state()
             return
         self._launched_lane_ids.difference_update(relevant)
@@ -1060,6 +1578,9 @@ class OrchestrationController:
 
     def _update_delegation_state(self) -> None:
         self._update_productive_count()
+        if self._route_revalidation_required:
+            self.state = OrchestrationState.ROUTE_REQUIRED
+            return
         if self._unresolved_terminal_failures:
             self.state = OrchestrationState.RECOVERY
             return
@@ -1077,14 +1598,36 @@ class OrchestrationController:
             else OrchestrationState.DELEGATION_PENDING
         )
 
+    def _record_terminal_strategy_evidence(self) -> None:
+        strategy_id = self._current_strategy_id
+        if strategy_id is None or self.decision is None:
+            return
+        required = {lane.id for lane in self._agent_lanes()}
+        if required and required <= self._completed_lane_ids:
+            self._terminal_strategy_evidence[strategy_id] = frozenset(required)
+
     def _register_failed_lanes(self, lane_ids: set[str]) -> None:
         if lane_ids:
-            self._failed_lane_groups.add(frozenset(lane_ids))
+            group = frozenset(lane_ids)
+            self._failed_lane_groups.add(group)
+            if self.decision is not None:
+                decision_lane_ids = {
+                    lane.id
+                    for lane in self.decision.lanes
+                    if lane.owner is LaneOwner.AGENT
+                }
+                if group <= decision_lane_ids:
+                    self._failed_recovery_identities[group] = self._recovery_identity(
+                        self.decision, group
+                    )
         else:
             self._unbound_terminal_failures += 1
         self._sync_terminal_failures()
 
     def _sync_terminal_failures(self) -> None:
+        stale_groups = set(self._failed_recovery_identities) - self._failed_lane_groups
+        for group in stale_groups:
+            self._failed_recovery_identities.pop(group, None)
         self._failed_lane_ids = set().union(*self._failed_lane_groups)
         self._unresolved_terminal_failures = (
             len(self._failed_lane_groups) + self._unbound_terminal_failures
@@ -1092,10 +1635,6 @@ class OrchestrationController:
 
     def _update_productive_count(self) -> None:
         self._productive_delegations = len(self._launched_lane_ids)
-
-    def _next_implicit_lane_id(self) -> str:
-        self._implicit_lane_counter += 1
-        return f"implicit-{self._implicit_lane_counter}"
 
     def _lane_binding_error(
         self, tool_name: str, args: dict[str, Any], *, call_id: str
@@ -1182,22 +1721,10 @@ class OrchestrationController:
             return entrypoint
         tree, main = entrypoint
 
-        calls: dict[str, list[ast.Call]] = {}
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            if not isinstance(node.func, ast.Name) or node.func.id != "agent":
-                continue
-            keywords = {item.arg: item.value for item in node.keywords if item.arg}
-            label = keywords.get("label")
-            if isinstance(label, ast.Constant) and isinstance(label.value, str):
-                calls.setdefault(label.value, []).append(node)
-
-        duplicate = next(
-            (label for label, items in calls.items() if len(items) != 1), None
-        )
-        if duplicate is not None:
-            return f"Workflow lane label '{duplicate}' must identify exactly one agent() call."
+        calls_result = cls._workflow_declared_agent_calls(tree, lanes)
+        if isinstance(calls_result, str):
+            return calls_result
+        calls = calls_result
 
         parents = {
             child: parent
@@ -1253,6 +1780,58 @@ class OrchestrationController:
                     "main() statements or ordered stages of one awaited pipeline()."
                 )
         return None
+
+    @staticmethod
+    def _workflow_declared_agent_calls(
+        tree: ast.Module, lanes: list[OrchestrationLane]
+    ) -> dict[str, list[ast.Call]] | str:
+        calls: dict[str, list[ast.Call]] = {}
+        direct_agent_names: set[ast.Name] = set()
+        unlabeled_calls = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Name) or node.func.id != "agent":
+                continue
+            direct_agent_names.add(node.func)
+            keywords = {item.arg: item.value for item in node.keywords if item.arg}
+            label = keywords.get("label")
+            if isinstance(label, ast.Constant) and isinstance(label.value, str):
+                calls.setdefault(label.value, []).append(node)
+            else:
+                unlabeled_calls += 1
+        indirect_reference = any(
+            isinstance(node, ast.Name)
+            and node.id == "agent"
+            and isinstance(node.ctx, ast.Load)
+            and node not in direct_agent_names
+            for node in ast.walk(tree)
+        )
+        if indirect_reference:
+            return (
+                "Workflow scripts cannot carry or invoke agent indirectly; use "
+                "literal agent(...) calls bound to declared lane labels."
+            )
+        if unlabeled_calls:
+            return (
+                "Every workflow agent() call must use one declared literal lane "
+                "label; dynamic or unlabeled calls can bypass the strategy limit."
+            )
+        lane_ids = {lane.id for lane in lanes}
+        if unexpected := sorted(set(calls) - lane_ids):
+            names = ", ".join(unexpected)
+            return (
+                f"Workflow agent() label(s) are not declared strategy lanes: {names}."
+            )
+        if missing := sorted(lane_ids - set(calls)):
+            names = ", ".join(missing)
+            return f"Workflow strategy lane(s) have no direct agent() call: {names}."
+        duplicate = next(
+            (label for label, items in calls.items() if len(items) != 1), None
+        )
+        if duplicate is not None:
+            return f"Workflow lane label '{duplicate}' must identify exactly one agent() call."
+        return calls
 
     @classmethod
     def _workflow_entrypoint(
@@ -1398,12 +1977,12 @@ class OrchestrationController:
                     named_stages.append((stage.id, functions[stage.id]))
             if not pipeline_positions:
                 continue
-            if not node.args or not cls._workflow_pipeline_seed_is_nonempty(
+            if not node.args or not cls._workflow_pipeline_seed_is_singleton(
                 node.args[0]
             ):
                 return (
-                    "Workflow pipeline lanes require a statically provable non-empty "
-                    "seed so every declared stage lane can execute."
+                    "Workflow pipeline lanes require a statically provable "
+                    "singleton seed so each declared lane executes once."
                 )
             for name, function in named_stages:
                 if cls._workflow_named_stage_is_stable(tree, name, function):
@@ -1433,12 +2012,12 @@ class OrchestrationController:
         return name in OrchestrationController._workflow_bound_names(node)
 
     @classmethod
-    def _workflow_pipeline_seed_is_nonempty(cls, node: ast.AST) -> bool:
+    def _workflow_pipeline_seed_is_singleton(cls, node: ast.AST) -> bool:
         value = cls._workflow_static_value(node)
         if value is _WORKFLOW_UNKNOWN:
             return False
         supported = (list, tuple, set, frozenset, dict, str, bytes, bytearray, range)
-        return isinstance(value, supported) and len(value) > 0
+        return isinstance(value, supported) and len(value) == 1
 
     @classmethod
     def _workflow_static_value(cls, node: ast.AST) -> Any:
@@ -1899,13 +2478,27 @@ class OrchestrationController:
     def _canonicalize_expected_paths(
         self, decision: OrchestrationDecision
     ) -> OrchestrationDecision:
+        expected_paths = self._canonical_path_list(decision.expected_paths)
+        lanes = [
+            lane.model_copy(
+                update={
+                    "expected_paths": self._canonical_path_list(lane.expected_paths)
+                }
+            )
+            for lane in decision.lanes
+        ]
+        return decision.model_copy(
+            update={"expected_paths": expected_paths, "lanes": lanes}
+        )
+
+    def _canonical_path_list(self, paths: list[str]) -> list[str]:
         expected_paths: list[str] = []
-        for path in decision.expected_paths:
+        for path in paths:
             normalized = self._workspace_relative_path(path)
             if normalized is None:
                 raise ValueError(f"Expected path '{path}' escapes the workspace")
             expected_paths.append(normalized)
-        return decision.model_copy(update={"expected_paths": expected_paths})
+        return expected_paths
 
     @staticmethod
     def _path_matches(path: str, expected: str) -> bool:

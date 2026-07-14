@@ -56,8 +56,9 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "process_e2e: launches or signals real process trees; opt-in only on a "
-        "disposable non-graphical host with xdist disabled",
+        "process_e2e: exercises real process-tree teardown or descendant "
+        "lifecycle; opt-in only on a disposable non-graphical host with xdist "
+        "disabled",
     )
     if not config.getoption("--run-process-e2e"):
         return
@@ -75,7 +76,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--run-process-e2e",
         action="store_true",
         default=False,
-        help="run real process-tree lifecycle probes (requires -n0 and a disposable host)",
+        help=(
+            "run real process-tree teardown or descendant-lifecycle probes "
+            "(requires -n0 and a disposable non-graphical host)"
+        ),
     )
 
 
@@ -83,7 +87,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     if item.get_closest_marker("process_e2e") and not item.config.getoption(
         "--run-process-e2e"
     ):
-        pytest.skip("real process-tree probes require --run-process-e2e")
+        pytest.skip("real process-tree teardown probes require --run-process-e2e")
     if item.get_closest_marker("sandbox_e2e") and not sandbox_e2e_available():
         pytest.skip("no usable OS sandbox backend (user namespaces unavailable)")
 

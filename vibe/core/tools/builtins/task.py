@@ -236,7 +236,6 @@ def _maybe_record_verifier_pass(
     attempt: _VerificationAttempt | None = None,
     evidence_hashes: tuple[str, ...] = (),
 ) -> str | None:
-    # Only the verifier subagent may set the verifier flag.
     if agent != BuiltinAgentName.VERIFIER:
         return None
     state = ctx.verification_state
@@ -723,6 +722,7 @@ class Task(
         "when you must have the result inline in THIS turn (you block until done)."
     )
 
+    host_only: ClassVar[bool] = True
     is_subagent_spawner: ClassVar[bool] = True
 
     @classmethod

@@ -146,6 +146,7 @@ class SafetyJudge:
         self._timeout = timeout if timeout is not None else provider_timeout(provider)
         self._usage_meter = usage_meter
         self._spend_adapter = spend_adapter
+        self._omit_temperature = False
 
     async def judge(
         self,
@@ -206,7 +207,7 @@ class SafetyJudge:
         # No override: forward the model's temperature verbatim so a
         # temperature=None model keeps its wire-omission contract (kimi).
         backend_cls = BACKEND_FACTORY[self._provider.backend]
-        temperature = self._model.temperature
+        temperature = None if self._omit_temperature else self._model.temperature
         async with backend_cls(
             provider=self._provider, timeout=self._timeout
         ) as backend:
@@ -222,6 +223,7 @@ class SafetyJudge:
                     temperature,
                     self._provider.name,
                 )
+                self._omit_temperature = True
                 result = await self._complete(backend, messages, None, is_retry=True)
         return self._parse(result.message.content)
 

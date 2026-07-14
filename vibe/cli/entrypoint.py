@@ -86,7 +86,8 @@ def parse_arguments() -> argparse.Namespace:
         metavar="TEXT",
         help="Run in programmatic mode: send prompt, output response, and exit. "
         "Tool approval follows the selected --agent (or 'default_agent' config); "
-        "pass --auto-approve or --yolo to allow all tool calls.",
+        "pass --auto-approve or --yolo to bypass ordinary approval prompts; hard "
+        "denials and explicit-user gates still apply.",
     )
     parser.add_argument(
         "--max-turns",
@@ -149,7 +150,10 @@ def parse_arguments() -> argparse.Namespace:
         "--auto-approve",
         "--yolo",
         action="store_true",
-        help="Approves all tool calls without prompting for the selected agent.",
+        help=(
+            "Bypasses ordinary tool approval prompts; hard denials, explicit-user "
+            "gates, and safety-judge deferrals still apply."
+        ),
     )
     parser.add_argument(
         "--model",

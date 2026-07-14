@@ -16,8 +16,9 @@ from vibe.core.config import (
     SafetyJudgeConfig,
     SpendConfig,
 )
-from vibe.core.tools.base import BaseToolState, ToolPermission
+from vibe.core.tools.base import BaseToolState, ToolAuthorizationSource, ToolPermission
 from vibe.core.tools.builtins.bash import Bash, BashArgs, BashToolConfig
+from vibe.core.tools.permissions import ApprovedRule, PermissionScope
 from vibe.core.tools.safety_judge import (
     _SYSTEM_PROMPT,
     _WORKFLOW_SYSTEM_PROMPT,
@@ -121,28 +122,173 @@ def test_resolve_judge_none_when_model_alias_unknown() -> None:
     assert loop._resolve_safety_judge() is None
 
 
+def test_resolve_judge_reuses_session_instance(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = build_test_vibe_config()
+    alias = base.models[0].alias
+    config = base.model_copy(
+        update={"safety_judge": SafetyJudgeConfig(enabled=True, model=alias)}
+    )
+    loop = build_test_agent_loop(config=config)
+    monkeypatch.setattr(
+        type(loop.config), "is_model_available", lambda _self, _model: True
+    )
+
+    first = loop._resolve_safety_judge()
+    second = loop._resolve_safety_judge()
+
+    assert first is not None
+    assert second is first
+
+
+def test_resolve_judge_rebinds_session_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = build_test_vibe_config()
+    alias = base.models[0].alias
+    config = base.model_copy(
+        update={"safety_judge": SafetyJudgeConfig(enabled=True, model=alias)}
+    )
+    loop = build_test_agent_loop(config=config)
+    monkeypatch.setattr(
+        type(loop.config), "is_model_available", lambda _self, _model: True
+    )
+    first = loop._resolve_safety_judge()
+    cache_key = ("bash", "args", (), "transcript")
+    loop._judge_verdict_cache[cache_key] = JudgeVerdict(safe=True, reason="cached")
+
+    loop.session_id = "replacement-session"
+    second = loop._resolve_safety_judge()
+
+    assert first is not None
+    assert second is not None
+    assert second is not first
+    assert second._extra_headers["x-affinity"] == "replacement-session"
+    assert not loop._judge_verdict_cache
+
+
+@pytest.mark.parametrize("identity_change", ["alias", "provider", "model", "timeout"])
+def test_resolve_judge_invalidates_verdict_cache_on_identity_change(
+    monkeypatch: pytest.MonkeyPatch, identity_change: str
+) -> None:
+    base = build_test_vibe_config()
+    alias = base.models[0].alias
+    config = base.model_copy(
+        update={"safety_judge": SafetyJudgeConfig(enabled=True, model=alias)}
+    )
+    loop = build_test_agent_loop(config=config)
+    monkeypatch.setattr(
+        type(loop.config), "is_model_available", lambda _self, _model: True
+    )
+    first = loop._resolve_safety_judge()
+    cache_key = ("bash", "args", (), "transcript")
+    loop._judge_verdict_cache[cache_key] = JudgeVerdict(safe=True, reason="cached")
+
+    if identity_change == "alias":
+        other_alias = "other-judge"
+        changed = config.model_copy(
+            update={
+                "models": [
+                    *config.models,
+                    config.models[0].model_copy(update={"alias": other_alias}),
+                ],
+                "safety_judge": SafetyJudgeConfig(enabled=True, model=other_alias),
+            }
+        )
+    elif identity_change == "provider":
+        changed = config.model_copy(
+            update={
+                "providers": [
+                    config.providers[0].model_copy(
+                        update={"api_base": "https://changed.example.test/v1"}
+                    )
+                ]
+            }
+        )
+    elif identity_change == "model":
+        changed = config.model_copy(
+            update={
+                "models": [config.models[0].model_copy(update={"temperature": 0.2})]
+            }
+        )
+    else:
+        changed = config.model_copy(update={"api_timeout": config.api_timeout + 1})
+    loop._base_config = changed
+    loop.agent_manager.invalidate_config()
+
+    second = loop._resolve_safety_judge()
+
+    assert first is not None
+    assert second is not None
+    assert second is not first
+    assert not loop._judge_verdict_cache
+
+
+def test_resolve_judge_updates_live_verdict_cache_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = build_test_vibe_config()
+    alias = base.models[0].alias
+    config = base.model_copy(
+        update={"safety_judge": SafetyJudgeConfig(enabled=True, model=alias)}
+    )
+    loop = build_test_agent_loop(config=config)
+    monkeypatch.setattr(
+        type(loop.config), "is_model_available", lambda _self, _model: True
+    )
+
+    assert loop._resolve_safety_judge() is not None
+    loop._base_config = config.model_copy(
+        update={
+            "safety_judge": SafetyJudgeConfig(
+                enabled=True, model=alias, verdict_cache_size=7
+            )
+        }
+    )
+    loop.agent_manager.invalidate_config()
+
+    assert loop._resolve_safety_judge() is not None
+
+    assert loop._judge_verdict_cache_maxsize == 7
+
+
 # --------------------------------------------------------------------------- #
 # Decision wiring in _should_execute_tool                                      #
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_judge_approves_executes_without_prompt() -> None:
+async def test_judge_approves_bounded_write_without_prompt() -> None:
     loop = build_test_agent_loop()
-    fake = _FakeJudge(safe=True, reason="npm install is benign")
+    fake = _FakeJudge(safe=True, reason="bounded candidate write")
     loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
     approval = _RecordingApproval(ApprovalResponse.NO)
     loop.approval_callback = approval
 
     decision = await loop._should_execute_tool(
-        _bash(), BashArgs(command="npm install"), "call-1"
+        _bash(), BashArgs(command="cp README.md candidate.txt"), "call-1"
     )
 
     assert decision.verdict == ToolExecutionResponse.EXECUTE
     assert fake.calls, "judge should have been consulted"
     assert approval.called is False, "must not prompt the user when judge approves"
     assert decision.judge_approved is True
-    assert decision.feedback and "npm install is benign" in decision.feedback
+    assert decision.authorization_source is ToolAuthorizationSource.SAFETY_JUDGE
+    assert decision.feedback and "bounded candidate write" in decision.feedback
+
+
+@pytest.mark.asyncio
+async def test_permission_parser_reason_reaches_safety_judge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = build_test_agent_loop()
+    fake = _FakeJudge(safe=False)
+    monkeypatch.setattr(loop, "_resolve_safety_judge", lambda: fake)
+    loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
+
+    await loop._should_execute_tool(
+        _bash(), BashArgs(command="cat README.md | head"), "composition-reason"
+    )
+
+    assert len(fake.calls) == 1
+    assert any("shell operator '|'" in reason for reason in fake.calls[0][2])
 
 
 @pytest.mark.asyncio
@@ -154,7 +300,7 @@ async def test_judge_rejects_falls_through_to_prompt() -> None:
     loop.approval_callback = approval
 
     decision = await loop._should_execute_tool(
-        _bash(), BashArgs(command="npm install"), "call-2"
+        _bash(), BashArgs(command="cp README.md candidate.txt"), "call-2"
     )
 
     assert decision.verdict == ToolExecutionResponse.SKIP
@@ -175,7 +321,7 @@ async def test_autoapprove_cannot_override_safety_judge_deferral(
     loop.approval_callback = approval
 
     decision = await loop._should_execute_tool(
-        _bash(), BashArgs(command="touch /outside/control"), "managed-1"
+        _bash(), BashArgs(command="cp README.md /outside/control"), "managed-1"
     )
 
     assert decision.verdict == ToolExecutionResponse.SKIP
@@ -196,7 +342,7 @@ async def test_autoapprove_still_executes_when_configured_judge_approves(
     monkeypatch.setattr(loop, "_resolve_safety_judge", lambda: fake)
 
     decision = await loop._should_execute_tool(
-        _bash(), BashArgs(command="touch candidate.txt"), "managed-2"
+        _bash(), BashArgs(command="cp README.md candidate.txt"), "managed-2"
     )
 
     assert decision.verdict == ToolExecutionResponse.EXECUTE
@@ -213,11 +359,12 @@ async def test_autoapprove_without_configured_judge_preserves_profile_behavior()
     )
 
     decision = await loop._should_execute_tool(
-        _bash(), BashArgs(command="touch candidate.txt"), "managed-3"
+        _bash(), BashArgs(command="cp README.md candidate.txt"), "managed-3"
     )
 
     assert decision.verdict == ToolExecutionResponse.EXECUTE
     assert decision.approval_type == ToolPermission.ALWAYS
+    assert decision.authorization_source is ToolAuthorizationSource.BYPASS
 
 
 @pytest.mark.asyncio
@@ -230,7 +377,7 @@ async def test_autoapprove_fails_closed_when_configured_judge_is_unavailable() -
     )
 
     decision = await loop._should_execute_tool(
-        _bash(), BashArgs(command="touch candidate.txt"), "managed-4"
+        _bash(), BashArgs(command="cp README.md candidate.txt"), "managed-4"
     )
 
     assert decision.verdict == ToolExecutionResponse.SKIP
@@ -263,6 +410,130 @@ class _NoteCapturingApproval:
         return self.response, None, None
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "npm install",
+        "pip install requests",
+        "uv sync",
+        "pnpm add lodash",
+        "dotnet restore FccSandbox.sln",
+        "dotnet test tests/Fcc.Core.Tests",
+    ],
+)
+@pytest.mark.asyncio
+async def test_dependency_changes_require_explicit_user_approval(
+    command: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = build_test_agent_loop()
+    fake = _FakeJudge(safe=True, reason="looks safe")
+    monkeypatch.setattr(loop, "_resolve_safety_judge", lambda: fake)
+    approval = _NoteCapturingApproval(ApprovalResponse.NO)
+    loop.approval_callback = approval
+
+    decision = await loop._should_execute_tool(
+        _bash(), BashArgs(command=command), "dependency-change"
+    )
+
+    assert decision.verdict == ToolExecutionResponse.SKIP
+    assert decision.judge_approved is False
+    assert fake.calls == []
+    assert approval.called is True
+    assert approval.judge_note and "explicit user approval" in approval.judge_note
+
+
+@pytest.mark.asyncio
+async def test_explicit_user_can_approve_dependency_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = build_test_agent_loop()
+    fake = _FakeJudge(safe=True, reason="looks safe")
+    monkeypatch.setattr(loop, "_resolve_safety_judge", lambda: fake)
+    approval = _RecordingApproval(ApprovalResponse.YES)
+    loop.approval_callback = approval
+
+    decision = await loop._should_execute_tool(
+        _bash(), BashArgs(command="npm install"), "dependency-approved"
+    )
+
+    assert decision.verdict == ToolExecutionResponse.EXECUTE
+    assert decision.judge_approved is False
+    assert fake.calls == []
+    assert approval.called is True
+
+
+@pytest.mark.asyncio
+async def test_autoapprove_does_not_replace_root_dependency_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = build_test_agent_loop(
+        config=build_test_vibe_config(bypass_tool_permissions=True)
+    )
+    fake = _FakeJudge(safe=True, reason="looks safe")
+    monkeypatch.setattr(loop, "_resolve_safety_judge", lambda: fake)
+    approval = _RecordingApproval(ApprovalResponse.YES)
+    loop.approval_callback = approval
+
+    decision = await loop._should_execute_tool(
+        _bash(), BashArgs(command="npm install"), "dependency-autoapprove"
+    )
+
+    assert decision.verdict == ToolExecutionResponse.EXECUTE
+    assert decision.authorization_source is ToolAuthorizationSource.USER
+    assert decision.judge_approved is False
+    assert fake.calls == []
+    assert approval.called is True
+
+
+@pytest.mark.asyncio
+async def test_dotnet_no_restore_requires_explicit_user_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = build_test_agent_loop()
+    fake = _FakeJudge(safe=True, reason="offline test run")
+    monkeypatch.setattr(loop, "_resolve_safety_judge", lambda: fake)
+    approval = _RecordingApproval(ApprovalResponse.NO)
+    loop.approval_callback = approval
+
+    decision = await loop._should_execute_tool(
+        _bash(),
+        BashArgs(command="dotnet test tests/Fcc.Core.Tests --no-restore"),
+        "dotnet-offline",
+    )
+
+    assert decision.verdict == ToolExecutionResponse.SKIP
+    assert decision.judge_approved is False
+    assert fake.calls == []
+    assert approval.called is True
+
+
+@pytest.mark.asyncio
+async def test_prior_session_rule_cannot_authorize_dependency_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = build_test_agent_loop()
+    loop._permission_store.add_rule(
+        ApprovedRule(
+            tool_name="bash",
+            scope=PermissionScope.COMMAND_PATTERN,
+            session_pattern="npm *",
+        )
+    )
+    fake = _FakeJudge(safe=True, reason="looks safe")
+    monkeypatch.setattr(loop, "_resolve_safety_judge", lambda: fake)
+    approval = _RecordingApproval(ApprovalResponse.NO)
+    loop.approval_callback = approval
+
+    decision = await loop._should_execute_tool(
+        _bash(), BashArgs(command="npm install"), "dependency-preapproved"
+    )
+
+    assert decision.verdict == ToolExecutionResponse.SKIP
+    assert decision.judge_approved is False
+    assert fake.calls == []
+    assert approval.called is True
+
+
 @pytest.mark.asyncio
 async def test_judge_deferral_reason_is_threaded_to_approval_callback() -> None:
     """The judge's reason must reach the host prompt even when the judged call
@@ -275,7 +546,9 @@ async def test_judge_deferral_reason_is_threaded_to_approval_callback() -> None:
     approval = _NoteCapturingApproval(ApprovalResponse.NO)
     loop.approval_callback = approval
 
-    await loop._should_execute_tool(_bash(), BashArgs(command="rm -rf build"), "call-3")
+    await loop._should_execute_tool(
+        _bash(), BashArgs(command="cp README.md candidate.txt"), "call-3"
+    )
 
     assert approval.called
     assert approval.judge_note == "could delete files", (
@@ -588,7 +861,7 @@ async def test_repeated_safe_call_hits_cache_and_skips_judge() -> None:
     loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
     loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
 
-    args = BashArgs(command="npm install")
+    args = BashArgs(command="cp README.md candidate.txt")
     first = await loop._should_execute_tool(_bash(), args, "c1")
     second = await loop._should_execute_tool(_bash(), args, "c2")
 
@@ -606,7 +879,7 @@ async def test_repeated_unsafe_call_hits_cache_and_skips_judge() -> None:
     approval = _RecordingApproval(ApprovalResponse.NO)
     loop.approval_callback = approval
 
-    args = BashArgs(command="rm -rf build")
+    args = BashArgs(command="cp README.md candidate.txt")
     await loop._should_execute_tool(_bash(), args, "c1")
     await loop._should_execute_tool(_bash(), args, "c2")
 
@@ -621,8 +894,12 @@ async def test_distinct_args_miss_cache_and_query_judge() -> None:
     loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
     loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
 
-    await loop._should_execute_tool(_bash(), BashArgs(command="npm install"), "c1")
-    await loop._should_execute_tool(_bash(), BashArgs(command="npm test"), "c2")
+    await loop._should_execute_tool(
+        _bash(), BashArgs(command="cp README.md candidate-a.txt"), "c1"
+    )
+    await loop._should_execute_tool(
+        _bash(), BashArgs(command="cp README.md candidate-b.txt"), "c2"
+    )
 
     assert len(fake.calls) == 2, "different args must not share a verdict"
 
@@ -649,7 +926,7 @@ async def test_fail_closed_verdict_is_not_cached() -> None:
     loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
     loop.approval_callback = _RecordingApproval(ApprovalResponse.YES)
 
-    args = BashArgs(command="npm install")
+    args = BashArgs(command="cp README.md candidate.txt")
     first = await loop._should_execute_tool(_bash(), args, "c1")  # fail-closed → prompt
     second = await loop._should_execute_tool(_bash(), args, "c2")  # retried → safe
 
@@ -668,7 +945,7 @@ async def test_cache_disabled_when_size_zero() -> None:
     loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
     loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
 
-    args = BashArgs(command="npm install")
+    args = BashArgs(command="cp README.md candidate.txt")
     await loop._should_execute_tool(_bash(), args, "c1")
     await loop._should_execute_tool(_bash(), args, "c2")
 
@@ -686,11 +963,17 @@ async def test_cache_evicts_oldest_at_capacity() -> None:
     loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
 
     # Fill the single slot with call A, then a distinct call B evicts it.
-    await loop._should_execute_tool(_bash(), BashArgs(command="npm install"), "c1")
-    await loop._should_execute_tool(_bash(), BashArgs(command="npm test"), "c2")
+    await loop._should_execute_tool(
+        _bash(), BashArgs(command="cp README.md candidate-a.txt"), "c1"
+    )
+    await loop._should_execute_tool(
+        _bash(), BashArgs(command="cp README.md candidate-b.txt"), "c2"
+    )
     fake.calls.clear()
     # A was evicted by B, so re-querying A must miss and call the judge.
-    await loop._should_execute_tool(_bash(), BashArgs(command="npm install"), "c3")
+    await loop._should_execute_tool(
+        _bash(), BashArgs(command="cp README.md candidate-a.txt"), "c3"
+    )
 
     assert len(fake.calls) == 1, "LRU must evict the least-recently-used entry"
 
@@ -708,46 +991,20 @@ async def test_calls_differing_only_past_truncation_do_not_collide() -> None:
     loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
 
     padding = "a" * 4500
-    benign = BashArgs(command=f"echo {padding}")
-    # Identical for the first 4000 chars of the JSON; the dangerous tail sits
-    # past the truncation point, so the judge would see the same args_repr.
-    dangerous = BashArgs(command=f"echo {padding}; rm -rf /important")
+    benign = BashArgs(command=f"cp README.md candidate-{padding}-a")
+    distinct = BashArgs(command=f"cp README.md candidate-{padding}-b")
 
     args_key_a, repr_a, trunc_a = AgentLoop._serialize_args(benign)
-    args_key_b, repr_b, trunc_b = AgentLoop._serialize_args(dangerous)
+    args_key_b, repr_b, trunc_b = AgentLoop._serialize_args(distinct)
     assert trunc_a is True and trunc_b is True
     assert repr_a == repr_b, "fixture premise: judge sees identical truncated args"
     assert args_key_a != args_key_b, "full-args fingerprint must distinguish them"
 
     await loop._judge_tool_safety("bash", benign, [])
-    await loop._judge_tool_safety("bash", dangerous, [])
+    await loop._judge_tool_safety("bash", distinct, [])
 
     assert len(fake.calls) == 2, (
         "calls differing past the 4000-char truncation must not share a verdict"
-    )
-
-
-@pytest.mark.asyncio
-async def test_cache_cleared_when_judge_model_changes() -> None:
-    config = build_test_vibe_config(
-        safety_judge=SafetyJudgeConfig(enabled=True, model="alpha")
-    )
-    loop = build_test_agent_loop(config=config)
-    fake = _FakeJudge(safe=True, reason="benign")
-    loop._resolve_safety_judge = lambda: fake  # type: ignore[method-assign]
-    loop.approval_callback = _RecordingApproval(ApprovalResponse.NO)
-
-    args = BashArgs(command="npm install")
-    await loop._should_execute_tool(_bash(), args, "c1")  # cached under "alpha"
-    assert len(fake.calls) == 1
-    # Swap the judge model mid-session.
-    loop.config.safety_judge = SafetyJudgeConfig(enabled=True, model="beta")
-    await loop._should_execute_tool(
-        _bash(), args, "c2"
-    )  # must not reuse alpha's verdict
-
-    assert len(fake.calls) == 2, (
-        "cached verdict must be dropped when the judge model changes"
     )
 
 
@@ -785,9 +1042,7 @@ async def test_truncated_args_with_risk_flag_force_defer_skipping_judge() -> Non
     approval = _NoteCapturingApproval(ApprovalResponse.NO)
     loop.approval_callback = approval
 
-    # >4000-char benign prefix hides `rm -rf ~`; the real Bash resolver surfaces
-    # an uncovered COMMAND_PATTERN / OUTSIDE_DIRECTORY flag for it.
-    args = BashArgs(command="echo " + ("a" * 4200) + "; rm -rf ~")
+    args = BashArgs(command="cp README.md /tmp/" + ("a" * 4200))
     decision = await loop._should_execute_tool(_bash(), args, "trunc-1")
 
     assert decision.judge_approved is False, (
@@ -880,7 +1135,7 @@ async def test_transcript_window_extracts_recent_user_assistant_turns() -> None:
         LLMMessage(role=Role.TOOL, content="big tool result", tool_call_id="x")
     )
 
-    args = BashArgs(command="rm -rf build")
+    args = BashArgs(command="cp README.md candidate.txt")
     loop._judge_transcript_window()  # warm
     await loop._should_execute_tool(_bash(), args, "c1")
 
@@ -976,9 +1231,12 @@ async def test_judge_retries_without_temperature_on_rejection(
         spend_adapter=_spend_adapter(tmp_path),
     )
     verdict = await judge.judge("write_file", '{"path":"x"}', ["flagged"])
-    assert captured == [1.0, None]
+    repeated = await judge.judge("write_file", '{"path":"y"}', ["flagged"])
+
+    assert captured == [1.0, None, None]
     assert verdict.safe is True
     assert verdict.failed is False
+    assert repeated.safe is True
 
 
 @pytest.mark.asyncio

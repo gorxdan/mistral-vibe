@@ -22,7 +22,11 @@ from vibe.core.types import (
     UserMessageEvent,
 )
 from vibe.core.workflows.contract import ContractFailure
-from vibe.core.workflows.models import SchemaValidationFailure
+from vibe.core.workflows.models import (
+    SchemaValidationFailure,
+    WorkflowLaneExpectation,
+    WorkflowStatus,
+)
 from vibe.core.workflows.runtime import (
     AgentCapExceeded,
     IsolatedStats,
@@ -100,6 +104,12 @@ def make_factory(
     return factory
 
 
+def _expected_lanes(*labels: str) -> tuple[WorkflowLaneExpectation, ...]:
+    return tuple(
+        WorkflowLaneExpectation(label=label, profile="explore") for label in labels
+    )
+
+
 @pytest.fixture
 def runtime() -> WorkflowRuntime:
     return WorkflowRuntime(
@@ -114,6 +124,170 @@ async def test_spawn_agent_returns_string(runtime: WorkflowRuntime) -> None:
     result = await runtime.spawn_agent("test prompt")
     assert result == "mock response"
     assert runtime._agent_count == 1
+
+
+async def test_strategy_bound_workflow_attests_exact_successful_lanes() -> None:
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        expected_lanes=_expected_lanes("lane-1", "lane-2"),
+        max_agents=2,
+    )
+    script = (
+        "async def main():\n"
+        "    return await parallel(\n"
+        '        agent("one", label="lane-1"),\n'
+        '        agent("two", label="lane-2"),\n'
+        "    )\n"
+    )
+
+    result = await rt.run(script)
+
+    attestation = result.run.lane_attestation
+    assert result.run.status is WorkflowStatus.COMPLETED
+    assert attestation is not None
+    assert attestation.is_valid
+
+
+async def test_strategy_bound_workflow_fails_when_lane_is_missing() -> None:
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        expected_lanes=_expected_lanes("lane-1", "lane-2"),
+        max_agents=2,
+    )
+
+    result = await rt.run(
+        'async def main():\n    return await agent("one", label="lane-1")\n'
+    )
+
+    assert result.run.status is WorkflowStatus.FAILED
+    assert result.run.lane_attestation is not None
+    assert not result.run.lane_attestation.is_valid
+
+
+async def test_strategy_bound_workflow_rejects_duplicate_lane_attempt() -> None:
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        expected_lanes=_expected_lanes("lane-1"),
+        max_agents=2,
+    )
+    script = (
+        "async def main():\n"
+        '    await agent("one", label="lane-1")\n'
+        '    return await agent("again", label="lane-1")\n'
+    )
+
+    result = await rt.run(script)
+
+    assert result.run.status is WorkflowStatus.FAILED
+    assert result.run.lane_attestation is not None
+    assert result.run.lane_attestation.violations == (
+        "duplicate lane attempt 'lane-1'",
+    )
+
+
+async def test_strategy_bound_workflow_rejects_unexpected_lane_after_successes() -> (
+    None
+):
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        expected_lanes=_expected_lanes("lane-1", "lane-2"),
+        max_agents=3,
+    )
+    script = (
+        "async def main():\n"
+        '    await agent("one", label="lane-1")\n'
+        '    await agent("two", label="lane-2")\n'
+        '    return await agent("three", label="lane-3")\n'
+    )
+
+    result = await rt.run(script)
+
+    assert result.run.status is WorkflowStatus.FAILED
+    assert result.run.lane_attestation is not None
+    assert result.run.lane_attestation.violations == ("unexpected lane label 'lane-3'",)
+
+
+async def test_strategy_bound_workflow_rejects_runtime_profile_alias_mismatch() -> None:
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        expected_lanes=_expected_lanes("lane-1"),
+        max_agents=1,
+    )
+    script = (
+        "async def main():\n"
+        '    return await agent("one", label="lane-1", agentType="reviewer")\n'
+    )
+
+    result = await rt.run(script)
+
+    attestation = result.run.lane_attestation
+    assert result.run.status is WorkflowStatus.FAILED
+    assert rt._agent_count == 0
+    assert attestation is not None
+    assert attestation.started_labels == ()
+    assert "expected profile 'explore', got 'reviewer'" in attestation.violations[0]
+
+
+async def test_strategy_bound_workflow_attests_pre_spawn_isolation_failure() -> None:
+    from vibe.core.tools.base import InvokeContext
+
+    expected = (WorkflowLaneExpectation(label="lane-1", profile="worker"),)
+    rt = WorkflowRuntime(
+        parent_context=InvokeContext(
+            tool_call_id="bound-workflow",
+            agent_manager=cast(AgentManager, _FakeAgentManager()),
+        ),
+        agent_loop_factory=make_factory(),
+        expected_lanes=expected,
+        max_agents=1,
+    )
+    script = (
+        "async def main():\n"
+        '    return await agent("one", agent="worker", label="lane-1")\n'
+    )
+
+    result = await rt.run(script)
+
+    attestation = result.run.lane_attestation
+    assert result.run.status is WorkflowStatus.FAILED
+    assert attestation is not None
+    assert attestation.attempted_labels == ("lane-1",)
+    assert attestation.started_labels == ()
+    assert attestation.successful_labels == ()
+
+
+async def test_strategy_bound_workflow_excludes_started_failed_lane() -> None:
+    @dataclass
+    class _FailingLoop:
+        stats: MockStats = field(default_factory=MockStats)
+
+        async def act(
+            self, prompt: str, *, response_format: Any = None
+        ) -> AsyncGenerator[AssistantEvent, None]:
+            raise RuntimeError("agent failed")
+            yield AssistantEvent(content="unreachable", message_id="never")
+
+    def failing_factory(
+        prompt: str, *, agent: str, parent_context: Any | None = None
+    ) -> Any:
+        return _FailingLoop()
+
+    rt = WorkflowRuntime(
+        agent_loop_factory=failing_factory,
+        expected_lanes=_expected_lanes("lane-1"),
+        max_agents=1,
+    )
+
+    result = await rt.run(
+        'async def main():\n    return await agent("one", label="lane-1")\n'
+    )
+
+    attestation = result.run.lane_attestation
+    assert result.run.status is WorkflowStatus.FAILED
+    assert attestation is not None
+    assert attestation.started_labels == ("lane-1",)
+    assert attestation.successful_labels == ()
+    assert not attestation.is_valid
 
 
 async def test_namespace_agent_tolerates_unknown_kwargs() -> None:
@@ -358,7 +532,7 @@ async def test_schema_failure_is_falsy_and_dict_like() -> None:
     assert f.schema_errors == ["x"]
 
 
-def test_schema_failure_is_json_serializable() -> None:
+async def test_schema_failure_is_json_serializable() -> None:
     # Regression for the wf-2 root cause: a SchemaValidationFailure flowing into
     # a workflow script's json.dumps(results) crashed the whole run with
     # "Object of type SchemaValidationFailure is not JSON serializable". It is
@@ -382,7 +556,7 @@ def test_schema_failure_is_json_serializable() -> None:
     ]
 
 
-def test_schema_failure_truthiness_filter_unaffected_by_dict_subclass() -> None:
+async def test_schema_failure_truthiness_filter_unaffected_by_dict_subclass() -> None:
     # The documented discriminator is truthiness. Filter with `if r`, never
     # `isinstance(r, dict)` (which now wrongly includes the failure since it is
     # a dict subclass). Pin both halves of that contract.
@@ -565,6 +739,49 @@ async def test_agent_cap_exceeded() -> None:
     await rt.spawn_agent("b")
     with pytest.raises(AgentCapExceeded):
         await rt.spawn_agent("c")
+
+
+async def test_agent_cap_applies_through_script_alias() -> None:
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_agents=2)
+    agent = rt.build_script_namespace()["agent"]
+    spawn = agent
+
+    await spawn("a")
+    await spawn("b")
+    with pytest.raises(AgentCapExceeded):
+        await spawn("c")
+
+    assert rt._agent_count == 2
+
+
+async def test_agent_cap_applies_across_nested_workflow() -> None:
+    nested = (
+        "async def main():\n"
+        "    await agent('nested one')\n"
+        "    return await agent('nested two')\n"
+    )
+    rt = WorkflowRuntime(
+        agent_loop_factory=make_factory(),
+        max_agents=2,
+        workflow_source_resolver=lambda name: nested if name == "nested" else None,
+    )
+    await rt.spawn_agent("outer")
+    workflow = rt.build_script_namespace()["workflow"]
+
+    with pytest.raises(AgentCapExceeded):
+        await workflow("nested")
+
+    assert rt._agent_count == 2
+
+
+async def test_agent_cap_applies_to_recipe_spawns() -> None:
+    rt = WorkflowRuntime(agent_loop_factory=make_factory(), max_agents=2)
+    recipe = rt.build_script_namespace()["recipe"]
+
+    with pytest.raises(AgentCapExceeded):
+        await recipe("find_verify", items=["one", "two"], max_concurrency=1)
+
+    assert rt._agent_count == 2
 
 
 async def test_budget_reconciled_after_spawn(runtime: WorkflowRuntime) -> None:
@@ -1959,6 +2176,7 @@ async def test_default_isolated_executor_reaps_and_cleans_on_cancel(
 
     monkeypatch.setattr(_os, "killpg", lambda pgid, sig: killed.append(sig))
     monkeypatch.setattr(_os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(_os, "getsid", lambda pid: pid)
 
     rt = WorkflowRuntime(agent_loop_factory=make_factory(), budget_total=1_000_000)
     with pytest.raises(asyncio.CancelledError):
@@ -2474,6 +2692,24 @@ async def test_board_survives_snapshot_restore(runtime: WorkflowRuntime) -> None
     assert notes == ["misc"]
 
 
+async def test_snapshot_restore_preserves_consumed_agent_cap(
+    runtime: WorkflowRuntime,
+) -> None:
+    runtime.max_agents = 2
+    runtime._agent_count = 2
+
+    snap = runtime.snapshot("wf-agent-cap", "src")
+    fresh = WorkflowRuntime(
+        agent_loop_factory=runtime.agent_loop_factory,
+        max_agents=32,
+        budget_total=runtime.budget_total,
+    )
+    fresh.restore_from_snapshot(snap)
+
+    assert fresh.max_agents == 2
+    assert fresh._agent_count == 2
+
+
 class _FakeProfile:
     def __init__(self, overrides: dict[str, Any]) -> None:
         self.overrides = overrides
@@ -2806,7 +3042,7 @@ async def test_worker_spawn_args_forbids_extra_fields() -> None:
         })
 
 
-def test_create_real_loop_caps_turns() -> None:
+async def test_create_real_loop_caps_turns() -> None:
     from unittest.mock import MagicMock, patch
 
     from vibe.core.workflows._limits import DEFAULT_ISOLATED_MAX_TURNS

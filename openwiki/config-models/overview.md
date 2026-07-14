@@ -342,7 +342,8 @@ network, and can write only its scratchpad. Trusted checks are narrower: they
 run only on Linux Bubblewrap, never Seatbelt, with network off and only a
 per-check disposable run root writable. All strict modes scrub credentials and
 fail closed when confinement cannot start. Ordinary auto-approve retains
-workspace writes, configured `write_dirs`, and Git commit compatibility.
+workspace writes and configured `write_dirs`; an interactive root user may
+explicitly approve Git commits.
 
 `SandboxConfig.extra_args` remains an internal compatibility field for narrow
 namespace/runtime flags. Bubblewrap rejects filesystem mounts, overlays, tmpfs,
@@ -501,6 +502,10 @@ For every verifier attempt, the host records PASS, FAIL, PARTIAL, or INVALID.
 Structured completion and outcome fields outrank raw task prose. Until the
 current pass and any configured receipt are valid, AgentLoop suppresses the
 model's tool-free completion and emits a host BLOCKED/PARTIAL status instead.
+Tool-bearing intermediate turns do not emit that terminal status. Typed
+tool-free in-progress, blocker, and question handoffs may be quoted as untrusted
+context beneath it. Outside managed topology, ordinary tool-free status
+snapshots may be quoted too. They do not grant completion or landing authority.
 
 ### Memory Types
 

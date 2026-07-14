@@ -11,7 +11,7 @@ from vibe.core.baseline_scaling import BaselineTier
 from vibe.core.config import ModelConfig
 from vibe.core.scratchpad import init_scratchpad
 from vibe.core.skills.manager import SkillManager
-from vibe.core.system_prompt import get_universal_system_prompt
+from vibe.core.system_prompt import _get_default_shell, get_universal_system_prompt
 from vibe.core.tools.manager import ToolManager
 
 
@@ -52,6 +52,43 @@ def test_get_universal_system_prompt_includes_windows_prompt_on_windows(
     assert "Use: backslashes (\\\\) for paths" in prompt
     assert "Check command availability with: `where command` (Windows)" in prompt
     assert "Script shebang: Not applicable on Windows" in prompt
+
+
+def test_linux_prompt_reports_frozen_bash_interpreter(monkeypatch) -> None:
+    monkeypatch.setattr("vibe.core.system_prompt.is_windows", lambda: False)
+    monkeypatch.setattr(
+        "vibe.core.system_prompt.get_platform_display_name", lambda: "Linux"
+    )
+    monkeypatch.setenv("SHELL", "/usr/bin/fish")
+    monkeypatch.setattr(
+        "vibe.core.system_prompt.get_bash_executable", lambda: "/usr/bin/bash"
+    )
+
+    assert _get_default_shell() == "/usr/bin/bash"
+
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=True,
+        include_model_info=False,
+        include_commit_signature=False,
+        include_humanizer_guidance=False,
+    )
+    prompt = get_universal_system_prompt(
+        ToolManager(lambda: config),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+    )
+
+    assert "The operating system is Linux with shell `/usr/bin/bash`" in prompt
+
+
+def test_linux_prompt_reports_unavailable_bash(monkeypatch) -> None:
+    monkeypatch.setattr("vibe.core.system_prompt.is_windows", lambda: False)
+    monkeypatch.setattr("vibe.core.system_prompt.get_bash_executable", lambda: None)
+
+    assert _get_default_shell() == "bash (unavailable)"
 
 
 def test_small_tier_drops_gated_sections_large_keeps_them() -> None:
@@ -198,9 +235,12 @@ def test_le_chaton_requires_local_reconnaissance_before_workflows(monkeypatch) -
     assert "First use local `glob` and `lsp`" in prompt
     assert "A broad label such as 'analyze this repo' does not by itself" in prompt
     assert "File count alone is not a reason to delegate" in prompt
-    # workflow path must carry the same narrow-brief steer as the task-tool prose
     assert "give each agent one question" in prompt
-    assert "breadth comes from more agents, not bigger prompts" in prompt
+    assert "no more than two non-overlapping evidence lanes" in prompt
+    assert "Never launch duplicate broad audits" in prompt
+    assert "risk is monotonic across the active strategy lifecycle" in prompt
+    assert "including continuation turns" in prompt
+    assert "rejected redeclaration does not replace an accepted strategy" in prompt
 
 
 def test_le_chaton_reconnaissance_uses_grep_without_lsp() -> None:
@@ -289,6 +329,9 @@ def test_le_chaton_orchestration_invariant_survives_compact_tiers(
     assert "`work_strategy`" in prompt
     assert "before the first mutating tool" in prompt
     assert "reassess" in prompt.lower()
+    assert "Start at most two non-overlapping evidence lanes" in prompt
+    assert "rejected redeclaration leaves the prior accepted route active" in prompt
+    assert "including continuation turns" in prompt
     assert "work_strategy" in tool_manager.available_tools
 
 
@@ -522,7 +565,7 @@ def test_planner_security_editor_registered() -> None:
     # plain-task call auto-approves its writes (not skipped).
     ed = load_system_prompt("editor")
     assert "isolation='worktree'" in ed
-    assert "not a security sandbox" in ed
+    assert "defense in depth" in ed
     assert "auto-isolate" in ed.lower()
 
     # Grunt shares worker's write surface and auto-isolation behavior.
@@ -655,6 +698,35 @@ def test_headless_section_absent_by_default() -> None:
     )
 
     assert "Headless Mode" not in prompt
+
+
+def test_isolated_headless_prompt_leaves_commit_and_checks_to_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "vibe.core.tools.utils.isolated_worktree_root", lambda: Path("/isolated")
+    )
+    config = build_test_vibe_config(
+        system_prompt_id="tests",
+        include_project_context=False,
+        include_prompt_detail=False,
+        include_model_info=False,
+        include_commit_signature=True,
+        include_humanizer_guidance=False,
+    )
+
+    prompt = get_universal_system_prompt(
+        ToolManager(lambda: config),
+        config,
+        SkillManager(lambda: config),
+        AgentManager(lambda: config),
+        headless=True,
+    )
+
+    assert "Do not issue Git mutations or test/build/package commands" in prompt
+    assert "return the exact host checks needed" in prompt
+    assert 'git commit -m "<summary>"' not in prompt
+    assert "Use `git commit" not in prompt
 
 
 def test_current_date_placeholder_substituted_in_prompt() -> None:
@@ -806,8 +878,8 @@ def test_verifier_subagent_registered_with_verdict_prompt() -> None:
     # Anti-rationalization + adversarial stance.
     assert "break it" in sp.lower()
     assert "Reading is not verification" in sp
-    # Mandatory command evidence on every PASS.
-    assert "Command run" in sp
+    # Mandatory executable evidence on every PASS.
+    assert "Evidence source" in sp
     # The verifier must not invalidate a run by attempting denied cleanup or
     # network commands after successful checks.
     assert "cleaned automatically" in sp
@@ -852,12 +924,21 @@ def test_verification_contract_section_present_when_subsystem_enabled() -> None:
     # Dead verifier (no VERDICT / subagent error) is not a pass.
     assert "no verdict" in prompt_on.lower()
     # Structural land_work gate is part of the contract.
-    assert "report pasted into tool arguments is not accepted" in prompt_on
+    assert "pasted report prose is never authority" in prompt_on
     assert "documentation-only diff" in prompt_on
     assert "finish and freeze the candidate" in prompt_on
     assert "Do not JSON-encode a `TaskBrief`" in prompt_on
     assert "do not edit, commit" in prompt_on
     assert "async_run=false" in prompt_on
+    assert "todo items remain open" in prompt_on
+    assert "`IN_PROGRESS:`" in prompt_on
+    assert "`BLOCKED:`" in prompt_on
+    assert "`QUESTION:`" in prompt_on
+    assert "`Status:`" in prompt_on
+    assert "Outside a host-managed topology" in prompt_on
+    assert "untrusted, non-authorizing handoff" in prompt_on
+    assert "Do not ask whether to resume work the user already authorized" in prompt_on
+    assert "A status request does not cancel prior unfinished work" in prompt_on
     # The verifier profile appears in the subagents picker.
     assert "- `verifier` —" in prompt_on
 
@@ -936,8 +1017,15 @@ def test_verification_contract_requires_receipt_for_configured_recipe() -> None:
     small = get_universal_system_prompt(
         tool_manager, config, skill_manager, agent_manager, tier=BaselineTier.SMALL
     )
+    compact_config = config.model_copy(update={"include_prompt_detail": False})
+    compact = get_universal_system_prompt(
+        ToolManager(lambda: compact_config),
+        compact_config,
+        SkillManager(lambda: compact_config),
+        AgentManager(lambda: compact_config),
+    )
 
-    for prompt in (large, small):
+    for prompt in (large, small, compact):
         assert "prebound" in prompt
         assert "verify_work" in prompt
         assert "READY_FOR_HOST_FREEZE:" in prompt
@@ -949,6 +1037,13 @@ def test_verification_contract_requires_receipt_for_configured_recipe() -> None:
         assert "Host-managed execution topology" in prompt
         assert "Packet `I00-P01` is host-bound in `active` state" in prompt
         assert "Never substitute a ref" in prompt
+        assert (
+            "Do not spawn a verifier or call `verify_work` in the active phase"
+            in prompt
+        )
+        assert "then spawn `verifier` via `task`" not in prompt
+        assert "`QUESTION:` and `Status:` are not valid" in prompt
+        assert "necessary question with exactly `QUESTION:`" not in prompt
 
 
 def test_investigation_contract_section_present_when_subsystem_enabled() -> None:
@@ -1025,6 +1120,24 @@ def test_raw_workflow_authoring_guide_remains_lazy() -> None:
     skill = BUILTIN_SKILLS["workflow-authoring"]
     assert "## Local discovery comes first" in skill.prompt
     assert "dedup_by" in skill.prompt
-    # authoring guide must steer toward one-question-per-agent fan-out
-    assert "One question per agent" in skill.prompt
-    assert "fan out for breadth" in skill.prompt
+    assert "Start with two bounded evidence lanes" in skill.prompt
+    assert "bounded strategy only after returned evidence" in skill.prompt
+    assert "TODO:" not in skill.prompt
+    assert "copy the two lane" in skill.prompt
+    assert "exactly from the accepted `work_strategy` receipt" in skill.prompt
+    assert "exact paths or symbols" in skill.prompt
+    assert "Every downstream agent counts against the same two-lane cap" in skill.prompt
+    assert "`recipe()`" in skill.prompt
+
+
+def test_vibe_skill_reports_current_workflow_caps() -> None:
+    from vibe.core.skills.builtins import BUILTIN_SKILLS
+    from vibe.core.workflows._limits import DEFAULT_MAX_AGENTS, DEFAULT_MAX_CONCURRENT
+
+    prompt = BUILTIN_SKILLS["vibe"].prompt
+
+    assert (
+        f"Up to {DEFAULT_MAX_CONCURRENT} concurrent agents, "
+        f"{DEFAULT_MAX_AGENTS} total per run"
+    ) in prompt
+    assert "1000 total per run" not in prompt

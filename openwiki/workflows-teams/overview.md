@@ -25,16 +25,28 @@ Workflows are Python scripts that orchestrate parallel agents for codebase audit
 
 A workflow script is a `.py` file with an `async def main()` function. Optional YAML frontmatter (`name:`, `description:`) precedes the Python source. The runtime injects these functions:
 
-- `agent(prompt, *, agent="explore", label=None, phase=None, schema=None, isolation=None)` — spawn a subagent
-  - Profiles: `explore` (grep/read), `research` (+web), `reviewer` (+bash), `worker` (full tools incl. MCP; **requires** `isolation="worktree"`)
+- `agent(prompt, *, agent="explore", model=None, label=None, phase=None, schema=None, budget_estimate=None, isolation=None, strip_unknown=True, contract=None, citations=None, then=None)` — spawn a subagent; `citations` verifies returned file/line/snippet evidence
+  - Profiles: `explore`, `research`, `reviewer`, `debugger`, `planner`, `security`, `editor`, `grunt`, `verifier`, and `worker`; write-capable profiles require `isolation="worktree"`
   - `isolation="worktree"` runs it as a `vibe -p` subprocess in a fresh git worktree
-- `parallel(*thunks)` — run thunks concurrently, results in order (a thunk that raises yields `None`)
-- `pipeline(items, *stages)` — run each item through all stages independently, no barrier between stages
+- `parallel(*items, max_concurrency=None)` — run coroutines or zero-argument thunks concurrently and return results in argument order
+- `pipeline(items, *stages, max_concurrency=None)` — run each item through its stages independently, with no cross-item barrier
+- `recipe(name, *, items=None, find_agent="explore", verify_agent="reviewer", synth=None, max_concurrency=None)` — run the built-in `find_verify` or `find_verify_synth` pattern
 - `phase(name)` — declare a phase for progress tracking
 - `log(msg)` — log a progress message
+- `post_message(channel, message)` / `fetch_messages(channel)` — exchange bounded in-run messages
+- `flatten(items)` — flatten one list level without iterating string-like atoms
+- `dedup_by(items, key)` / `merge_by(items, key, merge)` — deduplicate or fold grouped results
+- `team_task(description, dependencies=None)` — enqueue work on the active process team, if one exists
 - `budget` — token budget object with `.total` and `.remaining()`
 - `workflow(name, args=None)` — run another discovered workflow inline (one level deep)
 - `args` — structured input from the invocation command
+
+Ordinary agent/parallel/pipeline failures degrade the affected result to `None`;
+strategy-bound expected-lane failures and hard agent/budget/spend ceilings
+propagate instead. One workflow reserves both host agent slots. Nested agents share that workflow's
+budget, total-agent ceiling, and maximum concurrency; they do not create more
+host lanes. Tests, builds, and package/dependency commands remain explicit-user
+gates even for isolated auto-approved workers.
 
 ### Security Model
 
@@ -102,24 +114,27 @@ failure.
 - `/workflows` — progress view showing all runs with status, agents, tokens, elapsed
 - `/workflows stop <id|all>` — stop one or all runs
 - `/workflows snapshot <id>` — show cached results for a run
+- `/workflows resume <id>` — resume an unbound persisted snapshot
 - Result reuse is disabled unless the trusted host supplies a SHA-256 fingerprint
   covering the complete dependency closure, including ignored/external reads and
   resolved instructions. The fingerprint is part of the cache identity alongside
   repository state, model/provider and routing settings, tool schemas/policy,
   prompt, schema/contract, and harness version. Only known in-process read-only
-  profiles are eligible; resumed runs need the same fingerprint.
+  profiles are eligible; resumed runs need the same fingerprint. Strategy-bound
+  snapshots are recorded but cannot be resumed until exact lane authorization can
+  be restored; start a new strategy-bound run instead.
 
 ### Effort Modes
 
 - **normal** (default): work turn-by-turn
 - **le-chaton**: max thinking + adaptive orchestration. Every primary host model request uses effective max thinking, including after a model switch or failover. The hands-on host keeps its normal tools and records an observed-scope `work_strategy` route:
   - `direct` for localized or sequentially coupled work
-  - `task` for productive independent lanes
-  - `workflow` for staged fan-out or adversarial review
+  - `task` for one or two productive independent lanes
+  - `workflow` for exactly two staged or adversarial evidence lanes
   - `team` for long-running coordination
 - Select via `/effort` or set `effort_mode = "le-chaton"` in config.toml
 - A prompt containing `le chaton` or `lechaton` acquires a non-persistent Le Chaton lease. The lease survives matching asynchronous task, workflow, or team result delivery and restores the saved mode only after the host has acted on that result.
-- The runtime gates substantive mutation and finalization until strategy and productive-delegation debt are satisfied. Debt survives continuation turns and is correlated to immutable task, workflow, or team launch IDs until the matching terminal result arrives; superseded launches cannot satisfy or poison their replacement. Preflight reservations prevent concurrent tool calls from launching the same declared lane twice, and explicit task stops produce terminal failure receipts. A narrowly localized first edit/write may infer a bounded direct route; path or mutation expansion and delegation failure force scope reassessment. Verifier calls are completion checks, not productive delegation. Interactive teammate output is bounded, persisted when large, staged into the host context, and wakes an idle host.
+- The runtime gates substantive mutation and finalization until strategy and productive-delegation debt are satisfied. Each strategy starts at most two agent-owned lanes, and later expansion requires terminal evidence of a concrete gap. Risk cannot be downgraded during the active strategy lifecycle. Debt survives continuation turns and is correlated to immutable task, workflow, or team launch IDs until the matching terminal result arrives; superseded launches cannot satisfy or poison their replacement. Preflight reservations prevent concurrent tool calls from launching the same declared lane twice, and explicit task stops produce terminal failure receipts. A narrowly localized first edit/write may infer a bounded direct route; path or mutation expansion and delegation failure force scope reassessment. Verifier calls are completion checks, not productive delegation. Interactive teammate output is bounded, persisted when large, staged into the host context, and wakes an idle host.
 - `disable_workflows = true` hides raw `launch_workflow` without disabling Le Chaton. Workflow routing falls back to `task` when available, or to an honest capability-constrained direct route when appropriate.
 - Raw workflow scripts remain an advanced escape hatch; load the `workflow-authoring` skill before authoring one.
 

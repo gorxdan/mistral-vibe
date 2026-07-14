@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from vibe.core.tools.base import ToolPermission
+from vibe.core.tools.base import ToolAuthorizationSource, ToolPermission
 
 
 class ToolExecutionResponse(StrEnum):
@@ -25,6 +25,8 @@ class ToolDecision(BaseModel):
 
     verdict: ToolExecutionResponse
     approval_type: ToolPermission
+    authorization_source: ToolAuthorizationSource = ToolAuthorizationSource.POLICY
+    authorization_fingerprint: str | None = None
     feedback: str | None = None
     judge_approved: bool = False
     # When the user chose MODIFY at approval, the tool is re-validated and

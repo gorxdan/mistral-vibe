@@ -41,7 +41,7 @@ class TestBashGranularPermissions:
 
     def test_allowlisted_command_always(self):
         bash = self._bash()
-        result = bash.resolve_permission(BashArgs(command="git status"))
+        result = bash.resolve_permission(BashArgs(command="git log -1"))
         assert isinstance(result, PermissionContext)
         assert result.permission is ToolPermission.ALWAYS
 
@@ -80,35 +80,27 @@ class TestBashGranularPermissions:
             f"Command with redirect should not be denied: {command!r}"
         )
 
-    def test_unknown_command_returns_permission_context(self):
-        bash = self._bash()
-        result = bash.resolve_permission(BashArgs(command="npm install"))
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "npm install",
+            "docker compose up -d",
+            "npm install foo && npm install bar",
+            "mkdir /tmp/test",
+            "rm -rf /tmp/something",
+            "sudo apt install foo",
+            "rmdir foo",
+            "echo hello && npm install foo",
+            "chmod +x /tmp/script.sh",
+        ],
+    )
+    def test_explicit_user_commands_do_not_mint_reusable_rules(self, command):
+        result = self._bash().resolve_permission(BashArgs(command=command))
+
         assert isinstance(result, PermissionContext)
         assert result.permission is ToolPermission.ASK
-        assert len(result.required_permissions) == 1
-        rp = result.required_permissions[0]
-        assert rp.scope is PermissionScope.COMMAND_PATTERN
-        assert rp.session_pattern == "npm install *"
-
-    def test_arity_based_prefix(self):
-        bash = self._bash()
-        result = bash.resolve_permission(BashArgs(command="docker compose up -d"))
-        assert isinstance(result, PermissionContext)
-        rp = result.required_permissions[0]
-        assert rp.session_pattern == "docker compose up *"
-
-    def test_multiple_commands_dedup(self):
-        bash = self._bash()
-        result = bash.resolve_permission(
-            BashArgs(command="npm install foo && npm install bar")
-        )
-        assert isinstance(result, PermissionContext)
-        command_labels = [
-            rp.label
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.COMMAND_PATTERN
-        ]
-        assert command_labels == ["npm install *"]
+        assert result.requires_explicit_user_approval is True
+        assert result.required_permissions == []
 
     def test_cd_excluded_from_command_patterns(self):
         bash = self._bash()
@@ -118,28 +110,6 @@ class TestBashGranularPermissions:
             rp.scope is not PermissionScope.COMMAND_PATTERN
             for rp in result.required_permissions
         )
-
-    def test_outside_directory_detection(self):
-        bash = self._bash()
-        result = bash.resolve_permission(BashArgs(command="mkdir /tmp/test"))
-        assert isinstance(result, PermissionContext)
-        outside = [
-            rp
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.OUTSIDE_DIRECTORY
-        ]
-        assert len(outside) >= 1
-
-    def test_outside_directory_has_glob_pattern(self):
-        bash = self._bash()
-        result = bash.resolve_permission(BashArgs(command="mkdir /tmp/test"))
-        assert isinstance(result, PermissionContext)
-        outside = [
-            rp
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.OUTSIDE_DIRECTORY
-        ]
-        assert any("/tmp" in rp.session_pattern for rp in outside)
 
     def test_in_workdir_no_outside_directory(self):
         bash = self._bash()
@@ -152,40 +122,6 @@ class TestBashGranularPermissions:
             if rp.scope is PermissionScope.OUTSIDE_DIRECTORY
         ]
         assert len(outside) == 0
-
-    def test_rm_uses_arity_based_pattern(self):
-        bash = self._bash()
-        result = bash.resolve_permission(BashArgs(command="rm -rf /tmp/something"))
-        assert isinstance(result, PermissionContext)
-        cmd_perms = [
-            rp
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.COMMAND_PATTERN
-        ]
-        assert len(cmd_perms) == 1
-        assert cmd_perms[0].session_pattern == "rm *"
-
-    def test_sensitive_sudo_exact_pattern(self):
-        bash = self._bash()
-        result = bash.resolve_permission(BashArgs(command="sudo apt install foo"))
-        assert isinstance(result, PermissionContext)
-        cmd_perms = [
-            rp
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.COMMAND_PATTERN
-        ]
-        assert cmd_perms[0].session_pattern == "sudo apt install foo"
-
-    def test_rmdir_uses_arity_based_pattern(self):
-        bash = self._bash()
-        result = bash.resolve_permission(BashArgs(command="rmdir foo"))
-        assert isinstance(result, PermissionContext)
-        cmd_perms = [
-            rp
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.COMMAND_PATTERN
-        ]
-        assert cmd_perms[0].session_pattern == "rmdir *"
 
     def test_sensitive_bypasses_allowlist(self):
         bash = self._bash(allowlist=["sudo"])
@@ -240,34 +176,9 @@ class TestBashGranularPermissions:
         assert isinstance(result, PermissionContext)
         assert result.permission is ToolPermission.ALWAYS
 
-    def test_mixed_allowlisted_and_not(self):
-        bash = self._bash()
-        result = bash.resolve_permission(
-            BashArgs(command="echo hello && npm install foo")
-        )
-        assert isinstance(result, PermissionContext)
-        cmd_perms = [
-            rp
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.COMMAND_PATTERN
-        ]
-        assert len(cmd_perms) == 1
-        assert cmd_perms[0].session_pattern == "npm install *"
-
     def test_empty_command_returns_none(self):
         bash = self._bash()
         assert bash.resolve_permission(BashArgs(command="")) is None
-
-    def test_chmod_plus_skipped_as_flag(self):
-        bash = self._bash()
-        result = bash.resolve_permission(BashArgs(command="chmod +x /tmp/script.sh"))
-        assert isinstance(result, PermissionContext)
-        outside = [
-            rp
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.OUTSIDE_DIRECTORY
-        ]
-        assert len(outside) >= 1
 
 
 class TestReadGranularPermissions:
@@ -445,112 +356,6 @@ class TestApprovalFlowSimulation:
             and wildcard_match(rp.invocation_pattern, rule.session_pattern)
             for rule in rules
         )
-
-    def test_mkdir_approved_covers_subsequent_mkdir(self):
-        rules = [
-            ApprovedRule(
-                tool_name="bash",
-                scope=PermissionScope.COMMAND_PATTERN,
-                session_pattern="mkdir *",
-            )
-        ]
-        bash = Bash(config_getter=lambda: BashToolConfig(), state=BaseToolState())
-        result = bash.resolve_permission(BashArgs(command="mkdir another_dir"))
-        assert isinstance(result, PermissionContext)
-        uncovered = [
-            rp
-            for rp in result.required_permissions
-            if not self._is_covered("bash", rp, rules)
-        ]
-        assert not any(rp.scope is PermissionScope.COMMAND_PATTERN for rp in uncovered)
-
-    def test_mkdir_approved_does_not_cover_npm(self):
-        rules = [
-            ApprovedRule(
-                tool_name="bash",
-                scope=PermissionScope.COMMAND_PATTERN,
-                session_pattern="mkdir *",
-            )
-        ]
-        bash = Bash(config_getter=lambda: BashToolConfig(), state=BaseToolState())
-        result = bash.resolve_permission(BashArgs(command="npm install"))
-        assert isinstance(result, PermissionContext)
-        uncovered = [
-            rp
-            for rp in result.required_permissions
-            if not self._is_covered("bash", rp, rules)
-        ]
-        assert len(uncovered) == 1
-        assert uncovered[0].session_pattern == "npm install *"
-
-    def test_outside_dir_approved_covers_subsequent(self):
-        bash = Bash(config_getter=lambda: BashToolConfig(), state=BaseToolState())
-        result = bash.resolve_permission(BashArgs(command="mkdir /tmp/newdir"))
-        assert isinstance(result, PermissionContext)
-        outside_rps = [
-            rp
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.OUTSIDE_DIRECTORY
-        ]
-        assert len(outside_rps) == 1
-        # Resolved pattern may differ per OS (e.g. /private/tmp/* on macOS)
-        rules = [
-            ApprovedRule(
-                tool_name="bash",
-                scope=PermissionScope.OUTSIDE_DIRECTORY,
-                session_pattern=outside_rps[0].session_pattern,
-            ),
-            ApprovedRule(
-                tool_name="bash",
-                scope=PermissionScope.COMMAND_PATTERN,
-                session_pattern="mkdir *",
-            ),
-        ]
-        uncovered = [
-            rp
-            for rp in result.required_permissions
-            if not self._is_covered("bash", rp, rules)
-        ]
-        assert len(uncovered) == 0
-
-    def test_rm_approved_covers_subsequent_rm(self):
-        rules = [
-            ApprovedRule(
-                tool_name="bash",
-                scope=PermissionScope.COMMAND_PATTERN,
-                session_pattern="rm *",
-            )
-        ]
-        bash = Bash(config_getter=lambda: BashToolConfig(), state=BaseToolState())
-        result = bash.resolve_permission(BashArgs(command="rm -rf /tmp/something"))
-        assert isinstance(result, PermissionContext)
-        cmd_perms = [
-            rp
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.COMMAND_PATTERN
-        ]
-        assert cmd_perms[0].session_pattern == "rm *"
-        uncovered = [rp for rp in cmd_perms if not self._is_covered("bash", rp, rules)]
-        assert len(uncovered) == 0
-
-    def test_sudo_exact_approval_doesnt_cover_different_invocation(self):
-        rules = [
-            ApprovedRule(
-                tool_name="bash",
-                scope=PermissionScope.COMMAND_PATTERN,
-                session_pattern="sudo apt install foo",
-            )
-        ]
-        bash = Bash(config_getter=lambda: BashToolConfig(), state=BaseToolState())
-        result = bash.resolve_permission(BashArgs(command="sudo apt install bar"))
-        assert isinstance(result, PermissionContext)
-        cmd_perms = [
-            rp
-            for rp in result.required_permissions
-            if rp.scope is PermissionScope.COMMAND_PATTERN
-        ]
-        uncovered = [rp for rp in cmd_perms if not self._is_covered("bash", rp, rules)]
-        assert len(uncovered) == 1
 
     def test_read_sensitive_approved_covers_subsequent(self):
         rules = [

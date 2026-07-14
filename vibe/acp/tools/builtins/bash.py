@@ -17,7 +17,12 @@ from vibe.acp.tools.base import AcpToolState, BaseAcpTool
 from vibe.acp.tools.events import ToolTerminalOpenedEvent
 from vibe.acp.tools.session_update import failed_tool_result, resolve_kind
 from vibe.core.logger import logger
-from vibe.core.tools.base import BaseToolState, InvokeContext, ToolError
+from vibe.core.tools.base import (
+    BaseToolState,
+    InvokeContext,
+    ToolAuthorizationSource,
+    ToolError,
+)
 from vibe.core.tools.builtins.bash import Bash as CoreBashTool, BashArgs, BashResult
 from vibe.core.types import ToolCallEvent, ToolResultEvent, ToolStreamEvent
 
@@ -39,7 +44,38 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
     async def run(
         self, args: BashArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | BashResult, None]:
+        workspace_cwd = self.state.cwd
+        if ctx is not None:
+            if workspace_cwd is None:
+                raise ToolError(
+                    "Bound ACP workspace is unavailable; command not started."
+                )
+            try:
+                bound_cwd = Path(workspace_cwd).resolve()
+                process_cwd = Path.cwd().resolve()
+            except OSError as exc:
+                raise ToolError(
+                    "Bound ACP workspace could not be verified; command not started."
+                ) from exc
+            if bound_cwd != process_cwd:
+                raise ToolError(
+                    "ACP process workspace changed after session binding; command "
+                    "not started."
+                )
+            workspace_cwd = str(bound_cwd)
+        if ctx is not None and ctx.authorization_source in {
+            ToolAuthorizationSource.POLICY,
+            ToolAuthorizationSource.SAFETY_JUDGE,
+            ToolAuthorizationSource.BYPASS,
+        }:
+            async for item in super().run(args, ctx):
+                yield item
+            return
+        await self._validate_execution_authorization(
+            args, ctx, require_local_shell=False
+        )
         client, session_id = self._load_state()
+        workspace_cwd = workspace_cwd or str(Path.cwd())
 
         timeout = args.timeout or self.config.default_timeout
         max_bytes = self.config.max_output_bytes
@@ -48,7 +84,7 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
             terminal = await client.create_terminal(
                 session_id=session_id,
                 command=args.command,
-                cwd=str(Path.cwd()),
+                cwd=workspace_cwd,
                 output_byte_limit=max_bytes,
             )
         except Exception as e:

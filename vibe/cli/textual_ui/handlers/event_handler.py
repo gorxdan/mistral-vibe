@@ -75,6 +75,9 @@ class EventHandler:
         self._hook_containers: dict[str, HookRunContainer] = {}
         # Per-tool-call anchor for correct widget ordering during concurrent calls.
         self._tool_call_anchors: dict[str, Widget] = {}
+        self._pending_after_tool_events: dict[
+            str, list[tuple[HookEvent, LoadingWidget | None]]
+        ] = {}
         # Errored results shown muted while their verdict is unknown: a follow-up
         # tool call confirms them recoverable (stay muted), turn end escalates
         # them to hard errors.
@@ -109,6 +112,22 @@ class EventHandler:
                                 tool_call.add_class("no-gap")
                 if loading_widget:
                     loading_widget.set_status(DEFAULT_LOADING_STATUS)
+
+    async def _handle_or_defer_hook_event(
+        self, event: HookEvent, loading_widget: LoadingWidget | None
+    ) -> None:
+        call_id = getattr(event, "tool_call_id", None)
+        if (
+            getattr(event, "scope", None) == HookType.AFTER_TOOL
+            and call_id
+            and call_id in self.tool_calls
+        ):
+            self._pending_after_tool_events.setdefault(call_id, []).append((
+                event,
+                loading_widget,
+            ))
+            return
+        await self._handle_hook_event(event, loading_widget)
 
     @staticmethod
     def _hook_container_key(scope: HookType, tool_call_id: str | None) -> str:
@@ -189,7 +208,7 @@ class EventHandler:
             case UserMessageEvent():
                 await self._handle_user_message(event)
             case HookEvent():
-                await self._handle_hook_event(event, loading_widget)
+                await self._handle_or_defer_hook_event(event, loading_widget)
             case PlanReviewRequestedEvent():
                 await self._handle_start_plan_review(file_path=event.file_path)
             case PlanReviewEndedEvent():
@@ -270,6 +289,10 @@ class EventHandler:
             self._tool_call_anchors[tool_call_id] = tool_result
             if tool_call_id in self.tool_calls:
                 del self.tool_calls[tool_call_id]
+            for hook_event, loading_widget in self._pending_after_tool_events.pop(
+                tool_call_id, []
+            ):
+                await self._handle_hook_event(hook_event, loading_widget)
 
         if (
             self.on_code_file_edited
@@ -383,6 +406,7 @@ class EventHandler:
         self.tool_calls.clear()
         self._tool_call_anchors.clear()
         self._hook_containers.clear()
+        self._pending_after_tool_events.clear()
         # On cancel nothing is terminal -- leave prior errors muted too.
         self._resolve_pending_errors(escalate=not cancelled)
 

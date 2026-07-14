@@ -255,6 +255,7 @@ from vibe.core.utils import (
     get_user_cancellation_message,
     is_dangerous_directory,
 )
+from vibe.core.workflows._limits import MODEL_LAUNCHED_MAX_AGENTS
 from vibe.core.workflows.manager import WorkflowManager
 from vibe.core.workflows.runtime import WorkflowError, WorkflowRuntime
 
@@ -264,7 +265,7 @@ if TYPE_CHECKING:
     from vibe.cli.textual_ui.widgets.mcp_app import MCPApp
     from vibe.cli.voice_manager import VoiceManager
     from vibe.core.agent_loop import AgentLoop
-    from vibe.core.workflows.models import WorkflowStatus
+    from vibe.core.workflows.models import WorkflowLaneExpectation, WorkflowStatus
 
 _VSCODE_FAMILY_TERMINALS = {Terminal.VSCODE, Terminal.VSCODE_INSIDERS, Terminal.CURSOR}
 
@@ -2164,7 +2165,13 @@ class VibeApp(App):
         required_permissions: list[RequiredPermission] | None,
         judge_note: str | None = None,
     ) -> tuple[ApprovalResponse, str | None, dict[str, Any] | None]:
-        if self.agent_loop and self.agent_loop.config.bypass_tool_permissions:
+        if judge_note is None and self.agent_loop:
+            judge_note = self.agent_loop.pending_judge_deferral
+        if (
+            judge_note is None
+            and self.agent_loop
+            and self.agent_loop.config.bypass_tool_permissions
+        ):
             if self._is_tool_enabled_in_main_agent(tool):
                 return (ApprovalResponse.YES, None, None)
 
@@ -2175,8 +2182,6 @@ class VibeApp(App):
         # host. The callback argument is the only channel that crosses loops.
         # Fall back to the host's own attribute only for the host's direct
         # calls where the note wasn't passed.
-        if judge_note is None and self.agent_loop:
-            judge_note = self.agent_loop.pending_judge_deferral
         async with self._user_interaction_lock:
             await self._wait_for_typing_pause()
             self._pending_approval = asyncio.Future()
@@ -3948,7 +3953,12 @@ class VibeApp(App):
             safety_judge_factory=loop._resolve_safety_judge,
         )
 
-    def _launch_workflow_from_tool(self, script: str, name: str | None = None) -> str:
+    def _launch_workflow_from_tool(
+        self,
+        script: str,
+        name: str | None = None,
+        expected_lanes: tuple[WorkflowLaneExpectation, ...] | None = None,
+    ) -> str:
         if self.config.disable_workflows:
             raise WorkflowError("Workflows are disabled in this configuration.")
         parent_context = self._build_workflow_parent_context(
@@ -3956,7 +3966,9 @@ class VibeApp(App):
         )
         runtime = WorkflowRuntime(
             parent_context=parent_context,
+            max_agents=MODEL_LAUNCHED_MAX_AGENTS,
             workflow_source_resolver=self._resolve_workflow_source,
+            expected_lanes=expected_lanes,
         )
         run_id = self._workflow_runner.launch(script, runtime=runtime)
         return run_id
@@ -4254,8 +4266,16 @@ class VibeApp(App):
     async def _on_workflow_terminal(self, run_id: str, status: WorkflowStatus) -> None:
         from vibe.core.workflows.models import WorkflowStatus
 
+        entry = self._workflow_runner.find_run(run_id)
+        attestation = (
+            entry.result.run.lane_attestation
+            if entry is not None and entry.result is not None
+            else None
+        )
         self.agent_loop.observe_workflow_completion(
-            run_id, succeeded=status is WorkflowStatus.COMPLETED
+            run_id,
+            succeeded=status is WorkflowStatus.COMPLETED,
+            attestation=attestation,
         )
 
     async def _flush_stranded_workflow_delivery(

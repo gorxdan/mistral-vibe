@@ -107,6 +107,18 @@ async def test_live_agent_all_citations_verify(repo_files: Path) -> None:
     assert result["citation_report"]["items_verified"] == 2
 
 
+async def test_script_agent_forwards_citation_contract(repo_files: Path) -> None:
+    response = '{"findings": [{"file": "auth.py", "line": 1}]}'
+    rt = WorkflowRuntime(agent_loop_factory=_factory(response))
+    agent = rt.build_script_namespace()["agent"]
+
+    result = await agent("audit", schema=FINDINGS_SCHEMA, citations=CITATIONS)
+
+    assert isinstance(result, dict)
+    assert result["citation_report"]["passed"] is True
+    assert result["citation_report"]["items_verified"] == 1
+
+
 async def test_live_agent_drops_bad_citation_keeps_good(repo_files: Path) -> None:
     response = (
         '{"findings": ['

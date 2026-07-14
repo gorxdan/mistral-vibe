@@ -51,9 +51,10 @@ the implemented runtime and is not pending design work.
    has 1 shaper (full LLM summary) vs Claude's 5. Pure-local (no LLM), runs in the
    existing `MiddlewarePipeline` before AutoCompact. Highest architectural payoff.
 3. **shell-sandbox (implemented).** The sandbox defaults on. Auto-approve,
-   isolated/task-contracted work, managed topology, and trusted checks require
-   Bubblewrap or Seatbelt and fail closed. Ordinary sessions retain documented
-   compatibility fallbacks.
+   isolated/task-contracted work, and managed topology require Bubblewrap or
+   Seatbelt and fail closed. Receipt-authorizing trusted checks are separately
+   Linux-Bubblewrap-only. Ordinary sessions retain documented compatibility
+   fallbacks.
 4. **prompt-caching (M).** Mostly telemetry + a thin opt-in escape hatch; the spec
    is honest that generic-path auto-caching already works — value is *protecting*
    the cacheable prefix + measuring hit rate. Good once the shaper pipeline (2)

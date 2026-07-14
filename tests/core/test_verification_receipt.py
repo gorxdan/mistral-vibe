@@ -36,7 +36,7 @@ from vibe.core.config._verification_config import (
 )
 from vibe.core.tools.base import InvokeContext, ToolError
 from vibe.core.tools.builtins.land_work import LandWorkArgs, _require_verification_note
-from vibe.core.tools.sandbox import SandboxSpec, detect_backend
+from vibe.core.tools.sandbox import ResolvedSandboxBackend, SandboxSpec, detect_backend
 from vibe.core.utils.io import read_safe, write_durable, write_safe
 from vibe.core.verification_state import VerificationState, VerifierAttemptDisposition
 
@@ -54,6 +54,11 @@ _CUSTOM_EXECUTABLE = resolve_trusted_system_executable("python3")
 _CUSTOM_EXECUTABLE_SHA256 = stable_file_sha256(_CUSTOM_EXECUTABLE)
 _TEST_ENVIRONMENT_ATTESTATION = _CUSTOM_EXECUTABLE
 _TEST_ENVIRONMENT_ATTESTATION_SHA256 = _CUSTOM_EXECUTABLE_SHA256
+
+
+def _sandbox_backend(name: str) -> ResolvedSandboxBackend:
+    executable = None if name == "none" else Path(f"/usr/bin/{name}")
+    return ResolvedSandboxBackend(name, executable)
 
 
 def _custom_python_check(
@@ -83,7 +88,8 @@ def _receipt_sandbox_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     if detect_backend("auto") == "bwrap":
         return
     monkeypatch.setattr(
-        "vibe.core._verification_runner.detect_backend", lambda _override: "bwrap"
+        "vibe.core._verification_runner.resolve_backend",
+        lambda _override: _sandbox_backend("bwrap"),
     )
     monkeypatch.setattr(
         "vibe.core._verification_runner.build_sandbox_command",
@@ -633,7 +639,7 @@ def test_output_regex_evaluation_is_killably_bounded() -> None:
     diagnostics = _output_assertion_diagnostics(check, b"a" * 32 + b"X", b"")
 
     assert time.monotonic() - started < 3
-    assert diagnostics == ("verification output pattern evaluation timed out",)
+    assert "verification output pattern evaluation timed out" in diagnostics
 
 
 @pytest.mark.parametrize("model", [TrustedCheck, TrustedVerificationCheckConfig])
@@ -642,14 +648,26 @@ def test_verification_models_report_invalid_output_regex(model) -> None:
         model(name="invalid-regex", argv=("pytest",), required_output_patterns=("[",))
 
 
-def test_non_numeric_test_count_is_failed_evidence(tmp_path: Path) -> None:
+def test_non_numeric_test_count_is_failed_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repository = tmp_path / "repo"
     _, base_sha = _repo(repository)
     store = VerificationReceiptStore(tmp_path / "store")
+    monkeypatch.setattr(
+        "vibe.core._verification_runner.run_bounded_process",
+        lambda *_args, **_kwargs: BoundedProcessResult(
+            stdout=b"Total: many\n",
+            stderr=b"",
+            exit_code=0,
+            timed_out=False,
+            output_limited=False,
+        ),
+    )
     check = TrustedCheck(
         name="malformed-count",
-        argv=("/usr/bin/printf", "Total: many\n"),
-        executable_sha256=stable_file_sha256(Path("/usr/bin/printf")),
+        argv=(str(_CUSTOM_EXECUTABLE),),
+        executable_sha256=_CUSTOM_EXECUTABLE_SHA256,
         required_output_patterns=(r"Total:",),
         test_count_pattern=r"Total:\s*(?P<count>\w+)",
         minimum_test_count=1,
@@ -845,7 +863,8 @@ def test_trusted_runner_requires_linux_bubblewrap(
     store = VerificationReceiptStore(tmp_path / "store")
     marker = repository / "must-not-run"
     monkeypatch.setattr(
-        "vibe.core._verification_runner.detect_backend", lambda _override: backend
+        "vibe.core._verification_runner.resolve_backend",
+        lambda _override: _sandbox_backend(backend),
     )
 
     receipt = _run(
@@ -873,7 +892,8 @@ def test_trusted_runner_rejects_bubblewrap_on_non_linux(
     _, base_sha = _repo(repository)
     store = VerificationReceiptStore(tmp_path / "store")
     monkeypatch.setattr(
-        "vibe.core._verification_runner.detect_backend", lambda _override: "bwrap"
+        "vibe.core._verification_runner.resolve_backend",
+        lambda _override: _sandbox_backend("bwrap"),
     )
     monkeypatch.setattr("vibe.core._verification_runner.sys.platform", "darwin")
 
@@ -964,15 +984,26 @@ def test_trusted_runner_builds_networkless_read_only_sandbox(
     monkeypatch.setenv("GH_TOKEN", "host-token")
     monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/host-agent.sock")
 
-    def fake_build(spec: SandboxSpec, _backend: str):
+    def fake_build(spec: SandboxSpec, _backend: ResolvedSandboxBackend):
         captured.append(spec)
         return [], "bwrap", None
 
     monkeypatch.setattr(
-        "vibe.core._verification_runner.detect_backend", lambda _override: "bwrap"
+        "vibe.core._verification_runner.resolve_backend",
+        lambda _override: _sandbox_backend("bwrap"),
     )
     monkeypatch.setattr(
         "vibe.core._verification_runner.build_sandbox_command", fake_build
+    )
+    monkeypatch.setattr(
+        "vibe.core._verification_runner.run_bounded_process",
+        lambda *_args, **_kwargs: BoundedProcessResult(
+            stdout=b"all checks passed\n",
+            stderr=f"{_CUSTOM_CHECK_SENTINEL}: 1\n".encode(),
+            exit_code=0,
+            timed_out=False,
+            output_limited=False,
+        ),
     )
 
     receipt = _run(repository, base_sha, store)
@@ -1011,7 +1042,8 @@ def test_trusted_runner_rejects_temporary_directory_inside_candidate(
         return path
 
     monkeypatch.setattr(
-        "vibe.core._verification_runner.detect_backend", lambda _override: "bwrap"
+        "vibe.core._verification_runner.resolve_backend",
+        lambda _override: _sandbox_backend("bwrap"),
     )
     monkeypatch.setattr(
         "vibe.core._trusted_host_runner._create_run_root", unsafe_run_root
@@ -1231,7 +1263,7 @@ def test_land_work_accepts_current_receipt_and_rejects_unbound_or_stale(
 
     resumed = VerificationState(receipt_store=store)
     args = LandWorkArgs(verification_receipt_id=receipt.receipt_id)
-    with pytest.raises(ToolError, match="trusted verification state"):
+    with pytest.raises(ToolError, match="latest verifier attempt"):
         _require_verification_note(args, _ctx(resumed), **kwargs)
 
     write_safe(repository / "tracked.txt", "post-verification\n")

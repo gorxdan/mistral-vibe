@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from vibe.acp.session import AcpSessionLoop
+from vibe.acp.session import AcpSessionLoop, AcpWorkspace
 
 
 def _make_session() -> AcpSessionLoop:
     return AcpSessionLoop(
-        id="test-session", agent_loop=MagicMock(), command_registry=MagicMock()
+        id="test-session",
+        agent_loop=MagicMock(),
+        command_registry=MagicMock(),
+        workspace=AcpWorkspace(cwd=Path.cwd().resolve()),
     )
 
 

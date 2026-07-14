@@ -79,6 +79,8 @@ from vibe.core.workflows.models import (
     CachedAgentResult,
     PhaseReport,
     SchemaValidationFailure,
+    WorkflowLaneAttestation,
+    WorkflowLaneExpectation,
     WorkflowResult,
     WorkflowRun,
     WorkflowRunSnapshot,
@@ -1003,6 +1005,7 @@ class WorkflowRuntime:
     workflow_source_resolver: Callable[[str], str | None] | None = None
     isolated_executor: IsolatedExecutor | None = None
     trusted_cache_dependency_fingerprint: str | None = None
+    expected_lanes: tuple[WorkflowLaneExpectation, ...] | None = None
     _semaphore: asyncio.Semaphore = field(init=False)
     _budget: Budget = field(init=False)
     _agent_count: int = field(default=0, init=False)
@@ -1028,8 +1031,21 @@ class WorkflowRuntime:
         default_factory=lambda: f"workflow:{uuid4().hex}", init=False
     )
     _terminal_status: WorkflowStatus | None = field(default=None, init=False)
+    _attempted_lane_labels: list[str] = field(default_factory=list, init=False)
+    _started_lane_labels: list[str] = field(default_factory=list, init=False)
+    _lane_violations: list[str] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
+        if self.expected_lanes is not None:
+            labels = [lane.label for lane in self.expected_lanes]
+            if not labels or len(labels) != len(set(labels)):
+                raise WorkflowError(
+                    "Strategy-bound workflow lanes must be non-empty and unique"
+                )
+            if len(labels) > self.max_agents:
+                raise WorkflowError(
+                    "Strategy-bound workflow lanes exceed the runtime agent cap"
+                )
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self._budget = Budget(total=self.budget_total)
         self._run_gate = asyncio.Event()
@@ -1119,6 +1135,46 @@ class WorkflowRuntime:
             self._phase_order.append(phase_name)
         self._phases[phase_name].agent_results.append(result)
 
+    def _record_lane_attempt(self, label: str | None, agent: str) -> None:
+        if self.expected_lanes is None:
+            return
+        if label is None:
+            self._lane_violations.append("agent attempt omitted its lane label")
+            raise WorkflowError("Strategy-bound agent() calls require a lane label")
+        self._attempted_lane_labels.append(label)
+        expected = {lane.label: lane for lane in self.expected_lanes}
+        lane = expected.get(label)
+        if lane is None:
+            self._lane_violations.append(f"unexpected lane label {label!r}")
+            raise WorkflowError(f"Unexpected strategy lane label {label!r}")
+        if self._attempted_lane_labels.count(label) > 1:
+            self._lane_violations.append(f"duplicate lane attempt {label!r}")
+            raise WorkflowError(f"Strategy lane {label!r} was attempted more than once")
+        if lane.profile is not None and lane.profile != agent:
+            self._lane_violations.append(
+                f"lane {label!r} expected profile {lane.profile!r}, got {agent!r}"
+            )
+            raise WorkflowError(
+                f"Strategy lane {label!r} requires agent profile {lane.profile!r}"
+            )
+
+    def _lane_attestation(self) -> WorkflowLaneAttestation | None:
+        if self.expected_lanes is None:
+            return None
+        successful = tuple(
+            result.label
+            for phase in self._phases.values()
+            for result in phase.agent_results
+            if result.label is not None and result.completed and result.error is None
+        )
+        return WorkflowLaneAttestation(
+            expected=self.expected_lanes,
+            attempted_labels=tuple(self._attempted_lane_labels),
+            started_labels=tuple(self._started_lane_labels),
+            successful_labels=successful,
+            violations=tuple(self._lane_violations),
+        )
+
     def _register_live(
         self,
         agent: str,
@@ -1127,6 +1183,11 @@ class WorkflowRuntime:
         phase: str | None,
         prompt: str = "",
     ) -> _LiveAgent:
+        if self.expected_lanes is not None:
+            if label is None:
+                self._lane_violations.append("started agent omitted its lane label")
+                raise WorkflowError("Started strategy agent is missing its lane label")
+            self._started_lane_labels.append(label)
         live_id = f"la-{self._next_live_id}"
         self._next_live_id += 1
         live = _LiveAgent(
@@ -1339,6 +1400,7 @@ class WorkflowRuntime:
         | ContractFailure
         | CitationFailure
     ):
+        self._record_lane_attempt(label, agent)
         if then is not None and then != "verifier":
             raise WorkflowError(
                 f"agent(then=...) supports only 'verifier'; got {then!r}"
@@ -1374,7 +1436,11 @@ class WorkflowRuntime:
             then=then,
             strip_unknown=strip_unknown,
         )
-        if cache_context is not None and (cached := self._cache.get(cache_key)):
+        if (
+            self.expected_lanes is None
+            and cache_context is not None
+            and (cached := self._cache.get(cache_key))
+        ):
             self._log(f"cache hit: {label or agent}")
             self._record_cached_result(cached)
             return cached.response
@@ -2763,7 +2829,11 @@ class WorkflowRuntime:
             finally:
                 if delivery_reservation is not None:
                     state, generation = delivery_reservation
-                    if not state.release_authorization(generation):
+                    released = state.release_authorization(generation)
+                    pending_delivery_failure = (
+                        not released and state.is_pending_verifier_attempt(generation)
+                    )
+                    if not released and not pending_delivery_failure:
                         contract_report = ContractReport(
                             passed=False,
                             delivered=bool(
@@ -2880,6 +2950,8 @@ class WorkflowRuntime:
                 # breach. Ordinary failures still degrade to None below.
                 raise
             except Exception:
+                if self.expected_lanes is not None:
+                    raise
                 logger.warning("workflow: parallel() item failed", exc_info=True)
                 return None
 
@@ -2946,6 +3018,8 @@ class WorkflowRuntime:
                     # be swallowed into a silent None item.
                     raise
                 except Exception:
+                    if self.expected_lanes is not None:
+                        raise
                     logger.warning(
                         "workflow: pipeline() stage failed for item %d",
                         index,
@@ -2980,9 +3054,17 @@ class WorkflowRuntime:
             isolation: str | None = None,
             strip_unknown: bool = True,
             contract: dict | None = None,
+            citations: dict | None = None,
             then: str | None = None,
             **extra: Any,
-        ) -> str | dict[str, Any] | SchemaValidationFailure | ContractFailure | None:
+        ) -> (
+            str
+            | dict[str, Any]
+            | SchemaValidationFailure
+            | ContractFailure
+            | CitationFailure
+            | None
+        ):
             # Tolerate unknown kwargs so one stray argument degrades a single
             # agent() call instead of crashing the whole workflow at 0 agents.
             # `agentType`/`agent_type` is a common cross-API spelling of `agent`;
@@ -3013,12 +3095,15 @@ class WorkflowRuntime:
                     isolation=isolation,
                     strip_unknown=strip_unknown,
                     contract=contract,
+                    citations=citations,
                     then=then,
                 )
             except (AgentCapExceeded, BudgetExhausted, SpendBudgetExceededError):
                 # Hard ceilings must fail the run; mirrors parallel()._safe.
                 raise
             except Exception:
+                if self.expected_lanes is not None:
+                    raise
                 # Degrade like parallel() so a bare await doesn't null the run's
                 # return_value via run()'s broad handler at runtime.py:2026.
                 logger.warning("workflow: agent() call failed", exc_info=True)
@@ -3122,6 +3207,7 @@ class WorkflowRuntime:
             status=WorkflowStatus.RUNNING,
             started_at=self._started_at,
             budget=self._budget.snapshot(),
+            lane_attestation=self._lane_attestation(),
         )
 
     def live_status(self) -> dict[str, Any]:
@@ -3226,6 +3312,15 @@ class WorkflowRuntime:
         ]
         if status == WorkflowStatus.COMPLETED and failed:
             status = WorkflowStatus.COMPLETED_WITH_FAILURES
+        attestation = self._lane_attestation()
+        if (
+            attestation is not None
+            and not attestation.is_valid
+            and status
+            in {WorkflowStatus.COMPLETED, WorkflowStatus.COMPLETED_WITH_FAILURES}
+        ):
+            status = WorkflowStatus.FAILED
+            error = "workflow did not satisfy its host-bound lane contract"
 
         run = self.build_run(script_path=None, args=args)
         run.status = status
@@ -3279,12 +3374,21 @@ class WorkflowRuntime:
             started_at=self._started_at,
             budget_total=self.budget_total,
             budget_spent=self._budget.snapshot().spent,
+            max_agents=self.max_agents,
+            agent_count=self._agent_count,
+            expected_lanes=self.expected_lanes,
             cached_results=list(self._cache.values()),
             board=_coerce_json_safe(self._board.fetch_all()),
             return_value=_coerce_json_safe(return_value),
         )
 
     def restore_from_snapshot(self, snapshot: WorkflowRunSnapshot) -> None:
+        if snapshot.expected_lanes is not None:
+            raise WorkflowError(
+                "Strategy-bound workflow snapshots cannot be resumed safely"
+            )
+        self.max_agents = min(self.max_agents, snapshot.max_agents)
+        self._agent_count = max(self._agent_count, snapshot.agent_count)
         for cached in snapshot.cached_results:
             self._cache[cached.prompt_hash] = cached
         self._budget.restore_spent(snapshot.budget_spent)

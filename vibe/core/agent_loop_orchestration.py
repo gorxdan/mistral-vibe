@@ -27,6 +27,10 @@ if TYPE_CHECKING:
     from vibe.core.tools.background import BackgroundRegistry
     from vibe.core.tools.manager import ToolManager
     from vibe.core.types import ImageAttachment, LLMMessage
+    from vibe.core.workflows.models import (
+        WorkflowLaneAttestation,
+        WorkflowLaneExpectation,
+    )
 
 
 _SHELL_SEPARATORS = frozenset({"&&", "||", ";", "|"})
@@ -292,7 +296,10 @@ class AgentLoopOrchestrationMixin:
     _headless: bool
     agent_manager: AgentManager
     background_registry: BackgroundRegistry | None
-    launch_workflow_callback: Callable[[str, str | None], str] | None
+    launch_workflow_callback: (
+        Callable[[str, str | None, tuple[WorkflowLaneExpectation, ...] | None], str]
+        | None
+    )
     team_spawn_callback: (
         Callable[[str, str, str, int, bool, TeamSafetyMode], Awaitable[dict[str, Any]]]
         | None
@@ -365,6 +372,32 @@ class AgentLoopOrchestrationMixin:
             call_id=tool_call.call_id,
         )
 
+    def _release_orchestration_reservation(self, tool_call: ResolvedToolCall) -> None:
+        self._orchestration.release_reservation(tool_call.call_id)
+
+    def _bound_workflow_launch_callback(
+        self, tool_call: ResolvedToolCall
+    ) -> Callable[[str, str | None], str] | None:
+        callback = self.launch_workflow_callback
+        if callback is None:
+            return None
+        expected: tuple[WorkflowLaneExpectation, ...] | None = None
+        captured_script: str | None = None
+        if tool_call.tool_name == "launch_workflow":
+            captured_script = str(tool_call.args_dict.get("script", ""))
+            expected = self._orchestration.workflow_lane_expectations(
+                tool_call.call_id, captured_script
+            )
+
+        def launch(script: str, name: str | None) -> str:
+            if captured_script is not None and script != captured_script:
+                raise ValueError(
+                    "Workflow script changed after its strategy lanes were bound"
+                )
+            return callback(script, name, expected)
+
+        return launch
+
     def _record_orchestration_tool_result(
         self,
         tool_call: ResolvedToolCall,
@@ -397,8 +430,16 @@ class AgentLoopOrchestrationMixin:
     def _orchestration_completion_blocker(self) -> str | None:
         return self._orchestration.completion_blocker()
 
-    def observe_workflow_completion(self, run_id: str, *, succeeded: bool) -> None:
-        self._orchestration.record_workflow_completion(run_id, succeeded=succeeded)
+    def observe_workflow_completion(
+        self,
+        run_id: str,
+        *,
+        succeeded: bool,
+        attestation: WorkflowLaneAttestation | None,
+    ) -> None:
+        self._orchestration.record_workflow_completion(
+            run_id, succeeded=succeeded, attestation=attestation
+        )
 
     def observe_team_completion(
         self, launch_id: str, succeeded: bool, output: str

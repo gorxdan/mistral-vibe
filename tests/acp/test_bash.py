@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from acp import CreateTerminalResponse
 from acp.schema import EnvVariable, TerminalOutputResponse, WaitForTerminalExitResponse
@@ -9,8 +10,25 @@ import pytest
 from tests.mock.utils import collect_result
 from vibe.acp.tools.builtins.bash import AcpBashState, Bash
 from vibe.acp.tools.events import ToolTerminalOpenedEvent
-from vibe.core.tools.base import InvokeContext, ToolError
-from vibe.core.tools.builtins.bash import BashArgs, BashResult, BashToolConfig
+from vibe.core.tools.base import (
+    InvokeContext,
+    ToolAuthorizationSource,
+    ToolError,
+    ToolPermission,
+)
+from vibe.core.tools.builtins.bash import (
+    Bash as CoreBashTool,
+    BashArgs,
+    BashResult,
+    BashToolConfig,
+)
+from vibe.core.tools.permissions import (
+    PermissionContext,
+    PermissionScope,
+    PermissionStore,
+    RequiredPermission,
+    authorization_context_fingerprint,
+)
 from vibe.core.types import ToolResultEvent
 
 
@@ -107,7 +125,7 @@ def acp_bash_tool(mock_client: MockClient) -> Bash:
     config = BashToolConfig()
     # Use model_construct to bypass Pydantic validation for testing
     state = AcpBashState.model_construct(
-        client=mock_client, session_id="test_session_123"
+        client=mock_client, session_id="test_session_123", cwd=str(Path.cwd())
     )
     return Bash(config_getter=lambda: config, state=state)
 
@@ -128,6 +146,171 @@ class TestAcpBashBasic:
 
 
 class TestAcpBashExecution:
+    @pytest.mark.asyncio
+    async def test_editor_terminal_uses_bound_workspace(
+        self,
+        acp_bash_tool: Bash,
+        mock_client: MockClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        other = tmp_path / "other"
+        workspace.mkdir()
+        other.mkdir()
+        acp_bash_tool.state.cwd = str(workspace)
+        monkeypatch.chdir(other)
+
+        await collect_result(acp_bash_tool.run(BashArgs(command="echo ok")))
+
+        assert mock_client._last_create_params["cwd"] == str(workspace)
+
+    @pytest.mark.asyncio
+    async def test_automated_authorization_uses_core_execution(
+        self, acp_bash_tool: Bash, mock_client: MockClient, monkeypatch
+    ) -> None:
+        calls: list[str] = []
+
+        async def core_run(_self, args, _ctx=None):
+            calls.append(args.command)
+            yield BashResult(
+                command=args.command, stdout="core", stderr="", returncode=0
+            )
+
+        monkeypatch.setattr(CoreBashTool, "run", core_run)
+        ctx = InvokeContext(
+            tool_call_id="automated",
+            authorization_source=ToolAuthorizationSource.POLICY,
+        )
+
+        result = await collect_result(acp_bash_tool.run(BashArgs(command="cat x"), ctx))
+
+        assert result.stdout == "core"
+        assert calls == ["cat x"]
+        assert mock_client._create_terminal_called is False
+
+    @pytest.mark.asyncio
+    async def test_automated_authorization_requires_bound_workspace(
+        self, acp_bash_tool: Bash, mock_client: MockClient, monkeypatch
+    ) -> None:
+        async def fail_if_run(*_args, **_kwargs):
+            raise AssertionError("core execution must not be reached")
+
+        acp_bash_tool.state.cwd = None
+        monkeypatch.setattr(CoreBashTool, "run", fail_if_run)
+        ctx = InvokeContext(
+            tool_call_id="missing-workspace",
+            authorization_source=ToolAuthorizationSource.POLICY,
+        )
+
+        with pytest.raises(ToolError, match="workspace is unavailable"):
+            await collect_result(acp_bash_tool.run(BashArgs(command="cat x"), ctx))
+
+        assert mock_client._create_terminal_called is False
+
+    @pytest.mark.asyncio
+    async def test_automated_authorization_rejects_process_workspace_drift(
+        self,
+        acp_bash_tool: Bash,
+        mock_client: MockClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def fail_if_run(*_args, **_kwargs):
+            raise AssertionError("core execution must not be reached")
+
+        bound = tmp_path / "bound"
+        drifted = tmp_path / "drifted"
+        bound.mkdir()
+        drifted.mkdir()
+        acp_bash_tool.state.cwd = str(bound)
+        monkeypatch.chdir(drifted)
+        monkeypatch.setattr(CoreBashTool, "run", fail_if_run)
+        ctx = InvokeContext(
+            tool_call_id="drifted-workspace",
+            authorization_source=ToolAuthorizationSource.POLICY,
+        )
+
+        with pytest.raises(ToolError, match="workspace changed"):
+            await collect_result(acp_bash_tool.run(BashArgs(command="cat x"), ctx))
+
+        assert mock_client._create_terminal_called is False
+
+    @pytest.mark.asyncio
+    async def test_user_authorization_drift_is_rejected_before_terminal(
+        self, acp_bash_tool: Bash, mock_client: MockClient, monkeypatch
+    ) -> None:
+        permission = PermissionContext(
+            permission=ToolPermission.NEVER, reason="disabled after approval"
+        )
+        monkeypatch.setattr(
+            acp_bash_tool, "resolve_permission", lambda _args: permission
+        )
+        ctx = InvokeContext(
+            tool_call_id="user-drift",
+            authorization_source=ToolAuthorizationSource.USER,
+            authorization_fingerprint=authorization_context_fingerprint(
+                "bash", BashArgs(command="cat x"), permission
+            ),
+        )
+
+        with pytest.raises(ToolError, match="disabled after approval"):
+            await collect_result(acp_bash_tool.run(BashArgs(command="cat x"), ctx))
+
+        assert mock_client._create_terminal_called is False
+
+    @pytest.mark.asyncio
+    async def test_stored_authorization_drift_is_rejected_before_terminal(
+        self, acp_bash_tool: Bash, mock_client: MockClient, monkeypatch
+    ) -> None:
+        required = RequiredPermission(
+            scope=PermissionScope.COMMAND_PATTERN,
+            invocation_pattern="cat x",
+            session_pattern="cat *",
+            label="cat *",
+        )
+        monkeypatch.setattr(
+            acp_bash_tool,
+            "resolve_permission",
+            lambda _args: PermissionContext(
+                permission=ToolPermission.ASK, required_permissions=[required]
+            ),
+        )
+        ctx = InvokeContext(
+            tool_call_id="stored-drift",
+            permission_store=PermissionStore(),
+            authorization_source=ToolAuthorizationSource.STORED_USER,
+            authorization_fingerprint=authorization_context_fingerprint(
+                "bash",
+                BashArgs(command="cat x"),
+                PermissionContext(
+                    permission=ToolPermission.ASK, required_permissions=[required]
+                ),
+            ),
+        )
+
+        with pytest.raises(ToolError, match="no longer covers"):
+            await collect_result(acp_bash_tool.run(BashArgs(command="cat x"), ctx))
+
+        assert mock_client._create_terminal_called is False
+
+    @pytest.mark.asyncio
+    async def test_direct_hard_denial_is_rejected_before_terminal(
+        self, acp_bash_tool: Bash, mock_client: MockClient, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            acp_bash_tool,
+            "resolve_permission",
+            lambda _args: PermissionContext(
+                permission=ToolPermission.NEVER, reason="command denied"
+            ),
+        )
+
+        with pytest.raises(ToolError, match="command denied"):
+            await collect_result(acp_bash_tool.run(BashArgs(command="cat x")))
+
+        assert mock_client._create_terminal_called is False
+
     @pytest.mark.asyncio
     async def test_run_success(
         self, acp_bash_tool: Bash, mock_client: MockClient
@@ -156,7 +339,7 @@ class TestAcpBashExecution:
         tool = Bash(
             config_getter=lambda: BashToolConfig(),
             state=AcpBashState.model_construct(
-                client=mock_client, session_id="test_session"
+                client=mock_client, session_id="test_session", cwd=str(Path.cwd())
             ),
         )
 
@@ -176,7 +359,7 @@ class TestAcpBashExecution:
         tool = Bash(
             config_getter=lambda: BashToolConfig(),
             state=AcpBashState.model_construct(
-                client=mock_client, session_id="test_session"
+                client=mock_client, session_id="test_session", cwd=str(Path.cwd())
             ),
         )
 
@@ -359,7 +542,7 @@ class TestAcpBashTerminalOpenedEvent:
         tool = Bash(
             config_getter=lambda: BashToolConfig(),
             state=AcpBashState.model_construct(
-                client=mock_client, session_id="test_session"
+                client=mock_client, session_id="test_session", cwd=str(Path.cwd())
             ),
         )
 
@@ -382,7 +565,7 @@ class TestAcpBashConcurrentInvocations:
         tool = Bash(
             config_getter=lambda: BashToolConfig(),
             state=AcpBashState.model_construct(
-                client=mock_client, session_id="test_session"
+                client=mock_client, session_id="test_session", cwd=str(Path.cwd())
             ),
         )
 

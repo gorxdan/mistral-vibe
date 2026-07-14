@@ -341,6 +341,16 @@ class VerificationState:
         with self._authorization_lock:
             return generation == self.verifier_attempt_generation
 
+    def is_pending_verifier_attempt(self, generation: int) -> bool:
+        with self._authorization_lock:
+            attempt = self.latest_verifier_attempt
+            return bool(
+                generation == self.verifier_attempt_generation
+                and attempt is not None
+                and attempt.generation == generation
+                and attempt.disposition is VerifierAttemptDisposition.PENDING
+            )
+
     def record_verifier_result(
         self,
         generation: int | None,
@@ -411,6 +421,13 @@ class VerificationState:
                         "A verification authorization transaction is still in progress."
                     ),
                 )
+            attempt = self.latest_verifier_attempt
+            if attempt is not None:
+                attempt_constraint = self._attempt_completion_constraint(
+                    attempt, receipt_valid=receipt_valid
+                )
+                if attempt_constraint is not None:
+                    return attempt_constraint
             if self.open_todo_ids:
                 identifiers = _format_open_todos(self.open_todo_ids)
                 return VerificationCompletionConstraint(
@@ -423,34 +440,35 @@ class VerificationState:
                         "claiming the work is complete."
                     ),
                 )
-            attempt = self.latest_verifier_attempt
             if attempt is None:
-                if not self.verification_required:
-                    return None
-                return VerificationCompletionConstraint(
-                    generation=self.verifier_attempt_generation,
-                    status=VerificationCompletionStatus.UNVERIFIED,
-                    disposition=VerifierAttemptDisposition.INVALID,
-                    diagnostic=(
-                        "The candidate requires verification, but no current "
-                        "independent verifier attempt was recorded."
-                    ),
-                )
+                if self.verification_required:
+                    return VerificationCompletionConstraint(
+                        generation=self.verifier_attempt_generation,
+                        status=VerificationCompletionStatus.UNVERIFIED,
+                        disposition=VerifierAttemptDisposition.INVALID,
+                        diagnostic=(
+                            "The candidate requires verification, but no current "
+                            "independent verifier attempt was recorded."
+                        ),
+                    )
+            return None
 
-            if attempt.disposition is VerifierAttemptDisposition.PASS:
-                return self._pass_completion_constraint(attempt, receipt_valid)
-
-            status = VerificationCompletionStatus.BLOCKED
-            if attempt.disposition is VerifierAttemptDisposition.PENDING:
-                status = VerificationCompletionStatus.IN_PROGRESS
-            elif attempt.disposition is VerifierAttemptDisposition.PARTIAL:
-                status = VerificationCompletionStatus.PARTIAL
-            return VerificationCompletionConstraint(
-                generation=attempt.generation,
-                status=status,
-                disposition=attempt.disposition,
-                diagnostic=attempt.diagnostic,
-            )
+    def _attempt_completion_constraint(
+        self, attempt: VerifierAttemptResult, *, receipt_valid: bool
+    ) -> VerificationCompletionConstraint | None:
+        if attempt.disposition is VerifierAttemptDisposition.PASS:
+            return self._pass_completion_constraint(attempt, receipt_valid)
+        status = VerificationCompletionStatus.BLOCKED
+        if attempt.disposition is VerifierAttemptDisposition.PENDING:
+            status = VerificationCompletionStatus.IN_PROGRESS
+        elif attempt.disposition is VerifierAttemptDisposition.PARTIAL:
+            status = VerificationCompletionStatus.PARTIAL
+        return VerificationCompletionConstraint(
+            generation=attempt.generation,
+            status=status,
+            disposition=attempt.disposition,
+            diagnostic=attempt.diagnostic,
+        )
 
     def completion_claim_is_authorized(self, *, receipt_valid: bool) -> bool:
         with self._authorization_lock:
